@@ -320,8 +320,8 @@ pub enum Place {
     /// Over one source record of a view: its `where`, or an aggregate's
     /// argument in a measure. Like `Record`, and `param` has meaning.
     View,
-    /// A verb's `requires` and set values: like `Record`, and `exists`
-    /// has meaning.
+    /// A verb's `requires` and set values, and an object set's `where`:
+    /// like `Record`, and `exists` has meaning.
     Verb,
 }
 
@@ -408,7 +408,9 @@ pub fn check(e: &Expr, place: Place) -> Result<()> {
                     return err(Case::OnlyInWrite { name });
                 }
                 Func::Retired if place != Place::Guard => return err(Case::RetiredOnlyInGuard),
-                Func::Exists if place != Place::Verb => return err(Case::ExistsHere),
+                Func::Exists if !matches!(place, Place::Verb | Place::Guard) => {
+                    return err(Case::ExistsHere);
+                }
                 Func::Exists if !matches!(args.first(), Some(Expr::Path { path }) if path.len() == 1) =>
                 {
                     return err(Case::CallTakesField { name });

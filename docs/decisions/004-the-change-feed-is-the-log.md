@@ -328,6 +328,20 @@ the same as a set's declaration; past it the migration is refused
 migration that changes nothing a filter reads appends no
 `object_set_changed`.
 
+**A set whose `where` reads across an edge** is decided again at every
+write of the far record that moves what it reads there, in that write's
+own append and caused by its event, and so is a trigger whose `when`
+reads so (`docs/decisions/055-a-path-steps-through-a-reference.md`):
+a write of one record can move many memberships. What far writes set
+off across an edge in one append counts against the same
+`max_set_changes`, at every door that writes a record; past it the write
+is refused `too_large` naming the set or the trigger, to a caller shown
+it and naming nothing to another, a purge whole, and an aging move is a
+failed guard. The ceiling counts the append, records held from the
+writer among them: a refusal for size tells that much and no more. A migration, a re-key, a value type's
+rename and a `declared` of a far type decide the referring sets in their
+own walk, under the same ceiling.
+
 The ceiling is the last of a migration's refusals. One applied with a
 stale report is refused for that, and one that is not lossless is refused
 with its report, whether or not it is also past the ceiling: the walk

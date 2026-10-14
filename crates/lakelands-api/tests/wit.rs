@@ -1192,6 +1192,8 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 references: vec![purge_reference()],
                 moved: vec![purge_moved()],
                 report_id: "r".into(),
+                set_off: 1,
+                max_set_changes: 2,
             }),
         ),
         ("purge_reference", members(&purge_reference())),

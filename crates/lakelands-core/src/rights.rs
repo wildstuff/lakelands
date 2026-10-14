@@ -527,6 +527,44 @@ pub fn reads_what_verb_reads<'d>(
         && far.is_some_and(|far| far.iter().all(|(t, f)| field_access(who, t, f).reads()))
 }
 
+/// Whether nothing `paths`, over `decl`, read across an edge is held from
+/// `who`: it holds `restricted`, no `only` on a far type nor, of a link
+/// type, on its ends, and reads every field on the way, the first of each
+/// path with them. A set's `where` and a trigger's `when` are decided for
+/// no reader, so what they hold for a record tells what they read there
+/// (055, extended). With no path across, nothing is asked.
+pub fn holds_nothing_across<'d>(
+    who: &Principal,
+    decl: &'d TypeDecl,
+    paths: &[Vec<FieldName>],
+    ty: &dyn Fn(&TypeName) -> Option<&'d TypeDecl>,
+) -> bool {
+    // A path leaves the record where it steps through a reference or a
+    // relation; into a value of its own it does not.
+    let related = |n: &FieldName| {
+        !decl.fields.iter().any(|f| &f.name == n)
+            && decl.relations.iter().any(|r| r.name.as_str() == n.as_str())
+    };
+    let leaves = |p: &&Vec<FieldName>| related(&p[0]) || decl.stepped(p, ty).len() > 1;
+    let paths: Vec<Vec<FieldName>> = paths.iter().filter(leaves).cloned().collect();
+    if paths.is_empty() {
+        return true;
+    }
+    let far = decl.reads_across(&paths, ty);
+    let first = |p: &Vec<FieldName>| match decl.fields.iter().find(|f| f.name == p[0]) {
+        Some(f) => field_access(who, decl, f).reads(),
+        None => (decl.relations.iter())
+            .filter(|r| r.name.as_str() == p[0].as_str())
+            .all(|r| crate::describe::relation_shown(decl, r, ty, who)),
+    };
+    let unheld = |(t, f): &(&TypeDecl, &FieldDecl)| {
+        own_only(who, &t.name).is_empty()
+            && held_ends(who, t, ty).is_empty()
+            && field_access(who, t, f).reads()
+    };
+    who.grants.restricted && paths.iter().all(first) && far.iter().all(unheld)
+}
+
 /// Whether `who` can make a record of `decl` that its grant admits: it
 /// writes every field its `only` names at the authored door (051).
 pub fn creates(who: &Principal, decl: &TypeDecl) -> bool {

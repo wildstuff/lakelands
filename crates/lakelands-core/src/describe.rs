@@ -153,28 +153,46 @@ fn sets_of(declared: &[Declared]) -> impl Fn(&str) -> Option<Condition> + '_ {
 /// reads what its sets read. `None` when it does not parse, or names a set
 /// `sets` does not answer.
 fn named(c: &Condition, sets: Sets<'_>) -> Option<std::collections::BTreeSet<FieldName>> {
-    fn gather(
-        c: &Condition,
-        sets: Sets<'_>,
-        seen: &mut Vec<String>,
-        out: &mut std::collections::BTreeSet<FieldName>,
-    ) -> Option<()> {
-        let e = parsed(c)?;
-        out.extend(crate::derive::reads(&e));
-        let mut names = Vec::new();
-        in_sets(&e, &mut names);
-        for n in names
-            .into_iter()
-            .filter(|n| !seen.contains(n))
-            .collect::<Vec<_>>()
-        {
-            seen.push(n.clone());
-            gather(&sets(&n)?, sets, seen, out)?;
-        }
-        Some(())
+    let mut out = std::collections::BTreeSet::new();
+    gather(c, sets, &mut Vec::new(), &mut |e| {
+        out.extend(crate::derive::reads(e))
+    })?;
+    Some(out)
+}
+
+/// The paths a condition reads, and those of the sets it names, as
+/// [`named`] gathers them.
+fn paths_named(c: &Condition, sets: Sets<'_>) -> Option<Vec<Vec<FieldName>>> {
+    let mut out = Vec::new();
+    gather(c, sets, &mut Vec::new(), &mut |e| {
+        let mut paths = Vec::new();
+        lakelands_api::expr::paths(e, &mut paths);
+        out.extend(paths.into_iter().map(<[FieldName]>::to_vec));
+    })?;
+    Some(out)
+}
+
+/// `each` over a condition and the sets it names, through the sets those
+/// name, each once.
+fn gather(
+    c: &Condition,
+    sets: Sets<'_>,
+    seen: &mut Vec<String>,
+    each: &mut dyn FnMut(&Expr),
+) -> Option<()> {
+    let e = parsed(c)?;
+    each(&e);
+    let mut names = Vec::new();
+    in_sets(&e, &mut names);
+    for n in names
+        .into_iter()
+        .filter(|n| !seen.contains(n))
+        .collect::<Vec<_>>()
+    {
+        seen.push(n.clone());
+        gather(&sets(&n)?, sets, seen, each)?;
     }
-    let mut out = Default::default();
-    gather(c, sets, &mut Vec::new(), &mut out).map(|()| out)
+    Some(())
 }
 
 /// The sets an expression names with `in_set`.
@@ -256,8 +274,16 @@ impl Sight<'_> {
             Declaration::Type(t) => {
                 described(&t.name) && (t.view.as_deref()).is_none_or(|v| self.view_visible(v))
             }
-            Declaration::Trigger(t) => described(&t.on) && holds(t.when.as_ref(), &t.on),
-            Declaration::ObjectSet(s) => described(&s.of) && holds(Some(&s.filter), &s.of),
+            Declaration::Trigger(t) => {
+                described(&t.on)
+                    && holds(t.when.as_ref(), &t.on)
+                    && self.across_unheld(t.when.as_ref(), &t.on, declared)
+            }
+            Declaration::ObjectSet(s) => {
+                described(&s.of)
+                    && holds(Some(&s.filter), &s.of)
+                    && self.across_unheld(Some(&s.filter), &s.of, declared)
+            }
             // It names the fields it sets and says something of those it reads.
             Declaration::Verb(v) => {
                 // And what its paths read of other records, from a relation
@@ -341,6 +367,25 @@ impl Sight<'_> {
             }
         }
         used
+    }
+
+    /// Whether nothing a set's `where` or a trigger's `when` over `ty`
+    /// reads across an edge, with the sets it names, is held from its
+    /// principal: decided for no reader, what such a condition holds for a
+    /// record tells what it reads there (055, extended).
+    fn across_unheld(&self, c: Option<&Condition>, ty: &TypeName, all: &[Declared]) -> bool {
+        let (Some(c), Some(on)) = (c, self.force.ty(ty)) else {
+            return true;
+        };
+        let paths = paths_named(c, &sets_of(all));
+        let ty = |n: &TypeName| self.force.ty(n);
+        paths.is_some_and(|p| crate::rights::holds_nothing_across(self.who(), on, &p, &ty))
+    }
+
+    /// [`Self::across_unheld`] of a set's `where`, over the declarations
+    /// in force.
+    pub fn set_across_unheld(&self, s: &lakelands_api::write::ObjectSetDecl) -> bool {
+        self.across_unheld(Some(&s.filter), &s.of, &self.force.declared())
     }
 
     /// Whether a condition over type `ty` may be shown to its principal.

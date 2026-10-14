@@ -295,6 +295,11 @@ SHOWS = {
     "sealed_output": shows("a recorded output sealed under the key of the source `sealed` names")(
         lambda e: e["body"]["kind"] == "output_recorded" and "source" in e.get("sealed", {})
         and isinstance(e["body"].get("output"), str) and BASE64.fullmatch(e["body"]["output"]) is not None),
+    "set_across": shows("a declared object set whose `where` reads across an edge")(
+        lambda e: declaration(e).get("declare") == "object_set" and "shelf.capacity" in declaration(e).get("where", "")),
+    "trigger_across": shows("a declared trigger whose `when` reads across an edge and asks `exists`")(
+        lambda e: declaration(e).get("declare") == "trigger" and "exists(shelf)" in declaration(e).get("when", "")
+        and "shelf.capacity" in declaration(e)["when"]),
     "lake_upgraded": shows("a `lake_upgraded` from the format before to the one this lake is written in")(
         lambda e: e["body"]["kind"] == "lake_upgraded" and e["body"]["from"] == e["v"] - 1 and e["body"]["to"] == e["v"]),
 }

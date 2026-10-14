@@ -50,7 +50,7 @@ async fn changed(store: &dyn LakeStore, at: Position) -> Result<Vec<String>, Fai
 
 check!(
     SET_REKEYED_REFERENCES = a_rekey_decides_the_sets_that_read_a_rewritten_reference,
-    "004, extended: a re-keying migration appends, caused by its `migrated`, an `object_set_changed` for each record whose membership changes once its references to the moved keys are rewritten: a record of the migrated type under its new key, and a record of another type that holds such a reference, naming that type; a set whose filter reads no rewritten reference gets none"
+    "004, extended: a re-keying migration appends, caused by its `migrated`, an `object_set_changed` for each record whose membership changes once its references to the moved keys are rewritten: a record of the migrated type under its new key, and a record of another type that holds such a reference, naming that type; a set whose filter reads no rewritten reference gets none, and one that reads the far record across such a reference keeps its members, the far record read under its new key (055, extended, lakelands#567)"
 );
 
 async fn a_rekey_decides_the_sets_that_read_a_rewritten_reference(store: Store) -> Held {
@@ -64,6 +64,7 @@ async fn a_rekey_decides_the_sets_that_read_a_rewritten_reference(store: Store) 
         ("of_x", "task", "owner = 'X'"),
         ("of_x2", "task", "owner = 'X2'"),
         ("named", "task", "n = 't'"),
+        ("coded", "task", "owner.code = 'X2'"),
     ] {
         l.declare_as(object_set_on(name, of, filter), name).await?;
     }
@@ -81,7 +82,8 @@ async fn a_rekey_decides_the_sets_that_read_a_rewritten_reference(store: Store) 
     ensure!(
         got == want,
         "re-keying `person` rewrites `boss` and `owner`, so it must change {want:?} and \
-         nothing of `named`; its append changed {got:?}"
+         nothing of `named`, nor of `coded`, which reads the person across `owner` under \
+         its new key; its append changed {got:?}"
     );
     Ok(())
 }

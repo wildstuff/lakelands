@@ -881,7 +881,9 @@ the first release with real installations
   said here by the change that adds it, and a log of format 15 holds
   none of them: an event's `sealed` and a field's `erasable` (§1.4,
   `docs/decisions/058-a-source-may-be-forgotten.md`), so each value of
-  format 15 is plaintext. Neither step changes a fold, so the projection stays. A step that changes how an event folds
+  format 15 is plaintext; and a set's `where` and a trigger's `when`
+  that read across a reference, a relation's link or a derived relation,
+  and ask `exists` (055). Neither step changes a fold, so the projection stays. A step that changes how an event folds
   says so here, and a writer's open then rebuilds the projection.
 - **A writer's open upgrades.** Where the newest event, read under the
   writer's lease, is in an older format the release reads, the open
@@ -1076,17 +1078,19 @@ evaluated on, or `payload` in a verb's values; in a derived relation's
 `where` it is `from` or `to`, the owner's record or the target's, and
 the second a field there. Each later one reads the
 member of that name of the value the path has come to; in a verb's
-`requires` and set values, where that value is a reference, it reads the
-field of that name on the record the reference names; and there a
+`requires` and set values, a set's `where` and a trigger's `when`, where
+that value is a reference, it reads the field of that name on the
+record the reference names; and there a
 first identifier that names no field but a relation carried by link
 records reads the one link the record holds under it, the next
 identifier a field of that link, and a first identifier that names a
 derived relation onto its target's key reads the one record it matches
 (`docs/decisions/055-a-path-steps-through-a-reference.md`). `exists`,
 with one argument, a relation's name: whether the path that begins
-there reaches a record, in a verb's `requires` and set values only.
-These readings came with format 15: a log of an earlier format holds no
-declaration that reads across a reference or a relation.
+there reaches a record, in a verb's `requires` and set values, a set's
+`where` and a trigger's `when` only. These readings came with format 15
+for a verb, and with format 16 for a set and a trigger: a log of an
+earlier format holds no such declaration.
 
 **The typed form.** Every node is an object with `op`:
 

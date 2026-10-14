@@ -241,6 +241,10 @@ async fn a_dropped_writer_is_refused_while_another_holds_the_lease_and_writes_af
         the_lease_elsewhere(&compacted),
         "the compaction: {compacted:?}"
     );
+    // A purge's preflight reads, and takes no lease: it is answered while
+    // the second holds it.
+    let preflight = store.purge_preflight(&"crm".into(), None).await;
+    assert!(preflight.is_ok(), "the purge's preflight: {preflight:?}");
     assert_eq!(tip(store.as_ref()).await, at, "nothing appended");
     assert_eq!(
         keys(theirs.as_ref(), &who).await.unwrap(),

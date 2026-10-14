@@ -66,7 +66,16 @@ every retraction (lakelands#473).
   rule reads the report and does not purge.
 - **`purge_preflight` answers the report and appends nothing.** It is
   refused as the purge would be, for a co-owned record, because both
-  select through one function. Its report carries an id.
+  select through one function. Its report carries an id, and how many
+  memberships and firings the retirements would set off across an edge
+  (`set_off`) beside the lake's `max_set_changes`. It reads, on any
+  handle, and takes no lease.
+- **A purge past the ceiling is refused whole.** Past `max_set_changes`
+  of what its retirements set off across an edge
+  (`docs/decisions/055-a-path-steps-through-a-reference.md`) the purge
+  is refused `too_large`, naming the set, and appends nothing, as one
+  co-owned record refuses it whole: a host learns at the preflight that
+  it must narrow the set or open the lake with a higher ceiling.
 - **`purge_source` may repeat the id.** It is then refused as invalid if
   the lake has moved since, by any append, as a migration's apply is.
   The id is of the source, the type and the head: the report is a

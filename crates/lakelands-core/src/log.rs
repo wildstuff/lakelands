@@ -136,7 +136,8 @@ const SEALED_FROM: u32 = 16;
 /// - **15 → 16:** none. Format 16 is 0.15.0's one step: a log of format
 ///   15 holds none of the forms it adds, each named here by its change:
 ///   an event's `sealed` and a field's `erasable` (058), so each value of
-///   format 15 is plaintext.
+///   format 15 is plaintext; and a set's `where` and a trigger's `when`
+///   that read across an edge (055).
 #[doc(hidden)]
 pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
     debug_assert!(reads_format(v), "format {v} is not one this release reads");

@@ -4070,9 +4070,9 @@ pub async fn a_duration_by_a_unit_is_a_number_and_what_never_lands_is_refused(
 /// A set names a set with `in_set('name')`, in a set's `where` and in a
 /// read's (`docs/decisions/004-the-change-feed-is-the-log.md`, extended):
 /// the named filter stands in the name's place. A set that is not
-/// declared, one of another type, one that names it in turn and a path
-/// that steps through a reference are refused at the declaration, and a
-/// set declared again for another type on `of`; nothing is appended. To a
+/// declared, one of another type and one that names it in turn are
+/// refused at the declaration, and a set declared again for another type
+/// on `of`; nothing is appended. To a
 /// reader kept from a field, a set whose filter reads it, itself or
 /// through a set it names, is a set that is not declared.
 pub async fn a_set_names_a_set_and_tells_no_more_than_its_filter(store: Arc<dyn LakeStore>) {
@@ -4113,12 +4113,6 @@ pub async fn a_set_names_a_set_and_tells_no_more_than_its_filter(store: Arc<dyn 
     assert_eq!(rest.unwrap(), ["INV-2"]);
 
     let head = f.head().await;
-    let when = json!({"declare": "trigger", "name": "t", "on": INVOICE,
-                      "when": "partner.name = 'x'"});
-    let steps = || Case::StepsIntoReference {
-        expr: "partner.name".into(),
-        field: "partner".into(),
-    };
     for (d, case) in [
         (
             set("s", INVOICE, "in_set('ghost')"),
@@ -4148,8 +4142,6 @@ pub async fn a_set_names_a_set_and_tells_no_more_than_its_filter(store: Arc<dyn 
                 through: ["both", "open"].into_iter().collect(),
             },
         ),
-        (set("s", INVOICE, "partner.name = 'x'"), steps()),
-        (serde_json::from_value(when).expect("a trigger"), steps()),
     ] {
         let e = c.declare(owner, d.clone()).await;
         let e = e.expect_err("the declaration is refused");

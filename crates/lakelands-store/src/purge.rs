@@ -253,6 +253,8 @@ fn report<'a>(
         references,
         moved: moved.into_values().collect(),
         report_id: String::new(),
+        set_off: 0,
+        max_set_changes: 0,
     })
 }
 
@@ -266,25 +268,37 @@ fn id(source: &SourceId, ty: Option<&TypeName>, head: Option<Position>) -> Strin
 }
 
 /// What [`run`] would do, appending nothing, under the id a purge may
-/// repeat.
+/// repeat: with what its retirements would set off across an edge, past
+/// the ceiling too, so a host learns before the act that it must narrow a
+/// set or open the lake with a higher `max_set_changes`.
 pub fn preflight(lake: &Lake, source: &SourceId, ty: Option<&TypeName>) -> Result<PurgeReport> {
     let view = lake.engine.view(None)?;
-    let ontology = Ontology::at(view.as_ref())?;
-    let (purged, unsearched) = selection(view.as_ref(), &ontology, source, ty)?;
-    let mut report = report(view.as_ref(), &ontology, (source, ty), &purged, unsearched)?;
+    let w = lake.reading(view.as_ref())?;
+    let (purged, unsearched) = selection(view.as_ref(), &w.ontology, source, ty)?;
+    let mut report = report(
+        view.as_ref(),
+        &w.ontology,
+        (source, ty),
+        &purged,
+        unsearched,
+    )?;
+    let now = w.last_known_at;
+    let (_, set_off) = retirements(lake, (&w, view.as_ref()), purged, now, false)?;
+    (report.set_off, report.max_set_changes) = (set_off, lake.limits.max_set_changes);
     report.report_id = id(source, ty, view.position());
     Ok(report)
 }
 
-/// Retire every live record `source` brought in, into `ty` alone where
-/// one is named, in one append; with a preflight's `report_id`, only if
-/// that report is of this purge and the lake has not moved since.
-pub fn run(
+/// The drafts that retire `purged`, each with what it sets off, as the
+/// system writes them, and how many memberships and firings they set off
+/// across an edge; held to `max_set_changes` where `bound`.
+fn retirements(
     lake: &Lake,
-    source: &SourceId,
-    ty: Option<&TypeName>,
-    report_id: Option<&str>,
-) -> Result<PurgeReport> {
+    (w, view): (&crate::lake::Writer, &dyn ProjectionView),
+    purged: Vec<StoredRecord>,
+    now: lakelands_api::Timestamp,
+    bound: bool,
+) -> Result<(Vec<Draft>, u32)> {
     let system = lake.system("lakelands");
     let call = Call {
         lake,
@@ -293,6 +307,27 @@ pub fn run(
         followed: None,
         shown: None,
     };
+    let mut d = call.decide(w, view, now, 0);
+    d.bound = bound;
+    let mut drafts = Vec::new();
+    for before in purged {
+        let body = writes::retirement(&before.ty, &before.key, before.version);
+        drafts.extend(d.retiring(&before, Draft::system(now, body))?);
+    }
+    Ok((drafts, d.pending.across as u32))
+}
+
+/// Retire every live record `source` brought in, into `ty` alone where
+/// one is named, in one append; with a preflight's `report_id`, only if
+/// that report is of this purge and the lake has not moved since. Past the
+/// lake's `max_set_changes` of what it sets off across an edge it is
+/// refused whole, appending nothing.
+pub fn run(
+    lake: &Lake,
+    source: &SourceId,
+    ty: Option<&TypeName>,
+    report_id: Option<&str>,
+) -> Result<PurgeReport> {
     let mut w = lake.for_write()?;
     let view = lake.engine.view(None)?;
     if report_id.is_some_and(|given| given != id(source, ty, view.position())) {
@@ -307,12 +342,8 @@ pub fn run(
         unsearched,
     )?;
     let now = lake.clock(&mut w);
-    let mut d = call.decide(&w, view.as_ref(), now, 0);
-    let mut drafts = Vec::new();
-    for before in purged {
-        let body = writes::retirement(&before.ty, &before.key, before.version);
-        drafts.extend(d.retiring(&before, Draft::system(now, body))?);
-    }
+    let (drafts, set_off) = retirements(lake, (&w, view.as_ref()), purged, now, true)?;
+    (report.set_off, report.max_set_changes) = (set_off, lake.limits.max_set_changes);
     drop(view);
     if !drafts.is_empty() {
         lake.append(&mut w, drafts)?;

@@ -108,8 +108,8 @@ pub struct SetOff {
     /// events may lie before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub through: Option<Position>,
-    /// The triggers it fired, in the order fired: only those `describe`
-    /// lists to the caller.
+    /// The triggers it fired, each once, in the order first fired: only
+    /// those `describe` lists to the caller.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fired: Vec<TriggerName>,
     /// The object sets its record joined, as `describe` lists them to the
@@ -1330,6 +1330,19 @@ pub struct PurgeReport {
     /// a purge's own report.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub report_id: String,
+    /// The set memberships and trigger firings the retirements set off
+    /// across an edge, a set's `where` or a trigger's `when` reading a
+    /// retired record: past `max_set_changes` the purge is refused whole
+    /// (`docs/decisions/055-a-path-steps-through-a-reference.md`).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub set_off: u32,
+    /// The lake's `max_set_changes`, beside `set_off`.
+    #[serde(default)]
+    pub max_set_changes: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// The records outside a purge that refer into it over one relation.

@@ -808,6 +808,70 @@ async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_who
     }
 }
 
+/// A set or a trigger whose condition reads across an edge tells what it
+/// reads there, so it is a principal's only where nothing of the far type
+/// is held from it (055, extended): one who reads every field but holds no
+/// `restricted` is told of the far write, never of the set change or the
+/// firing it sets off. The owner is told of all three.
+#[tokio::test]
+async fn a_condition_across_an_edge_is_not_told_to_one_a_far_record_may_be_held_from() {
+    for backend in [Backend::Memory, Backend::Sqlite] {
+        let store = common::lake_on(backend).await;
+        for d in [
+            json!({"declare": "type", "name": "firm",
+                   "fields": [{"name": "grade", "type": {"kind": "text"}}]}),
+            json!({"declare": "type", "name": "bill", "fields": [
+                {"name": "firm", "type": {"kind": "reference", "target": "firm"}}]}),
+            json!({"declare": "object_set", "name": "graded", "of": "bill",
+                   "where": "firm.grade = 'x'"}),
+            json!({"declare": "trigger", "name": "hot", "on": "bill", "when": "firm.grade = 'x'"}),
+        ] {
+            declare(store.as_ref(), d).await;
+        }
+        write(store.as_ref(), "firm", "f1", json!({"grade": "y"})).await;
+        write(store.as_ref(), "bill", "b1", json!({"firm": "f1"})).await;
+        let reader = Principal {
+            kind: PrincipalKind::Agent,
+            id: "reader".into(),
+            lake: "finance".into(),
+            grants: Grants {
+                default: Access::Read,
+                ..Grants::default()
+            },
+        };
+        let mut owner = Stdio::open(store.clone(), common::owner()).await;
+        let mut reader = Stdio::open(store.clone(), reader).await;
+        for s in [&mut owner, &mut reader] {
+            s.call(
+                "subscribe",
+                json!({"kinds": ["trigger_fired", "object_set_changed", "record_upserted"]}),
+            )
+            .await;
+        }
+        let p = write(store.as_ref(), "firm", "f1", json!({"grade": "x"})).await;
+        let mut told = Vec::new();
+        while told.len() < 3 {
+            let m = owner.change().await;
+            told.push(m["params"]["kind"].as_str().unwrap().to_owned());
+        }
+        told.sort();
+        assert_eq!(
+            told,
+            ["object_set_changed", "record_upserted", "trigger_fired"],
+            "{backend:?}"
+        );
+        let m = reader.change().await;
+        assert_eq!(
+            (&m["params"]["kind"], &m["params"]["position"]),
+            (&json!("record_upserted"), &json!(p)),
+            "{backend:?}: {m}"
+        );
+        let later = write(store.as_ref(), "firm", "f2", json!({"grade": "y"})).await;
+        let m = reader.change().await;
+        assert_eq!(m["params"]["position"], json!(later), "{backend:?}: {m}");
+    }
+}
+
 /// A principal who reads every field of `invoice` but is not shown
 /// `partner` may not know of `invoice.partner`, which refers to it
 /// (lakelands#718): it is told of the write, never of the firing or the

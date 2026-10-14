@@ -75,6 +75,9 @@ use crate::log::{self, Draft};
 use crate::ontology::Ontology;
 use crate::record;
 
+mod across;
+use across::Heads;
+
 /// A set membership that changes: the set, the record's type and its key
 /// (after the migration, when one changes it), and whether it joined.
 type Change = (String, TypeName, RecordKey, bool);
@@ -206,6 +209,8 @@ pub struct Shown {
 pub struct Pending {
     records: BTreeMap<(TypeName, RecordKey), StoredRecord>,
     members: BTreeMap<(String, TypeName, RecordKey), bool>,
+    /// The memberships and firings its far writes set off across an edge.
+    pub across: usize,
     /// The records read from the projection, each once; the fold of the
     /// append takes them over ([`crate::lake::Lake::append_after`]).
     reads: crate::lake::Reads,
@@ -331,8 +336,8 @@ impl Call<'_> {
     }
 
     /// The first write's outcome, if this key was used before, with what
-    /// it set off: its append is read back as far as its reactions can
-    /// reach, one per trigger and object set the lake declares.
+    /// it set off, told as the first write was told it: its append is
+    /// read back whole ([`Self::appended`]).
     fn replay(
         &self,
         w: &Writer,
@@ -347,18 +352,40 @@ impl Call<'_> {
         let Some(pos) = view.applied(&id)? else {
             return Ok(None);
         };
-        let reach = 3 + w.ontology.triggers.len() + w.ontology.object_sets.len();
-        let events = self.lake.read_events(pos, reach as u32)?;
+        let events = self.appended(w, pos)?;
         if events.is_empty() {
             return Ok(None);
         }
-        let outcome = outcome_of(&events);
+        let outcome = self.told_of(&w.ontology, &events, outcome_of(&events))?;
         // An external verb is answered its executor's answer, recorded in
         // a later append that other writes may precede.
         match called_out(&events, &outcome) {
             Some(at) => self.recorded(view, outcome, at, false).map(Some),
             None => Ok(Some(outcome)),
         }
+    }
+
+    /// The events from `pos` an outcome of the append there reads: its own,
+    /// then every reaction that follows them, a far write's set off across
+    /// an edge among them, however many, read on a page at a time while
+    /// the events read end in a reaction.
+    fn appended(&self, w: &Writer, pos: Position) -> Result<Vec<Event>> {
+        let reach = 3 + w.ontology.triggers.len() + w.ontology.object_sets.len();
+        let mut events = self.lake.read_events(pos, reach as u32)?;
+        let reaction = |e: &Event| {
+            matches!(
+                e.body,
+                EventBody::TriggerFired { .. } | EventBody::ObjectSetChanged { .. }
+            )
+        };
+        while let Some(last) = events.last().filter(|e| reaction(e)) {
+            let more = self.lake.read_events(last.position.next(), 1024)?;
+            if more.is_empty() {
+                break;
+            }
+            events.extend(more);
+        }
+        Ok(events)
     }
 
     /// An external verb's outcome with the answer of its executor to the
@@ -408,9 +435,8 @@ impl Call<'_> {
         let decided = || refused(Refusal::Decided);
         let at = view.applied(&log::accepted_id(&self.lake.id, proposal))?;
         let Some(at) = at else { return Err(decided()) };
-        let reach = 3 + w.ontology.triggers.len() + w.ontology.object_sets.len();
-        let events = self.lake.read_events(at, reach as u32)?;
-        let outcome = outcome_of(&events);
+        let events = self.appended(w, at)?;
+        let outcome = self.told_of(&w.ontology, &events, outcome_of(&events))?;
         match called_out(&events, &outcome) {
             Some(_) => self.recorded(view, outcome, at, true),
             None => Err(decided()),
@@ -458,7 +484,11 @@ fn outcome_of(events: &[Event]) -> Outcome {
             .take_while(caused)
         {
             match &e.body {
-                EventBody::TriggerFired { trigger, .. } => set_off.fired.push(trigger.clone()),
+                EventBody::TriggerFired { trigger, .. } => {
+                    if !set_off.fired.contains(trigger) {
+                        set_off.fired.push(trigger.clone());
+                    }
+                }
                 EventBody::ObjectSetChanged { set, joined, .. } => {
                     let names = if *joined {
                         &mut set_off.joined
@@ -513,33 +543,49 @@ fn computed_again(
 
 /// Whether `record` is a member of `set`: live, and the set's filter holds
 /// over its fields at `now`, the time of the write or the declaration that
-/// decides it, the sets it names read as `o` holds them. A write and a
-/// set's declaration decide by this one rule.
+/// decides it, the sets it names read as `o` holds them, and what a path
+/// reads across an edge as `heads` reaches it. A write and a set's
+/// declaration decide by this one rule.
 fn member_of(
     (set, o): (&ObjectSetDecl, &Ontology),
     record: &StoredRecord,
     w: &Writer,
     now: Timestamp,
+    heads: Heads<'_>,
 ) -> Result<bool> {
     if record.retired {
         return Ok(false);
     }
-    let e = declare::filter(
-        &|n| o.set(n),
-        &set.of,
-        &set.filter,
-        Eval::Record,
-        &[Place::ObjectSet {
-            name: set.name.clone(),
-        }],
-    )?;
+    let at = [Place::ObjectSet {
+        name: set.name.clone(),
+    }];
+    let e = declare::set_filter(&|n| o.set(n), set, &at)?;
     let scope = RecordScope {
         fields: &record.fields,
         meta: Some(&record.meta),
         settings: Some(&w.settings),
         now,
     };
-    Ok(expr::holds(&e, &scope).unwrap_or(false))
+    let on = o.ty(&set.of)?;
+    Ok(across::holds(
+        (heads, o, on),
+        record,
+        &e,
+        scope,
+        &w.settings,
+    ))
+}
+
+/// What a path reads across an edge at the head of `view`, to `max`
+/// steps.
+fn at_head<R>(view: &dyn ProjectionView, max: u32, f: impl FnOnce(Heads<'_>) -> R) -> R {
+    let far = |t: &TypeName, k: &RecordKey| view.get(t, k);
+    let link = |t: &TypeName, r: &RelationName, k: &RecordKey| link_from(view, t, r, k);
+    f(Heads {
+        far: &far,
+        link: &link,
+        max,
+    })
 }
 
 /// The preflight of `m` over the stored records of `decl`'s type, retired
@@ -786,10 +832,11 @@ fn decide(
     is: &StoredRecord,
     (w, now, max): (&Writer, Timestamp, usize),
     changes: &mut Vec<Change>,
+    heads: Heads<'_>,
 ) -> Result<()> {
     for (s, held) in sets {
         let member = held.contains(was);
-        if changes.len() <= max && member != member_of((s, &w.ontology), is, w, now)? {
+        if changes.len() <= max && member != member_of((s, &w.ontology), is, w, now, heads)? {
             changes.push((s.name.clone(), is.ty.clone(), is.key.clone(), !member));
         }
     }
@@ -1593,6 +1640,7 @@ fn requires(
     };
     let payload = None;
     let scope = VerbScope {
+        fields: record.fields,
         record,
         payload,
         across,
@@ -1630,6 +1678,7 @@ fn assigned(
     };
     let payload = Some(payload);
     let scope = VerbScope {
+        fields: record.fields,
         record,
         payload,
         across,
@@ -1899,20 +1948,35 @@ impl<'a> Across<'a> {
 
 /// The scope a verb's `requires` and assignments see: the record's fields
 /// and their provenance, what a path reads across a reference, and in an
-/// assignment `payload.<name>` for the call's payload.
-struct VerbScope<'a> {
-    record: RecordScope<'a>,
+/// assignment `payload.<name>` for the call's payload. A set's `where`
+/// and a trigger's `when` see it over their own scope, `record`, with no
+/// payload (055, extended).
+struct VerbScope<'a, S = RecordScope<'a>> {
+    record: S,
+    fields: &'a BTreeMap<FieldName, Value>,
     payload: Option<&'a Patch>,
     across: &'a Across<'a>,
 }
 
-impl Scope for VerbScope<'_> {
+impl<S: Scope> Scope for VerbScope<'_, S> {
     fn value(&self, path: &[FieldName]) -> Option<Value> {
         let member = lakelands_core::derive::payload_member(path);
         match self.payload.zip(member) {
             Some((payload, name)) => payload.get(name).filter(|v| !v.is_null()).cloned(),
-            None => self.across.value(self.record.fields, path),
+            None => self.across.value(self.fields, path),
         }
+    }
+
+    fn previous(&self, field: &FieldName) -> Option<Value> {
+        self.record.previous(field)
+    }
+
+    fn in_write(&self) -> bool {
+        self.record.in_write()
+    }
+
+    fn retiring(&self) -> bool {
+        self.record.retiring()
     }
 
     fn meta(&self, field: &FieldName) -> Option<lakelands_api::FieldMeta> {
@@ -1924,11 +1988,11 @@ impl Scope for VerbScope<'_> {
     }
 
     fn now(&self) -> Timestamp {
-        self.record.now
+        self.record.now()
     }
 
     fn exists(&self, relation: &FieldName) -> Option<bool> {
-        Some(self.across.exists(self.record.fields, relation))
+        Some(self.across.exists(self.fields, relation))
     }
 }
 
@@ -1997,6 +2061,9 @@ pub(crate) struct Decide<'a> {
     pub door: Door,
     /// What its own events carry.
     pub envelope: Envelope,
+    /// Whether what its far writes set off is held to `max_set_changes`:
+    /// a purge's preflight counts it instead.
+    pub bound: bool,
 }
 
 impl Decide<'_> {
@@ -2313,7 +2380,9 @@ impl Decide<'_> {
     }
 
     /// The triggers and object-set changes a record change causes, the
-    /// event that makes it landing next.
+    /// event that makes it landing next: its own, then what it sets off
+    /// across an edge ([`Self::across`]). A refused write leaves the
+    /// append's drafts as they were.
     pub(crate) fn reactions(
         &mut self,
         before: Option<&StoredRecord>,
@@ -2328,62 +2397,50 @@ impl Decide<'_> {
             context,
             ..Draft::system(now, body)
         };
-        for t in w
-            .ontology
-            .triggers
-            .values()
-            .map(|e| &e.decl)
-            .filter(|t| t.on == after.ty)
-        {
-            let fires = match &t.when {
-                None => true,
-                Some(c) => {
-                    let sets = |n: &str| w.ontology.set(n);
-                    let at = [Place::Trigger {
-                        name: t.name.clone(),
-                    }];
-                    let e = declare::filter(&sets, &t.on, c, Eval::Guard, &at)?;
-                    let live = before.filter(|b| !b.retired);
-                    let scope = WriteScope {
-                        after: &after.fields,
-                        before: live.map(|b| &b.fields),
-                        retiring: live.is_some() && after.retired,
-                        meta: Some(&after.meta),
-                        settings: Some(&w.settings),
-                        now,
-                    };
-                    expr::holds(&e, &scope).unwrap_or(false)
+        let at = (after.ty.clone(), after.key.clone());
+        let prior = self.pending.records.insert(at.clone(), after.clone());
+        let mut own = BTreeMap::new();
+        let mut far = Vec::new();
+        let decided = (|| {
+            let on = |t: &&TriggerDecl| t.on == after.ty;
+            for t in w.ontology.triggers.values().map(|e| &e.decl).filter(on) {
+                if self.fires(t, before, after)? {
+                    out.push(system(EventBody::TriggerFired {
+                        trigger: t.name.clone(),
+                        ty: after.ty.clone(),
+                        key: after.key.clone(),
+                    }));
                 }
+            }
+            let of = |s: &&ObjectSetDecl| s.of == after.ty;
+            for s in w.ontology.object_sets.values().map(|e| &e.decl).filter(of) {
+                let was = self
+                    .pending
+                    .member(self.view, &s.name, &after.ty, &after.key)?;
+                let is = self.member(s, after)?;
+                if was != is {
+                    own.insert((s.name.clone(), at.0.clone(), at.1.clone()), is);
+                    let change = (s.name.clone(), at.0.clone(), at.1.clone(), is);
+                    out.push(self.call.changed(change, cause, now));
+                }
+            }
+            self.across((before, after), &own, &mut far)
+        })();
+        if let Err(e) = decided {
+            match prior {
+                Some(p) => self.pending.records.insert(at, p),
+                None => self.pending.records.remove(&at),
             };
-            if fires {
-                out.push(system(EventBody::TriggerFired {
-                    trigger: t.name.clone(),
-                    ty: after.ty.clone(),
-                    key: after.key.clone(),
-                }));
-            }
+            return Err(e);
         }
-        for s in w
-            .ontology
-            .object_sets
-            .values()
-            .map(|e| &e.decl)
-            .filter(|s| s.of == after.ty)
-        {
-            let was = self
-                .pending
-                .member(self.view, &s.name, &after.ty, &after.key)?;
-            let is = member_of((s, &w.ontology), after, w, now)?;
-            if was != is {
-                let member = (s.name.clone(), after.ty.clone(), after.key.clone());
-                self.pending.members.insert(member, is);
-                let change = (s.name.clone(), after.ty.clone(), after.key.clone(), is);
-                out.push(self.call.changed(change, cause, now));
+        self.pending.members.extend(own);
+        self.pending.across += far.len();
+        for (draft, change) in far {
+            if let Some((set, ty, key, is)) = change {
+                self.pending.members.insert((set, ty, key), is);
             }
+            out.push(draft);
         }
-        self.pending
-            .records
-            .insert((after.ty.clone(), after.key.clone()), after.clone());
         self.next = Position(cause.0 + 1 + out.len() as u64);
         Ok(out)
     }
@@ -2504,6 +2561,7 @@ impl Call<'_> {
             who: self.who,
             door: Door::Authored,
             envelope: Envelope::of(Origin::Authored),
+            bound: true,
         }
     }
 
@@ -2543,7 +2601,63 @@ impl Call<'_> {
         self.keyed(&mut drafts[0], &opts.idempotency_key);
         drop(view);
         let events = self.lake.append(&mut w, drafts)?;
-        Ok(outcome_of(&events))
+        self.told_of(&w.ontology, &events, outcome_of(&events))
+    }
+
+    /// `outcome` as its caller is told it: a set joined or left, or a
+    /// trigger fired, at a record other than the write's own, which a far
+    /// write sets off across an edge, only where the caller is answered
+    /// one of the records it moved, as a write's own record is its
+    /// writer's (055, extended).
+    fn told_of(&self, o: &Ontology, events: &[Event], mut outcome: Outcome) -> Result<Outcome> {
+        let Outcome::Applied {
+            position, set_off, ..
+        } = &mut outcome
+        else {
+            return Ok(outcome);
+        };
+        let at = events.iter().find(|e| e.position == *position);
+        let own = match at.map(|e| &e.body) {
+            Some(
+                EventBody::RecordUpserted { ty, key, .. }
+                | EventBody::RecordIngested { ty, key, .. }
+                | EventBody::RecordRetired { ty, key, .. },
+            ) => (ty, key),
+            _ => return Ok(outcome),
+        };
+        let mut moved: BTreeMap<(&str, &TypeName), Vec<&RecordKey>> = BTreeMap::new();
+        let mut mine = BTreeSet::new();
+        for e in events.iter().filter(|e| e.cause == Some(*position)) {
+            let (name, ty, key) = match &e.body {
+                EventBody::ObjectSetChanged { set, ty, key, .. } => (set.as_str(), ty, key),
+                EventBody::TriggerFired { trigger, ty, key } => (trigger.as_str(), ty, key),
+                _ => continue,
+            };
+            match (ty, key) == own {
+                true => mine.insert(name),
+                false => {
+                    moved.entry((name, ty)).or_default().push(key);
+                    false
+                }
+            };
+        }
+        if moved.is_empty() {
+            return Ok(outcome);
+        }
+        let view = self.lake.engine.view(None)?;
+        let sees = Sight::held(self.who, o);
+        let mut told = mine;
+        for ((name, ty), keys) in &moved {
+            if !told.contains(name) && crate::reads::answered_of(view.as_ref(), &sees, ty, keys, 1)?
+            {
+                told.insert(name);
+            }
+        }
+        let told: BTreeSet<String> = told.into_iter().map(str::to_owned).collect();
+        set_off.fired.retain(|t| told.contains(t.as_str()));
+        set_off.joined.retain(|s| told.contains(s));
+        set_off.left.retain(|s| told.contains(s));
+        Ok(outcome)
     }
 
     /// `retire`.
@@ -2721,7 +2835,7 @@ impl Call<'_> {
         let keyed = opts.idempotency_key.is_some();
         let by = MadeDue::Call { keyed };
         let events = appended.map_err(|e| not_handed(e, due && w.behind, by))?;
-        let outcome = outcome_of(&events);
+        let outcome = self.told_of(&w.ontology, &events, outcome_of(&events))?;
         let external = match &decl.effect {
             VerbEffect::External { executor } if low => Some(External {
                 executor: executor.clone(),
@@ -3184,7 +3298,8 @@ impl Call<'_> {
         let appended = self.lake.append(&mut w, drafts);
         let by = MadeDue::Accepted;
         let events = appended.map_err(|e| not_handed(e, external.is_some() && w.behind, by))?;
-        Ok((self.answered(&events, renamed), external))
+        let outcome = self.answered(&events, renamed);
+        Ok((self.told_of(&w.ontology, &events, outcome)?, external))
     }
 
     /// A refusal of the proposer's plan as an accept answers its reviewer
@@ -3412,8 +3527,9 @@ impl Call<'_> {
             _ => None,
         }))
         .collect();
-        // No verb on or into a changed type, in force or in the set: nothing
-        // is judged, and the lake is not copied.
+        // No verb on or into a changed type, in force or in the set, and no
+        // set or trigger reading into it across an edge: nothing is judged,
+        // and the lake is not copied.
         let verbs = || {
             let sent = set.iter().filter_map(|d| match d {
                 Declaration::Verb(v) => Some(v),
@@ -3421,8 +3537,9 @@ impl Call<'_> {
             });
             (held.verbs.values().map(|e| &e.decl)).chain(sent)
         };
-        let judged =
-            |(was, t, _): &(&TypeDecl, &TypeDecl, Place)| verbs().any(judged_by(held, was, t));
+        let judged = |(was, t, _): &(&TypeDecl, &TypeDecl, Place)| {
+            verbs().any(judged_by(held, was, t)) || !across_judged(held, was, t).is_empty()
+        };
         if !changed.iter().any(judged) {
             return Ok(());
         }
@@ -3876,22 +3993,40 @@ impl Call<'_> {
         );
         let computing = whole.computing(&types.iter().cloned().collect::<Vec<_>>());
         let (plans, mut out) = (record::Plans::default(), Vec::new());
-        for ty in types {
+        // A record of one of them as the fold computes it again.
+        let again = |r: &StoredRecord| match types.contains(&r.ty) {
+            true => computed_again(
+                (&computing, view.as_ref(), &plans, &self.lake.keys),
+                r,
+                event,
+                &w.settings,
+            ),
+            false => Ok(r.clone()),
+        };
+        // And the sets of other types that read into them across an edge.
+        let sets = whole.object_sets.values().map(|e| &e.decl);
+        let into = sets.filter(|s| across::reaches_into(whole, s, types));
+        let referring: BTreeSet<&TypeName> = into.map(|s| &s.of).collect();
+        for ty in types
+            .iter()
+            .chain(referring.into_iter().filter(|t| !types.contains(*t)))
+        {
             let computed: BTreeSet<&FieldName> = (whole.ty(ty)?.fields.iter())
                 .filter(|f| f.derived.is_some() || f.function.is_some() || f.embed.is_some())
+                .filter(|_| types.contains(ty))
                 .map(|f| &f.name)
                 .collect();
             let reads = |s: &ObjectSetDecl| {
                 let at = [Place::ObjectSet {
                     name: s.name.clone(),
                 }];
-                let filter =
-                    declare::filter(&|n| whole.set(n), &s.of, &s.filter, Eval::Record, &at);
-                filter.is_ok_and(|e| {
-                    lakelands_core::derive::reads(&e)
-                        .iter()
-                        .any(|f| computed.contains(f))
-                })
+                let filter = declare::set_filter(&|n| whole.set(n), s, &at);
+                across::reaches_into(whole, s, types)
+                    || filter.is_ok_and(|e| {
+                        lakelands_core::derive::reads(&e)
+                            .iter()
+                            .any(|f| computed.contains(f))
+                    })
             };
             let moved = |s: &ObjectSetDecl| w.ontology.set(&s.name) != Some(s);
             let mut sets = Vec::new();
@@ -3909,15 +4044,19 @@ impl Call<'_> {
             if sets.is_empty() {
                 continue;
             }
+            let far = |t: &TypeName, k: &RecordKey| view.get(t, k)?.map(|r| again(&r)).transpose();
+            let link =
+                |t: &TypeName, r: &RelationName, k: &RecordKey| link_from(view.as_ref(), t, r, k);
+            let max_depth = self.lake.limits.max_depth;
+            let heads = Heads {
+                far: &far,
+                link: &link,
+                max: max_depth,
+            };
             live(view.as_ref(), ty, |r| {
-                let is = &computed_again(
-                    (&computing, view.as_ref(), &plans, &self.lake.keys),
-                    r,
-                    event,
-                    &w.settings,
-                )?;
+                let is = &again(r)?;
                 for (s, held) in &sets {
-                    let member = member_of((s, whole), is, w, now)?;
+                    let member = member_of((s, whole), is, w, now, heads)?;
                     if held.contains(&r.key) == member {
                         continue;
                     }
@@ -3974,21 +4113,23 @@ impl Call<'_> {
         sets.insert(0, (set, held));
         let max = self.lake.limits.max_set_changes;
         let mut out = Vec::new();
-        live(view.as_ref(), ty, |r| {
-            for (s, held) in &sets {
-                let is = member_of((s, after), r, w, now)?;
-                if held.contains(&r.key) != is {
-                    if out.len() as u64 >= u64::from(max) {
-                        return Err(Error::Refused {
-                            field: Some(s.name.as_str().into()),
-                            reason: Refusal::TooLarge { max },
-                        });
+        at_head(view.as_ref(), self.lake.limits.max_depth, |heads| {
+            live(view.as_ref(), ty, |r| {
+                for (s, held) in &sets {
+                    let is = member_of((s, after), r, w, now, heads)?;
+                    if held.contains(&r.key) != is {
+                        if out.len() as u64 >= u64::from(max) {
+                            return Err(Error::Refused {
+                                field: Some(s.name.as_str().into()),
+                                reason: Refusal::TooLarge { max },
+                            });
+                        }
+                        let change = (s.name.clone(), ty.clone(), r.key.clone(), is);
+                        out.push(self.changed(change, declared, now));
                     }
-                    let change = (s.name.clone(), ty.clone(), r.key.clone(), is);
-                    out.push(self.changed(change, declared, now));
                 }
-            }
-            Ok(())
+                Ok(())
+            })
         })?;
         Ok(out)
     }
@@ -4356,13 +4497,10 @@ impl Call<'_> {
                 &self.draft(now, Origin::System, body),
             )
         });
-        let left = |moves: &crate::rekey::Moves,
-                    sets: &Held<'_>,
-                    decl: &TypeDecl,
-                    r: &StoredRecord,
-                    fields,
-                    now,
-                    members: &mut Vec<Change>| {
+        // A record as the migration leaves it: its references to moved keys
+        // rewritten, under its key after `moves`, computed again where the
+        // fold computes its type again.
+        let migrated = |moves: &crate::rekey::Moves, decl: &TypeDecl, r: &StoredRecord, fields| {
             let moved = moves.get(&r.ty).and_then(|m| m.get(&r.key));
             let mut is = StoredRecord {
                 key: moved.unwrap_or(&r.key).clone(),
@@ -4377,7 +4515,39 @@ impl Call<'_> {
                     &w.settings,
                 )?;
             }
-            decide(sets, &r.key, &is, (w, now, limit), members)
+            Ok::<_, Error>(is)
+        };
+        // What a set's path reads across an edge, as the migration leaves
+        // it: the record at a key after `moves`, converted.
+        let far = |moves: &crate::rekey::Moves, t: &TypeName, k: &RecordKey| {
+            let mut back = moves.get(t).into_iter().flatten().filter(|(_, n)| *n == k);
+            let old = back.next().map_or(k, |(o, _)| o);
+            let Some(r) = view.get(t, old)? else {
+                return Ok(None);
+            };
+            let fields = match t == &m.to.name {
+                true => convert(&before, m, &r)?,
+                false => r.fields.clone(),
+            };
+            migrated(moves, after.ty(t)?, &r, fields).map(Some)
+        };
+        let link = |t: &TypeName, r: &RelationName, k: &RecordKey| link_from(view, t, r, k);
+        let max_depth = self.lake.limits.max_depth;
+        let left = |moves: &crate::rekey::Moves,
+                    sets: &Held<'_>,
+                    decl: &TypeDecl,
+                    r: &StoredRecord,
+                    fields,
+                    now,
+                    members: &mut Vec<Change>| {
+            let is = migrated(moves, decl, r, fields)?;
+            let far = |t: &TypeName, k: &RecordKey| far(moves, t, k);
+            let heads = Heads {
+                far: &far,
+                link: &link,
+                max: max_depth,
+            };
+            decide(sets, &r.key, &is, (w, now, limit), members, heads)
         };
         let held = |ty: &TypeName| match now {
             Some(_) => sets_of(w, view, ty, |_| true),
@@ -4623,17 +4793,21 @@ impl Call<'_> {
         // page of the type at a time.
         for (name, decl) in w.ontology.types.iter().map(|(n, e)| (n, &e.decl)) {
             let rewritten = crate::rekey::moved_references(decl, &plan.moves);
+            // And for the sets whose `where` reads into the type across an
+            // edge (055, extended).
+            let into = BTreeSet::from([m.to.name.clone()]);
             let reads = |s: &ObjectSetDecl| {
                 let sets = |n: &str| w.ontology.set(n);
                 let at = [Place::ObjectSet {
                     name: s.name.clone(),
                 }];
-                let filter = declare::filter(&sets, &s.of, &s.filter, Eval::Record, &at);
+                let filter = declare::set_filter(&sets, s, &at);
                 let reads = filter.map(|e| lakelands_core::derive::reads(&e));
                 reads.is_ok_and(|r| rewritten.iter().any(|(f, _)| r.contains(*f)))
+                    || across::reaches_into(&w.ontology, s, &into)
             };
             let other = name != &m.to.name && !links.iter().any(|(old, _)| &old.name == name);
-            let Some(now) = now.filter(|_| other && !rewritten.is_empty()) else {
+            let Some(now) = now.filter(|_| other) else {
                 continue;
             };
             let sets = sets_of(w, view, name, reads)?;
@@ -4952,6 +5126,34 @@ impl Call<'_> {
                 },
             ),
         );
+        // A record of a type that uses the value type as the step leaves
+        // it, as what a set's path reads across an edge (055, extended).
+        let using: BTreeSet<TypeName> = crate::lake::using_types(&probe, &to.name)
+            .into_iter()
+            .collect();
+        let renamed_record = |r: StoredRecord| {
+            let Some(decl) = probe.ty(&r.ty).ok().filter(|_| using.contains(&r.ty)) else {
+                return Ok(r);
+            };
+            let reached = crate::lake::renamed_fields(&probe, decl, &to.name);
+            let mut is = r.clone();
+            for f in decl.fields.iter().filter(|f| reached.contains(&f.name)) {
+                if let Some(new) = r.fields.get(&f.name).and_then(renamed) {
+                    is.fields.insert(f.name.clone(), Value::from(new));
+                }
+            }
+            let computing = probe.computing(std::slice::from_ref(&r.ty));
+            let mut outputs = Outputs::planning(view, &w.plans, &self.lake.keys);
+            let again = record::rederive(&computing, &is, &event, &w.settings, &mut outputs)?;
+            Ok::<_, Error>(again.unwrap_or(is))
+        };
+        let far = |t: &TypeName, k: &RecordKey| view.get(t, k)?.map(renamed_record).transpose();
+        let link = |t: &TypeName, r: &RelationName, k: &RecordKey| link_from(view, t, r, k);
+        let heads = Heads {
+            far: &far,
+            link: &link,
+            max: self.lake.limits.max_depth,
+        };
         for name in crate::lake::using_types(&probe, &to.name) {
             let decl = probe.ty(&name)?;
             let uses: Vec<&FieldDecl> = (decl.fields.iter())
@@ -5072,7 +5274,8 @@ impl Call<'_> {
                     .unwrap_or(is);
                 for (s, held) in &sets {
                     let member = held.contains(&r.key);
-                    if plan.members.len() <= limit && member != member_of((s, &probe), &is, w, now)?
+                    if plan.members.len() <= limit
+                        && member != member_of((s, &probe), &is, w, now, heads)?
                     {
                         plan.members
                             .push((s.name.clone(), is.ty.clone(), is.key.clone(), !member));
@@ -5086,6 +5289,28 @@ impl Call<'_> {
                 report.misfits += used.misfits;
                 report.fields.push(used);
             }
+        }
+        // The sets of other types whose `where` reads a renamed value across
+        // an edge are decided with them.
+        let others = probe.types.keys().filter(|t| !using.contains(*t));
+        for name in others.filter(|_| now.is_some() && !renames.is_empty()) {
+            let sets = sets_of(w, view, name, |s| across::reaches_into(&probe, s, &using))?;
+            if sets.is_empty() {
+                continue;
+            }
+            let now = now.unwrap_or(Timestamp(0));
+            live(view, name, |r| {
+                for (s, held) in &sets {
+                    let member = held.contains(&r.key);
+                    if plan.members.len() <= limit
+                        && member != member_of((s, &probe), r, w, now, heads)?
+                    {
+                        plan.members
+                            .push((s.name.clone(), r.ty.clone(), r.key.clone(), !member));
+                    }
+                }
+                Ok(())
+            })?;
         }
         report.fits = report.misfits == 0;
         if !renames.is_empty() {
@@ -5367,12 +5592,13 @@ fn link_type_drafts(o: &Ontology, t: &TypeDecl, now: Timestamp) -> Result<Vec<Dr
 }
 
 /// Refuse `to`, a type declared again or migrated from `was`, where a verb
-/// on it or on a link type its relations carry, before or after, or
-/// reading across into one of them, could not be declared over `after`
-/// as `to` leaves it, its link types with it: a path read across, a
-/// relation stepped through, a kind its condition computes with (028,
-/// 055). A verb `shows` names is named; another is told one could not be
-/// declared. `o` is the lake before, where the verbs read.
+/// on it or on a link type its relations carry, before or after, or a
+/// verb, a set or a trigger reading across into one of them, could not be
+/// declared over `after` as `to` leaves it, its link types with it: a
+/// path read across, a relation stepped through, a kind its condition
+/// computes with (028, 055). A declaration `shows` names is named;
+/// another is told one could not be declared. `o` is the lake before,
+/// where they read.
 fn verbs_judged_again(
     (o, after): (&Ontology, &Ontology),
     was: &TypeDecl,
@@ -5380,14 +5606,15 @@ fn verbs_judged_again(
     shows: &dyn Fn(&Declaration) -> bool,
 ) -> std::result::Result<(), Said> {
     let judges = judged_by(o, was, to);
-    let judged: Vec<_> = (after.verbs.values()).filter(|e| judges(&e.decl)).collect();
+    let judged = (after.verbs.values()).filter(|e| judges(&e.decl));
+    let mut judged: Vec<_> = judged.map(|v| Declaration::Verb(v.decl.clone())).collect();
+    judged.extend(across_judged(o, was, to));
     if judged.is_empty() {
         return Ok(());
     }
     let mut linked = after.clone();
     put_as_appended(&mut linked, &Declaration::Type(to.clone()), Some);
-    for v in judged {
-        let verb = Declaration::Verb(v.decl.clone());
+    for verb in judged {
         if let Err(e) = declare::reads_its_type(&linked, &verb) {
             let said = e.case().filter(|_| shows(&verb)).cloned();
             let ty = to.name.clone();
@@ -5395,6 +5622,24 @@ fn verbs_judged_again(
         }
     }
     Ok(())
+}
+
+/// The sets and triggers in `o` whose condition reads across an edge into
+/// a type `was` becomes `to`, or into a link type its relations carry,
+/// before or after: [`verbs_judged_again`] judges them as it judges a verb
+/// that reads across into it (055, extended).
+fn across_judged(o: &Ontology, was: &TypeDecl, to: &TypeDecl) -> Vec<Declaration> {
+    let mut types = BTreeSet::from([to.name.clone()]);
+    for t in [was, to] {
+        types.extend(links::link_types_of(t).into_iter().map(|l| l.name));
+    }
+    let sets = o.object_sets.values().map(|e| &e.decl);
+    let sets = sets.filter(|s| across::reaches_into(o, s, &types));
+    let triggers = o.triggers.values().map(|e| &e.decl);
+    let triggers = triggers.filter(|t| across::when_reaches_into(o, t, &types));
+    (sets.map(|s| Declaration::ObjectSet(s.clone())))
+        .chain(triggers.map(|t| Declaration::Trigger(t.clone())))
+        .collect()
 }
 
 /// Whether [`verbs_judged_again`] judges a verb where `was` becomes `to`:

@@ -899,8 +899,9 @@ impl<'a> Reader<'a> {
     /// A read's condition with the filter of each set it names in the
     /// name's place, as the ontology read holds it. A set of a type its
     /// reader is not shown, or whose filter, with the sets it names, reads
-    /// a field its reader is kept from is, to that reader, a set that is
-    /// not declared (024): the refusal names nothing of the type or field.
+    /// a field its reader is kept from, or across an edge what is held from
+    /// it (055, extended), is, to that reader, a set that is not declared
+    /// (024): the refusal names nothing of the type or field.
     /// Over a view's records, which carry no provenance, a condition that
     /// reads one is refused (028, extended).
     fn named_sets(
@@ -911,12 +912,12 @@ impl<'a> Reader<'a> {
     ) -> Result<Expr> {
         let all = |n: &str| self.shape.ontology.set(n);
         let shown = |s: &&lakelands_api::write::ObjectSetDecl| {
-            let filter = crate::declare::filter(&all, &s.of, &s.filter, Eval::Record, at);
+            let filter = crate::declare::set_filter(&all, s, at);
             let reads = filter.map(|e| core_derive::reads(&e));
             let of = self.sight.ty(&s.of);
             of.is_ok_and(|t| {
                 reads.is_ok_and(|r| rights::check_probe(self.who, t, r.iter()).is_ok())
-            })
+            }) && self.sight.set_across_unheld(s)
         };
         let set = |n: &str| self.shape.ontology.set(n).filter(shown);
         let e = crate::declare::filter(&set, ty, c, Eval::Record, at)?;

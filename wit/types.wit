@@ -1238,8 +1238,9 @@ interface types {
 
     /// What one purge retired, or its preflight says it would: the one
     /// type it was of where it named one, per type, the types it could
-    /// not search, the position, what outside it refers into it, and a
-    /// preflight's id.
+    /// not search, the position, what outside it refers into it, a
+    /// preflight's id, and what its retirements set off across an edge
+    /// beside the lake's `max_set_changes`.
     record purge-report {
         source: source-id,
         %type: option<type-name>,
@@ -1250,6 +1251,8 @@ interface types {
         references: list<purge-reference>,
         moved: list<purge-moved>,
         report-id: string,
+        set-off: u32,
+        max-set-changes: u32,
     }
 
     /// The records a purge takes whose one field with a declared

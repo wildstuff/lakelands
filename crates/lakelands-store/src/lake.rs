@@ -497,6 +497,28 @@ impl Lake {
         }
     }
 
+    /// A writer that holds nothing, over `view`: what a write would decide
+    /// there, for a preflight that reads and never takes the lease. It
+    /// appends nothing; its drafts' positions follow the view's.
+    pub(crate) fn reading(&self, view: &dyn ProjectionView) -> Result<Writer> {
+        let shape = self.shape(view)?;
+        let tip = view.position().map(|p| (p, Digest::zero()));
+        Ok(Writer {
+            lease: None,
+            tip,
+            last_known_at: wall_clock(),
+            ontology: shape.ontology.clone(),
+            settings: shape.settings.clone(),
+            owed: Vec::new(),
+            held: BTreeMap::new(),
+            behind: false,
+            failed: None,
+            answers: Vec::new(),
+            plans: record::Plans::default(),
+            lost: false,
+        })
+    }
+
     /// Make the writer's tip and lease readable without its lock.
     fn publish(&self, w: &Writer) {
         self.set_head(w.tip.as_ref().map_or(0, |t| t.0.0));

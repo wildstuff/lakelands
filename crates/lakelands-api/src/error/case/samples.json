@@ -362,6 +362,11 @@
    "type": "t"
   },
   {
+   "code": "set_reads_computed",
+   "field": "f",
+   "type": "t"
+  },
+  {
    "code": "reads_no_input",
    "field": "f"
   },

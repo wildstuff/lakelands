@@ -895,6 +895,9 @@ catalog! {
         ReadAsStored => "a trigger, a verb, an object set or another type's derived relation in force reads it as stored, so it is not computed at the read",
         /// A declaration reading as stored a field computed at the read.
         ReadsAtRead { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "it reads `{field}`, which `{ty}` computes at the read; it is evaluated over the record as stored, which never holds it",
+        /// A set's `where` or a trigger's `when` reading across an edge a
+        /// field computed outside the lake.
+        SetReadsComputed { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "it reads `{field}` of `{ty}` across an edge, which is computed outside the lake: its value lands with no write that would decide this again",
         /// A function's expression reading what is not one of its inputs.
         ReadsNoInput { field: FieldName } => "it reads `{field}`, which is not one of its inputs",
         /// A view reading a view with parameters.

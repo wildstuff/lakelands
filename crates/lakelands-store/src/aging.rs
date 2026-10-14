@@ -15,8 +15,9 @@
 //! `docs/log-format.md` §3; triggers and object sets react in the same
 //! append. A move whose id is already in the lake is not made again, so
 //! aging a date twice writes it once. A condition that cannot be evaluated
-//! for a record, or a move the store would refuse for it, leaves the record
-//! as it is and is counted as a failed guard.
+//! for a record, or a move the store would refuse for it (one that sets off
+//! more across an edge than the lake's `max_set_changes` among them),
+//! leaves the record as it is and is counted as a failed guard.
 
 use std::collections::BTreeMap;
 
@@ -28,7 +29,7 @@ use lakelands_api::principal::{WriteContext, WriteOrigin};
 use lakelands_api::record::Origin;
 use lakelands_api::write::{AgeReport, RuleRun};
 use lakelands_api::{
-    Error, FieldName, Patch, Position, Principal, Result, Timestamp, TypeName, Value,
+    Error, FieldName, Patch, Position, Principal, Refusal, Result, Timestamp, TypeName, Value,
 };
 use lakelands_core::derive;
 use lakelands_core::expr::{self, Place, RecordScope};
@@ -250,7 +251,19 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
                     continue;
                 }
             };
-            drafts.extend(d.planned(plan)?.drafts);
+            // A move that sets off more across an edge than the lake's
+            // `max_set_changes` is one the store refuses (055, extended).
+            match d.planned(plan) {
+                Ok(plan) => drafts.extend(plan.drafts),
+                Err(Error::Refused {
+                    reason: Refusal::TooLarge { .. },
+                    ..
+                }) => {
+                    ran.failed_guards += 1;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
             ran.moved += 1;
         }
         drop(view);
