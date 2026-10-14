@@ -10,8 +10,9 @@
 # there. Red when a directory below the highest has no line there; when a
 # line's tag is not in the repository; and when a kept directory differs
 # from the tag's tree: a file changed, gone or added. And red when a kept
-# lake (`docs/log-format/lakes/<N>/`) has no line in `lakes/kept`, or its
-# files are not the ones that line's digest names.
+# lake (`docs/log-format/lakes/<N>/`, or `<N>-<name>/` for another lake
+# of format N) has no line in `lakes/kept`, or its files are not the ones
+# that line's digest names.
 . "$(dirname "$0")/lib.sh"
 
 DIR=docs/log-format/vectors
@@ -41,13 +42,13 @@ for n in $formats; do
     kept=$((kept + 1))
 done
 # The lakes a release of each format made and later releases read
-# (`docs/log-format/lakes/<N>/`) are never edited either: `lakes/kept`
+# (`docs/log-format/lakes/<N>/` and `<N>-<name>/`) are never edited either: `lakes/kept`
 # names each with a digest of its files, SHA-256 over the lines
 # "<path in the directory> <blob id>" in byte order (`LC_ALL=C`, so no
 # locale changes it), which this gate makes again.
 LAKES=docs/log-format/lakes
 LAKES_LIST="$LAKES/kept"
-lakes=$(tracked_files | tr '\0' '\n' | sed -n "s|^$LAKES/\([0-9][0-9]*\)/.*|\1|p" | sort -un)
+lakes=$(tracked_files | tr '\0' '\n' | sed -n "s|^$LAKES/\([0-9][0-9]*\(-[a-z0-9][a-z0-9-]*\)\{0,1\}\)/.*|\1|p" | LC_ALL=C sort -u)
 held=0
 for n in $lakes; do
     want=$(grep -E "^$n " "$LAKES_LIST" 2>/dev/null | awk '{ print $2 }' || true)

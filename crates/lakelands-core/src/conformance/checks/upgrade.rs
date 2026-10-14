@@ -89,6 +89,12 @@ async fn a_lake_of_format_14_is_upgraded_and_read(store: Store, given: Given) ->
 }
 
 check!(
+    LAKE_14_MIGRATED_READ = a_migration_of_format_14_folds_as_it_was_written,
+    "054 and log-format §6 (lakelands#1070): the lake v0.13.1 made through its doors with a migration that changes only a derived expression (`docs/log-format/lakes/14-migrated/`), imported on this engine and upgraded, answers as that release answered it, each record's computed value and the set's members as v0.13.1 left them, and the same after a rebuild: a `migrated` of format 14 is folded as that format wrote it",
+    given
+);
+
+check!(
     LAKE_14_READ = a_lake_the_release_before_made_is_read_as_it_answered,
     "054 (lakelands#962): the lake v0.13.1 made through its doors (`docs/log-format/lakes/14/`), in format 14, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; and the walk over its relation with the link's fields; the upgraded lake verifies",
     given
@@ -178,6 +184,53 @@ async fn a_lake_the_release_before_made_is_read_as_it_answered(store: Store, giv
         red.is_empty(),
         "the lake v0.13.1 made answers as it did: {}",
         red.join("; ")
+    );
+    Ok(())
+}
+
+async fn a_migration_of_format_14_folds_as_it_was_written(store: Store, given: Given) -> Held {
+    use crate::conformance::fixture::find_where;
+    store.head().await.must("reading the head")?;
+    let dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/lakes/14-migrated");
+    let said = std::fs::read(dir.join("answers.json"))
+        .map_err(|e| Failure::new(format!("reading the answers v0.13.1 gave: {e}")))?;
+    let answers: serde_json::Value = serde_json::from_slice(&said)
+        .map_err(|e| Failure::new(format!("the answers are no JSON: {e}")))?;
+    let lake = lakelands_api::LakeId::from("migrated14");
+    let imported = (given.import)(dir, lake, None, Seams::default()).await;
+    let ImportedLake { store, writer } =
+        imported.map_err(|e| Failure::new(format!("importing the lake: {e}")))?;
+    let copy = writer(store, Seams::default()).await;
+    let copy = copy.map_err(|e| Failure::new(format!("opening it for writing: {e}")))?;
+    let read = async || {
+        let (own, cat) = (
+            owner(copy.as_ref()),
+            crate::conformance::fixture::doors(copy.as_ref()),
+        );
+        let mut bill = serde_json::Map::new();
+        for r in all(cat.as_ref(), &own, "bill").await? {
+            bill.insert(r.key.to_string(), serde_json::json!(r.fields));
+        }
+        let big = cat
+            .find(&own, &"bill".into(), find_where("in_set('big')"))
+            .await;
+        let big = big.must("finding `big`'s members")?.data;
+        let big: Vec<String> = match big {
+            lakelands_api::read::Found::Records { rows, .. } => {
+                rows.iter().map(|r| r.key.to_string()).collect()
+            }
+            other => return Err(Failure::new(format!("`find` answered {other:?}"))),
+        };
+        Ok::<_, Failure>(serde_json::json!({"bill": bill, "big": big}))
+    };
+    let live = read().await?;
+    copy.rebuild().await.must("rebuilding the upgraded lake")?;
+    let rebuilt = read().await?;
+    ensure!(
+        live == answers && rebuilt == answers,
+        "the lake of format 14 with a migration of `twice` answers as v0.13.1 did ({answers}), \
+         and again after a rebuild; it answered {live}, and {rebuilt} rebuilt"
     );
     Ok(())
 }

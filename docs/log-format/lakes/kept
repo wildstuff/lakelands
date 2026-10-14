@@ -1,4 +1,6 @@
 # The lakes a release of each format made through its doors, which every
-# later release reads (`upgrade::LAKE_14_READ`), each never edited:
-# <format> <SHA-256 over "<path in the directory> <blob id>" lines, in byte order>
+# later release reads (`upgrade::LAKE_14_READ`, `upgrade::LAKE_14_MIGRATED_READ`),
+# each never edited:
+# <format>[-<name>] <SHA-256 over "<path in the directory> <blob id>" lines, in byte order>
 14 18dd1a9579ff692b5a529e79f905616d9a39b2c042c1c2ca56347ebe1fa13335
+14-migrated e91fb0366cc7ae6a4f8b6362724dbc22aec621f2e3f494f82f6501e13718e7cb

@@ -1493,6 +1493,9 @@ impl Lake {
             } => {
                 let before = w.ontology.ty(&migration.to.name)?.clone();
                 let decl = Declaration::Type(migration.to.clone());
+                // From format 15 on (lakelands#1070): a log of format 14
+                // folds as it was written, and a rebuild answers as its lake did.
+                let again = e.v >= 15 && computing_changed(&before, &migration.to);
                 w.ontology
                     .put(decl.clone(), *version, Some(schema_hash.clone()));
                 projection.put_declaration(&decl, *version, Some(schema_hash), e.position)?;
@@ -1519,7 +1522,10 @@ impl Lake {
                 // What reads a filled field is computed again, as of this
                 // event, as a create computes it (050): queued as a value's
                 // rename queues it.
-                if !migration.fill.is_empty() && computes(&w.ontology, &migration.to.name) {
+                // So is a type whose computed fields it changes (lakelands#1070).
+                let filled =
+                    !migration.fill.is_empty() && computes(&w.ontology, &migration.to.name);
+                if filled || again {
                     staged.rederive(w, e, std::slice::from_ref(&migration.to.name));
                 }
             }
@@ -2531,6 +2537,32 @@ pub(crate) struct Recomputed {
 /// retries a recorded failure (022, extended). The fold computes them again
 /// and the declaration's append decides their sets (lakelands#941).
 pub(crate) fn computes_again(o: &Ontology, declaration: &Declaration) -> Vec<TypeName> {
+    match declaration {
+        Declaration::Function(f) => (o.types.values())
+            .filter(|t| {
+                (t.decl.fields.iter()).any(|d| d.function.as_deref() == Some(f.name.as_str()))
+            })
+            .map(|t| t.decl.name.clone())
+            .collect(),
+        Declaration::Type(t) => match o.types.get(&t.name) {
+            Some(old)
+                if computing_changed(&old.decl, t) || crate::backed::computed_outside(o, t) =>
+            {
+                vec![t.name.clone()]
+            }
+            _ => vec![],
+        },
+        _ => vec![],
+    }
+}
+
+/// Whether `new` computes its records otherwise than `old`: its derived
+/// expressions, the functions its fields name, what its embeddings are made
+/// from, or which are computed at the read (saying `write` where nothing
+/// was said changes none). A migration that does computes them again
+/// (lakelands#1070); a declaration does too, and settles a type computed
+/// outside the lake again besides.
+pub(crate) fn computing_changed(old: &TypeDecl, new: &TypeDecl) -> bool {
     let computes = |t: &TypeDecl| -> Vec<_> {
         (t.fields.iter())
             .filter(|f| f.derived.is_some() || f.function.is_some() || f.embed.is_some())
@@ -2545,23 +2577,7 @@ pub(crate) fn computes_again(o: &Ontology, declaration: &Declaration) -> Vec<Typ
             })
             .collect()
     };
-    match declaration {
-        Declaration::Function(f) => (o.types.values())
-            .filter(|t| {
-                (t.decl.fields.iter()).any(|d| d.function.as_deref() == Some(f.name.as_str()))
-            })
-            .map(|t| t.decl.name.clone())
-            .collect(),
-        Declaration::Type(t) => match o.types.get(&t.name) {
-            Some(old)
-                if computes(&old.decl) != computes(t) || crate::backed::computed_outside(o, t) =>
-            {
-                vec![t.name.clone()]
-            }
-            _ => vec![],
-        },
-        _ => vec![],
-    }
+    computes(old) != computes(new)
 }
 
 impl Recomputed {
@@ -2666,7 +2682,7 @@ pub(crate) fn renamed_fields(o: &Ontology, t: &TypeDecl, vt: &ValueTypeName) -> 
 
 /// Whether a record of `t` holds a field the lake computes: a derived
 /// field, one computed by a function, an embedding.
-fn computes(o: &Ontology, t: &TypeName) -> bool {
+pub(crate) fn computes(o: &Ontology, t: &TypeName) -> bool {
     let computed = |f: &FieldDecl| f.derived.is_some() || f.function.is_some() || f.embed.is_some();
     o.ty(t).is_ok_and(|t| t.fields.iter().any(computed))
 }
