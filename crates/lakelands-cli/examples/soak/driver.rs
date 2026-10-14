@@ -552,11 +552,17 @@ impl Server {
             .is_ok()
     }
 
-    /// The server's resident memory, in KiB.
-    fn rss(&self) -> Option<u64> {
-        let status = std::fs::read_to_string(format!("/proc/{}/status", self.pid)).ok()?;
-        let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
-        line.split_whitespace().nth(1)?.parse().ok()
+    /// The server's resident memory in KiB: the whole, what is its own
+    /// (`RssAnon`: the heap, the engine's page cache) and what maps a file
+    /// (`RssFile`: the binary, a projection read through `mmap`).
+    fn memory(&self) -> serde_json::Value {
+        let status = std::fs::read_to_string(format!("/proc/{}/status", self.pid));
+        let status = status.unwrap_or_default();
+        let kib = |field: &str| {
+            let line = status.lines().find(|l| l.starts_with(field))?;
+            line.split_whitespace().nth(1)?.parse::<u64>().ok()
+        };
+        json!({"rss_kib": kib("VmRSS:"), "anon_kib": kib("RssAnon:"), "file_kib": kib("RssFile:")})
     }
 }
 
@@ -586,6 +592,28 @@ async fn open_here(at: &Location, mode: OpenMode) -> Result<Arc<dyn LakeStore>, 
     lakelands_store::open(at.clone(), seams, mode)
         .await
         .map_err(|e| format!("opening the lake: {e}"))
+}
+
+/// The lake's size in bytes: the files under its root on SQLite, its
+/// database on PostgreSQL (the soak's own, which nothing else uses).
+fn size(plan: &Plan, root: &std::path::Path) -> Option<u64> {
+    fn files(dir: &std::path::Path) -> u64 {
+        let entries = std::fs::read_dir(dir).into_iter().flatten().flatten();
+        let size = |e: std::fs::DirEntry| match e.file_type() {
+            Ok(t) if t.is_dir() => files(&e.path()),
+            _ => e.metadata().map_or(0, |m| m.len()),
+        };
+        entries.map(size).sum()
+    }
+    match &plan.engine {
+        Engine::Sqlite => Some(files(root)),
+        Engine::Postgres { url, .. } => {
+            let mut client = postgres::Client::connect(url, postgres::NoTls).ok()?;
+            let sql = "SELECT pg_database_size(current_database())";
+            let bytes: i64 = client.query_one(sql, &[]).ok()?.get(0);
+            u64::try_from(bytes).ok()
+        }
+    }
 }
 
 /// Drops every connection to the PostgreSQL database `url` names but
@@ -1483,7 +1511,7 @@ async fn drive(plan: &Plan, dir: &Path, report: &mut Report) -> Result<(), Strin
             report.line(
                 "check",
                 json!({"elapsed_s": t0.elapsed().as_secs(), "day": book.day, "kills": kills, "stops": stops, "drops": drops,
-                    "records": desk.ledger.len(), "resent": desk.resent, "restricted": book.restricted.len(), "rss_kib": server.rss(), "deep": deep, "timings": desk.timings.take()}),
+                    "records": desk.ledger.len(), "resent": desk.resent, "restricted": book.restricted.len(), "memory": server.memory(), "size_bytes": size(plan, &root), "deep": deep, "timings": desk.timings.take()}),
             );
             killer = arm(&server, &mut rng);
         }
