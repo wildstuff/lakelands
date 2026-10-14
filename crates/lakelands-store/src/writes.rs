@@ -77,6 +77,7 @@ use crate::record;
 
 mod across;
 use across::Heads;
+pub(crate) use across::reads_across;
 
 /// A set membership that changes: the set, the record's type and its key
 /// (after the migration, when one changes it), and whether it joined.
@@ -368,7 +369,9 @@ impl Call<'_> {
     /// The events from `pos` an outcome of the append there reads: its own,
     /// then every reaction that follows them, a far write's set off across
     /// an edge among them, however many, read on a page at a time while
-    /// the events read end in a reaction.
+    /// the events read end in a reaction this append caused. A later
+    /// write's reactions end the paging, so a retry on a busy lake reads
+    /// a page past its own append at most, never up to the head.
     fn appended(&self, w: &Writer, pos: Position) -> Result<Vec<Event>> {
         let reach = 3 + w.ontology.triggers.len() + w.ontology.object_sets.len();
         let mut events = self.lake.read_events(pos, reach as u32)?;
@@ -378,8 +381,22 @@ impl Call<'_> {
                 EventBody::TriggerFired { .. } | EventBody::ObjectSetChanged { .. }
             )
         };
-        while let Some(last) = events.last().filter(|e| reaction(e)) {
-            let more = self.lake.read_events(last.position.next(), 1024)?;
+        // The append's events: its first, and each one caused by one of them.
+        let (mut ours, mut read) = (BTreeSet::from([pos]), 0);
+        loop {
+            for e in &events[read..] {
+                if e.cause.is_some_and(|c| ours.contains(&c)) {
+                    ours.insert(e.position);
+                }
+            }
+            read = events.len();
+            let next = match events.last() {
+                Some(last) if reaction(last) && ours.contains(&last.position) => {
+                    last.position.next()
+                }
+                _ => break,
+            };
+            let more = self.lake.read_events(next, 1024)?;
             if more.is_empty() {
                 break;
             }

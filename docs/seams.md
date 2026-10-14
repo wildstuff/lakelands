@@ -398,9 +398,10 @@ indexes describe the head, and `ranked` reads them (below).
   translates a filter into its own query language must select exactly
   the same records; where it cannot, it evaluates that part with the
   evaluator. The store hands an engine only filters that need neither
-  the clock, the lake's settings, per-field provenance nor a pattern
-  match (`now`, `today`, `setting`, `known_at`, `seen_at`, `matches`);
-  it evaluates any other filter itself. When the filter is, or has as
+  the clock, the lake's settings, per-field provenance, a pattern
+  match nor a set's kept membership (`now`, `today`, `setting`,
+  `known_at`, `seen_at`, `matches`, `in_set`); it evaluates any other
+  filter itself. When the filter is, or has as
   one of its `and` terms, `field = 'text'` with a text that reads neither
   as a number nor as an instant
   (`lakelands_core::engines::exact_text_terms`), only records holding

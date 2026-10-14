@@ -403,6 +403,20 @@ pub fn filter<'s>(
     place: Eval,
     on: &[Place],
 ) -> Result<Expr> {
+    filter_kept(set, &|_| false, ty, c, place, on)
+}
+
+/// [`filter`], each set `kept` names left as `in_set('name')`, answered by
+/// its kept membership where the condition is evaluated: a read's `in_set`
+/// of a set across an edge (055, extended).
+pub fn filter_kept<'s>(
+    set: &dyn Fn(&str) -> Option<&'s ObjectSetDecl>,
+    kept: &dyn Fn(&str) -> bool,
+    ty: &TypeName,
+    c: &Condition,
+    place: Eval,
+    on: &[Place],
+) -> Result<Expr> {
     let e = typed(c, place).map_err(|c| invalid(at(on, c)))?;
     let named = |name: &str| {
         let set_name = name.to_owned();
@@ -420,7 +434,7 @@ pub fn filter<'s>(
             None => Err(Case::SetUndeclared { set: set_name }.into()),
         }
     };
-    lakelands_api::expr::expand(&e, &named).map_err(|s| invalid(at(on, s)))
+    lakelands_api::expr::expand_kept(&e, &named, kept).map_err(|s| invalid(at(on, s)))
 }
 
 /// A set's `where`, the sets it names standing in it, as a write decides

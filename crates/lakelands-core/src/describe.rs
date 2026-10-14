@@ -196,7 +196,8 @@ fn gather(
 }
 
 /// The sets an expression names with `in_set`.
-fn in_sets(e: &Expr, out: &mut Vec<String>) {
+#[doc(hidden)]
+pub fn in_sets(e: &Expr, out: &mut Vec<String>) {
     use lakelands_api::expr::{Func, Literal};
     if let Expr::Call {
         func: Func::InSet,
