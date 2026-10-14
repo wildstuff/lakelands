@@ -14,7 +14,7 @@
 use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind, ValueTypeDecl};
-use lakelands_api::write::{Declaration, ValueTypeReport};
+use lakelands_api::write::{Declaration, ProposedWrite, ValueTypeReport};
 use lakelands_api::{
     Access, Error, Grants, LakeStore, Principal, PrincipalKind, Refusal, WriteOpts,
 };
@@ -890,5 +890,126 @@ async fn a_value_types_version_is_answered_with_the_types_that_use_it(store: Sto
         shown.is_empty(),
         "a reader kept from `task.status` is told its value type: {shown:?}"
     );
+    Ok(())
+}
+
+check!(
+    VALUE_TYPES_BY_USE = a_value_type_is_listed_to_a_reader_shown_a_field_that_uses_it,
+    "024, extended (lakelands#1088): `describe` lists a value type, and its version, to a principal shown a field that uses it, a masked one too, or holding `schema`, as it lists the other declarations: a reader kept from every field that uses `band` is told neither, one that knows `employee.band` by its shape is, a holder of `schema` is told every value type, one no field uses included; a value type used only by a link field, only by a verb's payload or only by a function's input is listed to a reader shown that link field, that verb or that function, and not to one kept from the link field, from the field the verb sets or from the field the function computes; a proposed migration of `band` is listed to the first without its write and with `more`, and whole to the holder of `schema`"
+);
+
+async fn a_value_type_is_listed_to_a_reader_shown_a_field_that_uses_it(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let (cat, own) = (l.cat.as_ref(), &l.own);
+    for (name, one_of) in [
+        ("band", ["a", "b"]),
+        ("unit", ["kg", "g"]),
+        ("spare", ["x", "y"]),
+        ("grade", ["low", "high"]),
+        ("code", ["c1", "c2"]),
+        ("tone", ["warm", "cold"]),
+    ] {
+        let vt = json!({"name": name, "kind": "text", "one_of": one_of});
+        let vt = Declaration::ValueType(super::only::de(vt));
+        l.declare_as(vt, "declaring a value type").await?;
+    }
+    let typed = |vt: &str| json!({"kind": "text", "value_type": vt});
+    l.declare_json(json!({"declare": "type", "name": "employee", "fields": [
+        {"name": "name", "type": {"kind": "text"}},
+        {"name": "band", "type": typed("band")}]}))
+        .await?;
+    l.declare_json(json!({"declare": "type", "name": "item", "fields": [
+        {"name": "name", "type": {"kind": "text"}},
+        {"name": "unit", "type": typed("unit")}]}))
+        .await?;
+    // `grade` only on a link field, `code` only in a verb's payload, `tone`
+    // only as a function's input.
+    let text = json!({"kind": "text"});
+    l.declare_json(json!({"declare": "type", "name": "deal", "fields": [
+        {"name": "name", "type": text}],
+        "relations": [{"name": "with", "target": "item", "cardinality": "many_to_many",
+            "fields": [{"name": "grade", "type": typed("grade")}]}]}))
+        .await?;
+    l.declare_json(
+        json!({"declare": "verb", "name": "stamp", "on": "item", "risk": "high",
+        "payload": [{"name": "code", "type": typed("code")}],
+        "effect": "write", "set": [{"field": "name", "value": "payload.code"}]}),
+    )
+    .await?;
+    l.declare_json(
+        json!({"declare": "function", "name": "toned", "backing": "expr",
+        "inputs": [{"name": "tone", "type": typed("tone")}], "expr": "tone"}),
+    )
+    .await?;
+    l.declare_json(json!({"declare": "type", "name": "paint", "fields": [
+        {"name": "tone", "type": text},
+        {"name": "shade", "type": text, "authority": "derived", "function": "toned",
+            "depends_on": ["tone"]}]}))
+        .await?;
+    let reader = |id: &str, more: Value| {
+        // Each may write, so that it is shown the verb it may call.
+        let mut g = json!({"default": "write", "review": true});
+        if let (Some(g), Value::Object(more)) = (g.as_object_mut(), more) {
+            g.extend(more);
+        }
+        super::only::holder(s, id, g)
+    };
+    let hidden = reader(
+        "hidden",
+        json!({"types": {"employee": {"default": "none"}}}),
+    );
+    let masked = reader(
+        "masked",
+        json!({"types": {"employee": {"fields": {"band": "masked"}}}}),
+    );
+    let schema = reader("schema", json!({"schema": true}));
+    let none = json!({"default": "none"});
+    let kept = reader(
+        "kept",
+        json!({"types": {"employee": none, "sys.link.deal.with": {"fields": {"grade": "none"}},
+            "item": {"fields": {"name": "none"}}, "paint": {"fields": {"shade": "none"}}}}),
+    );
+    for (who, want) in [
+        (&hidden, vec!["code", "grade", "tone", "unit"]),
+        (&masked, vec!["band", "code", "grade", "tone", "unit"]),
+        (
+            &schema,
+            vec!["band", "code", "grade", "spare", "tone", "unit"],
+        ),
+        (&kept, vec!["unit"]),
+    ] {
+        let d = cat.describe(who, Default::default()).await;
+        let d = d.must("describing the lake")?.data;
+        let mut listed: Vec<&str> = d.value_types.iter().map(|v| v.name.as_str()).collect();
+        let versions: Vec<&str> = d.value_type_versions.keys().map(|n| n.as_str()).collect();
+        listed.sort();
+        ensure!(
+            listed == want && versions == want,
+            "`{}` is listed the value types {want:?} and their versions; it is listed {listed:?} and the versions of {versions:?}",
+            who.id
+        );
+    }
+    let to = json!({"name": "band", "kind": "text", "one_of": ["a", "b", "c"]});
+    let write = ProposedWrite::MigrateValueType {
+        to: Box::new(super::only::de(to)),
+        renames: Vec::new(),
+        report: Default::default(),
+    };
+    let id = match cat.propose(own, write, "loosen band".into()).await {
+        Ok(lakelands_api::write::Outcome::Proposed { proposal, .. }) => proposal,
+        other => return Err(Failure::new(format!("a proposal is due: {other:?}"))),
+    };
+    for (who, write, more) in [(&hidden, false, true), (&schema, true, false)] {
+        let all = cat.proposals(who, Default::default()).await;
+        let all = all.must("listing the proposals")?.data;
+        let p = all.iter().find(|p| p.id == id);
+        let seen = p.map(|p| (p.write.is_some(), p.more));
+        ensure!(
+            seen == Some((write, more)),
+            "`{}` is listed the migration of `band` with (write, more) {:?}; it is listed {seen:?}",
+            who.id,
+            (write, more)
+        );
+    }
     Ok(())
 }

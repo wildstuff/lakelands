@@ -61,11 +61,13 @@ const GRID: [(&str, &str, &str); 7] = [
         r#"{"schema": true, "types": {"secret": {"default": "none"}}}"#,
         "War War War War War War Tgr Tgr",
     ),
-    ("plain", "{}", "War War Wgr Wgr Wgr War Wgr Wgr"),
+    // `tier` and `rank` are used by no field: their renamings are listed
+    // whole only to a holder of `schema` (lakelands#1088).
+    ("plain", "{}", "War War Wgr Wgr Wgr War Tgr Tgr"),
     (
         "plain_kept",
         r#"{"types": {"invoice": {"fields": {"salary": "none"}}}}"#,
-        "Tgr Tgr Tgr Tgr Wgr War Wgr Wgr",
+        "Tgr Tgr Tgr Tgr Wgr War Tgr Tgr",
     ),
 ];
 

@@ -704,7 +704,13 @@ may not read the definition is not described to it, unless it holds
 `schema` (below). A function is shown to a principal only where
 `describe` lists it (every type that computes a field by it is shown to
 the principal, which reads that field and each input, or it holds
-`schema`).
+`schema`). A value type is listed, with its version, only to a principal
+shown a field that uses it (a type's field, a relation's link field, a
+verb's payload or a function's input, each where `describe` shows it, a
+masked one too, whose shape names the value type) or holding `schema`:
+its `one_of` and `constraint` say what those fields' values may be. One
+that no field uses is listed to holders of `schema` alone
+(lakelands#1088).
 
 #### A field its reader may not read is described without its annotations
 
@@ -1479,8 +1485,11 @@ away (lakelands#916).
 **A proposed bundle** shows each declaration `describe` would show its
 reader once the bundle is in force: a type it could see, with the fields
 it may know of; a view with its definition or not at all (above); a
-trigger and an object set whose condition it may read; a function by
-`describe`'s rule; a value type always. A verb is judged by the fields
+trigger and an object set whose condition it may read; a function and a
+value type by `describe`'s rule. A proposed migration of a value type
+`describe` does not list to its reader is listed to it without its write
+and with `more`, as a type's migration to one not shown the type
+(lakelands#1088). A verb is judged by the fields
 it names, the ones it sets known and the ones it reads readable, not by
 who may call it: a reviewer need not be one who may. One who holds
 `schema`, as an accepter of a bundle must, is shown every definition, so
@@ -2711,3 +2720,7 @@ Of `only`:
   was left out for every reader, so a reviewer shown everything was
   listed the proposal with `more` and its accept was not granted; it is
   answered as the link type's field (lakelands#1092).
+- `describe` listed every value type to every principal, its `one_of`
+  and `constraint` included, and a proposed migration of one was listed
+  to every reviewer; a value type is now listed by the fields its reader
+  is shown that use it, or to a holder of `schema` (lakelands#1088).
