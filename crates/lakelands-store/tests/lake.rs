@@ -928,13 +928,13 @@ fn lake_of_format_14_at(opener: &MemoryOpener, fence: u64) -> String {
     lake
 }
 
-/// A lake of format 14, which this release reads, is not read as it is:
-/// a reader's open is refused, naming the lake, its format, the one this
+/// A lake of format 14, which this release reads, is not read as it is: a
+/// reader's open is refused, naming the lake, its format, the one this
 /// release writes and the way. A writer's open upgrades it: after the
 /// events as they were written come its `lease_taken` and one
-/// `lake_upgraded` from 14 to 15, both in 15; the lake verifies, a reader
-/// then opens it, and another writer's open appends no second marker
-/// (`docs/log-format.md` §6).
+/// `lake_upgraded` from 14 to the format this release writes, both in it;
+/// the lake verifies, a reader then opens it, and another writer's open
+/// appends no second marker (`docs/log-format.md` §6).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lake_of_the_format_before_is_upgraded_by_a_writer_and_refused_to_a_reader() {
     use lakelands_api::error::Situation;
@@ -1349,10 +1349,10 @@ async fn an_import_judges_the_lake_it_finds_before_its_engine_is_opened() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A format-14 event between two of 15 is a fall: a lake's format never
-/// falls, so it is refused at its position as `format_step` where the
-/// events are read in order, by `verify`, by a writer's fold and by a
-/// rebuild, as an event of a format not read is.
+/// A format-14 event between two of a later format is a fall: a lake's
+/// format never falls, so it is refused at its position as `format_step`
+/// where the events are read in order, by `verify`, by a writer's fold and
+/// by a rebuild, as an event of a format not read is.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_event_whose_format_falls_is_refused_where_it_is_read() {
     use lakelands_api::error::{Flaw, Situation};
@@ -3152,7 +3152,7 @@ async fn verify_refuses_a_known_at_that_goes_back_naming_its_position() {
     use lakelands_api::event::{Digest, EventId};
 
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/15/negative/known-at-goes-back/log")
+        .join("../../docs/log-format/vectors/16/negative/known-at-goes-back/log")
         .join(format!("{:020}.jsonl", 0));
     let text = std::fs::read_to_string(&path).unwrap();
     let events: Vec<CanonicalEvent> = text

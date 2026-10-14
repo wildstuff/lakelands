@@ -1,5 +1,5 @@
 //! An export read back by a verifier that shares no code with Lakelands:
-//! `docs/log-format/vectors/15/verify.py` in its directory mode, over a lake
+//! `docs/log-format/vectors/16/verify.py` in its directory mode, over a lake
 //! with a checkpoint (two files) and a re-key; and
 //! an export whose feed breaks, which leaves nothing behind.
 //!
@@ -105,7 +105,7 @@ async fn verify_py_verifies_an_export_with_a_checkpoint_and_a_rekey() {
     );
 
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/15/verify.py");
+        .join("../../docs/log-format/vectors/16/verify.py");
     let run = Command::new("python3").arg(&script).arg(&dir).output();
     let run = match run {
         Ok(run) => run,
@@ -174,7 +174,7 @@ type Damage<'a> = (&'a SegmentFile, &'a dyn Fn(&mut Value), Position);
 #[test]
 fn verify_py_refuses_the_negative_vector_whose_known_at_goes_back() {
     let vectors =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/15");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/16");
     let said = python(
         &vectors.join("verify.py"),
         &vectors.join("negative/known-at-goes-back"),
@@ -371,8 +371,9 @@ async fn an_export_through_a_feed_that_skips_an_event_is_refused() {
 /// A lake v0.13.1 made in format 14 (`docs/log-format/lakes/14/`),
 /// imported and so upgraded, is exported in both formats: its events as
 /// they were written, then a writer's `lease_taken` and `lake_upgraded`
-/// and the rest in 15. `verify.py`, which shares no code with Lakelands,
-/// verifies that export through its last position, as the store does.
+/// and the rest in the format this release writes. `verify.py`, which
+/// shares no code with Lakelands, verifies that export through its last
+/// position, as the store does.
 #[tokio::test(flavor = "multi_thread")]
 async fn verify_py_verifies_the_export_of_an_upgraded_lake() {
     let lakes = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/lakes/14");
@@ -394,7 +395,7 @@ async fn verify_py_verifies_the_export_of_an_upgraded_lake() {
         .await
         .unwrap();
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/15/verify.py");
+        .join("../../docs/log-format/vectors/16/verify.py");
     let said = python(&script, &dir);
     let lake_says = store.verify(None, None).await.unwrap();
     let last = format!(

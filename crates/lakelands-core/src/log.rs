@@ -130,6 +130,8 @@ pub fn reads_format(v: u64) -> bool {
 /// - **14 → 15:** none. Format 15 lets a verb's path read across a
 ///   reference or a relation's link (055); a log of format 14 holds no
 ///   such declaration, and nothing else of an event changed.
+/// - **15 → 16:** none. Format 16 is 0.15.0's one step: a log of format
+///   15 holds none of the forms it adds, each named here by its change.
 #[doc(hidden)]
 pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
     debug_assert!(reads_format(v), "format {v} is not one this release reads");

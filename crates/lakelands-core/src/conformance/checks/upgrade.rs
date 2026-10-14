@@ -1,9 +1,9 @@
 //! A lake written in an older log format this release reads is upgraded,
 //! never rewritten (`docs/log-format.md` §6,
 //! `docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
-//! The vectors of format 14 (`docs/log-format/vectors/14/`) are a small
-//! lake's log as the release that wrote that format left it, so they are
-//! imported here on every engine, as an operator imports an export.
+//! The vectors of each older format (`docs/log-format/vectors/<N>/`) are a
+//! small lake's log as the release that wrote that format left it, so they
+//! are imported here on every engine, as an operator imports an export.
 
 use std::path::PathBuf;
 
@@ -16,7 +16,13 @@ use crate::conformance::{Failure, Given, Held, ImportedLake, Store};
 
 check!(
     FORMAT_14_UPGRADED = a_lake_of_format_14_is_upgraded_and_read,
-    "054 and log-format §6 (lakelands#962): the vectors of format 14, a lake as the release that wrote that format left it, imported on this engine, keep every event as it was written, `v` 14 included, and are followed by a writer's `lease_taken` and one `lake_upgraded` from 14 to 15, and every later event in format 15; the lake then opens read-only, verifies whole, `describe` shows its two types and `find` answers its records; and a writer's open appends its own `lease_taken` and no second `lake_upgraded`",
+    "054 and log-format §6 (lakelands#962): the vectors of format 14, a lake as the release that wrote that format left it, imported on this engine, keep every event as it was written, `v` 14 included, and are followed by a writer's `lease_taken` and one `lake_upgraded` from 14 to the format this release writes, and every later event in that format; the lake then opens read-only, verifies whole, `describe` shows its two types and `find` answers its records; and a writer's open appends its own `lease_taken` and no second `lake_upgraded`",
+    given
+);
+
+check!(
+    FORMAT_15_UPGRADED = a_lake_of_format_15_is_upgraded_and_read,
+    "054 and log-format §6 (lakelands#1096): the vectors of format 15, as v0.14.0 shipped them, imported on this engine, keep every event as it was written, `v` 15 included, and are followed by a writer's `lease_taken` and one `lake_upgraded` from 15 to the format this release writes, and every later event in that format; the lake then opens read-only, verifies whole, `describe` shows its two types and `find` answers its records; and a writer's open appends its own `lease_taken` and no second `lake_upgraded`",
     given
 );
 
@@ -28,12 +34,21 @@ fn vectors(format: u32) -> PathBuf {
 }
 
 async fn a_lake_of_format_14_is_upgraded_and_read(store: Store, given: Given) -> Held {
+    vectors_upgraded(store, given, OLDEST_LOG_FORMAT).await
+}
+
+async fn a_lake_of_format_15_is_upgraded_and_read(store: Store, given: Given) -> Held {
+    vectors_upgraded(store, given, 15).await
+}
+
+/// The vectors of the older format `old`, imported, upgraded and read.
+async fn vectors_upgraded(store: Store, given: Given, old: u32) -> Held {
     // The check's own lake answers before the import is asked of its
     // engine.
     store.head().await.must("reading the head")?;
     let lake = lakelands_api::LakeId::from("vectors");
-    let imported = (given.import)(vectors(14), lake, None, Seams::default()).await;
-    let imported = imported.map_err(|e| Failure::new(format!("importing format 14: {e}")));
+    let imported = (given.import)(vectors(old), lake, None, Seams::default()).await;
+    let imported = imported.map_err(|e| Failure::new(format!("importing format {old}: {e}")));
     let ImportedLake {
         store: copy,
         writer,
@@ -42,7 +57,7 @@ async fn a_lake_of_format_14_is_upgraded_and_read(store: Store, given: Given) ->
     let said: Vec<_> = (log.iter())
         .map(|e| format!("{} {} {}", e.position.0, e.v, e.body.kind()))
         .collect();
-    let (old, new) = (OLDEST_LOG_FORMAT, LOG_FORMAT_VERSION);
+    let new = LOG_FORMAT_VERSION;
     let as_written = log.iter().take(8).all(|e| e.v == old);
     let marked = matches!(log.get(9).map(|e| (&e.body, e.v)),
         Some((EventBody::LakeUpgraded { from, to }, v)) if *from == old && *to == new && v == new);
@@ -51,7 +66,7 @@ async fn a_lake_of_format_14_is_upgraded_and_read(store: Store, given: Given) ->
     let after = log.iter().skip(8).all(|e| e.v == new);
     ensure!(
         as_written && leased && marked && after,
-        "the imported log holds the eight events of format 14 as written, then a writer's \
+        "the imported log holds the eight events of format {old} as written, then a writer's \
          `lease_taken` and a `lake_upgraded` from {old} to {new}, and every later event in \
          {new}; it holds {said:?}"
     );
@@ -102,7 +117,7 @@ check!(
 
 check!(
     LAKE_15_READ = the_lake_of_format_15_is_read_as_it_answered,
-    "054 (lakelands#962): the lake v0.14.0 made through its doors (`docs/log-format/lakes/15/`), in format 15, imported on this engine, keeps its events as written and is read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; and the walk over its relation with the link's fields; the lake verifies",
+    "054 (lakelands#962): the lake v0.14.0 made through its doors (`docs/log-format/lakes/15/`), in format 15, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; and the walk over its relation with the link's fields; the lake verifies",
     given
 );
 

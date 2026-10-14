@@ -23,7 +23,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use lakelands_api::error::{Flaw, Situation};
-use lakelands_api::event::{Event, EventBody, LOG_FORMAT_VERSION};
+use lakelands_api::event::{Event, EventBody, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT};
 use lakelands_api::ontology::{TypeDecl, VerbScope};
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, ProposedWrite};
@@ -580,7 +580,7 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
         ),
         "lake_upgraded" => matches!(
             &event.body,
-            B::LakeUpgraded { from: 14, to } if *to == event.v
+            B::LakeUpgraded { from, to } if *to == event.v && *from + 1 == *to
         ),
         other => panic!("`further.json` shows `{other}`, which this test has no check for"),
     }
@@ -795,20 +795,27 @@ fn lines_of(n: u32) -> Vec<Value> {
     lines
 }
 
-/// The step from format 14 to 15 changes no event: format 15 lets a
-/// verb's path read across a reference or a relation's link (055), and a
-/// log of format 14 holds no such declaration. So every line of format
-/// 14's vectors, of every kind they hold, is read as it was written, `v`
-/// included, and decodes into this release's structs; the kinds it holds
-/// are named, so a kind the vectors miss is seen.
+/// The steps from each older format to this release's change no event:
+/// 14 → 15 lets a verb's path read across a reference or a relation's
+/// link (055), which a log of format 14 never declares, and 15 → 16 adds
+/// forms a log of 15 never holds. So every line of each older format's
+/// vectors, of every kind they hold, is read as it was written, `v`
+/// included, and decodes into this release's structs; the kinds each
+/// holds are named, so a kind the vectors miss is seen.
 #[test]
-fn the_step_from_format_14_changes_no_event_of_any_kind() {
+fn the_steps_from_every_older_format_change_no_event_of_any_kind() {
+    for n in OLDEST_LOG_FORMAT..LOG_FORMAT_VERSION {
+        the_step_from(n);
+    }
+}
+
+fn the_step_from(n: u32) {
     let mut kinds = std::collections::BTreeSet::new();
-    for line in lines_of(14) {
+    for line in lines_of(n) {
         let v = line["v"].as_u64().unwrap();
-        assert_eq!(v, 14);
+        assert_eq!(v, u64::from(n));
         let read = log::converted(v, line.clone());
-        assert_eq!(read, line, "the step from 14 changed {line}");
+        assert_eq!(read, line, "the step from {n} changed {line}");
         let event: Event = serde_json::from_value(read).unwrap();
         assert_eq!(canonical::of(&event), canonical::to_vec(&line));
         kinds.insert(event.body.kind());
@@ -828,22 +835,24 @@ fn the_step_from_format_14_changes_no_event_of_any_kind() {
     for kind in some {
         assert!(
             held.iter().any(|k| k == kind),
-            "format 14's vectors hold no `{kind}`: {held:?}"
+            "format {n}'s vectors hold no `{kind}`: {held:?}"
         );
     }
 }
 
-/// Format 14's vectors verify as an export does, through the converter:
-/// the chain, every hash over the bytes as written, and every rule of the
-/// format, by the same verifier an import runs.
+/// Each older format's vectors verify as an export does, through the
+/// converter: the chain, every hash over the bytes as written, and every
+/// rule of the format, by the same verifier an import runs.
 #[test]
-fn the_vectors_of_format_14_verify_as_an_export_of_that_format() {
-    let dir = every_format().join("14");
-    let verified = lakelands_core::export::verify(&dir).unwrap();
-    assert_eq!(
-        verified.through.0, 7,
-        "the two segments run through position 7"
-    );
+fn the_vectors_of_every_older_format_verify_as_an_export_of_that_format() {
+    for n in OLDEST_LOG_FORMAT..LOG_FORMAT_VERSION {
+        let dir = every_format().join(n.to_string());
+        let verified = lakelands_core::export::verify(&dir).unwrap();
+        assert_eq!(
+            verified.through.0, 7,
+            "format {n}: the two segments run through position 7"
+        );
+    }
 }
 
 /// Fences never fall: the vectors' first segment with the event at
