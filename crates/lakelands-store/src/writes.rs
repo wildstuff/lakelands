@@ -57,7 +57,8 @@ use lakelands_api::write::{
 };
 use lakelands_api::{
     Access, Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal, ProposalId,
-    RecordKey, Refusal, RelationName, Result, Timestamp, TypeName, Value, VerbName, Version,
+    RecordKey, Refusal, RelationName, Result, SourceId, Timestamp, TypeName, Value, VerbName,
+    Version,
 };
 use lakelands_core::expr::{self, Place as Eval, RecordScope, Scope, WriteScope};
 use lakelands_core::rights::{self, Door};
@@ -336,6 +337,9 @@ impl Call<'_> {
         view: &dyn ProjectionView,
     ) -> Result<Option<Outcome>> {
         let Some(k) = key else { return Ok(None) };
+        if k.as_str().contains('\0') {
+            return Err(invalid(Case::IdempotencyKeyNul));
+        }
         let id = log::authored_id(&self.who.writer(), k);
         let Some(pos) = view.applied(&id)? else {
             return Ok(None);
@@ -928,6 +932,15 @@ fn check_key_agrees(
 pub(crate) fn check_key(key: &RecordKey) -> Result<()> {
     if key.as_str().is_empty() || key.as_str().contains('\0') {
         return Err(invalid(Case::KeyEmpty));
+    }
+    Ok(())
+}
+
+/// Refuse a source id that is empty or holds a NUL character: it is a
+/// part of an ingested event's id, whose parts NUL separates.
+pub(crate) fn check_source(source: &SourceId) -> Result<()> {
+    if source.as_str().is_empty() || source.as_str().contains('\0') {
+        return Err(invalid(Case::SourceIdForm));
     }
     Ok(())
 }

@@ -138,8 +138,10 @@ impl StoredRecord {
 /// (`docs/decisions/012-writes-touch-only-their-fields.md`).
 pub type Patch = BTreeMap<FieldName, Value>;
 
-/// One record from a source, as `ingest` receives it.
+/// One record from a source, as `ingest` receives it. A member it does
+/// not know is refused, never taken as absent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceRecord {
     /// The record's type.
     #[serde(rename = "type")]
@@ -165,9 +167,13 @@ pub struct SourceRecord {
 /// Where values read from another lake's log came from: that lake, and
 /// the position of the event there whose state they are.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Upstream {
     /// The lake the values were read from.
     pub lake: crate::id::LakeId,
     /// The position of the event there whose state they are.
     pub position: crate::id::Position,
 }
+
+#[cfg(test)]
+mod tests;

@@ -102,6 +102,9 @@ pub fn window(
             // authority on is refused whole, even when that field's value is
             // the one already stored.
             let patch = d.checked(decl, &r.key, &r.fields)?;
+            if let Some(own) = &r.source {
+                crate::writes::check_source(own)?;
+            }
             stated(r)?;
             // A record a holder of `only` is not admitted is, to it, a key that
             // is free: it is not compared, and the write is refused as on a

@@ -1242,6 +1242,8 @@ catalog! {
         FieldNameKept { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "a new field of `{ty}` may not begin with `_`: the lake keeps such names for its own columns of a pattern's rows (`<name>._depth`, `<name>._type`); name it `{field}` without the `_`",
         /// A field taken away that another part of the type reads.
         FieldReadElsewhere { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "`{field}` is read by another part of `{ty}` and cannot be removed",
+        /// An idempotency key holding a NUL.
+        IdempotencyKeyNul => "an idempotency key holds no NUL character",
         /// A view at a door that writes or holds a record.
         IsAView {
             #[serde(rename = "type")]
@@ -1289,6 +1291,8 @@ catalog! {
         SetEmpty => "nothing to apply: the set holds no declaration",
         /// A set of declarations with several problems.
         SetRefused { count: usize, problems: Vec<super::Error> } => "the set of `declarations` is refused whole, with {count} problems: {problems}",
+        /// A source id that is empty or holds a NUL.
+        SourceIdForm => "a source id is not empty and holds no NUL character",
         /// A trigger's ceiling above the lake's.
         TriggerTooDeep { depth: u32, max: u32 } => "its `max_depth` {depth} is above the lake's `max_reactive_depth` {max}",
         /// A retry that finds no answer of the verb's executor recorded.
@@ -1315,6 +1319,8 @@ catalog! {
         WrittenOnce { #[serde(rename = "type")] ty: TypeName, key: RecordKey } => "`{ty}` `{key}` is written once: its type is insert-only, and a record stands at the key, live or retired",
         /// A pinned proposal's accept after its record or type changed.
         WriteChangedSinceProposed { #[serde(rename = "type")] ty: TypeName, #[serde(default, skip_serializing_if = "Option::is_none")] key: Option<RecordKey> } => "`{ty}`[ `{key}`] changed since this write was proposed; propose it again",
+        /// A principal whose id holds a NUL.
+        WriterNul => "a principal's id holds no NUL character",
 
         // ---- aging
         /// An aging rule's field that its door does not write.

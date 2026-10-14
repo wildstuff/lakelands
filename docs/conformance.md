@@ -296,6 +296,10 @@ belongs in the suite, not beside one engine:
 - `an_ingest_refusal_names_its_record_and_where_its_window_began` — 016, extended (lakelands#1043): a record an ingest refuses is named by the refusal, by its type and key as its source sent them, with its place in the stream and the place of the first record of its window, from which nothing was written while every window before it was: for a field the source is not the authority on, an empty record on a free key, a type its writer is not shown and a link past its relation's cardinality within the window, each the refusal it is without the stream, with `index`, `from` and `record` beside it on the wire
 - `an_insert_only_type_is_written_once_by_its_source` — 016 and 027, extended (lakelands#1044): a type marked `insert_only` takes a record from its source once: the same record again is a duplicate, other values for a key that holds a record, live or retired, or that the window wrote already, are refused as `written_once`, naming the record and appending nothing, while an author still writes its authored fields; a key held from its writer answers as on an unmarked type; `describe_type` says the mark; declared on a type that holds records it is taken with no migration, its version moving and its schema hash not, and taken off, a key moves its version again
 
+**logged ids**
+
+- `a_logged_id_holding_nul_is_refused` — the log format §3: a source id that is empty or holds NUL, and an idempotency key or a writer that holds NUL, are refused as invalid at every door that takes them, and append nothing
+
 **rebuild**
 
 - `a_rebuilt_projection_answers_every_read_as_the_live_one_did` — 001, 040 and the engine seam: a projection rebuilt from the log is the one it replaces, byte for byte, at the head and as of every earlier position, the `initial` values the fold filled (050), a type migration that converts records and a re-key that rewrites references to moved keys included

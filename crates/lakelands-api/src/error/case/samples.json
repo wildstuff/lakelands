@@ -1141,6 +1141,9 @@
    "type": "t"
   },
   {
+   "code": "idempotency_key_nul"
+  },
+  {
    "code": "is_a_view",
    "type": "t"
   },
@@ -1262,6 +1265,9 @@
    ]
   },
   {
+   "code": "source_id_form"
+  },
+  {
    "code": "trigger_too_deep",
    "depth": 1,
    "max": 1
@@ -1329,6 +1335,9 @@
    "code": "write_changed_since_proposed",
    "key": "k",
    "type": "t"
+  },
+  {
+   "code": "writer_nul"
   },
   {
    "code": "aging_authority",

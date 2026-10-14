@@ -75,7 +75,13 @@ pub async fn import(
 }
 
 fn same_lake(lake: &Lake, who: &Principal) -> Result<()> {
-    writes::granted(who.lake == lake.id)
+    writes::granted(who.lake == lake.id)?;
+    // The writer is a part of an authored event's id, whose parts NUL
+    // separates.
+    if who.id.contains('\0') {
+        return Err(invalid(Case::WriterNul));
+    }
+    Ok(())
 }
 
 /// The store facade of one lake.
@@ -693,6 +699,7 @@ impl Catalog for Doors {
         // is taken.
         writes::check_context(&self.lake, &self.context)?;
         writes::granted(who.grants.ingest)?;
+        writes::check_source(source)?;
         Ok(ingest::run(
             self.lake.clone(),
             who.clone(),
@@ -799,6 +806,7 @@ impl LakeStore for Store {
         source: &SourceId,
         ty: Option<&TypeName>,
     ) -> Result<PurgeReport> {
+        writes::check_source(source)?;
         let (lake, source, ty) = (self.lake.clone(), source.clone(), ty.cloned());
         exec::run(move || crate::purge::preflight(&lake, &source, ty.as_ref())).await
     }
@@ -809,6 +817,7 @@ impl LakeStore for Store {
         ty: Option<&TypeName>,
         id: Option<&str>,
     ) -> Result<PurgeReport> {
+        writes::check_source(source)?;
         let (lake, source, id) = (self.lake.clone(), source.clone(), id.map(str::to_owned));
         let ty = ty.cloned();
         let purge = move || crate::purge::run(&lake, &source, ty.as_ref(), id.as_deref());

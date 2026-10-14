@@ -662,6 +662,38 @@ async fn a_refused_ingest_is_answered_while_the_body_keeps_arriving() {
     assert_eq!(store.head().await.unwrap(), head, "nothing was committed");
 }
 
+/// A line with a member a source record does not have is refused at that
+/// line, never read without it: a misspelled `source` would file the
+/// record under the path's source (lakelands#1081).
+#[tokio::test]
+async fn an_ingest_line_with_an_unknown_member_is_refused() {
+    let store = rest_lake(Backend::Memory).await;
+    let (addr, task) = serve(store.clone()).await;
+    let head = store.head().await.unwrap();
+    let lines = [
+        r#"{"type":"invoice","key":"INV-S","fields":{"amount":"1.00"},"Source":"dev-a"}"#,
+        r#"{"type":"invoice","key":"INV-S","fields":{"amount":"1.00"},"upstream":{"lake":"l","position":1,"at":2}}"#,
+    ];
+    for line in lines {
+        let block = [
+            "POST /lakes/finance/ingest/bank",
+            "authorization: Bearer k-owner",
+            "content-type: application/x-ndjson",
+            line,
+        ];
+        let (status, _, body) = exchange(addr, &block).await;
+        let answer: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+        assert_eq!(status, "200", "{body}");
+        assert_eq!(
+            (&answer["reason"]["refusal"], &answer["reason"]["code"]),
+            (&json!("invalid"), &json!("line_not_record")),
+            "{body}"
+        );
+    }
+    task.abort();
+    assert_eq!(store.head().await.unwrap(), head, "nothing was committed");
+}
+
 /// A window that takes longer than the keep-alive to commit is answered
 /// with an empty line meanwhile, so a client holding the answer to a
 /// silence bound hears the server works; then its line comes, and the

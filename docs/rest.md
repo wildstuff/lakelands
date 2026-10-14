@@ -218,9 +218,11 @@ bound knows the server is working; a client skips it. The reply's
 `Lakelands-Position` is the head before the ingest began; each window's
 own position is in its line. A line is at most 4 MiB before its line
 feed, however the body is cut into reads. A line that is longer, or is
-not a record, ends the ingest with a last line naming it (`invalid`);
-what came before it is committed, and since ingest is content-addressed,
-sending the whole body again appends nothing twice. A record the store
+not a record (a member a source record does not have included, so a
+misspelled `"source"` is never read as the path's), ends the ingest
+with a last line naming it (`invalid`); what came before it is
+committed, and since ingest is content-addressed, sending the whole
+body again appends nothing twice. A record the store
 refuses ends the ingest with a last line that is its refusal, its own
 `error` code and shape kept, with `index` (its place among the body's
 records, from 0), `from` (the first record of its window: every record
