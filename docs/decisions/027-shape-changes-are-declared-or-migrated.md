@@ -491,6 +491,23 @@ declaration's changes, and the times `recompute` appended it again (022).
   migration to itself needs no rule: its preflight refuses it, there
   being nothing to migrate.
 
+**The answer says how each declaration stands** (lakelands#1059). A
+host reacts to "the ontology changed" and to "already in force" in
+different ways: it drops what it cached, or does nothing. The call's
+position cannot tell the two apart, since a call that appended nothing
+answers the head, which may hold a record's write. So `declare` and
+`apply` answer `declared`, one entry for each declaration sent, in the
+order sent:
+- its kind and name;
+- its version in force after the call;
+- `since`, the position of its `declared`, which a read `as_of` it sees;
+- and whether this call appended it.
+
+The call's own position keeps its meaning: the head where nothing was
+appended, and the set's last `declared` otherwise. The writer keeps each
+declaration's `since` beside its version, as the projection does, so
+the answer reads nothing. Any other write names no declaration.
+
 **What a declaration did besides its event follows only one that
 differs.** Stated again while in force, a declaration once did this
 besides appending its event, and none of it was a promise of this
@@ -790,3 +807,6 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
   (lakelands#644).
 - A migration may fill a field's `initial` into the records that hold
   none, and its preflight counts them (lakelands#1023).
+- `declare` and `apply` answer how each declaration sent stands in
+  force: its version, the position it stands from, and whether the call
+  appended it (lakelands#1059).

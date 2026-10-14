@@ -55,4 +55,4 @@
 # comes from the session's pump, not in step with the requests, so
 # `tests/notify.rs` checks it, not this transcript.
 > {"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"declare_type","arguments":{"type":{"name":"memo","fields":[{"name":"text","type":{"kind":"text"}}]}}}}
-< {"id":14,"jsonrpc":"2.0","result":{"content":[{"text":"position 10\n{\n  \"outcome\": \"applied\",\n  \"position\": 10\n}","type":"text"}],"isError":false,"structuredContent":{"outcome":"applied","position":10}}}
+< {"id":14,"jsonrpc":"2.0","result":{"content":[{"text":"position 10\n{\n  \"declared\": [\n    {\n      \"appended\": true,\n      \"kind\": \"type\",\n      \"name\": \"memo\",\n      \"since\": 10,\n      \"version\": 1\n    }\n  ],\n  \"outcome\": \"applied\",\n  \"position\": 10\n}","type":"text"}],"isError":false,"structuredContent":{"declared":[{"appended":true,"kind":"type","name":"memo","since":10,"version":1}],"outcome":"applied","position":10}}}

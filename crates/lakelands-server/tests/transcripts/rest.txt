@@ -408,7 +408,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 21
-< {"outcome":"applied","position":21}
+< {"declared":[{"appended":true,"kind":"type","name":"vendor","since":21,"version":1}],"outcome":"applied","position":21}
 
 > POST /lakes/finance/schema/add_field
 > authorization: Bearer k-owner
@@ -416,7 +416,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 22
-< {"outcome":"applied","position":22}
+< {"declared":[{"appended":true,"kind":"type","name":"vendor","since":22,"version":2}],"outcome":"applied","position":22}
 
 > POST /lakes/finance/schema/migrate/apply
 > authorization: Bearer k-owner
@@ -536,7 +536,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 30
-< {"outcome":"applied","position":30}
+< {"declared":[{"appended":true,"kind":"type","name":"contract","since":30,"version":1}],"outcome":"applied","position":30}
 
 > PUT /lakes/finance/types/partner/records/P-1
 > authorization: Bearer k-owner
@@ -676,7 +676,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 37
-< {"outcome":"applied","position":37}
+< {"declared":[{"appended":true,"kind":"trigger","name":"went_paid","since":37,"version":1}],"outcome":"applied","position":37}
 
 > POST /lakes/finance/schema/declare
 > authorization: Bearer k-clerk
@@ -694,7 +694,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 39
-< {"outcome":"applied","position":39}
+< {"declared":[{"appended":true,"kind":"type","name":"memo2","since":38,"version":1},{"appended":true,"kind":"trigger","name":"memo_written","since":39,"version":1}],"outcome":"applied","position":39}
 
 > POST /lakes/finance/schema/apply
 > authorization: Bearer k-owner
@@ -753,7 +753,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 43
-< {"outcome":"applied","position":43}
+< {"declared":[{"appended":true,"kind":"type","name":"lease","since":43,"version":1}],"outcome":"applied","position":43}
 
 > PUT /lakes/finance/types/partner/records/P-2
 > authorization: Bearer k-owner
@@ -800,7 +800,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 48
-< {"outcome":"applied","position":48}
+< {"declared":[{"appended":true,"kind":"value_type","name":"tier","since":48,"version":1}],"outcome":"applied","position":48}
 
 > POST /lakes/finance/schema/migrate
 > authorization: Bearer k-owner
@@ -841,7 +841,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 50
-< {"outcome":"applied","position":50}
+< {"declared":[{"appended":true,"kind":"verb","name":"register","since":50,"version":1}],"outcome":"applied","position":50}
 
 > POST /lakes/finance/verbs/register
 > authorization: Bearer k-owner

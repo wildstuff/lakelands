@@ -384,6 +384,7 @@ async fn a_low_verb_runs_a_high_one_waits_for_acceptance_and_an_unbound_one_is_r
             output: None,
             set_off: Default::default(),
             renamed: Vec::new(),
+            declared: Vec::new(),
         },
         "accepting a verb answers the write it made, not the verb's call"
     );

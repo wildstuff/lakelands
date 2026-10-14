@@ -69,6 +69,11 @@ pub enum Outcome {
         /// field more names the new one (`docs/hosting.md`).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         renamed: Vec<(FieldName, FieldName)>,
+        /// For `declare` and `apply`: each declaration sent, in the order
+        /// sent, as it stands in force after the call. Empty for every
+        /// other write.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        declared: Vec<InForce>,
     },
     /// The write was recorded as a proposal and waits for review.
     Proposed {
@@ -358,6 +363,57 @@ pub enum Declaration {
     Function(FunctionDecl),
 }
 
+/// The kind of a declaration. A later kind is an addition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum DeclarationKind {
+    /// A type.
+    Type,
+    /// A value type.
+    ValueType,
+    /// A verb.
+    Verb,
+    /// A trigger.
+    Trigger,
+    /// An object set.
+    ObjectSet,
+    /// A function.
+    Function,
+}
+
+impl DeclarationKind {
+    /// Its name, as the declaration's `declare` member writes it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeclarationKind::Type => "type",
+            DeclarationKind::ValueType => "value_type",
+            DeclarationKind::Verb => "verb",
+            DeclarationKind::Trigger => "trigger",
+            DeclarationKind::ObjectSet => "object_set",
+            DeclarationKind::Function => "function",
+        }
+    }
+}
+
+/// A declaration sent to `declare` or `apply`, as it stands in force
+/// after the call (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+/// extended).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InForce {
+    /// Its kind.
+    pub kind: DeclarationKind,
+    /// Its name.
+    pub name: String,
+    /// Its version in force.
+    pub version: u32,
+    /// The position it has stood from: its `declared`, which a read
+    /// `as_of` it sees.
+    pub since: Position,
+    /// Whether this call appended it; where not, it was in force already.
+    pub appended: bool,
+}
+
 /// Why a declaration's annotations cannot be declared, said at the
 /// declaration, where the map sits in it and the annotation.
 #[derive(Clone, Debug, PartialEq)]
@@ -381,15 +437,20 @@ impl Declaration {
     /// The declaration's kind and name, for a person
     /// (`the type declaration \`invoice\``).
     pub fn what(&self) -> String {
-        let (kind, name) = match self {
-            Declaration::Type(t) => ("type", t.name.as_str()),
-            Declaration::ValueType(v) => ("value_type", v.name.as_str()),
-            Declaration::Verb(v) => ("verb", v.name.as_str()),
-            Declaration::Trigger(t) => ("trigger", t.name.as_str()),
-            Declaration::ObjectSet(o) => ("object_set", o.name.as_str()),
-            Declaration::Function(f) => ("function", f.name.as_str()),
-        };
-        format!("the {kind} declaration `{name}`")
+        let (kind, name) = self.named();
+        format!("the {} declaration `{name}`", kind.as_str())
+    }
+
+    /// The declaration's kind and name.
+    pub fn named(&self) -> (DeclarationKind, &str) {
+        match self {
+            Declaration::Type(t) => (DeclarationKind::Type, t.name.as_str()),
+            Declaration::ValueType(v) => (DeclarationKind::ValueType, v.name.as_str()),
+            Declaration::Verb(v) => (DeclarationKind::Verb, v.name.as_str()),
+            Declaration::Trigger(t) => (DeclarationKind::Trigger, t.name.as_str()),
+            Declaration::ObjectSet(o) => (DeclarationKind::ObjectSet, o.name.as_str()),
+            Declaration::Function(f) => (DeclarationKind::Function, f.name.as_str()),
+        }
     }
 
     /// The declaration as the place a case is said at: `type `invoice``.
