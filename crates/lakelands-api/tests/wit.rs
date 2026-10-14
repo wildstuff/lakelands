@@ -40,10 +40,10 @@ use lakelands_api::query::{
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy};
 use lakelands_api::seam::{FeedBatch, FeedFilter};
 use lakelands_api::write::{
-    AgeReport, Carried, Carrier, CompactReport, Declaration, FieldConversion, FieldFill,
-    FunctionDecl, Migration, MigrationReport, Misfit, ObjectSetDecl, Proposal, ProposalFilter,
-    ProposalState, ProposedWrite, PurgeReport, RecordRef, ReferenceRewrite, Rekeyed,
-    RelationRename, Restated, RuleRun, TypeRetired, ValueRenamed, ValueTypeMigration,
+    AgeReport, Carried, Carrier, CompactReport, Declaration, DeclarationKind, FieldConversion,
+    FieldFill, FunctionDecl, InForce, Migration, MigrationReport, Misfit, ObjectSetDecl, Proposal,
+    ProposalFilter, ProposalState, ProposedWrite, PurgeReport, RecordRef, ReferenceRewrite,
+    Rekeyed, RelationRename, Restated, RuleRun, TypeRetired, ValueRenamed, ValueTypeMigration,
     ValueTypeReport, ValueTypeUse,
 };
 use lakelands_api::{
@@ -618,6 +618,17 @@ fn search_mode() -> SearchMode {
     }
 }
 
+/// A declaration as `declare` answers it, every member set.
+fn in_force() -> InForce {
+    InForce {
+        kind: DeclarationKind::Type,
+        name: "invoice".into(),
+        version: 2,
+        since: Position(5),
+        appended: true,
+    }
+}
+
 /// The serde members of a value, as a set of names.
 fn members<T: Serialize>(value: &T) -> BTreeSet<String> {
     match serde_json::to_value(value).expect("serialises") {
@@ -845,10 +856,12 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     left: vec!["s".into()],
                 },
                 renamed: vec![("a".into(), "b".into())],
+                declared: vec![in_force()],
             });
             m.remove("outcome");
             m
         }),
+        ("in_force", members(&in_force())),
         (
             "proposal",
             members(&Proposal {
@@ -1285,6 +1298,21 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
         [OneToOne, OneToMany, ManyToOne, ManyToMany]
     );
     units!("risk", Risk, [Low, Medium, High]);
+    // Marked `non_exhaustive`: listed by hand, a new kind added here too.
+    checks.push((
+        "declaration_kind",
+        case_names(
+            &[
+                DeclarationKind::Type,
+                DeclarationKind::ValueType,
+                DeclarationKind::Verb,
+                DeclarationKind::Trigger,
+                DeclarationKind::ObjectSet,
+                DeclarationKind::Function,
+            ],
+            None,
+        ),
+    ));
     units!("verb_scope", VerbScope, [Record, Type]);
     units!(
         "origin",
@@ -1351,6 +1379,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     output: None,
                     set_off: Default::default(),
                     renamed: Vec::new(),
+                    declared: Vec::new(),
                 },
                 Outcome::Proposed {
                     position: Position(1),

@@ -51,8 +51,8 @@ use lakelands_api::principal::WriteContext;
 use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::seam::VerbExecutor;
 use lakelands_api::write::{
-    Carried, Carrier, Declaration, FieldFill, Migration, MigrationReport, Misfit, ObjectSetDecl,
-    Outcome, ProposalState, ProposedWrite, Recompute, RelationRename, ValueRenamed,
+    Carried, Carrier, Declaration, FieldFill, InForce, Migration, MigrationReport, Misfit,
+    ObjectSetDecl, Outcome, ProposalState, ProposedWrite, Recompute, RelationRename, ValueRenamed,
     ValueTypeMigration, ValueTypeReport, ValueTypeUse, WriteOpts,
 };
 use lakelands_api::{
@@ -841,7 +841,34 @@ fn applied(position: Position, version: Option<Version>) -> Outcome {
         output: None,
         set_off: Default::default(),
         renamed: Vec::new(),
+        declared: Vec::new(),
     }
+}
+
+/// `outcome` naming each of `sent` as it stands in `o` after the call,
+/// appended where it stands from `from` on (027, extended).
+fn with_declared(
+    mut outcome: Outcome,
+    o: &Ontology,
+    sent: &[Declaration],
+    from: Position,
+) -> Outcome {
+    if let Outcome::Applied { declared, .. } = &mut outcome {
+        *declared = (sent.iter())
+            .filter_map(|d| {
+                let (version, since) = o.entry_of(d)?;
+                let (kind, name) = d.named();
+                Some(InForce {
+                    kind,
+                    name: name.to_owned(),
+                    version,
+                    since,
+                    appended: since >= from,
+                })
+            })
+            .collect();
+    }
+    outcome
 }
 
 /// Check and normalise the values a patch carries against their fields.
@@ -3346,13 +3373,19 @@ impl Call<'_> {
         declare::check_declaration(&w.ontology, &declaration, false)?;
         self.check_bound(&declaration, Some(&w.ontology))?;
         self.verbs_still_read(&w.ontology, std::slice::from_ref(&declaration))?;
+        let (sent, from) = ([declaration.clone()], head(&w).next());
         if w.ontology.in_force(&declaration) {
-            return Ok(applied(head(&w), None));
+            return Ok(with_declared(
+                applied(head(&w), None),
+                &w.ontology,
+                &sent,
+                from,
+            ));
         }
         let now = self.lake.clock(&mut w);
         let drafts = self.bundle_drafts(&w, vec![declaration], now, 0)?;
         let events = self.lake.append(&mut w, drafts)?;
-        Ok(outcome_of(&events))
+        Ok(with_declared(outcome_of(&events), &w.ontology, &sent, from))
     }
 
     /// Refuse each type of `set` declared again with a change, as its
@@ -3426,15 +3459,23 @@ impl Call<'_> {
         let mut w = self.writer()?;
         self.redeclared(&w.ontology, &mut declarations)?;
         self.check_bundle(&w.ontology, &declarations)?;
+        let (sent, from) = (declarations.clone(), head(&w).next());
         declarations.retain(|d| !w.ontology.in_force(d));
-        if declarations.is_empty() {
-            return Ok(applied(head(&w), None));
-        }
-        let now = self.lake.clock(&mut w);
-        let drafts = self.bundle_drafts(&w, declarations, now, 0)?;
-        let events = self.lake.append(&mut w, drafts)?;
-        let last = events.last().expect("the set is not empty");
-        Ok(applied(last.position, None))
+        let position = match declarations.is_empty() {
+            true => head(&w),
+            false => {
+                let now = self.lake.clock(&mut w);
+                let drafts = self.bundle_drafts(&w, declarations, now, 0)?;
+                let events = self.lake.append(&mut w, drafts)?;
+                events.last().expect("the set is not empty").position
+            }
+        };
+        Ok(with_declared(
+            applied(position, None),
+            &w.ontology,
+            &sent,
+            from,
+        ))
     }
 
     /// A declaration reads only what its author may read (024 and 028,

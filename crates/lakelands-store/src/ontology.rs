@@ -8,7 +8,7 @@ use std::sync::Arc;
 use lakelands_api::engine::{Declared, ProjectionView};
 use lakelands_api::ontology::{FieldDecl, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl};
 use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl};
-use lakelands_api::{Error, FieldName, Missing, TypeName, VerbName};
+use lakelands_api::{Error, FieldName, Missing, Position, TypeName, VerbName};
 
 /// A type's fields and its relations' link fields: all that may be computed.
 fn computed(t: &mut TypeDecl) -> impl Iterator<Item = &mut FieldDecl> {
@@ -25,6 +25,8 @@ pub struct Entry<T> {
     pub version: u32,
     /// For a type: its schema hash.
     pub schema_hash: Option<String>,
+    /// The position it has been in force since.
+    pub since: Position,
 }
 
 /// The declarations in force, by kind and name. What a record's derived
@@ -65,46 +67,64 @@ impl Ontology {
         let function = |d: &&Declared| matches!(d.declaration, Declaration::Function(_));
         let rest = declared.iter().filter(|d| !function(d));
         for d in declared.iter().filter(function).chain(rest) {
-            o.put(d.declaration.clone(), d.version, d.schema_hash.clone());
+            o.put_at(
+                d.declaration.clone(),
+                d.version,
+                d.schema_hash.clone(),
+                d.since,
+            );
         }
         o
     }
 
     /// Put one declaration in force, replacing an earlier version.
     pub fn put(&mut self, declaration: Declaration, version: u32, schema_hash: Option<String>) {
+        self.put_at(declaration, version, schema_hash, Position::GENESIS)
+    }
+
+    /// [`Ontology::put`], in force since `since`.
+    pub fn put_at(
+        &mut self,
+        declaration: Declaration,
+        version: u32,
+        schema_hash: Option<String>,
+        since: Position,
+    ) {
         fn put<K: Ord, T, E: From<Entry<T>>>(
             m: &mut BTreeMap<K, E>,
             name: K,
             decl: T,
             v: u32,
             h: Option<String>,
+            since: Position,
         ) {
             let entry = Entry {
                 decl,
                 version: v,
                 schema_hash: h,
+                since,
             };
             m.insert(name, entry.into());
         }
-        let (v, h) = (version, schema_hash);
+        let (v, h, s) = (version, schema_hash, since);
         match declaration {
             Declaration::Type(mut t) => {
                 let listed = computed(&mut t).map(|f| f.depends_on.clone()).collect();
                 self.listed.insert(t.name.clone(), listed);
                 self.complete(&mut t);
-                put(&mut self.types, t.name.clone(), t, v, h);
+                put(&mut self.types, t.name.clone(), t, v, h, s);
             }
-            Declaration::ValueType(t) => put(&mut self.value_types, t.name.to_string(), t, v, h),
-            Declaration::Verb(t) => put(&mut self.verbs, t.name.clone(), t, v, h),
-            Declaration::Trigger(t) => put(&mut self.triggers, t.name.to_string(), t, v, h),
-            Declaration::ObjectSet(t) => put(&mut self.object_sets, t.name.clone(), t, v, h),
+            Declaration::ValueType(t) => put(&mut self.value_types, t.name.to_string(), t, v, h, s),
+            Declaration::Verb(t) => put(&mut self.verbs, t.name.clone(), t, v, h, s),
+            Declaration::Trigger(t) => put(&mut self.triggers, t.name.to_string(), t, v, h, s),
+            Declaration::ObjectSet(t) => put(&mut self.object_sets, t.name.clone(), t, v, h, s),
             // A function's inputs are what its fields are computed from. Each
             // type is completed again from its lists as declared: a function
             // declared again with fewer inputs holds no field by one it lost.
             // An entry a step shares is completed on a copy, and kept when
             // the copy comes out as it was.
             Declaration::Function(t) => {
-                put(&mut self.functions, t.name.clone(), t, v, h);
+                put(&mut self.functions, t.name.clone(), t, v, h, s);
                 for (name, held) in std::mem::take(&mut self.types) {
                     let (mut e, shared) = match Arc::try_unwrap(held) {
                         Ok(own) => (own, None),
@@ -207,6 +227,21 @@ impl Ontology {
         self.value_types.values().map(|e| e.decl.clone()).collect()
     }
 
+    /// The version and since of the entry of `declaration`'s kind and name.
+    pub fn entry_of(&self, d: &Declaration) -> Option<(u32, Position)> {
+        fn of<T>(e: Option<&impl Borrow<Entry<T>>>) -> Option<(u32, Position)> {
+            e.map(|e| (e.borrow().version, e.borrow().since))
+        }
+        match d {
+            Declaration::Type(t) => of(self.types.get(&t.name)),
+            Declaration::ValueType(v) => of(self.value_types.get(v.name.as_str())),
+            Declaration::Verb(v) => of(self.verbs.get(&v.name)),
+            Declaration::Trigger(t) => of(self.triggers.get(t.name.as_str())),
+            Declaration::ObjectSet(s) => of(self.object_sets.get(&s.name)),
+            Declaration::Function(f) => of(self.functions.get(&f.name)),
+        }
+    }
+
     /// Whether `declaration` is the one in force, in the form the lake
     /// keeps: a type with its computed fields completed, and keyed as its
     /// records are, so a grouped view with its `key` written is the view
@@ -237,15 +272,7 @@ impl Ontology {
 
     /// The version a declaration of this name and kind would take next.
     pub fn next_version(&self, declaration: &Declaration) -> u32 {
-        let current = match declaration {
-            Declaration::Type(t) => self.types.get(&t.name).map(|e| e.version),
-            Declaration::ValueType(v) => self.value_types.get(v.name.as_str()).map(|e| e.version),
-            Declaration::Verb(v) => self.verbs.get(&v.name).map(|e| e.version),
-            Declaration::Trigger(t) => self.triggers.get(t.name.as_str()).map(|e| e.version),
-            Declaration::ObjectSet(s) => self.object_sets.get(&s.name).map(|e| e.version),
-            Declaration::Function(f) => self.functions.get(&f.name).map(|e| e.version),
-        };
-        current.map_or(1, |v| v + 1)
+        self.entry_of(declaration).map_or(1, |(v, _)| v + 1)
     }
 
     /// The object set `name`, if one is declared.
@@ -273,7 +300,7 @@ impl Ontology {
                     declaration: wrap(e.decl.clone()),
                     version: e.version,
                     schema_hash: e.schema_hash.clone(),
-                    since: lakelands_api::Position::GENESIS,
+                    since: e.since,
                 });
             }
         }

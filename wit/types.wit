@@ -641,6 +641,23 @@ interface types {
         /// For a migration: each field it renamed, old name and new, as
         /// the one answered may know of them.
         renamed: list<tuple<field-name, field-name>>,
+        /// For `declare` and `apply`: each declaration sent, in the order
+        /// sent, as it stands in force after the call.
+        declared: list<in-force>,
+    }
+
+    /// A declaration's kind. A later kind is an addition.
+    enum declaration-kind { %type, value-type, verb, trigger, object-set, function }
+
+    /// A declaration sent to `declare` or `apply`, as it stands in force
+    /// after the call: its version, the position it has stood from, and
+    /// whether this call appended it.
+    record in-force {
+        kind: declaration-kind,
+        name: string,
+        version: u32,
+        since: position,
+        appended: bool,
     }
 
     record proposed {

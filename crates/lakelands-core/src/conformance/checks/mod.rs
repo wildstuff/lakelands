@@ -421,6 +421,7 @@ pub const ALL: &[Check] = &[
     migrate::VIEW_SOURCE_KEPT,
     schema::REORDERED_FIELDS,
     schema::IN_FORCE_APPENDS_NOTHING,
+    schema::IN_FORCE_ANSWERED,
     schema::MIGRATION_IN_FORCE,
     schema::RECOMPUTED,
     relation_renamed::RENAMED_KEEPS_EDGES,

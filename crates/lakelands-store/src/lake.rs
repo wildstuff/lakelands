@@ -688,17 +688,9 @@ impl Lake {
         }
         drop(held);
         let rebuilds = self.rebuilds.load(Ordering::SeqCst);
-        let stored = view.declarations()?;
-        let ontology = Ontology::from_declared(&stored);
-        let key = lakelands_core::engines::declaration_key;
-        let since = stored.iter().map(|d| (key(&d.declaration), d.since));
-        let since: BTreeMap<String, Position> = since.collect();
-        let mut declared = ontology.declared();
-        for d in &mut declared {
-            d.since = since.get(&key(&d.declaration)).map_or(d.since, |s| *s);
-        }
+        let ontology = Ontology::from_declared(&view.declarations()?);
         let shape = Arc::new(Shape {
-            declared,
+            declared: ontology.declared(),
             settings: settings_in(view, &ontology)?,
             renames: self.renames(Some(view))?,
             ontology,
@@ -1462,8 +1454,12 @@ impl Lake {
                 with_the_set,
             } => {
                 let rederive = computes_again(&w.ontology, declaration);
-                w.ontology
-                    .put(declaration.clone(), *version, schema_hash.clone());
+                w.ontology.put_at(
+                    declaration.clone(),
+                    *version,
+                    schema_hash.clone(),
+                    e.position,
+                );
                 projection.put_declaration(
                     declaration,
                     *version,
@@ -1496,8 +1492,12 @@ impl Lake {
                 // From format 15 on (lakelands#1070): a log of format 14
                 // folds as it was written, and a rebuild answers as its lake did.
                 let again = e.v >= 15 && computing_changed(&before, &migration.to);
-                w.ontology
-                    .put(decl.clone(), *version, Some(schema_hash.clone()));
+                w.ontology.put_at(
+                    decl.clone(),
+                    *version,
+                    Some(schema_hash.clone()),
+                    e.position,
+                );
                 projection.put_declaration(&decl, *version, Some(schema_hash), e.position)?;
                 // The lake's list of renames takes the fields this migration
                 // renames, and each link type a renamed relation moves.
@@ -1544,7 +1544,7 @@ impl Lake {
                     return Err(damaged(Part::Log, Some(e.position), flaw));
                 }
                 let decl = Declaration::ValueType(declaration.clone());
-                w.ontology.put(decl.clone(), *version, None);
+                w.ontology.put_at(decl.clone(), *version, None, e.position);
                 projection.put_declaration(&decl, *version, None, e.position)?;
                 let step = Values::new(&w.ontology, e.position, &declaration.name, renames);
                 // What reads a renamed value is computed again, as of this

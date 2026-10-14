@@ -7,9 +7,12 @@
 
 use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl};
+use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl, ValueTypeDecl};
+use lakelands_api::seam::Seams;
 use lakelands_api::tools::{Door, GENERIC_TOOLS, MAX_TOOL_NAME, ToolSpec, tools};
-use lakelands_api::write::{Declaration, Outcome, ProposedWrite, Recompute};
+use lakelands_api::write::{
+    Declaration, DeclarationKind, InForce, Outcome, ProposedWrite, Recompute, ValueTypeMigration,
+};
 use lakelands_api::{Error, Grants, LakeStore, PrincipalKind, ReadAt, Refusal, TypeName};
 use serde_json::{Value, json};
 
@@ -18,7 +21,7 @@ use crate::conformance::fixture::{
     invalid_case, is_invalid, migration, object_set_on, principal, reason, refused_unmoved,
     reviewer, trigger_on, type_decl, value, value_type, view_of, write_verb,
 };
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::{Failure, Given, Held, Store};
 
 check!(
     ADD_FIELD_GRANT_FIRST =
@@ -520,6 +523,124 @@ async fn a_declaration_that_is_the_one_in_force_appends_nothing(store: Store) ->
          after the function's, the log holds {:?}",
         &written[1..]
     );
+    Ok(())
+}
+
+check!(
+    IN_FORCE_ANSWERED = a_declaration_answers_how_it_stands_in_force,
+    "027, extended (lakelands#1059): `declare` and `apply` answer each declaration sent, in the order sent, as it stands in force after the call: its kind, its name, its version, the position it has stood from (its `declared`, or the `migrated` or `value_type_migrated` that put it in force, which a read `as_of` it sees) and whether this call appended it; one in force appended nothing and names where it was declared, while the call's position stays the head; of a set only what differs is appended; each stands from the same position live, after a reopen and after a rebuild; any other write names no declaration",
+    given
+);
+
+async fn a_declaration_answers_how_it_stands_in_force(store: Store, given: Given) -> Held {
+    let state = |choices: &[&str]| ValueTypeDecl {
+        one_of: choices.iter().map(|c| (*c).to_owned()).collect(),
+        ..value_type("state", StorageKind::Text)
+    };
+    let opened = || Declaration::ValueType(state(&["open", "shut"]));
+    let bill = |noted: bool| {
+        let mut fields = vec![field("net", StorageKind::Decimal)];
+        fields.extend(noted.then(|| field("note", StorageKind::Text)));
+        Declaration::Type(type_decl("bill", fields))
+    };
+    let stands = |kind, name: &str, version, since, appended| InForce {
+        kind,
+        name: name.into(),
+        version,
+        since,
+        appended,
+    };
+    let declared = |o: &Outcome| match o {
+        Outcome::Applied { declared, .. } => declared.clone(),
+        Outcome::Proposed { .. } => Vec::new(),
+    };
+    let (ty, vt) = (DeclarationKind::Type, DeclarationKind::ValueType);
+    let l = Lake::of(store.as_ref());
+    // New, then the same again after a record's write.
+    let first = l.declare_as(bill(false), "declaring `bill`").await?;
+    let p1 = first.position();
+    let written = l.upsert("bill", "b", json!({"net": "3"})).await?;
+    let again = l.declare_as(bill(false), "declaring `bill` again").await?;
+    let head = store.head().await.must("reading the head")?;
+    ensure!(
+        declared(&first) == [stands(ty, "bill", 1, p1, true)]
+            && declared(&again) == [stands(ty, "bill", 1, p1, false)]
+            && again.position() == head
+            && declared(&written).is_empty(),
+        "`bill` declared answers {first:?}, at its `declared`, appended; declared again it \
+         answers {again:?}, standing from {p1}, not appended, at the head {head}; an upsert \
+         names no declaration: {written:?}"
+    );
+    // A set: what differs is appended, what is in force is not, in the order sent.
+    let set = l.cat.apply(&l.own, vec![opened(), bill(false)]).await;
+    let set = set.must("applying `state` and `bill`")?;
+    let p2 = set.position();
+    let changed = l.cat.apply(&l.own, vec![bill(true), opened()]).await;
+    let changed = changed.must("applying `bill` changed and `state`")?;
+    let p3 = changed.position();
+    ensure!(
+        declared(&set)
+            == [
+                stands(vt, "state", 1, p2, true),
+                stands(ty, "bill", 1, p1, false)
+            ]
+            && declared(&changed)
+                == [
+                    stands(ty, "bill", 2, p3, true),
+                    stands(vt, "state", 1, p2, false)
+                ],
+        "a set answers each member, appended where it differs: {set:?}, then {changed:?}"
+    );
+    // A migration of each: each stands from its own event.
+    let memo = vec![
+        field("net", StorageKind::Decimal),
+        field("memo", StorageKind::Text),
+    ];
+    let memo = type_decl("bill", memo);
+    let mut renamed = migration(memo.clone());
+    renamed.renames = vec![("note".into(), "memo".into())];
+    let report = l.cat.migrate(&l.own, renamed.clone()).await;
+    let report = report.must("previewing `bill`'s rename")?.data.report_id;
+    let migrated = l.cat.migrate_apply(&l.own, renamed, &report).await;
+    let pm = migrated.must("migrating `bill`")?.position();
+    let closed = ValueTypeMigration {
+        to: state(&["open", "closed"]),
+        renames: vec![("shut".into(), "closed".into())],
+    };
+    let report = l.cat.migrate_value_type(&l.own, closed.clone()).await;
+    let report = report.must("previewing `state`'s rename")?.data.report_id;
+    let migrated = l
+        .cat
+        .migrate_value_type_apply(&l.own, closed, &report)
+        .await;
+    let pv = migrated.must("migrating `state`")?.position();
+    // Stated again: live, after a reopen, and after a rebuild alike.
+    let both = vec![
+        Declaration::ValueType(state(&["open", "closed"])),
+        Declaration::Type(memo),
+    ];
+    let held = [
+        stands(vt, "state", 2, pv, false),
+        stands(ty, "bill", 3, pm, false),
+    ];
+    let mut store = store;
+    for step in ["live", "reopened", "rebuilt"] {
+        if step == "reopened" {
+            let reopened = (given.reopen)(store, Seams::default()).await;
+            store = reopened
+                .map_err(|e| Failure::new(format!("opening the lake again failed: {e}")))?;
+        }
+        if step == "rebuilt" {
+            store.rebuild().await.must("rebuilding")?;
+        }
+        let l = Lake::of(store.as_ref());
+        let after = l.cat.apply(&l.own, both.clone()).await;
+        let after = after.must("applying both again")?;
+        ensure!(
+            declared(&after) == held,
+            "{step}, each stands from its migration ({pm}, {pv}): {after:?}"
+        );
+    }
     Ok(())
 }
 

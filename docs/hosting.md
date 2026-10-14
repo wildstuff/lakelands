@@ -693,7 +693,10 @@ A host that already has a store of its own moves in four steps.
   a verb, a trigger, an object set. A computed field may be stated with
   the inputs `describe` shows or without them, and a grouped view with
   its `key` or without it. A declaration's version counts its changes.
-  See
+  The answer's `declared` names each declaration sent, with its
+  `version`, the position it stands from (`since`) and whether this call
+  `appended` it, so a host drops what it cached only for what changed
+  (lakelands#1059). See
   `docs/decisions/027-shape-changes-are-declared-or-migrated.md`.
 - **A read costs the same however much the lake declares
   (lakelands#557).** A handle builds what the lake declares once for a
