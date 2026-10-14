@@ -881,7 +881,8 @@ the release before; a backup taken before the upgrade is the way back.
 `docs/log-format/lakes/<N>/` holds a small lake a release of format N
 made through its doors, exported, and what that release answered of it;
 every later release imports it on every engine, upgrades it and answers
-the same.
+the same. The release that makes one keeps it too, read in its own format
+with no upgrade, so its answers are held from the day it ships.
 
 A lake written before format 14, when one log held versions 1 to 14 in
 rising order, is not read.

@@ -104,7 +104,9 @@ and its format 15 the first step: 0.14.0 reads 14 and 15 and writes 15.
 - **The proof on a lake the release before wrote**:
   `docs/log-format/lakes/14/`, a small lake v0.13.1 made through its
   doors, with what that release answered of it, is imported, upgraded
-  and read the same on every engine.
+  and read the same on every engine. `docs/log-format/lakes/15/`, the
+  lake v0.14.0 made, is held the same way from that release on, read
+  in its own format until a later one upgrades it.
 
 At 100 000 events a step that changes no fold costs one append, and
 about 5 µs an event at each later read of an older event; one that
