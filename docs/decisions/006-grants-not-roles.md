@@ -2232,7 +2232,12 @@ can infer that the condition held, where nothing else explains it. The
 lake answers no name and no value; it cannot hide that something reacted
 from one who must read its own write's consequences. So `schema` is not
 handed to a principal that is kept from a field or a type
-(`docs/hosting.md`).
+(`docs/hosting.md`). Every definition is a condition, a set's filter and
+a view's definition, told whole at `none` and masked alike. A verb is
+not one: `describe` lists it as a call, to one that may make it, with or
+without `schema`; and a field derived from one its reader may not know
+of is itself a field it may not know of, its expression with it
+(lakelands#928).
 
 **What a holder's write tells.** A create succeeds on a free key and is
 refused on another's: a key's existence shows where a write would make

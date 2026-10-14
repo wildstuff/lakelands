@@ -377,6 +377,11 @@ async fn describe_answers_the_declaration_whole(store: Store) -> Held {
 }
 
 check!(
+    SCHEMA_TOLD_AS_RECORDED = a_holder_of_schema_is_told_every_definition_but_a_verb,
+    "006, extended (lakelands#928): a holder of `schema` at `none` on a field, or masked on it, is described the trigger, the object set and the view whose conditions and measures name that field, whole, where a reader without `schema` is described none of them; a verb, described as a call to one that may make it, is described to neither; a field derived from one at `none` is not known to either, and one derived from a masked field is described masked to both"
+);
+
+check!(
     DESCRIBED_AS_SHOWN = a_description_says_only_what_its_reader_is_shown,
     "006 and 024, extended (lakelands#662): a type's `searchable` and `sourced` are said of the fields its reader is described, and a field it sees masked is searchable to it no more; a relation is described, listed in a proposal, named by a migration's refusal, offered to `link` and its link type shown only to a reader shown both its ends and, of a derived one, every field its match pairs, which a field it sees masked still is; a reader not shown a relation's target proposes the type as it is shown it, its declaration and its migration, and lists and rejects its own proposal (lakelands#762)"
 );
@@ -546,6 +551,62 @@ async fn a_description_says_only_what_its_reader_is_shown(store: Store) -> Held 
         "searchable, sourced, the relations, the link type and `may.link` as described, and \
          the relations listed and named: {}",
         red.join("; ")
+    );
+    Ok(())
+}
+
+async fn a_holder_of_schema_is_told_every_definition_but_a_verb(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let t = |n: &str| json!({"name": n, "type": {"kind": "text"}});
+    let shout = json!({"name": "shout", "type": {"kind": "text"}, "derived": "upper(sec)"});
+    let x = "sec = 'x'";
+    for d in [
+        json!({"declare": "type", "name": "vault", "fields": [t("name"), t("sec"), shout]}),
+        json!({"declare": "trigger", "name": "watch", "on": "vault", "when": x}),
+        json!({"declare": "object_set", "name": "secrets", "of": "vault", "where": x}),
+        json!({"declare": "verb", "name": "seal", "on": "vault", "risk": "high", "effect": "write",
+               "requires": "sec is not null", "set": [{"field": "sec", "value": "'y'"}]}),
+        json!({"declare": "type", "name": "byname", "key": ["name"], "fields": [t("name"),
+               {"name": "n", "type": {"kind": "number"}}], "view": {"source": "vault", "where": x,
+               "group_by": ["name"], "measures": [{"name": "n", "expr": "count(sec)"}]}}),
+    ] {
+        l.declare_json(d).await?;
+    }
+    // Per reader: trigger, set, view's definition, verb, and `shout`'s
+    // access, `-` where it is not described.
+    let mut seen = Vec::new();
+    for schema in [true, false] {
+        for sec in ["none", "masked"] {
+            let grants = json!({"default": "read", "schema": schema,
+                                "types": {"vault": {"fields": {"sec": sec}}}});
+            let who = super::only::holder(store.as_ref(), &format!("{schema}-{sec}"), grants);
+            let d = l.cat.describe(&who, Default::default()).await;
+            let d = d.must("describing")?.data;
+            let (w, s) = (Some(Condition::from(x)), Condition::from(x));
+            let view = |t: &TypeDescription| t.view.as_ref().is_some_and(|v| v.r#where == w);
+            let fields = d.types.iter().flat_map(|t| &t.fields);
+            let mut shout = fields.filter(|f| f.name.as_str() == "shout");
+            let cells = [
+                d.triggers.iter().any(|t| t.when == w),
+                d.object_sets.iter().any(|o| o.filter == s),
+                d.types.iter().any(view),
+                d.verbs.iter().any(|v| v.name.as_str() == "seal"),
+            ];
+            let cell = |(b, c): (bool, char)| if b { c } else { '-' };
+            let mut row: String = cells.into_iter().zip("TSVC".chars()).map(cell).collect();
+            row.push_str(
+                &shout
+                    .next()
+                    .map_or("-".into(), |f| format!(" {:?}", f.access)),
+            );
+            seen.push(row);
+        }
+    }
+    let want = ["TSV--", "TSV- Masked", "-----", "---- Masked"];
+    ensure!(
+        seen == want,
+        "to `schema` at `none` and masked on `sec`, then to readers without it, (trigger, set, \
+         view, verb, `shout`) are {seen:?}, where {want:?} are due"
     );
     Ok(())
 }
