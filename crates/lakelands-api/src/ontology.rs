@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Case, Place, Said};
 use crate::expr::{Condition, Func};
 use crate::id::{
-    FieldName, ParamName, RelationName, TriggerName, TypeName, ValueTypeName, VerbName,
+    ConstraintName, FieldName, ParamName, RelationName, TriggerName, TypeName, ValueTypeName,
+    VerbName,
 };
 
 /// A host's own marks on a declaration: a map from a namespaced key
@@ -1019,6 +1020,47 @@ pub struct TypeDecl {
     /// The host's own marks; never read by Lakelands.
     #[serde(default, skip_serializing_if = "Annotations::is_empty")]
     pub annotations: Annotations,
+    /// What every record of the type holds, judged at every write door
+    /// on the record as written (lakelands#1119).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<ConstraintDecl>,
+}
+
+/// A constraint over a record of its type: a condition over the record's
+/// own fields, `previous(f)` and `changed(f)` among them, that every
+/// write which moves a field it reads must leave true (lakelands#1119).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConstraintDecl {
+    /// Its name, unique in its type.
+    pub name: ConstraintName,
+    /// What every record of the type holds.
+    pub holds: Condition,
+    /// What it means, for people and agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Whether `ingest` refuses a record that breaks it, or writes the
+    /// record as its source sent it.
+    #[serde(default, skip_serializing_if = "AtIngest::refuses")]
+    pub at_ingest: AtIngest,
+}
+
+/// What `ingest` does with a record that breaks a constraint.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AtIngest {
+    /// Refuse the record, as an authored write is refused.
+    #[default]
+    Refuse,
+    /// Write it as its source sent it: a feed never stops at a breach.
+    Admit,
+}
+
+impl AtIngest {
+    /// Whether it refuses.
+    pub fn refuses(&self) -> bool {
+        *self == AtIngest::Refuse
+    }
 }
 
 fn yes() -> bool {

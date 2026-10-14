@@ -34,12 +34,12 @@
 
 use std::collections::BTreeSet;
 
-use lakelands_api::error::{Case, Names, Naming, Place, Said};
+use lakelands_api::error::{Beyond, Case, Names, Naming, Place, Said};
 use lakelands_api::expr::kind::{self, Kind};
 use lakelands_api::expr::{Condition, Expr, Func};
 use lakelands_api::ontology::{
-    Authority, Cardinality, Derived, FieldDecl, OnInputChange, RelationDecl, StorageKind, TypeDecl,
-    ValueTypeDecl, VerbEffect, VerbScope, ViewDecl, lands_in_the_fold,
+    Authority, Cardinality, ConstraintDecl, Derived, FieldDecl, OnInputChange, RelationDecl,
+    StorageKind, TypeDecl, ValueTypeDecl, VerbEffect, VerbScope, ViewDecl, lands_in_the_fold,
 };
 use lakelands_api::tools::{NameProblem, name_problems};
 use lakelands_api::write::{Carrier, Declaration, ObjectSetDecl};
@@ -377,7 +377,7 @@ pub fn names_set(o: &Ontology, s: &ObjectSetDecl, target: &str) -> bool {
 
 /// A condition parsed and checked for its place, the sets it names left
 /// as it names them.
-fn typed(c: &Condition, place: Eval) -> std::result::Result<Expr, Case> {
+pub(crate) fn typed(c: &Condition, place: Eval) -> std::result::Result<Expr, Case> {
     let e = match c {
         Condition::Expr(e) => e.clone(),
         Condition::Text(t) => parse(t).map_err(|e| {
@@ -1328,9 +1328,82 @@ fn read_as_stored(o: &Ontology, t: &TypeDecl) -> Result<()> {
 pub(crate) fn unless_a_migration(e: Error) -> Result<()> {
     let said = e.case().map(|s| &s.case);
     match said {
-        Some(Case::Reshapes { .. } | Case::ReshapesLinks { .. }) => Ok(()),
+        Some(
+            Case::Reshapes { .. }
+            | Case::ReshapesLinks { .. }
+            | Case::ConstraintNeedsMigrate { .. },
+        ) => Ok(()),
         _ => Err(e),
     }
+}
+
+/// A type's constraints, each named once and reading its record alone: its
+/// own fields as stored or computed in the lake at the write, `previous`
+/// and `changed`, and nothing that changes without a write of the record
+/// (lakelands#1119).
+fn constraints(o: &Ontology, t: &TypeDecl) -> Result<()> {
+    let mut named = BTreeSet::new();
+    for c in &t.constraints {
+        let on = [
+            of_type(&t.name),
+            Place::TypeConstraint {
+                name: c.name.clone(),
+            },
+        ];
+        let wrong = |case| Err(invalid(at(&on, case)));
+        let constraint = c.name.clone();
+        name(Naming::Constraint, constraint.as_str()).map_err(|e| e.within(on[0].clone()))?;
+        if !named.insert(&c.name) {
+            return wrong(Case::ConstraintNamedTwice { constraint });
+        }
+        let e = typed(&c.holds, Eval::Guard).map_err(|s| invalid(at(&on, s)))?;
+        let mut paths = Vec::new();
+        lakelands_api::expr::paths(&e, &mut paths);
+        let backed = |n: &str| {
+            o.functions
+                .get(n)
+                .is_some_and(|f| crate::backed::is_backed(&f.decl))
+        };
+        let beyond = if paths.iter().any(|p| p.len() > 1) {
+            Some(Beyond::Path)
+        } else if e.calls(&[Func::InSet]) {
+            Some(Beyond::InSet)
+        } else if e.calls(&[Func::Setting]) {
+            Some(Beyond::Setting)
+        } else if e.reads_clock() {
+            Some(Beyond::Clock)
+        } else if e.calls(&[Func::Exists]) {
+            Some(Beyond::Exists)
+        } else {
+            let mut fields = e.fields_read().into_iter();
+            fields.find_map(|n| {
+                let f = t.fields.iter().find(|f| &f.name == n)?;
+                let field = n.clone();
+                if f.at_read() {
+                    Some(Beyond::ComputedAtRead { field })
+                } else if f.embed.is_some() || f.function.as_deref().is_some_and(backed) {
+                    Some(Beyond::ComputedOutside { field })
+                } else {
+                    None
+                }
+            })
+        };
+        if let Some(reads) = beyond {
+            return wrong(Case::ConstraintReadsBeyond {
+                constraint,
+                reads: Box::new(reads),
+            });
+        }
+        if let Some(n) = e
+            .fields_read()
+            .into_iter()
+            .find(|n| !t.fields.iter().any(|f| &f.name == *n))
+        {
+            let (ty, field) = (t.name.clone(), n.clone());
+            return wrong(Case::UnknownField { ty, field });
+        }
+    }
+    Ok(())
 }
 
 /// A new field may not begin with `_`: under a pattern's bound name the
@@ -1371,6 +1444,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             type_decl(o, t)?;
             kept_names(o, t)?;
             read_as_stored(o, t)?;
+            constraints(o, t)?;
             if let Some(current) = o.types.get(&t.name)
                 && let Change::Migrate { reasons } = shape::classify(&current.decl, t)
             {
@@ -1397,6 +1471,24 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     let (ty, links) = (t.name.clone(), lt.name.clone());
                     return Err(invalid(Case::ReshapesLinks { ty, links, reasons }));
                 }
+            }
+            // A constraint added or tightened may be broken by stored
+            // records: a migration's preflight lists them. One restated in
+            // other words, described otherwise or moved to admit at ingest
+            // is not (lakelands#1119).
+            let parsed = |c: &ConstraintDecl| typed(&c.holds, Eval::Guard).ok();
+            let loosens = |c: &ConstraintDecl, h: &ConstraintDecl| {
+                h.name == c.name
+                    && parsed(h) == parsed(c)
+                    && (h.at_ingest == c.at_ingest || !c.at_ingest.refuses())
+            };
+            let held = o.types.get(&t.name).map(|e| &e.decl.constraints);
+            if let Some(held) = held
+                && let Some(c) =
+                    (t.constraints.iter()).find(|c| !held.iter().any(|h| loosens(c, h)))
+            {
+                let (ty, constraint) = (t.name.clone(), c.name.clone());
+                return Err(invalid(Case::ConstraintNeedsMigrate { ty, constraint }));
             }
         }
         Declaration::ValueType(v) => {

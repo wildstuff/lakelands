@@ -967,6 +967,7 @@ below; no other spelling is read.
 | a field's `computed_at` | `write`, `read` |
 | a relation's `cardinality` | `one_to_one`, `one_to_many`, `many_to_one`, `many_to_many` |
 | a verb's `risk` | `low`, `medium`, `high` |
+| a constraint's `at_ingest` (default `refuse`, which is never written) | `refuse`, `admit` |
 | a verb's `effect` | `write` (with `set`), `external` (with `executor`) |
 | a verb's `scope` (default `record`, which is never written) | `record`, `type` |
 | `declaration.declare` | `type`, `value_type`, `verb`, `trigger`, `object_set`, `function` |
@@ -978,7 +979,7 @@ with that declaration's members beside it. Every member not marked
 
 | Declaration | Members (default when absent) |
 |---|---|
-| `type` | `name` (required), `key` (`[]`), `fields` (`[]`), `relations` (`[]`), `view` (none), `valid_from`, `valid_to`, `language` (none), `field_meta` (`true`), `insert_only` (`false`), `description`, `label` (none), `annotations` (`{}`) |
+| `type` | `name` (required), `key` (`[]`), `fields` (`[]`), `relations` (`[]`), `view` (none), `valid_from`, `valid_to`, `language` (none), `field_meta` (`true`), `insert_only` (`false`), `description`, `label` (none), `annotations` (`{}`), `constraints` (`[]`: each `{ "name", "holds" }` required, `description` (none), `at_ingest` (`refuse`)) |
 | a field (in `fields`, a relation's `fields`, a verb's `payload`, a function's `inputs`) | `name` and `type` (required), `required` (`false`), `authority` (`authored`), `derived` (none), `computed_at` (none), `depends_on` (`[]`), `on_input_change` (`keep`), `initial` (none; on a type's own field alone), `sensitive` (`false`), `searchable` (`false`), `description`, `label` (none), `annotations` (`{}`) |
 | a field's `type` | `kind` (required), `value_type`, `target`, `dimensions` (none) |
 | a relation | `name` and `target` (required), `cardinality` (`many_to_one`), `authority` (`authored`; who writes its links, when link records carry it), `inverse`, `via` (none), `fields` (`[]`), `description` (none), `annotations` (`{}`), `derived` (none: `{ "match": [ { "from", "to" } ], "where" }`, a field of the owner and one of the target per pair, and `where` (none) a condition over `from.<field>` and `to.<field>`) |
@@ -998,7 +999,7 @@ together. An empty map is written as no member at all. A reader never
 interprets an annotation: it is carried, hashed into the event like any
 member, and left out of the schema hash.
 
-A **condition** (`where`, `derived`, `constraint`, `requires`, `when`, a
+A **condition** (`where`, `derived`, `constraint`, `holds`, `requires`, `when`, a
 measure's `expr`, an assignment's `value`, a function's `expr`) is
 either a string in the text form or an object in the typed form of
 Appendix B.
@@ -1019,10 +1020,11 @@ declarations as `declared` carries one each; `migrate` carries
 `migration`, as `migrated` carries it, and `report`, the preflight's
 report when it was proposed (`type`, `from_schema_hash`,
 `to_schema_hash`, `records_scanned`, `fields`, `dropped`, `rekeyed`,
-`references`, `sample_collisions`, `lossless`, `report_id`, and
+`references`, `sample_collisions`, `lossless`, `report_id`,
 `restated`, left out when empty: a list of
 `{ "field", "member", "was", "to" }`, `field` left out for a member of
-the type itself, as the
+the type itself, and `breaches`, left out when empty: a list of
+`{ "constraint", "records", "sample_keys" }`, as the
 `migrate` door answers it). `migrate_value_type`
 carries `to`, the value type's new declaration as `declared` carries
 one, and `report`, its preflight's report when it was proposed

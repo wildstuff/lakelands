@@ -24,7 +24,7 @@ use std::path::PathBuf;
 
 use lakelands_api::error::{Flaw, Situation};
 use lakelands_api::event::{Event, EventBody, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT};
-use lakelands_api::ontology::{TypeDecl, VerbScope};
+use lakelands_api::ontology::{AtIngest, TypeDecl, VerbScope};
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, ProposedWrite};
 use lakelands_core::{canonical, log, shape};
@@ -190,7 +190,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 351, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 358, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -392,7 +392,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 38] = [
+const SHOWN: [&str; 39] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -431,10 +431,11 @@ const SHOWN: [&str; 38] = [
     "sealed_output",
     "set_across",
     "trigger_across",
+    "constraints",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 45;
+const LAST: u64 = 46;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
@@ -588,6 +589,10 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
             &event.body,
             B::LakeUpgraded { from, to } if *to == event.v && *from + 1 == *to
         ),
+        "constraints" => matches!(declared, Some(D::Type(t)) if {
+            let at: Vec<_> = t.constraints.iter().map(|c| c.at_ingest).collect();
+            at == [AtIngest::Admit, AtIngest::Refuse] && line.contains("previous(status)")
+        }),
         "erasable" => {
             matches!(declared, Some(D::Type(t)) if t.fields.iter().any(|f| f.erasable))
         }

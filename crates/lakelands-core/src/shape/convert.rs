@@ -206,6 +206,7 @@ pub fn referring(
         })
         .collect();
     let mut report = MigrationReport {
+        breaches: Default::default(),
         ty: before.name.clone(),
         from_schema_hash: schema_hash(before)?,
         to_schema_hash: schema_hash(&migration.to)?,

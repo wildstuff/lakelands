@@ -822,6 +822,15 @@ impl Sight<'_> {
         let whole = d.schema_hash.as_deref().unwrap_or_default();
         let schema_hash = crate::rights::shown_hash(who, t, view.is_some(), whole, find);
         Some(TypeDescription {
+            // Told to one who reads every field it reads, as a set's
+            // condition is (lakelands#1119).
+            constraints: (t.constraints.iter())
+                .filter(|c| {
+                    let e = c.holds.typed().ok();
+                    e.is_some_and(|e| self.reads_all(e.fields_read(), &t.name))
+                })
+                .cloned()
+                .collect(),
             name: t.name.clone(),
             // `describe_type` fills them; `describe` names them once.
             value_types: Vec::new(),

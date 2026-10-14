@@ -66,6 +66,7 @@ async fn a_read_as_of_the_head_is_never_refused_while_a_writer_appends() {
     cat.declare(
         &owner(),
         Declaration::Type(TypeDecl {
+            constraints: Default::default(),
             annotations: Default::default(),
             name: "entry".into(),
             key: vec![],

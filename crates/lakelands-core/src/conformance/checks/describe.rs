@@ -137,6 +137,7 @@ fn object_set(name: &str, filter: &str) -> ObjectSetDecl {
 /// A described type projected back onto the declaration it describes.
 fn projected(t: &TypeDescription) -> TypeDecl {
     TypeDecl {
+        constraints: Default::default(),
         annotations: t.annotations.clone(),
         insert_only: false,
         name: t.name.clone(),

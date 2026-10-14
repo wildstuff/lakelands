@@ -161,6 +161,7 @@ pub fn mirror_type() -> TypeDecl {
         embed: None,
     };
     TypeDecl {
+        constraints: Default::default(),
         annotations: Default::default(),
         name: MIRROR_TYPE.into(),
         key: vec!["connection".into(), "source_type".into()],

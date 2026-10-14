@@ -464,6 +464,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
         }
     });
     let t = TypeDecl {
+        constraints: Default::default(),
         annotations: doc.annotations,
         name: TypeName::new(doc.name),
         key,

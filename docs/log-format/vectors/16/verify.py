@@ -300,6 +300,9 @@ SHOWS = {
     "trigger_across": shows("a declared trigger whose `when` reads across an edge and asks `exists`")(
         lambda e: declaration(e).get("declare") == "trigger" and "exists(shelf)" in declaration(e).get("when", "")
         and "shelf.capacity" in declaration(e)["when"]),
+    "constraints": shows("a declared type with a constraint that admits at ingest and one that reads `previous`")(
+        lambda e: [c.get("at_ingest", "refuse") for c in declaration(e).get("constraints", [])] == ["admit", "refuse"]
+        and "previous(" in declaration(e)["constraints"][1]["holds"]),
     "lake_upgraded": shows("a `lake_upgraded` from the format before to the one this lake is written in")(
         lambda e: e["body"]["kind"] == "lake_upgraded" and e["body"]["from"] == e["v"] - 1 and e["body"]["to"] == e["v"]),
 }

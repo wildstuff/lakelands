@@ -56,7 +56,7 @@ type Kind = (&'static str, Vec<&'static str>, fn(&str) -> bool);
 #[rustfmt::skip]
 fn kinds() -> [Kind; 3] {
     [
-        ("the type", members!(TypeDecl { name, key, fields, relations, view, valid_from, valid_to, language, field_meta, insert_only, description, label, annotations }), |t| t == "-"),
+        ("the type", members!(TypeDecl { name, key, fields, relations, view, valid_from, valid_to, language, field_meta, insert_only, description, label, annotations, constraints }), |t| t == "-"),
         ("a field", members!(FieldDecl { name, ty, required, authority, derived, function, computed_at, depends_on, on_input_change, initial, sensitive, searchable, erasable, description, label, embed, annotations }), |t| t != "-" && !RELATIONS.contains(&t)),
         ("a relation", members!(RelationDecl { name, target, cardinality, inverse, via, fields, authority, description, annotations, derived }), |t| RELATIONS.contains(&t)),
     ]
@@ -78,6 +78,7 @@ const ROWS: &str = r#"
 - language "en" restated
 - field_meta true restated
 - insert_only true restated
+- constraints [{"name":"always","holds":"1 = 1"}] restated
 - description null restated
 - label null restated
 - annotations null restated

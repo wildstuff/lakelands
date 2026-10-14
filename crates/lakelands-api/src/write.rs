@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Case, Place, Said};
 use crate::expr::Condition;
 use crate::id::{
-    Cursor, FieldName, IdempotencyKey, Position, ProposalId, RecordKey, RelationName, SourceId,
-    TriggerName, TypeName, ValueTypeName, VerbName, Version,
+    ConstraintName, Cursor, FieldName, IdempotencyKey, Position, ProposalId, RecordKey,
+    RelationName, SourceId, TriggerName, TypeName, ValueTypeName, VerbName, Version,
 };
 use crate::ontology::{
     ANNOTATION_KEY_MAX_BYTES, ANNOTATIONS_MAX_BYTES, Annotations, FieldDecl, FieldType,
@@ -1188,8 +1188,15 @@ pub struct MigrationReport {
     /// that hold no value for it and take its `initial`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filled: Vec<FieldFill>,
-    /// True when every stored value converts without loss, and every
-    /// record a re-key moves takes a new key of its own. It speaks of
+    /// Per constraint `to` declares: the live records that would break
+    /// it as the migration leaves them (lakelands#1119). One that `to`
+    /// refuses at ingest makes the migration lossy; one it admits is
+    /// listed only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub breaches: Vec<Breach>,
+    /// True when every stored value converts without loss, every record
+    /// a re-key moves takes a new key of its own, and no record breaks a
+    /// constraint that refuses. It speaks of
     /// stored values: a migration that only restates is lossless. It says
     /// nothing of what the migration removes, which is `dropped`.
     pub lossless: bool,
@@ -1220,6 +1227,17 @@ pub struct FieldFill {
     /// The field.
     pub field: FieldName,
     /// How many live records hold no value for it.
+    pub records: u64,
+    /// Up to five of their keys, the smallest its reader is answered.
+    pub sample_keys: Vec<RecordKey>,
+}
+
+/// The live records a migration would leave breaking a constraint.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Breach {
+    /// The constraint.
+    pub constraint: ConstraintName,
+    /// How many live records would break it.
     pub records: u64,
     /// Up to five of their keys, the smallest its reader is answered.
     pub sample_keys: Vec<RecordKey>,

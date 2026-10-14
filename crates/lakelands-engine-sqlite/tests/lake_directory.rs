@@ -67,6 +67,7 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
     cat.declare(
         &owner,
         Declaration::Type(TypeDecl {
+            constraints: Default::default(),
             annotations: Default::default(),
             insert_only: false,
             name: "entry".into(),

@@ -47,7 +47,7 @@ use std::sync::{Arc, Mutex};
 use lakelands_api::error::{Case, Flaw, Part, Said};
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::expr::Expr;
-use lakelands_api::ontology::{TypeDecl, ValueTypeDecl};
+use lakelands_api::ontology::{OnInputChange, TypeDecl, ValueTypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
 use lakelands_api::{FieldName, Result, TypeName, Value};
 use lakelands_core::rights::Door;
@@ -78,6 +78,18 @@ pub struct Plan {
     pub(crate) settled: std::result::Result<Vec<(FieldName, BTreeSet<FieldName>)>, Case>,
     /// The version of the function that computes a field, by field.
     versions: BTreeMap<FieldName, String>,
+    /// Its constraints, parsed once (lakelands#1119).
+    pub(crate) constraints: Vec<Constraint>,
+}
+
+/// A type's constraint as the write path judges it: parsed, with the
+/// fields it reads and those whose write moves them, through derived
+/// fields and fields cleared when their inputs change.
+pub(crate) struct Constraint {
+    pub(crate) decl: lakelands_api::ontology::ConstraintDecl,
+    pub(crate) holds: Expr,
+    pub(crate) reads: BTreeSet<FieldName>,
+    pub(crate) fed: BTreeSet<FieldName>,
 }
 
 impl Plan {
@@ -88,15 +100,48 @@ impl Plan {
             let function = o.functions.get(f.function.as_ref()?)?;
             Some((f.name.clone(), function.version.to_string()))
         });
+        let derived = derive::order(&decl);
+        let computed = derived.as_deref().unwrap_or_default();
+        let constraints = (decl.constraints.iter()).filter_map(|c| {
+            let holds = crate::declare::typed(&c.holds, lakelands_core::expr::Place::Guard).ok()?;
+            let reads = lakelands_core::derive::reads(&holds);
+            // What moves a field it reads: a derived field's inputs, and
+            // those of a field the fold clears when they change, to the
+            // fields a write sends (lakelands#1119).
+            let feeds = (computed.iter())
+                .map(|(f, e)| (f, lakelands_core::derive::reads(e)))
+                .chain(
+                    decl.fields
+                        .iter()
+                        .filter(|f| f.on_input_change == OnInputChange::Clear)
+                        .map(|f| (&f.name, f.depends_on.iter().cloned().collect())),
+                );
+            let feeds: Vec<(&FieldName, BTreeSet<FieldName>)> = feeds.collect();
+            let mut fed = reads.clone();
+            while let Some(more) =
+                (feeds.iter()).find(|(f, inputs)| fed.contains(*f) && !inputs.is_subset(&fed))
+            {
+                fed.extend(more.1.iter().cloned());
+            }
+            let decl = c.clone();
+            Some(Constraint {
+                decl,
+                holds,
+                reads,
+                fed,
+            })
+        });
+        let constraints = constraints.collect();
         Plan {
             entries: entries(o, &raw.name).collect(),
             value_types: named
                 .filter_map(|n| o.value_types.get(n.as_str()))
                 .map(|e| e.decl.clone())
                 .collect(),
-            derived: derive::order(&decl),
+            derived,
             settled: backed::computed_order(o, raw),
             versions: versions.collect(),
+            constraints,
             decl,
         }
     }

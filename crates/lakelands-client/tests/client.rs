@@ -97,6 +97,7 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
     };
     let said = || Box::new(Said::from(case.clone()).within(place.clone()));
     let report = MigrationReport {
+        breaches: Default::default(),
         ty: "invoice".into(),
         from_schema_hash: "a".into(),
         to_schema_hash: "b".into(),

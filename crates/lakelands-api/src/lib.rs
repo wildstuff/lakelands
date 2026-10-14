@@ -41,8 +41,8 @@ pub mod write;
 pub use catalog::{Catalog, CommitStream, LakeStore, SourceStream, Verification, ingest_all};
 pub use error::{Error, Missing, Refusal, Result};
 pub use id::{
-    Cursor, FieldName, IdempotencyKey, LakeId, ParamName, Position, ProposalId, RecordKey,
-    RelationName, SourceId, TriggerName, TypeName, ValueTypeName, VerbName, Version,
+    ConstraintName, Cursor, FieldName, IdempotencyKey, LakeId, ParamName, Position, ProposalId,
+    RecordKey, RelationName, SourceId, TriggerName, TypeName, ValueTypeName, VerbName, Version,
 };
 pub use location::{EngineConfig, Location, SqliteTuning};
 pub use principal::{Access, Grants, Principal, PrincipalKind, WriteContext, WriteOrigin};

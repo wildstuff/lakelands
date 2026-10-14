@@ -44,21 +44,21 @@ use lakelands_api::error::{
 };
 use lakelands_api::event::{Digest, Event, EventBody, EventId, Procedure};
 use lakelands_api::ontology::{
-    Assignment, Authority, FieldDecl, RelationDecl, Risk, TriggerDecl, TypeDecl, ValueTypeDecl,
-    VerbDecl, VerbEffect,
+    Assignment, Authority, ConstraintDecl, FieldDecl, RelationDecl, Risk, TriggerDecl, TypeDecl,
+    ValueTypeDecl, VerbDecl, VerbEffect,
 };
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::seam::VerbExecutor;
 use lakelands_api::write::{
-    Carried, Carrier, Declaration, FieldFill, InForce, Migration, MigrationReport, Misfit,
+    Breach, Carried, Carrier, Declaration, FieldFill, InForce, Migration, MigrationReport, Misfit,
     ObjectSetDecl, Outcome, ProposalState, ProposedWrite, Recompute, RelationRename, ValueRenamed,
     ValueTypeMigration, ValueTypeReport, ValueTypeUse, WriteOpts,
 };
 use lakelands_api::{
-    Access, Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal, ProposalId,
-    RecordKey, Refusal, RelationName, Result, SourceId, Timestamp, TypeName, Value, VerbName,
-    Version,
+    Access, ConstraintName, Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal,
+    ProposalId, RecordKey, Refusal, RelationName, Result, SourceId, Timestamp, TypeName, Value,
+    VerbName, Version,
 };
 use lakelands_core::expr::{self, Place as Eval, RecordScope, Scope, WriteScope};
 use lakelands_core::rights::{self, Door};
@@ -2268,6 +2268,58 @@ impl Decide<'_> {
         self.write(decl, key, t, patch, expected)
     }
 
+    /// Each constraint of `decl` that the write moves holds on `after`
+    /// (lakelands#1119). Whether the write is judged is told by what it
+    /// creates and sends, and the derived fields those feed, never by a
+    /// value: one who does not read every field a judged constraint reads
+    /// is not granted the write, whether it would hold or not. A source's
+    /// window does not judge a constraint that admits at ingest.
+    fn constraints_hold(
+        &self,
+        decl: &TypeDecl,
+        live: Option<&StoredRecord>,
+        after: &StoredRecord,
+        sent: &[FieldName],
+    ) -> Result<()> {
+        let (w, who) = (self.w, self.who);
+        let plan = w.plans.get(&w.ontology, decl);
+        let reads = |f: &FieldName| {
+            let mut fields = decl.fields.iter().filter(|d| &d.name == f);
+            fields.any(|d| rights::field_access(who, decl, d).reads())
+        };
+        for c in &plan.constraints {
+            let admits = matches!(self.door, Door::Source) && !c.decl.at_ingest.refuses();
+            if admits || (live.is_some() && !sent.iter().any(|f| c.fed.contains(f))) {
+                continue;
+            }
+            granted(c.reads.iter().all(reads))?;
+            let before = live.map(|b| &b.fields);
+            let moved = |f: &FieldName| before.and_then(|b| b.get(f)) != after.fields.get(f);
+            if before.is_some() && !c.reads.iter().any(moved) {
+                continue;
+            }
+            let scope = WriteScope {
+                after: &after.fields,
+                before,
+                retiring: false,
+                meta: Some(&after.meta),
+                settings: Some(&w.settings),
+                now: self.now,
+            };
+            if !expr::holds(&c.holds, &scope).unwrap_or(false) {
+                let (constraint, ty) = (c.decl.name.clone(), decl.name.clone());
+                let key = after.key.clone();
+                let case = Case::ConstraintBroken {
+                    constraint,
+                    ty,
+                    key,
+                };
+                return Err(refused(Refusal::Constraint(Box::new(case.into()))));
+            }
+        }
+        Ok(())
+    }
+
     /// The rest of a record write, authored or from a source (`ingest`),
     /// once its patch is checked and its target read.
     pub(crate) fn write(
@@ -2335,6 +2387,7 @@ impl Decide<'_> {
         let before = t.before.as_ref().filter(|_| !other);
         let after = self.apply(before, &draft)?;
         record::check_required(decl, &after.fields)?;
+        self.constraints_hold(decl, live.filter(|_| !other), &after, &sent)?;
         if after.ty.as_str() == AGING_RULE_TYPE {
             let rule = crate::aging::check(&w.ontology, &after.fields)
                 .map_err(|(field, said)| invalid_field(&field, *said))?;
@@ -3336,6 +3389,20 @@ impl Call<'_> {
         let requires = |v: &VerbName| o.verb(v).ok().and_then(|v| v.requires.clone());
         let mut named = Named::default();
         e.names(&mut named);
+        // A constraint is told to one who reads every field it reads, as
+        // `describe_type` tells it (lakelands#1119).
+        let constraints = o
+            .ty(&ty)
+            .map(|t| t.constraints.as_slice())
+            .unwrap_or_default();
+        let told = |n: &ConstraintName| {
+            let c = constraints.iter().find(|c| &c.name == n);
+            let e = c.and_then(|c| c.holds.typed().ok());
+            e.is_some_and(|e| e.fields_read().into_iter().all(read))
+        };
+        if named.constraints.iter().all(told) {
+            named.constraints.clear();
+        }
         match listed {
             Some(l) if named.shown_by(l, &sees, &read, &requires) => e,
             _ => invalid(Case::WriteChangedSinceProposed { ty, key }),
@@ -4573,6 +4640,17 @@ impl Call<'_> {
         // in key order, of those its reader is answered.
         let none = |f: &FieldName| (f.clone(), 0, Vec::new());
         let mut fills: Vec<(FieldName, u64, Vec<RecordKey>)> = m.fill.iter().map(none).collect();
+        // Each constraint `to` declares: the live records it would leave
+        // breaking it, as converted and filled (lakelands#1119).
+        let parse = |c: &ConstraintDecl| declare::typed(&c.holds, Eval::Guard).map_err(invalid);
+        type Breaking<'c> = (
+            &'c ConstraintDecl,
+            lakelands_api::expr::Expr,
+            u64,
+            Vec<RecordKey>,
+        );
+        let breaking = (m.to.constraints.iter()).map(|c| Ok((c, parse(c)?, 0, Vec::new())));
+        let mut breaking: Vec<Breaking<'_>> = breaking.collect::<Result<_>>()?;
         // A retarget is judged as its author is answered; at an accept, its
         // proposer (lakelands#1071).
         let onto = Sight::held(judged.unwrap_or(self.who), &w.ontology);
@@ -4585,6 +4663,26 @@ impl Call<'_> {
                     let shown = || crate::reads::answered(view, &sees, &m.to.name, &r.key);
                     if samples.len() < 5 && !sees.withheld(r) && shown()? {
                         samples.push(r.key.clone());
+                    }
+                }
+            }
+            if !breaking.is_empty() && !r.retired {
+                let fields = convert(&before, m, r)?;
+                let scope = WriteScope {
+                    after: &fields,
+                    before: Some(&fields),
+                    retiring: false,
+                    meta: Some(&r.meta),
+                    settings: Some(&w.settings),
+                    now: now.unwrap_or(w.last_known_at),
+                };
+                for (_, e, records, samples) in breaking.iter_mut() {
+                    if !expr::holds(e, &scope).unwrap_or(false) {
+                        *records += 1;
+                        let shown = || crate::reads::answered(view, &sees, &m.to.name, &r.key);
+                        if samples.len() < 5 && !sees.withheld(r) && shown()? {
+                            samples.push(r.key.clone());
+                        }
                     }
                 }
             }
@@ -4607,6 +4705,15 @@ impl Call<'_> {
             sample_keys,
         };
         report.filled = fills.into_iter().map(filled).collect();
+        for (c, _, records, sample_keys) in breaking.into_iter().filter(|b| b.2 > 0) {
+            report.lossless &= !c.at_ingest.refuses();
+            let constraint = c.name.clone();
+            report.breaches.push(Breach {
+                constraint,
+                records,
+                sample_keys,
+            });
+        }
         // A colliding key is the new key's fields' values: named to one
         // who reads each of them and is answered two of the records that
         // would take it, a collision it can see for itself.
@@ -5500,6 +5607,18 @@ fn as_author(
     let unshown = |r: &RelationDecl| !sees.relation(before, r);
     let unknown: Vec<&FieldDecl> = (before.fields.iter().filter(|f| hidden(before, f))).collect();
     put_back(&before.fields, |f| hidden(before, f), &mut to.fields);
+    // A constraint over a field it does not read is not told to it, as
+    // `describe_type` tells none, so left out it stands as declared
+    // (lakelands#1119).
+    let read = |c: &ConstraintDecl| -> Vec<FieldName> {
+        let e = c.holds.typed().ok();
+        e.map_or_else(Vec::new, |e| e.fields_read().into_iter().cloned().collect())
+    };
+    let untold = |c: &ConstraintDecl| !read(c).iter().all(|n| sees.reads_from(&before.name, n));
+    put_back(&before.constraints, untold, &mut to.constraints);
+    let constrained: Vec<FieldName> = (before.constraints.iter().filter(|c| untold(c)))
+        .flat_map(read)
+        .collect();
     // A valid time over a field it may not know of is not named to it, so
     // left out it stands as declared (024 and 027, extended).
     let unseen = |v: &Option<FieldName>| {
@@ -5550,7 +5669,8 @@ fn as_author(
     let matched = hid.flat_map(|r| r.via.iter()).chain(&owner_reads);
     let mut reads = (unknown.iter().copied())
         .flat_map(|f| (f.depends_on.iter()).chain(f.embed.iter().flat_map(|e| &e.from)))
-        .chain(matched);
+        .chain(matched)
+        .chain(&constrained);
     match reads.find(|n| !to.fields.iter().any(|t| &t.name == *n)) {
         Some(n) => {
             let (field, ty) = (n.clone(), to.name.clone());

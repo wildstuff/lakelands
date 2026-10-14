@@ -22,6 +22,7 @@ mod computed_reference;
 mod concurrency;
 mod conditional_edges;
 mod conditional_verbs;
+mod constraints;
 mod cursors;
 mod date_bucket;
 mod dates;
@@ -200,6 +201,12 @@ pub const ALL: &[Check] = &[
     ingest::FOREIGN_FIELD_REFUSED,
     ingest::UPSTREAM_PER_FIELD,
     ingest::UPSERT_REFUSES_SOURCE_FIELD,
+    constraints::CONSTRAINT_HELD_AT_EVERY_DOOR,
+    constraints::CONSTRAINT_JUDGED_THROUGH_WHAT_MOVES,
+    constraints::CONSTRAINT_TOLD_AT_ACCEPT,
+    constraints::CONSTRAINT_NOT_GRANTED_UNREAD,
+    constraints::CONSTRAINT_READS_ITS_RECORD_ALONE,
+    constraints::CONSTRAINT_BROKEN_IN_THE_PREFLIGHT,
     logged_ids::NO_NUL_IN_A_LOGGED_ID,
     rebuild::REBUILD_ANSWERS_AS_BEFORE,
     rebuild::REBUILD_REPRODUCES_THE_CHAIN,
