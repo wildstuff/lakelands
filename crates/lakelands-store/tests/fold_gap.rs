@@ -312,6 +312,7 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
     cat.declare(
         &who,
         Declaration::Type(TypeDecl {
+            constraints: Default::default(),
             annotations: Default::default(),
             insert_only: false,
             name: "note".into(),

@@ -41,6 +41,7 @@ interface types {
     type relation-name = string;
     type verb-name = string;
     type trigger-name = string;
+    type constraint-name = string;
     type param-name = string;
     type value-type-name = string;
     type source-id = string;
@@ -262,6 +263,20 @@ interface types {
         /// The host's own marks, by namespaced key (`acme.icon`), each a
         /// JSON value; Lakelands never reads them.
         annotations: list<tuple<string, json>>,
+        /// What every record of the type holds, judged at every write door.
+        constraints: list<constraint-decl>,
+    }
+
+    /// What `ingest` does with a record that breaks a constraint.
+    enum at-ingest { refuse, admit }
+
+    /// A condition over a record's own fields that every write moving a
+    /// field it reads leaves true.
+    record constraint-decl {
+        name: constraint-name,
+        holds: condition,
+        description: option<string>,
+        at-ingest: at-ingest,
     }
 
     record value-type-decl {
@@ -400,6 +415,12 @@ interface types {
         sample-keys: list<record-key>,
     }
 
+    record breach {
+        constraint: constraint-name,
+        records: u64,
+        sample-keys: list<record-key>,
+    }
+
     record field-conversion {
         field: field-name,
         %from: field-type,
@@ -426,8 +447,12 @@ interface types {
         sample-collisions: list<record-ref>,
         restated: list<restated>,
         filled: list<field-fill>,
-        /// Every kept value converts and every moved record gets a key;
-        /// it says nothing of what `dropped` removes.
+        /// Per constraint, the live records the migration would leave
+        /// breaking it.
+        breaches: list<breach>,
+        /// Every kept value converts, every moved record gets a key and no
+        /// record breaks a constraint that refuses; it says nothing of what
+        /// `dropped` removes.
         lossless: bool,
         report-id: string,
         /// The report holds more than its reader is shown.
@@ -1034,6 +1059,8 @@ interface types {
         /// From `describe-type`: the declaration of each value type the
         /// lifecycle's `value-types` names, in name order.
         value-types: list<value-type-decl>,
+        /// The constraints whose fields its reader reads.
+        constraints: list<constraint-decl>,
     }
 
     record verb-description {

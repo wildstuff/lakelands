@@ -28,9 +28,9 @@ use lakelands_api::describe::{
 use lakelands_api::expr::Condition;
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
-    Assignment, Authority, Cardinality, ComputedAt, EmbedDecl, FieldDecl, FieldType, Measure,
-    OnInputChange, RelationDecl, Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl,
-    VerbEffect, VerbScope, ViewDecl, ViewParam, ViewSource,
+    Assignment, AtIngest, Authority, Cardinality, ComputedAt, ConstraintDecl, EmbedDecl, FieldDecl,
+    FieldType, Measure, OnInputChange, RelationDecl, Risk, StorageKind, TriggerDecl, TypeDecl,
+    ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewParam, ViewSource,
 };
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{
@@ -40,11 +40,11 @@ use lakelands_api::query::{
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy};
 use lakelands_api::seam::{FeedBatch, FeedFilter};
 use lakelands_api::write::{
-    AgeReport, Carried, Carrier, CompactReport, Declaration, DeclarationKind, FieldConversion,
-    FieldFill, FunctionDecl, InForce, Migration, MigrationReport, Misfit, ObjectSetDecl, Proposal,
-    ProposalFilter, ProposalState, ProposedWrite, PurgeReport, RecordRef, ReferenceRewrite,
-    Rekeyed, RelationRename, Restated, RuleRun, TypeRetired, ValueRenamed, ValueTypeMigration,
-    ValueTypeReport, ValueTypeUse,
+    AgeReport, Breach, Carried, Carrier, CompactReport, Declaration, DeclarationKind,
+    FieldConversion, FieldFill, FunctionDecl, InForce, Migration, MigrationReport, Misfit,
+    ObjectSetDecl, Proposal, ProposalFilter, ProposalState, ProposedWrite, PurgeReport, RecordRef,
+    ReferenceRewrite, Rekeyed, RelationRename, Restated, RuleRun, TypeRetired, ValueRenamed,
+    ValueTypeMigration, ValueTypeReport, ValueTypeUse,
 };
 use lakelands_api::{
     Access, After, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, Missing, Origin,
@@ -288,8 +288,28 @@ fn relation_decl() -> RelationDecl {
     }
 }
 
+/// A constraint with every member set.
+fn constraint_decl() -> ConstraintDecl {
+    ConstraintDecl {
+        name: "never_overpaid".into(),
+        holds: cond(),
+        description: Some("d".into()),
+        at_ingest: AtIngest::Admit,
+    }
+}
+
+/// A breach with every member set.
+fn breach() -> Breach {
+    Breach {
+        constraint: "never_overpaid".into(),
+        records: 2,
+        sample_keys: vec!["k".into()],
+    }
+}
+
 fn type_decl() -> TypeDecl {
     TypeDecl {
+        constraints: vec![constraint_decl()],
         annotations: [("acme.icon".to_owned(), serde_json::json!("x"))].into(),
         insert_only: true,
         name: "invoice".into(),
@@ -436,6 +456,7 @@ fn write_opts() -> WriteOpts {
 
 fn migration_report() -> MigrationReport {
     MigrationReport {
+        breaches: vec![breach()],
         ty: "invoice".into(),
         from_schema_hash: "a".into(),
         to_schema_hash: "b".into(),
@@ -547,6 +568,7 @@ fn field_description() -> FieldDescription {
 
 fn type_description() -> TypeDescription {
     TypeDescription {
+        constraints: vec![constraint_decl()],
         value_types: vec![ValueTypeDecl {
             name: "money".into(),
             kind: StorageKind::Decimal,
@@ -774,6 +796,8 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             }),
         ),
         ("migration_report", members(&migration_report())),
+        ("constraint_decl", members(&constraint_decl())),
+        ("breach", members(&breach())),
         // A case is flattened into its object: its parameters (here `type`
         // and `field`) are members beside `at`, `code` and `message`, and
         // the WIT carries them as one JSON text, `params`.
@@ -1308,6 +1332,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
         [OneToOne, OneToMany, ManyToOne, ManyToMany]
     );
     units!("risk", Risk, [Low, Medium, High]);
+    units!("at_ingest", AtIngest, [Refuse, Admit]);
     // Marked `non_exhaustive`: listed by hand, a new kind added here too.
     checks.push((
         "declaration_kind",

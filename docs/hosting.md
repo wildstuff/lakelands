@@ -539,9 +539,10 @@ A host that already has a store of its own moves in four steps.
   is fixed. See `docs/decisions/051-a-grant-may-admit-only-some-records.md`.
 - **What a host reads before it applies a migration.** The preflight's
   report says, each in one member: whether the apply is admitted
-  (`lossless`: every value the migration keeps converts, and every
-  record a re-key moves takes a key of its own; it says nothing of what
-  the migration removes); what goes (`dropped`: each removed field with
+  (`lossless`: every value the migration keeps converts, every record a
+  re-key moves takes a key of its own, and no live record breaks a
+  constraint that refuses at ingest; it says nothing of what the
+  migration removes); what goes (`dropped`: each removed field with
   the records that hold a value, each removed relation with its live
   links; the apply discards the values and retires the links, each by
   an event of its own, so a host that asks "is anything lost?" sums
@@ -706,6 +707,24 @@ A host that already has a store of its own moves in four steps.
   value's rename the fill writes no record event and fires no trigger: a
   host that kept its own copy reads the feed's `migrated` (its `fill`),
   and a mirror copies the type again.
+- **A rule over a record is a constraint the store holds
+  (lakelands#1119).** A type's `constraints` are judged at every write
+  door, an import, a source and a reactive write included, so a host
+  drops its own check of the same rule. A write that would break one is
+  refused `constraint_broken`, naming the constraint, the type and the
+  key and never a value; the host shows its user the constraint's
+  `description`. A constraint reads its record alone, and a comparison
+  with an absent value is false, so a rule over an optional field says
+  what it holds when the field is absent (`paid is null or paid <=
+  amount`). A constraint is added or changed by a migration: its
+  preflight lists in `breaches` each constraint live records would
+  break, with their count and first keys. One that refuses at ingest
+  makes the migration lossy, so the host fixes those records first; one
+  declared `at_ingest: admit` applies, and lets a source go on writing
+  what it states. A principal kept from a field a constraint reads is
+  refused `not_granted` for every write the constraint judges, so a host
+  grants a writer what the rule reads or keeps those fields out of its
+  writes. See `docs/decisions/059-a-type-declares-its-constraints.md`.
 - **A host may state its declarations at every start.** A declaration
   that is the one in force is answered `applied` at the head and appends
   nothing, by `declare` and by `apply`: a type, a value type, a function,

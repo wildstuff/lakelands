@@ -27,6 +27,7 @@ What a declared name names.
 | `verb` | — | verb | A verb. |
 | `executor` | — | executor | A verb's executor. |
 | `trigger` | — | trigger | A trigger. |
+| `constraint` | — | constraint | A type's constraint. |
 | `object_set` | — | object set | An object set. |
 | `function` | — | function | A function. |
 | `backing` | — | backing | A function's backing. |
@@ -198,6 +199,7 @@ Where in a declaration or a request a case is said.
 | `verb` | `name` (VerbName) | verb `{name}` | A verb. |
 | `value_type` | `name` (ValueTypeName) | value type `{name}` | A value type. |
 | `trigger` | `name` (TriggerName) | trigger `{name}` | A trigger. |
+| `type_constraint` | `name` (ConstraintName) | constraint `{name}` | A type's constraint. |
 | `object_set` | `name` (String) | object set `{name}` | An object set. |
 | `function` | `name` (String) | function `{name}` | A function. |
 | `function_config` | `key` (String) | `config.{key}` | A member of a function's `config`. |
@@ -268,6 +270,8 @@ What a refusal is about.
 | `computed_at_uncomputed` | — | only a field derived from an expression or computed by a function says `computed_at` | A field that says when it is computed and is not computed. |
 | `computed_cycle` | `fields` (Names) | computed fields read each other in a cycle: {fields} | Computed fields that read each other. |
 | `computed_reads_itself` | `field` (FieldName) | the computed field `{field}` reads itself | A computed field that reads itself. |
+| `constraint_named_twice` | `constraint` (ConstraintName) | two constraints are named `{constraint}` | A type naming two constraints alike. |
+| `constraint_reads_beyond` | `constraint` (ConstraintName), `reads` (Beyond) | constraint `{constraint}` reads {reads}, which can change without a write of the record; a constraint reads the record's own fields | A constraint that reads what can change without a write of the record. |
 | `declared_twice` | `what` (Naming), `name` (String) | it declares the {what} `{name}` twice | A name declared twice in one declaration. |
 | `derived_and_function` | — | a field is derived from an expression or computed by a function, not both | A field both derived and computed by a function. |
 | `derived_cycle` | `fields` (Names) | derived fields read each other in a cycle: {fields} | Derived fields that read each other. |
@@ -518,6 +522,7 @@ What a refusal is about.
 | `purge_report_stale` | — | that report is not of this purge at this head; run the preflight again | A purge's report of another purge or head. |
 | `purge_shared` | `source` (SourceId), `type` (TypeName, optional), `count` (usize), `first` (list of RecordName) | the purge of `{source}`[ from `{type}`] is refused whole: {count} record(s) it brought in were also written by another hand (a principal, or another source), and a purge never half-removes a record; retire them or clear those fields, then purge again. First: {first} | A purge of records another hand wrote too. |
 | `required` | `type` (TypeName), `field` (FieldName) | `{type}` requires a value for `{field}` | A record with no value for a required field. |
+| `constraint_broken` | `constraint` (ConstraintName), `type` (TypeName), `key` (RecordKey) | `{type}` `{key}` would break the constraint `{constraint}` | A write that would leave a record breaking its type's constraint. |
 | `requires_unmet` | `verb` (VerbName), `type` (TypeName), `key` (RecordKey) | verb `{verb}` requires what `{type}` `{key}` does not hold | A verb's `requires` that does not hold. |
 | `restriction` | `type` (TypeName), `key` (RecordKey), `already` (bool) | `{type}` `{key}` is [{?already}already\|not] restricted | A restriction of what is restricted, or a release of what is not. |
 | `set_declares_twice` | — | the set declares it more than once | A set of declarations that names one twice. |
@@ -562,6 +567,7 @@ What a refusal is about.
 | `vector_index_at_read` | `field` (FieldName) | `{field}` is computed at the read; a vector index keeps stored values | A vector index of a field computed at the read. |
 | `vector_index_kind` | `field` (FieldName), `kind` (StorageKind) | `{field}` is of kind {kind}; a vector index keeps vector fields | A vector index of a field that is no vector. |
 | `view_not_keepable` | `type` (TypeName) | the view `{type}` cannot be kept | A view that cannot be kept, to one not shown why. |
+| `constraint_needs_migrate` | `type` (TypeName), `constraint` (ConstraintName) | `{type}`'s constraint `{constraint}` is added or changed, which stored records may break; that is a migration, whose preflight lists them | A constraint added to a type in force, or changed, by `declare`. |
 | `computed_holds_renamed` | `type` (TypeName), `field` (FieldName) | `{type}`.`{field}` is computed from an expression that holds a value this migration renames; change the expression first | A value a migration renames that a computed field's expression holds. |
 | `key_field_required` | `field` (FieldName) | the key field `{field}` is a required field of the type | A key field that is not required in a migration that changes the key. |
 | `key_holds_renamed` | `type` (TypeName), `field` (FieldName) | `{type}`.`{field}` is part of the key and holds a value this migration renames, which would leave records whose key no longer matches their fields; re-key the type through its migration first | A value a migration renames that a key field holds. |
@@ -736,6 +742,20 @@ Why a pattern is not an I-Regexp.
 | `range_backwards` | `lo` (char), `hi` (char) | the range `{lo}-{hi}` runs backwards | A class's range that runs backwards. |
 | `repeats_backwards` | `body` (String) | `{body}` between braces repeats at least more than at most | A repetition whose least is more than its most. |
 | `unmatched` | `c` (char) | unexpected `{c}` (an unmatched `)`?) | A character left after the whole pattern. |
+
+## `Beyond`
+
+What a constraint reads that can change without a write of its record (lakelands#1119).
+
+| code | parameters | sentence | about |
+|---|---|---|---|
+| `path` | — | a path across a reference or a link | A path across a reference or a link. |
+| `in_set` | — | `in_set` | An object set. |
+| `setting` | — | `setting` | A setting. |
+| `clock` | — | the clock | The clock. |
+| `exists` | — | `exists` | A relation's links. |
+| `computed_outside` | `field` (FieldName) | `{field}`, computed outside the lake | A field computed outside the lake. |
+| `computed_at_read` | `field` (FieldName) | `{field}`, computed at the read | A field computed at the read. |
 
 ## `Revision`
 
@@ -1016,8 +1036,8 @@ A parameter of a set above is that set's case; a plain name is said by
 its own sentence. The other types:
 
 - **text** (`String`), a **name** (`TypeName`, `FieldName`, `RelationName`,
-  `VerbName`, `ParamName`, `TriggerName`, `ValueTypeName`, `LakeId`,
-  `SourceId`, `KeyId`) or a **record key** (`RecordKey`): a string;
+  `VerbName`, `ParamName`, `TriggerName`, `ConstraintName`,
+  `ValueTypeName`, `LakeId`, `SourceId`, `KeyId`) or a **record key** (`RecordKey`): a string;
 - a **number** (`u16`, `u32`, `u64`, `usize`, `i32`, `i64`, `Number`) or
   a **position** (`Position`): a JSON number;
 - an **instant** (`Timestamp`): an RFC 3339 string in UTC; a

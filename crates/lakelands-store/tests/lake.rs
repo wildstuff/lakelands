@@ -85,6 +85,7 @@ fn field(name: &str, kind: StorageKind) -> FieldDecl {
 
 fn ty(name: &str, fields: Vec<FieldDecl>) -> TypeDecl {
     TypeDecl {
+        constraints: Default::default(),
         annotations: Default::default(),
         insert_only: false,
         name: name.into(),

@@ -1104,6 +1104,25 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
     // (024, extended).
     let named =
         |v: &serde_json::Value, t: &TypeDecl| v.as_str().is_none_or(|f| holds(t, &f.into()));
+    // A constraint is shown to one who reads every field it reads, in both
+    // shapes, as `describe_type` tells it (lakelands#1119).
+    let told = |c: &serde_json::Value| {
+        let c = serde_json::from_value::<lakelands_api::ontology::ConstraintDecl>(c.clone());
+        let e = c.ok().and_then(|c| c.holds.typed().ok());
+        e.is_some_and(|e| e.fields_read().into_iter().all(&read))
+    };
+    for r in (report.restated.iter_mut()).filter(|r| r.field.is_none() && r.member == "constraints")
+    {
+        for v in [&mut r.was, &mut r.to] {
+            if let Some(cs) = v.as_array_mut() {
+                cs.retain(told);
+            }
+        }
+    }
+    let empty = |v: &serde_json::Value| v.as_array().is_none_or(Vec::is_empty);
+    report
+        .restated
+        .retain(|r| r.member != "constraints" || r.was != r.to && !(empty(&r.was) && empty(&r.to)));
     report.restated.retain(|r| {
         let shape = !FieldDecl::UNREAD.contains(&r.member.as_str());
         let shown = |f| in_to(f) && sourced(f) && (shape || read(f));
@@ -1132,6 +1151,14 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
     }
     report.rekeyed.retain(|r| sees(&r.ty).is_some());
     report.filled.retain(|f| in_to(&f.field));
+    // A breach to one who reads every field its constraint reads, in both
+    // shapes (lakelands#1119).
+    let constraint = |b: &lakelands_api::write::Breach| {
+        let c = m.to.constraints.iter().find(|c| c.name == b.constraint);
+        let e = c.and_then(|c| c.holds.typed().ok());
+        e.is_some_and(|e| e.fields_read().into_iter().all(&read))
+    };
+    report.breaches.retain(constraint);
     report.references.retain(|r| match r.ty == m.to.name {
         true => holds(&to, &r.field) && sourced(&r.field),
         false => known(&r.ty, &r.field),
@@ -1143,6 +1170,7 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
     report.more = *report != whole
         || report.fields.iter().any(unnamed)
         || report.filled.iter().any(unfilled)
+        || (report.breaches.iter()).any(|b| b.records > b.sample_keys.len() as u64)
         || collide > report.sample_collisions.len() as u64;
 }
 

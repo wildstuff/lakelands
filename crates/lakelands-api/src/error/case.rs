@@ -31,8 +31,8 @@ use super::outage::{Aimless, Exchange, closed, named};
 use crate::expr::Condition;
 use crate::expr::kind::Kind;
 use crate::id::{
-    FieldName, KeyId, LakeId, ParamName, Position, ProposalId, RecordKey, RelationName, SourceId,
-    TriggerName, TypeName, ValueTypeName, VerbName,
+    ConstraintName, FieldName, KeyId, LakeId, ParamName, Position, ProposalId, RecordKey,
+    RelationName, SourceId, TriggerName, TypeName, ValueTypeName, VerbName,
 };
 use crate::ontology::{Authority, Cardinality, FieldType, StorageKind};
 use crate::query::Walk;
@@ -154,6 +154,10 @@ pub struct Named {
     pub keys: Vec<RecordKey>,
     /// Verbs.
     pub verbs: Vec<VerbName>,
+    /// Constraints of the type written: shown to one who reads every
+    /// field each reads, which its type alone says, so [`Self::shown_by`]
+    /// shows none and a caller judges and takes them first.
+    pub constraints: Vec<ConstraintName>,
     /// Values.
     pub values: Vec<Value>,
     /// What a field's declaration says: the values it allows, its value
@@ -201,6 +205,7 @@ impl Named {
         }
         let key_shown = |k: &RecordKey| Some(k) == key || listed(&Value::from(k.as_str()));
         !self.unjudged
+            && self.constraints.is_empty()
             && self.types.iter().all(sees)
             && self.fields.iter().chain(&read).all(reads)
             && (!self.declared || !self.fields.is_empty())
@@ -304,6 +309,7 @@ said_by_display!(
     RecordKey => keys,
     RelationName,
     TriggerName,
+    ConstraintName => constraints,
     TypeName => types,
     ValueTypeName => declared,
     VerbName => verbs,
@@ -513,6 +519,8 @@ named! {
         Executor = "executor" => "executor",
         /// A trigger.
         Trigger = "trigger" => "trigger",
+        /// A type's constraint.
+        Constraint = "constraint" => "constraint",
         /// An object set.
         ObjectSet = "object_set" => "object set",
         /// A function.
@@ -567,6 +575,8 @@ catalog! {
         ValueType { name: ValueTypeName } => "value type `{name}`",
         /// A trigger.
         Trigger { name: TriggerName } => "trigger `{name}`",
+        /// A type's constraint.
+        TypeConstraint { name: ConstraintName } => "constraint `{name}`",
         /// An object set.
         ObjectSet { name: String } => "object set `{name}`",
         /// A function.
@@ -767,6 +777,11 @@ catalog! {
         ComputedCycle { fields: Names } => "computed fields read each other in a cycle: {fields}",
         /// A computed field that reads itself.
         ComputedReadsItself { field: FieldName } => "the computed field `{field}` reads itself",
+        /// A type naming two constraints alike.
+        ConstraintNamedTwice { constraint: ConstraintName } => "two constraints are named `{constraint}`",
+        /// A constraint that reads what can change without a write of the
+        /// record.
+        ConstraintReadsBeyond { constraint: ConstraintName, reads: Box<Beyond> } => "constraint `{constraint}` reads {reads}, which can change without a write of the record; a constraint reads the record's own fields",
         /// A name declared twice in one declaration.
         DeclaredTwice { what: Naming, name: String } => "it declares the {what} `{name}` twice",
         /// A field both derived and computed by a function.
@@ -1297,6 +1312,9 @@ catalog! {
         PurgeShared { source: SourceId, #[serde(rename = "type")] ty: Option<TypeName>, count: usize, #[serde(with = "closed::list")] first: Vec<RecordName> } => "the purge of `{source}`[ from `{ty}`] is refused whole: {count} record(s) it brought in were also written by another hand (a principal, or another source), and a purge never half-removes a record; retire them or clear those fields, then purge again. First: {first}",
         /// A record with no value for a required field.
         Required { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`{ty}` requires a value for `{field}`",
+        /// A write that would leave a record breaking its type's
+        /// constraint.
+        ConstraintBroken { constraint: ConstraintName, #[serde(rename = "type")] ty: TypeName, key: RecordKey } => "`{ty}` `{key}` would break the constraint `{constraint}`",
         /// A verb's `requires` that does not hold.
         RequiresUnmet { verb: VerbName, #[serde(rename = "type")] ty: TypeName, key: RecordKey } => "verb `{verb}` requires what `{ty}` `{key}` does not hold",
         /// A restriction of what is restricted, or a release of what is not.
@@ -1406,6 +1424,8 @@ catalog! {
         } => "the view `{ty}` cannot be kept",
 
         // ---- migrations
+        /// A constraint added to a type in force, or changed, by `declare`.
+        ConstraintNeedsMigrate { #[serde(rename = "type")] ty: TypeName, constraint: ConstraintName } => "`{ty}`'s constraint `{constraint}` is added or changed, which stored records may break; that is a migration, whose preflight lists them",
         /// A value a migration renames that a computed field's expression holds.
         ComputedHoldsRenamed { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`{ty}`.`{field}` is computed from an expression that holds a value this migration renames; change the expression first",
         /// A key field that is not required in a migration that changes the key.
@@ -1750,6 +1770,28 @@ catalog! {
         RepeatsBackwards { body: String } => "`{body}` between braces repeats at least more than at most",
         /// A character left after the whole pattern.
         Unmatched { c: char } => "unexpected `{c}` (an unmatched `)`?)",
+    }
+}
+
+catalog! {
+    tag = "kind";
+    /// What a constraint reads that can change without a write of its
+    /// record (lakelands#1119).
+    pub enum Beyond {
+        /// A path across a reference or a link.
+        Path => "a path across a reference or a link",
+        /// An object set.
+        InSet => "`in_set`",
+        /// A setting.
+        Setting => "`setting`",
+        /// The clock.
+        Clock => "the clock",
+        /// A relation's links.
+        Exists => "`exists`",
+        /// A field computed outside the lake.
+        ComputedOutside { field: FieldName } => "`{field}`, computed outside the lake",
+        /// A field computed at the read.
+        ComputedAtRead { field: FieldName } => "`{field}`, computed at the read",
     }
 }
 

@@ -104,6 +104,17 @@
    "field": "f"
   },
   {
+   "code": "constraint_named_twice",
+   "constraint": "c"
+  },
+  {
+   "code": "constraint_reads_beyond",
+   "constraint": "c",
+   "reads": {
+    "kind": "path"
+   }
+  },
+  {
    "code": "declared_twice",
    "name": "s",
    "what": "type"
@@ -1255,6 +1266,12 @@
    "type": "t"
   },
   {
+   "code": "constraint_broken",
+   "constraint": "c",
+   "key": "k",
+   "type": "t"
+  },
+  {
    "code": "requires_unmet",
    "key": "k",
    "type": "t",
@@ -1462,6 +1479,11 @@
   },
   {
    "code": "view_not_keepable",
+   "type": "t"
+  },
+  {
+   "code": "constraint_needs_migrate",
+   "constraint": "c",
    "type": "t"
   },
   {
@@ -2103,6 +2125,10 @@
   {
    "code": "trigger",
    "name": "g"
+  },
+  {
+   "code": "type_constraint",
+   "name": "c"
   },
   {
    "code": "object_set",

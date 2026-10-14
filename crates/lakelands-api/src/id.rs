@@ -93,6 +93,8 @@ name! {
     IdempotencyKey,
     /// A trigger declared in a lake's ontology.
     TriggerName,
+    /// A constraint a type declares over its records.
+    ConstraintName,
     /// A parameter a view declares and a read binds.
     ParamName,
     /// A version of a source's data key, as the host's key store names it

@@ -102,6 +102,10 @@ pub struct TypeDescription {
     pub lineage: TypeLineage,
     /// Lifecycle: version and shape.
     pub lifecycle: TypeLifecycle,
+    /// The constraints every record of the type holds, those whose
+    /// fields its reader reads (lakelands#1119).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<crate::ontology::ConstraintDecl>,
     /// From `describe_type`: the declaration of each value type the
     /// lifecycle's `value_types` names, in name order. `describe` answers
     /// them once, in the lake's `value_types`.
