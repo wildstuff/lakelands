@@ -750,25 +750,36 @@ pub(crate) fn looked_fields(conn: &Connection, ty: &TypeName) -> Result<BTreeSet
     column(conn, sql, [ty.as_str()], |f: String| Ok(FieldName::from(f)))
 }
 
-/// Decide again which fields the exact-text index keeps ([`engines::relooked`])
-/// and fill or drop each field's rows from the head records: at the commit
-/// of a transaction that put a declaration or a `lookup_index.<type>`.
-pub(crate) fn relook(conn: &Connection) -> Result<()> {
+/// The declarations at the head.
+pub(crate) fn head_declarations(conn: &Connection) -> Result<Vec<Declaration>> {
     let decode = |s: String| Ok(engines::decode::<Declared>(&s, "a declaration")?.declaration);
     let sql = "SELECT state FROM declarations WHERE until IS NULL";
-    let decls: Vec<Declaration> = column(conn, sql, [], decode)?;
-    let rows: Vec<String> = column(
-        conn,
-        "SELECT ty || char(9) || field FROM lookup_fields",
-        [],
-        Ok,
-    )?;
-    let was = (rows.iter().filter_map(|r| r.split_once('\t')))
-        .map(|(t, f)| (t.to_owned(), f.to_owned()))
-        .collect();
+    column(conn, sql, [], decode)
+}
+
+/// Decide again which fields the exact-text index keeps ([`engines::relooked`])
+/// for the types `moved` names (`None`, every type), and fill or drop each
+/// field's rows from the head records: at the commit of a transaction that
+/// put a declaration or a `lookup_index.<type>`.
+pub(crate) fn relook(
+    conn: &Connection,
+    heads: &engines::Heads,
+    moved: Option<&BTreeSet<TypeName>>,
+) -> Result<()> {
+    let mut was = BTreeSet::new();
+    for ty in moved.into_iter().flatten() {
+        let fields = looked_fields(conn, ty)?.into_iter();
+        was.extend(fields.map(|f| (ty.to_string(), f.to_string())));
+    }
+    if moved.is_none() {
+        let sql = "SELECT ty || char(9) || field FROM lookup_fields";
+        let rows: Vec<String> = column(conn, sql, [], Ok)?;
+        let rows = rows.iter().filter_map(|r| r.split_once('\t'));
+        was.extend(rows.map(|(t, f)| (t.to_owned(), f.to_owned())));
+    }
     let setting =
         |key: &str| head_record(conn, &TypeName::from(SETTING_TYPE), &RecordKey::from(key));
-    for (ty, f, comes) in engines::relooked(&decls, &was, setting)? {
+    for (ty, f, comes) in engines::relooked(heads, moved, &was, setting)? {
         let statements = match comes {
             true => [
                 "INSERT OR IGNORE INTO text_index (ty, field, value, key) \

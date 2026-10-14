@@ -499,26 +499,41 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
     })
 }
 
-/// Decide again which fields the exact-text index keeps ([`engines::relooked`])
-/// and fill or drop each field's rows from the head records: at the commit
-/// of a transaction that put a declaration or a `lookup_index.<type>`, after
-/// its last page; the types it read are read again after it.
-pub(crate) fn relook(db: &mut Db, names: &Names, types: &mut HeadTypes) -> Result<()> {
-    types.0.clear();
-    let states = db.query(
-        &format!("SELECT r.state FROM {}", DECLARATIONS.at_head(names)),
-        &[],
-    )?;
-    let decls = (states
+/// The declarations at the head.
+pub(crate) fn head_declarations(db: &mut Db, names: &Names) -> Result<Vec<Declaration>> {
+    let sql = format!("SELECT r.state FROM {}", DECLARATIONS.at_head(names));
+    let states = db.query(&sql, &[])?;
+    let decls = states
         .iter()
-        .map(|row| decode::<Declared>(row.get(0), "a declaration")))
-    .map(|d| d.map(|d| d.declaration))
-    .collect::<Result<Vec<_>>>()?;
+        .map(|row| decode::<Declared>(row.get(0), "a declaration"));
+    decls.map(|d| d.map(|d| d.declaration)).collect()
+}
+
+/// Decide again which fields the exact-text index keeps ([`engines::relooked`])
+/// for the types `moved` names (`None`, every type), and fill or drop each
+/// field's rows from the head records: at the commit of a transaction that
+/// put a declaration or a `lookup_index.<type>`, after its last page; the
+/// types it read are read again after it.
+pub(crate) fn relook(
+    db: &mut Db,
+    names: &Names,
+    types: &mut HeadTypes,
+    kept: &engines::Heads,
+    moved: Option<&BTreeSet<TypeName>>,
+) -> Result<()> {
+    types.0.clear();
     let lookup = names.t("lookup_fields");
-    let rows = db.query(&format!("SELECT ty, field FROM {lookup}"), &[])?;
+    let rows = match moved {
+        Some(moved) => {
+            let moved: Vec<&str> = moved.iter().map(TypeName::as_str).collect();
+            let sql = format!("SELECT ty, field FROM {lookup} WHERE ty = ANY($1)");
+            db.query(&sql, &[&moved])?
+        }
+        None => db.query(&format!("SELECT ty, field FROM {lookup}"), &[])?,
+    };
     let was = rows.iter().map(|row| (row.get(0), row.get(1))).collect();
     let heads = RECORDS.at_head(names);
-    let changes = engines::relooked(&decls, &was, |key| {
+    let changes = engines::relooked(kept, moved, &was, |key| {
         let sql = format!("SELECT r.state FROM {heads} WHERE h.ty = $1 AND h.key = $2");
         let row = db.query_opt(&sql, &[&SETTING_TYPE, &key])?;
         (row.map(|row| decode::<StoredRecord>(row.get(0), "a record"))).transpose()

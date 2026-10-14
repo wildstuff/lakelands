@@ -63,9 +63,9 @@ struct Transaction {
     /// The types whose `vector_index.<type>` setting a page wrote, each with
     /// the setting's position: the commit builds their indexes, once.
     asked: BTreeMap<TypeName, Position>,
-    /// Whether it put a declaration or a `lookup_index.<type>` setting: the
-    /// commit decides the exact-text index's fields again.
-    relook: bool,
+    /// The declarations and the `lookup_index.<type>` settings it put: the
+    /// commit decides the exact-text index's fields again for what they move.
+    relook: engines::Relook,
     /// The record states staged in it, and the order index rows a page's
     /// settings rebuilt, for the count that tells the planner: counted as
     /// they are staged and written, since the buffer is written and
@@ -93,6 +93,9 @@ pub struct PgLake {
     writing: Option<Writing>,
     held: Mutex<Option<Lease>>,
     transaction: Mutex<Option<Transaction>>,
+    /// The head's declarations as the last commit left them, and the
+    /// position it folded through, for the next one's relook.
+    heads: Mutex<Option<(Position, engines::Heads)>>,
     /// pgvector, when the server has it: the vector index a lake asks for
     /// lives there (`crate::vector_index`).
     pgvector: Option<Pgvector>,
@@ -161,6 +164,7 @@ impl PgLake {
             writing,
             held: Mutex::new(None),
             transaction: Mutex::new(None),
+            heads: Mutex::new(None),
             pgvector,
         })
     }
@@ -567,6 +571,11 @@ impl ProjectionStore for PgLake {
         if let Some(refused) = engines::commit_refusal(folded, t.latest, through) {
             return db.end(Err(refused));
         }
+        let held = |(at, _): &(Position, _)| Some(*at) == folded;
+        let mut heads = lock(&self.heads)
+            .take()
+            .filter(held)
+            .map(|(_, heads)| heads);
         let Transaction {
             mut types,
             buffer,
@@ -581,8 +590,11 @@ impl ProjectionStore for PgLake {
         let written = buffer
             .write(&mut db, &self.names, &mut types, &mut asked)
             .and_then(|rebuilt| {
-                if relook {
-                    projection::relook(&mut db, &self.names, &mut types)?;
+                if relook.any() {
+                    let read = || projection::head_declarations(&mut db, &self.names);
+                    let (after, moved) = relook.heads(heads.take(), read)?;
+                    projection::relook(&mut db, &self.names, &mut types, &after, moved.as_ref())?;
+                    heads = Some(after);
                 }
                 let older = |(ty, at): (&TypeName, &Position)| {
                     projection::index_older(&mut db, &self.names, &mut types, ty, *at)
@@ -597,6 +609,7 @@ impl ProjectionStore for PgLake {
             });
         let ended = db.end(written);
         let put = self.lost(&db, None, ended, None)?;
+        *lock(&self.heads) = heads.map(|heads| (through, heads));
         // Once enough records went in since the last analysis, or order
         // index rows a setting rebuilt, the planner learns of them, after
         // the commit and outside it (module doc).
@@ -635,7 +648,7 @@ impl ProjectionStore for PgLake {
         let mut transaction = lock(&self.transaction);
         let t = transaction.as_mut().ok_or_else(engines::unstaged)?;
         t.latest = t.latest.max(Some(at));
-        t.relook = true;
+        t.relook.declared(declaration);
         let mut db = self.projecting(writing)?;
         if let Some(ty) = projection::put_declaration(&mut db, &self.names, &mut t.types, &d)? {
             t.redeclared.insert(ty, at);
@@ -652,7 +665,7 @@ impl ProjectionStore for PgLake {
         self.stage(record.position, |b| b.record(record))?;
         if let Some(t) = lock(&self.transaction).as_mut() {
             t.put += 1;
-            t.relook |= engines::lookup_index_type(record).is_some();
+            t.relook.record(record);
         }
         Ok(())
     }
