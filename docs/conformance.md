@@ -664,6 +664,7 @@ belongs in the suite, not beside one engine:
 **set migrated**
 
 - `a_migration_decides_the_membership_of_the_records_it_migrates` — 004, extended: a migration appends, directly after its `migrated` and caused by it, an `object_set_changed` for each record whose membership under a set of the type changes as migrated, and none when it changes nothing a filter reads; its answer names each set joined or left once and `through` the changes, also when it adds a relation carried by links; a re-keyed member stays a member under its new key, after a rebuild too; past the lake's `max_set_changes` a migration is refused `too_large`, naming a set and the ceiling, and appends nothing; one that is also applied with a stale report, or is not lossless, is refused for that first
+- `a_migration_computes_again_what_it_changes_and_decides_its_sets` — 004, extended (lakelands#1070): a migration that changes a derived expression and nothing else computes its records again, so a record reads the new value as soon as it is applied, and appends in its own append, caused by its `migrated`, the `object_set_changed` of each record the new value moves, a set that names such a set too; a rebuild reads the same members, and a later write of the record appends none; a field computed outside the lake keeps its value through it; past the lake's `max_set_changes` it is refused `too_large` naming a set, and appends nothing
 
 **set rewritten**
 
@@ -957,6 +958,7 @@ belongs in the suite, not beside one engine:
 
 - `a_lake_of_format_14_is_upgraded_and_read` — 054 and log-format §6 (lakelands#962): the vectors of format 14, a lake as the release that wrote that format left it, imported on this engine, keep every event as it was written, `v` 14 included, and are followed by a writer's `lease_taken` and one `lake_upgraded` from 14 to 15, and every later event in format 15; the lake then opens read-only, verifies whole, `describe` shows its two types and `find` answers its records; and a writer's open appends its own `lease_taken` and no second `lake_upgraded`
 - `a_lake_the_release_before_made_is_read_as_it_answered` — 054 (lakelands#962): the lake v0.13.1 made through its doors (`docs/log-format/lakes/14/`), in format 14, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; and the walk over its relation with the link's fields; the upgraded lake verifies
+- `a_migration_of_format_14_folds_as_it_was_written` — 054 and log-format §6 (lakelands#1070): the lake v0.13.1 made through its doors with a migration that changes only a derived expression (`docs/log-format/lakes/14-migrated/`), imported on this engine and upgraded, answers as that release answered it, each record's computed value and the set's members as v0.13.1 left them, and the same after a rebuild: a `migrated` of format 14 is folded as that format wrote it
 
 **vocabulary**
 

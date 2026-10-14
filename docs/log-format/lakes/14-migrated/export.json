@@ -1,0 +1,14 @@
+{
+  "lake": "migrated14",
+  "through": 11,
+  "hash": "6bf2b1d17118b76aec90cdada6d73abd2049e435717e13004ad1cadeabe26992",
+  "format": 14,
+  "segments": [
+    {
+      "file": "log/00000000000000000000.jsonl",
+      "first": 0,
+      "last": 11,
+      "digest": "e6556364322c6f464b8d85df7614b8db99bdbbf5630b60377c7eec23383634de"
+    }
+  ]
+}

@@ -68,7 +68,8 @@ use lakelands_core::{describe, invalid, links, shape, value};
 use crate::backed::{Outputs, is_backed};
 use crate::declare::{self, invalid_field};
 use crate::lake::{
-    AGING_RULE_TYPE, Lake, SETTING_TYPE, Writer, computes_again, every, find_proposal,
+    AGING_RULE_TYPE, Lake, SETTING_TYPE, Writer, computes, computes_again, computing_changed,
+    every, find_proposal,
 };
 use crate::log::{self, Draft};
 use crate::ontology::Ontology;
@@ -474,6 +475,35 @@ fn outcome_of(events: &[Event]) -> Outcome {
         }
     }
     outcome
+}
+
+/// `r` as `computing`, the lake after a declaration or a migration,
+/// computes its fields again as of `event`; a field computed outside the
+/// lake keeps its value, which lands with its output (004).
+fn computed_again(
+    (computing, view, plans): (&Ontology, &dyn ProjectionView, &record::Plans),
+    r: &StoredRecord,
+    event: &Event,
+    settings: &BTreeMap<String, Value>,
+) -> Result<StoredRecord> {
+    let mut outputs = Outputs::planning(view, plans);
+    let is = record::rederive(computing, r, event, settings, &mut outputs)?;
+    let mut is = is.unwrap_or_else(|| r.clone());
+    let backed = |n: &str| {
+        computing
+            .functions
+            .get(n)
+            .is_some_and(|f| is_backed(&f.decl))
+    };
+    for f in &computing.ty(&r.ty)?.fields {
+        if f.embed.is_some() || f.function.as_deref().is_some_and(backed) {
+            match r.fields.get(&f.name) {
+                Some(v) => is.fields.insert(f.name.clone(), v.clone()),
+                None => is.fields.remove(&f.name),
+            };
+        }
+    }
+    Ok(is)
 }
 
 /// Whether `record` is a member of `set`: live, and the set's filter holds
@@ -3640,28 +3670,12 @@ impl Call<'_> {
                     sets.push((s, held));
                 }
             }
-            let outside = |f: &&FieldDecl| {
-                let backed = |n: &str| whole.functions.get(n).is_some_and(|f| is_backed(&f.decl));
-                f.embed.is_some() || f.function.as_deref().is_some_and(backed)
-            };
-            let outside: Vec<&FieldName> = (whole.ty(ty)?.fields.iter())
-                .filter(outside)
-                .map(|f| &f.name)
-                .collect();
             if sets.is_empty() {
                 continue;
             }
             live(view.as_ref(), ty, |r| {
-                let mut outputs = Outputs::planning(view.as_ref(), &plans);
-                let mut is = record::rederive(&computing, r, event, &w.settings, &mut outputs)?
-                    .unwrap_or_else(|| r.clone());
-                for f in &outside {
-                    match r.fields.get(*f) {
-                        Some(v) => is.fields.insert((*f).clone(), v.clone()),
-                        None => is.fields.remove(*f),
-                    };
-                }
-                let is = &is;
+                let is =
+                    &computed_again((&computing, view.as_ref(), &plans), r, event, &w.settings)?;
                 for (s, held) in &sets {
                     let member = member_of((s, whole), is, w, now)?;
                     if held.contains(&r.key) == member {
@@ -4081,6 +4095,27 @@ impl Call<'_> {
         // references to moved keys rewritten, under its key after `moves`.
         let mut members = Vec::new();
         let limit = self.lake.limits.max_set_changes as usize;
+        // Where the fold computes the type again, a record is decided as it
+        // computes it, over the lake after the migration (lakelands#1070).
+        let again = (!m.fill.is_empty() && computes(&after, &m.to.name))
+            || computing_changed(&before, &m.to);
+        let (computing, plans) = (
+            after.computing(std::slice::from_ref(&m.to.name)),
+            Default::default(),
+        );
+        let event = now.filter(|_| again).map(|now| {
+            let body = EventBody::Declared {
+                declaration: Declaration::Type(m.to.clone()),
+                schema_hash: None,
+                version: 0,
+                with_the_set: false,
+            };
+            provisional(
+                self.lake,
+                position_after(w, 0),
+                &self.draft(now, Origin::System, body),
+            )
+        });
         let left = |moves: &crate::rekey::Moves,
                     sets: &Held<'_>,
                     decl: &TypeDecl,
@@ -4089,11 +4124,14 @@ impl Call<'_> {
                     now,
                     members: &mut Vec<Change>| {
             let moved = moves.get(&r.ty).and_then(|m| m.get(&r.key));
-            let is = StoredRecord {
+            let mut is = StoredRecord {
                 key: moved.unwrap_or(&r.key).clone(),
                 fields: crate::rekey::rewritten(decl, &fields, moves),
                 ..r.clone()
             };
+            if let Some(e) = event.as_ref().filter(|_| r.ty == m.to.name) {
+                is = computed_again((&computing, view, &plans), &is, e, &w.settings)?;
+            }
             decide(sets, &r.key, &is, (w, now, limit), members)
         };
         let held = |ty: &TypeName| match now {

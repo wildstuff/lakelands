@@ -248,7 +248,11 @@ for each membership that moves, caused by the last `declared` of the
 bundle, within the same `max_set_changes`. Past it the declaration is
 refused `too_large`, naming the set. A set the bundle declares, or
 declares again, of such a type is decided in that walk too, by its new
-filter over the records as the bundle computes them. Before, the leaves landed at each
+filter over the records as the bundle computes them. A migration that
+changes what its type computes does the same (lakelands#1070): the fold
+computes its records again, so a record reads the new value as soon as
+the migration is applied, and the migration's own append decides the
+sets over the records as converted and computed again. Before, the leaves landed at each
 record's next write, caused by a write that did not move them, and the
 feed and the filter disagreed until then.
 
@@ -401,6 +405,9 @@ own pace, and adding one changes nothing in the lake.
 - A type declared again with other computed fields decides the sets of
   what it computes again in its own append, where the leaves landed at
   each record's next write (lakelands#941).
+- A migration that changes what its type computes computes its records
+  again, where they kept the old values until each was written again, and
+  decides their sets in its own append (lakelands#1070).
 - A migration decides every record it changes: also a record of another
   type that holds a reference to a moved key, and a link of a relation
   whose fields it converts. Until then the decision concerned only what
