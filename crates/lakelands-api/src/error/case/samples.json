@@ -237,6 +237,12 @@
    "field": "f"
   },
   {
+   "code": "link_type_ring",
+   "ring": [
+    "a"
+   ]
+  },
+  {
    "code": "match_not_key",
    "relation": "r",
    "target": "t"

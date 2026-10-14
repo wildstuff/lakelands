@@ -143,6 +143,12 @@ link type as on any type.
   migration. A removal in a migration that re-keys the type is refused
   too, naming the relation: the re-key would move the links the removal
   retires, so the two are two migrations, as a rename and a re-key are.
+- A relation may target a link type, so a link's end may be a link; but
+  no declaration closes a ring of link types, each the end of the one
+  before, by a type, a set or a migration (`link_type_ring`, naming the
+  ring). A link of a ring needs a live link of the next one as its end,
+  so none can be written, and the links written before the ring closed
+  would be judged by ends no write could make again (lakelands#919).
 - The link type is checked as any type is, when its owner is declared:
   its fields' kinds, functions and embeddings. A field that cannot work
   fails at `declare`, not at the first write.
@@ -329,6 +335,9 @@ doors that check the relation's authority and cardinality.
   refused while another relation or a reference field refers to its
   link type, and in a migration that re-keys (lakelands#938,
   lakelands#920).
+- A ring of link types is refused at its declaration; before, a
+  migration or a set could close one, and its links were read as far as
+  those written before it closed (lakelands#919).
 - At the rewrite (lakelands#817): the sentences in "Why" on what two
   new event kinds would cost every reader of the log name no format
   version by its number; `docs/log-format.md` has it. The first rule's

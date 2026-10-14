@@ -303,6 +303,7 @@ What a refusal is about.
 | `link_authority` | `authority` (Authority) | its links are written by `authored` or `source`, not `{authority}` | Links of an authority no door writes them by. |
 | `link_field_authority` | `field` (FieldName), `authority` (Authority) | its links arrive from a source, so its field `{field}` is `source` (or derived); an `{authority}` field of a link no door could write | A field of a source's link that no door writes. |
 | `link_field_is_end` | `field` (FieldName) | a link's `{field}` is its end; the relation cannot name a field of its own so | A link field named as a link's end. |
+| `link_type_ring` | `ring` (Names) | its relations close a ring of link types, each the end of the one before: {ring}; no link of a ring can be written | Relations whose link types are each other's ends, in a ring. |
 | `match_not_key` | `relation` (RelationName), `target` (TypeName) | `{relation}` matches fields of `{target}` other than its key, so it may reach several records; a verb reads a derived relation whose match names every key field of its target | A verb reading a derived relation whose match is not its target's key. |
 | `measure_twice` | `name` (FieldName) | its view names the measure `{name}` twice; a view's measures and its merged sources' share one set of names | A measure named twice in a view. |
 | `measures_nothing` | `source` (TypeName) | it calls no aggregate, so it measures nothing of `{source}` | A merged measure that calls no aggregate. |
