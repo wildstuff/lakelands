@@ -63,6 +63,9 @@ jobs:
 
   nextest:
     runs-on: ubuntu-latest
+    # About twice the longest green run. A hung test ends on its own at
+    # .config/nextest.toml's bound; this ends whatever is left.
+    timeout-minutes: 60
     steps:
       # This job builds every test of the workspace; the runner image's
       # toolchains Lakelands never uses take the disk it needs.
@@ -102,6 +105,8 @@ jobs:
     needs: roster
     if: needs.roster.result == 'success' && needs.roster.outputs.engines != ''
     runs-on: ubuntu-latest
+    # About three times the longest green run, which is pg's.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
