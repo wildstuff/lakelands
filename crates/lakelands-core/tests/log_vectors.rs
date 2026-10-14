@@ -190,7 +190,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 337, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 351, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -392,7 +392,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 36] = [
+const SHOWN: [&str; 38] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -429,10 +429,12 @@ const SHOWN: [&str; 36] = [
     "erasable",
     "sealed_ingest",
     "sealed_output",
+    "set_across",
+    "trigger_across",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 43;
+const LAST: u64 = 45;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
@@ -602,6 +604,14 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
                     ..
                 }
             ) && source.is_some()
+        }
+        "set_across" => {
+            matches!(declared, Some(D::ObjectSet(_))) && line.contains("shelf.capacity")
+        }
+        "trigger_across" => {
+            matches!(declared, Some(D::Trigger(_)))
+                && line.contains("exists(shelf)")
+                && line.contains("shelf.capacity")
         }
         other => panic!("`further.json` shows `{other}`, which this test has no check for"),
     }

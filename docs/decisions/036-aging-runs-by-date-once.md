@@ -64,7 +64,10 @@ no longer written by `upsert`, `from` no longer a value of it. Such a
 rule moves nothing, the report names it with the reason, and the other
 rules run, so one stale rule neither stops the day nor goes unnoticed.
 A move the store would refuse for one record is counted with the failed
-guards and leaves that record, for the reason a failed guard does.
+guards and leaves that record, for the reason a failed guard does; so is
+one that sets off more across an edge than the lake's `max_set_changes`
+(`docs/decisions/055-a-path-steps-through-a-reference.md`), which no run
+could narrow.
 
 ### The run holds the writer
 

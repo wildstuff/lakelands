@@ -26,9 +26,9 @@ A path that cannot be read is refused at the declaration: a far field
 the type does not have (`unknown_field`, naming the far type), one
 computed at the read (`reads_at_read`), a step into a far field that is
 no reference and has no members (`steps_into_scalar`), and `changed` of
-a path (`call_takes_field`). An object set's `where`, a trigger's
-`when`, a derived field and a read's `where` keep the refusal of a step
-through a reference
+a path (`call_takes_field`). An object set's `where` and a trigger's `when`
+read across an edge by the section below; a derived field and a read's
+`where` keep the refusal of a step through a reference
 (`docs/decisions/028-authoring-is-strict-and-whole.md`).
 
 ### A path that begins at a relation reads the one link the record holds under it
@@ -45,8 +45,7 @@ several is refused at the declaration (`relation_holds_many`), as is
 one carried by a field (`relation_via_field`), whose edge the path
 steps through by that field's name: one edge, one spelling. A
 relation's name with no field after it stays an unknown field, and so
-does a relation in a set's `where`, a trigger's `when` and a read's
-`where`.
+does a relation in a read's `where`.
 To an author who may not know of the link type, a path through it
 names a field the verb's type does not have (`unknown_field`), whatever
 the link holds, and nothing of the link type, as a read of the type
@@ -184,6 +183,77 @@ proposed and as it reads now: a condition a setting or the clock decides
 may come to a record at one and not at the other, and the proposer was
 judged on the first.
 
+### A set's `where` and a trigger's `when` read across an edge, decided again at every write of the far record
+
+A set's `where` and a trigger's `when` take every path a verb's
+condition takes, and are refused at the declaration by the same cases:
+through a reference to `max_depth`, from a relation carried by links to
+its one link, from a derived relation onto its target's key, and
+`exists(<relation>)`. `changed` and `previous` of a path stay
+`call_takes_field`. A set is decided for no reader
+(`docs/decisions/004-the-change-feed-is-the-log.md`), so a far record is
+read at the head, whoever is answered it, and over the append's own
+drafts: one that is not live (retired, purged, never there) reads null,
+and a hold changes nothing. A path past `max_depth` reads null too.
+A path into a far field computed outside the lake (a backing's answer,
+an embedding), or derived from one at any depth, is refused at the
+declaration, `set_reads_computed` naming it: that value lands in an
+append of its own that writes no record, so no write would decide the
+referrers again, and a fill never decides one.
+
+**What decides a membership again.** Every write of a far record, in its
+own append and caused by its own event, whatever door writes it:
+`upsert`, a verb, an accept, `ingest`, `retire` and revival, a purge, an
+aging move. It pays only where a field some set's path reads on that
+record moved, or the record became live or not live; any other write
+pays nothing. The records decided are those that reach it, found by
+stepping back along the path a type at a time: by the reference's key in
+one scan of the referring type (the exact-text index of 057 where an
+engine keeps one), by a link's `from`, by a derived relation's matched
+values. The step back goes by the path's steps, never by type, so a
+reference to a record of the same type (a manager, a parent) is stepped
+back through like any other. Each is decided by the one rule a write
+and a declaration decide by, its memberships read once a set and a
+write. A trigger whose
+`when` reads across fires once for each record that reaches the far
+record and whose `when` holds after that write: the level its author
+states, judged at the write that moved what it reads.
+
+A migration, a re-key, a value type's rename and a `declared` that
+computes a far type's fields again decide the referring sets in their
+own preflight, the far records read as the step leaves them; a
+migration that renames or takes a field such a set or trigger reads is
+refused naming it, as for a verb.
+
+**The bound.** Past the lake's `max_set_changes`, counted over every
+membership change and every firing far writes set off in one append,
+the write is refused `too_large`, naming the set or the trigger and the
+ceiling to a caller shown it, and naming nothing to another; nothing is
+appended. A purge is refused whole, and its preflight, a read that takes
+no lease, reports how many it would set off beside the ceiling; an
+aging move past it is a failed guard. The write lands once fewer
+memberships move: narrow the set by the referring record's own fields,
+since only those that move count; or retire the set and declare it again
+after the write, its declaration bounded alike; or have the lake opened
+with a higher `max_set_changes`. A write itself cannot be split: one
+field of one record moves every referrer at once.
+
+**Whose it is.** A membership tells a far field: `in_set('graded')` on an
+invoice tells `customer.grade`. So a set or a trigger whose condition
+reads across an edge is a reader's only where nothing of a far type is
+held from it: it holds `restricted`, no `only` on a far type nor, of a
+link type, on its ends, and reads every reference and far field on the
+way. To any other reader the set is one that is not declared
+(`set_undeclared` in a read's `in_set`), `describe` names neither, and
+their events are not told to its subscription. A writer is told that
+such a set moved, or such a trigger fired, at records other than its
+write's own only where it is answered one of them, as a write's own
+record is its writer's. Then no two lakes that differ only in a record
+held from a reader answer that reader differently.
+
+Until a read's `in_set` reads the kept membership, `in_set` of such a
+set in a read's `where` keeps the refusal of a path there.
+
 ## Why
 
 A cash discount is granted while an invoice is paid within its
@@ -207,10 +277,10 @@ refused tells the caller nothing it could not learn by writing the key.
 - It is not a walk of a relation: a relation that may hold several
   links from a record, or a derived relation off its target's key, is
   walked by a pattern; a path reads one link or one matched record.
-- It is not a set, a trigger or a derived field across an edge. A
-  trigger's `when` judged only when its own record is written would
-  miss every change of the far record, a level its author cannot rely
-  on; such rules wait for a set that is kept across an edge.
+- It is not a derived field across an edge. A derived field is computed
+  at its record's write and kept; one that read a far record would go
+  stale at every far write, and computing it again there is a write of
+  the referrer no one made.
 - It is not a read's filter: a `where` that steps through a reference
   is refused as before.
 
@@ -225,3 +295,9 @@ refused tells the caller nothing it could not learn by writing the key.
   derived relation and of one carried by links; a derived relation,
   refused in a path before (`relation_is_derived`), is now refused only
   off its target's key (`match_not_key`) (lakelands#960).
+- A set's `where` and a trigger's `when` read across an edge, decided
+  again at every write of the far record that moves what they read
+  there, under one bound, and a reader's only where nothing far is held
+  from it; before, both were refused a step through a reference, since
+  a condition judged only at its own record's write would miss every
+  change of the far record (lakelands#567).

@@ -22,7 +22,7 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     PATH_STEPS = a_verbs_condition_reads_a_field_of_the_record_a_reference_names,
-    "055 (lakelands#567): a verb's `requires` and set values read a field of the record a reference names, by one step (`customer.discount_days`) and by two (`customer.term.days`), at the call: the verb runs where the far record meets the condition and is refused precondition where it does not, a far record changed between two calls is read as it stands, a value is copied from it, and a reference that is null reads null; what the call wrote stays when the far record changes after it, and a rebuild gives it again; a path of the lake's `max_depth` steps is read and a call whose path takes more is refused; a far field the type does not have, one computed at the read, a step into a far scalar and `changed` of a path are refused at the declaration, and an object set's `where`, a trigger's `when` and a derived field keep `steps_into_reference`; a migration that takes a field a verb reads across is refused, naming the verb, and so is taking such a field to the read; the preflight judges every verb on the type it migrates or reading across into it again, so a reference retargeted under a path, on the verb's type or a far one, a far reference made text, and a kind changed under a verb's own condition are refused, naming the verb to an author shown it and as a declaration no longer declarable to one who is not"
+    "055 (lakelands#567): a verb's `requires` and set values read a field of the record a reference names, by one step (`customer.discount_days`) and by two (`customer.term.days`), at the call: the verb runs where the far record meets the condition and is refused precondition where it does not, a far record changed between two calls is read as it stands, a value is copied from it, and a reference that is null reads null; what the call wrote stays when the far record changes after it, and a rebuild gives it again; a path of the lake's `max_depth` steps is read and a call whose path takes more is refused; a far field the type does not have, one computed at the read, a step into a far scalar and `changed` of a path are refused at the declaration, and a derived field keeps `steps_into_reference`; a migration that takes a field a verb reads across is refused, naming the verb, and so is taking such a field to the read; the preflight judges every verb on the type it migrates or reading across into it again, so a reference retargeted under a path, on the verb's type or a far one, a far reference made text, and a kind changed under a verb's own condition are refused, naming the verb to an author shown it and as a declaration no longer declarable to one who is not"
 );
 
 /// `who` calling `verb` on the invoice `key` with no payload: what it did,
@@ -1007,15 +1007,5 @@ async fn a_verbs_condition_reads_a_field_of_the_record_a_reference_names(store: 
         l.try_declare(derives).await,
         &steps,
     )?;
-    for d in [
-        json!({"declare": "object_set", "name": "named", "of": "invoice",
-               "where": "customer.name = 'c1'"}),
-        json!({"declare": "trigger", "name": "t", "on": "invoice",
-               "when": "customer.name = 'c1'"}),
-    ] {
-        let what = format!("{d}");
-        let d = serde_json::from_value(d).expect("a declaration");
-        refused_like(&what, l.cat.declare(&l.own, d).await, &steps)?;
-    }
     Ok(())
 }

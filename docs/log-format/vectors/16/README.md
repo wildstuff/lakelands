@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 43, each
+- `further.json`: the lake's next events, positions 8 to 45, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -71,7 +71,11 @@ The files:
     computed from it, sealed under the same key with an HMAC `input`
     (41 to 43). The key is SHA-256 of `lakelands:vectors:key`, so a
     reader that holds it opens them; `verify.py` holds the members'
-    form, and the ingest's id over the patch as stored.
+    form, and the ingest's id over the patch as stored;
+  - a `declared` object set whose `where` reads across an edge, through
+    a derived relation, and a `declared` trigger whose `when` reads so
+    and asks `exists` (44, 45): forms format 16 holds and 15 does not
+    (`docs/decisions/055-a-path-steps-through-a-reference.md`).
 
   Its `misplaced` holds four lines that are not of the lake. Each
   stands at its position after the event before it, in the release's

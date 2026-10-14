@@ -74,7 +74,7 @@
 //! it again. So at most one change in flight may be told twice; each
 //! carries its position, which a client already deduplicates by.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -479,6 +479,9 @@ struct View<'a> {
     /// Whether the principal reads every field of a type in full, by type,
     /// since the last declaration the pump passed.
     whole: BTreeMap<TypeName, bool>,
+    /// The sets and triggers the principal's description names, since the
+    /// last declaration the pump passed.
+    listed: Option<BTreeSet<String>>,
 }
 
 /// The field names a type shows the principal, and those of them it is
@@ -497,6 +500,7 @@ impl<'a> View<'a> {
             host,
             shown: BTreeMap::new(),
             whole: BTreeMap::new(),
+            listed: None,
         }
     }
 
@@ -504,6 +508,7 @@ impl<'a> View<'a> {
     fn forget(&mut self) {
         self.shown.clear();
         self.whole.clear();
+        self.listed = None;
     }
 
     /// How the principal may see an event.
@@ -511,6 +516,7 @@ impl<'a> View<'a> {
         let at = e.position;
         let mut extra = Map::new();
         let mut condition = false;
+        let mut named = None;
         let made = matches!(
             e.body,
             EventBody::RecordUpserted { made: true, .. }
@@ -534,6 +540,7 @@ impl<'a> View<'a> {
             EventBody::TriggerFired { trigger, ty, key } => {
                 extra.insert("trigger".into(), json!(trigger));
                 condition = true;
+                named = Some(format!("trigger {trigger}"));
                 (ty, key, None, at)
             }
             EventBody::ObjectSetChanged {
@@ -545,6 +552,7 @@ impl<'a> View<'a> {
                 extra.insert("set".into(), json!(set));
                 extra.insert("joined".into(), json!(joined));
                 condition = true;
+                named = Some(format!("set {set}"));
                 (ty, key, None, at)
             }
             _ => return Seen::Hidden,
@@ -583,6 +591,15 @@ impl<'a> View<'a> {
             match self.whole(ty, read_at).await {
                 Ok(true) => {}
                 Ok(false) => return Seen::Hidden,
+                Err(seen) => return seen,
+            }
+        }
+        // A set or a trigger its description does not name is not its: one
+        // across an edge whose far side is held from it (055, extended).
+        if let Some(named) = named {
+            match self.listed(read_at).await {
+                Ok(l) if l.contains(&named) => {}
+                Ok(_) => return Seen::Hidden,
                 Err(seen) => return seen,
             }
         }
@@ -670,6 +687,23 @@ impl<'a> View<'a> {
         let w = d.data.fields.iter().all(|f| reads(&f.name));
         self.whole.insert(ty.clone(), w);
         Ok(w)
+    }
+}
+
+impl View<'_> {
+    /// The sets and triggers the principal's description names.
+    async fn listed(&mut self, at: Position) -> Result<&BTreeSet<String>, Seen> {
+        if self.listed.is_none() {
+            let d = (self.catalog.describe(self.who, as_of(at)).await).map_err(|e| failed(&e))?;
+            let sets = d.data.object_sets.iter().map(|s| format!("set {}", s.name));
+            let triggers = d
+                .data
+                .triggers
+                .iter()
+                .map(|t| format!("trigger {}", t.name));
+            self.listed = Some(sets.chain(triggers).collect());
+        }
+        Ok(self.listed.get_or_insert_default())
     }
 }
 

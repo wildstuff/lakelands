@@ -371,7 +371,7 @@ pub fn names_set(o: &Ontology, s: &ObjectSetDecl, target: &str) -> bool {
         asked.set(asked.get() || n == target);
         o.set(n)
     };
-    let _ = filter(&lookup, &s.of, &s.filter, Eval::Record, &[]);
+    let _ = set_filter(&lookup, s, &[]);
     asked.get()
 }
 
@@ -407,7 +407,7 @@ pub fn filter<'s>(
     let named = |name: &str| {
         let set_name = name.to_owned();
         match set(name) {
-            Some(s) if &s.of == ty => typed(&s.filter, Eval::Record).map_err(Said::from),
+            Some(s) if &s.of == ty => typed(&s.filter, place).map_err(Said::from),
             Some(s) => {
                 let (of, ty) = (s.of.clone(), ty.clone());
                 Err(Case::SetOfOtherType {
@@ -421,6 +421,17 @@ pub fn filter<'s>(
         }
     };
     lakelands_api::expr::expand(&e, &named).map_err(|s| invalid(at(on, s)))
+}
+
+/// A set's `where`, the sets it names standing in it, as a write decides
+/// a membership: in a verb's place, where `exists` has meaning and a path
+/// steps across an edge (055, extended).
+pub fn set_filter<'s>(
+    set: &dyn Fn(&str) -> Option<&'s ObjectSetDecl>,
+    s: &ObjectSetDecl,
+    on: &[Place],
+) -> Result<Expr> {
+    filter(set, &s.of, &s.filter, Eval::Verb, on)
 }
 
 /// The kind an expression certainly computes over `decl`'s records, or the
@@ -1062,26 +1073,37 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
         let lt = o.ty(&links::link_type_name(&on.name, &r.name));
         !r.carried_by_links() || lt.is_ok_and(|lt| lt.fields.iter().any(|f| f.name == links::FROM))
     };
-    // `exists(r)` reads the relation alone.
-    let exists = match d {
-        Declaration::Verb(v) => v.exists_relations(),
-        _ => Vec::new(),
+    // A set's `where` and a trigger's `when` take the paths a verb's
+    // condition takes (055, extended); `exists(r)` reads the relation alone.
+    let (paths, exists) = match d {
+        Declaration::Verb(v) => (v.record_paths().unwrap_or_default(), v.exists_relations()),
+        Declaration::Trigger(_) | Declaration::ObjectSet(_) => {
+            let conditions = conditions_of(d).into_iter().filter_map(|c| c.typed().ok());
+            let (mut paths, mut exists) = (Vec::new(), Vec::new());
+            for e in conditions {
+                let mut read = Vec::new();
+                lakelands_api::expr::paths(&e, &mut read);
+                paths.extend(read.into_iter().map(<[FieldName]>::to_vec));
+                lakelands_api::ontology::exists_args(&e, &mut exists);
+            }
+            (paths, exists)
+        }
+        _ => Default::default(),
     };
     // A relation's name alone, beside the `exists` that names it, stays
     // a field the type does not have.
-    let bare = |v: &lakelands_api::ontology::VerbDecl, n: &FieldName| {
-        let paths = v.record_paths().unwrap_or_default();
+    let bare = |n: &FieldName| {
         let alone = paths.iter().filter(|p| p.len() == 1 && &p[0] == n).count();
         alone > exists.iter().filter(|e| *e == n).count()
     };
-    let begins_at_relation = |n: &FieldName| match (d, on) {
-        (Declaration::Verb(v), Some(on)) => {
-            (v.record_paths().unwrap_or_default().iter()).any(|p| {
+    let begins_at_relation = |n: &FieldName| match on {
+        Some(on) => {
+            paths.iter().any(|p| {
                 let long = p.len() > 1 || exists.contains(n);
                 long && &p[0] == n && related(on, n).is_some_and(|r| link_known(on, r))
-            }) && !bare(v, n)
+            }) && !bare(n)
         }
-        _ => false,
+        None => false,
     };
     // `exists` over a field is no question of a relation; over a name the
     // type has neither as a field nor as a relation it is the unknown
@@ -1115,12 +1137,16 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
         let (field, ty) = (n.clone(), on.name.clone());
         return Err(invalid(at(&[d.place()], Case::ReadsAtRead { field, ty })));
     }
-    // What a verb reads across a reference, the record it reaches has, as
-    // stored; a verb alone reads so.
-    let far = |n: &TypeName| o.ty(n).ok().filter(|_| matches!(d, Declaration::Verb(_)));
-    if let (Some(on), Declaration::Verb(v)) = (on, d) {
+    // What a verb, a trigger and a set read across a reference, the record
+    // it reaches has, as stored.
+    let across = matches!(
+        d,
+        Declaration::Verb(_) | Declaration::Trigger(_) | Declaration::ObjectSet(_)
+    );
+    let far = |n: &TypeName| o.ty(n).ok().filter(|_| across);
+    if let Some(on) = on.filter(|_| across) {
         let wrong = |c| Err(invalid(at(&[d.place()], c)));
-        for path in v.record_paths().unwrap_or_default() {
+        for path in paths.iter().cloned() {
             // A relation reads the one link a record holds under it, so one
             // whose records each hold one link record at most.
             let long = path.len() > 1 || exists.contains(&path[0]);
@@ -1191,20 +1217,33 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
                 return wrong(Case::ReadsAtRead { field, ty });
             }
         }
+        // A set and a trigger are decided again at a write of the far
+        // record, which a value computed outside the lake, and every field
+        // computed from one at any depth, lands without: a fill writes no
+        // record a path is decided at.
+        let function = |n: &str| o.functions.get(n).map(|e| &e.decl);
+        let lands = |(t, f): &&(&TypeDecl, &FieldDecl)| {
+            lakelands_api::ontology::lands_in_the_fold(&t.fields, f, &function, &mut Vec::new())
+        };
+        for p in paths.iter().filter(|_| !matches!(d, Declaration::Verb(_))) {
+            // A derived relation's match reads the condition's own record
+            // first; what follows is the far record's.
+            let own = on.derived_step(&p[0]).and_then(|r| r.derived.as_ref());
+            let own = own.map_or(0, |d| {
+                let [from, _] = d.reads();
+                from.iter()
+                    .filter(|n| on.fields.iter().any(|f| &f.name == *n))
+                    .count()
+            });
+            let read = on.reads_across(std::slice::from_ref(p), &far);
+            if let Some((t, f)) = read.iter().skip(own).find(lands) {
+                let (field, ty) = (f.name.clone(), t.name.clone());
+                return wrong(Case::SetReadsComputed { field, ty });
+            }
+        }
     }
     // And each of its conditions can be evaluated over that type's records.
-    let conditions: Vec<&Condition> = match d {
-        Declaration::Trigger(t) => t.when.iter().collect(),
-        Declaration::ObjectSet(s) => vec![&s.filter],
-        Declaration::Verb(v) => match &v.effect {
-            VerbEffect::Write { set } => (v.requires.iter())
-                .chain(set.iter().map(|a| &a.value))
-                .collect(),
-            _ => v.requires.iter().collect(),
-        },
-        _ => vec![],
-    };
-    for c in conditions {
+    for c in conditions_of(d) {
         let typed = match c {
             Condition::Expr(e) => Some(e.clone()),
             Condition::Text(t) => parse(t).ok(),
@@ -1214,6 +1253,21 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The conditions of a declaration over its type's records.
+fn conditions_of(d: &Declaration) -> Vec<&Condition> {
+    match d {
+        Declaration::Trigger(t) => t.when.iter().collect(),
+        Declaration::ObjectSet(s) => vec![&s.filter],
+        Declaration::Verb(v) => match &v.effect {
+            VerbEffect::Write { set } => (v.requires.iter())
+                .chain(set.iter().map(|a| &a.value))
+                .collect(),
+            _ => v.requires.iter().collect(),
+        },
+        _ => vec![],
+    }
 }
 
 /// The relation of `on` a path's first segment `n` names, where `on` has
@@ -1518,7 +1572,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 return Err(invalid_field(&"of".into(), at(&on, Case::SetOfView { ty })));
             }
             let named = |n: &str| Some(s).filter(|s| s.name == n).or_else(|| o.set(n));
-            filter(&named, &s.of, &s.filter, Eval::Record, &on)?;
+            set_filter(&named, s, &on)?;
         }
         Declaration::Function(f) => {
             name(Naming::Function, &f.name)?;

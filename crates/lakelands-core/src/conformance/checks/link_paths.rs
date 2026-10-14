@@ -24,7 +24,7 @@ const LT: &str = "sys.link.deal.with";
 
 check!(
     LINK_PATH_READS = a_verbs_path_reads_the_one_link_a_relation_holds,
-    "055, extended (lakelands#567): a verb's `requires` and set values read the one link a record holds under a relation carried by link records: the link's fields (`with.days`) and, through its `to`, the far record's (`with.to.discount_days`), a link whose far end is retired refusing `not_live` on `to`; the verb runs where the link meets its condition, is refused precondition where it does not, copies a link's field, and a record with no such link reads null there; `exists(with)` holds where the record holds its link and not where it holds none; each step counts toward the lake's `max_depth`; a relation that may hold several links from a record and one carried by a field are refused at the declaration (`relation_holds_many`, `relation_via_field`), and one derived from values other than its target's key is (`match_not_key`), a relation's name alone and a field its links do not have are `unknown_field`, and so is a relation in a trigger's `when`, a set's `where` and a read's `where`; an author who may not know of the link type is told `unknown_field` on the verb's type for a path through it, whether the link has the field or not; a migration that retargets the relation under a verb that reads across it, or lets it hold several links from a record, is refused naming the verb, and so is the type declared again without a migration, by `declare` with the relation holding several links or a field under the relation's name, and by a set with the relation holding several links, each naming the verb; judged over the lake as it is, an author not shown the relation adds a field to the type, and one adding a field of the relation's name is told the type could not be declared"
+    "055, extended (lakelands#567): a verb's `requires` and set values read the one link a record holds under a relation carried by link records: the link's fields (`with.days`) and, through its `to`, the far record's (`with.to.discount_days`), a link whose far end is retired refusing `not_live` on `to`; the verb runs where the link meets its condition, is refused precondition where it does not, copies a link's field, and a record with no such link reads null there; `exists(with)` holds where the record holds its link and not where it holds none; each step counts toward the lake's `max_depth`; a relation that may hold several links from a record and one carried by a field are refused at the declaration (`relation_holds_many`, `relation_via_field`), and one derived from values other than its target's key is (`match_not_key`), a relation's name alone and a field its links do not have are `unknown_field`, and so is a relation in a read's `where`; an author who may not know of the link type is told `unknown_field` on the verb's type for a path through it, whether the link has the field or not; a migration that retargets the relation under a verb that reads across it, or lets it hold several links from a record, is refused naming the verb, and so is the type declared again without a migration, by `declare` with the relation holding several links or a field under the relation's name, and by a set with the relation holding several links, each naming the verb; judged over the lake as it is, an author not shown the relation adds a field to the type, and one adding a field of the relation's name is told the type could not be declared"
 );
 
 check!(
@@ -268,14 +268,6 @@ async fn a_verbs_path_reads_the_one_link_a_relation_holds(store: Store) -> Held 
         let v = serde_json::from_value(verb("odd", "low", requires, ("grade", "'x'")));
         let declared = l.cat.declare(&blind, v.expect("a declaration")).await;
         refused_like(requires, declared, &unknown)?;
-    }
-    for d in [
-        json!({"declare": "trigger", "name": "t", "on": "deal", "when": "with.note = 'a'"}),
-        json!({"declare": "object_set", "name": "s", "of": "deal", "where": "with.note = 'a'"}),
-    ] {
-        let what = format!("{d}");
-        let d = serde_json::from_value(d).expect("a declaration");
-        refused_like(&what, l.cat.declare(&l.own, d).await, &unknown)?;
     }
     let find = Find {
         filter: Some("with.note = 'a'".into()),

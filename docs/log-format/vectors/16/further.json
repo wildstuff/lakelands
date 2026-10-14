@@ -216,6 +216,18 @@
       "about": "A recorded output computed from `crm`'s erasable value: `sealed` names the key and the source, the `output` is sealed, and the `input` is an HMAC under a key derived from the source's (§1.4).",
       "line": "{\"body\":{\"field\":[\"contact\",\"c1\",\"loud\"],\"input\":\"485a52cd131c3a003a51dbf1bc558f53255ccf11f12da73be680d0545b0888b0\",\"kind\":\"output_recorded\",\"output\":\"VGlIWoOFpr1x7HCPVB174ML9+wiFL3lSTiNWClGfoT8Z\",\"seam\":\"function:http:shout\"},\"cause\":42,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"5ffb0b1bcdbd34f8bdd1d018169ef872aec2fd8fa78a2a998af4f4e152b699d9\",\"id\":\"0000000000000000000000000000002b\",\"known_at\":\"2026-10-05T09:00:14.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":43,\"prev\":\"6abf0f9e769ae4a0b190250007a0c1174772a3e025e2809a0138c478441e5bc6\",\"procedure\":{\"name\":\"shout\",\"version\":\"1\"},\"sealed\":{\"key\":\"1\",\"source\":\"crm\"},\"v\":16,\"writer\":\"system:lakelands\"}",
       "hash": "5ffb0b1bcdbd34f8bdd1d018169ef872aec2fd8fa78a2a998af4f4e152b699d9"
+    },
+    {
+      "shows": "set_across",
+      "about": "A `declared` object set whose `where` reads across an edge: `shelf.capacity`, through the derived relation `shelf` onto the shelf's key (`docs/decisions/055-a-path-steps-through-a-reference.md`), a form format 16 holds and 15 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"object_set\",\"name\":\"big_shelf_slips\",\"of\":\"slip\",\"where\":\"shelf.capacity > 10\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"f0d1c2c04485fb7ded6d25b425a82c615080deb2895663d2cb580a841e0fe063\",\"id\":\"a3c5e7f9b1d2046e8a0c2e4f6b8d1a37\",\"known_at\":\"2026-10-05T09:00:15.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":44,\"prev\":\"5ffb0b1bcdbd34f8bdd1d018169ef872aec2fd8fa78a2a998af4f4e152b699d9\",\"v\":16,\"writer\":\"agent:agent\"}",
+      "hash": "f0d1c2c04485fb7ded6d25b425a82c615080deb2895663d2cb580a841e0fe063"
+    },
+    {
+      "shows": "trigger_across",
+      "about": "A `declared` trigger whose `when` reads across an edge and asks `exists` of the derived relation: `exists(shelf) and shelf.capacity > 10` (055), a form format 16 holds and 15 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"trigger\",\"name\":\"slip_on_big_shelf\",\"on\":\"slip\",\"when\":\"exists(shelf) and shelf.capacity > 10\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"9b0a2ad061c9f3c95ee67dff9284f8638166de14247452b799bc469a29d56821\",\"id\":\"b4d6f8a0c2e3157f9b1d3f5a7c9e2b48\",\"known_at\":\"2026-10-05T09:00:16.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":45,\"prev\":\"f0d1c2c04485fb7ded6d25b425a82c615080deb2895663d2cb580a841e0fe063\",\"v\":16,\"writer\":\"agent:agent\"}",
+      "hash": "9b0a2ad061c9f3c95ee67dff9284f8638166de14247452b799bc469a29d56821"
     }
   ],
   "misplaced": [

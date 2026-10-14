@@ -214,9 +214,10 @@ a set declared with it would have no member, a trigger would never fire
 and a read would answer nothing, each with nothing said.
 
 A path of more than one name is a walk into a `json` or `geo` value's
-members, and in a verb's `requires` and set values also a step through
-a reference to the record it names, or from a relation carried by link
-records to the one link the record holds under it
+members, and in a verb's `requires` and set values, a set's `where` and
+a trigger's `when` also a step through a reference to the record it
+names, or from a relation carried by link records to the one link the
+record holds under it
 (`docs/decisions/055-a-path-steps-through-a-reference.md`). Into a
 field of any other kind it is refused as `invalid`, where what can never
 be evaluated is refused: at the declaration of a set, a trigger, a verb
@@ -349,6 +350,11 @@ rather than one error at a time.
 - A verb's `requires` and set values step through a reference to the
   record it names, where a step through a reference was refused at
   every declaration (lakelands#567).
+- A set's `where` and a trigger's `when` step through a reference, read
+  a relation's link and a derived relation's match, and ask `exists`, as
+  a verb's condition does, where a step through a reference was refused
+  there; a path into a far field computed outside the lake is refused
+  `set_reads_computed` (lakelands#567).
 - A verb's `requires` and set values read the link a relation holds,
   `<relation>.<link field>`, where a relation's name was an unknown
   field in a condition (lakelands#567).

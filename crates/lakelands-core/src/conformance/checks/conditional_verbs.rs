@@ -17,7 +17,7 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     SKONTO = a_verb_reads_a_conditional_edge_onto_its_targets_key,
-    "055 and 044, extended (lakelands#960): a verb's `requires` and set values read a derived relation whose match names its target's key by `exists(<relation>)` and `<relation>.<field>`: `skonto` (`requires: exists(discountable)`, the discount copied from `discountable.rate`) runs on an open invoice inside its terms' period and is refused precondition, appending nothing, on a closed one, one past its period, one whose terms hold no period, one whose terms no record holds and one whose terms are retired, never `not_live`; a call proposed while the edge holds is refused precondition at an accept after the period is gone, appending nothing, and so after its terms are retired; one whose terms are held since the proposal is refused not_granted, appending nothing, where one whose terms were held when it was proposed is accepted, its proposer having been answered them; a proposal is not there to a reviewer the terms are held from, by the grant rule; a match of two pairs onto one key field holds only where both do; a derived relation whose match is not its target's key is refused `match_not_key` in a verb, by `exists` and by a path; a relation's name alone beside its `exists` is `unknown_field`; `exists` over a field, and in a trigger's `when`, a set's `where` and a read's `where`, is refused `exists_here`; a migration that takes the match off the target's key is refused naming the verb, and one that removes the relation as `unknown_field` as for a path"
+    "055 and 044, extended (lakelands#960): a verb's `requires` and set values read a derived relation whose match names its target's key by `exists(<relation>)` and `<relation>.<field>`: `skonto` (`requires: exists(discountable)`, the discount copied from `discountable.rate`) runs on an open invoice inside its terms' period and is refused precondition, appending nothing, on a closed one, one past its period, one whose terms hold no period, one whose terms no record holds and one whose terms are retired, never `not_live`; a call proposed while the edge holds is refused precondition at an accept after the period is gone, appending nothing, and so after its terms are retired; one whose terms are held since the proposal is refused not_granted, appending nothing, where one whose terms were held when it was proposed is accepted, its proposer having been answered them; a proposal is not there to a reviewer the terms are held from, by the grant rule; a match of two pairs onto one key field holds only where both do; a derived relation whose match is not its target's key is refused `match_not_key` in a verb, by `exists` and by a path; a relation's name alone beside its `exists` is `unknown_field`; `exists` over a field, and in a read's `where`, is refused `exists_here`; a migration that takes the match off the target's key is refused naming the verb, and one that removes the relation as `unknown_field` as for a path"
 );
 
 check!(
@@ -201,18 +201,6 @@ async fn a_verb_reads_a_conditional_edge_onto_its_targets_key(store: Store) -> H
             "a relation's name alone beside its `exists`",
             verb("exists(discountable) and discountable is null"),
             &json!({"code": "unknown_field", "type": "invoice", "field": "discountable"}),
-        ),
-        (
-            "`exists` in a trigger",
-            json!({"declare": "trigger", "name": "t", "on": "invoice",
-            "when": "exists(discountable)"}),
-            &exists_here,
-        ),
-        (
-            "`exists` in a set",
-            json!({"declare": "object_set", "name": "s", "of": "invoice",
-            "where": "exists(discountable)"}),
-            &exists_here,
         ),
     ] {
         let head = s.head().await.must("reading the head")?;

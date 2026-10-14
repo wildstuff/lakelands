@@ -89,6 +89,7 @@ mod set_declared;
 mod set_migrated;
 mod set_names;
 mod set_rewritten;
+mod sets_across;
 mod settings;
 mod shown_hash;
 mod streaming;
@@ -395,6 +396,12 @@ pub const ALL: &[Check] = &[
     set_migrated::SET_MIGRATED_COMPUTED,
     set_rewritten::SET_REKEYED_REFERENCES,
     set_rewritten::SET_OVER_LINKS,
+    sets_across::SET_ACROSS,
+    sets_across::SET_ACROSS_SELF,
+    sets_across::SET_ACROSS_EDGES,
+    sets_across::SET_ACROSS_BOUND,
+    sets_across::SET_ACROSS_DECLARED,
+    sets_across::SET_ACROSS_HELD,
     link_triggers::LINK_TRIGGER_FIRES,
     link_triggers::VIA_LINK_TYPE_REFUSED,
     bundles::BUNDLE_WHOLE,
