@@ -1020,6 +1020,29 @@ impl ProjectionView for SqliteView<'_> {
         })
     }
 
+    fn proposals_before(
+        &self,
+        filter: &ProposalFilter,
+        before: Option<Position>,
+    ) -> Result<Option<Vec<Proposal>>> {
+        let (state, before, limit) = lakelands_core::engines::proposals_asked(filter, before);
+        self.read(Some(Vec::new()), |r| {
+            column(
+                r.conn,
+                &format!(
+                    "SELECT state FROM proposals WHERE {} \
+                     AND (?2 IS NULL OR json_extract(state, '$.state') = ?2) \
+                     AND json_extract(state, '$.position') < ?3 \
+                     ORDER BY json_extract(state, '$.position') DESC LIMIT ?4",
+                    holds_at(1)
+                ),
+                params![r.at(), state, before, limit],
+                |s: String| decode(&s, "a state"),
+            )
+            .map(Some)
+        })
+    }
+
     fn is_member(&self, set: &str, ty: &TypeName, key: &RecordKey) -> Result<bool> {
         self.read(false, |r| {
             one(

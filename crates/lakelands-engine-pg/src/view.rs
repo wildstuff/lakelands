@@ -1147,6 +1147,33 @@ impl ProjectionView for PgView<'_> {
         })
     }
 
+    fn proposals_before(
+        &self,
+        filter: &ProposalFilter,
+        before: Option<Position>,
+    ) -> Result<Option<Vec<Proposal>>> {
+        let (state, before, limit) = lakelands_core::engines::proposals_asked(filter, before);
+        self.read(Some(Vec::new()), |r| {
+            // Each proposal's state in force at the view: no later one by
+            // its position. By the index on the state's position.
+            r.db.query(
+                &format!(
+                    "SELECT p.state FROM {t} p WHERE p.since <= $1 \
+                     AND NOT EXISTS (SELECT 1 FROM {t} q WHERE q.id = p.id AND q.since > p.since AND q.since <= $1) \
+                     AND ($2::text IS NULL OR (p.state::jsonb ->> 'state') = $2) \
+                     AND ((p.state::jsonb ->> 'position')::int8) < $3 \
+                     ORDER BY ((p.state::jsonb ->> 'position')::int8) DESC LIMIT $4",
+                    t = r.names.t(PROPOSALS.table)
+                ),
+                &[&r.at, &state, &before, &limit],
+            )?
+            .iter()
+            .map(|row| decode(&row.get::<_, String>(0), "a proposal"))
+            .collect::<Result<_>>()
+            .map(Some)
+        })
+    }
+
     fn is_member(&self, set: &str, ty: &TypeName, key: &RecordKey) -> Result<bool> {
         self.single(false, |r| {
             Ok(r.db

@@ -50,6 +50,11 @@ struct Handed {
     declared_then: AtomicUsize,
     /// The ranges of replaced declarations read.
     replaced: AtomicUsize,
+    /// The proposals the engine answered.
+    proposed: AtomicUsize,
+    /// The pages of proposals asked, and the whole listings.
+    pages: AtomicUsize,
+    wholes: AtomicUsize,
 }
 
 struct Counting {
@@ -110,7 +115,21 @@ impl ProjectionView for CountingView<'_> {
         self.inner.edges(ty, keys, relation, walk)
     }
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
-        self.inner.proposals(filter)
+        let all = self.inner.proposals(filter)?;
+        self.handed.wholes.fetch_add(1, Ordering::SeqCst);
+        self.handed.proposed.fetch_add(all.len(), Ordering::SeqCst);
+        Ok(all)
+    }
+    fn proposals_before(
+        &self,
+        filter: &ProposalFilter,
+        before: Option<Position>,
+    ) -> Result<Option<Vec<Proposal>>> {
+        let page = self.inner.proposals_before(filter, before)?;
+        self.handed.pages.fetch_add(1, Ordering::SeqCst);
+        let n = page.as_ref().map_or(0, Vec::len);
+        self.handed.proposed.fetch_add(n, Ordering::SeqCst);
+        Ok(page)
     }
     fn is_member(&self, set: &str, ty: &TypeName, key: &RecordKey) -> Result<bool> {
         self.inner.is_member(set, ty, key)
@@ -665,6 +684,25 @@ async fn a_listing_of_proposals_judges_its_page_and_no_more() {
     let mark = json!({"declare": "verb", "name": "mark", "on": "note", "risk": "high",
                       "effect": "write", "set": [{"field": "text", "value": "'x'"}]});
     cat.declare(&who, declare(mark)).await.unwrap();
+    // A clerk's own call, older than the 80 it is not shown.
+    let clerk = Principal {
+        kind: PrincipalKind::Agent,
+        id: "clerk".into(),
+        grants: Grants {
+            default: lakelands_api::Access::Write,
+            ..Grants::default()
+        },
+        ..who.clone()
+    };
+    let (verb, key) = ("mark".into(), "n0000".into());
+    let called = cat.call(
+        &clerk,
+        &verb,
+        Some(&key),
+        Default::default(),
+        Default::default(),
+    );
+    called.await.unwrap();
     for _ in 0..80 {
         let (verb, key) = ("mark".into(), "n0000".into());
         let called = cat.call(
@@ -692,16 +730,57 @@ async fn a_listing_of_proposals_judges_its_page_and_no_more() {
         ..who.clone()
     };
     handed.pasts.store(0, Ordering::SeqCst);
+    handed.proposed.store(0, Ordering::SeqCst);
     let listed = cat
         .proposals(&reviewer, Default::default())
         .await
         .unwrap()
         .data;
     let pasts = handed.pasts.load(Ordering::SeqCst);
+    let proposed = handed.proposed.load(Ordering::SeqCst);
     assert!(
         listed.len() == 50 && pasts <= 50,
         "a listing of {} over 80 decided calls read the past {pasts} times; it judges its page of 50 and no more",
         listed.len()
+    );
+    // And the engine answered it a page, not every proposal (lakelands#1063).
+    assert_eq!(
+        proposed, 50,
+        "the listing's page of 50, none hidden, is one page of the engine's"
+    );
+    // Its own entry behind the 80 newest it is not shown: the pages grow,
+    // seven of them (1 + 2 + … + 64), the rows the hidden ones and its own.
+    let listing = |who: Principal, filter: ProposalFilter| {
+        let cat = cat.clone();
+        for c in [&handed.pages, &handed.wholes, &handed.proposed] {
+            c.store(0, Ordering::SeqCst);
+        }
+        async move { cat.proposals(&who, filter).await.unwrap().data }
+    };
+    let one = ProposalFilter {
+        limit: Some(1),
+        ..Default::default()
+    };
+    let mine = listing(clerk.clone(), one.clone()).await;
+    let asked = [&handed.pages, &handed.wholes, &handed.proposed].map(|c| c.load(Ordering::SeqCst));
+    assert!(
+        mine.len() == 1 && asked[0] <= 8 && asked[1] == 0 && asked[2] <= 81,
+        "a listing of one behind 80 hidden asks pages that grow: {asked:?} pages, wholes, rows"
+    );
+    // A past listing by a reader without `restricted` is paged as well.
+    let head = store.head().await.unwrap();
+    let past = ProposalFilter {
+        at: lakelands_api::read::ReadAt {
+            as_of: Some(head),
+            valid_at: None,
+        },
+        ..Default::default()
+    };
+    let listed = listing(reviewer, past).await;
+    let asked = [&handed.pages, &handed.wholes, &handed.proposed].map(|c| c.load(Ordering::SeqCst));
+    assert!(
+        listed.len() == 50 && asked[1] == 0 && asked[2] == 50,
+        "a past listing by a reader without `restricted` reads pages: {asked:?}"
     );
     drop(store);
 }

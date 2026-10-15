@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS proposals (
     state TEXT NOT NULL,
     PRIMARY KEY (id, since)
 );
+CREATE INDEX IF NOT EXISTS proposals_newest ON proposals (json_extract(state, '$.position'));
 CREATE TABLE IF NOT EXISTS members (
     object_set TEXT NOT NULL, ty TEXT NOT NULL, key TEXT NOT NULL,
     since INTEGER NOT NULL, until INTEGER,

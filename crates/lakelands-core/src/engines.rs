@@ -1576,6 +1576,20 @@ fn touched(write: &ProposedWrite, stands: &impl Fn(&str) -> Option<TypeName>) ->
     }
 }
 
+/// What a page of proposals asks a SQL engine (`proposals_before`): the
+/// state's name as stored, the position its proposals come before, and
+/// how many it holds, each the widest where it is not asked.
+pub fn proposals_asked(
+    filter: &lakelands_api::write::ProposalFilter,
+    before: Option<Position>,
+) -> (Option<String>, i64, i64) {
+    let state = filter
+        .state
+        .and_then(|s| serde_json::to_value(s).ok()?.as_str().map(Into::into));
+    let limit = filter.limit.map_or(i64::MAX, i64::from);
+    (state, before.map_or(i64::MAX, |b| b.0 as i64), limit)
+}
+
 /// Whether a proposal is of `filter`'s kind and touches its type, by the
 /// write it holds: one that holds none is of no kind and touches no type.
 pub fn matches(
