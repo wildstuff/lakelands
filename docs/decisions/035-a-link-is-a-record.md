@@ -188,8 +188,8 @@ verb is declared, as `link` refuses an end among its fields. Each door
 keeps the order of its family: a verb's call on a link answers a stale
 expected version before it judges the ends, as any verb compares the
 version where it reads its record (024), and `link` judges the ends
-first, as any record write judges its references before the version
-(016).
+first, as any record write judges its sent references before the
+version (016).
 
 ### A renamed relation keeps its edges
 

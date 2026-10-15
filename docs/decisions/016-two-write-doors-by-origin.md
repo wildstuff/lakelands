@@ -137,7 +137,10 @@ verb's effect, a proposal and its acceptance, and `ingest`:
    key: a key that does not split into them is `invalid`; a filled
    field is granted and fits as in 4 and 5;
 7. the key and the key fields agree: `invalid`;
-8. every reference names a live record, in name order: `constraint`;
+8. every reference the write sends names a live record, in name order:
+   `constraint`; a reference the record computes is judged once the
+   record is computed, after 11, so a stale version is told first
+   (`docs/decisions/032-a-reference-names-a-live-record.md`);
 9. the expected version: `conflict`;
 10. every required field holds a value after the write: `constraint`;
 11. a `sys.aging_rule` record, or a `sys.setting` record of a setting
