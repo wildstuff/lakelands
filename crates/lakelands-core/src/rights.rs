@@ -1152,12 +1152,20 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
     }
     report.rekeyed.retain(|r| sees(&r.ty).is_some());
     report.filled.retain(|f| in_to(&f.field));
-    // A breach to one who reads every field its constraint reads, in both
-    // shapes (lakelands#1119).
+    // A breach to one who reads every field its constraint reads: of the
+    // migrated type in both shapes, of another as it stands (lakelands#1119).
     let constraint = |b: &lakelands_api::write::Breach| {
-        let c = m.to.constraints.iter().find(|c| c.name == b.constraint);
+        let own = b.ty == m.to.name;
+        let t = if own { Some(&m.to) } else { sees(&b.ty) };
+        let c = t.and_then(|t| t.constraints.iter().find(|c| c.name == b.constraint));
         let e = c.and_then(|c| c.holds.typed().ok());
-        e.is_some_and(|e| e.fields_read().into_iter().all(&read))
+        let reads = |f: &FieldName| match own {
+            true => read(f),
+            false => sees(&b.ty)
+                .and_then(|t| Some((t, t.fields.iter().find(|x| &x.name == f)?)))
+                .is_some_and(|(t, x)| field_access(who, t, x).reads()),
+        };
+        e.is_some_and(|e| e.fields_read().into_iter().all(reads))
     };
     report.breaches.retain(constraint);
     report.references.retain(|r| match r.ty == m.to.name {

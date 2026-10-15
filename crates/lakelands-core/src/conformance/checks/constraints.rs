@@ -37,6 +37,21 @@ check!(
 );
 
 check!(
+    CONSTRAINT_HELD_ON_EVERY_WALK = a_walk_of_the_lake_leaves_no_record_breaking_a_constraint,
+    "lakelands#1119: a declaration that computes a type's records again, a value type's migration that renames what they hold, and a re-key that rewrites what other types' records hold of a moved key each judge the records as they would leave them, against each constraint that refuses, where a field it reads moved; one that would leave a record breaking it is refused `constraint_left_broken`, naming the constraint, the type and the count, appending nothing, and `not_granted`, naming nothing, to an author who does not read every field it reads; a migration's preflight lists in `breaches` the records as it computes them again and as its re-key rewrites their references"
+);
+
+check!(
+    CONSTRAINT_WALK_GRANTED_BY_FIELDS = a_walk_is_granted_by_the_fields_it_may_move,
+    "lakelands#1119: an author who does not read every field a constraint that refuses reads is not granted a walk that may move one of them, a function declared again that computes it or a value type's renames in a field that feeds it, decided before any record is read: the answer is the same whether a record would break it or not"
+);
+
+check!(
+    CONSTRAINT_NAME_UNTOLD = a_constraint_named_like_one_its_author_is_not_told_is_not_granted,
+    "lakelands#1119 and 027: a declaration or a migration whose constraint bears the name of one its author is not told is not granted, naming nothing, as a name a hidden field holds; under a free name it is answered as to any author"
+);
+
+check!(
     CONSTRAINT_NOT_GRANTED_UNREAD =
         a_writer_kept_from_what_a_constraint_reads_is_not_granted_what_it_judges,
     "lakelands#1119 and 006: a writer that does not read every field a constraint reads is refused `not_granted` for a write the constraint judges, one that creates the record or sends a field it reads, whether it would hold or not, so the answer tells nothing of the field it may not read; its writes to other fields are judged as before"
@@ -51,7 +66,7 @@ check!(
 check!(
     CONSTRAINT_BROKEN_IN_THE_PREFLIGHT =
         a_migration_lists_the_records_its_constraints_would_find_broken,
-    "lakelands#1119: a migration whose `to` declares a constraint lists in its preflight, per constraint, the live records it would leave breaking it, as converted, with the first keys its reader is answered; one that refuses makes the migration lossy and its apply is refused, one that admits is listed and applies; one who does not read every field a constraint reads, kept from one or masked, is not told its entry nor the constraint in `restated`, and is told `more`, and the constraint, which its declaration or migration leaves out, stands as declared"
+    "lakelands#1119: a migration whose `to` declares a constraint lists in its preflight, per constraint, the live records it would leave breaking it, as converted, with the first keys its reader is answered; one that refuses makes the migration lossy and its apply is refused, one that admits is listed and applies; one who does not read every field a constraint reads, kept from one or masked, is not told its entry nor the constraint in `restated`, and no record is counted against it for them; a migration that may move a field such a constraint that refuses reads, converted, filled, renamed, added or computed again, is not granted to them, decided before any record is read, so the answer is the same whatever the records hold; the constraint, which its declaration or migration leaves out, stands as declared"
 );
 
 /// A type of invoices: `paid` never beyond `amount`, and a closed one
@@ -290,6 +305,328 @@ async fn a_reviewer_who_reads_a_constraint_is_told_it_at_accept(store: Store) ->
     Ok(())
 }
 
+/// The case a refusal is, if it is one with a case.
+fn case_of<T>(a: &lakelands_api::Result<T>) -> Option<&Case> {
+    a.as_ref().err().and_then(Error::case).map(|s| &s.case)
+}
+
+/// Whether `a` is refused `constraint_left_broken` for `constraint` of `ty`
+/// with `records`.
+fn left_broken<T>(a: &lakelands_api::Result<T>, (constraint, ty, n): (&str, &str, u64)) -> bool {
+    matches!(case_of(a), Some(Case::ConstraintLeftBroken { constraint: c, ty: t, records })
+        if c.as_str() == constraint && t.as_str() == ty && *records == n)
+}
+
+async fn a_walk_of_the_lake_leaves_no_record_breaking_a_constraint(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let number = |n: &str| json!({"name": n, "type": {"kind": "number"}});
+    // A declaration that computes `rest` again.
+    let bill = |rest: &str| {
+        json!({"declare": "type", "name": "bill", "key": ["no"],
+            "fields": [{"name": "no", "type": {"kind": "text"}}, number("amount"), number("paid"),
+                       {"name": "rest", "type": {"kind": "number"}, "authority": "derived",
+                        "derived": rest, "depends_on": ["amount", "paid"]}],
+            "constraints": [{"name": "covered", "holds": "rest >= 0 and amount > 0"}]})
+    };
+    l.declare_json(bill("amount - paid")).await?;
+    l.upsert(
+        "bill",
+        "B-1",
+        json!({"no": "B-1", "amount": 100, "paid": 50}),
+    )
+    .await?;
+    let head = store.head().await.must("reading the head")?;
+    let under = try_declare(&l, bill("amount - paid - 60")).await?;
+    let mut masked = field_access(
+        store.as_ref(),
+        "masked",
+        "bill",
+        &[("amount", Access::Masked)],
+    );
+    masked.grants.schema = true;
+    // As it knows the type: without the constraint it is not told.
+    let mut known = bill("0 - paid");
+    known["constraints"] = json!([]);
+    known["fields"][3]["depends_on"] = json!(["paid"]);
+    let d: Declaration = serde_json::from_value(known).map_err(|e| Failure::new(e.to_string()))?;
+    let untold = l.cat.declare(&masked, d).await;
+    let not_granted =
+        |a: &lakelands_api::Result<Outcome>| matches!(reason(a), Some(Refusal::NotGranted));
+    ensure!(
+        left_broken(&under, ("covered", "bill", 1)) && not_granted(&untold),
+        "a declaration whose computing again leaves `B-1` breaking `covered` is refused \
+         `constraint_left_broken` to the owner and `not_granted` to one masked from `amount`: \
+         {under:?}, {untold:?}"
+    );
+    head_unmoved(store.as_ref(), head, "a walk that breaks a constraint").await?;
+    try_declare(&l, bill("amount - paid - 10"))
+        .await?
+        .must("a declaration that leaves it held")?;
+    // A migration's preflight counts the records as it computes them again.
+    let mut to = bill("amount - paid - 60");
+    to.as_object_mut().map(|o| o.remove("declare"));
+    let to = Migration::to(type_of(to)?);
+    let preview = l
+        .cat
+        .migrate(&l.own, to)
+        .await
+        .must("previewing a migration that computes again")?
+        .data;
+    ensure!(
+        preview
+            .breaches
+            .iter()
+            .any(|b| b.constraint.as_str() == "covered" && b.records == 1)
+            && !preview.lossless,
+        "a migration's preflight lists `B-1` breaking `covered` as it computes it again: {preview:?}"
+    );
+    // A value type's migration that renames what a record holds.
+    l.declare_json(json!({"declare": "value_type", "name": "state", "kind": "text", "one_of": ["draft", "open"]}))
+        .await?;
+    l.declare_json(json!({"declare": "type", "name": "ticket", "key": ["no"],
+        "fields": [{"name": "no", "type": {"kind": "text"}}, number("amount"),
+                   {"name": "state", "type": {"kind": "text", "value_type": "state"}}],
+        "constraints": [{"name": "closed_is_free", "holds": "not (state = 'closed') or amount = 0"}]}))
+        .await?;
+    l.upsert(
+        "ticket",
+        "T-1",
+        json!({"no": "T-1", "amount": 5, "state": "open"}),
+    )
+    .await?;
+    // Its twin admits at ingest: the report names what it admits.
+    l.declare_json(json!({"declare": "type", "name": "ticket_a", "key": ["no"],
+        "fields": [{"name": "no", "type": {"kind": "text"}}, number("amount"),
+                   {"name": "state", "type": {"kind": "text", "value_type": "state"}}],
+        "constraints": [{"name": "closed_is_free", "holds": "not (state = 'closed') or amount = 0",
+                         "at_ingest": "admit"}]}))
+        .await?;
+    l.upsert(
+        "ticket_a",
+        "A-1",
+        json!({"no": "A-1", "amount": 5, "state": "open"}),
+    )
+    .await?;
+    let renamed = || {
+        let to = serde_json::from_value(
+            json!({"name": "state", "kind": "text", "one_of": ["draft", "closed"]}),
+        );
+        let to: lakelands_api::ontology::ValueTypeDecl =
+            to.map_err(|e| Failure::new(e.to_string()))?;
+        Ok::<_, Failure>(lakelands_api::write::ValueTypeMigration {
+            to,
+            renames: vec![("open".into(), "closed".into())],
+        })
+    };
+    let refused = l.cat.migrate_value_type(&l.own, renamed()?).await;
+    let left = left_broken(&refused, ("closed_is_free", "ticket", 1));
+    l.upsert("ticket", "T-1", json!({"amount": 0})).await?;
+    let fits = l.cat.migrate_value_type(&l.own, renamed()?).await;
+    let admitted = fits.as_ref().map(|r| {
+        let b = r.data.breaches.iter();
+        b.map(|b| (b.ty.to_string(), b.records, b.sample_keys.len()))
+            .collect::<Vec<_>>()
+    });
+    ensure!(
+        left && admitted
+            .as_ref()
+            .is_ok_and(|a| a == &[("ticket_a".to_owned(), 1, 1)]),
+        "a value type's renames that leave `T-1` breaking `closed_is_free` are refused, and \
+         once it holds them, previewed, naming what `ticket_a` admits: {refused:?}, {fits:?}"
+    );
+    // A re-key that rewrites another type's reference to a moved key.
+    l.declare_json(json!({"declare": "type", "name": "owner", "key": ["code"],
+        "fields": [{"name": "code", "type": {"kind": "text"}, "required": true},
+                   {"name": "alias", "type": {"kind": "text"}, "required": true}]}))
+        .await?;
+    l.declare_json(json!({"declare": "type", "name": "pet", "key": ["no"],
+        "fields": [{"name": "no", "type": {"kind": "text"}},
+                   {"name": "owner", "type": {"kind": "reference", "target": "owner"}}],
+        "constraints": [{"name": "not_x", "holds": "not (owner = 'X')"}]}))
+        .await?;
+    l.upsert("owner", "a", json!({"code": "a", "alias": "X"}))
+        .await?;
+    l.upsert("pet", "P-1", json!({"no": "P-1", "owner": "a"}))
+        .await?;
+    let rekeyed = json!({"name": "owner", "key": ["alias"],
+        "fields": [{"name": "code", "type": {"kind": "text"}, "required": true},
+                   {"name": "alias", "type": {"kind": "text"}, "required": true}]});
+    let rekey = l
+        .cat
+        .migrate(&l.own, Migration::to(type_of(rekeyed)?))
+        .await;
+    ensure!(
+        left_broken(&rekey, ("not_x", "pet", 1)),
+        "a re-key that rewrites `P-1`'s reference to `X` is refused `constraint_left_broken` \
+         on `pet`: {rekey:?}"
+    );
+    // One that admits is named in the migration's report, with its type.
+    l.retire("pet", "P-1").await?;
+    l.declare_json(json!({"declare": "type", "name": "pet_a", "key": ["no"],
+        "fields": [{"name": "no", "type": {"kind": "text"}},
+                   {"name": "owner", "type": {"kind": "reference", "target": "owner"}}],
+        "constraints": [{"name": "not_x", "holds": "not (owner = 'X')", "at_ingest": "admit"}]}))
+        .await?;
+    l.upsert("pet_a", "Q-1", json!({"no": "Q-1", "owner": "a"}))
+        .await?;
+    let rekeyed = json!({"name": "owner", "key": ["alias"],
+        "fields": [{"name": "code", "type": {"kind": "text"}, "required": true},
+                   {"name": "alias", "type": {"kind": "text"}, "required": true}]});
+    let admits = l
+        .cat
+        .migrate(&l.own, Migration::to(type_of(rekeyed)?))
+        .await;
+    let admits = admits
+        .must("previewing the re-key over an admitting constraint")?
+        .data;
+    let named = admits
+        .breaches
+        .iter()
+        .map(|b| (b.ty.to_string(), b.records))
+        .collect::<Vec<_>>();
+    ensure!(
+        named == [("pet_a".to_owned(), 1)] && admits.lossless,
+        "a re-key whose rewrite `pet_a` admits names it in the report, lossless: {admits:?}"
+    );
+    // And one that rewrites the migrated type's own references: listed.
+    let node = |key: &str| {
+        json!({"name": "node", "key": [key],
+            "fields": [{"name": "code", "type": {"kind": "text"}, "required": true},
+                       {"name": "alias", "type": {"kind": "text"}, "required": true},
+                       {"name": "boss", "type": {"kind": "reference", "target": "node"}}],
+            "constraints": [{"name": "not_y", "holds": "not (boss = 'Y')"}]})
+    };
+    let mut declared = node("code");
+    declared["declare"] = json!("type");
+    l.declare_json(declared).await?;
+    l.upsert("node", "c", json!({"code": "c", "alias": "Y", "boss": "c"}))
+        .await?;
+    let own = l
+        .cat
+        .migrate(&l.own, Migration::to(type_of(node("alias"))?))
+        .await;
+    let own = own.must("previewing a re-key of `node`")?.data;
+    ensure!(
+        own.breaches
+            .iter()
+            .any(|b| b.constraint.as_str() == "not_y" && b.records == 1)
+            && !own.lossless,
+        "a re-key that rewrites `c`'s own reference to `Y` lists it breaking `not_y`: {own:?}"
+    );
+    Ok(())
+}
+
+async fn a_walk_is_granted_by_the_fields_it_may_move(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let number = |n: &str| json!({"name": n, "type": {"kind": "number"}});
+    let due = |by: &str| {
+        json!({"declare": "function", "name": "due_of", "backing": "expr", "expr": format!("paid * {by}"),
+               "inputs": [{"name": "paid", "type": {"kind": "number"}}]})
+    };
+    l.declare_json(due("1")).await?;
+    l.declare_json(json!({"declare": "value_type", "name": "phase", "kind": "text", "one_of": ["open", "done"]}))
+        .await?;
+    l.declare_json(json!({"declare": "type", "name": "loan", "key": ["no"],
+        "fields": [{"name": "no", "type": {"kind": "text"}}, number("amount"), number("paid"),
+                   {"name": "due", "type": {"kind": "number"}, "authority": "derived",
+                    "function": "due_of", "depends_on": ["paid"]},
+                   {"name": "phase", "type": {"kind": "text", "value_type": "phase"}}],
+        "constraints": [{"name": "within", "holds": "due <= amount"},
+                        {"name": "settled_free", "holds": "not (phase = 'settled') or amount = 0"}]}))
+        .await?;
+    l.upsert(
+        "loan",
+        "L-1",
+        json!({"no": "L-1", "amount": 100, "paid": 10, "phase": "open"}),
+    )
+    .await?;
+    let mut masked = field_access(
+        store.as_ref(),
+        "masked",
+        "loan",
+        &[("amount", Access::Masked)],
+    );
+    masked.grants.schema = true;
+    let not_granted =
+        |a: &lakelands_api::Result<Outcome>| matches!(reason(a), Some(Refusal::NotGranted));
+    // A function declared again: one that leaves `L-1` within, one that does not.
+    let (holds, breaks) = (due("2"), due("50"));
+    let mut said = Vec::new();
+    for d in [holds.clone(), breaks.clone()] {
+        let d: Declaration = serde_json::from_value(d).map_err(|e| Failure::new(e.to_string()))?;
+        said.push(l.cat.declare(&masked, d).await);
+    }
+    let owner = try_declare(&l, breaks).await?;
+    ensure!(
+        said.iter().all(not_granted) && left_broken(&owner, ("within", "loan", 1)),
+        "a function declared again is not granted to one masked from `amount`, whether \
+         `L-1` would break `within` or not, and refused `constraint_left_broken` to the owner: \
+         {said:?}, {owner:?}"
+    );
+    // A value type's renames: one that leaves `L-1` free, one that does not.
+    let renamed = |to: &str| {
+        let decl = json!({"name": "phase", "kind": "text", "one_of": [to, "done"]});
+        let to_decl = serde_json::from_value(decl).map_err(|e| Failure::new(e.to_string()))?;
+        Ok::<_, Failure>(lakelands_api::write::ValueTypeMigration {
+            to: to_decl,
+            renames: vec![("open".into(), to.into())],
+        })
+    };
+    let st_1 = l.cat.migrate_value_type(&masked, renamed("pending")?).await;
+    let st_2 = l.cat.migrate_value_type(&masked, renamed("settled")?).await;
+    let not = |a: &lakelands_api::Result<_>| matches!(reason(a), Some(Refusal::NotGranted));
+    ensure!(
+        not(&st_1) && not(&st_2),
+        "a value type's renames into a field `settled_free` reads are not granted to one masked \
+         from `amount`, whether `L-1` would break it or not: {st_1:?}, {st_2:?}"
+    );
+    Ok(())
+}
+
+async fn a_constraint_named_like_one_its_author_is_not_told_is_not_granted(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare_json(invoice("invoice", "authored", "refuse"))
+        .await?;
+    let mut masked = field_access(
+        store.as_ref(),
+        "masked",
+        "invoice",
+        &[("amount", Access::Masked)],
+    );
+    masked.grants.schema = true;
+    let theirs = |name: &str| {
+        let mut t = invoice("invoice", "authored", "refuse");
+        if let Some(cs) = t["constraints"].as_array_mut() {
+            cs.retain(|c| c["name"] != "never_overpaid");
+            cs.push(json!({"name": name, "holds": "paid >= 0"}));
+        }
+        t
+    };
+    let mut said = Vec::new();
+    for name in ["never_overpaid", "fresh"] {
+        let m = Migration::to(type_of(theirs(name))?);
+        let migrated = l.cat.migrate(&masked, m).await.map(|r| r.data.lossless);
+        let d: Declaration =
+            serde_json::from_value(theirs(name)).map_err(|e| Failure::new(e.to_string()))?;
+        let declared = l.cat.declare(&masked, d).await;
+        said.push((name, format!("{migrated:?}"), declared));
+    }
+    let [(_, hidden_m, hidden_d), (_, free_m, free_d)] = &said[..] else {
+        return Err(Failure::new("two names"));
+    };
+    let not_granted =
+        |a: &lakelands_api::Result<Outcome>| matches!(reason(a), Some(Refusal::NotGranted));
+    ensure!(
+        hidden_m.contains("NotGranted")
+            && not_granted(hidden_d)
+            && free_m.starts_with("Ok(")
+            && matches!(case_of(free_d), Some(Case::ConstraintNeedsMigrate { .. })),
+        "a constraint named like one its author is not told is not granted, by `migrate` and \
+         by `declare`; under a free name it is previewed, and `declare` names `migrate`: {said:?}"
+    );
+    Ok(())
+}
+
 async fn a_writer_kept_from_what_a_constraint_reads_is_not_granted_what_it_judges(
     store: Store,
 ) -> Held {
@@ -470,8 +807,8 @@ async fn a_migration_lists_the_records_its_constraints_would_find_broken(store: 
     let shown = l.cat.migrate(&kept, m.clone()).await;
     let shown = shown.must("previewing as one kept from `amount`")?.data;
     ensure!(
-        shown.breaches.is_empty() && shown.more && shown.lossless,
-        "one kept from `amount` is not told the entry, and is told more: {shown:?}"
+        shown.breaches.is_empty() && shown.lossless && !shown.more,
+        "one kept from `amount` is not told the entry, nor that there is more: {shown:?}"
     );
     let applied = l.cat.migrate_apply(&kept, m, &shown.report_id).await;
     applied.must("applying as one kept from `amount`")?;
@@ -508,6 +845,70 @@ async fn a_migration_lists_the_records_its_constraints_would_find_broken(store: 
         held.iter()
             .any(|c| c.name.as_str() == "never_overpaid" && c.at_ingest == AtIngest::Admit),
         "the constraint its author may not read stands: {held:?}"
+    );
+    // Twins that differ only in a hidden value: filling `paid` under a
+    // constraint that reads `amount` is not granted to one kept from it,
+    // whether a record would break it or not.
+    let hold = |name: &str, with_amount: bool| {
+        let mut fields = vec![
+            json!({"name": "no", "type": {"kind": "text"}}),
+            json!({"name": "paid", "type": {"kind": "number"}, "initial": 60}),
+        ];
+        if with_amount {
+            fields.insert(1, json!({"name": "amount", "type": {"kind": "number"}}));
+        }
+        let constraints = match with_amount {
+            true => json!([{"name": "fits", "holds": "paid is null or paid <= amount"}]),
+            false => json!([]),
+        };
+        json!({"name": name, "key": ["no"], "fields": fields, "constraints": constraints})
+    };
+    for (name, amount) in [("hold_a", 100), ("hold_b", 50)] {
+        let mut d = hold(name, true);
+        d["declare"] = json!("type");
+        d["fields"][2].as_object_mut().map(|f| f.remove("initial"));
+        l.declare_json(d).await?;
+        l.upsert(name, "h", json!({"no": "h", "amount": amount}))
+            .await?;
+    }
+    let mut hidden = field_access(
+        store.as_ref(),
+        "hidden",
+        "hold_a",
+        &[("amount", Access::None)],
+    );
+    let held_b = hidden
+        .grants
+        .types
+        .get("hold_a")
+        .cloned()
+        .unwrap_or_default();
+    hidden.grants.types.insert("hold_b".into(), held_b);
+    hidden.grants.schema = true;
+    let mut answers = Vec::new();
+    for name in ["hold_a", "hold_b"] {
+        let filling = |who_knows: bool| {
+            type_of(hold(name, who_knows)).map(|to| Migration {
+                fill: vec!["paid".into()],
+                ..Migration::to(to)
+            })
+        };
+        let theirs = l.cat.migrate(&hidden, filling(false)?).await;
+        let owner = l
+            .cat
+            .migrate(&l.own, filling(true)?)
+            .await
+            .map(|r| r.data.lossless);
+        answers.push((
+            name,
+            matches!(reason(&theirs), Some(Refusal::NotGranted)),
+            owner,
+        ));
+    }
+    ensure!(
+        answers.iter().all(|a| a.1) && matches!(answers[..], [(_, _, Ok(true)), (_, _, Ok(false))]),
+        "filling `paid` under `fits` is not granted to one kept from `amount`, `h` at 100 or \
+         at 50, and to the owner lossless at 100, lossy at 50: {answers:?}"
     );
     Ok(())
 }

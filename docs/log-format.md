@@ -1025,12 +1025,13 @@ report when it was proposed (`type`, `from_schema_hash`,
 `restated`, left out when empty: a list of
 `{ "field", "member", "was", "to" }`, `field` left out for a member of
 the type itself, and `breaches`, left out when empty: a list of
-`{ "constraint", "records", "sample_keys" }`, as the
+`{ "type", "constraint", "records", "sample_keys" }`, as the
 `migrate` door answers it). `migrate_value_type`
 carries `to`, the value type's new declaration as `declared` carries
 one, and `report`, its preflight's report when it was proposed
 (`value_type`, `from_version`, `records_scanned`, `fields`, `misfits`,
-`first`, left out when empty, `fits`, `report_id`, as the
+`first`, left out when empty, `fits`, `report_id`, `breaches`, left
+out when empty, as a migration's report holds it, as the
 `migrate_value_type` door answers it). A logged report fits, so its
 `first` is empty. `migrate_value_type` also carries
 `renames`, left out when empty, a list of `[old, new]` text pairs, and

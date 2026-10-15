@@ -1280,6 +1280,12 @@
    "type": "t"
   },
   {
+   "code": "constraint_left_broken",
+   "constraint": "c",
+   "records": 1,
+   "type": "t"
+  },
+  {
    "code": "requires_unmet",
    "key": "k",
    "type": "t",

@@ -724,7 +724,13 @@ A host that already has a store of its own moves in four steps.
   what it states. A principal kept from a field a constraint reads is
   refused `not_granted` for every write the constraint judges, so a host
   grants a writer what the rule reads or keeps those fields out of its
-  writes. See `docs/decisions/059-a-type-declares-its-constraints.md`.
+  writes. A declaration that computes records again, a value type's
+  migration and a re-key are refused `constraint_left_broken` where they
+  would leave records breaking a constraint that refuses, naming it and
+  the count, so the host fixes those records first. A constraint that
+  admits is named in the value type's or the migration's report, in
+  `breaches`, with its type. See
+  `docs/decisions/059-a-type-declares-its-constraints.md`.
 - **A host may state its declarations at every start.** A declaration
   that is the one in force is answered `applied` at the head and appends
   nothing, by `declare` and by `apply`: a type, a value type, a function,

@@ -301,6 +301,7 @@ fn constraint_decl() -> ConstraintDecl {
 /// A breach with every member set.
 fn breach() -> Breach {
     Breach {
+        ty: "invoice".into(),
         constraint: "never_overpaid".into(),
         records: 2,
         sample_keys: vec!["k".into()],
@@ -1200,6 +1201,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 report_id: "r".into(),
                 conditions: vec!["the object_set declaration `open`".into()],
                 conditions_unshown: true,
+                breaches: vec![breach()],
             }),
         ),
         (
