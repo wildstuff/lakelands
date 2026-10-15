@@ -921,6 +921,8 @@ catalog! {
             #[serde(default, skip_serializing_if = "Option::is_none")]
             cut: Option<Box<Error>>,
         } => "appending to the log failed: {detail}[; {left}][ ({cut})]",
+        /// A sync of the log failed on this handle, and writing and syncing its group again failed too: it appends, seals and takes the lease no more until the lake is opened again, whose open checks the group it left.
+        Unsynced => "a sync of the log failed on this handle and writing it again failed too, so it writes nothing more: open the lake again, and its open checks what the last append left",
         /// A seal's step was taken and syncing its directory failed: the next segment is in the log's files, and the outcome is not known.
         SealUnsure { detail: Detail } => "syncing the log's directory failed: {detail}; the next segment is in the log's files and its name's sync failed: every handle reads it, and the outcome is not known",
         /// A segment was sealed through a position, and this handle then failed to read on.

@@ -13,20 +13,25 @@ The SQLite engine keeps a lake as a directory whose log anyone can read:
 - `index/<first position>.idx` holds, per event, the members the engine
   was handed beside the bytes (position, id, `prev`, `hash`, fence) and
   where the bytes lie, and one commit line closing each append. An
-  append writes and syncs its segment lines, then its index lines and
-  the commit line. Only events before the last commit line exist, so an
-  append is whole after a crash or not there at all. The next writer
+  append writes its segment lines, then its index lines and the commit
+  line, and syncs both files at once; every open checks the last group
+  a crash may have left ahead of its bytes
+  (`docs/decisions/060-an-append-syncs-its-two-files-at-once.md`). Only
+  events before the last commit line exist, so an append is whole after
+  a crash or not there at all. The next writer
   cuts off what an interrupted append left. A writer that goes on after
   an append that failed cuts off what that one left before it answers
   the error, and again before every append and every seal: an offset in
   the index is the byte its event begins at, and a sealed segment holds
   its events' lines and nothing else. The cut takes the index before
-  the segment and never a commit line that is whole; a segment shorter
-  than its index commits is refused as damaged (lakelands#618).
+  the segment and never a commit line that is whole, but for a last
+  group that the check refuses; a segment shorter than an earlier group
+  its index commits is refused as damaged (lakelands#618).
 - **The index is part of the log, and a segment without it is damage**
   (lakelands#865). The order of the writes tells a crash from a loss. A
-  crash leaves an index shorter than its segment, or a lake's first
-  segment with no bytes and no index yet; both are read. No
+  crash leaves an index shorter than its segment, its last group ahead
+  of the segment, or a lake's first segment with no bytes and no index
+  yet; each is read. No
   crash leaves a segment with lines and no index file, a later segment
   with none (a seal writes the next index before the segment comes to
   exist), or a `projection.db` with no segment file (the projection is
@@ -35,8 +40,11 @@ The SQLite engine keeps a lake as a directory whose log anyone can read:
   (`index_missing`) or that there is none (`no_segment_file`), at the
   question for the log's ends and at every open, before anything is
   read, cut or made. A lost index is an operator's restore; nothing
-  rebuilds it. One case nothing in the files tells apart: an index file
-  that is there and was shortened by hand reads as a crash's tail.
+  rebuilds it. What nothing in the files tells apart reads as a crash's
+  tail: an index file that is there and was shortened by hand, a byte
+  changed by hand in the last group's lines, and a commit line before
+  the last one made no JSON
+  (`docs/decisions/060-an-append-syncs-its-two-files-at-once.md`).
   - Each pair of files is looked for in the reverse of the order a
     making writes it in: the projection before the segments, a
     segment's lines before its index a second time. So beside a lake
@@ -211,3 +219,6 @@ file's contents; the operating system's lock does not.
 - An export of an upgraded lake holds its events in the formats they
   were written in, and a verifier and an import read every format from
   14 on; before, one format a release (lakelands#962).
+- An append syncs its segment and its index at once, and every open
+  checks the active segment's last group against its hashes; before, it
+  synced the segment, then the index (lakelands#1037).

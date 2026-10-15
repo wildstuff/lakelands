@@ -307,11 +307,7 @@ impl Chain {
         if event.prev != self.prev {
             return damaged(at, Flaw::PrevHash);
         }
-        let mut unhashed = value;
-        if let Some(members) = unhashed.as_object_mut() {
-            members.remove("hash");
-        }
-        if canonical::sha256_hex(&unhashed) != event.hash.0 {
+        if crate::engines::hash_of(value) != event.hash.0 {
             return damaged(at, Flaw::HashMismatch);
         }
         let later_file_start = at == first && index > 0;

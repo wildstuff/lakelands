@@ -5,7 +5,8 @@
 //! the last commit line says what the segment has committed, whatever a
 //! crash left after it. A read finds the line it starts at by halving the
 //! index and goes on where the last one ended. A damaged line is found by
-//! the read that meets it, and so by `verify`, not by the open. A writer
+//! the read that meets it, and so by `verify`, not by the open but in the
+//! active segment's last group, which an open checks. A writer
 //! that gives its lease up leaves the journal empty. The engine seam's
 //! checks hold what every engine answers; these hold what this engine's
 //! files make of it.
@@ -474,7 +475,8 @@ fn a_refresh_that_fails_once_leaves_no_segment_passed_by_unread() {
 /// the line a read starts at is reached from a line before it, checked to
 /// be the position that follows, wherever the halving lands. Every line
 /// in turn names the position after its own, and that position is read by
-/// a fresh handle.
+/// a fresh handle. A line of the last group, or the one before it, is
+/// found by the open, which reads that group and checks it.
 #[test]
 fn a_line_that_names_another_position_is_refused_when_it_alone_is_read() {
     let dir = scratch("misnamed-line");
@@ -488,7 +490,11 @@ fn a_line_that_names_another_position_is_refused_when_it_alone_is_read() {
         let damaged = text.replacen(&format!("[\"e\",{q},"), &format!("[\"e\",{},", q + 1), 1);
         assert_ne!(text, damaged, "the index holds position {q}'s line");
         std::fs::write(&index, damaged).unwrap();
-        let reader = open(&dir, OpenMode::Read);
+        let reader = match SqliteOpener.open(&Location::sqlite("lake", &dir), OpenMode::Read) {
+            Ok(reader) => reader,
+            Err(e) if q >= 549 && e.to_string().contains("damaged") => continue,
+            Err(e) => panic!("{q}: the open refused {e}"),
+        };
         match reader.read(Position(q + 1), 1) {
             Err(Error::Unavailable { situation }) => {
                 let message = situation.to_string();

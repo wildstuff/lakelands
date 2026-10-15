@@ -163,7 +163,9 @@ is short, unreadable or not the position expected is refused as a
 damaged index, never read as another event. **A damaged line is found
 by the read that meets it,** and so by `verify`, which reads the log
 from the first position it is asked for; an open reads the index's end
-alone and does not find it. **An append that fails after it wrote,**
+and the active segment's last group, and finds there a line that names
+another position; a line that is no JSON there, or past what is
+committed with no commit line after it, is a crash's tear. **An append that fails after it wrote,**
 as on a disk that fills, reads what is committed and cuts the index and
 then the segment back to it before it answers its error, and every
 append and every seal begins the same way, whoever left bytes there: no
@@ -171,13 +173,20 @@ event is written behind bytes that are none, and a sealed file holds
 its events' lines and nothing else (lakelands#618). The cut is the
 writer's: the lease's check and what follows it are one step under the
 handle's own lock, and the lease file's lock lets no other handle take
-the lease meanwhile. It never takes a commit line that is whole, which
-another handle may have read, so one outcome is not known: where the
-sync after the commit line fails, the group is in the log for every
-handle, the writer's too, and may not outlast a crash; its append
-answers `unavailable` and says so. A segment that ends before what its
-index commits is damage no cut mends: the append, the seal and the next
-writer's lease are refused, naming the file. **A seal is one rename.**
+the lease meanwhile. An append writes both files, then syncs them at
+once, so a crash can leave the last commit line ahead of its group's
+bytes: every handle checks that group against its hashes as it first
+reads the active segment, reads the log as ending before one that is not
+whole, and the writer cuts it off
+(`docs/decisions/060-an-append-syncs-its-two-files-at-once.md`). Any
+other commit line that is whole is never cut, since another handle may
+have read its group, so one outcome is not known: where a sync after the
+commit line fails, the group is in the log for every handle, the
+writer's too, and may not outlast a crash; its append answers
+`unavailable` and says so. A segment that ends before an earlier group
+its index commits is damage no cut mends: the append, the seal and the
+next writer's lease are refused, naming the file, before either file is
+cut. **A seal is one rename.**
 It writes the next segment's index whole (its event lines and their
 commit line) and syncs it and its name, then the segment's lines as
 `log/<first>.jsonl.partial`, synced, and renames that to
