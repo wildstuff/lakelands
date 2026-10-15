@@ -92,7 +92,11 @@ once keeps both promises and buys most of what one sync would.
   readable and not yet durable is the two syncs at once, where it was
   the index's sync.
 - **Not a rule for PostgreSQL.** Its append is one transaction and one
-  WAL flush, with no index. Its projection's commit, which is synced
-  there and not on SQLite, was considered here and not taken: the
-  projection is folded again from the log, and how far a refold after a
-  crash may reach is a question of its own (lakelands#1129).
+  WAL flush, with no index. Its projection's commit waits for no flush,
+  as SQLite's does not
+  (`docs/decisions/061-a-projection-commit-waits-for-no-flush.md`).
+
+## How it came to be
+
+- The PostgreSQL projection's commit, named here as considered and not
+  taken, was taken in its own record, 061 (lakelands#1129).

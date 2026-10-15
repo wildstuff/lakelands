@@ -18,6 +18,11 @@
 //! it checks the fence against the lease row, checks that the events
 //! continue the log, inserts them and commits. After a crash an append is
 //! either all there or not at all; nothing needs cutting off.
+//!
+//! **Synced.** An append's and a seal's commits wait for their flush
+//! whatever the server, the database or the role sets, so an answered
+//! append outlasts a crash, and it flushes the projection commits before
+//! it (`docs/decisions/061-a-projection-commit-waits-for-no-flush.md`).
 
 use std::io::Write as _;
 use std::path::Path;
@@ -31,6 +36,9 @@ use sha2::{Digest as _, Sha256};
 use crate::connect::Db;
 use crate::invalid;
 use crate::projection::Names;
+
+/// How an append and a seal begin: synced, whatever the session's default.
+const SYNCED: &str = "BEGIN ISOLATION LEVEL READ COMMITTED; SET LOCAL synchronous_commit = on";
 
 /// Create the first, empty segment of a new lake.
 pub(crate) fn create(db: &mut Db, names: &Names) -> Result<()> {
@@ -116,7 +124,7 @@ pub(crate) fn append(
     if events.is_empty() {
         return Ok(());
     }
-    db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
+    db.transaction(SYNCED, |db| {
         fenced(db, names, lease, Act::Appended)?;
         add(db, names, lease, events, imported)
     })
@@ -282,7 +290,7 @@ pub(crate) fn seal(
     imported: bool,
     first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
 ) -> Result<Option<SegmentDigest>> {
-    db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
+    db.transaction(SYNCED, |db| {
         fenced(db, names, lease, Act::Sealed)?;
         let active = active(db, names)?;
         let Some((from, to)) = span(db, names, active)? else {

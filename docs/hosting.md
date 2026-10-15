@@ -52,6 +52,12 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   give, and the statement then fails as unavailable ("could not resize
   shared memory segment") (lakelands#1161).
 
+  The engine sets `synchronous_commit` itself: `on` for the log's
+  appends and seals, so a server or role set to `off` loses no answered
+  append, and `off` for the projection's commits, which a crash can lose
+  and a writer's open folds again from the log
+  (`docs/decisions/061-a-projection-commit-waits-for-no-flush.md`).
+
   A process serving a SQLite lake shows up to the tuning's `mmap_mb`
   (256 MiB unless set; `0` turns it off) more resident memory once it
   has read that much of the projection: file pages mapped for reads,

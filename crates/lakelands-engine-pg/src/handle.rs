@@ -547,7 +547,10 @@ impl PgLake {
 
 impl ProjectionStore for PgLake {
     /// Opens a transaction. Beginning while one is open abandons the open
-    /// one, as a rollback would.
+    /// one, as a rollback would. Its commit waits for no flush of its own:
+    /// the next append, synced, flushes it, and a fold a crash takes is
+    /// folded again from the log
+    /// (`docs/decisions/061-a-projection-commit-waits-for-no-flush.md`).
     fn begin(&self) -> Result<()> {
         let writing = self.writing()?;
         let mut transaction = lock(&self.transaction);
@@ -555,7 +558,8 @@ impl ProjectionStore for PgLake {
         if transaction.take().is_some() {
             db.batch("ROLLBACK")?;
         }
-        let begun = db.batch("BEGIN ISOLATION LEVEL READ COMMITTED");
+        let begun =
+            db.batch("BEGIN ISOLATION LEVEL READ COMMITTED; SET LOCAL synchronous_commit = off");
         self.lost(&db, None, begun, None)?;
         *transaction = Some(Transaction::default());
         Ok(())
