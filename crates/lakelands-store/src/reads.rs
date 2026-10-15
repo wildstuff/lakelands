@@ -3723,10 +3723,33 @@ impl<'a> Reader<'a> {
         // its first records, so it reads as many as its page reaches and
         // one more (lakelands#963).
         let hood = p.project == Projection::Graph && !chain && p.to.is_none();
+        // A neighbourhood's cursor names the last start its page held, and
+        // a page from it reads the starts after it, inside them where more
+        // than the page follow (lakelands#1050). A graph's other `after` is
+        // another read's.
+        let after_start = match &after {
+            Some((v, key)) if hood && v.as_slice() == [Value::from(0u64)] => Some(key.clone()),
+            Some(_) if p.project == Projection::Graph => return Err(invalid(Case::CursorForeign)),
+            _ => None,
+        };
+        let mut inside = None;
         let few = match few {
             None if hood && start_decl.view.is_none() => {
-                let want = offset.saturating_add(limit).saturating_add(1);
-                Some(self.page(&start_decl, filter.as_ref(), &[], None, want)?)
+                let more = limit.saturating_add(1);
+                let after = after_start.clone().map(|key| (Vec::new(), key));
+                let read = match after {
+                    Some(after) => {
+                        self.page(&start_decl, filter.as_ref(), &[], Some(after), more)?
+                    }
+                    None => Vec::new(),
+                };
+                if read.len() > limit {
+                    inside = after_start;
+                    Some(read)
+                } else {
+                    let want = offset.saturating_add(limit).saturating_add(1);
+                    Some(self.page(&start_decl, filter.as_ref(), &[], None, want)?)
+                }
             }
             None if !binds || start_decl.view.is_some() => {
                 Some(self.records(&start_decl, filter.as_ref())?)
@@ -3764,13 +3787,63 @@ impl<'a> Reader<'a> {
         // one walk orders what it reaches (026, 029), a page at a time.
         if p.project == Projection::Graph {
             let bound = (max_depth, self.lake.limits.max_graph_nodes);
-            let g = match chain {
-                true => graph::spanned(&hidden, &from, &p.steps, bound, offset, limit, keep)?,
-                false => graph::subgraph(&hidden, &from, &p.steps, max_depth, offset, limit, keep)?,
+            let g = match (chain, &inside) {
+                (true, _) => graph::spanned(&hidden, &from, &p.steps, bound, offset, limit, keep)?,
+                (false, Some(last)) => {
+                    // The page's starts are held for a step's `where`, and a
+                    // link is walked back to a start's type alone.
+                    hidden.remember(few.iter().flatten().cloned());
+                    let only = |r: &Reach| {
+                        let far = r.far.as_ref().is_none_or(|f| f.contains(&start_ty));
+                        let far = Some(far.then(|| start_ty.clone()).into_iter().collect());
+                        Reach {
+                            owner: r.owner.clone(),
+                            far,
+                        }
+                    };
+                    let back: Vec<Reach> = reach.iter().map(only).collect();
+                    let back = Visible {
+                        reader,
+                        reach: &back,
+                        records: None,
+                    };
+                    // The starts an earlier page held, of the page's far
+                    // records: of the start's type, at or before the
+                    // cursor's key, and selected by its filter, read together.
+                    let earlier = |far: &BTreeSet<lakelands_core::graph::Node>| -> Result<BTreeSet<lakelands_core::graph::Node>> {
+                        // What the walk holds is not read again.
+                        let held = |n: &lakelands_core::graph::Node| {
+                            hidden.records.as_ref().and_then(|h| h.borrow().get(n).cloned())
+                        };
+                        let (mut rows, mut keys) = (Vec::new(), Vec::new());
+                        for n in far.iter().filter(|n| n.0 == start_ty && n.1 <= *last) {
+                            match held(n) {
+                                Some(r) => rows.push(r),
+                                None => keys.push(n.1.clone()),
+                            }
+                        }
+                        if !keys.is_empty() {
+                            rows.extend(self.get_many(&start_ty, &keys)?);
+                        }
+                        Ok(rows
+                            .into_iter()
+                            .filter(|r| filter.as_ref().is_none_or(|f| self.holds(f, r, true)))
+                            .map(|r| (r.ty, r.key))
+                            .collect())
+                    };
+                    graph::starts_page(&hidden, &back, &from, &p.steps, limit, earlier, keep)?
+                }
+                (false, None) => {
+                    graph::subgraph(&hidden, &from, &p.steps, max_depth, offset, limit, keep)?
+                }
             };
+            // Where the page ends inside the starts, the next one begins
+            // after its last start.
+            let last_start = (g.nodes.last()).filter(|r| r.depth == 0 && !chain);
+            let at = last_start.map(|r| (vec![Value::from(0u64)], r.node.1.clone()));
             let next = g
                 .truncated
-                .then(|| self.page_cursor(p, (offset + limit, None), params));
+                .then(|| self.page_cursor(p, (offset + limit, at), params));
             return self.graph_result(g.nodes, g.edges, next).map(Ok);
         }
         // What each step reaches (lakelands#991): a step walked whole before

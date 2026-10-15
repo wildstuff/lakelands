@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::Result;
-use lakelands_api::query::{Edge, Step};
+use lakelands_api::query::{Edge, Step, Walk};
 
 use super::{EdgeId, EdgeSource, Links, Node, Reached, check_depth, edge_id, hop};
 
@@ -100,6 +100,66 @@ where
         level = first..nodes.len();
     }
     Ok(page(nodes, walked, offset, limit))
+}
+
+/// One page of the neighbourhood of [`subgraph`] that lies inside its
+/// starts: `starts`, the starts after the last one an earlier page held,
+/// more of them than `limit`. The page is the first `limit`, and its links
+/// are those walked between one of them and one of the page or a start
+/// `earlier` says an earlier page held, asked once for the page's far
+/// records together. A link from an earlier start to one of the page is
+/// walked from the page's end, against its step, over `back`, which
+/// reaches records of the starts' type alone. The steps' depths are the
+/// caller's to have checked.
+pub fn starts_page<S, B, K, E>(
+    source: &S,
+    back: &B,
+    starts: &[Node],
+    steps: &[Step],
+    limit: usize,
+    earlier: E,
+    mut keep: K,
+) -> Result<Subgraph>
+where
+    S: EdgeSource + ?Sized,
+    B: EdgeSource + ?Sized,
+    K: FnMut(usize, &Node) -> Result<bool>,
+    E: FnOnce(&BTreeSet<Node>) -> Result<BTreeSet<Node>>,
+{
+    let mut links = Links::new(source);
+    let page: Vec<Node> = starts.iter().take(limit).cloned().collect();
+    let mut found: Vec<(Node, Edge)> = hop(&mut links, &page, steps, 1, &mut keep)?.concat();
+    let mut behind = Links::new(back);
+    for (i, s) in steps.iter().enumerate().filter(|(_, s)| s.depth.max >= 1) {
+        let walk = match s.walk {
+            Walk::Out => Walk::In,
+            Walk::In => Walk::Out,
+            Walk::Both => Walk::Both,
+        };
+        let around = behind.around(&page, std::slice::from_ref(&s.relation), walk, Some(i))?;
+        for (near, one) in page.iter().zip(around) {
+            if keep(i, near)? {
+                found.extend(one);
+            }
+        }
+    }
+    let held: BTreeSet<&Node> = page.iter().collect();
+    let far = found.iter().map(|(f, _)| f).filter(|f| !held.contains(f));
+    let theirs = earlier(&far.cloned().collect())?;
+    let ours = |f: &Node| held.contains(f) || theirs.contains(f);
+    let walked: BTreeMap<EdgeId, Edge> = (found.into_iter())
+        .filter(|(f, _)| ours(f))
+        .map(|(_, e)| (edge_id(&e), e))
+        .collect();
+    let nodes = page
+        .into_iter()
+        .map(|node| Reached { node, depth: 0 })
+        .collect();
+    Ok(Subgraph {
+        nodes,
+        edges: walked.into_values().collect(),
+        truncated: true,
+    })
 }
 
 /// The page at `offset..offset + limit` of `nodes`, already in their

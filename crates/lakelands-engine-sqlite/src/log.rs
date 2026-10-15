@@ -412,8 +412,8 @@ pub(crate) struct Log {
     sealed: usize,
     /// How a file of the log is synced: `sync_data`, a fault in a test.
     sync: fn(&Path, &File) -> io::Result<()>,
-    /// Whether a sync failed twice on this handle: it writes nothing more
-    /// (module doc).
+    /// Whether a sync failed on this handle and writing it again failed
+    /// too: it writes nothing more (module doc).
     unsynced: bool,
 }
 
