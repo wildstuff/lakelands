@@ -108,6 +108,34 @@ impl KeyStore for Keys {
 }
 
 impl Keys {
+    /// The keys a file keyring's file holds for `lake` (`<lake>.keys.json`,
+    /// 058): each source's versions as hex, a destroyed source's none.
+    pub(super) fn from_file(path: &std::path::Path, lake: &LakeId) -> Result<Keys, Failure> {
+        let text =
+            std::fs::read(path).map_err(|e| Failure::new(format!("reading the key file: {e}")))?;
+        let ring: Value = serde_json::from_slice(&text)
+            .map_err(|e| Failure::new(format!("the key file is no JSON: {e}")))?;
+        let key = |k: &Value| {
+            let (id, hex) = (k[0].as_str()?, k[1].as_str()?);
+            let byte = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
+            let bytes: Option<Vec<u8>> = (0..hex.len()).step_by(2).map(byte).collect();
+            Some((KeyId::from(id), Some(<[u8; 32]>::try_from(bytes?).ok()?)))
+        };
+        let mut held = BTreeMap::new();
+        for (source, versions) in ring["sources"].as_object().into_iter().flatten() {
+            let keys = versions["keys"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(key);
+            held.insert(
+                (lake.clone(), SourceId::from(source.as_str())),
+                keys.collect(),
+            );
+        }
+        Ok(Keys(Mutex::new(held)))
+    }
+
     /// A copy of every key, as a backup of the key store holds them.
     pub(super) fn backup(&self) -> Keys {
         Keys(Mutex::new(crate::lock(&self.0).clone()))

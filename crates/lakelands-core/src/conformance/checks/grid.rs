@@ -69,9 +69,9 @@ check!(
     given
 );
 
-/// Cells red for an open issue of 0.14.0, by the start of their name, and
-/// the issue. A cell listed must be red; one that holds is removed by its
-/// fix.
+/// Cells red for an open issue, by the start of their name, and the
+/// issue; none is open now. A cell listed must be red; one that holds is
+/// removed by its fix.
 const KNOWN: &[(&str, u32)] = &[];
 
 /// The cells whose owner's answers differ between the twins.

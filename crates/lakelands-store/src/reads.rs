@@ -3738,7 +3738,7 @@ impl<'a> Reader<'a> {
         // Whether a record reached over step `i` is kept and walked from:
         // it is of the step's `type`, and its `where`, read against the type
         // the step reaches, holds of it.
-        let keep = |i: usize, node: &lakelands_core::graph::Node| -> Result<bool> {
+        let keep = |i: usize, node: &graph::Node| -> Result<bool> {
             if p.steps[i].ty.as_ref().is_some_and(|t| *t != node.0) {
                 return Ok(false);
             }
@@ -3809,7 +3809,7 @@ impl<'a> Reader<'a> {
             }
             few => few,
         };
-        let from: Vec<lakelands_core::graph::Node> = (few.iter().flatten())
+        let from: Vec<graph::Node> = (few.iter().flatten())
             .map(|s| (s.ty.clone(), s.key.clone()))
             .collect();
         // A path, from its one start.
@@ -3863,10 +3863,13 @@ impl<'a> Reader<'a> {
                     // The starts an earlier page held, of the page's far
                     // records: of the start's type, at or before the
                     // cursor's key, and selected by its filter, read together.
-                    let earlier = |far: &BTreeSet<lakelands_core::graph::Node>| -> Result<BTreeSet<lakelands_core::graph::Node>> {
+                    let earlier = |far: &BTreeSet<graph::Node>| -> Result<BTreeSet<graph::Node>> {
                         // What the walk holds is not read again.
-                        let held = |n: &lakelands_core::graph::Node| {
-                            hidden.records.as_ref().and_then(|h| h.borrow().get(n).cloned())
+                        let held = |n: &graph::Node| {
+                            hidden
+                                .records
+                                .as_ref()
+                                .and_then(|h| h.borrow().get(n).cloned())
                         };
                         let (mut rows, mut keys) = (Vec::new(), Vec::new());
                         for n in far.iter().filter(|n| n.0 == start_ty && n.1 <= *last) {
