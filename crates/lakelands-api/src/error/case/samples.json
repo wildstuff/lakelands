@@ -450,6 +450,10 @@
    "code": "valid_time_stands"
   },
   {
+   "code": "valid_to_alone",
+   "field": "f"
+  },
+  {
    "code": "value_type_format",
    "format": "s",
    "value_type": "vt"

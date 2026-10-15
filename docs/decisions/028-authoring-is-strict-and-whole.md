@@ -251,6 +251,22 @@ instant at its UTC midnight, so a booking valid from `2026-07-01` to
 declaration in force is not checked again until it is declared again,
 and then it is checked as any other is.
 
+A valid time has a start (lakelands#909). A `valid_to` with no
+`valid_from` is refused as `invalid` on it (`valid_to_alone`) by the
+same doors: a read at `valid_at` keeps a record from its start up to
+its end, and with no start there is nothing to keep it by, so such an
+end would filter nothing while it looked like a filter. A type in force
+that holds one alone, as a lake written before this rule may, keeps
+one: declared again, as it is or with its end on another field, it is
+not refused, and a read at `valid_at` reads it as a type with no valid
+time, filtering by nothing and probing nothing (006). The type is judged
+as its author is shown it, before what it is not shown is put back: to
+an author not shown its start a type that has both reads as one with an
+end alone, whose end it may move, and to one shown neither bound it
+reads as a type with none, where an end sent alone is refused as on any
+such type, so the answer does not tell that a bound it is not shown
+stands.
+
 ### The schema doors refuse in one order
 
 The schema doors refuse in this order, in the frame every write door

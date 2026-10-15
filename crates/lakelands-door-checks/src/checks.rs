@@ -13703,15 +13703,26 @@ pub async fn a_shape_names_no_field_its_author_may_not_know_of(store: Arc<dyn La
             left == "taken" && plain == "taken",
             "`{axis}` left out is taken on `stamped` as on `plain`: {left} | {plain}"
         );
+        // An end with no start shown is one alone, refused on both as on a
+        // type with no valid time (028, lakelands#909); a start is the
+        // bound taken.
+        let code = match axis {
+            "valid_to" => "valid_to_alone",
+            _ => "valid_time_stands",
+        };
         for door in ["declare", "migrate"] {
             let answer = wire(&send(shape("stamped", axis, Some("d2")), door).await);
             assert!(
-                answer.contains("\"code\":\"valid_time_stands\""),
-                "`{axis}: d2` sent by `{door}` on `stamped` is refused as the bound taken: {answer}"
+                answer.contains(&format!("\"code\":\"{code}\"")),
+                "`{axis}: d2` sent by `{door}` on `stamped` is refused `{code}`: {answer}"
             );
         }
         let plain = wire(&send(shape("plain", axis, Some("d2")), "migrate").await);
-        assert_eq!(plain, "taken", "`{axis}: d2` on `plain` is taken");
+        let taken = axis == "valid_from" && plain == "taken";
+        assert!(
+            taken || plain.contains(&format!("\"code\":\"{code}\"")),
+            "`{axis}: d2` on `plain` is taken, an end alone refused: {plain}"
+        );
     }
     // As the store: a field of its own named like a hidden one, sent as a
     // valid time, is a field declared twice, as on `plain`.

@@ -98,6 +98,7 @@ mod sorted_whole;
 mod streaming;
 mod triggers;
 mod upgrade;
+mod valid_cells;
 mod value_renames;
 mod value_types;
 mod values;

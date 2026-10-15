@@ -537,10 +537,12 @@ A read at `valid_at` filters on its type's `valid_from` and `valid_to`,
 so it probes them as a filter on them would: `find`, `get`, `search`, a
 pattern's start and every type a walk reaches. It filters by the bounds
 the reader is shown and probes only those: with both hidden it answers
-as for a type with no valid time, with one hidden as for a type declared
-with the other alone, word for word. A refusal, or a filter by the
-hidden bound, would tell the reader that a valid time it is not shown
-exists.
+as for a type with no valid time; with the end hidden, by the start
+alone; with the start hidden, by the end alone, a record holding while
+it has not ended. A refusal, or a filter by the hidden bound, would tell
+the reader that a valid time it is not shown exists. A type in force
+with a `valid_to` and no `valid_from` (028) is filtered by nothing, so
+its read probes nothing either (lakelands#909).
 
 A walk keeps each record it meets by its own type's valid time, so it
 probes every type it can meet, not only the one a step is judged to
@@ -561,11 +563,25 @@ A view read at `valid_at` is computed from its sources' records as they
 are valid then, so the computation probes each source's valid-time
 fields too, those its reader may know of, a merged source's as the
 first, and as deep as the view goes: a view over a view is computed from
-the inner one, whose computation probes its own source. The probe stands
-where the computation reads a source, beside the view's other probes, so
-every door that computes the view makes it: `find`, `get`, a pattern's
-start, and a walk where it computes the view it arrives at. What reads
-no source at a valid time probes none: the kept records of a view, and
+the inner one, whose computation probes its own source. The probes of
+every source, merged ones included and as deep as the view goes, are
+made before the computation reads a record, so what a reader is told
+does not turn on the order of the sources: a measure of one source that
+fails is told only to a reader every probe admits (lakelands#911). So
+every door that computes the view makes them: `find`, `get`, a
+pattern's start, and a walk where it computes the view it arrives at.
+A read at `valid_at` reads no kept records of a view in whose tree a
+valid time is declared, its own or a source's, merged and nested ones
+included: a kept fold has no valid time, so whatever its reader is shown
+of the view's own valid time, the view is computed at that date, and
+every door answers it alike (lakelands#910); the view's own valid time
+then keeps its computed records as a type's keeps its stored ones, by
+the bounds its reader is shown. Which views those are is
+read from the declarations alone, never from what the reader is shown;
+a view with none in its tree is read from its kept records at a valid
+time as without one, since nothing there is filtered by it. What reads
+no source at a valid time probes none: a read without one, which may
+read the kept records, and
 `describe`, which shows a view alike with a valid time and without. The
 probe is the view's own: it names the field to a holder of `schema` and
 nothing of the source to another reader.

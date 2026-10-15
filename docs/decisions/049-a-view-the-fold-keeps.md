@@ -60,9 +60,11 @@ would have to reproduce one.
   otherwise on the whole face. A read
   answers the kept records where the state at its position says whole
   and counts no group that is not exact for the reader's face, for the
-  view and for every view it reads through, and where the read names no
-  valid time; it computes otherwise. So a refusal, its sentence and its
-  order are always the computation's own.
+  view and for every view it reads through, and, at a valid time, where
+  no valid time is declared in the view's tree, its own or a source's,
+  merged and nested ones included, judged by the declarations alone
+  (lakelands#910); it computes otherwise. So a refusal, its sentence and
+  its order are always the computation's own.
 - **What is not exact is counted, never returned.** A measure that
   fails over a group (a division by zero, a value its field would not
   take written, 023), a member whose argument does

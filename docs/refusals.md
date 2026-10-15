@@ -351,6 +351,7 @@ What a refusal is about.
 | `undeclared` | `type` (TypeName) | `{type}` is not a declared type | A type named that is not declared. |
 | `valid_time_not_time` | `field` (FieldName), `axis` (String), `kind` (StorageKind) | it names `{field}` as its `{axis}`, a {kind} field; a valid time is a date_time or a date field | A valid time over a field that is neither a date-time nor a date. |
 | `valid_time_stands` | `axis` (String) | its `{axis}` names a field you may not know of, and stands as declared | A field its author may name, sent as a valid time where one over a field it may not know of stands: the bound is taken. |
+| `valid_to_alone` | `field` (FieldName) | it names `{field}` as its `valid_to` and no `valid_from`; a valid time has a start | A `valid_to` declared without a `valid_from`. |
 | `value_type_format` | `value_type` (ValueTypeName), `format` (String) | value type `{value_type}` names the unknown format `{format}` | A value type naming a format that does not exist. |
 | `value_type_kind` | `field` (FieldName), `value_type` (ValueTypeName), `expected` (StorageKind), `found` (StorageKind) | field `{field}` uses value type `{value_type}`, which is {expected}, but the field is {found} | A field stored as another kind than its value type. |
 | `vector_dimensions` | — | a vector names its dimensions, more than zero | A vector with no dimensions. |

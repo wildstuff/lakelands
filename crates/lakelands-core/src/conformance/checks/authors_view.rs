@@ -442,7 +442,7 @@ async fn a_migrations_faults_come_in_one_order_for_a_hidden_name_and_an_absent_o
 
 check!(
     HIDDEN_NAME_NOT_IN_THE_SHAPE = a_shape_names_no_field_its_author_may_not_know_of,
-    "027 and 024, extended (lakelands#726): a valid time, a key or a relation's `via` its author gives anew names a field of its view, so a field it may not know of answers word for word as a name no field has, by `declare` and by `migrate`, and the type in force is unmoved; what stands as declared is taken, valid times left out as `describe` gives them, and a rename from a relation the author is not shown, or a relation of that name sent to a hidden type, answers as for no relation and no type; a valid time sent where one over such a field stands, the one in force restated too, is judged by its name first, answering as on a type with none, and only a field its author may name is refused, as the bound taken (lakelands#692); a valid-time bound over a field its reader may not know of is not described, and a read at a `valid_at`, its total and a `get` answer by the bounds shown, as on a type declared with those alone"
+    "027 and 024, extended (lakelands#726): a valid time, a key or a relation's `via` its author gives anew names a field of its view, so a field it may not know of answers word for word as a name no field has, by `declare` and by `migrate`, and the type in force is unmoved; what stands as declared is taken, valid times left out as `describe` gives them, and a rename from a relation the author is not shown, or a relation of that name sent to a hidden type, answers as for no relation and no type; a valid time sent where one over such a field stands, the one in force restated too, is judged by its name first, answering as on a type with none, and only a field its author may name is refused, as the bound taken (lakelands#692), but for an end sent with no start shown, which is refused as one alone, as on a type with none (028, lakelands#909); a valid-time bound over a field its reader may not know of is not described, and a read at a `valid_at`, its total and a `get` answer by the bounds shown, as on a type declared with those alone"
 );
 
 async fn a_shape_names_no_field_its_author_may_not_know_of(store: Store) -> Held {
@@ -690,7 +690,13 @@ async fn a_shape_names_no_field_its_author_may_not_know_of(store: Store) -> Held
             left.is_ok() && plain.is_ok(),
             "`{axis}` left out is taken on `stamped` as on `plain`: {left:?} | {plain:?}"
         );
-        let says = json!({"code": "valid_time_stands", "axis": axis});
+        // An end with no start shown is one alone, refused on both as on a
+        // type with no valid time (028, lakelands#909); a start is the
+        // bound taken.
+        let says = match axis {
+            "valid_to" => json!({"code": "valid_to_alone", "field": "d2"}),
+            _ => json!({"code": "valid_time_stands", "axis": axis}),
+        };
         for door in ["declare", "migrate"] {
             let answer = send(shape("stamped", axis, Some("d2")), door).await;
             ensure!(
@@ -700,7 +706,11 @@ async fn a_shape_names_no_field_its_author_may_not_know_of(store: Store) -> Held
             );
         }
         let plain = send(shape("plain", axis, Some("d2")), "migrate").await;
-        ensure!(plain.is_ok(), "`{axis}: d2` on `plain` is taken: {plain:?}");
+        let taken = axis == "valid_from" && plain.is_ok();
+        ensure!(
+            taken || invalid_like(&plain, &says),
+            "`{axis}: d2` on `plain` is taken, an end alone refused: {plain:?}"
+        );
     }
     // A field of its own named like a hidden one, sent as a valid time, is
     // a field declared twice, as on `plain`, and never the bound taken: the
@@ -1572,22 +1582,13 @@ async fn a_declaration_in_force_listed_to_no_one_is_declared_again_by_no_one(
     store: Store,
     given: crate::conformance::Given,
 ) -> Held {
-    use crate::conformance::Lines;
-    use crate::conformance::fixture::{head_unmoved, log_events, write_verb};
-    use lakelands_api::engine::{CanonicalEvent, OpenMode};
-    use lakelands_api::event::{Digest, Event, EventBody, EventId};
-    use lakelands_api::seam::Seams;
+    use crate::conformance::fixture::{declared_below, head_unmoved, write_verb};
     let l = Lake::of(store.as_ref());
     l.declare(type_of(
         "job",
         &[("state", StorageKind::Text), ("secret", StorageKind::Text)],
     ))
     .await?;
-    let events = log_events(store.as_ref()).await?;
-    let template = events
-        .last()
-        .cloned()
-        .ok_or_else(|| Failure::new("the lake holds a log"))?;
     // `close` declared below the store, its `requires` not parsing.
     let mut close = write_verb("close", "job", "state", "'shut'");
     if let Declaration::Verb(v) = &mut close {
@@ -1599,51 +1600,7 @@ async fn a_declaration_in_force_listed_to_no_one_is_declared_again_by_no_one(
     if let Declaration::Verb(v) = &mut found {
         v.requires = Some("state = ((".into());
     }
-    let declared = [close.clone(), found];
-    let lines: Lines = Box::new(move |(mut tip, mut prev), fence| {
-        let mut lines = Vec::new();
-        for declaration in declared {
-            let position = tip.next();
-            let body = EventBody::Declared {
-                declaration,
-                schema_hash: None,
-                version: 1,
-                with_the_set: false,
-            };
-            let event = Event {
-                position,
-                id: EventId(format!("{:032x}", position.0)),
-                prev: prev.clone(),
-                fence,
-                body,
-                ..template.clone()
-            };
-            let mut value = json!(event);
-            value.as_object_mut().map(|m| m.remove("hash"));
-            let hash = Digest(crate::canonical::sha256_hex(&value));
-            value["hash"] = json!(hash);
-            let bytes = crate::canonical::to_vec(&value);
-            let id = event.id;
-            lines.push(CanonicalEvent {
-                position,
-                id,
-                prev,
-                hash: hash.clone(),
-                fence,
-                bytes,
-            });
-            (tip, prev) = (position, hash);
-        }
-        (lines, 0)
-    });
-    let (lake, mode) = (store.lake().clone(), OpenMode::Write);
-    let c = (given.continued)(Some(store), lake, lines, mode, Seams::default());
-    let c = c
-        .await
-        .map_err(|e| Failure::new(format!("continuing the lake below the store: {e}")))?;
-    let store = c
-        .opened
-        .map_err(|e| Failure::new(format!("opening the lake again: {e}")))?;
+    let store = declared_below(store, &given, vec![close.clone(), found]).await?;
     let l = Lake::of(store.as_ref());
     let hidden = [(FieldName::from("secret"), Access::None)].into();
     let mut grants = lakelands_api::Grants {
