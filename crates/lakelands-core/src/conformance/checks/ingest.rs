@@ -650,7 +650,7 @@ async fn an_ingest_refusal_names_its_record_and_where_its_window_began(store: St
 
 check!(
     INSERT_ONLY = an_insert_only_type_is_written_once_by_its_source,
-    "016 and 027, extended (lakelands#1044): a type marked `insert_only` takes a record from its source once: the same record again is a duplicate, other values for a key that holds a record, live or retired, or that the window wrote already, are refused as `written_once`, naming the record and appending nothing, while an author still writes its authored fields; a key held from its writer answers as on an unmarked type; `describe_type` says the mark; declared on a type that holds records it is taken with no migration, its version moving and its schema hash not, and taken off, a key moves its version again"
+    "016 and 027, extended (lakelands#1044): a type marked `insert_only` takes a record from its source once: the same record again is a duplicate, other values for a key that holds a record, live or retired, or that the window wrote already, are refused as `written_once`, naming the record and appending nothing, and the pair cut after its first record on a signal is refused alike at its second, the first written and `from` 1 (lakelands#886), while an author still writes its authored fields; a key held from its writer answers as on an unmarked type; `describe_type` says the mark; declared on a type that holds records it is taken with no migration, its version moving and its schema hash not, and taken off, a key moves its version again"
 );
 
 async fn an_insert_only_type_is_written_once_by_its_source(store: Store) -> Held {
@@ -708,6 +708,33 @@ async fn an_insert_only_type_is_written_once_by_its_source(store: Store) -> Held
     ] {
         step("feed", recs, want).await?;
     }
+    // The pair cut on a signal answers alike: its second record refused,
+    // the first written, as `from` tells (lakelands#886).
+    let pair = ["a", "b"].map(|b| source_record("feed", "c1", json!({"body": b})));
+    let fed = crate::conformance::fixture::fed(l.cat.as_ref(), &l.own, "dev", pair.into(), Some(1));
+    let cut = match fed.await {
+        (
+            done,
+            Some(Error::Ingested {
+                index, from, error, ..
+            }),
+        ) => Some((
+            committed(&done),
+            index,
+            from,
+            error.case().map(|s| s.case.clone()),
+        )),
+        _ => None,
+    };
+    let once = Case::WrittenOnce {
+        ty: "feed".into(),
+        key: "c1".into(),
+    };
+    ensure!(
+        cut == Some(((1, 0), 1, 1, Some(once))),
+        "`c1` twice, cut after the first, writes the first and refuses the second as written \
+         once, from 1; it answered {cut:?}"
+    );
     // An author still writes its fields; a retired key stays written.
     l.upsert("feed", "r1", json!({"verdict": "fine"})).await?;
     l.retire("feed", "r1").await?;

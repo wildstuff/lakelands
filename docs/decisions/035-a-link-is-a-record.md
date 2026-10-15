@@ -166,7 +166,7 @@ link type as on any type.
 A trigger on a relation watches its link type: `on` names
 `sys.link.<type>.<relation>`. It fires on every write of a link, as a
 trigger on a type fires on every write of a record: `link`, a link
-written again, `unlink`, and each link a source ingests, per window.
+written again, `unlink`, and each link a source ingests, link by link.
 Its guard reads the link's fields (`from`, `to` and the relation's
 own), and `changed(f)` holds on a write that changes `f`. On `unlink`
 the guard reads the link's fields as they were, and none reads as
@@ -346,3 +346,4 @@ doors that check the relation's authority and cardinality.
   version by its number; `docs/log-format.md` has it. The first rule's
   sentence that the log format does not change, untrue since
   lakelands#429, left.
+- A trigger on a relation fires on each link a source ingests, link by link: "per window" said of it what no answer turns on (lakelands#886).

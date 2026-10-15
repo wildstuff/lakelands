@@ -206,12 +206,11 @@ does not is the path's. One call so carries the batches of many sources,
 each record's event stamped with its own. The answer is NDJSON too: one line per commit
 window as it becomes durable,
 `{"position":…,"records":…,"duplicates":…}`. Where a window is cut is
-the store's: a client cannot make two records share one, so what is
-judged over a window (a relation's cardinality among the links that
-arrive together) is judged over whatever the store took as one. Two
-links that break a cardinality together are refused as one window, or
-the first is committed and the second refused; a host takes both
-answers. While a window takes
+the store's, and no answer turns on it: a record is judged over the
+lake and the records before it, and a refused one is refused alike
+wherever the cut fell. What the cut decides is only the refusal's
+`from`, whether the records of its window before it were written; a
+host resumes there. While a window takes
 longer than fifteen seconds to commit, the answer carries an empty line
 every fifteen seconds, so a client that holds the answer to a silence
 bound knows the server is working; a client skips it. The reply's

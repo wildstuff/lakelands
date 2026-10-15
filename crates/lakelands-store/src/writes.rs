@@ -2350,7 +2350,7 @@ impl Decide<'_> {
                 }
                 let plan = self.record(&lt, &links::link_key(key, to), &patch, expected, None)?;
                 let sees = Sight::held(self.who, &self.w.ontology);
-                cardinality(self.view, &sees, ty, &r, key, to)?;
+                cardinality((self.view, &sees), None, (ty, &r), key, to)?;
                 self.planned(plan)
             }
             (Op::Unlink((_, key, _, to)), Some((lt, _))) => {
@@ -6206,19 +6206,26 @@ fn no_link_relation(ty: &TypeName, relation: &RelationName) -> Error {
     invalid(Case::NoLinkRelation { ty, relation })
 }
 
+/// A record as a write reads it, the head's or its append's.
+pub type Get<'a> = &'a dyn Fn(&TypeName, &RecordKey) -> Result<Option<StoredRecord>>;
+
+/// An ingest window's earlier links, `(link type, from, to)` each, and how
+/// it reads a record.
+pub type Window<'a> = (&'a [(TypeName, RecordKey, RecordKey)], Get<'a>);
+
 /// The relation's cardinality over live links, with the link from `from`
 /// to `to` among them: `many_to_one` and `one_to_one` allow one live link
 /// per `from`, `one_to_many` and `one_to_one` one per `to`. Answered from
-/// the links the engine walks at the head, not by reading every link. The
+/// the links the engine walks at the head, not by reading every link, then
+/// from an ingest window's earlier links, the records read as the window
+/// plans them: one answer wherever the store cut the stream (016). The
 /// other end of the link that holds is named only where a record holds
-/// its key and the principal of `sees` is answered that link: by its
-/// ends, as deep as they go, and by `only` on the link type itself (006,
-/// 051).
+/// its key and the principal of `sees` is answered that link: by its ends,
+/// as deep as they go, and by `only` on the link type itself (006, 051).
 pub fn cardinality(
-    view: &dyn ProjectionView,
-    sees: &Sight,
-    ty: &TypeName,
-    r: &RelationDecl,
+    (view, sees): (&dyn ProjectionView, &Sight),
+    window: Option<Window>,
+    (ty, r): (&TypeName, &RelationDecl),
     from: &RecordKey,
     to: &RecordKey,
 ) -> Result<()> {
@@ -6227,74 +6234,80 @@ pub fn cardinality(
     let (relation, cardinality) = (r.name.clone(), r.cardinality);
     let broken = |case: Case| constraint(Some(links::TO.into()), case);
     let lt = links::link_type_name(ty, &r.name);
-    // A key no record holds names nothing either, nor does the end of a
-    // link its writer is not answered.
-    let shown = |end: &TypeName, key: RecordKey, link: RecordKey| -> Result<Option<RecordKey>> {
-        let there = view.get(end, &key)?.is_some();
-        Ok((there && crate::reads::answered(view, sees, &lt, &link)?).then_some(key))
+    let head = |t: &TypeName, k: &RecordKey| view.get(t, k);
+    let (earlier, get): (&[_], Get) = window.unwrap_or((&[], &head));
+    let earlier = || {
+        earlier
+            .iter()
+            .filter(|(t, f, o)| *t == lt && (f, o) != (from, to))
     };
+    let walk = |end: &TypeName, key: &RecordKey, dir| -> Result<Vec<_>> {
+        Ok(view
+            .edges(end, std::slice::from_ref(key), Some(&r.name), dir)?
+            .remove(0))
+    };
+    // `from`'s other link first, in the head and then the window, then
+    // `to`'s: the one answered does not turn on where the store cut.
+    let mut other = None;
     if per_from
-        && let Some(e) = view
-            .edges(ty, std::slice::from_ref(from), Some(&r.name), Walk::Out)?
-            .remove(0)
+        && let Some(e) = walk(ty, from, Walk::Out)?
             .into_iter()
             .find(|e| e.to.1 != *to)
     {
-        let link = links::link_key(from, &e.to.1);
-        let (from, to) = (from.clone(), shown(&r.target, e.to.1, link)?);
-        return Err(broken(Case::LinkedAlreadyFrom {
-            from,
+        other = Some((true, e.to.1));
+    }
+    if other.is_none() && per_from {
+        other = earlier()
+            .find(|(_, f, _)| f == from)
+            .map(|(_, _, o)| (true, o.clone()));
+    }
+    if other.is_none() && per_to {
+        let mut there = walk(&r.target, to, Walk::In)?.into_iter();
+        other = (there.find(|e| e.from.0 == *ty && e.from.1 != *from)).map(|e| (false, e.from.1));
+    }
+    if other.is_none() && per_to {
+        other = earlier()
+            .find(|(_, _, o)| o == to)
+            .map(|(_, f, _)| (false, f.clone()));
+    }
+    let Some((of_from, end)) = other else {
+        return Ok(());
+    };
+    // A key no record holds names nothing either, nor does the end of a
+    // link its writer is not answered.
+    let link = match of_from {
+        true => links::link_key(from, &end),
+        false => links::link_key(&end, to),
+    };
+    let answered = || -> Result<bool> {
+        let (Ok(decl), who) = (sees.ty(&lt), sees.who()) else {
+            return Ok(false);
+        };
+        let Some(l) = get(&lt, &link)? else {
+            return Ok(true);
+        };
+        let mut many = |t: &TypeName, ks: &[RecordKey]| -> Result<Vec<StoredRecord>> {
+            ks.iter().filter_map(|k| get(t, k).transpose()).collect()
+        };
+        let restricted = who.grants.restricted && !rights::holds_only(who);
+        Ok(restricted || sees.ends(decl, &[&l.fields], &mut many)?[0] && sees.answers(&lt, &l))
+    };
+    let end_ty = if of_from { &r.target } else { ty };
+    let named = (get(end_ty, &end)?.is_some() && answered()?).then_some(end);
+    Err(broken(match of_from {
+        true => Case::LinkedAlreadyFrom {
+            from: from.clone(),
             relation,
-            to,
+            to: named,
             cardinality,
-        }));
-    }
-    if per_to
-        && let Some(e) = view
-            .edges(&r.target, std::slice::from_ref(to), Some(&r.name), Walk::In)?
-            .remove(0)
-            .into_iter()
-            .find(|e| e.from.0 == *ty && e.from.1 != *from)
-    {
-        let link = links::link_key(&e.from.1, to);
-        let (to, from) = (to.clone(), shown(ty, e.from.1, link)?);
-        return Err(broken(Case::LinkedAlreadyTo {
-            to,
+        },
+        false => Case::LinkedAlreadyTo {
+            to: to.clone(),
             relation,
-            from,
+            from: named,
             cardinality,
-        }));
-    }
-    Ok(())
-}
-
-/// The relation's cardinality among the links of one ingest window that
-/// came before: `(link type, from, to)` each.
-pub fn cardinality_among(
-    earlier: &[(TypeName, RecordKey, RecordKey)],
-    lt: &TypeName,
-    r: &RelationDecl,
-    from: &RecordKey,
-    to: &RecordKey,
-) -> Result<()> {
-    let (per_from, per_to) = one_per(r.cardinality);
-    for (_, f, o) in earlier.iter().filter(|(t, _, _)| t == lt) {
-        if f == from && o == to {
-            continue;
-        }
-        if (per_from && f == from) || (per_to && o == to) {
-            let (from, to, relation, cardinality) =
-                (f.clone(), o.clone(), r.name.clone(), r.cardinality);
-            let case = Case::WindowLinksAlready {
-                from,
-                to,
-                relation,
-                cardinality,
-            };
-            return Err(constraint(Some(links::TO.into()), case));
-        }
-    }
-    Ok(())
+        },
+    }))
 }
 
 /// What made an external verb due: a call, under a key or with none, or

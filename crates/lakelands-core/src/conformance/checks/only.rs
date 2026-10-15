@@ -538,7 +538,7 @@ async fn a_link_is_answered_where_its_ends_are_admitted(store: Store) -> Held {
 }
 
 /// What a link answered, short where a relation's cardinality refused
-/// it: the other end its case names, or that the window links already.
+/// it: the other end its case names.
 fn link_said<T>(answer: lakelands_api::Result<T>) -> String {
     let case = answer.as_ref().err().and_then(Error::case);
     match case.map(|s| s.case.clone()) {
@@ -550,7 +550,6 @@ fn link_said<T>(answer: lakelands_api::Result<T>) -> String {
             || "linked from no end".to_owned(),
             |k| format!("linked from `{k}`"),
         ),
-        Some(Case::WindowLinksAlready { .. }) => "linked in the window".to_owned(),
         _ => said(answer),
     }
 }
@@ -912,11 +911,7 @@ async fn a_holder_of_only_writes_its_own_records_alone(store: Store) -> Held {
     let again = link_said(fed(vec![stub("s1", "t5")]).await);
     row("kim's s1 → t5", again, "linked to `t1`");
     let window = link_said(fed(vec![stub("s2", "t1"), stub("s2", "t5")]).await);
-    row(
-        "kim's s2 → t1 and t5 at once",
-        window,
-        "linked in the window",
-    );
+    row("kim's s2 → t1 and t5 at once", window, "linked to `t1`");
     // A link her `only` on the link type keeps from her names her no end,
     // from either side, whichever record that end is: the owner's two
     // pairs, fed by another feed, answer her alike.

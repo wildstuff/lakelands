@@ -292,8 +292,15 @@ fn judge(
                     end.map(lakelands_api::RecordKey::from)
                 };
                 if let (Some(from), Some(to)) = (end(links::FROM), end(links::TO)) {
-                    crate::writes::cardinality(view, &sees, &t.name, relation, &from, &to)?;
-                    crate::writes::cardinality_among(&window_links, &r.ty, relation, &from, &to)?;
+                    let get = |ty: &_, key: &_| d.pending.record(view, ty, key);
+                    let window = Some((&window_links[..], &get as crate::writes::Get));
+                    crate::writes::cardinality(
+                        (view, &sees),
+                        window,
+                        (&t.name, relation),
+                        &from,
+                        &to,
+                    )?;
                     window_links.push((r.ty.clone(), from, to));
                 }
             }
