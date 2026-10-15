@@ -76,36 +76,33 @@ of changes without polling, `propose`, `proposals`, `accept` and
 (stdio and HTTP) and REST from one catalog. Agents never write a query
 language.
 
-> **Status: `0.14.0`.** Lakelands `0.14.0` is the `lakelands` CLI, its
+> **Status: `0.15.0`.** Lakelands `0.15.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the
-> whole conformance suite (583 checks through the doors and 68 through
-> the engine seam), with 58 decision records and the event log at
-> format version 15, installable from the release. Its budgets: the
-> store facade and engine traits hold 59 of 110 methods, the core
-> crates' product code 57 474 of 57 500 lines and their specification
-> 84 734 of 85 000, and 3 of 20 `cfg(feature)` sites. A ceiling rises
+> whole conformance suite (622 checks through the doors and 70 through
+> the engine seam), with 60 decision records and the event log at
+> format version 16, installable from the release. Its budgets: the
+> store facade and engine traits hold 65 of 110 methods, the core
+> crates' product code 62 358 of 62 500 lines and their specification
+> 91 535 of 92 000, and 3 of 20 `cfg(feature)` sites. A ceiling rises
 > only by a recorded rule (decision 047): the operator set the round's
-> reserve at 56 000 and 82 000, and the round's rights, integrity and
-> host fixes raised the product's twice, to 57 500, and the
-> specification's five times, to 85 000, row by row. Beside what
-> `0.13.0` held, a lake is kept from this release on: a writer's open
-> upgrades a format-14 log to 15 by appending, never rewriting, the
-> lake each release writes is kept as a vector every later release
-> must read as it answered, and the host surface is named and changes
-> only by one release of deprecation. A reader is answered only what it
-> is shown at every door a proposal, a migration or a report reaches,
-> the targets a retarget turns on included. A verb reads across a
-> reference, a link and a derived relation; a walk answers what each
-> step reaches, its depth and its type, and grows components from
-> every linked record. A migration fills a field's starting value into
-> the records that hold none, and a declaration or a migration that
-> computes a field again decides its sets in its own append. An ingest
-> takes a source for each record, keeps an exact-text index only where
-> a host looks a field up, and refuses a source id the log format
-> would not hold. A served PostgreSQL lake recovers from a dropped
-> connection, and a read the engine fails is answered `unavailable`.
-> Decision 058 says how a source will be forgotten, built in `0.15.0`.
+> ceilings at 62 500 and 90 500, and its last pull requests raised the
+> specification's once more, to 92 000, by a measured row. Beside what
+> `0.14.0` held, a source may be forgotten: a field declared erasable
+> is sealed under its source's key, and forgetting the source destroys
+> that key in one act, so its values read as erased at every position
+> (decision 058). A type declares constraints that every write door
+> judges (decision 059). A set's filter and a trigger's condition read
+> across a reference, a link and a derived relation. A declaration
+> answers how it stands, a type tells its value types, and a valid
+> time is read one way at every door. A feed waits for the next
+> append, and the server's consumers of one lake share one read of its
+> log. An append syncs its two files at once (decision 060). An ingest
+> window asks its ids once, and a listing reads the declarations' past
+> once and asks for a page of proposals at a time. A writer's open
+> upgrades a lake of format 14 or 15 to 16 by appending, and the lake
+> this release writes, sealed values and a forgotten source among
+> them, is kept beside those of the releases before.
 
 ## Try it
 

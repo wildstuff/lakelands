@@ -71,3 +71,37 @@ fn a_destroyed_source_has_no_key_and_gets_none() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The key file the kept lake of format 16 ships
+/// (`docs/log-format/lakes/16/keys/`) is read by this keyring as it is:
+/// every key the lake's log seals under is given for a source kept, and
+/// none for the source it forgot, which is destroyed. A change to the
+/// file's form that would no longer read it turns this red.
+#[test]
+fn the_kept_lakes_key_file_is_read_as_written() {
+    let lake =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/lakes/16");
+    let log = std::fs::read_to_string(lake.join("log/00000000000000000000.jsonl")).unwrap();
+    let ring = FileKeyring::new(lake.join("keys"));
+    let kept16 = LakeId::from("kept16");
+    let mut sealed = Vec::new();
+    for line in log.lines() {
+        let event: serde_json::Value = serde_json::from_str(line).unwrap();
+        let (Some(source), Some(key)) = (event["source"].as_str(), event["sealed"]["key"].as_str())
+        else {
+            continue;
+        };
+        let (source, key) = (SourceId::from(source), lakelands_api::id::KeyId::from(key));
+        let given = ring.key(&kept16, &source, &key).unwrap();
+        sealed.push((source.to_string(), given.is_some()));
+    }
+    assert_eq!(
+        sealed,
+        [("crm".to_owned(), true), ("web".to_owned(), false)]
+    );
+    assert!(
+        ring.ids(&kept16, &SourceId::from("web"))
+            .unwrap()
+            .is_empty()
+    );
+}

@@ -7,6 +7,8 @@
 
 use std::path::PathBuf;
 
+use lakelands_api::Error;
+use lakelands_api::error::Seam;
 use lakelands_api::event::{EventBody, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT};
 use lakelands_api::read::ReadAt;
 use lakelands_api::seam::Seams;
@@ -121,12 +123,22 @@ check!(
     given
 );
 
+check!(
+    LAKE_16_READ = the_lake_of_format_16_is_read_as_it_answered,
+    "054 (lakelands#962): the lake v0.15.0 made through its doors (`docs/log-format/lakes/16/`), in format 16, imported on this engine, keeps its events as written and is read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; the walk over its relation with the link's fields; and, what format 16 adds (058), its sealed values read whole with the file keyring's file it ships and a forgotten source's values read as erased, each with its provenance; imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies",
+    given
+);
+
 async fn a_lake_the_release_before_made_is_read_as_it_answered(store: Store, given: Given) -> Held {
     kept_lake_answers(store, given, 14).await
 }
 
 async fn the_lake_of_format_15_is_read_as_it_answered(store: Store, given: Given) -> Held {
     kept_lake_answers(store, given, 15).await
+}
+
+async fn the_lake_of_format_16_is_read_as_it_answered(store: Store, given: Given) -> Held {
+    kept_lake_answers(store, given, 16).await
 }
 
 /// The kept lake of `format` (`docs/log-format/lakes/<format>/`), imported
@@ -149,7 +161,25 @@ async fn kept_lake_answers(store: Store, given: Given, format: u32) -> Held {
         .unwrap_or("its release")
         .to_owned();
     let lake = lakelands_api::LakeId::from(format!("kept{format}").as_str());
-    let imported = (given.import)(dir, lake, None, Seams::default()).await;
+    // A lake whose values are sealed ships the file keyring's file that
+    // sealed them (058), and is imported with it; with no key store bound
+    // the import fails closed, before it writes.
+    let ring = dir.join("keys").join(format!("kept{format}.keys.json"));
+    let seams = match ring.exists() {
+        true => {
+            let bare = (given.import)(dir.clone(), lake.clone(), None, Seams::default()).await;
+            let bare = bare.err();
+            ensure!(
+                matches!(&bare, Some(Error::Unbound { seam }) if **seam == Seam::KeyStore),
+                "lake {format} imported with no key store must be refused as unbound, \
+                 the key store; it answered {bare:?}"
+            );
+            let keys = super::erasable::Keys::from_file(&ring, &lake)?;
+            super::erasable::with(&std::sync::Arc::new(keys))
+        }
+        false => Seams::default(),
+    };
+    let imported = (given.import)(dir, lake, None, seams).await;
     let imported = imported.map_err(|e| Failure::new(format!("importing the lake: {e}")))?;
     let copy = imported.store;
     let log = log_events(copy.as_ref()).await?;
@@ -176,9 +206,11 @@ async fn kept_lake_answers(store: Store, given: Given, format: u32) -> Held {
          after them come {tail:?}",
         made + 1
     );
-    copy.verify(None, None)
-        .await
-        .must("verifying the upgraded lake")?;
+    let verifying = match format < LOG_FORMAT_VERSION {
+        true => "verifying the upgraded lake",
+        false => "verifying the lake",
+    };
+    copy.verify(None, None).await.must(verifying)?;
     let (own, cat) = (
         owner(copy.as_ref()),
         crate::conformance::fixture::doors(copy.as_ref()),
@@ -212,9 +244,27 @@ async fn kept_lake_answers(store: Store, given: Given, format: u32) -> Held {
                 .collect(),
             other => return Err(Failure::new(format!("a graph walk answered {other:?}"))),
         };
-    let now = serde_json::json!({"records": records, "open": members, "walk_from_i1": walked});
+    // The records whose provenance the answers keep, an erased value's
+    // among them.
+    let mut erasable = Vec::new();
+    for said in answers["erasable"].as_array().into_iter().flatten() {
+        let (ty, key) = (
+            said["type"].as_str().unwrap_or(""),
+            said["key"].as_str().unwrap_or(""),
+        );
+        let get = crate::conformance::fixture::get_at(key, None);
+        let r = cat
+            .get(&own, &ty.into(), get)
+            .await
+            .must(&format!("reading `{key}`"))?
+            .data;
+        erasable
+            .push(serde_json::json!({"type": ty, "key": key, "fields": r.fields, "meta": r.meta}));
+    }
+    let now = serde_json::json!({"records": records, "open": members, "walk_from_i1": walked, "erasable": erasable});
     let mut red = Vec::new();
-    for part in ["records", "open", "walk_from_i1"] {
+    let parts = ["records", "open", "walk_from_i1", "erasable"];
+    for part in parts.into_iter().filter(|p| answers.get(*p).is_some()) {
         if now[part] != answers[part] {
             red.push(format!(
                 "{part}: {by} answered {} and this release {}",

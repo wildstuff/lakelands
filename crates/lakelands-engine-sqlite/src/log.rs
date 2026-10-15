@@ -720,7 +720,10 @@ impl Log {
 
     /// Read what is committed, then cut off what lies past it in the
     /// active segment. Only the writer does this, holding the lease, and
-    /// not on a handle whose sync failed twice (module doc).
+    /// not on a handle that writes nothing more: one whose append's sync
+    /// failed and whose second write of that group then failed in any
+    /// way, before its sync or at it
+    /// (`docs/decisions/060-an-append-syncs-its-two-files-at-once.md`).
     pub(crate) fn recover(&mut self) -> Result<()> {
         if self.unsynced {
             return Err(Error::unavailable(Situation::Unsynced));
@@ -807,8 +810,9 @@ impl Log {
             (segment_path.as_path(), &lines[..], active.end),
             (index_path.as_path(), &index[..], active.index_read),
         ];
-        // A failed sync is written again and synced once more; failing
-        // again, the handle writes nothing more (module doc).
+        // A failed sync is written again and synced once more; where that
+        // second write fails in any way, the handle writes nothing more
+        // (`docs/decisions/060-an-append-syncs-its-two-files-at-once.md`).
         let mut written = self.put(parts);
         let again = matches!(written, Err((_, true)));
         if again {
