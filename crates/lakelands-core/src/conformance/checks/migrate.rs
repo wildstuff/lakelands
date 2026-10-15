@@ -21,6 +21,11 @@ check!(
 );
 
 check!(
+    FILL_IN_FORCE = a_fill_alone_fills_the_type_in_force,
+    "050 and 027, extended (lakelands#1104): a migration to the type in force that names a field in `fill` fills each live record holding none, through `migrate_apply` and through an accepted proposal alike, with origin `initial` at its position, a record held from its author too, whose preview names only the keys that author is shown; the type's version and schema hash move as a fill inside a changing migration moves them; the same migration again counts no record and its apply appends nothing"
+);
+
+check!(
     APPLY_NEEDS_ITS_REPORT = migrate_apply_requires_the_report_it_was_shown,
     "027: `migrate_apply` names the preflight's report; another report id, or a lake that moved since the report, is refused, after the preflight's own refusals (027, extended)"
 );
@@ -800,5 +805,98 @@ async fn a_migration_fills_a_fields_initial_into_the_records_that_hold_none(
         wrong.push(format!("the aging rule moved {moved} of 4"));
     }
     ensure!(wrong.is_empty(), "{}", wrong.join("; "));
+    Ok(())
+}
+
+async fn a_fill_alone_fills_the_type_in_force(store: Store) -> Held {
+    use crate::conformance::checks::report_names::preview;
+    use crate::conformance::fixture::{principal, restrict};
+    use lakelands_api::principal::{Grants, PrincipalKind};
+    use lakelands_api::record::Origin;
+    use lakelands_api::write::{Outcome, ProposedWrite};
+    let (l, s) = (Lake::of(store.as_ref()), store.as_ref());
+    let with = |n: &str| {
+        let mut f = field(n, StorageKind::Text);
+        f.initial = Some(json!("open"));
+        f
+    };
+    let no = field("no", StorageKind::Text);
+    l.declare(type_decl("t", vec![no.clone()])).await?;
+    for k in ["f1", "f2"] {
+        l.upsert("t", k, json!({"no": k})).await?;
+    }
+    restrict(s, "t", "f2", "held").await?;
+    // `status` and `size` are added with an `initial`, and fill nothing.
+    let t = type_decl("t", vec![no, with("status"), with("size")]);
+    l.migrate(t.clone()).await?;
+    let life = || async {
+        let d = l.describe_type("t").await?;
+        Ok::<_, Failure>((d.lifecycle.version, d.lifecycle.schema_hash))
+    };
+    let fill = |f: &str| Migration {
+        fill: vec![f.into()],
+        ..migration(t.clone())
+    };
+    let grants = Grants {
+        schema: true,
+        restricted: false,
+        ..Grants::owner()
+    };
+    let author = principal(s, PrincipalKind::Agent, "author", grants);
+    let before = life().await?;
+    let report = preview(&l, &author, fill("status")).await?;
+    let told = json!(report.filled).to_string();
+    let applied = l
+        .cat
+        .migrate_apply(&author, fill("status"), &report.report_id);
+    let Outcome::Applied { position: at, .. } = applied.await.must("the fill's apply")? else {
+        return Err(Failure::new("the fill's apply answered no position"));
+    };
+    let after = life().await?;
+    let write = ProposedWrite::Migrate {
+        migration: Box::new(fill("size")),
+        report: Default::default(),
+    };
+    let proposed = l.cat.propose(&l.own, write, "size".into()).await;
+    let Ok(Outcome::Proposed { proposal, .. }) = proposed else {
+        return Err(Failure::new(format!("proposing the fill: {proposed:?}")));
+    };
+    let accepted = l.cat.accept(&l.own, &proposal).await;
+    let Ok(Outcome::Applied { position: by, .. }) = accepted else {
+        return Err(Failure::new(format!("accepting the fill: {accepted:?}")));
+    };
+    // A version per migration, and the hash of the same declaration.
+    let moved = [after, life().await?].map(|(v, h)| (v - before.0, h == before.1));
+    let mut got = Vec::new();
+    for k in ["f1", "f2"] {
+        let r = l.read("t", k).await?;
+        for (f, pos) in [("status", at), ("size", by)] {
+            let meta = r.meta.get(f);
+            let initial = meta.is_some_and(|m| m.origin == Origin::Initial && m.position == pos);
+            got.push(format!("{k}.{f} {:?} {initial}", r.fields.get(f)));
+        }
+    }
+    let again = preview(&l, &l.own, fill("status")).await?;
+    let head = store.head().await.must("reading the head")?;
+    let twice = l
+        .cat
+        .migrate_apply(&l.own, fill("status"), &again.report_id)
+        .await;
+    let unmoved = matches!(twice, Ok(Outcome::Applied { position, .. }) if position == head);
+    let open = |k: &str, f: &str| format!("{k}.{f} Some(String(\"open\")) true");
+    let want = ["f1", "f2"]
+        .map(|k| [open(k, "status"), open(k, "size")])
+        .concat();
+    ensure!(
+        told == r#"[{"field":"status","records":2,"sample_keys":["f1"]}]"#
+            && got == want
+            && again.filled.iter().all(|f| f.records == 0)
+            && unmoved
+            && moved == [(1, true), (2, true)],
+        "a fill alone fills `t`: the author is told {told}, the records read {got:?}, the \
+         version moved by and the hash stayed {moved:?}, and again it counts {:?} and its \
+         apply answers {twice:?}",
+        again.filled
+    );
     Ok(())
 }
