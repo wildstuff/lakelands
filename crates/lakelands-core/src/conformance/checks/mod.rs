@@ -272,6 +272,7 @@ pub const ALL: &[Check] = &[
     migrate::APPLY_NEEDS_ITS_REPORT,
     migrate::LOSSY_REFUSED,
     migrate::FILLED,
+    migrate::FILL_IN_FORCE,
     migrate::CONVERSIONS_AND_RENAMES,
     made_of::SHOWN_WITH_WHAT_IT_IS_MADE_OF,
     made_of::KEPT_AT_EVERY_DOOR,

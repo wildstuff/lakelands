@@ -37,7 +37,11 @@ A migration may fill a field all the same, where it names the field in
 holds no value for it then takes the value, once, at the `migrated`
 event, of origin `initial` at that position, as a create fills it. Its
 preflight counts them (`filled`), so a field made required with
-`initial` and named in `fill` is lossless. A retired record is history
+`initial` and named in `fill` is lossless. The declaration need not
+change: a migration to the type in force that fills a record appends
+its `migrated` event, moving the type's version by one and keeping its
+schema hash, as any migration's fill leaves them, and one that fills
+none appends nothing (lakelands#1104). A retired record is history
 and never held the value: it is left as it was, and takes the value if
 it is written again, as above. A restricted record is filled; whoever
 applies the migration is told how many records it fills, and the keys

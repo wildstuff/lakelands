@@ -646,7 +646,7 @@ async fn a_declaration_answers_how_it_stands_in_force(store: Store, given: Given
 
 check!(
     MIGRATION_IN_FORCE = a_migration_to_what_is_in_force_appends_nothing,
-    "027, extended (lakelands#577): a migration whose `to` is the type in force and that renames nothing is answered `applied` at the head and appends nothing; a stale report is refused first; an accepted proposal of it appends its acceptance alone; a value type's migration to itself is refused as before, there being nothing to migrate"
+    "027, extended (lakelands#577): a migration whose `to` is the type in force and that renames nothing is answered `applied` at the head and appends nothing only where it fills no record (050); a stale report is refused first; an accepted proposal of it appends its acceptance alone; a value type's migration to itself is refused as before, there being nothing to migrate"
 );
 
 async fn a_migration_to_what_is_in_force_appends_nothing(store: Store) -> Held {

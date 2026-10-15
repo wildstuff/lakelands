@@ -1706,10 +1706,11 @@ pub(crate) fn call_reads(
     Ok((set.unwrap_or_default(), read))
 }
 
-/// Whether a migration changes nothing: its `to` is the type in force and
-/// it renames no field (027, extended).
-fn unchanged(o: &Ontology, m: &Migration) -> bool {
-    m.renames.is_empty() && o.in_force(&Declaration::Type(m.to.clone()))
+/// Whether a migration changes nothing: its `to` is the type in force, it
+/// renames no field and its plan fills no record (027 and 050, extended).
+fn unchanged(o: &Ontology, m: &Migration, plan: &MigrationPlan) -> bool {
+    let fills = plan.report.filled.iter().any(|f| f.records > 0);
+    m.renames.is_empty() && !fills && o.in_force(&Declaration::Type(m.to.clone()))
 }
 
 /// The lake's head: the position of its last event.
@@ -3429,11 +3430,9 @@ impl Call<'_> {
                     return Err(changed());
                 }
                 renamed = self.known_renames(&w.ontology, migration);
-                let first = drafts.len();
+                let (first, same) = (drafts.len(), unchanged(&w.ontology, migration, &plan));
                 let own = self.migration_drafts(&w, (**migration).clone(), plan, now, first)?;
-                let own = own
-                    .into_iter()
-                    .filter(|_| !unchanged(&w.ontology, migration));
+                let own = own.into_iter().filter(|_| !same);
                 drafts.extend(own.map(&as_accepted));
             }
             ProposedWrite::MigrateValueType {
@@ -5261,8 +5260,9 @@ impl Call<'_> {
     }
 
     /// `migrate_apply`. A migration to the type in force that renames
-    /// nothing is answered at the head and appends nothing, after every
-    /// refusal, a stale report among them (027, extended).
+    /// nothing is answered at the head and appends nothing only where it
+    /// fills no record (050), after every refusal, a stale report among
+    /// them (027, extended).
     pub fn migrate_apply(&self, mut m: Migration, report_id: &str) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema && !rights::holds_only(self.who))?;
@@ -5276,7 +5276,7 @@ impl Call<'_> {
             return Err(invalid(Case::MigrationStale));
         }
         let renamed = self.known_renames(&w.ontology, &m);
-        let same = unchanged(&w.ontology, &m);
+        let same = unchanged(&w.ontology, &m, &plan);
         let drafts = self.migration_drafts(&w, m, plan, now, 0)?;
         if same {
             return Ok(applied(head(&w), None));

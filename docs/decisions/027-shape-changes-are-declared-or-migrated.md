@@ -484,10 +484,11 @@ declaration's changes, and the times `recompute` appended it again (022).
   computed outside the lake are no exception (022).
 - **A migration to the type in force** is the same case: its `to` is
   the type in force, judged the same way, and it renames nothing.
-  `migrate_apply` answers it `applied` at the head and appends nothing,
-  after every refusal, a stale report among them: the preflight is made
-  and its id compared, and each answers as for any migration. An
-  accepted proposal of one appends its acceptance alone. A value type's
+  `migrate_apply` answers it `applied` at the head and appends nothing
+  only where it fills no record (050), after every refusal, a stale
+  report among them: the preflight is made and its id compared, and each
+  answers as for any migration. An accepted proposal of one that fills
+  no record appends its acceptance alone. A value type's
   migration to itself needs no rule: its preflight refuses it, there
   being nothing to migrate.
 
