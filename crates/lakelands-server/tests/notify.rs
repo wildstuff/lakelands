@@ -404,6 +404,108 @@ async fn a_subscription_with_keys_is_told_those_records_only() {
     }
 }
 
+/// Twins that differ only in a record the watcher may not read: through
+/// the hub it is told the same of each, so nothing of the hub's raw events
+/// reaches it (lakelands#1113).
+#[tokio::test]
+async fn through_the_hub_a_pump_tells_what_its_principal_may_see_alike_of_twins() {
+    let mut told = Vec::new();
+    for hidden in ["P-1", "P-2"] {
+        let store = common::lake_on(Backend::Memory).await;
+        let mut s = Stdio::open(store.clone(), watcher()).await;
+        // A second session on the lake shares the pump's hub.
+        let mut other = Stdio::open(store.clone(), common::owner()).await;
+        s.call("subscribe", json!({})).await;
+        other.call("subscribe", json!({})).await;
+        write(
+            store.as_ref(),
+            "invoice",
+            "INV-1",
+            json!({"status": "open"}),
+        )
+        .await;
+        write(store.as_ref(), "partner", hidden, json!({"name": "Acme"})).await;
+        write(store.as_ref(), "invoice", "INV-1", json!({"secret": "s1"})).await;
+        let last = write(
+            store.as_ref(),
+            "invoice",
+            "INV-2",
+            json!({"status": "paid"}),
+        )
+        .await;
+        let mut changes = Vec::new();
+        while changes
+            .last()
+            .is_none_or(|m: &Value| m["params"]["position"] != json!(last))
+        {
+            changes.push(s.change().await);
+        }
+        let mut owner_saw = Vec::new();
+        while owner_saw
+            .last()
+            .is_none_or(|m: &Value| m["params"]["position"] != json!(last))
+        {
+            owner_saw.push(other.change().await);
+        }
+        assert!(
+            owner_saw
+                .iter()
+                .any(|m| m["params"]["key"] == json!(hidden)),
+            "the owner, on the same hub, is told the partner's change"
+        );
+        told.push(changes);
+    }
+    assert_eq!(told[0], told[1], "the watcher is told alike of the twins");
+    assert_eq!(told[0].len(), 2, "of INV-1 and INV-2 only: {:?}", told[0]);
+}
+
+/// A subscription to other kinds leaves the pump's hub for the hub of its
+/// new kinds: what the new kinds name is told, what only the old ones
+/// named is not.
+#[tokio::test]
+async fn a_new_subscription_follows_the_hub_of_its_kinds() {
+    let store = common::lake_on(Backend::Memory).await;
+    let mut s = Stdio::open(store.clone(), common::owner()).await;
+    s.call("subscribe", json!({"kinds": ["record_upserted"]}))
+        .await;
+    let p = write(
+        store.as_ref(),
+        "invoice",
+        "INV-1",
+        json!({"status": "open"}),
+    )
+    .await;
+    assert_eq!(s.change().await["params"]["position"], json!(p));
+    s.call("subscribe", json!({"kinds": ["record_retired"]}))
+        .await;
+    s.seen.clear();
+    write(
+        store.as_ref(),
+        "invoice",
+        "INV-1",
+        json!({"status": "paid"}),
+    )
+    .await;
+    let retired = store
+        .catalog(WriteContext::default())
+        .retire(
+            &common::owner(),
+            &"invoice".into(),
+            &"INV-1".into(),
+            WriteOpts::default(),
+        )
+        .await
+        .unwrap()
+        .position()
+        .0;
+    let m = s.change().await;
+    assert_eq!(
+        (&m["params"]["position"], &m["params"]["kind"]),
+        (&json!(retired), &json!("record_retired")),
+        "the retirement, of the new kinds, and not the write before it: {m}"
+    );
+}
+
 // ---------------------------------------------------------------- HTTP
 
 async fn serve(store: Arc<dyn LakeStore>) -> (SocketAddr, tokio::task::JoinHandle<()>) {

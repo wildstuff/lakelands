@@ -83,7 +83,7 @@ use lakelands_api::event::{Event, EventBody};
 use lakelands_api::id::{Position, RecordKey, TypeName};
 use lakelands_api::principal::{Grants, PrincipalKind};
 use lakelands_api::read::{Get, ReadAt};
-use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter};
+use lakelands_api::seam::{ChangeFeed, FeedFilter};
 use lakelands_api::tools::CHANGE_KINDS;
 use lakelands_api::{Catalog, LakeStore, Principal, WriteContext};
 use serde_json::{Map, Value, json};
@@ -92,9 +92,6 @@ use tokio::sync::{Notify, mpsc};
 /// How many notifications wait for a slow client before the pump stops
 /// reading the feed.
 pub const QUEUE: usize = 256;
-
-/// How many events the pump reads at once.
-const BATCH: u32 = 100;
 
 /// The method of a change notification.
 pub const CHANGED: &str = "notifications/lakelands/changed";
@@ -298,7 +295,6 @@ pub async fn pump(
     (pause, floor): (Duration, Duration),
 ) {
     let catalog = store.catalog(WriteContext::default());
-    let feed = store.feed();
     // The head the session starts at; a lake that cannot answer is asked
     // again after the pause.
     loop {
@@ -319,9 +315,10 @@ pub async fn pump(
     let mut view = View::new(catalog.as_ref(), &who, &host);
     // Where the view's reads go on from; `None` after a pass broke off.
     let mut view_at: Option<Position> = None;
-    // Whether the next read follows a wake by an append, and when the last
-    // such read ended: the floor counts from it (lakelands#1061).
-    let (mut woken, mut paced) = (false, None);
+    // The pump reads the lake's hub for its kinds (lakelands#1113): a new
+    // subscription leaves its hub for its own, joining it as every
+    // follower joins.
+    let mut follow: Option<(u64, Vec<String>, crate::hub::Follow)> = None;
     'poll: loop {
         if queue.is_closed() {
             return;
@@ -344,24 +341,42 @@ pub async fn pump(
             types: vec![],
             keys: Vec::new(),
         };
-        let batch = match feed.poll(from, &filter, BATCH).await {
-            Ok(b) => b,
+        let same = |(g, k, _): &(u64, Vec<String>, _)| *g == generation && *k == filter.kinds;
+        let (_, _, f) = match follow.take().filter(same) {
+            Some(held) => follow.insert(held),
+            None => {
+                let kinds = filter.kinds.clone();
+                match crate::hub::Follow::new(&store, filter, (pause, floor)).await {
+                    Ok(f) => follow.insert((generation, kinds, f)),
+                    Err(_) => {
+                        let _ = wait(&watch, &queue, pause, None).await;
+                        continue;
+                    }
+                }
+            }
+        };
+        // It waits on the hub, or for a new subscription, or the queue's end.
+        let got = tokio::select! {
+            got = f.next(from, pause) => got,
+            _ = watch.wake.notified() => continue 'poll,
+            _ = queue.closed() => return,
+        };
+        let shared = match got {
+            Ok(crate::hub::Next::Batch(b)) => b,
+            Ok(crate::hub::Next::Quiet) => continue,
             Err(_) => {
                 // The lake cannot be read now; try again after the pause.
                 let _ = wait(&watch, &queue, pause, None).await;
                 continue;
             }
         };
-        if woken {
-            paced = Some(tokio::time::Instant::now());
-        }
-        woken = false;
+        let batch = &shared.batch;
         // The view holds only while the passes read on without a gap.
         if view_at != Some(from) {
             view.forget();
         }
         view_at = None;
-        for e in &batch.events {
+        for e in batch.events.iter().filter(|e| e.position >= from) {
             if watch.generation() != generation {
                 continue 'poll;
             }
@@ -406,30 +421,10 @@ pub async fn pump(
             }
             watch.advance(generation, e.position.next());
         }
-        watch.advance(generation, batch.next);
-        view_at = Some(batch.next);
-        // Past the head it waits for the next append, which the lake tells
-        // it, the pause bounding the wait (lakelands#1061); a batch that
-        // did not move waits the pause out.
-        if caught_up(&batch, from) {
-            let after = (batch.next > batch.head).then_some(batch.head);
-            woken = wait(&watch, &queue, pause, after.map(|a| (feed.as_ref(), a))).await;
-            // Woken by an append, it reads once the floor has passed since
-            // the last read an append woke: a busy lake's appends come in
-            // batches, and one after a quiet spell is read at once.
-            if let (true, Some(at)) = (woken, paced) {
-                tokio::time::sleep_until(at + floor).await;
-            }
-        }
+        let to = batch.next.max(from);
+        watch.advance(generation, to);
+        view_at = Some(to);
     }
-}
-
-/// Whether a batch reached the head, so the pump pauses before it polls
-/// again; a batch with no events may stop short of it. One whose `next`
-/// did not move from `from` pauses too, rather than poll the same place
-/// at once again.
-fn caught_up(batch: &FeedBatch, from: Position) -> bool {
-    batch.next > batch.head || batch.next == from
 }
 
 /// The lake as its host reads it: every field of every type.
@@ -723,31 +718,5 @@ pub(crate) fn kinds(asked: Option<Vec<String>>) -> Result<Vec<String>, String> {
             Some(bad) => Err(bad.clone()),
             None => Ok(k),
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A poll stops after `FEED_EXAMINED` events examined, so a batch with
-    /// no events short of the head is not the end of the log: the pump
-    /// reads on at once and pauses only past the head, or when `next` did
-    /// not move.
-    #[test]
-    fn an_empty_batch_short_of_the_head_is_not_caught_up() {
-        let examined = Position(u64::from(lakelands_api::seam::FEED_EXAMINED));
-        let batch = |next, head| FeedBatch {
-            events: Vec::new(),
-            next,
-            head,
-        };
-        let from = Position::GENESIS;
-        assert!(!caught_up(&batch(examined, Position(10_000)), from));
-        assert!(caught_up(&batch(Position(10_001), Position(10_000)), from));
-        assert!(
-            caught_up(&batch(examined, Position(10_000)), examined),
-            "a batch whose `next` did not move pauses"
-        );
     }
 }

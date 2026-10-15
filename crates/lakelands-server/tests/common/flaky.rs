@@ -20,20 +20,21 @@ use lakelands_api::principal::{Principal, WriteContext};
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
 use lakelands_api::read::{Find, Found, Get, ReadAt, Reply};
 use lakelands_api::record::{Patch, Record};
-use lakelands_api::seam::ChangeFeed;
+use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter};
 use lakelands_api::write::{
     AgeReport, Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter,
     ProposedWrite, WriteOpts,
 };
 use lakelands_api::{Catalog, LakeStore};
 
-/// How many more times `head` and `get` fail, how many more times `get`
-/// answers that its reads have not reached the position yet, how many
-/// milliseconds an ingest's first window takes to commit, and how many
-/// reads were made.
+/// How many more times `head`, `get` and a feed's `poll` fail, how many
+/// more times `get` answers that its reads have not reached the position
+/// yet, how many milliseconds an ingest's first window takes to commit,
+/// and how many reads were made.
 #[derive(Default)]
 pub struct Faults {
     pub head: AtomicUsize,
+    pub poll: AtomicUsize,
     pub get: AtomicUsize,
     pub behind: AtomicUsize,
     pub first_window_millis: AtomicU64,
@@ -104,6 +105,26 @@ pub struct Store {
     pub faults: Arc<Faults>,
 }
 
+/// The lake's feed, its `poll` failing while `Faults::poll` says so.
+struct Feed {
+    inner: Arc<dyn ChangeFeed>,
+    faults: Arc<Faults>,
+}
+
+#[async_trait]
+impl ChangeFeed for Feed {
+    async fn poll(&self, from: Position, filter: &FeedFilter, limit: u32) -> Result<FeedBatch> {
+        fail(&self.faults.poll)?;
+        self.inner.poll(from, filter, limit).await
+    }
+    async fn ack(&self, consumer: &str, through: Position) -> Result<()> {
+        self.inner.ack(consumer, through).await
+    }
+    async fn wait(&self, after: Position, within: Duration) -> Result<Position> {
+        self.inner.wait(after, within).await
+    }
+}
+
 struct Doors {
     inner: Arc<dyn Catalog>,
     faults: Arc<Faults>,
@@ -131,7 +152,10 @@ impl LakeStore for Store {
         })
     }
     fn feed(&self) -> Arc<dyn ChangeFeed> {
-        self.inner.feed()
+        Arc::new(Feed {
+            inner: self.inner.feed(),
+            faults: self.faults.clone(),
+        })
     }
     async fn verify(
         &self,
