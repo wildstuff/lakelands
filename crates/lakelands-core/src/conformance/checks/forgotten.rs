@@ -41,6 +41,12 @@ check!(
     reopens
 );
 
+check!(
+    FORGET_IMPORT = an_export_imports_with_its_keys_or_with_its_forgetting,
+    "058: an export holds a source's values sealed; imported with no key store it is refused as unbound, and with a key store that lacks the key as missing, each before anything is written; imported with the key store it reads them plain; once the source is forgotten, its export imports with no key store, and the values arrive erased, provenance saying so; imported with a backup of the key store from before the act, the import finishes the act: the backup's keys are destroyed, and the first read answers the values erased",
+    given
+);
+
 /// A key store over [`Keys`] that fails on cue: `destroy`, or a key of
 /// `erp` once a destroy has run, as a crash would stop the act there.
 struct Faulty {
@@ -498,5 +504,95 @@ async fn a_source_with_plaintext_values_in_the_log_is_not_forgotten(
         store.forget_source(&"web".into(), None).await,
         &json!({"code": "forget_plaintext", "source": "web", "count": 1}),
     )?;
+    Ok(())
+}
+
+async fn an_export_imports_with_its_keys_or_with_its_forgetting(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let keys = Arc::new(Keys::default());
+    let store = again(&given.reopen, store, with(&keys), "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(person()).await?;
+    let ada = source_record("person", "p1", json!({"id": "p1", "name": "Ada"}));
+    l.ingest("crm", vec![ada]).await.must("ingesting p1")?;
+    let base = given.scratch.clone();
+    let _ = std::fs::remove_dir_all(&base);
+    let export = |name: &str| base.join(name);
+    let lake = store.lake().clone();
+    let import =
+        |dir: std::path::PathBuf, seams: Seams| (given.import)(dir, lake.clone(), None, seams);
+    crate::export::write(store.as_ref(), &export("sealed"))
+        .await
+        .must("exporting")?;
+    let keyless = import(export("sealed"), Seams::default()).await;
+    ensure!(
+        matches!(&keyless, Err(Error::Unbound { .. })),
+        "an export holding crm's sealed values, imported with no key store, is refused as unbound; it answered {:?}",
+        keyless.as_ref().map(|_| ())
+    );
+    let other = Arc::new(Keys::default());
+    let lacking = import(export("sealed"), with(&other)).await;
+    ensure!(
+        matches!(
+            &lacking,
+            Err(Error::Unavailable { situation })
+                if matches!(**situation, lakelands_api::error::Situation::KeyMissing { .. })
+        ),
+        "an export holding crm's sealed values, imported with a key store that lacks its key, is refused as missing; it answered {:?}",
+        lacking.as_ref().map(|_| ())
+    );
+    let keyed = import(export("sealed"), with(&keys)).await;
+    let keyed = keyed.map_err(|e| Failure::new(format!("importing with the key store: {e}")))?;
+    let name = (keyed.store.catalog(Default::default()))
+        .get(&l.own, &"person".into(), get_at("p1", None))
+        .await
+        .must("reading the imported p1")?
+        .data;
+    ensure!(
+        name.fields.get("name") == Some(&json!("Ada")),
+        "imported with the key store, p1 reads its name: {name:?}"
+    );
+    let backup = Arc::new(keys.backup());
+    let before = store.head().await.must("reading the head")?;
+    store
+        .forget_source(&"crm".into(), None)
+        .await
+        .must("forgetting crm")?;
+    crate::export::write(store.as_ref(), &export("forgot"))
+        .await
+        .must("exporting again")?;
+    let keyless = import(export("forgot"), Seams::default()).await;
+    let keyless = keyless
+        .map_err(|e| Failure::new(format!("importing the forgetting with no key store: {e}")))?;
+    let p1 = (keyless.store.catalog(Default::default()))
+        .get(&l.own, &"person".into(), get_at("p1", Some(before)))
+        .await;
+    let p1 = p1.must("reading the imported p1 before the act")?.data;
+    let meta = p1.meta.get("name");
+    ensure!(
+        !p1.fields.contains_key("name") && meta.is_some_and(|m| m.erased),
+        "imported with no key store, the forgotten crm's name arrives erased: {p1:?}"
+    );
+    // A backup of the key store from before the act still holds crm's key.
+    let restored = import(export("forgot"), with(&backup)).await;
+    let restored = restored.map_err(|e| Failure::new(format!("importing with the backup: {e}")))?;
+    let p1 = (restored.store.catalog(Default::default()))
+        .get(&l.own, &"person".into(), get_at("p1", Some(before)))
+        .await;
+    let p1 = p1.must("reading p1 imported with the backup")?.data;
+    ensure!(
+        !p1.fields.contains_key("name"),
+        "imported with a backup that held crm's key, the first read answers the name erased: {p1:?}"
+    );
+    let held = backup
+        .ids(store.lake(), &"crm".into())
+        .ok()
+        .unwrap_or_default();
+    ensure!(
+        held.is_empty(),
+        "the import destroyed the backup's keys of crm: {held:?}"
+    );
     Ok(())
 }

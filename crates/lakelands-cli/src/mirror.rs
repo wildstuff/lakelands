@@ -1004,12 +1004,30 @@ impl Mirror {
             .poll(Position(from), &filter, self.batch)
             .await
             .map_err(|e| format!("the source's feed failed: {e}"))?;
+        // A forgetting is about no type: it is asked of the feed apart, over
+        // the batch's range, and met in the log's order (058).
+        let forgot = FeedFilter {
+            kinds: vec!["source_forgotten".to_owned()],
+            ..FeedFilter::default()
+        };
+        let acts = feed
+            .poll(Position(from), &forgot, self.batch)
+            .await
+            .map_err(|e| format!("the source's feed failed: {e}"))?;
+        let mut events: Vec<&Event> = batch.events.iter().collect();
+        events.extend(acts.events.iter().filter(|e| e.position < batch.next));
+        events.sort_by_key(|e| e.position);
         // A poll may stop short of the head with no events: read on, unless
         // it did not move.
         let more = batch.next <= batch.head && batch.next.0 > from;
         self.caught = (batch.next > batch.head).then_some(batch.head);
         let mut run = Run::default();
-        for e in &batch.events {
+        for e in events {
+            if let EventBody::SourceForgotten { source, .. } = &e.body {
+                self.flush(&mut run).await?;
+                self.forgotten(source, e.position).await?;
+                continue;
+            }
             if let EventBody::ValueTypeMigrated { types, .. } = &e.body {
                 self.flush(&mut run).await?;
                 self.revalued(types, e.position).await?;
@@ -1581,6 +1599,35 @@ impl Mirror {
             Err(Error::NotFound { .. }) => Ok(Some(true)),
             Err(e) => Err(format!("`{t}` `{key}` cannot be read from the target: {e}")),
         }
+    }
+
+    /// At the source's forgetting of `source` at `p`: each running type
+    /// whose source type has an erasable field may have copied that
+    /// source's values, which the target holds under the mirror's own
+    /// source, out of the act's reach. It stops past the act, saying so;
+    /// a restart goes on once the host has copied it again or forgotten
+    /// the mirror's source in the target
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
+    async fn forgotten(&mut self, source: &SourceId, p: Position) -> Result<(), String> {
+        let running: Vec<TypeName> = (self.kept.types.iter())
+            .filter(|(t, s)| s.stopped.is_none() && p.0 >= s.next && self.map.contains_key(*t))
+            .map(|(t, _)| t.clone())
+            .collect();
+        for s in running {
+            let before = Position(p.0.saturating_sub(1));
+            let t = self.describe_source(&s, Some(before)).await?;
+            if t.fields.iter().any(|f| f.erasable) {
+                let target = &self.map[&s].target;
+                let why = format!(
+                    "the source forgot `{source}`, whose values of `{s}`'s erasable fields \
+                     its copies may hold in `{target}` under `mirror:{}:{s}`: copy the type \
+                     again, or forget that source in the target, then restart",
+                    self.source.lake()
+                );
+                self.stop(&[s], p.next(), why).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Stop `types` at `p` for `why`: each keeps `p` as the position to

@@ -2029,7 +2029,15 @@ writer that holds the key.
 `<lake>.keys.json`, in a directory the operator keeps outside every lake
 directory, readable by its owner alone and written whole. Its backups are
 the operator's to keep honest: a key restored from a backup restores what
-it sealed.
+it sealed. The CLI and `serve` bind it where the root's `lakelands.json`
+names its directory, `"keys": {"keyring": "<dir>"}`, relative to the
+root, and refuse one inside a lake's directory.
+
+An import (`lakelands_store::import`) opens a sealed value with the key
+store bound. With none bound, it reads the export first: a source whose
+values are sealed and whose `source_forgotten` the export holds arrives
+erased, and any other refuses the import as `Unbound` before anything
+is written.
 
 ## The facade and the doors
 
@@ -2185,7 +2193,10 @@ answers the same report, appending nothing, with the time the act is
 expected to hold the lock (`events` at the engine's `rebuild_rate`).
 The act is refused while the log holds a value of the source in an
 erasable field in plaintext, and a forgotten source's ingest is
-refused. It is no door's; `lakelands-client` answers it `unbound`.
+refused. It is no door's; `lakelands-client` answers it `unbound`. The
+CLI's `lakelands forget --source <id> [--preflight | --report <id>]` runs
+it. A mirror that meets `source_forgotten` in its source's feed stops each
+mapped type whose source type has an erasable field, past the act.
 
 `LakeStore::purge_source(source, None, None)` retires every live record
 one source brought in, across every type it reached, restricted records and the

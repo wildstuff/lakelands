@@ -40,7 +40,9 @@ target, so grants decide what crosses on both sides.
    the position reached and why it stopped, is a `sys.mirror` record in
    the target, one per connection and source type, readable through the
    catalog. Nothing is dropped silently; a new source field crosses only
-   once the target declares it.
+   once the target declares it. The source's forgetting of a source stops
+   each mapped type whose source type has an erasable field, past the act
+   (`docs/decisions/058-a-source-may-be-forgotten.md`).
 5. **One home lake per field.** A field is a source field in one
    direction only. A connection whose target type is the source type of
    a connection the other way is refused, naming both.
