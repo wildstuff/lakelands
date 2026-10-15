@@ -516,6 +516,7 @@ pub const ALL: &[Check] = &[
     forgotten::FORGOTTEN,
     forgotten::FORGET_CRASH,
     forgotten::FORGET_PLAINTEXT,
+    forgotten::FORGET_IMPORT,
     embeddings::EMBED_WRITE,
     embeddings::VECTOR_COVERAGE,
     embeddings::EMBED_ONCE,

@@ -48,6 +48,7 @@
 //! naming its head. The host removes it (its file or schema) and imports
 //! again.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -58,7 +59,7 @@ use lakelands_api::error::{Case, Detail, Doing, Flaw, Part, Said, Situation};
 use lakelands_api::event::{Digest, LOG_FORMAT_VERSION};
 use lakelands_api::location::Location;
 use lakelands_api::seam::Seams;
-use lakelands_api::{Error, LakeId, Position, Result};
+use lakelands_api::{Error, LakeId, Position, Result, SourceId};
 use sha2::{Digest as _, Sha256};
 
 use crate::lake::Lake;
@@ -109,14 +110,32 @@ struct Envelope {
     fence: u64,
     lake: LakeId,
     body: Body,
+    /// The event's source, for a sealed ingest.
+    #[serde(default)]
+    source: Option<SourceId>,
+    /// What a source's key sealed in it (058).
+    #[serde(default)]
+    sealed: Option<Sealed>,
 }
 
-/// Of an event's body, its kind and the fence a `lease_taken` names.
+/// Of an event's body, its kind, the fence a `lease_taken` names and the
+/// source a `source_forgotten` forgot.
 #[derive(serde::Deserialize)]
 struct Body {
     kind: String,
     #[serde(default)]
     fence: Option<u64>,
+    #[serde(default)]
+    source: Option<SourceId>,
+}
+
+/// Of an event's `sealed`, the version of the key and the source of a
+/// recorded output.
+#[derive(serde::Deserialize)]
+struct Sealed {
+    key: lakelands_api::id::KeyId,
+    #[serde(default)]
+    source: Option<SourceId>,
 }
 
 /// Each line of `path` as the event the store would append, with its
@@ -144,9 +163,18 @@ fn events(path: &Path) -> Result<impl Iterator<Item = Result<(CanonicalEvent, En
 }
 
 /// What only an import checks, over the whole export, before anything is
-/// written: every event is `lake`'s, and every fence is its writer's.
+/// written: every event is `lake`'s, and every fence is its writer's; and
+/// every key a sealed value names, of a source the export does not forget,
+/// is one the bound key store gives. With none bound such a value is
+/// refused as unbound, and a key the store does not give as missing: the
+/// value would be lost (058). A forgotten source's values arrive erased.
 /// Answers each file's digest.
-fn check(files: &[PathBuf], lake: &LakeId) -> Result<Vec<Digest>> {
+fn check(
+    files: &[PathBuf],
+    lake: &LakeId,
+    keys: Option<&dyn lakelands_api::seam::KeyStore>,
+) -> Result<Vec<Digest>> {
+    let (mut sealed, mut forgot) = (BTreeSet::new(), BTreeSet::new());
     let mut fence = 0;
     let mut digests = Vec::with_capacity(files.len());
     for path in files {
@@ -172,6 +200,14 @@ fn check(files: &[PathBuf], lake: &LakeId) -> Result<Vec<Digest>> {
             {
                 fence = taken;
             }
+            if let Some(s) = &event.sealed
+                && let Some(source) = s.source.clone().or_else(|| event.source.clone())
+            {
+                sealed.insert((source, s.key.clone()));
+            }
+            if event.body.kind == "source_forgotten" {
+                forgot.extend(event.body.source.clone());
+            }
             if event.fence != fence {
                 let (carried, lease) = (event.fence, fence);
                 let flaw = Flaw::FenceMismatch { carried, lease };
@@ -183,6 +219,14 @@ fn check(files: &[PathBuf], lake: &LakeId) -> Result<Vec<Digest>> {
             }
         }
     }
+    for (source, key) in sealed.into_iter().filter(|(s, _)| !forgot.contains(s)) {
+        let Some(keys) = keys else {
+            return Err(Error::unbound(lakelands_api::error::Seam::KeyStore));
+        };
+        if keys.key(lake, &source, &key)?.is_none() {
+            return Err(Error::unavailable(Situation::KeyMissing { source, key }));
+        }
+    }
     Ok(digests)
 }
 
@@ -190,7 +234,7 @@ fn check(files: &[PathBuf], lake: &LakeId) -> Result<Vec<Digest>> {
 pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported> {
     let verified = lakelands_core::export::verify(dir)?;
     let files = lakelands_core::export::segment_files(dir)?;
-    let digests = check(&files, &location.lake)?;
+    let digests = check(&files, &location.lake, seams.keys.as_deref())?;
     let opener = crate::lake::opener(location, &seams)?;
     if let Some(ends) = opener.log_ends(location)? {
         crate::log::one_format(&location.lake, Some(&ends))?;
@@ -215,7 +259,12 @@ pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported>
         lake.catch_up().map_err(|e| {
             let cause = Box::new(e);
             Error::unavailable(Situation::ImportNotFolded { cause })
-        })
+        })?;
+        // A forgetting the export holds is finished here, as a writer's
+        // open would: a key store restored from a backup has the source's
+        // keys destroyed again, and no read of the new lake answers what
+        // they sealed (058).
+        lake.finish_forgetting(&mut lake.writer()).map(drop)
     })();
     let released = engine.release_lease(&lease);
     written?;

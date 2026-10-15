@@ -42,7 +42,7 @@ A forgotten source id is never given a key again, so an ingest from it is refuse
 - `destroy(source)`;
 - `ids(source)`, its versions, for rotation.
 
-**Where it sits:** it is an eighth seam beside the seven of `docs/seams.md`, configured through `Location` and the server's configuration like every other, never the environment (005).
+**Where it sits:** it is an eighth seam beside the seven of `docs/seams.md`, configured through `Location` and the server's configuration like every other, never the environment (005). The CLI and `serve` bind the file keyring the root's `lakelands.json` names (`"keys": {"keyring": "<directory>"}`), and refuse one inside a lake's directory.
 
 **What Lakelands ships:**
 - a file keyring, for one machine and for tests: one file per lake, kept outside the lake directory, with a key per source;
@@ -126,13 +126,13 @@ doors, or opens the values with the key store (lakelands#1042).
 
 **Exports:**
 - An export carries the log, so one made after the feature holds the source's values only as ciphertext, and the destroyed key covers it.
-- Importing an export needs the key store, or the values arrive erased.
+- Importing an export needs the key store. Without one, an export that holds the act imports, and the forgotten source's values arrive erased; one that holds a sealed value of any other source is refused as unbound before anything is written, since its values would be lost (lakelands#1042).
 - An export made before the feature, or of plaintext data, is out of reach. The act cannot know where it went.
 
 **Mirrors:**
 - A mirror writes its copies into another lake through `ingest`, as that lake's source `mirror:<lake>:<type>` (042). There an erasable field is encrypted under that mirror source's key.
 - A mirror cannot tell the target which of its copies came from the forgotten source.
-- So **a mirror that reads `source_forgotten`** for a source whose records it mapped **stops the type**, fails closed as at a migration it cannot follow (042), and names the cause. The host then re-snapshots the type, or forgets the mirror source in the target.
+- The mirror reads its records through the doors, as its principal, so it needs no key, and the feed does not say which records a source wrote. So **a mirror that reads `source_forgotten`** stops **each mapped type whose source type has an erasable field**, the only fields whose copies the act would have reached, past the act, and names the source: it fails closed as at a migration it cannot follow (042). The host then copies the type again, or forgets the mirror source in the target, and restarts; a type with no erasable field goes on (lakelands#1042).
 
 The first version carries no per-copy erasure across lakes.
 

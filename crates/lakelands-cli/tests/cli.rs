@@ -1779,3 +1779,100 @@ fn the_built_binary_exports_without_a_writer_beside_a_running_serve() {
     drop(to);
     assert!(server.wait().unwrap().success());
 }
+
+/// `forget` (058): with the root's keyring, a source's erasable values
+/// enter the log sealed; the preflight says what the act erases and
+/// retires and how long it holds the writer, the act under its id erases
+/// them and says through which position, and the source then writes
+/// nothing more.
+#[test]
+fn forget_erases_a_sources_values_and_prints_what_it_did() {
+    const TYPES: [(&str, &str); 1] = [(
+        "types/contact.yaml",
+        "name: contact\nfields:\n  email: { type: text, authority: source, erasable: true }\n",
+    )];
+    for backend in BACKENDS {
+        let sh = Shell::on("forget", backend);
+        sh.lake();
+        let config = r#"{"lakelands": 1, "owner": "owner", "keys": {"keyring": "keys"}}"#;
+        fs::write(sh.root.join("lakelands.json"), config).unwrap();
+        let applied = sh.run(&["apply", &sh.bundle("types", &TYPES)]);
+        assert_eq!(applied.code, 0, "{backend:?}: {}", applied.err);
+        let rows = sh.file(
+            "crm.ndjson",
+            "{\"type\": \"contact\", \"key\": \"c1\", \"fields\": {\"email\": \"ada@example.org\"}}\n",
+        );
+        let fed = sh.run(&["ingest", &rows, "--source", "crm"]);
+        assert_eq!(fed.code, 0, "{backend:?}: {}", fed.err);
+        // Without --report it acts not: it answers the preflight.
+        let bare = sh.run(&["forget", "--source", "crm"]);
+        assert!(
+            bare.out.contains("forget with --report "),
+            "{backend:?}: {} {}",
+            bare.out,
+            bare.err
+        );
+        let seen = sh.run(&["forget", "--source", "crm", "--preflight"]);
+        let said = "contact.email: would erase 1 value(s)\ncontact: retires 1 record(s) crm alone brought\ncrm: preflight at position ";
+        assert!(
+            seen.out.starts_with(said),
+            "{backend:?}: {} {}",
+            seen.out,
+            seen.err
+        );
+        let id = seen
+            .out
+            .rsplit("--report ")
+            .next()
+            .map(str::trim)
+            .unwrap_or_default();
+        assert!(
+            seen.out.contains("the act holds the writer about"),
+            "{}",
+            seen.out
+        );
+        let done = sh.run(&["forget", "--source", "crm", "--report", id]);
+        assert!(
+            done.code == 0
+                && done.out.starts_with("contact.email: erased 1 value(s)\ncontact: retires 1 record(s) crm alone brought\nforgot crm through position "),
+            "{backend:?}: {} {}",
+            done.out,
+            done.err
+        );
+        let again = sh.run(&["ingest", &rows, "--source", "crm"]);
+        assert!(
+            again.code != 0 && again.err.contains("was forgotten"),
+            "{backend:?}: {}",
+            again.err
+        );
+    }
+}
+
+/// A keyring inside a lake's directory would travel with the lake's
+/// files, a destroyed key with it: the root refuses it (058).
+#[test]
+fn a_keyring_inside_a_lakes_directory_is_refused() {
+    let sh = Shell::on("keyring-inside", Backend::Store);
+    sh.lake();
+    // Named straight, through `..`, and through a link, which is followed.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(sh.root.join("lakes"), sh.root.join("shelf")).unwrap();
+    let mut named = vec!["lakes/finance/keys", "elsewhere/../lakes/finance/keys"];
+    if cfg!(unix) {
+        named.push("shelf/finance/keys");
+    }
+    for keyring in named {
+        let config =
+            format!(r#"{{"lakelands": 1, "owner": "owner", "keys": {{"keyring": "{keyring}"}}}}"#);
+        fs::write(sh.root.join("lakelands.json"), config).unwrap();
+        let refused = sh.run(&["feed"]);
+        assert!(
+            refused.code != 0
+                && refused
+                    .err
+                    .contains("is inside the lake `finance`'s directory"),
+            "{keyring}: {}",
+            refused.err
+        );
+    }
+}

@@ -107,6 +107,13 @@ impl KeyStore for Keys {
     }
 }
 
+impl Keys {
+    /// A copy of every key, as a backup of the key store holds them.
+    pub(super) fn backup(&self) -> Keys {
+        Keys(Mutex::new(crate::lock(&self.0).clone()))
+    }
+}
+
 /// The first version of `source`'s key `keys` holds for the lake.
 pub(super) fn first(keys: &Keys, store: &dyn LakeStore, source: &str) -> Result<KeyId, Failure> {
     let ids = keys

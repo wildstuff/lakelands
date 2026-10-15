@@ -2,10 +2,11 @@
 //!
 //! `init` and `lake new` lay out a root: a directory with a
 //! configuration and one location per lake. `apply`, `ingest`, `feed`,
-//! `age`, `purge`, `rebuild`, `compact`, `export` and `serve` open a lake at its location and call the
-//! library in-process: there is no command enum and no layer between the
-//! command and the catalog. `import` makes a lake from an export, through
-//! `lakelands_store::import` over the same engines.
+//! `age`, `purge`, `forget`, `rebuild`, `compact`, `export` and `serve`
+//! open a lake at its location and call the library in-process: there is
+//! no command enum and no layer between the command and the catalog.
+//! `import` makes a lake from an export, through `lakelands_store::import`
+//! over the same engines.
 //!
 //! Opening a lake is one function, [`open_store`], and [`run`] takes it
 //! as a parameter so that tests can pass another. `open_store` opens a
@@ -254,6 +255,20 @@ fn command() -> Command {
                 .arg(Arg::new("preflight").long("preflight").action(ArgAction::SetTrue).conflicts_with("report").help("Say what the purge would retire and strand, appending nothing"))
                 .arg(Arg::new("report").long("report").value_name("ID").help("Purge only if the preflight with this id is of this purge and the lake has not moved since")),
         )
+        .subcommand(
+            Command::new("forget")
+                .about("Forget one source: destroy its keys, so every value it sealed reads as erased, as one act")
+                .arg(
+                    Arg::new("source")
+                        .long("source")
+                        .value_name("ID")
+                        .required(true)
+                        .value_parser(clap::builder::NonEmptyStringValueParser::new())
+                        .help("The source to forget"),
+                )
+                .arg(Arg::new("preflight").long("preflight").action(ArgAction::SetTrue).conflicts_with("report").help("Say what the act would erase and retire, and how long it would hold the writer, appending nothing; what `forget` does without --report"))
+                .arg(Arg::new("report").long("report").value_name("ID").help("Forget, only under the id of a preflight of this source at this head")),
+        )
         .subcommand(Command::new("rebuild").about("Delete the lake's projection and rebuild it from the log"))
         .subcommand(Command::new("compact").about("Give back the storage the lake's projection no longer uses"))
         .subcommand(
@@ -465,6 +480,13 @@ async fn dispatch(
             let report = (!sub.get_flag("preflight")).then_some(report.as_deref());
             let of = (source.as_str(), text(sub, "type"));
             commands::purge(out, &store, (of.0, of.1.as_deref()), report).await
+        }
+        "forget" => {
+            // An act that cannot be undone is never one flag away: it runs
+            // only under a preflight's id, and otherwise answers the
+            // preflight (058).
+            let (source, report) = (text(sub, "source").unwrap_or_default(), text(sub, "report"));
+            commands::forget(out, &store, &source, report.as_deref().map(Some)).await
         }
         "rebuild" => commands::rebuild(out, &store).await,
         "compact" => commands::compact(out, &store).await,

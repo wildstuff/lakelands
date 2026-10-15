@@ -214,11 +214,52 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   into what went, and the id is of that purge alone. A view, and a type
   that keeps no per-field provenance, are refused there.
   A purge retires and does not erase: `as_of` still reads what the
-  source wrote. Forgetting a source is decided for 0.15.0
-  (`docs/decisions/058-a-source-may-be-forgotten.md`): a source's values
-  in fields declared erasable kept under a key of its own, which the act
-  destroys. Source ids and record keys stay plaintext in the log, so a
-  lake made now is ready for it when:
+  source wrote. **Forgetting a source** erases it
+  (`docs/decisions/058-a-source-may-be-forgotten.md`). A source's values
+  of a field declared `erasable` enter the log sealed under a key of its
+  own, which the host's key store keeps outside the lake; the CLI and
+  `serve` bind `lakelands-backings`' file keyring where the root's
+  `lakelands.json` names one, `"keys": {"keyring": "<directory>"}`,
+  relative to the root, and refuse a keyring inside a lake's directory.
+  Without one a value that would be sealed is refused.
+  - **The act:** `LakeStore::forget_source(source, None)`
+    (`lakelands forget --source <id> --report <id>`) appends `source_forgotten`,
+    retires what the source alone brought, has the key store destroy its
+    keys, rebuilds the projection and reclaims the storage, all under the
+    writer's lock. Its preflight, `forget_preflight` (`--preflight`),
+    says what it erases and retires, what is computed again, and how
+    long it expects to hold the lock (the log's events at the engine's
+    measured rate: about 2 500 a second on PostgreSQL, 17 000 on
+    SQLite). The CLI acts only with `--report <id>`, the preflight's,
+    and only if the lake has not moved since; without it, it answers the
+    preflight.
+    Choose a moment when waiting writes can wait.
+  - **What it cannot reach** refuses it: a value the log holds in
+    plaintext, written before its field was erasable or by a release
+    before 0.15.0. Such a lake is exported, the source left out, and
+    imported as a new lake.
+  - **After a crash** between the act's steps, open a writer: the next
+    writer's open, or the act repeated, finishes what is owed. A
+    handle that only reads answers what the projection held until then.
+  - **Keep backups honest:** a key restored from a backup restores what
+    it sealed. The key store's backups must follow its destroys, and the
+    keyring stays out of the lake's backup set: a backup that carries
+    both carries what forgetting destroys. A disk snapshot, a PostgreSQL
+    WAL archive or a copy outside the lake is out of the act's reach. An
+    import finishes a forgetting its export holds, so a key store
+    restored beside it has that source's keys destroyed again.
+  - **An export** holds sealed values as ciphertext, and no key. It
+    imports with the key store bound, or with none where the export
+    holds the source's forgetting, whose values then arrive erased; any
+    other sealed value refuses an import with no key store, as unbound.
+  - **A mirror** reads the source through the doors, which answer
+    plaintext. At a `source_forgotten`, each mapped type whose source
+    type has an erasable field stops past it, naming the source: its
+    copies may hold that source's values under the mirror's own source.
+    Copy the type again, or forget `mirror:<lake>:<type>` in the target,
+    then restart.
+  Source ids and record keys stay plaintext in the log, so a lake is
+  ready to forget when:
   - **a source id names no person:** an opaque id for a device or a feed,
     the person kept in the host's own mapping;
   - **a type that holds personal data is keyed by a surrogate:** a minted

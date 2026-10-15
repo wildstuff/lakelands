@@ -65,6 +65,21 @@ pub struct Config {
     /// is mirrored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mirror: Option<crate::mirror::MirrorConfig>,
+    /// The key store that seals a source's values of erasable fields:
+    /// `lakelands-backings`' file keyring, one file per lake in a directory
+    /// outside every lake's. Absent, no key store is bound, and a value
+    /// that would be sealed is refused
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<KeysConfig>,
+}
+
+/// Where the root's key store keeps its keys.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeysConfig {
+    /// The keyring's directory, relative to the root where it is relative.
+    pub keyring: PathBuf,
 }
 
 /// An opened root.
@@ -104,9 +119,40 @@ pub fn init(dir: &Path, owner: &str) -> Result<(), Failure> {
         deliver: None,
         aging: None,
         mirror: None,
+        keys: None,
     };
     fs::create_dir_all(dir.join("lakes")).map_err(|e| io(dir, e))?;
     write_new(&file, &config)
+}
+
+/// `path` with its links followed and its `.` and `..` taken out: its
+/// longest part that exists, canonical, and the rest as named, so a
+/// keyring not made yet is judged where it will be.
+fn canonical(path: &Path) -> PathBuf {
+    let mut rest: Vec<std::ffi::OsString> = Vec::new();
+    let mut at = path.to_path_buf();
+    let mut out = loop {
+        if let Ok(real) = at.canonicalize() {
+            break real;
+        }
+        match at.components().next_back() {
+            Some(last) => rest.push(last.as_os_str().to_owned()),
+            None => break at.clone(),
+        }
+        if !at.pop() {
+            break PathBuf::new();
+        }
+    };
+    for part in rest.into_iter().rev() {
+        match part.to_str() {
+            Some("..") => {
+                out.pop();
+            }
+            Some(".") => {}
+            _ => out.push(part),
+        }
+    }
+    out
 }
 
 /// Write a JSON file that must not exist yet.
@@ -159,13 +205,51 @@ impl Root {
                 Arc::new(crate::mirror::MirrorVocabulary::of(m))
                     as Arc<dyn lakelands_api::seam::SystemVocabulary>
             }),
+            keys: self.keyring().map(|dir| {
+                Arc::new(lakelands_backings::keyring::FileKeyring::new(dir))
+                    as Arc<dyn lakelands_api::seam::KeyStore>
+            }),
             ..Seams::default()
         }
+    }
+
+    /// The keyring's directory, where `keys` names one.
+    fn keyring(&self) -> Option<PathBuf> {
+        let named = &self.config.keys.as_ref()?.keyring;
+        Some(match named.is_relative() {
+            true => self.dir.join(named),
+            false => named.clone(),
+        })
+    }
+
+    /// A keyring inside a lake's directory would go wherever the lake's
+    /// files go, a backup or a copy, and a destroyed key with them: it is
+    /// refused (058).
+    fn keyring_outside_the_lakes(&self) -> Result<(), Failure> {
+        let Some(keyring) = self.keyring() else {
+            return Ok(());
+        };
+        let keyring = canonical(&keyring);
+        for lake in self.lakes() {
+            if let EngineConfig::Sqlite { dir, .. } = self.location(Some(&lake))?.engine
+                && keyring.starts_with(canonical(&dir))
+            {
+                return Err(Failure::new(
+                    format!(
+                        "the keyring {} is inside the lake `{lake}`'s directory",
+                        show(&keyring)
+                    ),
+                    "name a keyring directory outside every lake's, in the keys section of the configuration",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Open the root in `dir`.
     pub fn open(dir: &Path) -> Result<Root, Failure> {
         let root = Root::open_to_add_a_lake(dir)?;
+        root.keyring_outside_the_lakes()?;
         root.deliver_to_held_lakes()?;
         root.mirror_held_lakes()?;
         Ok(root)

@@ -1836,3 +1836,78 @@ async fn a_copy_crosses_at_its_source_depth_and_a_chain_past_the_targets_ceiling
         assert!(why.contains("at depth 9"), "{why}");
     }
 }
+
+/// At the source's forgetting of a source (058), a mapped type whose
+/// source type has an erasable field stops past the act, naming the
+/// source, since its copies may hold that source's values under the
+/// mirror's own; a type with no erasable field goes on.
+#[tokio::test]
+async fn a_forgetting_in_the_source_stops_a_type_with_an_erasable_field() {
+    for engine in engines() {
+        let engine = &engine;
+        let email = json!({"name": "email", "type": {"kind": "text"}, "authority": "source", "erasable": true});
+        let source = vec![
+            decl(
+                json!({"declare": "type", "name": "partner", "key": ["name"],
+                        "fields": [required("name", "authored")]}),
+            ),
+            decl(
+                json!({"declare": "type", "name": "customer", "key": ["code"],
+                        "fields": [required("code", "source"), email]}),
+            ),
+        ];
+        let target = vec![
+            decl(
+                json!({"declare": "type", "name": "partner", "key": ["name"],
+                        "fields": [required("name", "source")]}),
+            ),
+            customer_copy(vec![required("code", "source"), text("email", "source")]),
+        ];
+        let mut two = Two::with("forgotten", engine, source, target).await;
+        // The source lake again, with a keyring.
+        two.crm.close().await.unwrap();
+        let keyring = lakelands_backings::FileKeyring::new(two.dir.join("keys"));
+        let seams = Seams {
+            keys: Some(Arc::new(keyring)),
+            ..two.seams.clone()
+        };
+        two.crm = lakelands_store::open(two.crm_at.clone(), seams, OpenMode::Write)
+            .await
+            .unwrap();
+        let rows = vec![lakelands_core::conformance::fixture::source_record(
+            "customer",
+            "c1",
+            json!({"code": "c1", "email": "ada@example.org"}),
+        )];
+        let cat = doors(two.crm.as_ref());
+        lakelands_core::conformance::fixture::ingest(
+            cat.as_ref(),
+            &owner(two.crm.as_ref()),
+            "web",
+            rows,
+        )
+        .await
+        .unwrap();
+        two.upsert("partner", "acme", json!({"name": "acme"})).await;
+        let mut m = two.mirror().await.unwrap();
+        settle(&mut m).await;
+        assert!(
+            two.copy("customer", "c1").await.is_some(),
+            "{engine:?}: c1 crossed"
+        );
+        two.crm.forget_source(&"web".into(), None).await.unwrap();
+        two.upsert("partner", "globex", json!({"name": "globex"}))
+            .await;
+        settle(&mut m).await;
+        let kept = m.kept().types[&TypeName::from("customer")].clone();
+        let why = kept.stopped.expect("customer stopped").why;
+        assert!(
+            why.contains("forgot `web`") && why.contains("mirror:"),
+            "{why}"
+        );
+        assert!(
+            two.copy("partner", "globex").await.is_some(),
+            "{engine:?}: partner, with no erasable field, goes on"
+        );
+    }
+}

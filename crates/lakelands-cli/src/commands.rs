@@ -1,6 +1,7 @@
 //! The commands that open a lake: `apply`, `ingest`, `feed`, `age`,
-//! `purge`, `rebuild`, `compact`, `export` and `serve`. Each calls the library
-//! in-process and prints the position of every answer that has one.
+//! `purge`, `forget`, `rebuild`, `compact`, `export` and `serve`. Each calls
+//! the library in-process and prints the position of every answer that has
+//! one.
 //! `import` makes a lake instead of opening one.
 //!
 //! What a command says of its operator's own files and terminal (a file it
@@ -626,6 +627,94 @@ pub async fn purge(
     put(
         out,
         format!("purged {source}{from} through position {head}"),
+    )
+}
+
+/// `forget`: forget one source (`LakeStore::forget_source`): append the
+/// act, destroy its keys, rebuild and reclaim, and print what it erased
+/// and retired. `report` is its `--report`, the only way to act; without
+/// one (`None`), as with `--preflight`, it prints the same for an act not
+/// made, the
+/// values the log holds in plaintext that refuse it, the time it expects
+/// to hold the writer's lock, and the id to make it under
+/// (`docs/decisions/058-a-source-may-be-forgotten.md`).
+pub async fn forget(
+    out: Out<'_>,
+    store: &Arc<dyn LakeStore>,
+    source: &str,
+    report: Option<Option<&str>>,
+) -> Result<(), Failure> {
+    let id = SourceId::from(source);
+    let (report, did) = match report {
+        Some(given) => (store.forget_source(&id, given).await?, "erased"),
+        None => (store.forget_preflight(&id).await?, "would erase"),
+    };
+    for f in &report.fields {
+        put(
+            out,
+            format!("{}.{}: {did} {} value(s)", f.ty, f.field, f.values),
+        )?;
+    }
+    for t in &report.retired {
+        put(
+            out,
+            format!(
+                "{}: retires {} record(s) {source} alone brought",
+                t.ty, t.retired
+            ),
+        )?;
+    }
+    for t in &report.co_owned {
+        let first: Vec<String> = t.first.iter().map(|k| k.to_string()).collect();
+        let what = format!(
+            "{}: keeps {} record(s) another hand wrote too",
+            t.ty, t.records
+        );
+        put(out, format!("{what}, first {}", first.join(", ")))?;
+    }
+    if report.outputs > 0 {
+        put(out, format!("{did} {} recorded output(s)", report.outputs))?;
+    }
+    for f in &report.recomputed {
+        put(out, format!("{}.{}: computed again", f.ty, f.field))?;
+    }
+    for v in &report.views {
+        put(out, format!("{v}: computed again"))?;
+    }
+    if report.plaintext > 0 {
+        put(
+            out,
+            format!(
+                "{source}: the log holds {} value(s) of erasable fields in plaintext, which the act cannot reach; it is refused",
+                report.plaintext
+            ),
+        )?;
+    }
+    if !report.report_id.is_empty() {
+        let (head, id) = (report.position, &report.report_id);
+        let seconds = report.expected_ms.div_ceil(1000);
+        return put(
+            out,
+            format!(
+                "{source}: preflight at position {head}; the act holds the writer about {seconds} s \
+                 ({} events); forget with --report {id}",
+                report.events
+            ),
+        );
+    }
+    let reclaimed = match report.reclaimed {
+        Some(r) => match (r.before, r.after) {
+            (Some(b), Some(a)) => format!(", the projection {b} → {a} bytes"),
+            _ => String::new(),
+        },
+        None => String::new(),
+    };
+    put(
+        out,
+        format!(
+            "forgot {source} through position {}{reclaimed}",
+            report.position
+        ),
     )
 }
 

@@ -1606,16 +1606,25 @@ impl Lake {
         let e = match (&e.sealed, source) {
             (Some(sealed), Some(source)) => {
                 let mut plain = e.clone();
-                match self.keys.opened(source, &sealed.key)? {
-                    Some(key) => crate::sealing::open(&mut plain, &key)?,
-                    None if self.forgot(w, view, staged, source, e.position)? => {
+                // With no key store at all, as an import made without one,
+                // a value the log forgot is erased, and any other refused
+                // as unbound rather than lost.
+                let key = match self.keys.opened(source, &sealed.key) {
+                    Ok(Some(key)) => Ok(key),
+                    Ok(None) => {
+                        let (source, key) = (source.clone(), sealed.key.clone());
+                        Err(Error::unavailable(Situation::KeyMissing { source, key }))
+                    }
+                    Err(e @ Error::Unbound { .. }) => Err(e),
+                    Err(e) => return Err(e),
+                };
+                match key {
+                    Ok(key) => crate::sealing::open(&mut plain, &key)?,
+                    Err(_) if self.forgot(w, view, staged, source, e.position)? => {
                         dropped = matches!(plain.body, EventBody::OutputRecorded { .. });
                         erased = crate::sealing::erase(&mut plain);
                     }
-                    None => {
-                        let (source, key) = (source.clone(), sealed.key.clone());
-                        return Err(Error::unavailable(Situation::KeyMissing { source, key }));
-                    }
+                    Err(lost) => return Err(lost),
                 }
                 opened = plain;
                 &opened
