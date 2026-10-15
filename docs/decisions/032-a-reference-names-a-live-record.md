@@ -28,8 +28,10 @@ One the write neither moves nor sends a field of is not judged again,
 as a sent one outside the patch is not: else a record whose reference
 names a record retired since could not be written at all. A field is
 sent for a reference that reads it directly or through other computed
-fields; a written reference is computed from nothing, whatever it
-lists beside it. At `ingest` a record its window sends wholly unchanged
+fields, and for one that lists it in `depends_on` whether its
+expression reads it or not: the type in force lists what a computed
+field is computed from (lakelands#936). A written reference is computed
+from nothing, whatever it lists beside it. At `ingest` a record its window sends wholly unchanged
 is a duplicate and is not written, so nothing of it is judged, a sent
 key as little as a computed one. A proposal's accept judges the record as the declarations in force then
 compute it, and what a proposal reaches counts the records its computed

@@ -1,9 +1,11 @@
 //! A reference a record computes is judged as one its writer sends
 //! (`docs/decisions/032-a-reference-names-a-live-record.md`).
 
+use std::fmt::Write as _;
+
 use lakelands_api::error::Missing;
 use lakelands_api::write::{Declaration, Outcome, ProposedWrite, WriteOpts};
-use lakelands_api::{Error, Principal, ProposalId, Refusal};
+use lakelands_api::{Error, LakeStore, Principal, ProposalId, Refusal, Version};
 use serde_json::{Value, json};
 
 use super::only::holder;
@@ -15,7 +17,12 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     COMPUTED_REFERENCE = a_reference_a_record_computes_is_judged_as_one_its_writer_sends,
-    "032 (lakelands#795): a reference field computed at the write, by an expression or an `expr` function, names a live record its writer is answered, as a written one does: for a record that is absent, retired, held or not admitted by the writer's `only`, a writer of everything, one without `restricted` and a holder of `only` are each answered what the same key written into a reference field answers, applied or refused as `not_live`, by an upsert; a verb's call, an ingest and a link to an absent key are refused as their written twins are; a writer who may not read the reference, masked or not shown it, is refused as not granted, a held key as one never there, and the key the record holds, guessed, as any other; to a writer kept from the target type no record of it is there (lakelands#1003), so a key it computes, live or gone, is refused `not_granted` naming nothing, alike to the byte at an upsert and an ingest, and a verb whose path reads into that type is refused so for a live far record and a gone one; a reference its write neither moves nor sends a field of is not judged again, and one whose field is sent again with the value it had, read directly or through another computed field, is judged as a key sent again, as is one of a record retired and written again, which has held nothing; a written reference is computed from nothing, whatever it lists; a proposal is judged at its accept by the function as declared then, while a function declared again computes every record's reference again unjudged, and a write that sends none of its fields is applied; to a reviewer without `restricted` a proposed write or call whose computed reference, from an initial value too or from a field sent again, reaches a held record is not there, its accept answered as an id no proposal holds; a reference computed at the read, by a function's backing or from a field a backing computes or, through another computed field, one an embedding computes, is refused by `declare`, `apply` and `propose`, and a function declared again with a backing is refused while a reference calls it or reads a field that does, or a field computed at the read calls it, whatever else its type's fields say"
+    "032 (lakelands#795): a reference field computed at the write, by an expression or an `expr` function, names a live record its writer is answered, as a written one does: for a record that is absent, retired, held or not admitted by the writer's `only`, a writer of everything, one without `restricted` and a holder of `only` are each answered what the same key written into a reference field answers, applied or refused as `not_live`, by an upsert; a verb's call, an ingest and a link to an absent key are refused as their written twins are; a writer who may not read the reference, masked or not shown it, is refused as not granted, a held key as one never there, and the key the record holds, guessed, as any other; to a writer kept from the target type no record of it is there (lakelands#1003), so a key it computes, live or gone, is refused `not_granted` naming nothing, alike to the byte at an upsert and an ingest, and a verb whose path reads into that type is refused so for a live far record and a gone one; a field a computed reference lists counts as sent, whether its expression reads it or not (lakelands#936); a reference its write neither moves nor sends a field of is not judged again, and one whose field is sent again with the value it had, read directly or through another computed field, is judged as a key sent again, as is one of a record retired and written again, which has held nothing; a written reference is computed from nothing, whatever it lists; a proposal is judged at its accept by the function as declared then, while a function declared again computes every record's reference again unjudged, and a write that sends none of its fields is applied; to a reviewer without `restricted` a proposed write or call whose computed reference, from an initial value too or from a field sent again, reaches a held record is not there, its accept answered as an id no proposal holds, and so its accept or rejection again once the write has landed, the written twin alike, while one that reaches a live record is `decided` again (lakelands#923); a reference computed at the read, by a function's backing or from a field a backing computes or, through another computed field, one an embedding computes, is refused by `declare`, `apply` and `propose`, and a function declared again with a backing is refused while a reference calls it or reads a field that does, or a field computed at the read calls it, whatever else its type's fields say"
+);
+
+check!(
+    COMPUTED_REFERENCE_CELLS = a_computed_reference_answers_alike_in_every_cell,
+    "032 (lakelands#923): a reference computed at the write is answered at `ingest`, at a link's field, under `only` on the type written, and under a stale `expected_version`, by one who reads it and one who may not (masked or not shown it), alike on every engine: an ingest window whose record names a record not live to its writer commits nothing, its neighbours included, and `Ingested` names the record; a link's computed field is answered as its written twin; the reference is judged before `only` on the type written: outside it, a key that is not live is `not_live`, and a live one `not_granted` naming nothing; a stale version is told first, `conflict`, where the written twin is told its reference first, and a writer who may not read the reference learns nothing of the key from either"
 );
 
 /// A record of `p` in each state a reference may find it in, and whether
@@ -37,25 +44,37 @@ fn not_live<T>(answer: &lakelands_api::Result<T>) -> bool {
     answer.as_ref().is_err_and(|e| wire(e).contains("not_live"))
 }
 
-async fn a_reference_a_record_computes_is_judged_as_one_its_writer_sends(store: Store) -> Held {
-    let (l, s) = (Lake::of(store.as_ref()), store.as_ref());
-    let c = l.cat.as_ref();
+fn text(n: &str) -> Value {
+    json!({"name": n, "type": {"kind": "text"}})
+}
+
+fn ty(name: &str, fields: Value) -> Value {
+    json!({"declare": "type", "name": name, "fields": fields})
+}
+
+/// A reference to `p` computed `how` (`derived`, `function`) from `what`.
+fn by(how: &str, what: &str) -> Value {
+    let mut r = json!({"name": "r", "type": {"kind": "reference", "target": "p"},
+        "authority": "derived"});
+    r[how] = json!(what);
+    r
+}
+
+/// A function of `s`, its `expr` when it has one.
+fn function(name: &str, backing: &str, expr: Value) -> Value {
+    let mut f = json!({"declare": "function", "name": name, "backing": backing,
+        "inputs": [text("s")]});
+    if !expr.is_null() {
+        f["expr"] = expr;
+    }
+    f
+}
+
+/// The lake both rows write: `p`'s records `live`, `old` (retired), `held`
+/// (restricted), `theirs` (another team's) and `p2`, and the types that
+/// write, compute or move a reference to them.
+async fn fixture(l: &Lake, s: &dyn LakeStore) -> Held {
     let to_p = json!({"kind": "reference", "target": "p"});
-    let text = |n: &str| json!({"name": n, "type": {"kind": "text"}});
-    let by = |how: &str, what: &str| {
-        let mut r = json!({"name": "r", "type": to_p, "authority": "derived"});
-        r[how] = json!(what);
-        r
-    };
-    let function = |name: &str, backing: &str, expr: Value| {
-        let mut f = json!({"declare": "function", "name": name, "backing": backing,
-            "inputs": [text("s")]});
-        if !expr.is_null() {
-            f["expr"] = expr;
-        }
-        f
-    };
-    let ty = |name: &str, fields: Value| json!({"declare": "type", "name": name, "fields": fields});
     let (s_, note) = (text("s"), text("note"));
     let mut initial = text("s");
     initial["initial"] = json!("held");
@@ -64,7 +83,7 @@ async fn a_reference_a_record_computes_is_judged_as_one_its_writer_sends(store: 
         function("g", "expr", json!("s")),
         function("h", "expr", json!("s")),
         function("remote", KIND, Value::Null),
-        ty("dw", json!([s_, {"name": "r", "type": to_p}])),
+        ty("dw", json!([s_, note, {"name": "r", "type": to_p}])),
         ty("dr", json!([s_, note, by("derived", "s")])),
         ty("fr", json!([s_, note, by("function", "g")])),
         ty("ir", json!([initial, note, by("derived", "s")])),
@@ -87,6 +106,15 @@ async fn a_reference_a_record_computes_is_judged_as_one_its_writer_sends(store: 
         ),
         json!({"declare": "verb", "name": "point", "on": "dr", "risk": "low", "effect": "write",
             "set": [{"field": "s", "value": "'gone'"}]}),
+        // Its written twin.
+        json!({"declare": "verb", "name": "point_w", "on": "dw", "risk": "low", "effect": "write",
+            "set": [{"field": "r", "value": "'gone'"}]}),
+        // `r` computed from `s` alone, listing `note` beside it.
+        ty(
+            "nr",
+            json!([s_, note, {"name": "r", "type": to_p, "authority": "derived",
+                "derived": "s", "depends_on": ["s", "note"]}]),
+        ),
         json!({"declare": "verb", "name": "hold", "on": "dr", "risk": "low", "effect": "write",
             "set": [{"field": "s", "value": "'held'"}]}),
         // A source's twin, and a link's: `r` written and `r` computed.
@@ -113,6 +141,17 @@ async fn a_reference_a_record_computes_is_judged_as_one_its_writer_sends(store: 
     ] {
         l.upsert("p", k, json!({ "team": team })).await?;
     }
+    let (p, old) = ("p".into(), "old".into());
+    let retired = l.cat.retire(&l.own, &p, &old, WriteOpts::default()).await;
+    retired.must("retiring `p` `old`")?;
+    restrict(s, "p", "held", "a hold").await.map(drop)
+}
+
+async fn a_reference_a_record_computes_is_judged_as_one_its_writer_sends(store: Store) -> Held {
+    let (l, s) = (Lake::of(store.as_ref()), store.as_ref());
+    let c = l.cat.as_ref();
+    fixture(&l, s).await?;
+    let s_ = text("s");
     let retire = |ty: &'static str, k: &'static str| {
         let own = &l.own;
         async move {
@@ -121,12 +160,10 @@ async fn a_reference_a_record_computes_is_judged_as_one_its_writer_sends(store: 
             retired.must(&what).map(drop)
         }
     };
-    retire("p", "old").await?;
-    restrict(s, "p", "held", "a hold").await?;
     let writes = json!({"default": "write"});
     let only = json!({"default": "write", "types": {"p": {"only": {"team": "a"}}}});
     let unread = json!({"default": "write", "types": {"dr": {"fields": {"r": "masked"}},
-        "fr": {"fields": {"r": "none"}}}});
+        "fr": {"fields": {"r": "none"}}, "nr": {"fields": {"r": "masked"}}}});
     let writers = [l.own.clone(), holder(s, "w", writes), holder(s, "o", only)];
     // Each state for each writer: the computed reference answers what the
     // written one answers, and that is what the state says.
@@ -158,10 +195,19 @@ async fn a_reference_a_record_computes_is_judged_as_one_its_writer_sends(store: 
     let (point, key) = ("point".into(), "w-live".into());
     let called = c.call(w, &point, Some(&key), Default::default(), opts());
     let called = called.await;
-    ensure!(
-        not_live(&called),
-        "a verb's call that moves `dr` `w-live` to `gone`: {called:?}"
+    let point_w = "point_w".into();
+    let twin = c.call(w, &point_w, Some(&key), Default::default(), opts());
+    let (twin, what) = (
+        twin.await,
+        "a verb's call that moves `dr` `w-live` to `gone`",
     );
+    ensure!(
+        not_live(&called) && twin.is_err(),
+        "{what}: {called:?}; written: {twin:?}"
+    );
+    if let (Err(a), Err(b)) = (&called, &twin) {
+        alike_renamed(what, a, b, ("", ""))?;
+    }
     // A source's write and a link's are judged as an upsert's: each as
     // its written twin.
     let ingest = |ty: &'static str, fields: Value| {
@@ -282,6 +328,7 @@ async fn a_reference_a_record_computes_is_judged_as_one_its_writer_sends(store: 
         retire(ty, "zr").await?;
         l.upsert(ty, "z1", json!({ field: "p2" })).await?;
     }
+    l.upsert("nr", "z1", json!({"s": "p2"})).await?;
     l.upsert("tr", "z1", json!({"s": "p2"})).await?;
     l.upsert("kr", "z1", json!({"x": "a", "r": "p2"})).await?;
     // `ir` computes `held` from its initial value, each time it is made.
@@ -367,6 +414,36 @@ async fn a_reference_a_record_computes_is_judged_as_one_its_writer_sends(store: 
             "a reviewer without `restricted` accepting `{ty}` to `held`: {a:?}"
         );
     }
+    // Deciding again a proposal whose write has landed: to `rv` one that
+    // reaches a held record is not there, the written twin alike, and one
+    // that reaches a live record is `decided` (lakelands#923).
+    for x in ["live", "held"] {
+        for (ty, f) in [("dr", "s"), ("dw", "r")] {
+            let id = proposed(&l.own, onto(ty, &format!("d-{x}"), json!({ f: x }))).await?;
+            c.accept(&l.own, &id).await.must("the owner's accept")?;
+            let again = c.accept(&rv, &id).await;
+            let rejected = c.reject(&rv, &id, "no".into()).await;
+            let told = |a| (x == "held" && gone(a, &id)) || (x == "live" && class(a) == "decided");
+            let what = format!("`rv` deciding `{ty}` to `{x}` again: {again:?}, {rejected:?}");
+            ensure!(told(&again) && told(&rejected), "{what}");
+        }
+    }
+    // A field a computed reference lists counts as sent, whether its
+    // expression reads it or not (lakelands#936).
+    let listed = try_upsert(c, w, "nr", "z1", json!({"note": "b"})).await;
+    let what = "`nr` `z1`, sent the `note` its `r` lists";
+    ensure!(
+        not_live(&listed) && resent.is_err(),
+        "{what}: {listed:?}; written: {resent:?}"
+    );
+    if let (Err(a), Err(b)) = (&listed, &resent) {
+        alike_renamed(what, a, b, ("", ""))?;
+    }
+    let masked = try_upsert(c, &m, "nr", "z1", json!({"note": "b"})).await;
+    ensure!(
+        masked.as_ref().is_err_and(|e| !named(e)),
+        "`nr` `z1`, sent `note` by one who may not read `r`, is not granted, naming nothing: {masked:?}"
+    );
     // A written reference is computed from nothing, whatever it lists.
     let listed = try_upsert(c, w, "kr", "z1", json!({"x": "b"})).await;
     listed.must("`kr` `z1`, whose written `r` lists `x`, written with `x`")?;
@@ -514,3 +591,161 @@ async fn a_reference_a_record_computes_is_judged_as_one_its_writer_sends(store: 
     }
     Ok(())
 }
+
+/// What an answer is, by its kind: `applied`, `not_live <key>`, `not_granted`
+/// naming nothing or `not_granted r`, `unknown_field`, `conflict`,
+/// `not_found`, `decided`, another refusal by its wire form; an ingest's
+/// with the record it names; and any refusal but `not_live` whose wire
+/// names a key of `p` marked so.
+fn class<T>(a: &lakelands_api::Result<T>) -> String {
+    let Err(e) = a else {
+        return "applied".into();
+    };
+    let w = serde_json::to_value(e).unwrap_or_default();
+    let r = &w["reason"];
+    let kind = [&r["code"], &r["refusal"], &w["error"]];
+    let kind = kind.into_iter().find_map(Value::as_str).unwrap_or("?");
+    let more = match kind {
+        "not_live" => r["key"].as_str(),
+        "not_granted" => w["field"].as_str(),
+        _ => None,
+    };
+    let more = more.map(|m| format!(" {m}")).unwrap_or_default();
+    let names = |k: &str| kind != "not_live" && w.to_string().contains(&format!("\"{k}\""));
+    let named = ["gone", "held", "theirs"].into_iter().any(names);
+    let record = w["record"]["message"].as_str().unwrap_or("?");
+    let at = w
+        .get("index")
+        .map(|i| format!(" at {i} from {} {record}", w["from"]));
+    let named = if named { " names the key" } else { "" };
+    format!("{kind}{more}{named}{}", at.unwrap_or_default())
+}
+
+async fn a_computed_reference_answers_alike_in_every_cell(store: Store) -> Held {
+    let (l, s) = (Lake::of(store.as_ref()), store.as_ref());
+    let c = l.cat.as_ref();
+    fixture(&l, s).await?;
+    let link = |r: &str| lakelands_api::key::link_type_name(&"lt".into(), &r.into()).to_string();
+    let kept = |how: &str| {
+        let (r, lr, lw) = (json!({"fields": {"r": how}}), link("lr"), link("lw"));
+        json!({"default": "write", "ingest": true,
+            "types": {"dr": r, "dw": r, "sr": r, "sw": r, lr: r, lw: r}})
+    };
+    let (w, m, n) = (
+        holder(s, "w", json!({"default": "write", "ingest": true})),
+        holder(s, "m", kept("masked")),
+        holder(s, "n", kept("none")),
+    );
+    let writers = [("w", &w), ("m", &m), ("n", &n)];
+    // A line per cell: the computed twin's answer, then the written one's.
+    let mut said = String::new();
+    for (who, p) in writers {
+        for x in ["gone", "held"] {
+            // 1. An ingest window whose middle record names `x`: what it
+            // answers, and which of the window's records it commits.
+            let _ = write!(said, "\n1 {who} {x}:");
+            for (t, f) in [("sr", "s"), ("sw", "r")] {
+                let key = |i: u8| format!("{who}-{x}-{i}");
+                let recs = (1..=3u8).map(|i| {
+                    let to = if i == 2 { x } else { "live" };
+                    source_record(t, &key(i), json!({ f: to }))
+                });
+                let src = lakelands_api::SourceId::from("feed");
+                let a = lakelands_api::ingest_all(c, p, &src, recs.collect()).await;
+                let mut kept = Vec::new();
+                for i in 1..=3 {
+                    kept.push(l.read(t, &key(i)).await.is_ok());
+                }
+                let _ = write!(said, " [{} {kept:?}]", class(&a));
+            }
+            // 2. A link's field, computed and written.
+            let _ = write!(said, "\n2 {who} {x}:");
+            for (rel, f) in [("lr", "s"), ("lw", "r")] {
+                let from = format!("{who}-{x}-{rel}");
+                l.upsert("lt", &from, json!({"s": "x"})).await?;
+                let (t, k, rel) = ("lt".into(), from.as_str().into(), rel.into());
+                let (fields, opts) = (patch(json!({ f: x })), WriteOpts::default());
+                let a = c.link(p, &t, &k, &rel, &"live".into(), fields, opts).await;
+                let _ = write!(said, " [{}]", class(&a));
+            }
+            // 4. A stale `expected_version` beside a reference that is not
+            // live.
+            let _ = write!(said, "\n4 {who} {x}:");
+            for (t, f) in [("dr", "s"), ("dw", "r")] {
+                let key = format!("v-{who}-{x}");
+                l.upsert(t, &key, json!({ f: "live" })).await?;
+                let expected_version = Some(Version(9));
+                let opts = WriteOpts {
+                    expected_version,
+                    ..Default::default()
+                };
+                let (ty, k) = (t.into(), key.as_str().into());
+                let a = c.upsert(p, &ty, &k, patch(json!({ f: x })), opts).await;
+                let _ = write!(said, " [{}]", class(&a));
+            }
+        }
+    }
+    // 3. `only` on the type written, inside it and outside.
+    let only = |more: Value| {
+        let t = json!({"only": {"note": "x"}, "fields": more});
+        json!({"default": "write", "types": {"dr": t, "dw": t}})
+    };
+    let (o, om) = (
+        holder(s, "o", only(json!({}))),
+        holder(s, "om", only(json!({"r": "masked"}))),
+    );
+    for (who, p) in [("o", &o), ("om", &om)] {
+        for x in ["gone", "held", "theirs"] {
+            for note in ["x", "y"] {
+                let _ = write!(said, "\n3 {who} {x} {note}:");
+                for (t, f) in [("dr", "s"), ("dw", "r")] {
+                    let key = format!("{who}-{x}-{note}");
+                    let a = try_upsert(c, p, t, &key, json!({"note": note, f: x})).await;
+                    let _ = write!(said, " [{}]", class(&a));
+                }
+            }
+        }
+    }
+    let trim = |t: &str| t.lines().map(str::trim).collect::<Vec<_>>().join("\n");
+    let said = trim(&said);
+    ensure!(
+        said == trim(EXPECTED),
+        "the cells answered otherwise than pinned:{said}"
+    );
+    Ok(())
+}
+
+/// What every cell answers, a line each in the order asked: the computed
+/// twin's answer, then the written one's.
+const EXPECTED: &str = "
+    1 w gone: [not_live gone at 1 from 0 `sr` `w-gone-2` [false, false, false]] [not_live gone at 1 from 0 `sw` `w-gone-2` [false, false, false]]
+    2 w gone: [not_live gone] [not_live gone]
+    4 w gone: [conflict] [not_live gone]
+    1 w held: [not_live held at 1 from 0 `sr` `w-held-2` [false, false, false]] [not_live held at 1 from 0 `sw` `w-held-2` [false, false, false]]
+    2 w held: [not_live held] [not_live held]
+    4 w held: [conflict] [not_live held]
+    1 m gone: [not_granted at 1 from 0 `sr` `m-gone-2` [false, false, false]] [not_granted r at 0 from 0 `sw` `m-gone-1` [false, false, false]]
+    2 m gone: [not_granted] [not_granted r]
+    4 m gone: [conflict] [not_granted r]
+    1 m held: [not_granted at 1 from 0 `sr` `m-held-2` [false, false, false]] [not_granted r at 0 from 0 `sw` `m-held-1` [false, false, false]]
+    2 m held: [not_granted] [not_granted r]
+    4 m held: [conflict] [not_granted r]
+    1 n gone: [not_granted at 1 from 0 `sr` `n-gone-2` [false, false, false]] [unknown_field at 0 from 0 `sw` `n-gone-1` [false, false, false]]
+    2 n gone: [not_granted] [unknown_field]
+    4 n gone: [conflict] [unknown_field]
+    1 n held: [not_granted at 1 from 0 `sr` `n-held-2` [false, false, false]] [unknown_field at 0 from 0 `sw` `n-held-1` [false, false, false]]
+    2 n held: [not_granted] [unknown_field]
+    4 n held: [conflict] [unknown_field]
+    3 o gone x: [not_live gone] [not_live gone]
+    3 o gone y: [not_live gone] [not_live gone]
+    3 o held x: [not_live held] [not_live held]
+    3 o held y: [not_live held] [not_live held]
+    3 o theirs x: [applied] [applied]
+    3 o theirs y: [not_granted] [not_granted]
+    3 om gone x: [not_granted] [not_granted r]
+    3 om gone y: [not_granted] [not_granted r]
+    3 om held x: [not_granted] [not_granted r]
+    3 om held y: [not_granted] [not_granted r]
+    3 om theirs x: [applied] [not_granted r]
+    3 om theirs y: [not_granted] [not_granted r]
+";
