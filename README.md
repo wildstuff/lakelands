@@ -275,12 +275,9 @@ walk's page lists every call and the answer it must give.
 
 `0.1.0` holds what is on disk, in every reply, or in a trait: the log
 format, per-field provenance, positions on every answer, the engine
-contract and the seams. What came right after arrived through those
-seams without changing them: the PostgreSQL engine, the REST door, the
-OpenAI-compatible embedding client and webhook delivery of fired
-triggers and set changes, MCP notifications and a client for a lake
-served over REST, all in `0.2.0`. The repository goes public once The
-Wild runs on a tagged Lakelands.
+contract and the seams. Each later release built on them; what it adds
+is in its notes on the releases page, and what comes next is on the
+milestones.
 
 ## Licence
 
