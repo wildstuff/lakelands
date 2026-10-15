@@ -86,7 +86,9 @@ reads. To any other author, kept from such a field or shown it masked
 or write-only, it does not exist: a declaration or a migration that
 leaves it out leaves it as declared, as a field the author may not know
 of is left (024 and 027, extended), and a migration's preview names it
-nowhere, neither in `breaches` nor in `restated`.
+nowhere, neither in `breaches` nor in `restated`. A declaration or a
+migration whose constraint bears its name is not granted, naming
+nothing, as a name a hidden field holds is.
 
 At accept, a proposal whose write now breaks a constraint is refused
 `constraint_broken` to a reviewer who reads every field the constraint
@@ -112,6 +114,44 @@ when it has an entry, so its apply is refused. One that admits is
 listed and applies. A reader who does not read every field a
 constraint reads is not told its entry, and is told `more`.
 
-A migration's preflight judges records as converted and filled. A
-field it computes anew is computed by the recompute that follows the
-migration; a breach that recompute would make is not listed yet.
+A migration's preflight judges each record as the migration leaves it:
+converted and filled, computed again where the migration changes what
+the type computes, and with its references to moved keys rewritten
+where it re-keys.
+
+What a migration may move of its own type is told by its declaration
+alone: a field it converts, fills, renames or adds, one it computes
+again, a reference it may rewrite. An author who does not read every
+field read by a constraint that refuses and that the migration may move
+is refused `not_granted`, naming nothing, before any record is read. No
+constraint its author is not told is counted for it, so neither
+`lossless` nor `more` answers by a value it may not read.
+
+### Every walk that changes stored records holds them
+
+The lake changes stored records without a write of them in three more
+ways, and each judges them as it would leave them:
+- a declaration that computes a type's records again: a changed
+  expression, a function declared again, `recompute`;
+- a value type's migration that renames what records hold;
+- a re-key that rewrites another type's references to a moved key.
+
+What a walk may move is told by the declarations alone: the fields a
+type computes, the fields of the value type the renames reach, the
+references to a type whose key may move. A constraint is judged by a
+walk that may move a field it reads, directly or through the fields
+that feed it, where such a field moved. A walk is no transition, so
+`previous(f)` reads the record as the walk leaves it.
+
+An author who does not read every field read by a constraint that
+refuses and that the walk may move is refused `not_granted`, naming
+nothing, before any record is read: the answer is the same whether a
+record would break the constraint or not, as at a write door.
+
+A walk that would leave a record breaking a constraint that refuses is
+refused `constraint_left_broken`, naming the constraint, the type and
+the number of records, and appends nothing; the host fixes the records
+first. A constraint that admits at ingest admits what a walk leaves, as
+it admits what a source sends, and a report names it: a value type's
+migration and a re-key list in `breaches` each such constraint with its
+type, the count and the first keys their reader is answered.

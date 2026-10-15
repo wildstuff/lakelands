@@ -1319,6 +1319,10 @@ catalog! {
         /// A write that would leave a record breaking its type's
         /// constraint.
         ConstraintBroken { constraint: ConstraintName, #[serde(rename = "type")] ty: TypeName, key: RecordKey } => "`{ty}` `{key}` would break the constraint `{constraint}`",
+        /// Records a walk of the lake would leave breaking their type's
+        /// constraint: a declaration's or a migration's computing again, a
+        /// re-key's rewritten references, a value type's renames.
+        ConstraintLeftBroken { constraint: ConstraintName, #[serde(rename = "type")] ty: TypeName, records: u64 } => "{records} record(s) of `{ty}` would be left breaking the constraint `{constraint}`; fix them first",
         /// A verb's `requires` that does not hold.
         RequiresUnmet { verb: VerbName, #[serde(rename = "type")] ty: TypeName, key: RecordKey } => "verb `{verb}` requires what `{ty}` `{key}` does not hold",
         /// A restriction of what is restricted, or a release of what is not.

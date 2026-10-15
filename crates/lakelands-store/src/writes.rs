@@ -126,6 +126,116 @@ fn one_per(c: lakelands_api::ontology::Cardinality) -> (bool, bool) {
     )
 }
 
+/// What a walk that changes stored records leaves of a type's constraints
+/// (lakelands#1119): a declaration's or a migration's computing again, a
+/// re-key's rewritten references, a value type's renames. A constraint is
+/// judged where the walk may move a field it reads, directly or through
+/// the fields that feed it, which the declarations alone tell; a record
+/// is judged as the walk leaves it where such a field moved, with
+/// `previous` as the record itself: a walk is no transition.
+pub(crate) struct Walked {
+    plan: std::sync::Arc<record::Plan>,
+    ty: TypeName,
+    /// Per constraint the walk may move, the records it would leave
+    /// breaking it and the first keys of those its reader is answered.
+    broken: Vec<Option<(u64, Vec<RecordKey>)>>,
+}
+
+impl Walked {
+    /// For `decl` as `o` declares it, over the fields the walk may move.
+    /// One who does not read every field a constraint that refuses and
+    /// that it may move reads is not granted the walk, decided before any
+    /// record is read, so the answer is the same whatever they hold.
+    pub(crate) fn of(
+        o: &crate::ontology::Ontology,
+        decl: &TypeDecl,
+        moving: &BTreeSet<FieldName>,
+        sight: &Sight<'_>,
+    ) -> Result<Walked> {
+        let plan = record::Plans::default().get(o, decl);
+        let reaches = |c: &record::Constraint| !c.fed.is_disjoint(moving);
+        for c in (plan.constraints.iter()).filter(|c| reaches(c) && c.decl.at_ingest.refuses()) {
+            granted(c.reads.iter().all(|f| sight.reads_from(&decl.name, f)))?;
+        }
+        let broken = (plan.constraints.iter())
+            .map(|c| reaches(c).then(|| (0, Vec::new())))
+            .collect();
+        let ty = decl.name.clone();
+        Ok(Walked { plan, ty, broken })
+    }
+
+    /// Whether it judges anything: a constraint that refuses, or, where
+    /// `admits`, one that admits, which a report names.
+    pub(crate) fn judges(&self, admits: bool) -> bool {
+        let judged = |(c, b): (&record::Constraint, &Option<_>)| {
+            b.is_some() && (admits || c.decl.at_ingest.refuses())
+        };
+        self.plan.constraints.iter().zip(&self.broken).any(judged)
+    }
+
+    /// Counts `is`, `was` as the walk leaves it, against each constraint
+    /// it moves; `shown` tells whether its reader is answered the record.
+    pub(crate) fn judge(
+        &mut self,
+        (was, is): (&StoredRecord, &StoredRecord),
+        (w, now): (&Writer, Timestamp),
+        shown: &dyn Fn(&StoredRecord) -> Result<bool>,
+    ) -> Result<()> {
+        let moved = |f: &FieldName| was.fields.get(f) != is.fields.get(f);
+        for (c, b) in self.plan.constraints.iter().zip(&mut self.broken) {
+            let Some((records, first)) = b.as_mut().filter(|_| !is.retired) else {
+                continue;
+            };
+            if !c.reads.iter().any(moved) {
+                continue;
+            }
+            let scope = WriteScope {
+                after: &is.fields,
+                before: Some(&is.fields),
+                retiring: false,
+                meta: Some(&is.meta),
+                settings: Some(&w.settings),
+                now,
+            };
+            if !expr::holds(&c.holds, &scope).unwrap_or(false) {
+                *records += 1;
+                if first.len() < 5 && shown(was)? {
+                    first.push(was.key.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Refused where a record breaks one that refuses, appending nothing,
+    /// naming the constraint, the type and the count; otherwise each that
+    /// admits and is broken, for the walk's report.
+    pub(crate) fn kept(self) -> Result<Vec<Breach>> {
+        let mut breaches = Vec::new();
+        for (c, b) in self.plan.constraints.iter().zip(self.broken) {
+            let Some((records, sample_keys)) = b.filter(|b| b.0 > 0) else {
+                continue;
+            };
+            let (name, ty) = (c.decl.name.clone(), self.ty.clone());
+            if c.decl.at_ingest.refuses() {
+                let case = Case::ConstraintLeftBroken {
+                    constraint: name,
+                    ty,
+                    records,
+                };
+                return Err(constraint(None, case));
+            }
+            breaches.push(Breach {
+                ty,
+                constraint: name,
+                records,
+                sample_keys,
+            });
+        }
+        Ok(breaches)
+    }
+}
+
 /// A refusal of what a constraint does not allow, at `field` if one is named.
 pub(crate) fn constraint(
     field: Option<FieldName>,
@@ -3712,6 +3822,28 @@ impl Call<'_> {
     /// a name, or with a tool's name, that what its author is not shown
     /// holds is not granted.
     fn reads_as_author(&self, o: &Ontology, sent: &[Declaration], reshapes: bool) -> Result<()> {
+        // A constraint under the name of one its author is not told, as
+        // `describe_type` tells it, is not granted, naming nothing, before
+        // anything judges the type as its author knows it (lakelands#1119).
+        let sees = Sight::held(self.who, o);
+        for t in sent.iter().filter_map(|d| match d {
+            Declaration::Type(t) => o.types.get(&t.name).map(|held| (t, &held.decl)),
+            _ => None,
+        }) {
+            let (t, held) = t;
+            let untold = |c: &ConstraintDecl| {
+                let e = c.holds.typed().ok();
+                !e.is_some_and(|e| {
+                    e.fields_read()
+                        .into_iter()
+                        .all(|f| sees.reads_from(&held.name, f))
+                })
+            };
+            let named_like = |c: &ConstraintDecl| {
+                (held.constraints.iter()).any(|h| h.name == c.name && untold(h))
+            };
+            granted(!t.constraints.iter().any(named_like))?;
+        }
         // One who reads every field and holds `schema` is shown the lake
         // whole: its view is the lake, and nothing it adds or changes
         // probes a field it may not read.
@@ -3859,6 +3991,18 @@ impl Call<'_> {
         let sees = Sight::held(self.who, o);
         report.fields.retain(|u| sees.reads(&u.ty, &u.field));
         report.first.retain(|m| sees.reads(&m.ty, &m.field));
+        // A breach to one who reads every field its constraint reads, as
+        // `describe_type` tells it (lakelands#1119).
+        report.breaches.retain(|b| {
+            let t = o.ty(&b.ty).ok();
+            let c = t.and_then(|t| t.constraints.iter().find(|c| c.name == b.constraint));
+            let e = c.and_then(|c| c.holds.typed().ok());
+            e.is_some_and(|e| {
+                e.fields_read()
+                    .into_iter()
+                    .all(|f| sees.reads_from(&b.ty, f))
+            })
+        });
         report
     }
 
@@ -4052,10 +4196,44 @@ impl Call<'_> {
         // declaration, where the fold computes them again (lakelands#941).
         if let (Some(last), Some(whole)) = (last, &whole) {
             let event = provisional(self.lake, position_after(w, first + last), &drafts[last]);
+            self.kept_again((w, whole), &again, &event, now)?;
             let changes = self.recomputed_sets((w, whole, &decided), &again, &event, now)?;
             drafts.extend(changes);
         }
         Ok(drafts)
+    }
+
+    /// The records of `types` as `whole` computes them again leave each
+    /// constraint that refuses held (lakelands#1119); one that admits is
+    /// named by no report here, as a declaration has none.
+    fn kept_again(
+        &self,
+        (w, whole): (&Writer, &Ontology),
+        types: &BTreeSet<TypeName>,
+        event: &Event,
+        now: Timestamp,
+    ) -> Result<()> {
+        let view = self.lake.engine.view(None)?;
+        let computing = whole.computing(&types.iter().cloned().collect::<Vec<_>>());
+        let (plans, sight) = (record::Plans::default(), Sight::held(self.who, &w.ontology));
+        for ty in types {
+            // What it may move: the fields the type computes.
+            let decl = whole.ty(ty)?;
+            let computed = (decl.fields.iter())
+                .filter(|f| f.derived.is_some() || f.function.is_some() || f.embed.is_some());
+            let moving = computed.map(|f| f.name.clone()).collect();
+            let mut walked = Walked::of(whole, decl, &moving, &sight)?;
+            if !walked.judges(false) {
+                continue;
+            }
+            let with = (&computing, view.as_ref(), &plans, &*self.lake.keys);
+            live(view.as_ref(), ty, |r| {
+                let is = computed_again(with, r, event, &w.settings)?;
+                walked.judge((r, &is), (w, now), &|_| Ok(false))
+            })?;
+            walked.kept()?;
+        }
+        Ok(())
     }
 
     /// The changes to the sets of `types`, as `whole` declares them, whose
@@ -4568,7 +4746,10 @@ impl Call<'_> {
             after.computing(std::slice::from_ref(&m.to.name)),
             Default::default(),
         );
-        let event = now.filter(|_| again).map(|now| {
+        // Its constraints are judged on the records as computed again, at
+        // the lake's last time where nothing is applied (lakelands#1119).
+        let judged_at = now.unwrap_or(w.last_known_at);
+        let event = again.then(|| {
             let body = EventBody::Declared {
                 declaration: Declaration::Type(m.to.clone()),
                 schema_hash: None,
@@ -4578,7 +4759,7 @@ impl Call<'_> {
             provisional(
                 self.lake,
                 position_after(w, 0),
-                &self.draft(now, Origin::System, body),
+                &self.draft(judged_at, Origin::System, body),
             )
         });
         // A record as the migration leaves it: its references to moved keys
@@ -4657,6 +4838,82 @@ impl Call<'_> {
         // in key order, of those its reader is answered.
         let none = |f: &FieldName| (f.clone(), 0, Vec::new());
         let mut fills: Vec<(FieldName, u64, Vec<RecordKey>)> = m.fill.iter().map(none).collect();
+        // The types a re-key may move, told by the declarations alone: the
+        // migrated type where its key, or a key field's type, changes, and
+        // each type whose key references one of them. The references to
+        // them, in any other type, are what the re-key may rewrite.
+        let renamed_to = |k: &FieldName| {
+            let to = m.renames.iter().find(|(o, _)| o == k);
+            to.map_or_else(|| k.clone(), |(_, n)| n.clone())
+        };
+        let typed = |t: &TypeDecl, k: &FieldName| {
+            let f = t.fields.iter().find(|f| &f.name == k);
+            f.map(|f| f.ty.clone())
+        };
+        let rekeys = before
+            .key
+            .iter()
+            .map(renamed_to)
+            .ne(m.to.key.iter().cloned())
+            || (before.key.iter().zip(&m.to.key))
+                .any(|(o, n)| typed(&before, o) != typed(&m.to, n));
+        let mut moving: BTreeSet<TypeName> =
+            rekeys.then(|| m.to.name.clone()).into_iter().collect();
+        let targets = |t: &TypeDecl, f: &FieldName, among: &BTreeSet<TypeName>| {
+            typed(t, f)
+                .and_then(|ty| ty.target)
+                .is_some_and(|x| among.contains(&x))
+        };
+        let decls = || (after.types.values().map(|e| &e.decl)).filter(|t| t.view.is_none());
+        loop {
+            let keyed = |t: &&TypeDecl| {
+                !moving.contains(&t.name) && t.key.iter().any(|k| targets(t, k, &moving))
+            };
+            let more: Vec<TypeName> = decls().filter(keyed).map(|t| t.name.clone()).collect();
+            if more.is_empty() {
+                break;
+            }
+            moving.extend(more);
+        }
+        // What the migration may move of its own type, told by its
+        // declaration alone: a field it converts, fills, renames or adds,
+        // one it computes again, a reference it may rewrite. A constraint
+        // its author is not told is judged by none of them: one that
+        // refuses and that it may move is not granted, before any record
+        // is read, and none is counted in its report (lakelands#1119).
+        let was = |f: &FieldName| {
+            let from = m.renames.iter().find(|(_, n)| n == f);
+            from.map_or_else(|| f.clone(), |(o, _)| o.clone())
+        };
+        let computed =
+            |f: &FieldDecl| f.derived.is_some() || f.function.is_some() || f.embed.is_some();
+        let moves_field = |f: &FieldDecl| {
+            let old = was(&f.name);
+            m.fill.contains(&f.name)
+                || old != f.name
+                || typed(&before, &old) != Some(f.ty.clone())
+                || (again && computed(f))
+                || targets(&m.to, &f.name, &moving)
+        };
+        let moved: BTreeSet<FieldName> = (m.to.fields.iter())
+            .filter(|f| moves_field(f))
+            .map(|f| f.name.clone())
+            .collect();
+        let shape = record::Plans::default().get(&after, &m.to);
+        let told = |c: &record::Constraint| {
+            (c.reads.iter()).all(|f| rights::reads_both(self.who, &before, m, f))
+        };
+        for c in shape
+            .constraints
+            .iter()
+            .filter(|c| !c.fed.is_disjoint(&moved))
+        {
+            granted(!c.decl.at_ingest.refuses() || told(c))?;
+        }
+        let untold: BTreeSet<&ConstraintName> = (shape.constraints.iter())
+            .filter(|c| !told(c))
+            .map(|c| &c.decl.name)
+            .collect();
         // Each constraint `to` declares: the live records it would leave
         // breaking it, as converted and filled (lakelands#1119).
         let parse = |c: &ConstraintDecl| declare::typed(&c.holds, Eval::Guard).map_err(invalid);
@@ -4666,8 +4923,30 @@ impl Call<'_> {
             u64,
             Vec<RecordKey>,
         );
-        let breaking = (m.to.constraints.iter()).map(|c| Ok((c, parse(c)?, 0, Vec::new())));
+        let breaking = (m.to.constraints.iter()).filter(|c| !untold.contains(&c.name));
+        let breaking = breaking.map(|c| Ok((c, parse(c)?, 0, Vec::new())));
         let mut breaking: Vec<Breaking<'_>> = breaking.collect::<Result<_>>()?;
+        // A live record counted against each, as the migration leaves it.
+        let tally = |breaking: &mut Vec<Breaking<'_>>, r: &StoredRecord, is: &StoredRecord| {
+            let scope = WriteScope {
+                after: &is.fields,
+                before: Some(&is.fields),
+                retiring: false,
+                meta: Some(&is.meta),
+                settings: Some(&w.settings),
+                now: judged_at,
+            };
+            for (_, e, records, samples) in breaking.iter_mut() {
+                if !expr::holds(e, &scope).unwrap_or(false) {
+                    *records += 1;
+                    let shown = || crate::reads::answered(view, &sees, &m.to.name, &r.key);
+                    if samples.len() < 5 && !sees.withheld(r) && shown()? {
+                        samples.push(r.key.clone());
+                    }
+                }
+            }
+            Ok::<_, Error>(())
+        };
         // A retarget is judged as its author is answered; at an accept, its
         // proposer (lakelands#1071).
         let onto = Sight::held(judged.unwrap_or(self.who), &w.ontology);
@@ -4684,24 +4963,8 @@ impl Call<'_> {
                 }
             }
             if !breaking.is_empty() && !r.retired {
-                let fields = convert(&before, m, r)?;
-                let scope = WriteScope {
-                    after: &fields,
-                    before: Some(&fields),
-                    retiring: false,
-                    meta: Some(&r.meta),
-                    settings: Some(&w.settings),
-                    now: now.unwrap_or(w.last_known_at),
-                };
-                for (_, e, records, samples) in breaking.iter_mut() {
-                    if !expr::holds(e, &scope).unwrap_or(false) {
-                        *records += 1;
-                        let shown = || crate::reads::answered(view, &sees, &m.to.name, &r.key);
-                        if samples.len() < 5 && !sees.withheld(r) && shown()? {
-                            samples.push(r.key.clone());
-                        }
-                    }
-                }
+                let is = migrated(&BTreeMap::new(), &m.to, r, convert(&before, m, r)?)?;
+                tally(&mut breaking, r, &is)?;
             }
             if m.to.key.is_empty() && sets.is_empty() {
                 return Ok(());
@@ -4722,15 +4985,6 @@ impl Call<'_> {
             sample_keys,
         };
         report.filled = fills.into_iter().map(filled).collect();
-        for (c, _, records, sample_keys) in breaking.into_iter().filter(|b| b.2 > 0) {
-            report.lossless &= !c.at_ingest.refuses();
-            let constraint = c.name.clone();
-            report.breaches.push(Breach {
-                constraint,
-                records,
-                sample_keys,
-            });
-        }
         // A colliding key is the new key's fields' values: named to one
         // who reads each of them and is answered two of the records that
         // would take it, a collision it can see for itself.
@@ -4740,6 +4994,55 @@ impl Call<'_> {
             false => Ok(false),
         };
         let plan = crate::rekey::plan(&after, view, &m.to.name, keyed, &m.renames, &seen)?;
+        // With moves its constraints are judged again, on the references the
+        // moves leave, a second walk; and the records of other types whose
+        // references they rewrite hold theirs (lakelands#1119).
+        if !breaking.is_empty() && !plan.moves.is_empty() {
+            breaking
+                .iter_mut()
+                .for_each(|b| (b.2, b.3) = (0, Vec::new()));
+            crate::lake::walk(view, &before.name, true, |r| match r.retired {
+                true => Ok(()),
+                false => tally(
+                    &mut breaking,
+                    &r,
+                    &migrated(&plan.moves, &m.to, &r, convert(&before, m, &r)?)?,
+                ),
+            })?;
+        }
+        for (c, _, records, sample_keys) in breaking.into_iter().filter(|b| b.2 > 0) {
+            report.lossless &= !c.at_ingest.refuses();
+            let constraint = c.name.clone();
+            report.breaches.push(Breach {
+                ty: m.to.name.clone(),
+                constraint,
+                records,
+                sample_keys,
+            });
+        }
+        for decl in decls().filter(|t| t.name != m.to.name) {
+            let refs = (decl.fields.iter()).filter(|f| targets(decl, &f.name, &moving));
+            let refs: BTreeSet<FieldName> = refs.map(|f| f.name.clone()).collect();
+            if refs.is_empty() {
+                continue;
+            }
+            let mut walked = Walked::of(&after, decl, &refs, &sees)?;
+            if walked.judges(true) && !plan.moves.is_empty() {
+                let shown = |r: &StoredRecord| match sees.withheld(r) {
+                    true => Ok(false),
+                    false => crate::reads::answered(view, &sees, &decl.name, &r.key),
+                };
+                live(view, &decl.name, |r| {
+                    let fields = crate::rekey::rewritten(decl, &r.fields, &plan.moves);
+                    let is = StoredRecord {
+                        fields,
+                        ..r.clone()
+                    };
+                    walked.judge((r, &is), (w, judged_at), &shown)
+                })?;
+            }
+            report.breaches.extend(walked.kept()?);
+        }
         // With moves the memberships are decided again, under the keys and
         // the references the moves leave: a second walk.
         if let Some(now) = now.filter(|_| !sets.is_empty() && !plan.moves.is_empty()) {
@@ -5229,6 +5532,7 @@ impl Call<'_> {
             report_id: String::new(),
             conditions: Vec::new(),
             conditions_unshown: false,
+            breaches: Vec::new(),
         };
         let mut plan = ValueTypePlan {
             report: ValueTypeReport::default(),
@@ -5348,6 +5652,18 @@ impl Call<'_> {
             };
             let computing = probe.computing(std::slice::from_ref(&name));
             let sees = Sight::held(self.who, &w.ontology);
+            // And its records as the renames leave them, computed again, hold
+            // its constraints (lakelands#1119): what moves is each field of
+            // the value type the renames reach.
+            let moving = match renames.is_empty() {
+                true => BTreeSet::new(),
+                false => reached.iter().cloned().collect(),
+            };
+            let mut walked = Walked::of(&probe, decl, &moving, &sees)?;
+            let shown = |r: &StoredRecord| match sees.withheld(r) {
+                true => Ok(false),
+                false => crate::reads::answered(view, &sees, &name, &r.key),
+            };
             crate::lake::walk(view, &name, true, |r| {
                 report.records_scanned += 1;
                 let mut is = r.clone();
@@ -5390,6 +5706,13 @@ impl Call<'_> {
                         }
                     }
                 }
+                if walked.judges(true) {
+                    let mut outputs = Outputs::planning(view, &w.plans, &self.lake.keys);
+                    let again =
+                        record::rederive(&computing, &is, &event, &w.settings, &mut outputs)?;
+                    let at = (w, now.unwrap_or(w.last_known_at));
+                    walked.judge((&r, again.as_ref().unwrap_or(&is)), at, &shown)?;
+                }
                 let Some(now) = now.filter(|_| !sets.is_empty()) else {
                     return Ok(());
                 };
@@ -5407,6 +5730,7 @@ impl Call<'_> {
                 }
                 Ok(())
             })?;
+            report.breaches.extend(walked.kept()?);
             for (used, first) in used {
                 let room = 10 - report.first.len();
                 report.first.extend(first.into_iter().take(room));

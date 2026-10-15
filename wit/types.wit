@@ -416,6 +416,7 @@ interface types {
     }
 
     record breach {
+        %type: type-name,
         constraint: constraint-name,
         records: u64,
         sample-keys: list<record-key>,
@@ -1129,6 +1130,8 @@ interface types {
         conditions: list<string>,
         /// Whether one the reader is not shown may name one too.
         conditions-unshown: bool,
+        /// The records the renames would leave breaking a constraint that admits.
+        breaches: list<breach>,
     }
 
     /// One field that uses a value type, as its preflight found it.

@@ -1232,9 +1232,13 @@ pub struct FieldFill {
     pub sample_keys: Vec<RecordKey>,
 }
 
-/// The live records a migration would leave breaking a constraint.
+/// The live records a migration or a value type's migration would leave
+/// breaking a constraint of their type.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Breach {
+    /// The type whose constraint it is.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
     /// The constraint.
     pub constraint: ConstraintName,
     /// How many live records would break it.
@@ -1519,6 +1523,11 @@ pub struct ValueTypeReport {
     /// Whether a declaration the reader is not shown may name one too.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub conditions_unshown: bool,
+    /// Per constraint that admits at ingest, the records the renames would
+    /// leave breaking it; one that refuses refuses the migration
+    /// (lakelands#1119).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub breaches: Vec<Breach>,
     /// Names this report; `migrate_value_type_apply` must repeat it.
     pub report_id: String,
 }
