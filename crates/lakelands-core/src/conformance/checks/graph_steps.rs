@@ -27,7 +27,7 @@ check!(
 
 check!(
     GRAPH_PAGES = a_graph_cut_by_its_limit_pages_on_with_its_cursor,
-    "018 and 029, extended: a graph cut by `limit` answers `truncated` and a `next_cursor`, and the next page holds the next records of the one order with every link between a record of that page and one of this or an earlier page, read at the first page's position; several starts are one walk, cut together, and their pages through the cursors are the graph read in one page, a neighbourhood's starts read a page at a time (lakelands#963)"
+    "018 and 029, extended: a graph cut by `limit` answers `truncated` and a `next_cursor`, and the next page holds the next records of the one order with every link between a record of that page and one of this or an earlier page, read at the first page's position; several starts are one walk, cut together, and their pages through the cursors are the graph read in one page, a neighbourhood's starts read a page at a time (lakelands#963); a neighbourhood's page that ends at a start names it, and the next page inside the starts reads those after it and walks from them each step both ways, so a page of one at a time is the graph read in one page with links between starts of earlier and later pages, along a step and against it, with a start filter, with a step `where` that holds of one end alone and over a cycle; a cursor that names no start, as one handed out before, reads on by its offset, and one whose `after` is no depth-0 start is refused as cursor_foreign (lakelands#1050)"
 );
 
 check!(
@@ -208,32 +208,129 @@ async fn a_graph_cut_by_its_limit_pages_on_with_its_cursor(store: Store) -> Held
     );
     // Ten spokes and the three people who own one, a record a page and in
     // one page: `s0`, the first page, owns nothing.
-    let hood = |limit, cursor| Pattern {
-        limit: Some(limit),
-        cursor,
-        ..graph_of("spoke", None, vec![st("owned_by", Out, 0, 1)])
+    let one = |p: &Pattern| Pattern {
+        limit: Some(50),
+        ..p.clone()
     };
-    let whole = graph(cat.as_ref(), own, hood(20, None), "every spoke").await?;
+    let hood = graph_of("spoke", None, vec![st("owned_by", Out, 0, 1)]);
+    let mut whole = graph(cat.as_ref(), own, one(&hood), "every spoke").await?;
+    whole.1.sort();
+    let paged = through(cat.as_ref(), own, &hood, "every spoke, 1 a page").await?;
+    ensure!(
+        whole.0.len() == 13 && (&whole.0, &whole.1) == (&paged.0, &paged.1),
+        "a neighbourhood's pages of 1 are the graph read in one page; it answered {whole:?}, \
+         where its pages answered {paged:?}"
+    );
+    // The people report to each other, to earlier keys and to later ones
+    // (p3, p0, p1, p2, and p4 to p1), and then in a cycle. Filtered out, p1
+    // is no start, though p4's page comes after its key.
+    l.upsert("person", "p4", json!({"name": "p4", "boss": "p1"}))
+        .await?;
+    l.upsert("person", "p5", json!({"name": "p5"})).await?;
+    let people = |filter: Option<&str>, walk, step_where: Option<&str>| {
+        let mut step = st("reports_to", walk, 0, 1);
+        step.filter = step_where.map(Into::into);
+        let mut p = graph_of("person", None, vec![step]);
+        p.start.filter = filter.map(Into::into);
+        p
+    };
+    for cycle in [false, true] {
+        if cycle {
+            l.upsert("person", "p2", json!({"boss": "p3"})).await?;
+        }
+        for (what, p) in [
+            ("out", people(None, Out, None)),
+            ("in", people(None, In, None)),
+            (
+                "filtered, both ways",
+                people(Some("name != 'p1'"), Both, None),
+            ),
+            ("with a step where", people(None, Out, Some("name != 'p0'"))),
+        ] {
+            let mut whole = graph(cat.as_ref(), own, one(&p), what).await?;
+            whole.1.sort();
+            let paged = through(cat.as_ref(), own, &p, what).await?;
+            ensure!(
+                (&whole.0, &whole.1) == (&paged.0, &paged.1),
+                "the people's neighbourhood {what} (a cycle: {cycle}), a start a page, is the \
+                 graph read in one page; it answered {whole:?}, where its pages answered {paged:?}"
+            );
+        }
+    }
+    // A team's `reports_to` onto the people is not walked back from a
+    // page's start: a reader masked from its field reads the pages as the
+    // graph in one page.
+    let mut team = type_decl("team", vec![field("name", StorageKind::Text)]);
+    team.fields.push(reference("boss", "person"));
+    team.relations = vec![RelationDecl {
+        via: Some("boss".into()),
+        ..RelationDecl::to("reports_to", "person")
+    }];
+    l.declare(team).await?;
+    l.upsert("team", "t1", json!({"name": "t1", "boss": "p1"}))
+        .await?;
+    let masked = field_access(store.as_ref(), "masked", "team", &[("boss", Access::None)]);
+    let p = people(None, Out, None);
+    let mut whole = graph(cat.as_ref(), &masked, one(&p), "masked").await?;
+    whole.1.sort();
+    let paged = through(cat.as_ref(), &masked, &p, "masked, a start a page").await?;
+    ensure!(
+        (&whole.0, &whole.1) == (&paged.0, &paged.1),
+        "a reader masked from a team's `boss` reads the people a start a page as in one page; \
+         it answered {whole:?}, where its pages answered {paged:?}"
+    );
+    let first = Pattern {
+        limit: Some(1),
+        ..people(None, Out, None)
+    };
+    let (_, _, cursor) = graph(cat.as_ref(), own, first.clone(), "a person").await?;
+    let cursor = cursor.ok_or_else(|| Failure::new("a person a page has a next page"))?;
+    let next = |c| Pattern {
+        cursor: Some(c),
+        ..first.clone()
+    };
+    let by_key = graph(cat.as_ref(), own, next(cursor.clone()), "the next person").await?;
+    let offset = super::row_pages::forged(&cursor, Value::Null);
+    let by_offset = graph(cat.as_ref(), own, next(offset), "by an offset alone").await?;
+    ensure!(
+        (&by_key.0, &by_key.1) == (&by_offset.0, &by_offset.1),
+        "a cursor that names no start reads on by its offset; it answered {by_offset:?}, where \
+         the cursor that names one answered {by_key:?}"
+    );
+    let foreign = super::row_pages::forged(&cursor, json!([[1], "p0"]));
+    let answer = cat.query(own, next(foreign)).await;
+    ensure!(
+        matches!(&answer, Err(e) if invalid_case(e) == Some(&Case::CursorForeign)),
+        "a neighbourhood's cursor whose `after` is no depth-0 start is refused as cursor_foreign; \
+         it answered {answer:?}"
+    );
+    Ok(())
+}
+
+/// Every page of `p`, a record at a time through its cursors: the nodes
+/// in turn and the links together, sorted.
+async fn through(
+    cat: &dyn Catalog,
+    who: &Principal,
+    p: &Pattern,
+    what: &str,
+) -> Result<(Vec<String>, Vec<String>), Failure> {
     let (mut nodes, mut edges, mut cursor) = (Vec::new(), Vec::new(), None);
     loop {
-        let (n, e, next) =
-            graph(cat.as_ref(), own, hood(1, cursor), "every spoke, 1 a page").await?;
+        let q = Pattern {
+            limit: Some(1),
+            cursor,
+            ..p.clone()
+        };
+        let (n, e, next) = graph(cat, who, q, what).await?;
         nodes.extend(n);
         edges.extend(e);
         cursor = next;
         if cursor.is_none() {
-            break;
+            edges.sort();
+            return Ok((nodes, edges));
         }
     }
-    let mut whole = whole;
-    whole.1.sort();
-    edges.sort();
-    ensure!(
-        whole.0.len() == 13 && (&whole.0, &whole.1) == (&nodes, &edges),
-        "a neighbourhood's pages of 1 are the graph read in one page; it answered {whole:?}, \
-         where its pages answered {nodes:?} {edges:?}"
-    );
-    Ok(())
 }
 
 async fn a_chain_graph_past_max_graph_nodes_is_refused_too_large(

@@ -568,7 +568,9 @@ async fn a_derived_walk_asks_one_scan_a_page_of_starts() {
 /// (lakelands#1027): a chain's graph, a reach and rows ask no single
 /// record of the engine, and each walks a step's records together, one
 /// edge question a step. A neighbourhood's starts are its first records,
-/// so its first page reads those and one more (lakelands#963).
+/// so its first page reads those and one more (lakelands#963), and so
+/// does every later page inside them, walking back to the starts' type
+/// alone (lakelands#1050).
 #[tokio::test]
 async fn a_walk_with_a_where_reads_no_record_alone() {
     use lakelands_api::query::{Pattern, QueryResult};
@@ -589,7 +591,17 @@ async fn a_walk_with_a_where_reads_no_record_alone() {
         ty("region", "name", None),
         ty("customer", "name", Some(("in_region", "region", "region"))),
         ty("invoice", "status", Some(("of", "cust", "customer"))),
-        ty("payment", "amount", Some(("pays", "inv", "invoice"))),
+        // A payment follows the one before it, and a refund `pays` one:
+        // a relation onto the start's own type, and another type's of the
+        // same name as a step's (lakelands#1050).
+        serde_json::from_value(json!({"declare": "type", "name": "payment", "fields": [
+            {"name": "amount", "type": {"kind": "text"}},
+            {"name": "inv", "type": {"kind": "reference", "target": "invoice"}},
+            {"name": "prev", "type": {"kind": "reference", "target": "payment"}}],
+            "relations": [{"name": "pays", "target": "invoice", "via": "inv"},
+                          {"name": "follows", "target": "payment", "via": "prev"}]}))
+        .unwrap(),
+        ty("refund", "amount", Some(("pays", "pay", "payment"))),
     ] {
         cat.declare(&who, d).await.unwrap();
     }
@@ -624,10 +636,17 @@ async fn a_walk_with_a_where_reads_no_record_alone() {
         .await;
     }
     for i in 0..80 {
+        let mut payment = json!({"amount": "1", "inv": format!("i{:02}", i % 40)});
+        if i > 0 {
+            payment["prev"] = json!(format!("p{:02}", i - 1));
+        }
+        put("payment", format!("p{i:02}"), payment).await;
+    }
+    for i in 0..10 {
         put(
-            "payment",
-            format!("p{i:02}"),
-            json!({"amount": "1", "inv": format!("i{:02}", i % 40)}),
+            "refund",
+            format!("r{i}"),
+            json!({"amount": "1", "pay": format!("p{i:02}")}),
         )
         .await;
     }
@@ -658,20 +677,44 @@ async fn a_walk_with_a_where_reads_no_record_alone() {
             "a {project} over a step with a `where` answered {answered} where {want} are due, and asked {ones} records of the engine one at a time and {edges} edge questions; it reads what its visibility read, and walks a step's records together"
         );
     }
-    let hood: Pattern = serde_json::from_value(json!({"start": {"type": "payment"}, "steps": [
-        {"relation": "pays", "walk": "out", "depth": {"min": 0, "max": 1}}],
-        "project": {"as": "graph"}, "limit": 5}))
-    .unwrap();
-    handed.rows.store(0, Ordering::SeqCst);
-    let QueryResult::Graph { nodes, .. } = cat.query(&who, hood).await.unwrap().data else {
-        panic!("a graph");
-    };
-    let rows = handed.rows.load(Ordering::SeqCst);
-    assert!(
-        nodes.len() == 5 && rows <= 6,
-        "a neighbourhood of 80 payments answered {} on a page of 5 and read {rows} records by scan; it reads its page of starts and one more",
-        nodes.len()
-    );
+    // Each page inside the starts reads them from where the last ended
+    // (lakelands#1050), the tenth as the first, and with a step's `where`
+    // reads no record alone.
+    for step in [
+        json!({"relation": "pays", "walk": "out", "depth": {"min": 0, "max": 1}}),
+        json!({"relation": "pays", "type": "invoice", "walk": "out", "depth": {"min": 0, "max": 1}, "where": "status = 'open'"}),
+        json!({"relation": "follows", "walk": "out", "depth": {"min": 0, "max": 1}, "where": "amount = '1'"}),
+    ] {
+        let mut hood: Pattern = serde_json::from_value(json!({"start": {"type": "payment"},
+            "steps": [step], "project": {"as": "graph"}, "limit": 5}))
+        .unwrap();
+        // A page inside the starts asks no more than the first, but the
+        // one read of earlier starts that a step onto their type makes.
+        let (mut first, onto) = (0, usize::from(step["relation"] == "follows"));
+        for page in 1..=10 {
+            handed.rows.store(0, Ordering::SeqCst);
+            handed.ones.store(0, Ordering::SeqCst);
+            handed.edges.store(0, Ordering::SeqCst);
+            handed.gets.store(0, Ordering::SeqCst);
+            let QueryResult::Graph {
+                nodes, next_cursor, ..
+            } = cat.query(&who, hood.clone()).await.unwrap().data
+            else {
+                panic!("a graph");
+            };
+            let rows = handed.rows.load(Ordering::SeqCst);
+            let ones = handed.ones.load(Ordering::SeqCst);
+            let edges = handed.edges.load(Ordering::SeqCst);
+            let gets = handed.gets.load(Ordering::SeqCst);
+            first = if page == 1 { gets } else { first };
+            assert!(
+                nodes.len() == 5 && rows <= 6 && ones == 0 && edges <= 2 && gets <= first + onto,
+                "a neighbourhood of 80 payments over {step} answered {} on page {page} of 5, read {rows} records by scan, asked {ones} alone, {gets} by key ({first} on page 1) and {edges} edge questions; it reads its page of starts and one more, no record alone, and walks back to its starts' type alone",
+                nodes.len()
+            );
+            hood.cursor = next_cursor;
+        }
+    }
 }
 
 /// A listing of proposals judges the entries of its page and no more

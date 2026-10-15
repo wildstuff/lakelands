@@ -146,7 +146,7 @@ fn opened(c: &Cursor) -> Value {
     serde_json::from_slice(&bytes.collect::<Vec<_>>()).unwrap_or(Value::Null)
 }
 
-fn forged(c: &Cursor, after: Value) -> Cursor {
+pub(super) fn forged(c: &Cursor, after: Value) -> Cursor {
     let mut state = opened(c);
     state["after"] = after;
     Cursor(lakelands_api::canonical::hex(
