@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS {s}.declarations (
     ident TEXT NOT NULL, since BIGINT NOT NULL, state TEXT NOT NULL,
     PRIMARY KEY (ident, since)
 );
+CREATE INDEX IF NOT EXISTS declarations_since ON {s}.declarations (since);
 CREATE TABLE IF NOT EXISTS {s}.records (
     ty TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, since BIGINT NOT NULL,
     state TEXT NOT NULL,

@@ -46,6 +46,10 @@ struct Handed {
     ones: AtomicUsize,
     /// The views opened at a past position.
     pasts: AtomicUsize,
+    /// The declarations read whole at a past position.
+    declared_then: AtomicUsize,
+    /// The ranges of replaced declarations read.
+    replaced: AtomicUsize,
 }
 
 struct Counting {
@@ -56,6 +60,7 @@ struct Counting {
 struct CountingView<'a> {
     inner: Box<dyn ProjectionView + 'a>,
     handed: Arc<Handed>,
+    past: bool,
 }
 
 impl ProjectionView for CountingView<'_> {
@@ -63,7 +68,14 @@ impl ProjectionView for CountingView<'_> {
         self.inner.position()
     }
     fn declarations(&self) -> Result<Vec<Declared>> {
+        if self.past {
+            self.handed.declared_then.fetch_add(1, Ordering::SeqCst);
+        }
         self.inner.declarations()
+    }
+    fn replaced(&self, from: Position, to: Position) -> Result<Option<Vec<Declared>>> {
+        self.handed.replaced.fetch_add(1, Ordering::SeqCst);
+        self.inner.replaced(from, to)
     }
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
         self.handed.gets.fetch_add(1, Ordering::SeqCst);
@@ -173,6 +185,7 @@ impl LakeEngine for Counting {
         Ok(Box::new(CountingView {
             inner: self.inner.view(as_of)?,
             handed: self.handed.clone(),
+            past: as_of.is_some(),
         }))
     }
     fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked> {
@@ -688,6 +701,88 @@ async fn a_listing_of_proposals_judges_its_page_and_no_more() {
     assert!(
         listed.len() == 50 && pasts <= 50,
         "a listing of {} over 80 decided calls read the past {pasts} times; it judges its page of 50 and no more",
+        listed.len()
+    );
+    drop(store);
+}
+
+/// A listing reads the declarations' past once, not once an entry
+/// (lakelands#1064): a reviewer kept from a field, listing decided
+/// migrations each of which its own accept declared again, judges each on
+/// the type as it was proposed against, and reads no view's declarations
+/// at a past position for it, but ranges of what was replaced, at most
+/// one an entry.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_listing_reads_the_declarations_past_once() {
+    let (store, cat, who, handed) = notes("past").await;
+    let doc = |n: usize| {
+        let mut fields = vec![
+            json!({"name": "title", "type": {"kind": "text"}}),
+            json!({"name": "secret", "type": {"kind": "text"}}),
+        ];
+        fields.extend((0..n).map(|i| json!({"name": format!("f{i}"), "type": {"kind": "text"}})));
+        json!({"name": "doc", "fields": fields})
+    };
+    let mut first = doc(0);
+    first["declare"] = json!("type");
+    cat.declare(&who, serde_json::from_value(first).unwrap())
+        .await
+        .unwrap();
+    let mut mid = None;
+    for i in 0..40 {
+        if i == 20 {
+            mid = Some(store.head().await.unwrap());
+        }
+        let write = json!({"write": "migrate", "migration": {"to": doc(i + 1)}});
+        let proposed = cat.propose(&who, serde_json::from_value(write).unwrap(), "m".into());
+        let lakelands_api::Outcome::Proposed { proposal, .. } = proposed.await.unwrap() else {
+            panic!("a proposal");
+        };
+        cat.accept(&who, &proposal).await.unwrap();
+    }
+    let secret = lakelands_api::principal::TypeGrants {
+        fields: [("secret".into(), lakelands_api::Access::None)].into(),
+        ..Default::default()
+    };
+    let kept = Principal {
+        kind: PrincipalKind::Agent,
+        id: "kept".into(),
+        grants: Grants {
+            default: lakelands_api::Access::Read,
+            review: true,
+            types: [("doc".into(), secret)].into(),
+            ..Grants::default()
+        },
+        ..who.clone()
+    };
+    handed.declared_then.store(0, Ordering::SeqCst);
+    handed.replaced.store(0, Ordering::SeqCst);
+    let listed = cat.proposals(&kept, Default::default()).await.unwrap().data;
+    let (then, ranges) = (
+        handed.declared_then.load(Ordering::SeqCst),
+        handed.replaced.load(Ordering::SeqCst),
+    );
+    assert!(
+        listed.len() == 40 && then == 0 && ranges <= 40,
+        "a listing of {} decided migrations read the declarations whole at a past position {then} times and {ranges} ranges of the replaced; it reads none whole and a range at most once an entry",
+        listed.len()
+    );
+    // A listing as of a past position, which reads each record held as at
+    // the head through a view of its own, asks the same: the declarations
+    // whole only at its own position (its shape, and its past), and
+    // ranges, one for the holds' history and at most one an entry.
+    handed.declared_then.store(0, Ordering::SeqCst);
+    handed.replaced.store(0, Ordering::SeqCst);
+    let mut then_filter = lakelands_api::write::ProposalFilter::default();
+    then_filter.at.as_of = mid;
+    let listed = cat.proposals(&kept, then_filter).await.unwrap().data;
+    let (then, ranges) = (
+        handed.declared_then.load(Ordering::SeqCst),
+        handed.replaced.load(Ordering::SeqCst),
+    );
+    assert!(
+        listed.len() == 20 && then <= 2 && ranges <= 21,
+        "a listing as of {mid:?} of {} decided migrations read the declarations whole at a past position {then} times and {ranges} ranges; it reads them whole only at its own position, and a range at most once an entry and once for the holds",
         listed.len()
     );
     drop(store);

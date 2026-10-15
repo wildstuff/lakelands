@@ -64,6 +64,12 @@ impl ProjectionView for MemView {
         Ok(self.read(|p, at| p.declarations_at(at)))
     }
 
+    fn replaced(&self, from: Position, to: Position) -> Result<Option<Vec<Declared>>> {
+        Ok(Some(self.read(|p, at| {
+            p.replaced(from, at.map_or(to, |a| a.min(to)))
+        })))
+    }
+
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
         Ok(self.read(|p, at| {
             p.records
