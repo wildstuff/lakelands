@@ -1036,13 +1036,18 @@ impl ProjectionView for SqliteView<'_> {
     }
 
     fn applied(&self, id: &EventId) -> Result<Option<Position>> {
-        self.read(None, |r| {
-            one(
-                r.conn,
-                "SELECT at FROM applied WHERE id = ?1 AND at <= ?2",
-                params![id.0, r.at()],
-            )
-            .map(|p: Option<i64>| p.map(|p| Position(p as u64)))
+        Ok(self.applied_many(std::slice::from_ref(id))?.remove(0))
+    }
+
+    fn applied_many(&self, ids: &[EventId]) -> Result<Vec<Option<Position>>> {
+        // One read for every id, each its seek of the cached statement.
+        self.read(vec![None; ids.len()], |r| {
+            let at = |id: &EventId| {
+                let query = "SELECT at FROM applied WHERE id = ?1 AND at <= ?2";
+                one(r.conn, query, params![id.0, r.at()])
+            };
+            let at = |id| at(id).map(|p: Option<i64>| p.map(|p| Position(p as u64)));
+            ids.iter().map(at).collect()
         })
     }
 
