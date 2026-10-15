@@ -33,6 +33,14 @@
 //! reject of the owner's proposals, of a record and of a call on a link.
 //! A call on a link comes before the unlinking, which retires the link. A
 //! report is compared without the counts it keeps whole.
+//!
+//! Three pairs are of the ontology, of values only (lakelands#1074): the
+//! twins declare the same names, otherwise only in what a reader is not
+//! shown. After the writes each reader asks the declaration doors with the
+//! type as it knows it and a field of its own, and with what the pair
+//! hides under the names it bears; the owner's `describe` and
+//! `describe_type` before and after must keep what the reader is not shown
+//! (lakelands#917).
 
 use std::collections::BTreeSet;
 
@@ -57,7 +65,7 @@ use Hidden::*;
 
 check!(
     GRID = the_rights_grid_holds_over_every_feature,
-    "006, 024 and 051 (lakelands#962): on twin lakes that differ only in a held record, another's record, another's link, a link to a trip another's `only` keeps, a field kept from a reader or a type kept from a reviewer, either in its values (each record its own, ordered one way in one lake and the other way in the other) or in whether it is there at all (the second lake holding it, and each link that reaches it, as one record of a type no reader is shown), each reader not shown that part, every one of them holding `review` and `ingest` so that those doors reach the part (without `restricted`, `only` on a type, on a link type and on an end's type, masked, at `none` and `write_only` on a field, `review` and `schema` kept from a type) is answered alike to the byte by `get`, `get` as of a position, `find` with rows, total and its count of the retired, over a held claim and one of another's that are retired beside the hidden ones (lakelands#1024), a count and a group, a `where` and an order on the hidden field and its sum, min and max, a lexical and a vector search, a pattern's rows, graph, path, degree and components, `describe` and `describe_type`, the proposals listed, unfiltered, of a pair that hides a link as well, where the owner proposed a call on each link with its label, and the preview of a migration that makes the hidden field a number, sent as its author is shown the type, and of the value type of the hidden texts tightened, and through each feature that reaches the part: a set of a set over the hidden field, read by `find`, a count, a group and an order; a relation matched on owners, and one under a condition over the hidden field, each walked, a path taken over it and measured by degree and components, but toward the one claim of an owner, which no other is a peer of; a relation whose target is the link type, its links read at every door; and a view over valid-timed trips and the same view kept with a valid time of its own (lakelands#910), each read at a valid time by `find`, a count, a group, a `where` and an order, and a total of the view that merges the trips in (lakelands#911), read at a valid time by `find` and a count, as is a trip whose valid time alone the twins hold otherwise, to a reader that reads it masked and to one that holds it and the kept view's valid time at `none`; after every read each reader writes, the owner last: the hidden field again, a link to the hidden record and from it, its unlinking and a link ingested, a verb's call, on a link too, and one whose `requires` reads the hidden field across a ticket's reference, a reference to it written and one computed from its key, a proposed retirement, an accept and a reject of the owner's proposal to write the hidden record again and of its call on the hidden link, and a retirement, each answered alike; the owner's answers differ at each of the 515 cells whose door shows the hidden part, so no twin is blind; twins whose logs part outside what they hide, in an event's kind, type, key or value, are a broken fixture, a set's memberships aside, which follow from the records; an instant the store stamps from its clock is compared by its rank among its answer's own, a fixture field bearing such a name refused, and the head an answer was read at, which those memberships move, is left out, with a proposal's id, which is a position, and how far a write's consequences reach, which a write tells on purpose (006: that something reacted), as an upsert in a pair of existence is not asked, a create on a free key, which a write tells on purpose too (006: what a holder's write tells), and a report's counts are left out, which 006 keeps whole on purpose, with what follows from them (`lossless`, `fits`, `more` and the report's id); the feed, the log as the host reads it, answers no principal and is no door of the grid; so a leak through an instant's absolute value, the head, a write's reach, a free key or a report's count is out of the grid's reach",
+    "006, 024 and 051 (lakelands#962): on twin lakes that differ only in a held record, another's record, another's link, a link to a trip another's `only` keeps, a field kept from a reader or a type kept from a reviewer, either in its values (each record its own, ordered one way in one lake and the other way in the other) or in whether it is there at all (the second lake holding it, and each link that reaches it, as one record of a type no reader is shown), each reader not shown that part, every one of them holding `review` and `ingest` so that those doors reach the part (without `restricted`, `only` on a type, on a link type and on an end's type, masked, at `none` and `write_only` on a field, `review` and `schema` kept from a type) is answered alike to the byte by `get`, `get` as of a position, `find` with rows, total and its count of the retired, over a held claim and one of another's that are retired beside the hidden ones (lakelands#1024), a count and a group, a `where` and an order on the hidden field and its sum, min and max, a lexical and a vector search, a pattern's rows, graph, path, degree and components, `describe` and `describe_type`, the proposals listed, unfiltered, of a pair that hides a link as well, where the owner proposed a call on each link with its label, and the preview of a migration that makes the hidden field a number, sent as its author is shown the type, and of the value type of the hidden texts tightened, and through each feature that reaches the part: a set of a set over the hidden field, read by `find`, a count, a group and an order; a relation matched on owners, and one under a condition over the hidden field, each walked, a path taken over it and measured by degree and components, but toward the one claim of an owner, which no other is a peer of; a relation whose target is the link type, its links read at every door; and a view over valid-timed trips and the same view kept with a valid time of its own (lakelands#910), each read at a valid time by `find`, a count, a group, a `where` and an order, and a total of the view that merges the trips in (lakelands#911), read at a valid time by `find` and a count, as is a trip whose valid time alone the twins hold otherwise, to a reader that reads it masked and to one that holds it and the kept view's valid time at `none`; after every read each reader writes, the owner last: the hidden field again, a link to the hidden record and from it, its unlinking and a link ingested, a verb's call, on a link too, and one whose `requires` reads the hidden field across a ticket's reference, a reference to it written and one computed from its key, a proposed retirement, an accept and a reject of the owner's proposal to write the hidden record again and of its call on the hidden link, and a retirement, each answered alike; on twins of the ontology that declare the same names, differing in a claim's derived field's description and expression and its link's field's type and description, kept from a reader holding `schema`, in a trip's verb's assignment and `requires` and its trigger's `when`, kept from that reviewer kept from trips and from one kept from them without `schema`, and in the body of a function computing a trip's field and the `one_of` of that field's value type, kept from the latter, `describe` and `describe_type` answer alike, and so do, after the writes, the claim or the trip declared again as the reader knows it with a field of its own, a verb and a trigger moved onto the claim and the function declared anew under the hidden names, the two applied together and the named alone, each proposed so, and the type previewed and proposed as a migration, while the owner's `describe`, and `describe_type` of the pair's types, read before those doors and before the owner declares, stay as they were but for a reader's own field, the head, the version and the hash (lakelands#917); the owner's answers differ at each of the 521 cells whose door shows the hidden part, so no twin is blind; twins whose logs part outside what they hide, in an event's kind, type, key or value, are a broken fixture, a set's memberships aside, which follow from the records; an instant the store stamps from its clock is compared by its rank among its answer's own, a fixture field bearing such a name refused, and the head an answer was read at, which those memberships move, is left out, with a proposal's id, which is a position, and how far a write's consequences reach, which a write tells on purpose (006: that something reacted), as an upsert in a pair of existence is not asked, a create on a free key, which a write tells on purpose too (006: what a holder's write tells), and a report's counts are left out, which 006 keeps whole on purpose, with what follows from them (`lossless`, `fits`, `more` and the report's id); the feed, the log as the host reads it, answers no principal and is no door of the grid; so a leak through an instant's absolute value, the head, a write's reach, a free key or a report's count is out of the grid's reach",
     given
 );
 
@@ -67,7 +75,7 @@ check!(
 const KNOWN: &[(&str, u32)] = &[];
 
 /// The cells whose owner's answers differ between the twins.
-const CONTROLS: usize = 515;
+const CONTROLS: usize = 521;
 
 /// The link type of `claim.on_trip`.
 const LINK: &str = "sys.link.claim.on_trip";
@@ -151,9 +159,20 @@ enum Hidden {
     /// `t2`'s `since`: before the valid time in the first twin, after it in
     /// the second.
     Since,
+    /// As declared, the claim's `hush`, its description and what derives
+    /// it, and the claim's link's `grade`, its type and its description.
+    Shape,
+    /// The trip's verb `stamp`, what it sets and requires, and its trigger
+    /// `rung`, when it fires.
+    Acts,
+    /// The function `toned` that computes the trip's `loud`, its body, and
+    /// the value type of `loud`, the values it is one of.
+    Beside,
 }
 
-const HIDDEN: [Hidden; 7] = [Hold, Bobs, BobsLink, OtherTrip, Secret, TripKept, Since];
+const HIDDEN: [Hidden; 10] = [
+    Hold, Bobs, BobsLink, OtherTrip, Secret, TripKept, Since, Shape, Acts, Beside,
+];
 
 /// What a target's record is of: the plain lake, or a feature atop it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -175,12 +194,19 @@ enum Feature {
     ViewKept,
     /// A view merging the trips into a view of them, read at a valid time.
     ViewMerged,
+    /// The declarations themselves: described, and sent again by the
+    /// declaration doors.
+    Ontology,
 }
 
 impl Feature {
     /// Whether `door` reads the feature, about a number where `num`: a
     /// write asks the plain lake, of a number only across a reference.
     fn asks(self, door: Door, num: bool) -> bool {
+        if self == Ontology || DECLARING.contains(&door) {
+            return self == Ontology
+                && (DECLARING.contains(&door) || matches!(door, Describe | DescribeType));
+        }
         if WRITES.contains(&door) {
             return self == Plain && (!num || door == Across);
         }
@@ -194,6 +220,7 @@ impl Feature {
             ViewValid | ViewKept => matches!(door, Get | Rows | Count | Group | Where | Order),
             // One total, with no field of the trip's to group, filter or order by.
             ViewMerged => matches!(door, Rows | Count),
+            Ontology => false,
         }
     }
 
@@ -229,6 +256,9 @@ impl Hidden {
             Secret => field == "secret",
             TripKept => ty == "trip" || ty == VAULT || ty.starts_with("sys.link."),
             Since => ty == "trip" && key == "t2",
+            Shape => (ty == "claim" && field == "hush") || (ty == LINK && field == "grade"),
+            Acts => false,
+            Beside => ty == "trip" && field == "loud",
         };
         part && (field == "since") == (self == Since) && !matches!(field, "owner" | "by" | "claim")
     }
@@ -287,14 +317,89 @@ impl Hidden {
                 (ViewMerged, MERGED, "", "name"),
                 (ViewValid, "trip", "t2", "name"),
             ],
+            Shape => &[(Ontology, "claim", "", "hush")],
+            Acts => &[(Ontology, "trip", "", "stamp")],
+            Beside => &[(Ontology, "trip", "", "loud")],
         }
+    }
+
+    /// The members the twins declare otherwise: of the declaration of
+    /// kind and name, of its field or link field where one is named.
+    fn reshaped(self) -> &'static [(&'static str, &'static str, &'static str, &'static str)] {
+        match self {
+            Shape => &[
+                ("type", "claim", "hush", "description"),
+                ("type", "claim", "hush", "derived"),
+                ("type", "claim", "grade", "type"),
+                ("type", "claim", "grade", "description"),
+                ("type", LINK, "grade", "type"),
+                ("type", LINK, "grade", "description"),
+            ],
+            Acts => &[
+                ("verb", "stamp", "", "set"),
+                ("verb", "stamp", "", "requires"),
+                ("trigger", "rung", "", "when"),
+            ],
+            Beside => &[
+                ("function", "toned", "", "expr"),
+                ("value_type", "tone", "", "one_of"),
+            ],
+            _ => &[],
+        }
+    }
+
+    /// The declarations of [`declarations`] as twin `b` of the pair holds
+    /// them: the part a pair of the ontology hides declared otherwise in
+    /// the second.
+    fn declared(self, b: bool) -> Vec<Value> {
+        let mut all = declarations();
+        let named = |all: &mut Vec<Value>, name: &str| all.iter().position(|d| d["name"] == name);
+        let pick = |x: Value, y: Value| if b { y } else { x };
+        match self {
+            Shape => {
+                let at = named(&mut all, "claim").unwrap_or_default();
+                let hush = json!({"name": "hush", "type": {"kind": "text"}, "authority": "derived",
+                                  "derived": pick(json!("owner"), json!("note")),
+                                  "description": pick(json!("quiet"), json!("loud"))});
+                let grade = pick(
+                    json!({"name": "grade", "type": {"kind": "number"}, "description": "high"}),
+                    json!({"name": "grade", "type": {"kind": "text"}, "description": "low"}),
+                );
+                let claim = &mut all[at];
+                claim["fields"].as_array_mut().into_iter().for_each(|f| f.push(hush.clone()));
+                (claim["relations"].as_array_mut().into_iter().flatten())
+                    .filter(|r| r["name"] == "on_trip")
+                    .for_each(|r| r["fields"].as_array_mut().into_iter().for_each(|f| f.push(grade.clone())));
+            }
+            Acts => all.extend([
+                json!({"declare": "verb", "name": "stamp", "on": "trip", "risk": "low", "effect": "write",
+                       "set": [{"field": "name", "value": pick(json!("'a'"), json!("'b'"))}],
+                       "requires": pick(json!("name < 'p'"), json!("name > 'a'"))}),
+                json!({"declare": "trigger", "name": "rung", "on": "trip",
+                       "when": pick(json!("name is not null"), json!("since is not null"))}),
+            ]),
+            Beside => {
+                let tone = json!({"declare": "value_type", "name": "tone", "kind": "text",
+                                  "one_of": pick(json!(["oslo", "rome", "touched"]), json!(["oslo", "rome", "touched", "x"]))});
+                let toned = json!({"declare": "function", "name": "toned", "backing": "expr",
+                                   "inputs": [{"name": "name", "type": {"kind": "text"}}],
+                                   "expr": pick(json!("name"), json!("'oslo'"))});
+                all.splice(0..0, [tone, toned]);
+                let at = named(&mut all, "trip").unwrap_or_default();
+                let loud = json!({"name": "loud", "type": {"kind": "text", "value_type": "tone"},
+                                  "authority": "derived", "function": "toned", "depends_on": ["name"]});
+                all[at]["fields"].as_array_mut().into_iter().for_each(|f| f.push(loud.clone()));
+            }
+            _ => {}
+        }
+        all
     }
 }
 
 /// Each reader, its grants, and the twins besides `Hold` it is compared
 /// on: no reader but the owner holds `restricted`. The owner is the
 /// control, on every twin.
-const READERS: [(&str, &str, &[Hidden]); 11] = [
+const READERS: [(&str, &str, &[Hidden]); 13] = [
     ("owner", "", &[]),
     ("unrestricted", r#"{"default": "write"}"#, &[]),
     (
@@ -330,7 +435,19 @@ const READERS: [(&str, &str, &[Hidden]); 11] = [
     (
         "reviewer_partial",
         r#"{"default": "write", "review": true, "schema": true, "types": {"trip": {"default": "none"}}}"#,
-        &[TripKept],
+        &[TripKept, Acts],
+    ),
+    // `schema` shows every function and value type whole: one kept from
+    // the trip without it.
+    (
+        "trip_kept",
+        r#"{"default": "write", "review": true, "types": {"trip": {"default": "none"}}}"#,
+        &[Acts, Beside],
+    ),
+    (
+        "none_hush",
+        r#"{"default": "write", "review": true, "schema": true, "types": {"claim": {"fields": {"hush": "none"}}, "sys.link.claim.on_trip": {"fields": {"grade": "none"}}}}"#,
+        &[Shape],
     ),
     (
         "since_masked",
@@ -379,6 +496,12 @@ enum Door {
     Accept,
     Reject,
     Retire,
+    Declare,
+    DeclareNamed,
+    Apply,
+    ProposeBundle,
+    MigratePreview,
+    ProposeMigration,
 }
 
 /// The write doors, asked after every read on both twins in step, each of
@@ -387,6 +510,18 @@ enum Door {
 /// so that the link it is called on is there.
 const WRITES: [Door; 12] = [
     Across, Upsert, Link, Call, Unlink, Ingest, Named, Computed, Propose, Accept, Reject, Retire,
+];
+
+/// The declaration doors, asked of a pair of the ontology after its
+/// writes, each reader all of them in turn, the owner last: what it
+/// declares, it declares alike in both twins.
+const DECLARING: [Door; 6] = [
+    Declare,
+    DeclareNamed,
+    Apply,
+    ProposeBundle,
+    MigratePreview,
+    ProposeMigration,
 ];
 
 const DOORS: [Door; 20] = [
@@ -470,6 +605,19 @@ impl Door {
         }
     }
 
+    /// Whether the door shows what a pair of the ontology hides: a
+    /// description does, of a verb and a trigger only the lake's, and a
+    /// preview's hashes do, of the type's own fields; a declaration door
+    /// answers what it took or why not, never what stood.
+    fn reshows(self, hidden: Hidden) -> bool {
+        match self {
+            Describe => true,
+            DescribeType => hidden != Acts,
+            MigratePreview => hidden == Shape,
+            _ => false,
+        }
+    }
+
     /// `who`'s answer at this door about `target`, or `None` where the
     /// door asks nothing of it: a door that does not read the target's
     /// feature, a vector of a twin that hides none, a walk from a link.
@@ -493,6 +641,31 @@ impl Door {
             _ => (key, "t1"),
         };
         let by = || patch(json!({"by": "alice", "label": "w"}));
+        let mine = || {
+            let mut d = declarations().into_iter().find(|d| d["name"] == ty)?;
+            let own = json!({"name": format!("own_{}", alnum(&who.id)), "type": {"kind": "text"}});
+            d["fields"].as_array_mut()?.push(own);
+            Some(d)
+        };
+        let named = || match hidden {
+            Acts => vec![
+                json!({"declare": "verb", "name": "stamp", "on": "claim", "risk": "low", "effect": "write",
+                       "set": [{"field": "note", "value": "'stamped'"}]}),
+                json!({"declare": "trigger", "name": "rung", "on": "claim"}),
+            ],
+            Beside => vec![
+                json!({"declare": "function", "name": "toned", "backing": "expr",
+                       "inputs": [{"name": "name", "type": {"kind": "text"}}], "expr": "'mine'"}),
+            ],
+            _ => vec![],
+        };
+        // The two as one set, and what is named alone, which a reader kept
+        // from the type would otherwise be refused for the type.
+        let sets = || {
+            let both = std::iter::once(mine()?).chain(named()).map(de).collect();
+            let alone = named().into_iter().map(de).collect::<Vec<_>>();
+            Some(std::iter::once(both).chain((!alone.is_empty()).then_some(alone)))
+        };
         if !feature.asks(self, num) {
             return None;
         }
@@ -600,19 +773,10 @@ impl Door {
             // value type of the hidden texts tightened.
             Migrate if !link => {
                 let mut to = declarations().into_iter().find(|d| d["name"] == ty)?;
-                to.as_object_mut()?.remove("declare");
                 let fields = to["fields"].as_array_mut()?.iter_mut();
                 (fields.filter(|f| f["name"] == field))
                     .for_each(|f| f["type"] = json!({"kind": "number"}));
-                // As its author is shown the type: a relation to a type it
-                // is not shown, the store completes.
-                let mut shown = Vec::new();
-                for r in to["relations"].as_array()?.clone() {
-                    let target = TypeName::from(r["target"].as_str()?);
-                    let seen = cat.describe_type(who, &target, Default::default()).await;
-                    shown.extend(seen.is_ok().then_some(r));
-                }
-                to["relations"] = json!(shown);
+                let to = as_shown(cat, who, to).await?;
                 said(cat.migrate(who, de(json!({ "to": to }))).await)
             }
             Retype if matches!(field, "note" | "secret") => {
@@ -685,9 +849,57 @@ impl Door {
                 }
             }
             Retire if !link => said(cat.retire(who, &t, &k, opts).await),
+            // A pair of the ontology: its type as the reader knows it, with
+            // a field of its own, and beside it what the pair hides, under
+            // the names it bears, put on the claim.
+            Declare => said(cat.declare(who, de(mine()?)).await),
+            DeclareNamed | Apply | ProposeBundle => {
+                let sets: Vec<Vec<_>> = match self {
+                    DeclareNamed => named().into_iter().map(|d| vec![de(d)]).collect(),
+                    _ => sets()?.collect(),
+                };
+                let mut out = Vec::new();
+                for mut declarations in (!sets.is_empty()).then_some(sets)? {
+                    out.push(match self {
+                        DeclareNamed => said(cat.declare(who, declarations.remove(0)).await),
+                        Apply => said(cat.apply(who, declarations).await),
+                        _ => {
+                            let write = ProposedWrite::Declare { declarations };
+                            said(cat.propose(who, write, "the grid".into()).await)
+                        }
+                    });
+                }
+                json!(out)
+            }
+            MigratePreview | ProposeMigration => {
+                let to = as_shown(cat, who, mine()?).await?;
+                let migration = de(json!({ "to": to }));
+                match self {
+                    MigratePreview => said(cat.migrate(who, migration).await),
+                    _ => {
+                        let (migration, report) = (Box::new(migration), Default::default());
+                        let write = ProposedWrite::Migrate { migration, report };
+                        said(cat.propose(who, write, "the grid".into()).await)
+                    }
+                }
+            }
             _ => return None,
         })
     }
+}
+
+/// `to` without `declare`, as its author `who` is shown the type: a
+/// relation to a type it is not shown, the store completes.
+async fn as_shown(cat: &dyn Catalog, who: &Principal, mut to: Value) -> Option<Value> {
+    to.as_object_mut()?.remove("declare");
+    let mut shown = Vec::new();
+    for r in to["relations"].as_array()?.clone() {
+        let target = TypeName::from(r["target"].as_str()?);
+        let seen = cat.describe_type(who, &target, Default::default()).await;
+        shown.extend(seen.is_ok().then_some(r));
+    }
+    to["relations"] = json!(shown);
+    Some(to)
 }
 
 /// The declarations of the lake: the claims, trips and links, the vault,
@@ -831,7 +1043,7 @@ async fn plain(
     gone: bool,
     b: bool,
 ) -> Result<At, Failure> {
-    for d in declarations() {
+    for d in hidden.declared(b) {
         l.declare_json(d).await?;
     }
     l.set(&format!("view_kept.{KEPT}"), json!(true)).await?;
@@ -1000,6 +1212,15 @@ fn masked(body: &EventBody, hidden: Hidden, gone: bool) -> Value {
                         .filter(|(f, _)| hidden.hides(LINK, &key, f))
                         .for_each(|(_, x)| *x = json!("hidden"));
                 }
+                // A declaration a pair of the ontology holds otherwise: the
+                // members it hides, and the hash of the type they are of.
+                for &(kind, name, field, member) in hidden.reshaped() {
+                    let of = |d: &&mut Value| d["declare"] == kind && d["name"] == name;
+                    if let Some(d) = m.get_mut("declaration").filter(of) {
+                        unshape(d, field, member);
+                        m.entry("schema_hash").and_modify(|h| *h = json!("hidden"));
+                    }
+                }
                 m.values_mut().for_each(|x| walk(x, hidden, gone));
             }
             Value::Array(xs) => xs.iter_mut().for_each(|x| walk(x, hidden, gone)),
@@ -1009,6 +1230,23 @@ fn masked(body: &EventBody, hidden: Hidden, gone: bool) -> Value {
     let mut v = serde_json::to_value(body).unwrap_or_default();
     walk(&mut v, hidden, gone);
     v
+}
+
+/// `member` of a declaration put out of sight, or where `field` is named,
+/// of each of its fields and link fields of that name.
+fn unshape(v: &mut Value, field: &str, member: &str) {
+    match v {
+        Value::Object(m) => {
+            if field.is_empty() || m.get("name").and_then(Value::as_str) == Some(field) {
+                m.entry(member).and_modify(|x| *x = json!("hidden"));
+            }
+            if !field.is_empty() {
+                m.values_mut().for_each(|x| unshape(x, field, member));
+            }
+        }
+        Value::Array(xs) => xs.iter_mut().for_each(|x| unshape(x, field, member)),
+        _ => {}
+    }
 }
 
 /// The twins of `hidden`, of existence where `gone`, each with the position
@@ -1066,6 +1304,40 @@ async fn twins(
         at.unwrap_or_else(|| "the position they are read as of".into())
     );
     Ok(out)
+}
+
+/// What the owner is shown of the lake and of `types` in each twin, but
+/// for what a reader's own field moves: the field, the head, the versions
+/// and the hashes. Nothing where no type is asked.
+async fn owners(cats: [&dyn Catalog; 2], owner: &Principal, types: &BTreeSet<&str>) -> Value {
+    fn moved(v: &mut Value) {
+        match v {
+            Value::Object(m) => {
+                for moved in ["position", "version", "schema_hash"] {
+                    m.remove(moved);
+                }
+                m.values_mut().for_each(moved);
+            }
+            Value::Array(xs) => {
+                xs.retain(|x| !x["name"].as_str().is_some_and(|n| n.starts_with("own_")));
+                xs.iter_mut().for_each(moved);
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for cat in cats.into_iter().filter(|_| !types.is_empty()) {
+        out.push(said(cat.describe(owner, Default::default()).await));
+        for ty in types {
+            let ty = TypeName::from(*ty);
+            out.push(said(
+                cat.describe_type(owner, &ty, Default::default()).await,
+            ));
+        }
+    }
+    let mut out = json!(out);
+    moved(&mut out);
+    out
 }
 
 /// The instants the store stamps from its clock, by their member's name.
@@ -1175,18 +1447,33 @@ async fn the_rights_grid_holds_over_every_feature(store: Store, given: Given) ->
     let (mut red, mut blind, mut alike, mut controls, mut unasked) =
         (Vec::new(), Vec::new(), 0, 0, 0);
     let pairs = (HIDDEN.iter()).flat_map(|&h| [(h, false), (h, true)]);
-    for (hidden, gone) in pairs.filter(|&(h, gone)| !(gone && matches!(h, Secret | Since))) {
+    let values_only = |h| matches!(h, Secret | Since | Shape | Acts | Beside);
+    for (hidden, gone) in pairs.filter(|&(h, gone)| !(gone && values_only(h))) {
         let pair = twins(&given, own.take(), &lake, (hidden, gone)).await?;
         let (a, b, at) = (
             doors(pair[0].0.as_ref()),
             doors(pair[1].0.as_ref()),
             &pair[0].1,
         );
+        // What the owner is shown of the lake and a pair's types, before
+        // the doors and before it declares itself: a reader let through adds
+        // its own field and keeps what it is not shown (lakelands#917).
+        let types: BTreeSet<&str> = match hidden {
+            Shape => ["claim", LINK].into(),
+            Acts | Beside => ["trip"].into(),
+            _ => BTreeSet::new(),
+        };
+        let (owner, cats) = (owner(pair[0].0.as_ref()), [a.as_ref(), b.as_ref()]);
+        let (before, mut after) = (owners(cats, &owner, &types).await, None);
         let reads = READERS.iter().flat_map(|r| DOORS.map(|d| (r, d)));
         let writes = (WRITES.iter()).flat_map(|&d| READERS.iter().rev().map(move |r| (r, d)));
-        let cells: Vec<_> = reads.chain(writes).collect();
+        let declaring = (READERS.iter().rev()).flat_map(|r| DECLARING.map(|d| (r, d)));
+        let cells: Vec<_> = reads.chain(writes).chain(declaring).collect();
         for (&(name, grants, not_shown), door) in cells {
             let control = grants.is_empty();
+            if control && DECLARING.contains(&door) && after.is_none() {
+                after = Some(owners(cats, &owner, &types).await);
+            }
             if !control && hidden != Hold && !not_shown.contains(&hidden) {
                 continue;
             }
@@ -1202,7 +1489,7 @@ async fn the_rights_grid_holds_over_every_feature(store: Store, given: Given) ->
                     let mut y = y.unwrap_or_default();
                     for v in [&mut x, &mut y] {
                         ranked(v);
-                        if matches!(door, Migrate | Retype) {
+                        if matches!(door, Migrate | Retype | MigratePreview) {
                             trimmed(v);
                         }
                     }
@@ -1211,8 +1498,12 @@ async fn the_rights_grid_holds_over_every_feature(store: Store, given: Given) ->
                     let cell = format!(
                         "{feature:?}/{name}/{door:?} on {ty} {key}.{field} ({hidden:?}, {pair})"
                     );
+                    let shows = match feature {
+                        Ontology => door.reshows(hidden),
+                        _ => door.shows(gone),
+                    };
                     match (control, x == y) {
-                        (true, true) if door.shows(gone) => blind.push(cell),
+                        (true, true) if shows => blind.push(cell),
                         (true, true) => {}
                         (true, false) => controls += 1,
                         (false, true) => alike += 1,
@@ -1220,6 +1511,9 @@ async fn the_rights_grid_holds_over_every_feature(store: Store, given: Given) ->
                     }
                 }
             }
+        }
+        if let Some(at) = after.and_then(|after| parted(&before, &after, "")) {
+            red.push((format!("Ontology/owner/Describe ({hidden:?})"), at));
         }
         for (store, _) in pair {
             store.close().await.must("closing a twin")?;
