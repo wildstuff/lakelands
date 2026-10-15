@@ -565,6 +565,17 @@ impl Projection {
             .collect()
     }
 
+    /// Every state of a declaration replaced after `from` and by `to`.
+    pub(crate) fn replaced(&self, from: Position, to: Position) -> Vec<Declared> {
+        let ended =
+            |w: &[(Position, Declared)]| (w[1].0 > from && w[1].0 <= to).then(|| w[0].1.clone());
+        let each = self
+            .declarations
+            .values()
+            .flat_map(|h| h.0.windows(2).filter_map(ended));
+        each.collect()
+    }
+
     /// The type declaration in force for `ty` at `at`.
     pub(crate) fn type_at(&self, ty: &TypeName, at: Option<Position>) -> Option<&TypeDecl> {
         match &self

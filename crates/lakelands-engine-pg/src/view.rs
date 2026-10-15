@@ -899,6 +899,27 @@ impl ProjectionView for PgView<'_> {
         })
     }
 
+    fn replaced(&self, from: Position, to: Position) -> Result<Option<Vec<Declared>>> {
+        self.read(Some(Vec::new()), |r| {
+            // Each state declared again in `(from, to]`, by the one before
+            // it under the same name.
+            let (from, to) = (from.0 as i64, (to.0 as i64).min(r.at));
+            r.db.query(
+                &format!(
+                    "SELECT p.state FROM {t} n CROSS JOIN LATERAL (SELECT state FROM {t} p \
+                     WHERE p.ident = n.ident AND p.since < n.since ORDER BY p.since DESC LIMIT 1) p \
+                     WHERE n.since > $1 AND n.since <= $2",
+                    t = r.names.t("declarations")
+                ),
+                &[&from, &to],
+            )?
+            .iter()
+            .map(|row| decode(&row.get::<_, String>(0), "a declaration"))
+            .collect::<Result<_>>()
+            .map(Some)
+        })
+    }
+
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
         self.single(None, |r| r.record(ty, key))
     }

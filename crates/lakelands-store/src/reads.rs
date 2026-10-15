@@ -51,7 +51,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use lakelands_api::describe::{Kept, LakeDescription, NotKept, SortedWhole, TypeDescription};
-use lakelands_api::engine::{After, ProjectionView, Ranked, Rankings, Scan};
+use lakelands_api::engine::{After, Declared, ProjectionView, Ranked, Rankings, Scan};
 use lakelands_api::error::{Case, Names, Naming, Place, Said};
 use lakelands_api::expr::{CmpOp, Expr, Func, Literal};
 use lakelands_api::ontology::{
@@ -140,6 +140,27 @@ pub struct Reader<'a> {
     /// The kept members of each set across an edge a read's `in_set` names,
     /// read once a read where its condition is read ([`Self::named_sets`]).
     members: RefCell<BTreeMap<String, BTreeSet<RecordKey>>>,
+    /// The declarations' past this read has needed ([`Self::ontology_at`]).
+    past: RefCell<Past>,
+    /// The settings at the read's position, read once.
+    settings: OnceCell<BTreeMap<String, Value>>,
+}
+
+/// What a read holds of the declarations' past (lakelands#1064): those in
+/// force at its position, as the engine holds them, and every state
+/// replaced after `from` and by its position, read a range at a time as
+/// entries further back ask; and the past it last built.
+#[derive(Default)]
+struct Past {
+    /// In force at the read's position, once asked.
+    now: Option<Vec<Declared>>,
+    /// The states replaced after `from`; `None` where the engine keeps no
+    /// such read, and each position is read whole.
+    replaced: Option<(Position, Vec<Declared>)>,
+    /// The engine keeps no such read.
+    unkept: bool,
+    /// The ontology built last, and where.
+    built: Option<(Position, Ontology)>,
 }
 
 mod held;
@@ -547,6 +568,8 @@ impl<'a> Reader<'a> {
             retired: Cell::new(false),
             keys: RefCell::default(),
             members: RefCell::default(),
+            past: RefCell::default(),
+            settings: OnceCell::new(),
         })
     }
 
@@ -771,9 +794,71 @@ impl<'a> Reader<'a> {
     }
 
     /// The declarations in force at `at`, if the lake can be read there.
+    /// A read asks the engine for the past once, not once a position: the
+    /// declarations in force at its own position and the states replaced
+    /// since the earliest position asked, each the engine's row, so the
+    /// ontology built is the one a view at `at` reads (lakelands#1064).
     fn ontology_at(&self, at: Position) -> Option<Ontology> {
-        let view = self.lake.engine.view(Some(at)).ok()?;
-        Ontology::at(view.as_ref()).ok()
+        if let Some((p, o)) = &self.past.borrow().built
+            && *p == at
+        {
+            return Some(o.clone());
+        }
+        let o = match self.past_at(at).ok()? {
+            Some(declared) => Ontology::from_declared(&declared),
+            None => {
+                let view = self.lake.engine.view(Some(at)).ok()?;
+                Ontology::at(view.as_ref()).ok()?
+            }
+        };
+        self.past.borrow_mut().built = Some((at, o.clone()));
+        Some(o)
+    }
+
+    /// The declarations in force at `at`, from what [`Past`] holds and
+    /// the range it is short of; `None` where the engine keeps no such read.
+    fn past_at(&self, at: Position) -> Result<Option<Vec<Declared>>> {
+        let mut past = self.past.borrow_mut();
+        if past.unkept {
+            return Ok(None);
+        }
+        let to = past
+            .replaced
+            .as_ref()
+            .map_or(self.position, |(from, _)| *from);
+        if at < to {
+            let Some(rows) = self.view.replaced(at, to)? else {
+                past.unkept = true;
+                return Ok(None);
+            };
+            let held = past.replaced.get_or_insert_with(|| (at, Vec::new()));
+            held.0 = at;
+            held.1.extend(rows);
+        }
+        if past.now.is_none() {
+            past.now = Some(self.view.declarations()?);
+        }
+        let now = past.now.iter().flatten();
+        let replaced = past.replaced.iter().flat_map(|(_, r)| r);
+        // Of each declaration, the latest state at or before `at`, in the
+        // engine's order.
+        let mut by: BTreeMap<String, &Declared> = BTreeMap::new();
+        for d in now.chain(replaced).filter(|d| d.since <= at) {
+            let k = core_engines::declaration_key(&d.declaration);
+            if by.get(&k).is_none_or(|e| e.since < d.since) {
+                by.insert(k, d);
+            }
+        }
+        Ok(Some(by.into_values().cloned().collect()))
+    }
+
+    /// The settings at the read's position, read once a read.
+    fn settings(&self) -> Result<&BTreeMap<String, Value>> {
+        if let Some(s) = self.settings.get() {
+            return Ok(s);
+        }
+        let s = crate::lake::settings_in(self.view.as_ref(), &self.shape.ontology)?;
+        Ok(self.settings.get_or_init(|| s))
     }
 
     /// The type whose records a read reads, if the principal is shown it
@@ -2526,20 +2611,28 @@ impl<'a> Reader<'a> {
                 free = self.sight.ty(t).is_ok() && view.count(t, &open)? == all;
             }
             if !free {
-                let settings = crate::lake::settings_in(view, o)?;
-                let now = (view, &settings, crate::lake::wall_clock());
+                let now = (view, self.settings()?, crate::lake::wall_clock());
                 let mut named = crate::writes::reached(self.lake, o, now, &logged, true)?;
                 let since = self.shape.declared.iter().any(|d| d.since > at);
                 if since || crate::writes::reaches_by_state(o, &logged) {
+                    // The lake as the entry was proposed against, built from
+                    // the past this read holds, the one its past sight reads.
                     let then = self.lake.engine.view(Some(at))?;
-                    let lake = self.lake;
-                    let was = crate::writes::reached_then(
-                        lake,
-                        then.as_ref(),
-                        proposed_at,
-                        &logged,
-                        false,
-                    );
+                    let (lake, then) = (self.lake, then.as_ref());
+                    let was = match self.ontology_at(at) {
+                        Some(o) => crate::lake::settings_in(then, &o).and_then(|s| {
+                            crate::writes::reached(
+                                lake,
+                                &o,
+                                (then, &s, proposed_at),
+                                &logged,
+                                false,
+                            )
+                        }),
+                        None => {
+                            crate::writes::reached_then(lake, then, proposed_at, &logged, false)
+                        }
+                    };
                     named.extend(was?);
                 }
                 // Each type's records once, a page at a time.

@@ -409,6 +409,16 @@ pub trait ProjectionView {
     /// Every declaration in force.
     fn declarations(&self) -> Result<Vec<Declared>>;
 
+    /// Every state of a declaration that a later one replaced after
+    /// `from` and by `to`, as it stood before. With those in force at
+    /// `to`, they hold what was in force at every position from `from` on,
+    /// one read for many (lakelands#1064). `None` from an engine that keeps
+    /// no such read: the store then reads each position's declarations.
+    fn replaced(&self, from: Position, to: Position) -> Result<Option<Vec<Declared>>> {
+        let _ = (from, to);
+        Ok(None)
+    }
+
     /// One record, retired and restricted ones included.
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>>;
 

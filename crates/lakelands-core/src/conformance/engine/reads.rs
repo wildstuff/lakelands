@@ -11,7 +11,9 @@
 //! state, with its position. A vector's list is exact: the true top `k`
 //! by cosine, ties by key.
 
-use lakelands_api::engine::{After, LakeEngine, ProjectionStore, ProjectionView, Rankings, Scan};
+use lakelands_api::engine::{
+    After, Declared, LakeEngine, ProjectionStore, ProjectionView, Rankings, Scan,
+};
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::read::{Direction, Order, OrderBy};
@@ -959,6 +961,85 @@ fn a_record_put_after_a_redeclaration_in_the_same_transaction_is_indexed_under_i
          `river` answered {:?}, but under the declaration in force both are hits",
         hit_keys(&hits)
     );
+    Ok(())
+}
+
+engine_check!(
+    REPLACED = what_was_replaced_since_a_position_and_what_is_in_force_hold_what_was_then,
+    "seams §ProjectionView (lakelands#1064): `replaced(from, to)` answers each declaration's state that a later one replaced after `from` and by `to`, as it stood: at every position, the latest state of each name at or before it, among those in force at the head and those replaced since, is what `declarations` answers there, two ranges that meet answer what the one over both does, and a view at an earlier position answers no further than its position"
+);
+
+fn what_was_replaced_since_a_position_and_what_is_in_force_hold_what_was_then(
+    engine: &dyn LakeEngine,
+) -> Held {
+    let ty = |name: &str, fields: &[&str]| {
+        let fields: Vec<Value> = (fields.iter())
+            .map(|f| json!({"name": f, "type": {"kind": "text"}}))
+            .collect();
+        declare(json!({"declare": "type", "name": name, "fields": fields}))
+    };
+    fold(engine, 7, |p| {
+        p.put_declaration(&ty("a", &["x"]), 1, None, Position(1))?;
+        p.put_declaration(&ty("b", &["x"]), 1, None, Position(1))?;
+        p.put_declaration(&ty("a", &["x", "y"]), 2, None, Position(3))?;
+        p.put_declaration(&ty("c", &["x"]), 1, None, Position(4))?;
+        p.put_declaration(&ty("a", &["x", "y", "z"]), 3, None, Position(6))?;
+        p.put_declaration(&ty("b", &["x", "w"]), 2, None, Position(6))
+    })?;
+    let shown = |d: &[Declared]| {
+        let mut all: Vec<String> = d
+            .iter()
+            .map(|d| serde_json::to_string(d).unwrap_or_default())
+            .collect();
+        all.sort();
+        all
+    };
+    let head = view(engine, None)?;
+    let now = head
+        .declarations()
+        .must("reading the declarations at the head")?;
+    let replaced = |from: u64, to: u64| -> Result<Vec<Declared>, Failure> {
+        let got = head.replaced(Position(from), Position(to));
+        got.must(&format!("reading what was replaced in ({from}, {to}]"))?
+            .ok_or_else(|| Failure::new("the engine keeps no read of what was replaced".to_owned()))
+    };
+    for at in 1..=7 {
+        let then = view(engine, Some(Position(at)))?.declarations();
+        let then = then.must(&format!("reading the declarations at {at}"))?;
+        let since = replaced(at, 7)?;
+        let mut by: std::collections::BTreeMap<String, &Declared> = Default::default();
+        for d in now.iter().chain(&since).filter(|d| d.since.0 <= at) {
+            let k = crate::engines::declaration_key(&d.declaration);
+            if by.get(&k).is_none_or(|e| e.since < d.since) {
+                by.insert(k, d);
+            }
+        }
+        let built: Vec<Declared> = by.into_values().cloned().collect();
+        ensure!(
+            shown(&built) == shown(&then),
+            "at {at}, the head's declarations with those replaced since answer {:?}; `declarations` there answers {:?}",
+            shown(&built),
+            shown(&then)
+        );
+        // A view at `at` answers to its own position, whatever `to` asks.
+        let then = view(engine, Some(Position(at)))?;
+        let early = then.replaced(Position(1), Position(7));
+        let early = early.must(&format!("reading what was replaced as of {at}"))?;
+        ensure!(
+            early.as_ref().map(|e| shown(e)) == Some(shown(&replaced(1, at)?)),
+            "as of {at}, what was replaced in (1, 7] is {early:?}; it is what was replaced in (1, {at}]"
+        );
+        for mid in at..=7 {
+            let mut parts = replaced(at, mid)?;
+            parts.extend(replaced(mid, 7)?);
+            ensure!(
+                shown(&parts) == shown(&since),
+                "what was replaced in ({at}, {mid}] and ({mid}, 7] is {:?}; in ({at}, 7] it is {:?}",
+                shown(&parts),
+                shown(&since)
+            );
+        }
+    }
     Ok(())
 }
 

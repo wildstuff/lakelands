@@ -815,6 +815,19 @@ impl ProjectionView for SqliteView<'_> {
         })
     }
 
+    fn replaced(&self, from: Position, to: Position) -> Result<Option<Vec<Declared>>> {
+        self.read(Some(Vec::new()), |r| {
+            let to = to.min(Position(r.at() as u64));
+            column(
+                r.conn,
+                "SELECT state FROM declarations WHERE until > ?1 AND until <= ?2",
+                params![from.0 as i64, to.0 as i64],
+                |s: String| decode(&s, "a state"),
+            )
+            .map(Some)
+        })
+    }
+
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
         self.read(None, |r| r.record(ty, key))
     }

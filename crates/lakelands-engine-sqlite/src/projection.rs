@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS records (
     PRIMARY KEY (ty, key, since)
 );
 CREATE INDEX IF NOT EXISTS records_at ON records (ty, until, key);
+CREATE INDEX IF NOT EXISTS declarations_until ON declarations (until);
 CREATE INDEX IF NOT EXISTS records_since ON records (ty, since);
 CREATE TABLE IF NOT EXISTS proposals (
     id TEXT NOT NULL, since INTEGER NOT NULL, until INTEGER,
