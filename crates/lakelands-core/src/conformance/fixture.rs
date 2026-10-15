@@ -754,6 +754,69 @@ pub async fn declare(cat: &dyn Catalog, who: &Principal, ty: TypeDecl) -> Result
     cat.declare(who, Declaration::Type(ty)).await.must(&what)
 }
 
+/// Declares `declared` below the store, as a log another writer made
+/// holds them, each a `declared` event after the last, and opens the
+/// lake again through the store for writing.
+pub async fn declared_below(
+    store: super::Store,
+    given: &super::Given,
+    declared: Vec<Declaration>,
+) -> Result<super::Store, Failure> {
+    use lakelands_api::engine::OpenMode;
+    use lakelands_api::event::{Event, EventBody, EventId};
+    let template = log_events(store.as_ref()).await?.pop();
+    let template = template.ok_or_else(|| Failure::new("the lake holds a log"))?;
+    let lines: super::Lines = Box::new(move |(mut tip, mut prev), fence| {
+        let mut lines = Vec::new();
+        for declaration in declared {
+            let position = tip.next();
+            let body = EventBody::Declared {
+                declaration,
+                schema_hash: None,
+                version: 1,
+                with_the_set: false,
+            };
+            let line = canonical_line(Event {
+                position,
+                id: EventId(format!("{:032x}", position.0)),
+                prev: prev.clone(),
+                fence,
+                body,
+                ..template.clone()
+            });
+            (tip, prev) = (position, line.hash.clone());
+            lines.push(line);
+        }
+        (lines, 0)
+    });
+    let lake = store.lake().clone();
+    let seams = lakelands_api::seam::Seams::default();
+    let c = (given.continued)(Some(store), lake, lines, OpenMode::Write, seams);
+    let c = c
+        .await
+        .map_err(|e| Failure::new(format!("continuing the lake below the store: {e}")))?;
+    c.opened
+        .map_err(|e| Failure::new(format!("opening the lake again: {e}")))
+}
+
+/// `event` as a line of its log, its hash made over the rest.
+pub fn canonical_line(event: lakelands_api::event::Event) -> lakelands_api::engine::CanonicalEvent {
+    let mut value = serde_json::json!(event);
+    value.as_object_mut().map(|m| m.remove("hash"));
+    let hash = lakelands_api::event::Digest(crate::canonical::sha256_hex(&value));
+    value["hash"] = serde_json::json!(hash);
+    let bytes = crate::canonical::to_vec(&value);
+    let (position, id, prev, fence) = (event.position, event.id, event.prev, event.fence);
+    lakelands_api::engine::CanonicalEvent {
+        position,
+        id,
+        prev,
+        hash,
+        fence,
+        bytes,
+    }
+}
+
 /// The lake's log, oldest first: up to 10 000 events.
 pub async fn log_events(
     store: &dyn LakeStore,

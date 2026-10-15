@@ -73,7 +73,7 @@ fn kinds() -> [Kind; 3] {
 const ROWS: &str = r#"
 - key ["other"] restated
 - view {"source":"person","measures":[]} refused
-- valid_from null restated
+- valid_from null refused
 - valid_to null restated
 - language "en" restated
 - field_meta true restated

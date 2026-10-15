@@ -118,9 +118,10 @@ pub struct Reader<'a> {
     /// What [`Self::kept_read`] answered for each view and face, so that a
     /// view many views read is asked once a read (lakelands#942).
     kept_reads: RefCell<BTreeMap<(TypeName, usize), Option<KeptRead>>>,
-    /// The views whose sources [`Self::probe_view`] found readable, so
-    /// that a view many views read is probed once a read (lakelands#942).
-    probed: RefCell<BTreeSet<TypeName>>,
+    /// The views whose sources [`Self::probe_view`] found readable, and
+    /// whether for a computation, so that a view many views read is
+    /// probed once a read (lakelands#942).
+    probed: RefCell<BTreeSet<(TypeName, bool)>>,
     /// What [`Self::computes`] answered for each type this read, so that a
     /// view many views read is asked once (lakelands#942).
     computes_known: RefCell<BTreeMap<TypeName, bool>>,
@@ -785,7 +786,7 @@ impl<'a> Reader<'a> {
         // so it probes them as a `where` on them would (024): those it is
         // shown.
         if self.valid_at.is_some() {
-            let timed = decl.valid_from.iter().chain(&decl.valid_to);
+            let timed = lakelands_core::valid_time::bounds(decl);
             rights::check_probe(self.who, decl, timed.filter(|n| self.knows(decl, n)))?;
         }
         Ok(decl)
@@ -1073,7 +1074,7 @@ impl<'a> Reader<'a> {
             // read held as now computes every view, as `kept_as` does.
             } else if t.lifecycle.kept.as_ref() == Some(&open)
                 && !self.held_now
-                && self.probe_view(view).is_ok()
+                && self.probe_view(view, false).is_ok()
             {
                 let face = usize::from(self.who.grants.restricted);
                 t.lifecycle.kept = Some(match self.kept_read(&t.name, view, face) {
@@ -1423,8 +1424,9 @@ impl<'a> Reader<'a> {
     /// a group's whole face reads otherwise than its open one. `None` where
     /// the read computes: the fold kept none at this position, they are not
     /// whole there, a group of the reader's face is not exact, or the read
-    /// names a valid time, which filters the source's records and which a
-    /// kept fold has no axis for. What depends on the reader is decided
+    /// names a valid time where one is declared in the view's tree
+    /// ([`Self::timed_tree`]), which a kept fold has no axis for. What
+    /// depends on the reader is decided
     /// here, as the computation decides it: the probes of every source, in
     /// its order, and the face.
     fn kept_as(
@@ -1433,20 +1435,42 @@ impl<'a> Reader<'a> {
         v: &lakelands_api::ontology::ViewDecl,
     ) -> Result<Option<(TypeDecl, bool)>> {
         let face = usize::from(self.who.grants.restricted);
-        if self.held_now {
+        if self.held_now || (self.valid_at.is_some() && self.timed_tree(decl)) {
             return Ok(None);
         }
         let state = match self.kept_read(&decl.name, v, face)? {
-            Some((state, 0)) if !self.timed(decl) && !self.computes(&decl.name) => state,
+            Some((state, 0)) if !self.computes(&decl.name) => state,
             _ => return Ok(None),
         };
-        self.probe_view(v)?;
+        self.probe_view(v, false)?;
         let stored = TypeDecl {
             name: lakelands_api::seam::kept_name(&decl.name),
             view: None,
             ..decl.clone()
         };
         Ok(Some((stored, face == 1 && state.differ > 0)))
+    }
+
+    /// Whether a valid time is declared in the tree of the view `decl`: its
+    /// own, or one of a source it reads, merged and nested ones included.
+    /// Judged by the declarations alone, never by what the reader is shown,
+    /// so a read at `valid_at` reads the kept records of a view alike for
+    /// every reader (lakelands#910).
+    fn timed_tree(&self, decl: &TypeDecl) -> bool {
+        let (mut seen, mut next) = (BTreeSet::new(), vec![decl]);
+        while let Some(t) = next.pop() {
+            if !seen.insert(&t.name) {
+                continue;
+            }
+            if lakelands_core::valid_time::bounds(t).next().is_some() {
+                return true;
+            }
+            if let Some(v) = &t.view {
+                let sources = std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source));
+                next.extend(sources.filter_map(|s| self.shape.ontology.ty(s).ok()));
+            }
+        }
+        false
     }
 
     /// [`Self::kept_as`] for a type that may be a view.
@@ -1554,6 +1578,9 @@ impl<'a> Reader<'a> {
             // search.
             None => return Err(invalid(unbound(&decl.name, &v.params[0], true))),
         };
+        // Every source's probes before a record is read, so what a reader
+        // is told does not turn on the order of the sources (024).
+        self.probe_view(v, true)?;
         let (members, measures) = self.view_source(
             &v.source,
             v.r#where.as_ref(),
@@ -1689,6 +1716,12 @@ impl<'a> Reader<'a> {
         if let Some(e) = filter {
             out.retain(|r| self.holds(e, r, false));
         }
+        // Its own valid time keeps its records as a type's does, by the
+        // bounds its reader is shown: here those it is shown each of, the
+        // rest by `with_bound`'s condition (006, lakelands#910).
+        if let Some(t) = self.valid_at_for(decl) {
+            out.retain(|r| lakelands_core::valid_time::record_holds(decl, &r.fields, t));
+        }
         Ok(out)
     }
 
@@ -1774,22 +1807,26 @@ impl<'a> Reader<'a> {
         Ok(Some((state, not_exact)))
     }
 
-    /// The probes computing a view without parameters would make, in the
-    /// computation's order and with its refusals, and nothing read: each
-    /// source's, its own first, and after each those of a source that is
-    /// itself a view, which computing would read there.
-    fn probe_view(&self, v: &lakelands_api::ontology::ViewDecl) -> Result<()> {
+    /// The probes computing a view would make, in the computation's order
+    /// and with its refusals, and nothing read: each source's, its own
+    /// first, and after each those of a source that is itself a view,
+    /// which computing would read there; with those its valid time filters
+    /// by where the source is `read` for the computation.
+    fn probe_view(&self, v: &lakelands_api::ontology::ViewDecl, read: bool) -> Result<()> {
         let own = (&v.source, v.r#where.as_ref(), &v.group_by, &v.measures);
         let merged = v.merge.iter();
         let merged = merged.map(|m| (&m.source, m.r#where.as_ref(), &m.group_by, &m.measures));
         for (source, filter, group_by, measures) in std::iter::once(own).chain(merged) {
             let (source, ..) =
-                self.view_probe(source, filter, group_by, measures, &BTreeMap::new(), false)?;
+                self.view_probe(source, filter, group_by, measures, &BTreeMap::new(), read)?;
+            // Marked before it is walked: a cycle of views, which a log
+            // the store did not write may hold, is refused where it is
+            // read, not walked here for ever.
+            let probed = (source.name.clone(), read);
             if let Some(inner) = &source.view
-                && !self.probed.borrow().contains(&source.name)
+                && self.probed.borrow_mut().insert(probed)
             {
-                self.probe_view(inner)?;
-                self.probed.borrow_mut().insert(source.name.clone());
+                self.probe_view(inner, read)?;
             }
         }
         Ok(())
@@ -1832,7 +1869,7 @@ impl<'a> Reader<'a> {
         // probes those its reader may know of (024, lakelands#881). Kept
         // records are filtered by none.
         if read && self.valid_at.is_some() {
-            let timed = source.valid_from.iter().chain(&source.valid_to);
+            let timed = lakelands_core::valid_time::bounds(&source);
             probed.extend(timed.filter(|n| self.knows(&source, n)).cloned());
         }
         // The probe is the view's own, so its refusal names nothing of the

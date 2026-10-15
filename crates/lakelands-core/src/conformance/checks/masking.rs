@@ -555,15 +555,20 @@ check!(
 
 check!(
     VALID_AT_VIEW = a_view_read_at_a_valid_time_probes_its_sources_valid_time,
-    "024 and 006, extended (lakelands#881): a view read at `valid_at` is computed from its source's records as they are valid then, so its computation probes the source's valid-time fields, as deep as the view goes: to a reader masked on the field, the source's `valid_from` or its `valid_to`, `find`, `get`, a pattern started on the view and a walk that arrives at it are refused not_granted, of the view, of one with a `where` and of a view that reads it, in a month the source's record is valid in as in one it is not, naming the field to a holder of `schema` and nothing of the source to another (024); without `valid_at` both are answered as a reader of every field is; one who holds the field at `none` is answered at every time what a reader of every field is answered where the record is valid, the source reading to it as one with no valid time (lakelands#726); one not shown the source is shown none of the views, at any time, each answered word for word as a type no one declared and the walk as one over a relation no one declared; `describe_type` shows a kept view to each reader alike with a valid time and without (lakelands#798); a reader of every field is answered by the dates, a count of one where the record is valid"
+    "024 and 006, extended (lakelands#881): a view read at `valid_at` is computed from its source's records as they are valid then, so its computation probes the source's valid-time fields, as deep as the view goes: to a reader masked on the field, the source's `valid_from` or its `valid_to`, `find`, `get`, a pattern started on the view and a walk that arrives at it are refused not_granted, of the view, of one with a `where` and of a view that reads it, in a month the source's record is valid in as in one it is not, naming the field to a holder of `schema` and nothing of the source to another (024); without `valid_at` both are answered as a reader of every field is; one who holds the field at `none` is answered at every time what a reader of every field is answered where the record is valid, the source reading to it as one with no valid time (lakelands#726); one not shown the source is shown none of the views, at any time, each answered word for word as a type no one declared and the walk as one over a relation no one declared; `describe_type` shows a kept view to each reader alike with a valid time and without (lakelands#798); a reader of every field is answered by the dates, a count of one where the record is valid; and (lakelands#910, lakelands#911) a read at `valid_at` reads no view's kept records where a valid time is declared in its tree, its own or a source's, merged and nested ones included, and reads them where none is, a page answered as without `valid_at` and in the heap of that page, give or take twice and 256 KiB, where its computation would hold each of 2 000 groups, while one whose valid time stands only in a merged source, a kept view over a valid-timed type, and a kept view over that one are computed at a valid time where the dates matter; a computed view's own valid time keeps its records as a type's does, by the bounds its reader is shown, so one valid until a hidden end is answered to its reader as a view with no end: a kept view with a valid time of its own is computed for a reader at `none` on that valid time, answered by `find`, a count, `get` and a pattern as its owner is, the group whose records do not hold left out, and refused naming it to the masked and write-only readers, each answered the kept records as the owner is without `valid_at`; a view over merged sources makes the probes of every source before it reads a record, so one masked or write-only on a source's valid time is refused not_granted, naming nothing, whichever source comes first and whatever measure of another fails, and is told the failing measure without `valid_at`, as a reader at `none` is at any time",
+    given
 );
 
 check!(
     VALID_AT_PROBES = a_read_at_a_valid_time_probes_the_types_valid_time_fields,
-    "024 and 006: a read at `valid_at` filters on the type's `valid_from` and `valid_to`, so `find`, `get` and a pattern started on the type probe them as a filter would: refused not_granted naming the field where it is masked; where it is hidden the type is described with no valid time, and the reads are answered as on a type with none (lakelands#726); without `valid_at` the same reads are answered; what is shown does not turn on a read's valid time (lakelands#798): a reviewer with the field masked or hidden is listed a proposed upsert and a proposed call on the type at `valid_at` as without it, whole, and accepts the upsert"
+    "024 and 006: a read at `valid_at` filters on the type's `valid_from` and `valid_to`, so `find`, `get` and a pattern started on the type probe them as a filter would: refused not_granted naming the field where it is masked; where it is hidden the type is described with no valid time, and the reads are answered as on a type with none (lakelands#726); without `valid_at` the same reads are answered; what is shown does not turn on a read's valid time (lakelands#798): a reviewer with the field masked or hidden is listed a proposed upsert and a proposed call on the type at `valid_at` as without it, whole, and accepts the upsert; 028 and 006, extended (lakelands#909): a `valid_to` with no `valid_from` is refused naming it by `declare`, `apply` and a migration, and a type in force that holds it, as a log the store did not write holds it, keeps it, declared again as it is and with a field more, and is read at `valid_at` as a type with no valid time, filtered by nothing and probing nothing: the masked, write-only and hidden readers are answered `find`, a count, `get` and a pattern as its owner is, of the type and of a view over it; and (lakelands#912) a read as of a position follows the valid time declared there, its filter and its probe: a type that had none is answered to one masked on the field declared since, and a type whose `valid_from` moved is refused to one masked on the field it named there and answered to one masked on the one it names now",
+    given
 );
 
-async fn a_view_read_at_a_valid_time_probes_its_sources_valid_time(store: Store) -> Held {
+async fn a_view_read_at_a_valid_time_probes_its_sources_valid_time(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
     use lakelands_api::query::Walk;
     const VIEWS: [&str; 3] = ["per_customer", "per_all", "per_some"];
     // What a door answered, whole.
@@ -762,10 +767,17 @@ async fn a_view_read_at_a_valid_time_probes_its_sources_valid_time(store: Store)
         wrong.is_empty(),
         "a view read at a valid time probes its source's valid-time fields: {wrong:#?}"
     );
-    Ok(())
+    Box::pin(super::valid_cells::a_kept_view_and_merged_sources_at_a_valid_time(&store)).await?;
+    Box::pin(super::valid_cells::a_kept_view_with_no_valid_time_at_one(
+        &store, &given,
+    ))
+    .await
 }
 
-async fn a_read_at_a_valid_time_probes_the_types_valid_time_fields(store: Store) -> Held {
+async fn a_read_at_a_valid_time_probes_the_types_valid_time_fields(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, .. } = &l;
     let mut contract = type_decl(
@@ -884,7 +896,9 @@ async fn a_read_at_a_valid_time_probes_the_types_valid_time_fields(store: Store)
             }
         }
     }
-    Ok(())
+    // Boxed: the row's future is large enough already.
+    let store = Box::pin(super::valid_cells::a_valid_to_alone(store, &given)).await?;
+    Box::pin(super::valid_cells::the_valid_time_as_of_a_position(&store)).await
 }
 
 async fn a_walk_at_a_valid_time_probes_every_type_it_can_meet(store: Store) -> Held {

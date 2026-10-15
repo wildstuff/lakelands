@@ -1110,8 +1110,8 @@ async fn a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_whe
     given: crate::conformance::Given,
 ) -> Held {
     use crate::conformance::Lines;
-    use lakelands_api::engine::{CanonicalEvent, OpenMode};
-    use lakelands_api::event::{Digest, Event, EventId};
+    use lakelands_api::engine::OpenMode;
+    use lakelands_api::event::{Event, EventId};
     use lakelands_api::seam::Seams;
     let reads = lakelands_api::event::LOG_FORMAT_VERSION;
     let l = Lake::of(store.as_ref());
@@ -1136,25 +1136,13 @@ async fn a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_whe
                 v,
                 position,
                 id: EventId(format!("{:032x}", position.0)),
-                prev: prev.clone(),
+                prev,
                 known_at,
                 fence,
                 body: EventBody::LeaseTaken { fence, holder },
                 ..template
             };
-            let mut value = json!(event);
-            value.as_object_mut().map(|m| m.remove("hash"));
-            let hash = Digest(canonical::sha256_hex(&value));
-            value["hash"] = json!(hash);
-            let line = CanonicalEvent {
-                position,
-                id: event.id,
-                prev,
-                hash,
-                fence,
-                bytes: canonical::to_vec(&value),
-            };
-            (vec![line], 0)
+            (vec![crate::conformance::fixture::canonical_line(event)], 0)
         })
     };
     let nothing = || -> Lines { Box::new(|_, _| (Vec::new(), 0)) };

@@ -700,6 +700,16 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             return Err(invalid_field(k, at(&owner, case)));
         }
     }
+    // A valid time has a start (028, extended): a read at `valid_at`
+    // filters by `valid_to` only beside one. A type in force that holds
+    // one alone, as its author is shown it, keeps one.
+    if let (None, Some(to)) = (&t.valid_from, &t.valid_to) {
+        let held = o.types.get(&t.name).map(|e| &e.decl);
+        if !held.is_some_and(|h| h.valid_from.is_none() && h.valid_to.is_some()) {
+            let case = Case::ValidToAlone { field: to.clone() };
+            return Err(invalid_field(to, at(&owner, case)));
+        }
+    }
     // Before any relation is judged: one its author is not shown, put back
     // under a name the author sends again, is refused as any relation
     // declared twice (024, extended). Its inverse is judged below.

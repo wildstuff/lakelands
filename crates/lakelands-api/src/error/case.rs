@@ -944,6 +944,8 @@ catalog! {
         /// A field its author may name, sent as a valid time where one over
         /// a field it may not know of stands: the bound is taken.
         ValidTimeStands { axis: String } => "its `{axis}` names a field you may not know of, and stands as declared",
+        /// A `valid_to` declared without a `valid_from`.
+        ValidToAlone { field: FieldName } => "it names `{field}` as its `valid_to` and no `valid_from`; a valid time has a start",
         /// A value type naming a format that does not exist.
         ValueTypeFormat { value_type: ValueTypeName, format: String } => "value type `{value_type}` names the unknown format `{format}`",
         /// A field stored as another kind than its value type.

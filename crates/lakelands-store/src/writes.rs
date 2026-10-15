@@ -5966,6 +5966,20 @@ fn as_author(
         v.as_ref()
             .is_some_and(|v| unknown.iter().any(|f| &f.name == v))
     };
+    // An end sent with no start is judged on the type as it is shown:
+    // one alone there keeps one; else it is refused as on a type with no
+    // valid time, before a hidden start is put back, which would tell
+    // that one stands (028, lakelands#909).
+    let alone = (before.valid_from.is_none() || unseen(&before.valid_from))
+        && before.valid_to.is_some()
+        && !unseen(&before.valid_to);
+    if let (None, Some(field), false) = (&to.valid_from, &to.valid_to, alone) {
+        let (name, field) = (to.name.clone(), field.clone());
+        let said = Said::from(Case::ValidToAlone {
+            field: field.clone(),
+        });
+        return Err(invalid_field(&field, said.within(Place::Type { name })));
+    }
     for (axis, sent, held) in [
         ("valid_from", &mut to.valid_from, &before.valid_from),
         ("valid_to", &mut to.valid_to, &before.valid_to),

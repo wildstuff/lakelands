@@ -46,6 +46,14 @@ pub fn holds(valid_from: Option<Timestamp>, valid_to: Option<Timestamp>, t: Time
     valid_from.is_some_and(|from| from <= t && valid_to.is_none_or(|to| t < to))
 }
 
+/// The fields a read at a valid time filters `ty`'s records by: its
+/// `valid_from` and `valid_to`, or none where it names no start, which
+/// holds at every `t` ([`record_holds`]).
+pub fn bounds(ty: &TypeDecl) -> impl Iterator<Item = &FieldName> {
+    let to = ty.valid_to.iter().filter(|_| ty.valid_from.is_some());
+    ty.valid_from.iter().chain(to)
+}
+
 /// Whether a record of `ty` holds at `t`. A type that is not valid-timed
 /// holds at every `t`.
 pub fn record_holds(ty: &TypeDecl, fields: &BTreeMap<FieldName, Value>, t: Timestamp) -> bool {
