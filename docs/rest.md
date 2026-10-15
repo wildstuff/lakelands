@@ -253,9 +253,12 @@ that reads what is there and stops knows where to stop. A quiet stream
 sends the comment `: keep-alive` every fifteen seconds. A caught-up
 stream waits for the lake's next append and sends it at once; the
 configuration's `feed_poll_millis` (250 unless stated) bounds that wait,
-after which it reads the log again, and `feed_floor_millis` (250 unless
-stated) is the most often it reads the log, counted from the end of its
-last read, so a busy lake's appends reach it in batches (lakelands#1061).
+after which it reads the log again, and `feed_floor_millis` (10 unless
+stated) is the most often the log is read for it, counted from the end
+of the last such read, so a busy lake's appends reach it in batches
+(lakelands#1061). The streams and MCP sessions that follow one lake with
+the same kinds and types share one read of the log; a stream's `key`s
+are applied to it by the stream (lakelands#1113).
 
 The feed is the log itself, unmasked, so only a principal that reads
 every field of every record, withheld records included

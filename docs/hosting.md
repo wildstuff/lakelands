@@ -130,14 +130,17 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     next append;
   - the `deliver` section's `poll_millis` (1 000 ms), for the lake's;
   - the `server` section's `feed_poll_millis` (250 ms), for a feed
-    stream's or an MCP session's, beside its `feed_floor_millis` (250 ms):
-    the most often such a consumer reads the log, counted from the end of
-    its last read. An append after a quiet spell is read at once; on a
-    busy lake each consumer reads what came in batches, so hundreds of
-    them cost its writer no more than when they slept. A lower floor
-    trades the writer's time for the latency of a busy lake's changes:
-    with 1 000 streams, SQLite's writer took 7–8 s for 300 upserts at
-    250 ms, 18–23 s at 100 ms and 30–35 s at 25 ms.
+    stream's or an MCP session's, beside its `feed_floor_millis` (10 ms):
+    the most often the log is read for such consumers, counted from the
+    end of the last read an append woke. The streams and sessions that
+    follow one lake with the same kinds and types share one read of the
+    log, and each applies its own keys and its own principal's view to
+    it (lakelands#1113), so a thousand of them cost the writer what one
+    does: 300 upserts took 1.5–1.7 s on SQLite and 1.6–2.0 s on
+    PostgreSQL beside 1 000 streams, as beside none, where a read per
+    stream had taken 8 s and 51 s at a floor of 250 ms. A stream whose
+    client falls behind reads on alone from its own position until it
+    is caught up again; it never holds the others.
 
   An in-process host that calls `wait` paces its own reads the same way.
   An agent on MCP is told of changes without polling:

@@ -91,12 +91,12 @@ pub struct HttpConfig {
     /// lake's next append before it reads the log again, in milliseconds.
     #[serde(default = "default_feed_poll")]
     pub feed_poll_millis: u64,
-    /// How often, at most, a feed stream or MCP session reads the log,
-    /// in milliseconds: woken by an append, it reads once this has passed
-    /// since its last read ended. An append after a quiet spell is read at
-    /// once; a busy lake's appends reach each consumer in batches, so
-    /// hundreds of them read the log no more often than they did when
-    /// they slept (lakelands#1061).
+    /// How often, at most, the log is read for the feed streams and MCP
+    /// sessions that follow one lake with one filter, in milliseconds:
+    /// they share one read (lakelands#1113), which, woken by an append,
+    /// reads once this has passed since the last such read ended. An
+    /// append after a quiet spell is read at once; a busy lake's appends
+    /// reach the consumers in batches (lakelands#1061).
     #[serde(default = "default_feed_floor")]
     pub feed_floor_millis: u64,
 }
@@ -110,7 +110,7 @@ fn default_feed_poll() -> u64 {
 }
 
 fn default_feed_floor() -> u64 {
-    250
+    10
 }
 
 /// Opens a lake by its id, for a new session.

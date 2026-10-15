@@ -44,7 +44,7 @@ use lakelands_api::error::{Case, Error, Form, Names, Refusal, Said};
 use lakelands_api::id::{LakeId, Position, SourceId};
 use lakelands_api::read::POSITION_HEADER;
 use lakelands_api::record::SourceRecord;
-use lakelands_api::seam::{ChangeFeed, FeedFilter};
+use lakelands_api::seam::FeedFilter;
 use lakelands_api::tools::{Door, tools};
 use lakelands_api::{Catalog, LakeStore, Principal, WriteContext};
 use serde_json::{Map, Value, json};
@@ -61,8 +61,6 @@ type Stop = Box<Answer>;
 
 /// The longest line an ingest body may carry.
 const MAX_LINE: usize = 4 << 20;
-/// How many events one poll of the feed reads.
-const FEED_BATCH: u32 = 256;
 /// A quiet feed sends a comment this often, so a proxy keeps it open and
 /// a closed connection is noticed.
 pub(crate) const KEEP_ALIVE: Duration = Duration::from_secs(15);
@@ -1134,101 +1132,89 @@ async fn feed(
         }));
     }
     let (tx, rx) = mpsc::channel(16);
-    let (source, pace) = (store.feed(), (state.feed_poll, state.feed_floor));
-    tokio::spawn(tail(source, from, filter, pace, tx));
+    let pace = (state.feed_poll, state.feed_floor);
+    tokio::spawn(tail(store.clone(), from, filter, pace, tx));
     let mut r = with_position(streamed("text/event-stream", rx), Some(head));
     r.headers_mut()
         .insert("cache-control", HeaderValue::from_static("no-store"));
     Ok(r)
 }
 
+/// An event as one SSE frame.
+fn frame(e: &lakelands_api::event::Event) -> Bytes {
+    let data = serde_json::to_string(&to_json(e)).expect("JSON prints");
+    let (at, kind) = (e.position.0, e.body.kind());
+    format!("id: {at}\nevent: {kind}\ndata: {data}\n\n").into()
+}
+
 /// Send the feed from `from` on, then wait for more, until the client
-/// goes away.
+/// goes away. It reads the lake's hub for its filter's kinds and types,
+/// applying its keys itself (lakelands#1113).
 async fn tail(
-    source: Arc<dyn ChangeFeed>,
+    store: Arc<dyn LakeStore>,
     mut at: Position,
     filter: FeedFilter,
     (pause, floor): (Duration, Duration),
     tx: mpsc::Sender<Bytes>,
 ) {
+    let failure = async |e: Error| {
+        let f = Failure::from(e.clone());
+        let data = serde_json::to_string(&failure_json(&e, &f)).expect("JSON prints");
+        let _ = tx
+            .send(format!("event: error\ndata: {data}\n\n").into())
+            .await;
+    };
+    let mut follow = match crate::hub::Follow::new(&store, filter, (pause, floor)).await {
+        Ok(f) => f,
+        Err(e) => return failure(e).await,
+    };
     let mut last_sent = Instant::now();
-    // Whether the next read follows a wake by an append, and when the
-    // last such read ended: the floor counts from it (lakelands#1061).
-    let (mut woken, mut paced) = (false, None);
     // The `next` last told, so a client that stops when caught up hears it
     // once per position, not once per pause.
     let mut told: Option<Position> = None;
     loop {
-        let batch = match source.poll(at, &filter, FEED_BATCH).await {
-            Ok(b) => b,
-            Err(e) => {
-                let f = Failure::from(e.clone());
-                let data = serde_json::to_string(&failure_json(&e, &f)).expect("JSON prints");
-                let _ = tx
-                    .send(format!("event: error\ndata: {data}\n\n").into())
-                    .await;
-                return;
+        match follow.next(at, pause).await {
+            Err(e) => return failure(e).await,
+            Ok(crate::hub::Next::Quiet) => {}
+            Ok(crate::hub::Next::Batch(b)) => {
+                // Of the batch, the events at `at` and after that its keys
+                // admit, as the frames the batch made once.
+                let events = b.batch.events.iter().zip(b.frames(frame));
+                let new = |(e, _): &(&lakelands_api::event::Event, &Bytes)| {
+                    e.position >= at && follow.admits(e)
+                };
+                for (_, f) in events.filter(new) {
+                    if tx.send(f.clone()).await.is_err() {
+                        return;
+                    }
+                    last_sent = Instant::now();
+                }
+                let caught_up = crate::hub::caught_up(&b.batch, at);
+                at = at.max(b.batch.next);
+                // Caught up: the first position not yet examined, the `next`
+                // a poll would answer, told when it moved since last told.
+                if caught_up && told != Some(at) {
+                    let next = format!(": next {}\n\n", at.0);
+                    if tx.send(next.into()).await.is_err() {
+                        return;
+                    }
+                    told = Some(at);
+                    last_sent = Instant::now();
+                }
             }
-        };
-        if woken {
-            paced = Some(tokio::time::Instant::now());
         }
-        for e in &batch.events {
-            let data = serde_json::to_string(&to_json(e)).expect("JSON prints");
-            let event = format!(
-                "id: {}\nevent: {}\ndata: {data}\n\n",
-                e.position.0,
-                e.body.kind()
-            );
-            if tx.send(event.into()).await.is_err() {
+        if last_sent.elapsed() >= KEEP_ALIVE {
+            if tx
+                .send(Bytes::from_static(b": keep-alive\n\n"))
+                .await
+                .is_err()
+            {
                 return;
             }
             last_sent = Instant::now();
         }
-        let caught_up = batch.next > batch.head || batch.next == at;
-        at = batch.next;
-        if caught_up {
-            // Caught up: the first position not yet examined, the `next` a
-            // poll would answer, told when it moved since it was last told.
-            if told != Some(at) {
-                if tx
-                    .send(format!(": next {}\n\n", at.0).into())
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-                told = Some(at);
-                last_sent = Instant::now();
-            } else if last_sent.elapsed() >= KEEP_ALIVE {
-                if tx
-                    .send(Bytes::from_static(b": keep-alive\n\n"))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-                last_sent = Instant::now();
-            }
-            // Past the head it waits for the next append, the pause
-            // bounding the wait (lakelands#1061); a batch that did not
-            // move waits the pause out.
-            woken = match batch.next > batch.head {
-                true => (source.wait(batch.head, pause).await).is_ok_and(|h| h > batch.head),
-                false => {
-                    tokio::time::sleep(pause).await;
-                    false
-                }
-            };
-            // Woken by an append, it reads once the floor has passed since
-            // the last read an append woke: a busy lake's appends come in
-            // batches, and one after a quiet spell is read at once.
-            if let (true, Some(at)) = (woken, paced) {
-                tokio::time::sleep_until(at + floor).await;
-            }
-            if tx.is_closed() {
-                return;
-            }
+        if tx.is_closed() {
+            return;
         }
     }
 }

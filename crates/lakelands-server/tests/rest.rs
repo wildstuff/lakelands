@@ -320,6 +320,23 @@ impl Events {
         (status, head, events)
     }
 
+    /// The next frame as sent, an event or a comment.
+    async fn frame(&mut self) -> String {
+        loop {
+            if let Some(i) = self.pending.find("\n\n") {
+                return self.pending.drain(..i + 2).collect();
+            }
+            let mut size = String::new();
+            self.reader.read_line(&mut size).await.unwrap();
+            let n = usize::from_str_radix(size.trim(), 16).unwrap();
+            assert!(n > 0, "the feed ended");
+            let mut chunk = vec![0; n + 2];
+            self.reader.read_exact(&mut chunk).await.unwrap();
+            self.pending
+                .push_str(std::str::from_utf8(&chunk[..n]).unwrap());
+        }
+    }
+
     /// The next event, skipping comments.
     async fn next(&mut self) -> Sse {
         loop {
@@ -455,6 +472,139 @@ async fn the_feed_streams_the_log_and_resumes_on(backend: Backend) {
         "{backend:?}: resumed after the last id, not from `from`"
     );
 
+    task.abort();
+}
+
+/// The frames a solo read of `filter` from `at` would send, and the
+/// `next` it would tell at the head (lakelands#1113).
+async fn solo_frames(
+    store: &dyn LakeStore,
+    filter: &FeedFilter,
+    mut at: Position,
+) -> (Vec<String>, u64) {
+    let (feed, mut frames) = (store.feed(), Vec::new());
+    loop {
+        let b = feed.poll(at, filter, 256).await.unwrap();
+        for e in &b.events {
+            let data = serde_json::to_value(e).unwrap();
+            frames.push(format!(
+                "id: {}\nevent: {}\ndata: {data}\n\n",
+                e.position.0,
+                e.body.kind()
+            ));
+        }
+        let caught_up = b.next > b.head || b.next == at;
+        at = b.next;
+        if caught_up {
+            return (frames, at.0);
+        }
+    }
+}
+
+/// The event frames a stream sends until it tells `: next {next}`.
+async fn stream_frames(events: &mut Events, next: u64) -> Vec<String> {
+    let mut frames = Vec::new();
+    loop {
+        let f = tokio::time::timeout(std::time::Duration::from_secs(20), events.frame())
+            .await
+            .expect("the stream reaches the head");
+        if f == format!(": next {next}\n\n") {
+            return frames;
+        }
+        if !f.starts_with(':') {
+            frames.push(f);
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_feed_stream_sends_what_a_solo_read_of_its_filter_sends() {
+    let store = common::lake_on(Backend::Sqlite).await;
+    let (addr, task) = serve(store.clone()).await;
+    let c = store.catalog(WriteContext::default());
+    let write = async |ty: &str, key: &str, i: usize| {
+        let patch = match ty {
+            "invoice" => {
+                lakelands_door_checks::checks::patch(&[("status", json!(format!("s{i}")))])
+            }
+            _ => lakelands_door_checks::checks::patch(&[("name", json!(format!("n{i}")))]),
+        };
+        c.upsert(
+            &common::owner(),
+            &ty.into(),
+            &key.into(),
+            patch,
+            WriteOpts::default(),
+        )
+        .await
+        .unwrap();
+    };
+    for i in 0..12 {
+        write(
+            ["invoice", "partner"][i % 2],
+            ["INV-1", "INV-2", "P-1"][i % 3],
+            i,
+        )
+        .await;
+    }
+    for (query, filter) in [
+        ("", FeedFilter::default()),
+        (
+            "&kinds=record_upserted",
+            FeedFilter {
+                kinds: vec!["record_upserted".into()],
+                ..Default::default()
+            },
+        ),
+        (
+            "&types=invoice",
+            FeedFilter {
+                types: vec!["invoice".into()],
+                ..Default::default()
+            },
+        ),
+        (
+            "&key=INV-1",
+            FeedFilter {
+                keys: vec!["INV-1".into()],
+                ..Default::default()
+            },
+        ),
+        (
+            "&types=partner&key=P-1",
+            FeedFilter {
+                types: vec!["partner".into()],
+                keys: vec!["P-1".into()],
+                ..Default::default()
+            },
+        ),
+    ] {
+        let get = format!("GET /lakes/finance/feed?from=0{query}");
+        let (_, _, events) = Events::open(addr, &[&get, "authorization: Bearer k-owner"]).await;
+        let mut events = events.unwrap();
+        // The backlog, read alone.
+        let (solo, next) = solo_frames(store.as_ref(), &filter, Position(0)).await;
+        assert_eq!(
+            stream_frames(&mut events, next).await,
+            solo,
+            "{query}: the backlog"
+        );
+        // What is written once it follows the hub.
+        for i in 12..24 {
+            write(
+                ["invoice", "partner"][i % 2],
+                ["INV-1", "INV-2", "P-1"][i % 3],
+                i,
+            )
+            .await;
+        }
+        let (solo, last) = solo_frames(store.as_ref(), &filter, Position(next)).await;
+        assert_eq!(
+            stream_frames(&mut events, last).await,
+            solo,
+            "{query}: through the hub"
+        );
+    }
     task.abort();
 }
 
@@ -878,13 +1028,47 @@ async fn a_caught_up_feed_sends_the_next_append_at_once() {
     }
 }
 
+/// A read of the log that fails ends a caught-up stream with `event: error`,
+/// as its own read did before streams shared one (lakelands#1113).
+#[tokio::test]
+async fn a_failed_read_ends_a_caught_up_stream_with_an_error() {
+    use std::sync::atomic::Ordering;
+    let faults = Arc::new(common::flaky::Faults::default());
+    let store: Arc<dyn LakeStore> = Arc::new(common::flaky::Store {
+        inner: rest_lake(Backend::Memory).await,
+        faults: faults.clone(),
+    });
+    let head = store.head().await.unwrap().0;
+    let (addr, task) = serve(store).await;
+    let from = format!("GET /lakes/finance/feed?from={}", head + 1);
+    let (status, _, events) = Events::open(addr, &[&from, "authorization: Bearer k-owner"]).await;
+    assert_eq!(status, "200");
+    let mut events = events.unwrap();
+    // Caught up, it takes the shared reads; then every read fails.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    faults.poll.store(usize::MAX, Ordering::SeqCst);
+    let error = tokio::time::timeout(WAIT, async {
+        loop {
+            let f = events.frame().await;
+            if f.starts_with("event: error") {
+                return f;
+            }
+        }
+    })
+    .await
+    .expect("the failed read reached the stream");
+    task.abort();
+    assert!(error.contains("\"unavailable\""), "{error}");
+}
+
 /// The server's configuration: a caught-up feed polls the lake every 250
-/// milliseconds unless the configuration says otherwise.
+/// milliseconds, and reads it at most every 10 (lakelands#1113), unless
+/// the configuration says otherwise.
 #[test]
 fn the_feed_polls_every_250_milliseconds_unless_configured() {
     let config: HttpConfig = serde_json::from_value(json!({"bind": "127.0.0.1:7700"})).unwrap();
     assert_eq!(config.feed_poll_millis, 250);
-    assert_eq!(config.feed_floor_millis, 250);
+    assert_eq!(config.feed_floor_millis, 10);
 }
 
 /// A stream's idle re-reads start no floor: after a quiet spell an append
