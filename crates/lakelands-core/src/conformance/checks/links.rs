@@ -21,7 +21,7 @@ use lakelands_api::{Catalog, Error, LakeStore, Position, Principal, Refusal};
 use serde_json::{Value, json};
 
 use crate::conformance::fixture::{
-    Lake, Must, all, doors, field, field_writer, head_unmoved, invalid_case, migration,
+    Lake, Must, all, doors, fed, field, field_writer, head_unmoved, invalid_case, migration,
     no_such_field, patch, pattern, principal, reads_all, reason, reference, refused_on, restrict,
     source_record, step, type_decl,
 };
@@ -110,7 +110,7 @@ check!(
 
 check!(
     INGEST_CARDINALITY = ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_window,
-    "§2.3: a link that arrives by ingest holds the relation's cardinality over the lake's live links and the window's, an end read from the key when the record leaves it out"
+    "§2.3 and 016, extended (lakelands#886): a link that arrives by ingest holds the relation's cardinality over the lake's live links and the window's, an end read from the key when the record leaves it out; a pair sent whole and cut after its first link on a signal is refused at its second link in the one case `linked_already_from`, naming the first's end, `from` 0 and 1 telling what was written, and where the link that holds is restricted, a writer without `restricted` is named no end, whole and cut alike; under `one_to_one` a link from `ia` to `pb` after `ib → pb` and `ia → pa` is refused `linked_already_from` naming `pa`, whole and cut after the first, since `from`'s other link is looked for, in the lake and then the window, before `to`'s"
 );
 
 check!(
@@ -949,20 +949,24 @@ async fn ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_windo
     let mut vouched = approved_by(vec![], Authority::Source);
     vouched.name = "vouched_by".into();
     vouched.inverse = None;
-    l.declare(invoice(vec![dated(), vouched])).await?;
+    let mut paired = vouched.clone();
+    (paired.name, paired.cardinality) = ("paired".into(), Cardinality::OneToOne);
+    l.declare(invoice(vec![dated(), vouched, paired])).await?;
     let vt = link_type_name(&"invoice".into(), &"vouched_by".into());
-    let record = |from: &str, to: &str, ends: bool| {
+    let pt = link_type_name(&"invoice".into(), &"paired".into());
+    let link = |lt: &lakelands_api::TypeName, from: &str, to: &str, ends: bool| {
         let fields = if ends {
             json!({"from": from, "to": to})
         } else {
             json!({"from": from})
         };
         source_record(
-            vt.as_str(),
+            lt.as_str(),
             link_key(&from.into(), &to.into()).as_str(),
             fields,
         )
     };
+    let record = |from: &str, to: &str, ends: bool| link(&vt, from, to, ends);
     // Two links from i1 in one window: many_to_one breaks.
     let window = l.ingest(
         "registry",
@@ -982,6 +986,103 @@ async fn ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_windo
         matches!(reason(&keyed), Some(Refusal::Constraint(..))),
         "i1 already links to p1; a record keyed i1:p2 that leaves `to` to its key \
          breaks the cardinality too, its end read from the key; it answered {keyed:?}"
+    );
+    // Where the store cuts the stream changes no answer (016,
+    // lakelands#886): a pair whole and cut on a signal is refused at its
+    // second link in one case, `from` alone telling what was written, the
+    // first's end named. Its twin: where the link that holds is held, a
+    // writer without `restricted` is named no end, whole and cut alike.
+    for i in ["i3", "i4", "i5", "i6", "i7", "i8"] {
+        l.upsert("invoice", i, json!({"amount": "10"})).await?;
+    }
+    for i in ["i5", "i6"] {
+        let fut = l.ingest("registry", vec![record(i, "p1", true)]);
+        fut.await.must("ingesting a link to hold")?;
+        let key = link_key(&i.into(), &"p1".into());
+        restrict(store.as_ref(), vt.as_str(), key, "hold").await?;
+    }
+    // What an ingest answered: the records written, and where and how it
+    // was refused.
+    let said = |(done, e): (Vec<lakelands_api::write::Committed>, Option<Error>)| match e {
+        Some(Error::Ingested {
+            index, from, error, ..
+        }) => {
+            let written: u32 = done.iter().map(|c| c.records).sum();
+            Some((written, index, from, error.case().map(|s| s.case.clone())))
+        }
+        _ => None,
+    };
+    let kim = json!({"default": "write", "ingest": true});
+    let kim = super::only::holder(store.as_ref(), "kim", kim);
+    let rows = [
+        (&l.own, ["i3", "i3"], ["i4", "i4"], true),
+        (&kim, ["i7", "i5"], ["i8", "i6"], false),
+    ];
+    for (who, [w1, whole], [c1, cut], named) in rows {
+        let pair = |a: &str, b: &str| {
+            vec![
+                record(a, if named { "p1" } else { "p2" }, true),
+                record(b, "p2", true),
+            ]
+        };
+        let got = [
+            fed(l.cat.as_ref(), who, "registry", pair(w1, whole), None).await,
+            fed(l.cat.as_ref(), who, "registry", pair(c1, cut), Some(1)).await,
+        ];
+        let got = got.map(said);
+        let want = |i: &str, written: u32| {
+            let to = named.then(|| "p1".into());
+            let (from, relation, cardinality) =
+                (i.into(), "vouched_by".into(), Cardinality::ManyToOne);
+            let case = Case::LinkedAlreadyFrom {
+                from,
+                relation,
+                to,
+                cardinality,
+            };
+            Some((written, 1, u64::from(written), Some(case)))
+        };
+        ensure!(
+            got == [want(whole, 0), want(cut, 1)],
+            "two links from one invoice break `vouched_by` alike whole and cut: the second \
+             refused, its first's end named {}, `from` 0 and 1; it answered {got:?}",
+            if named {
+                "`p1`"
+            } else {
+                "by nothing to one without `restricted`"
+            }
+        );
+    }
+    // `one_to_one`: `from`'s other link is told before `to`'s, wherever it
+    // stands, so `ia → pb` names `pa` whole and cut after `ib → pb`.
+    let mut got = Vec::new();
+    for (ib, ia, cut) in [("i9", "i10", None), ("i11", "i12", Some(1))] {
+        l.upsert("invoice", ib, json!({"amount": "10"})).await?;
+        l.upsert("invoice", ia, json!({"amount": "10"})).await?;
+        let stream = vec![
+            link(&pt, ib, "p2", true),
+            link(&pt, ia, "p1", true),
+            link(&pt, ia, "p2", true),
+        ];
+        got.push(said(
+            fed(l.cat.as_ref(), &l.own, "registry", stream, cut).await,
+        ));
+    }
+    let want = |ia: &str, written: u32| {
+        let (from, to) = (ia.into(), Some("p1".into()));
+        let (relation, cardinality) = ("paired".into(), Cardinality::OneToOne);
+        let case = Case::LinkedAlreadyFrom {
+            from,
+            relation,
+            to,
+            cardinality,
+        };
+        Some((written, 2, u64::from(written), Some(case)))
+    };
+    ensure!(
+        got == [want("i10", 0), want("i12", 1)],
+        "`ia → pb` after `ib → pb` and `ia → pa` breaks `paired` one way, whole and cut \
+         after the first: `linked_already_from` naming `pa`; it answered {got:?}"
     );
     Ok(())
 }

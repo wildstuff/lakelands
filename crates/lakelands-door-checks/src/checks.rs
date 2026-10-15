@@ -8211,11 +8211,11 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
         ),
         "{past:?}"
     );
-    // A source relation's links arrive by ingest, its cardinality held in
-    // one window as at the door. Where the window is cut is the store's:
-    // over the wire the two links may arrive as two windows, and then the
-    // first is committed and the second refused (lakelands#885). Either
-    // way no two links of `d1` are live.
+    // A source relation's links arrive by ingest, its cardinality held as
+    // at the door. Where the window is cut is the store's, and changes no
+    // answer: the second link is refused, naming the first's end; whether
+    // the first was written is the refusal's `from` (lakelands#886). No two
+    // links of `d1` are live.
     let window = vec![
         SourceRecord {
             source: None,
@@ -8242,14 +8242,9 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
     if matches!(&answers[0], Some(Ok(c)) if (c.records, c.duplicates) == (1, 0)) {
         answers.push(crate::stream::next(&mut commits).await);
     }
-    // One window is refused for the window's links, two for the link the
-    // first committed, which it names: nothing else passes.
     let last = answers.last().and_then(|a| a.as_ref()?.as_ref().err());
     let held = match last.and_then(Error::case).map(|s| &s.case) {
-        Some(Case::WindowLinksAlready { .. }) => answers.len() == 1,
-        Some(Case::LinkedAlreadyFrom { to, .. }) => {
-            answers.len() == 2 && to.as_ref().is_some_and(|k| k.as_str() == "p1")
-        }
+        Some(Case::LinkedAlreadyFrom { to, .. }) => to.as_ref().is_some_and(|k| k.as_str() == "p1"),
         _ => false,
     };
     assert!(

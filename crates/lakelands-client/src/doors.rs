@@ -387,6 +387,7 @@ impl Catalog for RemoteCatalog {
             records,
             upload: upload.clone(),
             since: 0,
+            drained: false,
         }
         .boxed_unsync();
         let call = Call::new(Method::POST, path.clone()).stream("application/x-ndjson", body);
@@ -497,6 +498,8 @@ struct Ndjson {
     upload: Arc<Upload>,
     /// The bytes handed over since the connection was last sent to read.
     since: usize,
+    /// Whether the source ended while a frame was filled.
+    drained: bool,
 }
 
 impl Body for Ndjson {
@@ -508,6 +511,10 @@ impl Body for Ndjson {
         cx: &mut Context<'_>,
     ) -> Poll<Option<std::result::Result<Frame<Bytes>, std::io::Error>>> {
         let this = self.as_mut().get_mut();
+        if this.drained {
+            this.upload.end();
+            return Poll::Ready(None);
+        }
         if this.upload.over.load(Ordering::SeqCst) {
             // The source is not asked again: the body ends, and the
             // connection drops it with its source.
@@ -543,10 +550,28 @@ impl Body for Ndjson {
             }
             Poll::Ready(Some(r)) => {
                 this.upload.asked(false);
-                let mut line = serde_json::to_vec(&r).expect("a record prints");
-                line.push(b'\n');
-                this.since += line.len();
-                Poll::Ready(Some(Ok(Frame::data(Bytes::from(line)))))
+                // Every record the source has ready leaves in one frame, so
+                // the server reads them together. That is cost, not a
+                // promise: a frame may be read in parts, and where a window
+                // is cut is the store's (lakelands#886).
+                let (mut frame, mut next) = (Vec::new(), Some(r));
+                while let Some(r) = next.take() {
+                    serde_json::to_writer(&mut frame, &r).expect("a record prints");
+                    frame.push(b'\n');
+                    // The answer's end stops the source here too.
+                    if this.since + frame.len() >= READ_EVERY
+                        || this.upload.over.load(Ordering::SeqCst)
+                    {
+                        break;
+                    }
+                    match this.records.as_mut().poll_next(cx) {
+                        Poll::Ready(Some(r)) => next = Some(r),
+                        Poll::Ready(None) => this.drained = true,
+                        Poll::Pending => {}
+                    }
+                }
+                this.since += frame.len();
+                Poll::Ready(Some(Ok(Frame::data(Bytes::from(frame)))))
             }
         }
     }

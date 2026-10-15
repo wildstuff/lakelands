@@ -1113,6 +1113,61 @@ impl Stream for Records {
     }
 }
 
+/// Feeds `records` from `source` as `who`: as one ready stream, or with
+/// those from `cut` on held back until the first window has answered, so
+/// the store cuts there on a signal, not a clock (lakelands#886). Answers
+/// the windows committed and the error that ended the stream, as is.
+pub async fn fed(
+    cat: &dyn Catalog,
+    who: &Principal,
+    source: &str,
+    records: Vec<SourceRecord>,
+    cut: Option<usize>,
+) -> (Vec<Committed>, Option<lakelands_api::Error>) {
+    let held = Arc::new(std::sync::Mutex::new((records.into_iter(), cut, None)));
+    let stream = Box::pin(Cut(held.clone()));
+    let mut commits = match cat.ingest(who, &SourceId::from(source), stream).await {
+        Ok(c) => c,
+        Err(e) => return (Vec::new(), Some(e)),
+    };
+    let mut out = Vec::new();
+    while let Some(window) = std::future::poll_fn(|cx| commits.as_mut().poll_next(cx)).await {
+        match window {
+            Ok(c) => out.push(c),
+            Err(e) => return (out, Some(e)),
+        }
+        let (_, cut, waker) = &mut *held.lock().expect("the cut");
+        cut.take();
+        if let Some(waker) = waker.take() {
+            waker.wake();
+        }
+    }
+    (out, None)
+}
+
+type Holding = (
+    std::vec::IntoIter<SourceRecord>,
+    Option<usize>,
+    Option<std::task::Waker>,
+);
+
+/// Records in hand, all but the first `cut` held until it is released.
+struct Cut(Arc<std::sync::Mutex<Holding>>);
+
+impl Stream for Cut {
+    type Item = SourceRecord;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<SourceRecord>> {
+        let (records, cut, waker) = &mut *self.0.lock().expect("the cut");
+        if *cut == Some(0) {
+            *waker = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
+        *cut = cut.map(|n| n - 1);
+        Poll::Ready(records.next())
+    }
+}
+
 /// Feeds `records` from `source` and drains the answer: every window's
 /// acknowledgement, or the first error, whether `ingest` refused the
 /// call or a window failed; a refused record's refusal, which the checks

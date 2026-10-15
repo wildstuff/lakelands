@@ -40,6 +40,17 @@ the stream handed out) and the place of the first record of its window
 outage names no record, since it is no record's. An authored `upsert` is
 different on purpose: a write is a write, even with the same values.
 
+**A window is the store's, and no answer turns on it** (lakelands#886).
+The store cuts a stream where it chooses, and a host cannot make two
+records share a window: over the wire they arrive as the socket brings
+them. So no rule is judged over a window. A record is judged over the
+lake and the records before it in its stream, as the window plans them,
+and its refusal is the same wherever the store cut. What the cut decides
+is only `from`: whether the records of the refused record's window
+before it were written. The host's move is the same either way: resume
+at `from` without the refused record. A record sent again lands with the
+id it would have had, or counts as a duplicate where it was written.
+
 ### A type may be written once by its source
 
 A type marked `insert_only` takes each of its records from its source
@@ -177,10 +188,13 @@ removed, is `invalid`, naming the type (lakelands#761); then the
 duplicate test, which counts a record and checks nothing further; then
 the record checks from the empty patch on, the expected version
 excepted; then a link of a relation carried by link records holds its
-cardinality over the lake's live links, then over the window's earlier
-links (`constraint`, naming `to`), once the record its writer leaves is
-admitted (051). The two cardinality steps answer alike, and are stated,
-not checked.
+cardinality, once the record its writer leaves is admitted (051): a
+link from its `from` is looked for over the lake's live links and then
+the window's earlier ones, and only then a link to its `to`, in the
+same order (`constraint`, naming `to`). The refusal is
+`linked_already_from` or `linked_already_to`, naming the other link's
+end by one rule. The link found does not depend on which side of the
+cut it stands, so the cut changes no answer, `one_to_one` included.
 
 ### A door decides over everything the log holds
 
@@ -268,3 +282,4 @@ is just another caller later, not a change to the contract.
   (lakelands#1044).
 - One ingest may carry many sources: a record may name its own `source`, which its event and its id take in place of the call's (lakelands#1041).
 - A source id is formed as a key is, not empty and holding no NUL, and a source record with a member it does not have is refused, never read without it (lakelands#1081).
+- A window is the store's: no rule is judged over one, and a link that breaks its relation's cardinality with an earlier link of its window is answered as over the lake, the other end named by the same rule; `window_links_already` is never answered from 0.15.0 (lakelands#886).
