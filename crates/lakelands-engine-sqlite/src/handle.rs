@@ -339,9 +339,10 @@ impl LakeEngine for SqliteLake {
         }
         let taken = self.lease_file.take(holder)?;
         // What a writer that ended mid-append left uncommitted is cut off
-        // before this one appends.
+        // before this one appends, and its last group is written again.
         let mut log = lock(&self.log);
         log.recover()?;
+        log.settle()?;
         log.sweep()?;
         let lease = taken.lease.clone();
         *held = Some(taken);

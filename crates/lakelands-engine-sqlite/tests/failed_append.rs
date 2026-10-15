@@ -23,9 +23,10 @@ use lakelands_api::Location;
 use lakelands_api::engine::{CanonicalEvent, EngineOpener, LakeEngine, Lease, OpenMode};
 use lakelands_api::event::Digest;
 use lakelands_api::id::Position;
-use lakelands_core::conformance::engine::{chain, seal};
+use lakelands_core::conformance::engine::{event, seal};
 use lakelands_engine_sqlite::SqliteOpener;
 use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+use serde_json::json;
 use sha2::{Digest as _, Sha256};
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -49,11 +50,15 @@ fn add(path: &Path, bytes: &str) {
 /// `n` chained events from `start` whose bytes say which append wrote
 /// them.
 fn said(start: u64, n: u64, prev: &Digest, lease: &Lease, by: &str) -> Vec<CanonicalEvent> {
-    let mut events = chain(start, n, prev, lease);
-    for e in &mut events {
-        e.bytes = format!("{{\"n\":{},\"by\":\"{by}\"}}", e.position.0).into_bytes();
-    }
-    events
+    let mut prev = prev.clone();
+    (start..start + n)
+        .map(|p| {
+            let fence = if p == 0 { 0 } else { lease.fence };
+            let e = event(p, &prev, fence, json!({"kind": "note", "n": p, "by": by}));
+            prev = e.hash.clone();
+            e
+        })
+        .collect()
 }
 
 /// The segment file that holds `events` and nothing else.
@@ -264,14 +269,16 @@ fn a_handle_whose_lease_is_no_longer_the_lakes_cuts_nothing() {
     }
 }
 
-/// A segment that ends before what its index commits is damage, which no
-/// cut mends: an append, a seal and the next writer's lease are refused,
-/// and nothing is written behind the short file.
+/// A segment that ends before an earlier group than its last is damage,
+/// which no cut mends: an append, a seal and the next writer's lease are
+/// refused, and nothing is written behind the short file. Its last group
+/// alone may be a crash's (060).
 #[test]
 fn a_segment_shorter_than_its_index_commits_is_refused_as_damaged() {
     let s = Scene::new("short");
+    let last = lines(&s.committed[4..]).len() as u64;
     let file = std::fs::OpenOptions::new().write(true).open(s.segment());
-    file.unwrap().set_len(s.lengths().0 - 3).unwrap();
+    file.unwrap().set_len(s.lengths().0 - last - 3).unwrap();
     let short = s.lengths();
     for (what, answer) in [
         ("an append", s.writer.append(&s.lease, &s.next(1, "behind"))),

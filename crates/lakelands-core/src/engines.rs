@@ -1407,6 +1407,15 @@ pub fn append_fault(
     Ok(())
 }
 
+/// An event's hash as the log format defines it: SHA-256 of its
+/// canonical bytes without `hash` (`docs/log-format.md` §1.2).
+pub fn hash_of(mut event: serde_json::Value) -> String {
+    if let Some(members) = event.as_object_mut() {
+        members.remove("hash");
+    }
+    crate::canonical::sha256_hex(&event)
+}
+
 /// The events that begin the next segment as a seal's `first` answered
 /// them for `sealed`: at least one, or the seal is refused and nothing is
 /// sealed.
