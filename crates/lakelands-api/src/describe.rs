@@ -290,6 +290,13 @@ pub struct TypeLifecycle {
     /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sorted: Vec<FieldName>,
+    /// The fields a `find` ordered first by and the lake answered by
+    /// sorting the type, since it was opened in the process that answers:
+    /// the pages and the time they cost. Each is one `sort_index.<type>`
+    /// would name, told to a holder of `schema` who reads the field, to
+    /// weigh (lakelands#1029).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sorted_whole: Vec<SortedWhole>,
     /// The vector fields the lake asks an index for, by its
     /// `vector_index.<type>` setting: a search over one of them answers
     /// the index's set and says `ranked_by: index`; on an engine that keeps
@@ -307,6 +314,17 @@ pub struct TypeLifecycle {
     /// keyed by the three together.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub value_types: BTreeMap<ValueTypeName, u32>,
+}
+
+/// A field ordered by sorting the whole type, and what it cost.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SortedWhole {
+    /// The field a `find` ordered first by.
+    pub field: FieldName,
+    /// The pages so answered.
+    pub pages: u64,
+    /// The time those reads took, in milliseconds.
+    pub millis: u64,
 }
 
 /// Whether a view's records are kept as its sources are written, or

@@ -205,6 +205,10 @@ pub struct Lake {
     /// The causes writes wait for in [`crate::backed::settle`], each with
     /// how many wait: an entry of any other cause is an orphan.
     pub(crate) waiting: Mutex<BTreeMap<Position, usize>>,
+    /// Per type and field, the `find` pages ordered first by a field the
+    /// lake keeps no order index for, since it was opened here, and the
+    /// microseconds they took (lakelands#1029).
+    pub(crate) sorted_whole: Mutex<BTreeMap<(TypeName, FieldName), (u64, u64)>>,
     writer: Mutex<Writer>,
     /// The tip's position and whether the lease is held, as of the last
     /// change the writer made: read without the writer's lock, which an
@@ -548,6 +552,7 @@ impl Lake {
             limits: location.limits,
             calls: tokio::sync::Mutex::new(()),
             waiting: Mutex::new(BTreeMap::new()),
+            sorted_whole: Mutex::new(BTreeMap::new()),
             writer: Mutex::new(Writer {
                 lease,
                 tip: None,

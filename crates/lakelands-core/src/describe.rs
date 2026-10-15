@@ -873,6 +873,7 @@ impl Sight<'_> {
                 version: d.version,
                 schema_hash,
                 sorted: vec![],
+                sorted_whole: vec![],
                 indexed: vec![],
                 kept: None,
                 // Of the fields as shown, as the hash is (024, extended).

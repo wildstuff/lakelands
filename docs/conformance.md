@@ -312,6 +312,10 @@ belongs in the suite, not beside one engine:
 
 - `a_logged_id_holding_nul_is_refused` — the log format §3: a source id that is empty or holds NUL, and an idempotency key or a writer that holds NUL, are refused as invalid at every door that takes them, and append nothing
 
+**sorted whole**
+
+- `what_was_ordered_by_a_whole_sort_is_told` — 041, extended (lakelands#1029): each `find` page ordered first, by value, by a scalar field the lake keeps no order index for is counted for that field with its time, and `describe_type` tells the count in `sorted_whole` to a holder of `schema` who reads the field, and to no other reader, whatever records are held from it; an order by key, by `known_at` or of a field it indexes is not counted, and a field named in `sort_index.<type>` is told in `sorted` and no longer in `sorted_whole`
+
 **rebuild**
 
 - `a_rebuilt_projection_answers_every_read_as_the_live_one_did` — 001, 040 and the engine seam: a projection rebuilt from the log is the one it replaces, byte for byte, at the head and as of every earlier position, the `initial` values the fold filled (050), a type migration that converts records and a re-key that rewrites references to moved keys included

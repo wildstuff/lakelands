@@ -985,6 +985,9 @@ interface types {
         /// `sort_index.<type>` setting): a `find` ordered first by one of
         /// them reads its page, not the type.
         sorted: list<field-name>,
+        /// The fields a `find` ordered first by and the lake answered by
+        /// sorting the type, since it was opened where it answers.
+        sorted-whole: list<sorted-whole>,
         /// The vector fields the lake asks an index for (its
         /// `vector_index.<type>` setting): a search over one of them
         /// answers the index's set and says `ranked_by: index`.
@@ -995,6 +998,13 @@ interface types {
         /// The version of each value type a field shown uses: what the type
         /// accepts is keyed by `version`, `schema-hash` and these.
         value-types: list<tuple<value-type-name, u32>>,
+    }
+
+    /// A field ordered by sorting the whole type, and what it cost.
+    record sorted-whole {
+        field: field-name,
+        pages: u64,
+        millis: u64,
     }
 
     /// Whether a view's records are kept as its sources are written, or
