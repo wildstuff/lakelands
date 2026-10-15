@@ -4,7 +4,7 @@
 use std::fmt::Write as _;
 
 use lakelands_api::error::Missing;
-use lakelands_api::write::{Declaration, Outcome, ProposedWrite, WriteOpts};
+use lakelands_api::write::{Declaration, Migration, Outcome, ProposedWrite, WriteOpts};
 use lakelands_api::{Error, LakeStore, Principal, ProposalId, Refusal, Version};
 use serde_json::{Value, json};
 
@@ -23,6 +23,11 @@ check!(
 check!(
     COMPUTED_REFERENCE_CELLS = a_computed_reference_answers_alike_in_every_cell,
     "032 (lakelands#923): a reference computed at the write is answered at `ingest`, at a link's field, under `only` on the type written, and under a stale `expected_version`, by one who reads it and one who may not (masked or not shown it), alike on every engine: an ingest window whose record names a record not live to its writer commits nothing, its neighbours included, and `Ingested` names the record; a link's computed field is answered as its written twin; the reference is judged before `only` on the type written: outside it, a key that is not live is `not_live`, and a live one `not_granted` naming nothing; a stale version is told first, `conflict`, where the written twin is told its reference first, and a writer who may not read the reference learns nothing of the key from either"
+);
+
+check!(
+    COMPUTED_REFERENCE_LEFT = a_declaration_that_computes_references_again_tells_none_of_them,
+    "032 (lakelands#922): a function declared again, or an expression a migration changes, so that records' computed references name a retired record or a key no record holds, is applied, its outcome naming the declaration and its preview the restated expression, lossless, and neither naming a reference; `get` then answers the keys as computed, a `find` where the reference is not null answers every record, one through it is refused `steps_into_reference`, and a write of another field is applied"
 );
 
 /// A record of `p` in each state a reference may find it in, and whether
@@ -749,3 +754,111 @@ const EXPECTED: &str = "
     3 om theirs x: [applied] [not_granted r]
     3 om theirs y: [not_granted] [not_granted r]
 ";
+async fn a_declaration_that_computes_references_again_tells_none_of_them(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let c = l.cat.as_ref();
+    let to_p = json!({"kind": "reference", "target": "p"});
+    let f = |expr: &str| {
+        json!({"declare": "function", "name": "f", "backing": "expr",
+        "expr": expr, "inputs": [text("s")]})
+    };
+    let u = |derived: &str| {
+        json!({"name": "u", "fields": [text("s"), text("note"),
+        {"name": "r", "type": to_p, "authority": "derived", "derived": derived, "depends_on": ["s"]}]})
+    };
+    let mut declared_u = u("s");
+    declared_u["declare"] = json!("type");
+    for d in [
+        ty("p", json!([text("team")])),
+        f("s"),
+        json!({"declare": "type", "name": "t", "fields": [text("s"), text("note"),
+            {"name": "r", "type": to_p, "authority": "derived", "function": "f", "depends_on": ["s"]}]}),
+        declared_u,
+    ] {
+        l.declare_json(d).await?;
+    }
+    for k in ["a1", "a2", "a3"] {
+        l.upsert("p", k, json!({"team": "a"})).await?;
+    }
+    for (k, s) in [("1", "a1"), ("2", "a2"), ("3", "a3")] {
+        l.upsert("t", k, json!({ "s": s })).await?;
+        l.upsert("u", k, json!({ "s": s })).await?;
+    }
+    l.retire("p", "a2").await?;
+    let moved = "if(s = 'a1', 'a2', 'nobody')";
+    // The function declared again: applied, naming the declaration alone.
+    let d: Declaration =
+        serde_json::from_value(f(moved)).map_err(|e| Failure::new(e.to_string()))?;
+    let declared = c.declare(&l.own, d).await.must("`f` declared again")?;
+    let members = serde_json::to_value(&declared).unwrap_or_default();
+    let names: Vec<&String> = members
+        .as_object()
+        .map(|o| o.keys().collect())
+        .unwrap_or_default();
+    ensure!(
+        names == ["declared", "outcome", "position"],
+        "`f` declared again answers its declaration and nothing of the references: {members}"
+    );
+    // The expression migrated: its preview restates it and names no reference.
+    let to: lakelands_api::ontology::TypeDecl =
+        serde_json::from_value(u(moved)).map_err(|e| Failure::new(e.to_string()))?;
+    let preview = c.migrate(&l.own, Migration::to(to.clone())).await;
+    let preview = preview.must("previewing `u`'s expression changed")?.data;
+    let report = serde_json::to_value(&preview).unwrap_or_default();
+    let names: Vec<&String> = report
+        .as_object()
+        .map(|o| o.keys().collect())
+        .unwrap_or_default();
+    ensure!(
+        preview.lossless
+            && serde_json::to_value(&preview.restated).unwrap_or_default()
+                == json!([{"field": "r", "member": "derived", "was": "s", "to": moved}])
+            && names
+                == [
+                    "fields",
+                    "from_schema_hash",
+                    "lossless",
+                    "records_scanned",
+                    "report_id",
+                    "restated",
+                    "to_schema_hash",
+                    "type"
+                ],
+        "`u`'s preview restates the expression, lossless, and names no reference: {report}"
+    );
+    let applied = c
+        .migrate_apply(&l.own, Migration::to(to), &preview.report_id)
+        .await;
+    applied.must("applying `u`'s expression changed")?;
+    // What a reader is answered afterwards.
+    for ty in ["t", "u"] {
+        let mut keys = Vec::new();
+        for k in ["1", "2", "3"] {
+            let r = l.read(ty, k).await?;
+            keys.push(r.fields.get("r").cloned().unwrap_or(Value::Null));
+        }
+        ensure!(
+            keys == [json!("a2"), json!("nobody"), json!("nobody")],
+            "`{ty}` answers the keys as computed, the retired one and the absent one: {keys:?}"
+        );
+        let all = l
+            .all_found(ty, crate::conformance::fixture::find_where("r is not null"))
+            .await?;
+        ensure!(
+            all.len() == 3,
+            "`{ty}` where `r` is not null answers every record: {}",
+            all.len()
+        );
+        let through = lakelands_api::read::Find {
+            filter: Some("r.team = 'a'".into()),
+            ..lakelands_api::read::Find::default()
+        };
+        let through = c.find(&l.own, &ty.into(), through).await;
+        let stepped = json!({"code": "steps_into_reference", "field": "r"});
+        refused_like(&format!("`{ty}` where `r.team`"), through, &stepped)?;
+        try_upsert(c, &l.own, ty, "2", json!({"note": "n"}))
+            .await
+            .must(&format!("`{ty}` `2`, written with another field"))?;
+    }
+    Ok(())
+}

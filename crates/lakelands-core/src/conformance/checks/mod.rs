@@ -425,6 +425,7 @@ pub const ALL: &[Check] = &[
     references::REFERENCE_WITHIN_A_WINDOW,
     computed_reference::COMPUTED_REFERENCE,
     computed_reference::COMPUTED_REFERENCE_CELLS,
+    computed_reference::COMPUTED_REFERENCE_LEFT,
     values::DECIMAL_NOT_A_NUMBER,
     values::GEO_VALUES,
     values::JSON_VALUES,
