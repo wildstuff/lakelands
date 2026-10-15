@@ -1,7 +1,15 @@
 # Lakelands
 
-**The ground that AI agents work on.** A landscape of typed, auditable
-lakes — not a data lake. Every lake has a map (its ontology), keeps its
+**The open ontology store for AI agents.**
+
+Don't trust your agent's memory — verify it. Lakelands is the ground AI
+agents work on: an ontology types every write, every field keeps its
+source and its time, and the log is hash-chained, so anyone can check
+what the agent knew and who changed it — without us. Your agent reaches
+it over MCP, on your machine; engine and on-disk format are Apache-2.0.
+
+Underneath, a landscape of typed, auditable lakes — not a data lake.
+Every lake has a map (its ontology), keeps its
 whole history in layers (its event log), is fed and drained by streams
 (its changes), and can be searched from any point on the map. Agents get
 typed tools to read and write it; every value they see says where it came
@@ -75,6 +83,27 @@ of changes without polling, `propose`, `proposals`, `accept` and
 `add_field`, `migrate` and `recompute` for the schema. Served over MCP
 (stdio and HTTP) and REST from one catalog. Agents never write a query
 language.
+
+## Verify it
+
+A memory you are asked to trust is a memory nobody can check. Every
+claim Lakelands makes about its data is one you can recompute:
+
+- **What the agent saw.** Every reply carries the position it was read
+  at. Pin an earlier position and the lake answers as it did then.
+- **Where a value came from.** Every field records who wrote it, when
+  the lake learned it and when its source saw it — per field, not per
+  record.
+- **That nothing was rewritten.** Each event carries the hash of the
+  one before it. The format is published byte for byte in
+  [`docs/log-format.md`](docs/log-format.md), with test vectors and a
+  `verify.py` beside them that shares no code with Lakelands: point it
+  at a lake's directory and it checks the chain from the segment files
+  alone. An import checks an export's chain before it opens.
+- **That an engine keeps its word.** An engine is a port, not a
+  re-implementation, and proves itself against the open conformance
+  suite ([`docs/conformance.md`](docs/conformance.md)) — SQLite,
+  PostgreSQL and in-memory pass all of it.
 
 > **Status: `0.15.0`.** Lakelands `0.15.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
@@ -164,6 +193,10 @@ walk's page lists every call and the answer it must give.
 - **Not a data lake.** A data lake stores raw files and lets meaning
   arrive later. Lakelands is the opposite: schema-first, every write
   governed by declared authority, every value traceable to its event.
+- **Not memory you rent.** There is no hosted tier holding the parts
+  that make it trustworthy: the ontology, the history, the provenance
+  and the verifier are all in this repository, under the same licence,
+  and a lake lives on your machine or in your own PostgreSQL.
 - **Not autonomous.** Lakelands detects when something is due — a
   trigger matched, an object set changed, a verb was called — and records it
   durably. Executing it is behind a seam: an HTTP endpoint, a local
