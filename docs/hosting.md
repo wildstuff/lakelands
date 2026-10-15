@@ -46,6 +46,12 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   well-known Unix paths; on Windows there is none, so opening the lake
   fails as `unavailable` until `ca_file` names one.
 
+  PostgreSQL in a container wants a `shm_size` of at least 256 MB:
+  its parallel workers take shared memory of `maintenance_work_mem`'s
+  size and more from `/dev/shm`, which Docker's default 64 MB cannot
+  give, and the statement then fails as unavailable ("could not resize
+  shared memory segment") (lakelands#1161).
+
   A process serving a SQLite lake shows up to the tuning's `mmap_mb`
   (256 MiB unless set; `0` turns it off) more resident memory once it
   has read that much of the projection: file pages mapped for reads,
@@ -244,6 +250,11 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   - **After a crash** between the act's steps, open a writer: the next
     writer's open, or the act repeated, finishes what is owed. A
     handle that only reads answers what the projection held until then.
+  - **A reclaim that fails** is owed, never a lock-out: the values are
+    erased already, so the writer opens without it, says why on the
+    CLI and in `serve`'s log, and tries it again at each open until it
+    runs (lakelands#1161). A rebuild still owed refuses the writer's
+    open while it fails, since the projection is not whole without it.
   - **Keep backups honest:** a key restored from a backup restores what
     it sealed. The key store's backups must follow its destroys, and the
     keyring stays out of the lake's backup set: a backup that carries

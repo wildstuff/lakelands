@@ -15,8 +15,8 @@ use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::checks::ALL;
 use lakelands_core::conformance::{
-    Continue, Continued, FreshLake, Harness, Import, ImportedLake, Meter, Relimit, Reopen, Twin,
-    below, continue_below, run_all, run_one,
+    Continue, Continued, Fault, FreshLake, Harness, Import, ImportedLake, Meter, Relimit, Reopen,
+    Twin, below, continue_below, run_all, run_one,
 };
 use lakelands_engine_pg::PgOpener;
 use peak_alloc::PeakAlloc;
@@ -55,6 +55,25 @@ impl Harness for Pg {
                 store.close().await?;
                 let seams = Seams {
                     engines: vec![Arc::new(PgOpener)],
+                    ..host
+                };
+                let location = common::location(&url, &schema, &schema);
+                let store: Arc<dyn LakeStore> =
+                    lakelands_store::open(location, seams, OpenMode::Write).await?;
+                Ok(store)
+            })
+        })
+    }
+
+    fn faulter(&self) -> Fault {
+        let url = self.url.clone();
+        Arc::new(move |store, host, wrap| {
+            let url = url.clone();
+            Box::pin(async move {
+                let schema = store.lake().to_string();
+                store.close().await?;
+                let seams = Seams {
+                    engines: vec![wrap(Arc::new(PgOpener))],
                     ..host
                 };
                 let location = common::location(&url, &schema, &schema);

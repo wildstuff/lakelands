@@ -122,6 +122,12 @@ pub fn open_store(location: Location, mode: OpenMode, host: Seams) -> Opening {
             OpenMode::Rebuild => OpenMode::Rebuild,
         };
         let store = lakelands_store::open(location, seams, mode).await?;
+        // An owed reclaim kept no writer out; the host is told (lakelands#1161).
+        if let Some(why) = store.reclaim_owed() {
+            eprintln!(
+                "lakelands: a forgetting still owes its reclaim, tried again at the next open: {why}"
+            );
+        }
         lakes.insert(key, store.clone());
         Ok(store)
     })

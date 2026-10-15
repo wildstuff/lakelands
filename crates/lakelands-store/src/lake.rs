@@ -228,6 +228,9 @@ pub struct Lake {
     rebuilds: AtomicU64,
     /// The sources' keys the lake was given, and the key store (058).
     pub(crate) keys: Arc<crate::sealing::Keys>,
+    /// Why a forgetting's reclaim is still owed, where the last one failed
+    /// (lakelands#1161).
+    reclaim_owed: Mutex<Option<String>>,
 }
 
 /// The opener `seams` passes for the engine `location` names.
@@ -522,7 +525,15 @@ impl Lake {
             }
             lake.append(&mut w, drafts)?;
             // What a crash left of a forgetting is finished first (058).
-            lake.finish_forgetting(&mut w)?;
+            // An owed rebuild refuses the open, since the projection is not
+            // whole without it; a reclaim that fails again stays owed, is
+            // told and is tried at the next open, never a lock-out: the
+            // values are erased already (lakelands#1161).
+            if let Err(e) = lake.finish_forgetting(&mut w)
+                && lake.reclaim_owed().is_none()
+            {
+                return Err(e);
+            }
         }
         {
             // A read-only handle keeps the folded position `catch_up`
@@ -575,6 +586,7 @@ impl Lake {
             holds_lease: AtomicBool::new(false),
             shapes: Mutex::new(Vec::new()),
             rebuilds: AtomicU64::new(0),
+            reclaim_owed: Mutex::new(None),
         }
     }
 
@@ -2169,7 +2181,9 @@ impl Lake {
             self.rebuild_held(w)?;
         }
         let mut list = listed(self)?;
-        let reclaimed = self.engine.projection().compact()?;
+        let reclaimed = self.engine.projection().compact();
+        *lakelands_core::lock(&self.reclaim_owed) = reclaimed.as_ref().err().map(Error::to_string);
+        let reclaimed = reclaimed?;
         for state in list.values_mut().filter(|s| *s == "rebuilt") {
             *state = "done".to_owned();
         }
@@ -2185,6 +2199,12 @@ impl Lake {
             after: reclaimed.after,
             head,
         }))
+    }
+
+    /// Why a forgetting's reclaim is still owed, where the last one tried
+    /// failed: the writer's open goes on without it (lakelands#1161).
+    pub fn reclaim_owed(&self) -> Option<String> {
+        lakelands_core::lock(&self.reclaim_owed).clone()
     }
 
     /// Check the hash chain between two positions, every checkpoint in
