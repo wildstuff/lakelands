@@ -1072,6 +1072,19 @@ fn ranked(v: &mut Value) {
         Some(ok) => head(ok),
         None => {}
     }
+    // The time a whole sort took is the answering process's clock too
+    // (lakelands#1029): dropped, its pages kept.
+    fn timed(v: &mut Value) {
+        match v {
+            Value::Object(m) if m.contains_key("pages") && m.contains_key("millis") => {
+                m.insert("millis".into(), json!(0));
+            }
+            Value::Object(m) => m.values_mut().for_each(timed),
+            Value::Array(xs) => xs.iter_mut().for_each(timed),
+            _ => {}
+        }
+    }
+    timed(v);
     let mut seen = BTreeSet::new();
     each(v, &mut |x| {
         seen.insert(x.as_str().unwrap_or_default().to_owned());

@@ -22,8 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use lakelands_api::describe::{
-    ExecutorDescription, FieldDescription, Kept, LakeDescription, LakeRights, NotKept, TypeAccess,
-    TypeDescription, TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
+    ExecutorDescription, FieldDescription, Kept, LakeDescription, LakeRights, NotKept, SortedWhole,
+    TypeAccess, TypeDescription, TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
 };
 use lakelands_api::expr::Condition;
 use lakelands_api::location::Limits;
@@ -295,6 +295,15 @@ fn constraint_decl() -> ConstraintDecl {
         holds: cond(),
         description: Some("d".into()),
         at_ingest: AtIngest::Admit,
+    }
+}
+
+/// A field ordered by a whole sort, with every member set.
+fn sorted_whole() -> SortedWhole {
+    SortedWhole {
+        field: "due".into(),
+        pages: 3,
+        millis: 1800,
     }
 }
 
@@ -606,6 +615,7 @@ fn type_description() -> TypeDescription {
             version: 1,
             schema_hash: "h".into(),
             sorted: vec!["amount".into()],
+            sorted_whole: vec![sorted_whole()],
             indexed: vec!["embedding".into()],
             kept: Some(Kept::Kept),
             value_types: [("money".into(), 2)].into(),
@@ -1086,6 +1096,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         ("type_access", members(&type_description().access)),
         ("type_lineage", members(&type_description().lineage)),
         ("type_lifecycle", members(&type_description().lifecycle)),
+        ("sorted_whole", members(&sorted_whole())),
         ("field_description", members(&field_description())),
         ("type_description", members(&type_description())),
         (

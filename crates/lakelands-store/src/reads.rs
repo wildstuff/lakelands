@@ -50,7 +50,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use lakelands_api::describe::{Kept, LakeDescription, NotKept, TypeDescription};
+use lakelands_api::describe::{Kept, LakeDescription, NotKept, SortedWhole, TypeDescription};
 use lakelands_api::engine::{After, ProjectionView, Ranked, Rankings, Scan};
 use lakelands_api::error::{Case, Names, Naming, Place, Said};
 use lakelands_api::expr::{CmpOp, Expr, Func, Literal};
@@ -1031,6 +1031,24 @@ impl<'a> Reader<'a> {
         let setting = settings.get(&core_engines::sort_index_key(&ordered));
         t.lifecycle.sorted = core_engines::sorted_fields(&ordered, decl, setting);
         t.lifecycle.sorted.retain(seen);
+        // What was ordered by a whole sort, told to a holder of `schema`
+        // who reads the field, who can weigh `sort_index.<type>`, and never
+        // once it is indexed: its pages count every principal's reads and
+        // its time grows with records a reader may not be answered
+        // (lakelands#1029).
+        let tally = lakelands_core::lock(&self.lake.sorted_whole).clone();
+        let schema = self.who.grants.schema;
+        let told = |f: &FieldName| {
+            schema && self.sight.reads(&t.name, f) && !t.lifecycle.sorted.contains(f)
+        };
+        t.lifecycle.sorted_whole = (tally.into_iter())
+            .filter(|((ty, f), _)| *ty == t.name && told(f))
+            .map(|((_, field), (pages, micros))| SortedWhole {
+                field,
+                pages,
+                millis: micros / 1000,
+            })
+            .collect();
         let setting = settings.get(&core_engines::vector_index_key(&t.name));
         t.lifecycle.indexed = core_engines::indexed_fields(decl, setting);
         t.lifecycle.indexed.retain(seen);
@@ -1865,6 +1883,38 @@ impl<'a> Reader<'a> {
 
     /// `find`.
     pub fn find(&self, ty: &TypeName, find: &Find) -> Result<Found> {
+        // A page ordered first by a field the lake keeps no order index for
+        // sorts the type: counted with its time, for `describe_type` to
+        // tell, and never by a value (lakelands#1029).
+        let whole = self.sorts_whole(ty, find);
+        let started = std::time::Instant::now();
+        let found = self.find_ordered(ty, find);
+        if let (Some(field), Ok(_)) = (whole, &found) {
+            let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            let mut tally = lakelands_core::lock(&self.lake.sorted_whole);
+            let (pages, took) = tally.entry((ty.clone(), field)).or_default();
+            (*pages, *took) = (*pages + 1, took.saturating_add(micros));
+        }
+        found
+    }
+
+    /// The field a `find` orders first by, where the lake keeps no order
+    /// index for it at the head: a type's own scalar field, by its value,
+    /// on a page of records (041).
+    fn sorts_whole(&self, ty: &TypeName, find: &Find) -> Option<FieldName> {
+        let first = find.order_by.first().filter(|o| o.by == OrderBy::Value);
+        let o = first.filter(|_| find.aggregate.is_none())?;
+        let decl = (self.shape.ontology.ty(ty).ok()).filter(|d| d.view.is_none())?;
+        let sortable =
+            |f: &&FieldDecl| f.name == o.field && lakelands_api::seam::sortable(&f.ty.kind);
+        let f = decl.fields.iter().find(sortable)?;
+        let setting = self.shape.settings.get(&core_engines::sort_index_key(ty));
+        let sorted = core_engines::sorted_fields(ty, decl, setting);
+        (!sorted.contains(&f.name)).then(|| f.name.clone())
+    }
+
+    /// [`Self::find`]'s answer.
+    fn find_ordered(&self, ty: &TypeName, find: &Find) -> Result<Found> {
         let decl = self.named_type(ty)?.clone();
         let params = self.bind_params(&decl, &find.params)?;
         for o in &find.order_by {

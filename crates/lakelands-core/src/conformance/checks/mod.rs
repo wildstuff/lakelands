@@ -94,6 +94,7 @@ mod set_rewritten;
 mod sets_across;
 mod settings;
 mod shown_hash;
+mod sorted_whole;
 mod streaming;
 mod triggers;
 mod upgrade;
@@ -212,6 +213,7 @@ pub const ALL: &[Check] = &[
     constraints::CONSTRAINT_READS_ITS_RECORD_ALONE,
     constraints::CONSTRAINT_BROKEN_IN_THE_PREFLIGHT,
     logged_ids::NO_NUL_IN_A_LOGGED_ID,
+    sorted_whole::SORTED_WHOLE_TOLD,
     rebuild::REBUILD_ANSWERS_AS_BEFORE,
     rebuild::REBUILD_REPRODUCES_THE_CHAIN,
     rebuild::REBUILD_FOLDS_OVER_RECORDS,

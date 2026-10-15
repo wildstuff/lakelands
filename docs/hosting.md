@@ -1035,6 +1035,29 @@ A host that already has a store of its own moves in four steps.
   embedding or a field of a function computed outside the lake is never
   such a type: the store walks its records at every declaration of it,
   whatever changed.
+- **An order index is the host's to ask for, from what was ordered
+  (lakelands#1029).** A page ordered by a field `sort_index.<type>` does
+  not name sorts the type, on every page: 0.6 s on SQLite and 1.0 s on
+  PostgreSQL at 100 000 records, and far more for a deep page by offset.
+  Naming a field costs every write about 4 % and one rebuild, about a
+  second at that size. The lake does not choose: `describe_type` tells a
+  holder of `schema`, in `sorted_whole`, each field it reads that was
+  ordered by a whole sort since the lake was opened, with its pages and
+  their time, and `lakelands serve`
+  prints a line when one grows. A host's rule, run as often as it likes,
+  names a field when it was ordered by on a few pages of a large type,
+  and keeps a type's list short:
+
+  ```text
+  for each type with at least 2 000 records:
+    for each field in sorted_whole with pages >= 3 and millis >= 100,
+      while sort_index.<type> names fewer than 4 fields:
+        add it to sort_index.<type>
+  ```
+
+  Write the setting in a quiet moment: its fold rebuilds the type's
+  rows under the writer. See
+  `docs/decisions/041-a-sorted-page-reads-its-page.md`.
 - **A view that is read often may be kept.** A view's read walks its
   source: seconds at a hundred thousand records. The setting
   `view_kept.<type>` asks the fold to keep the view's records in the
