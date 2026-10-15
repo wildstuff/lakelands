@@ -449,6 +449,18 @@ pub trait ProjectionView {
     /// Proposals.
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>>;
 
+    /// A page of proposals newest first (lakelands#1063): of `filter`'s
+    /// state alone, proposed before `before`, at most `filter.limit`; a
+    /// proposal's position is its own. `None` where the engine keeps no
+    /// such read, and the store reads [`Self::proposals`] whole.
+    fn proposals_before(
+        &self,
+        _: &ProposalFilter,
+        _: Option<Position>,
+    ) -> Result<Option<Vec<Proposal>>> {
+        Ok(None)
+    }
+
     /// Whether a record is a member of an object set.
     fn is_member(&self, set: &str, ty: &TypeName, key: &RecordKey) -> Result<bool>;
 

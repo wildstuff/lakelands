@@ -313,6 +313,14 @@ impl ProjectionView for HeldNow<'_> {
         self.then.proposals(filter)
     }
 
+    fn proposals_before(
+        &self,
+        filter: &ProposalFilter,
+        before: Option<Position>,
+    ) -> Result<Option<Vec<Proposal>>> {
+        self.then.proposals_before(filter, before)
+    }
+
     fn is_member(&self, set: &str, ty: &TypeName, key: &RecordKey) -> Result<bool> {
         self.then.is_member(set, ty, key)
     }

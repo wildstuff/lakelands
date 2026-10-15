@@ -143,6 +143,8 @@ pub(crate) struct Projection {
     pub(crate) declarations: BTreeMap<String, History<Declared>>,
     pub(crate) records: BTreeMap<(TypeName, RecordKey), History<StoredRecord>>,
     pub(crate) proposals: BTreeMap<ProposalId, History<Proposal>>,
+    /// Each proposal's id by its position, newest last (lakelands#1063).
+    pub(crate) by_position: BTreeMap<Position, ProposalId>,
     pub(crate) members: BTreeMap<(String, TypeName, RecordKey), History<bool>>,
     pub(crate) outputs: BTreeMap<(String, Digest), History<Value>>,
     pub(crate) applied: BTreeMap<EventId, Position>,
@@ -511,6 +513,7 @@ impl Projection {
                     .put(from, r);
             }
             Put::Proposal { proposal, at } => {
+                (self.by_position).insert(proposal.position, proposal.id.clone());
                 self.proposals
                     .entry(proposal.id.clone())
                     .or_default()

@@ -2404,13 +2404,13 @@ impl<'a> Reader<'a> {
         };
         // The kind and the type are answered on the entry as its reader is
         // shown it, so they are asked behind the trim, not of the engine.
-        let all = self.view.proposals(&ProposalFilter {
-            limit: Some(u32::MAX),
+        let asking = |limit: u32| ProposalFilter {
+            limit: Some(limit),
             cursor: None,
             kind: None,
             ty: None,
             ..filter.clone()
-        })?;
+        };
         let me = self.who.writer();
         // The lake as its reader is described it, and the types it is
         // shown, each read once for the listing and only where a proposal
@@ -2419,28 +2419,44 @@ impl<'a> Reader<'a> {
         let stands = |ident: &str| stands(&self.shape.ontology, ident);
         // In the engine's order, newest first, a page is its first entries:
         // those past it are not judged, each a read of the past where its
-        // subject was declared again since (lakelands#888). Another order
-        // judges every entry.
-        let end = (filter.order_by.is_empty()).then_some(offset.saturating_add(limit));
-        let mut mine = Vec::new();
-        for mut p in all {
-            if end.is_some_and(|end| mine.len() >= end) {
+        // subject was declared again since (lakelands#888), and the engine
+        // is asked for them a page at a time, the next only while the
+        // listing's is not full, each twice the last, so a reader kept from
+        // many asks a few (lakelands#1063). Another order, or an engine
+        // without pages, judges every entry.
+        let end = offset.saturating_add(limit);
+        let paged = filter.order_by.is_empty();
+        let (mut mine, mut before) = (Vec::new(), None);
+        let mut page = u32::try_from(end.max(1)).unwrap_or(u32::MAX);
+        loop {
+            let rows = (paged.then(|| self.view.proposals_before(&asking(page), before)))
+                .transpose()?
+                .flatten();
+            let full = rows.as_ref().is_some_and(|rows| rows.len() as u32 == page);
+            let rows = rows.map_or_else(|| self.view.proposals(&asking(u32::MAX)), Ok)?;
+            for mut p in rows {
+                if paged && mine.len() >= end {
+                    break;
+                }
+                before = Some(p.position);
+                if !self.who.grants.review && p.proposer != me {
+                    continue;
+                }
+                if let Some(logged) = p.write.take() {
+                    let at = (p.position, p.proposed_at);
+                    let Some(shown) = self.entry(asked, &logged, at, (&lake, &seen))? else {
+                        continue;
+                    };
+                    (p.write, p.more) = shown;
+                }
+                if core_engines::matches(&p, filter, stands) {
+                    mine.push(p);
+                }
+            }
+            if !full || mine.len() >= end {
                 break;
             }
-            if !self.who.grants.review && p.proposer != me {
-                continue;
-            }
-            if let Some(logged) = p.write.take() {
-                let Some(shown) =
-                    self.entry(asked, &logged, (p.position, p.proposed_at), (&lake, &seen))?
-                else {
-                    continue;
-                };
-                (p.write, p.more) = shown;
-            }
-            if core_engines::matches(&p, filter, stands) {
-                mine.push(p);
-            }
+            page = page.saturating_mul(2);
         }
         Ok(ordered_proposals(mine, &filter.order_by)?
             .into_iter()

@@ -269,6 +269,23 @@ impl ProjectionView for MemView {
         }))
     }
 
+    fn proposals_before(
+        &self,
+        filter: &ProposalFilter,
+        before: Option<Position>,
+    ) -> Result<Option<Vec<Proposal>>> {
+        let limit = filter.limit.map_or(usize::MAX, |l| l as usize);
+        Ok(Some(self.read(|p, at| {
+            let ids = p
+                .by_position
+                .range(..before.unwrap_or(Position(u64::MAX)))
+                .rev();
+            let states = ids.filter_map(|(_, id)| p.proposals.get(id)?.at(at));
+            let kept = states.filter(|q| filter.state.is_none_or(|s| q.state == s));
+            kept.take(limit).cloned().collect()
+        })))
+    }
+
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
         Ok(self.read(|p, at| {
             engines::proposals(p.proposals.values().filter_map(|h| h.at(at)), filter, |i| {

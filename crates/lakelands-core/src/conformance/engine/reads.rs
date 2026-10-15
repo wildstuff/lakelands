@@ -164,6 +164,11 @@ engine_check!(
 );
 
 engine_check!(
+    PROPOSALS_PAGED = proposals_come_newest_first_a_page_at_a_time,
+    "seams §ProjectionView (lakelands#1063): `proposals_before` answers, at the head and at earlier positions, for every state filter and pages of one, two and four, the proposals `proposals` answers whole, newest first, each page those before the last one read: a state is judged as it stood at the view, and a page holds no more than its limit"
+);
+
+engine_check!(
     PROPOSALS = proposals_filter_by_state_and_type_newest_first,
     "seams §ProjectionView: proposals match the filter's state and type, a call's type being its verb's `on`, newest first by their latest state, then by id"
 );
@@ -1752,6 +1757,84 @@ fn proposal(id: &str, position: u64, write: ProposedWrite, state: ProposalState)
         reason: None,
         more: false,
     }
+}
+
+fn proposals_come_newest_first_a_page_at_a_time(engine: &dyn LakeEngine) -> Held {
+    use ProposalState::{Accepted, Pending, Rejected};
+    let retire = |ty: &str| ProposedWrite::Retire {
+        ty: ty.into(),
+        key: "k".into(),
+        opts: Default::default(),
+    };
+    let write = |n: u64| {
+        retire(if n.is_multiple_of(2) {
+            "invoice"
+        } else {
+            "customer"
+        })
+    };
+    fold(engine, 6, |p| {
+        for n in 1..=6 {
+            p.put_proposal(
+                &proposal(&format!("p{n}"), n, write(n), Pending),
+                Position(n),
+            )?;
+        }
+        Ok(())
+    })?;
+    fold(engine, 8, |p| {
+        p.put_proposal(&proposal("p2", 2, write(2), Accepted), Position(7))?;
+        p.put_proposal(&proposal("p5", 5, write(5), Rejected), Position(8))
+    })?;
+    for at in [None, Some(Position(6)), Some(Position(7))] {
+        let v = view(engine, at)?;
+        for state in [None, Some(Pending), Some(Accepted), Some(Rejected)] {
+            let filter = ProposalFilter {
+                state,
+                ..Default::default()
+            };
+            let ids =
+                |ps: Vec<Proposal>| ps.into_iter().map(|p| p.id.to_string()).collect::<Vec<_>>();
+            let whole = ids(v.proposals(&filter).must("listing proposals")?);
+            for size in [1, 2, 4] {
+                // At most a page more than the proposals: an engine that never
+                // ends its pages fails here, not by hanging.
+                let (mut paged, mut before, mut ended) = (Vec::new(), None, false);
+                for _ in 0..=whole.len() {
+                    let asked = ProposalFilter {
+                        limit: Some(size),
+                        ..filter.clone()
+                    };
+                    let page = v.proposals_before(&asked, before).must("reading a page")?;
+                    let Some(page) = page else {
+                        return Err(Failure::new(
+                            "the engine keeps no page of proposals".to_owned(),
+                        ));
+                    };
+                    ensure!(
+                        page.len() <= size as usize,
+                        "a page of {size} held {}",
+                        page.len()
+                    );
+                    let last = page.last().map(|p| p.position);
+                    let full = page.len() == size as usize;
+                    paged.extend(ids(page));
+                    match last {
+                        Some(last) if full => before = Some(last),
+                        _ => {
+                            ended = true;
+                            break;
+                        }
+                    }
+                }
+                ensure!(
+                    ended && paged == whole,
+                    "at {at:?}, state {state:?}, pages of {size} answered {paged:?}; the whole listing is {whole:?}"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn proposals_filter_by_state_and_type_newest_first(engine: &dyn LakeEngine) -> Held {

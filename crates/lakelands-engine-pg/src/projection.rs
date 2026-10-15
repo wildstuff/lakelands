@@ -130,6 +130,7 @@ CREATE TABLE IF NOT EXISTS {s}.proposals (
     id TEXT NOT NULL, since BIGINT NOT NULL, state TEXT NOT NULL,
     PRIMARY KEY (id, since)
 );
+CREATE INDEX IF NOT EXISTS proposals_newest ON {s}.proposals (((state::jsonb ->> 'position')::int8));
 CREATE TABLE IF NOT EXISTS {s}.members (
     object_set TEXT NOT NULL, ty TEXT NOT NULL, key TEXT NOT NULL,
     since BIGINT NOT NULL, state BOOLEAN NOT NULL,
