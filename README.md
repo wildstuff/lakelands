@@ -153,33 +153,35 @@ terrain Lakelands is built for, and where it is not the right tool.
   map first. An agent can draw it over MCP (`declare_type`, `add_field`),
   but there is always a map.
 
-> **Status: `0.15.0`.** Lakelands `0.15.0` is the `lakelands` CLI, its
+> **Status: `0.15.1`.** Lakelands `0.15.1` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the
-> whole conformance suite (622 checks through the doors and 70 through
+> whole conformance suite (623 checks through the doors and 70 through
 > the engine seam), with 60 decision records and the event log at
 > format version 16, installable from the release. Its budgets: the
-> store facade and engine traits hold 65 of 110 methods, the core
-> crates' product code 62 358 of 62 500 lines and their specification
-> 91 535 of 92 000, and 3 of 20 `cfg(feature)` sites. A ceiling rises
+> store facade and engine traits hold 66 of 110 methods, the core
+> crates' product code 62 396 of 62 500 lines and their specification
+> 91 828 of 92 000, and 3 of 20 `cfg(feature)` sites. A ceiling rises
 > only by a recorded rule (decision 047): the operator set the round's
 > ceilings at 62 500 and 90 500, and its last pull requests raised the
 > specification's once more, to 92 000, by a measured row. Beside what
 > `0.14.0` held, a source may be forgotten: a field declared erasable
 > is sealed under its source's key, and forgetting the source destroys
 > that key in one act, so its values read as erased at every position
-> (decision 058). A type declares constraints that every write door
-> judges (decision 059). A set's filter and a trigger's condition read
-> across a reference, a link and a derived relation. A declaration
-> answers how it stands, a type tells its value types, and a valid
-> time is read one way at every door. A feed waits for the next
-> append, and the server's consumers of one lake share one read of its
-> log. An append syncs its two files at once (decision 060). An ingest
-> window asks its ids once, and a listing reads the declarations' past
-> once and asks for a page of proposals at a time. A writer's open
-> upgrades a lake of format 14 or 15 to 16 by appending, and the lake
-> this release writes, sealed values and a forgotten source among
-> them, is kept beside those of the releases before.
+> (decision 058), and a reclaim that fails keeps no writer out: it is
+> owed, said, and tried again at the next open. A type declares
+> constraints that every write door judges (decision 059). A set's
+> filter and a trigger's condition read across a reference, a link and
+> a derived relation. A declaration answers how it stands, a type
+> tells its value types, and a valid time is read one way at every
+> door. A feed waits for the next append, and the server's consumers
+> of one lake share one read of its log. An append syncs its two files
+> at once (decision 060). An ingest window asks its ids once, and a
+> listing reads the declarations' past once and asks for a page of
+> proposals at a time. A writer's open upgrades a lake of format 14 or
+> 15 to 16 by appending, and the lake this release writes, sealed
+> values and a forgotten source among them, is kept beside those of
+> the releases before.
 
 ## Try it
 
