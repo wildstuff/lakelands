@@ -1087,6 +1087,17 @@ impl<'a> Reader<'a> {
         for e in lake.verbs.iter_mut().filter_map(|v| v.executor.as_mut()) {
             e.bound = executors.iter().any(|x| x.name() == e.name);
         }
+        // A host's setting is told with its declaration to a holder of
+        // `schema` and to one who may write it (063, extended).
+        let host = (self.shape.ontology.settings.values())
+            .filter(|e| self.sight.setting_visible(&e.decl))
+            .map(|e| lakelands_api::describe::SettingValue {
+                key: e.decl.key.clone(),
+                value: self.shape.settings.get(&e.decl.key).cloned(),
+                default: lakelands_api::Value::Null,
+                declared: Some(e.decl.clone()),
+            });
+        let host: Vec<_> = host.collect();
         if self.who.grants.schema {
             // A setting of a type it is not shown, or naming a field it
             // does not read, is told as were the type or the field absent.
@@ -1097,6 +1108,7 @@ impl<'a> Reader<'a> {
                 .filter_map(|s| lakelands_api::settings::seen(s, &shown, &reads))
                 .collect();
         }
+        lake.settings.extend(host);
         lake
     }
 
@@ -4916,7 +4928,10 @@ fn in_force_under(o: &Ontology, d: &Declaration) -> Option<Declaration> {
             .functions
             .get(&f.name)
             .map(|e| Declaration::Function(e.decl.clone())),
-        Declaration::ValueType(_) => None,
+        Declaration::Setting(s) => {
+            (o.settings.get(&s.key)).map(|e| Declaration::Setting(e.decl.clone()))
+        }
+        _ => None,
     }
 }
 

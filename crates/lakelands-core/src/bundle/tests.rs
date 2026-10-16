@@ -383,6 +383,8 @@ fn value_types_and_functions_come_before_the_types_that_use_them() {
         Declaration::Verb(_) => 3,
         Declaration::Trigger(_) => 4,
         Declaration::ObjectSet(_) => 5,
+        Declaration::Setting(_) => 6,
+        _ => unreachable!("a lane this release does not have"),
     };
     let lanes: Vec<u8> = bundle.declarations.iter().map(lane).collect();
     let mut sorted = lanes.clone();
@@ -397,6 +399,7 @@ fn an_empty_bundle_declares_nothing() {
         Ok(Bundle {
             declarations: vec![],
             aging_rules: vec![],
+            settings: vec![],
         })
     );
 }
@@ -666,6 +669,8 @@ fn the_documented_examples_load() {
         let has = |key: &str| body.lines().any(|l| l.starts_with(key));
         let lane = if has("from:") {
             "aging_rules"
+        } else if body.starts_with("key:") {
+            "settings"
         } else if has("kind:") {
             "value_types"
         } else if has("risk:") {
@@ -681,7 +686,7 @@ fn the_documented_examples_load() {
         };
         owned.push((format!("{lane}/{}.yaml", owned.len()), body.to_owned()));
     }
-    assert_eq!(owned.len(), 11, "every documented example is found");
+    assert_eq!(owned.len(), 12, "every documented example is found");
     fs.extend(owned.iter().map(|(p, c)| (p.as_str(), c.as_str())));
     load(&fs).expect("the documented examples load");
 }
@@ -1534,5 +1539,45 @@ fn a_views_merged_source_arrives_whole() {
                 expr: text("sum(amount)"),
             }],
         }]
+    );
+}
+
+/// A setting's file declares it and gives its first value; a setting is
+/// declared once, and its type names a value type of the bundle.
+#[test]
+fn a_setting_is_declared_with_its_first_value() {
+    let vat = (
+        "settings/vat_rate.yaml",
+        "key: vat_rate\ntype: { kind: decimal }\nunit: fraction\ngroup: operator\nvalue: \"0.19\"\n",
+    );
+    let bundle = load(&[vat]).expect("loads");
+    let Some(Declaration::Setting(s)) = bundle.declarations.first() else {
+        panic!("a setting: {:?}", bundle.declarations);
+    };
+    assert_eq!(
+        (s.key.as_str(), s.group.as_deref(), s.unit.as_deref()),
+        ("vat_rate", Some("operator"), Some("fraction"))
+    );
+    let first = serde_json::to_value(&bundle.settings).expect("serialises");
+    assert_eq!(
+        first,
+        serde_json::json!([{"key": "vat_rate", "value": "0.19"}])
+    );
+    let twice = ("settings/again.yaml", "key: vat_rate\ntype: decimal\n");
+    let refused = load(&[vat, twice]).expect_err("declared twice");
+    assert!(
+        refused.iter().any(|e| e.problem == Problem::DuplicateName),
+        "{refused:?}"
+    );
+    let unknown = (
+        "settings/rate.yaml",
+        "key: rate\ntype: { kind: decimal, value_type: money }\n",
+    );
+    let refused = load(&[unknown]).expect_err("an unknown value type");
+    assert!(
+        refused
+            .iter()
+            .any(|e| e.problem == Problem::UnknownReference),
+        "{refused:?}"
     );
 }

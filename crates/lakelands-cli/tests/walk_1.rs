@@ -49,6 +49,7 @@ fn the_liquidity_bundle_loads_with_every_lane_the_walk_needs() {
             Declaration::Verb(v) => format!("verb {}", v.name),
             Declaration::Trigger(t) => format!("trigger {}", t.name),
             Declaration::ObjectSet(o) => format!("object_set {}", o.name),
+            other => format!("{other:?}"),
         })
         .collect();
     assert_eq!(

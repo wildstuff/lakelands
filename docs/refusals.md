@@ -30,6 +30,7 @@ What a declared name names.
 | `constraint` | — | constraint | A type's constraint. |
 | `object_set` | — | object set | An object set. |
 | `function` | — | function | A function. |
+| `setting` | — | setting | A host's setting. |
 | `backing` | — | backing | A function's backing. |
 | `aging_rule` | — | aging rule | An aging rule. |
 | `group` | — | group | An aggregate's group key. |
@@ -575,6 +576,10 @@ What a refusal is about.
 | `setting_index_shape` | `type` (TypeName) | it holds an array of field names of `{type}`, or null for no index | An index setting that is no list. |
 | `setting_kept_holds` | — | it holds `true` for a view that is kept, or `false` | A `view_kept` setting that holds no boolean. |
 | `setting_unlisted` | `prefix` (String) | keys under `{prefix}.` are the store's own settings, and this is none of them | A key under the prefix of the store's own settings that names none of them. |
+| `setting_store_key` | `prefix` (String) | keys under `{prefix}` are the store's own settings; a host declares a key of its own | A host's setting declared under a key the store reads, or under the prefix of one. |
+| `setting_group_stamped` | — | the store writes a setting's group from its declaration; leave `group` out | A write of `sys.setting` naming a group other than the one the store stamps from the setting's declaration. |
+| `setting_store_group` | — | the group `store` holds the store's own settings; a host's setting is in a group of its own | A host's setting declared into the store's own group. |
+| `setting_reference` | — | a setting holds no reference; keep the record's key as `text` | A host's setting declared to hold a reference, whose record nothing would hold to it. |
 | `setting_weights_shape` | — | it holds an object of `fields` (vector fields and their weights) and `text_weight`, one at least, or null | A `search_weights` setting of the wrong shape. |
 | `vector_index_at_read` | `field` (FieldName) | `{field}` is computed at the read; a vector index keeps stored values | A vector index of a field computed at the read. |
 | `vector_index_kind` | `field` (FieldName), `kind` (StorageKind) | `{field}` is of kind {kind}; a vector index keeps vector fields | A vector index of a field that is no vector. |

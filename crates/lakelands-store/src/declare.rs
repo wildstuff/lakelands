@@ -42,7 +42,7 @@ use lakelands_api::ontology::{
     StorageKind, TypeDecl, ValueTypeDecl, VerbEffect, VerbScope, ViewDecl, lands_in_the_fold,
 };
 use lakelands_api::tools::{NameProblem, name_problems};
-use lakelands_api::write::{Carrier, Declaration, ObjectSetDecl};
+use lakelands_api::write::{Carrier, Declaration, ObjectSetDecl, SettingDecl};
 use lakelands_api::{Error, FieldName, Refusal, RelationName, Result, TypeName, VerbName};
 use lakelands_core::expr::{Place as Eval, check, parse};
 use lakelands_core::rights::is_system;
@@ -1832,9 +1832,38 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 }
             }
         }
+        Declaration::Setting(s) => setting_decl(o, s)?,
+        _ => {}
     }
     reads_its_type(o, d)?;
     tool_names(o, d)
+}
+
+/// A host's setting: a key of its own, never one the store reads or one
+/// under such a key's prefix; a group of its own, never the store's; and a
+/// type a field could hold, but a reference, whose record nothing would
+/// hold to it (063, extended).
+fn setting_decl(o: &Ontology, s: &SettingDecl) -> Result<()> {
+    use lakelands_api::settings::{STORE_GROUP, lake_setting, unlisted};
+    let on = [Place::Setting { key: s.key.clone() }];
+    let store = lake_setting(&s.key)
+        .map(|(l, _)| l.key)
+        .or_else(|| unlisted(&s.key));
+    if let Some(prefix) = store {
+        let prefix = prefix.to_owned();
+        return Err(invalid(at(&on, Case::SettingStoreKey { prefix })));
+    }
+    if s.group.as_deref() == Some(STORE_GROUP) {
+        return Err(invalid(at(&on, Case::SettingStoreGroup)));
+    }
+    if s.ty.kind == StorageKind::Reference {
+        return Err(invalid(at(&on, Case::SettingReference)));
+    }
+    let value = FieldDecl {
+        ty: s.ty.clone(),
+        ..FieldDecl::of("value", s.ty.kind)
+    };
+    field_type(o, &on, &value, &TypeName::from(""), None)
 }
 
 /// Refuses `d` where the lake `o` with it declared has a problem among its

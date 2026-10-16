@@ -45,6 +45,7 @@ mod graph_steps;
 mod grid;
 mod hidden_readers;
 mod host_cause;
+mod host_settings;
 mod ingest;
 mod initial;
 mod judged;
@@ -645,6 +646,8 @@ pub const ALL: &[Check] = &[
     settings::SETTING_AS_OF_THE_WRITE,
     settings::VIEW_KEPT_HOLDS_A_BOOLEAN,
     settings::SETTINGS_TOLD,
+    host_settings::HOST_SETTING_KIND,
+    host_settings::HOST_SETTING_GROUP,
     feed::LIMIT_ZERO_IS_ONE,
     feed::MADE,
     feed::BY_KEY,

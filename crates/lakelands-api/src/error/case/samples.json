@@ -1511,6 +1511,19 @@
    "prefix": "s"
   },
   {
+   "code": "setting_store_key",
+   "prefix": "s"
+  },
+  {
+   "code": "setting_group_stamped"
+  },
+  {
+   "code": "setting_store_group"
+  },
+  {
+   "code": "setting_reference"
+  },
+  {
    "code": "setting_weights_shape"
   },
   {

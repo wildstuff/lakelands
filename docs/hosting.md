@@ -191,7 +191,8 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   withdrawn. See `docs/decisions/004-the-change-feed-is-the-log.md`.
 - **`SystemVocabulary`.** The host registers its own `sys.*` types and
   says which lakes may hold them; each time a writer opens a lake, the
-  store declares the allowed types it does not hold yet.
+  store declares the allowed types it does not hold yet, and its own
+  `sys.*` types again where the lake holds an older form of them.
   Lakelands reserves only the types its own fold reads; today those are
   `sys.setting` and `sys.aging_rule`, and the other two are reserved
   ahead of their readers. See `docs/decisions/003-reservation-by-namespace.md`.
@@ -204,7 +205,11 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   bindings apart; `lakelands settings` shows
   their values for a lake. A key under the prefix of one of the store's
   own settings that names none of them is refused, naming the prefix
-  (`docs/decisions/063-every-setting-is-in-one-list.md`).
+  (`docs/decisions/063-every-setting-is-in-one-list.md`). A host
+  declares its own settings in the lake (`{"declare": "setting", ...}`,
+  or a bundle's `settings/` lane): each write of one is judged by its
+  declared kind, and the store stamps its `group`, which a grant's
+  `only` on `sys.setting` names to say who writes it.
   The aging rules run when the host calls `LakeStore::age(today)`, once
   a day, with the date (`docs/decisions/036-aging-runs-by-date-once.md`);
   `lakelands age --today <YYYY-MM-DD>` is the same call from the CLI, and

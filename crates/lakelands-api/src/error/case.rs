@@ -527,6 +527,8 @@ named! {
         ObjectSet = "object_set" => "object set",
         /// A function.
         Function = "function" => "function",
+        /// A host's setting.
+        Setting = "setting" => "setting",
         /// A function's backing.
         Backing = "backing" => "backing",
         /// An aging rule.
@@ -1445,6 +1447,17 @@ catalog! {
         /// A key under the prefix of the store's own settings that names
         /// none of them.
         SettingUnlisted { prefix: String } => "keys under `{prefix}.` are the store's own settings, and this is none of them",
+        /// A host's setting declared under a key the store reads, or
+        /// under the prefix of one.
+        SettingStoreKey { prefix: String } => "keys under `{prefix}` are the store's own settings; a host declares a key of its own",
+        /// A write of `sys.setting` naming a group other than the one the
+        /// store stamps from the setting's declaration.
+        SettingGroupStamped => "the store writes a setting's group from its declaration; leave `group` out",
+        /// A host's setting declared into the store's own group.
+        SettingStoreGroup => "the group `store` holds the store's own settings; a host's setting is in a group of its own",
+        /// A host's setting declared to hold a reference, whose record
+        /// nothing would hold to it.
+        SettingReference => "a setting holds no reference; keep the record's key as `text`",
         /// A `search_weights` setting of the wrong shape.
         SettingWeightsShape => "it holds an object of `fields` (vector fields and their weights) and `text_weight`, one at least, or null",
         /// A vector index of a field computed at the read.

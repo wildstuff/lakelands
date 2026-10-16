@@ -347,6 +347,17 @@ interface types {
         description: option<string>,
     }
 
+    /// A host's own setting: every write of its key is judged as a write
+    /// of a field of its type, and its group is what a grant's `only` on
+    /// `sys.setting` names.
+    record setting-decl {
+        key: string,
+        %type: field-type,
+        unit: option<string>,
+        description: option<string>,
+        group: option<string>,
+    }
+
     variant declaration {
         %type(type-decl),
         value-type(value-type-decl),
@@ -354,6 +365,7 @@ interface types {
         trigger(trigger-decl),
         object-set(object-set-decl),
         function(function-decl),
+        setting(setting-decl),
     }
 
     /// What `recompute` names.
@@ -678,7 +690,7 @@ interface types {
     }
 
     /// A declaration's kind. A later kind is an addition.
-    enum declaration-kind { %type, value-type, verb, trigger, object-set, function }
+    enum declaration-kind { %type, value-type, verb, trigger, object-set, function, setting }
 
     /// A declaration sent to `declare` or `apply`, as it stands in force
     /// after the call: its version, the position it has stood from, and
@@ -1102,6 +1114,9 @@ interface types {
         key: string,
         value: option<json>,
         default: json,
+        /// A host's setting's declaration, told to a holder of the schema
+        /// grant and to one who may write it.
+        declared: option<setting-decl>,
     }
 
     record lake-description {

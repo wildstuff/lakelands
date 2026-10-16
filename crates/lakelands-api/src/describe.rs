@@ -68,6 +68,10 @@ pub struct SettingValue {
     pub value: Option<crate::Value>,
     /// Its value where none is held.
     pub default: crate::Value,
+    /// A host's setting's declaration: its kind, unit, meaning and group,
+    /// told to a holder of `schema` and to one who may write it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared: Option<crate::write::SettingDecl>,
 }
 
 /// Rights of the principal beyond any one type.

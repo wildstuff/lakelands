@@ -17,7 +17,7 @@ use lakelands_api::record::Patch;
 use lakelands_api::tools::{Door, ToolSpec};
 use lakelands_api::write::{
     Declaration, FunctionDecl, Migration, ObjectSetDecl, ProposalFilter, ProposedWrite,
-    ValueTypeMigration, WriteOpts,
+    SettingDecl, ValueTypeMigration, WriteOpts,
 };
 use lakelands_api::{Catalog, Principal};
 use serde::Deserialize;
@@ -123,7 +123,9 @@ fn in_declaration(v: &Value, at: String) -> Option<(String, Said)> {
             if let Some(Value::String(kind)) = m.get("declare") {
                 let mut members = m.clone();
                 members.remove("declare");
-                let name = m.get("name").and_then(Value::as_str).map(str::to_owned);
+                // A setting is named by its key.
+                let named = if kind == "setting" { "key" } else { "name" };
+                let name = m.get(named).and_then(Value::as_str).map(str::to_owned);
                 let (what, said) = declared(kind, Value::Object(members))?;
                 return Some((at, said.within(Place::Declaration { what, name })));
             }
@@ -160,6 +162,7 @@ fn declared(kind: &str, members: Value) -> Option<(Naming, Said)> {
         "trigger" => (Naming::Trigger, one::<TriggerDecl>(members)),
         "object_set" => (Naming::ObjectSet, one::<ObjectSetDecl>(members)),
         "function" => (Naming::Function, one::<FunctionDecl>(members)),
+        "setting" => (Naming::Setting, one::<SettingDecl>(members)),
         _ => return None,
     };
     Some((what, said?))

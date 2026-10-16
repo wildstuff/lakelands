@@ -123,19 +123,19 @@ check!(
 
 check!(
     LAKE_14_READ = a_lake_the_release_before_made_is_read_as_it_answered,
-    "054 (lakelands#962): the lake v0.13.1 made through its doors (`docs/log-format/lakes/14/`), in format 14, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; and the walk over its relation with the link's fields; the upgraded lake verifies",
+    "054 (lakelands#962): the lake v0.13.1 made through its doors (`docs/log-format/lakes/14/`), in format 14, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; and the walk over its relation with the link's fields; the upgraded lake verifies; and its `sys.setting`, declared again at the writer's open, holds `group` (063, extended), a store's setting written there stamped `store`",
     given
 );
 
 check!(
     LAKE_15_READ = the_lake_of_format_15_is_read_as_it_answered,
-    "054 (lakelands#962): the lake v0.14.0 made through its doors (`docs/log-format/lakes/15/`), in format 15, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; and the walk over its relation with the link's fields; the lake verifies",
+    "054 (lakelands#962): the lake v0.14.0 made through its doors (`docs/log-format/lakes/15/`), in format 15, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; and the walk over its relation with the link's fields; the lake verifies; and its `sys.setting`, declared again at the writer's open, holds `group` (063, extended), a store's setting written there stamped `store`",
     given
 );
 
 check!(
     LAKE_16_READ = the_lake_of_format_16_is_read_as_it_answered,
-    "054 (lakelands#962): the lake v0.15.0 made through its doors (`docs/log-format/lakes/16/`), in format 16, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; the walk over its relation with the link's fields; and, what format 16 adds (058), its sealed values read whole with the file keyring's file it ships and a forgotten source's values read as erased, each with its provenance; imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies",
+    "054 (lakelands#962): the lake v0.15.0 made through its doors (`docs/log-format/lakes/16/`), in format 16, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; the walk over its relation with the link's fields; and, what format 16 adds (058), its sealed values read whole with the file keyring's file it ships and a forgotten source's values read as erased, each with its provenance; imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies; and its `sys.setting`, declared again at the writer's open, holds `group` (063, extended), a store's setting written there stamped `store`",
     given
 );
 
@@ -189,9 +189,9 @@ async fn kept_lake_answers(store: Store, given: Given, format: u32) -> Held {
         }
         false => Seams::default(),
     };
-    let imported = (given.import)(dir, lake, None, seams).await;
+    let imported = (given.import)(dir, lake, None, seams.clone()).await;
     let imported = imported.map_err(|e| Failure::new(format!("importing the lake: {e}")))?;
-    let copy = imported.store;
+    let (copy, writer) = (imported.store, imported.writer);
     let log = log_events(copy.as_ref()).await?;
     let made = answers["head"].as_u64().unwrap_or(0);
     let tail: Vec<_> = log
@@ -286,6 +286,45 @@ async fn kept_lake_answers(store: Store, given: Given, format: u32) -> Held {
         red.is_empty(),
         "the lake {by} made answers as it did: {}",
         red.join("; ")
+    );
+    settings_grouped(copy, writer, seams, format).await
+}
+
+/// The lake of `format`, older than this release's, holds `sys.setting`
+/// with the `group` its writer's open declared again (063, extended), and
+/// a store's setting written to it is stamped `store`.
+async fn settings_grouped(
+    copy: Store,
+    writer: crate::conformance::Reopen,
+    seams: Seams,
+    format: u32,
+) -> Held {
+    if format >= LOG_FORMAT_VERSION {
+        return Ok(());
+    }
+    let ty = lakelands_api::seam::SETTING_TYPE;
+    let own = owner(copy.as_ref());
+    let cat = crate::conformance::fixture::doors(copy.as_ref());
+    let described = cat.describe(&own, ReadAt::default()).await;
+    let described = described.must("describing the upgraded lake")?.data;
+    let fields: Vec<_> = (described.types.iter())
+        .filter(|t| t.name.as_str() == ty)
+        .flat_map(|t| t.fields.iter().map(|f| f.name.to_string()))
+        .collect();
+    let reopened = writer(copy, seams).await;
+    let reopened = reopened.map_err(|e| Failure::new(format!("opening it for writing: {e}")))?;
+    let l = crate::conformance::fixture::Lake::of(reopened.as_ref());
+    l.set("view_kept.by_state", serde_json::json!(true)).await?;
+    let group = l
+        .read(ty, "view_kept.by_state")
+        .await?
+        .fields
+        .get("group")
+        .cloned();
+    ensure!(
+        fields == ["key", "value", "group"] && group == Some(serde_json::json!("store")),
+        "a writer's open of the lake of format {format} declares `{ty}` again with `group` \
+         ({fields:?}), and a store's setting written to it is stamped `store` ({group:?})"
     );
     Ok(())
 }

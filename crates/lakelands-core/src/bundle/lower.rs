@@ -14,14 +14,16 @@ use lakelands_api::ontology::{
     Assignment, EmbedDecl, FieldDecl, FieldType, Measure, RelationDecl, StorageKind, TriggerDecl,
     TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl, ViewParam, ViewSource,
 };
-use lakelands_api::write::{AnnotationFault, Declaration, FunctionDecl, ObjectSetDecl};
+use lakelands_api::write::{
+    AnnotationFault, Declaration, FunctionDecl, ObjectSetDecl, SettingDecl,
+};
 use lakelands_api::{
     FieldName, ParamName, Patch, RelationName, TriggerName, TypeName, ValueTypeName, VerbName,
 };
 
 use super::doc::{
-    AgingRuleDoc, Cond, FieldDoc, FieldTypeDoc, FunctionDoc, Named, ObjectSetDoc, StrOr,
-    TriggerDoc, TypeDoc, TypeSpec, ValueTypeDoc, VerbDoc,
+    AgingRuleDoc, Cond, FieldDoc, FieldTypeDoc, FunctionDoc, Named, ObjectSetDoc, SettingDoc,
+    StrOr, TriggerDoc, TypeDoc, TypeSpec, ValueTypeDoc, VerbDoc,
 };
 use super::{BundleError, Problem};
 
@@ -591,6 +593,24 @@ pub(super) fn aging_rule(l: &mut Lower<'_>, doc: AgingRuleDoc) -> Patch {
         p.insert("description".into(), d.into());
     }
     p
+}
+
+/// A host's setting, and the fields of the `sys.setting` record that gives
+/// it its first value, where the file gives one.
+pub(super) fn setting(l: &mut Lower<'_>, doc: SettingDoc) -> (SettingDecl, Option<Patch>) {
+    let ty = l.field_type("`type`", doc.ty);
+    let value = doc.value.map(|v| {
+        let key = serde_json::Value::String(doc.key.clone());
+        [("key".into(), key), ("value".into(), v)].into()
+    });
+    let decl = SettingDecl {
+        key: doc.key,
+        ty,
+        unit: doc.unit,
+        description: doc.description,
+        group: doc.group,
+    };
+    (decl, value)
 }
 
 /// A function. An `expr` function (the default backing) carries its

@@ -7,3 +7,4 @@
 # (docs/decisions/056-the-host-surface-changes-by-one-release-of-deprecation.md).
 baseline v0.15.0
 lakelands-api	enum_marked_non_exhaustive	enum Authority
+lakelands-api	enum_marked_non_exhaustive	enum Declaration

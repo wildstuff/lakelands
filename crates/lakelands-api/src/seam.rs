@@ -304,6 +304,9 @@ pub fn setting_type() -> TypeDecl {
         fields: vec![
             field("key", StorageKind::Text),
             field("value", StorageKind::Json),
+            // The group the store stamps from the setting's declaration,
+            // which a grant's `only` names (063, extended).
+            FieldDecl::of("group", StorageKind::Text),
         ],
         field_meta: true,
         description: Some(

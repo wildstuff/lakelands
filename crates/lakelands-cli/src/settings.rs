@@ -129,7 +129,7 @@ pub fn list(
     location: &Location,
     root: &Config,
 ) -> Result<(), Failure> {
-    let mut rows: Vec<(String, Layer, String)> = Vec::new();
+    let mut rows: Vec<(String, &str, String)> = Vec::new();
     let shown = |value: &Value, default: &Value, held: bool| match held && value != default {
         true => format!("{value} (default {default})"),
         false => format!("{value} (default)"),
@@ -139,7 +139,7 @@ pub fn list(
             let default = s.default_value();
             rows.push((
                 format!("{}.<type>", s.key),
-                Layer::Lake,
+                "lake",
                 shown(&default, &default, false),
             ));
         }
@@ -149,17 +149,47 @@ pub fn list(
             let value = t.value.as_ref().unwrap_or(&t.default);
             rows.push((
                 t.key.clone(),
-                Layer::Lake,
+                "lake",
                 shown(value, &t.default, t.value.is_some()),
             ));
         }
     }
     if !lake.may.schema {
-        rows.retain(|(_, layer, _)| *layer != Layer::Lake);
+        rows.retain(|(_, layer, _)| *layer != "lake");
         line(
             out,
             "lake settings are told to a holder of the schema grant",
         )?;
+    }
+    // A host's own settings, with their group, kind and unit, as the lake
+    // tells them to a holder of `schema` and to their writers.
+    for t in &lake.settings {
+        let Some(d) = &t.declared else {
+            continue;
+        };
+        let kind =
+            d.ty.value_type
+                .as_ref()
+                .map_or_else(|| d.ty.kind.to_string(), ToString::to_string);
+        let unit = d
+            .unit
+            .as_deref()
+            .map(|u| format!(", in {u}"))
+            .unwrap_or_default();
+        let group = d
+            .group
+            .as_deref()
+            .map(|g| format!("group {g}, "))
+            .unwrap_or_default();
+        let value = t
+            .value
+            .as_ref()
+            .map_or_else(|| "not set".to_owned(), ToString::to_string);
+        rows.push((
+            t.key.clone(),
+            "host",
+            format!("{value} ({group}{kind}{unit})"),
+        ));
     }
     let tuning = match &location.engine {
         EngineConfig::Sqlite { tuning, .. } => serde_json::to_value(tuning),
@@ -173,37 +203,44 @@ pub fn list(
         ("aging.", serde_json::to_value(&root.aging)),
         ("deliver.", serde_json::to_value(&root.deliver)),
         ("embed.", serde_json::to_value(&root.embed)),
+        ("backings.", serde_json::to_value(&root.backings)),
+        ("mirror.", serde_json::to_value(&root.mirror)),
     ];
     let elsewhere = SETTINGS.iter().filter(|s| s.layer != Layer::Lake);
     for s in elsewhere {
         let Some(value) = member(s, &held) else {
             continue;
         };
-        let section = s.key.split('.').next().unwrap_or(s.key);
+        let section = s.key.rsplit_once('.').map_or(s.key, |(section, _)| section);
         let value = match value {
             Some(v) => shown(&v, &s.default_value(), true),
             None => format!("not configured: lakelands.json has no `{section}`"),
         };
-        rows.push((s.key.to_owned(), s.layer, value));
+        let layer = match s.layer {
+            Layer::Location => "location",
+            _ => "root",
+        };
+        rows.push((s.key.to_owned(), layer, value));
     }
     let width = rows.iter().map(|(k, ..)| k.len()).max().unwrap_or(0);
     for (key, layer, value) in rows {
-        let layer = format!("{layer:?}").to_lowercase();
         line(out, format!("{key:width$}  {layer:8}  {value}"))?;
     }
     Ok(())
 }
 
 /// The value of the location's or root's setting `s` in `held`, by its
-/// key's prefix: `None` where the engine keeps no such member, and
-/// `Some(None)` where the root has no such section.
+/// key's prefix and the path after it: `None` where the engine keeps no
+/// such member, and `Some(None)` where the root has no such section.
 fn member(s: &Setting, held: &[(&str, serde_json::Result<Value>)]) -> Option<Option<Value>> {
     let (rest, of) = held
         .iter()
         .find_map(|(p, v)| Some((s.key.strip_prefix(p)?, v)))?;
-    match of.as_ref().ok()? {
-        Value::Null if s.layer == Layer::Root => Some(None),
-        v => v.get(rest).cloned().map(Some),
+    let path = format!("/{}", rest.replace('.', "/"));
+    match (of.as_ref().ok()?.pointer(&path), s.layer) {
+        (Some(v), _) => Some(Some(v.clone())),
+        (None, Layer::Root) => Some(None),
+        (None, _) => None,
     }
 }
 

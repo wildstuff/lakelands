@@ -2101,6 +2101,31 @@ fn settings_lists_every_setting_and_sets_only_the_lake_s() {
         ok(&unset, "retired `sort_index.invoice` at position 9\n");
         let listed = sh.run(&["settings"]);
         assert!(!listed.out.contains("sort_index.invoice"), "{}", listed.out);
+
+        // A configured section is read member by member, at each one's
+        // whole path.
+        let config = r#"{"lakelands": 1, "owner": "owner",
+            "backings": {"http": {"hosts": ["geo.example"], "timeout_secs": 3}},
+            "mirror": {"connections": [], "batch": 7}}"#;
+        fs::write(sh.root.join("lakelands.json"), config).unwrap();
+        let listed = sh.run(&["settings"]);
+        let rows: Vec<String> = (listed.out.lines())
+            .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect();
+        for want in [
+            "backings.http.timeout_secs root 3 (default 10)",
+            "backings.http.max_reply_bytes root 1048576 (default)",
+            "backings.exec.timeout_secs root not configured: lakelands.json has no `backings.exec`",
+            "mirror.poll_millis root 1000 (default)",
+            "mirror.batch root 7 (default 100)",
+        ] {
+            assert!(
+                rows.iter().any(|r| r == want),
+                "`{want}` in {}{}",
+                listed.out,
+                listed.err
+            );
+        }
     }
 }
 
@@ -2142,4 +2167,67 @@ embed.send_dimensions                   root      not configured: lakelands.json
 embed.max_batch                         root      not configured: lakelands.json has no `embed`
 embed.timeout_secs                      root      not configured: lakelands.json has no `embed`
 embed.max_reply_bytes                   root      not configured: lakelands.json has no `embed`
+backings.http.timeout_secs              root      not configured: lakelands.json has no `backings.http`
+backings.http.max_reply_bytes           root      not configured: lakelands.json has no `backings.http`
+backings.exec.timeout_secs              root      not configured: lakelands.json has no `backings.exec`
+backings.exec.max_output_bytes          root      not configured: lakelands.json has no `backings.exec`
+mirror.poll_millis                      root      not configured: lakelands.json has no `mirror`
+mirror.batch                            root      not configured: lakelands.json has no `mirror`
 ";
+
+/// A bundle declares a host's setting and gives its first value in one
+/// `apply`; applied again, it keeps the value written since. `settings`
+/// lists it with its group, kind and unit, and `set` judges it by its kind.
+#[test]
+fn a_bundle_declares_a_setting_and_gives_its_first_value() {
+    for backend in BACKENDS {
+        let sh = Shell::on("host-setting", backend);
+        sh.lake();
+        let vat = "key: vat_rate\ntype: { kind: decimal }\nunit: fraction\ngroup: operator\nvalue: \"0.19\"\n";
+        let bundle = sh.bundle("vat", &[("settings/vat_rate.yaml", vat)]);
+        let first = sh.run(&["apply", &bundle]);
+        assert_eq!(first.code, 0, "{}", first.err);
+        assert!(
+            first
+                .out
+                .contains("setting `vat_rate` given its first value"),
+            "{}",
+            first.out
+        );
+        ok(
+            &sh.run(&["settings", "set", "vat_rate", "\"0.2\""]),
+            "set `vat_rate` to \"0.2\" at position 6\n",
+        );
+        let again = sh.run(&["apply", &bundle]);
+        assert!(
+            again
+                .out
+                .contains("setting `vat_rate` holds a value already, kept"),
+            "{}",
+            again.out
+        );
+        let bad = sh.run(&["settings", "set", "vat_rate", "19%"]);
+        assert!(bad.code == 1 && bad.err.contains("`value`"), "{}", bad.err);
+        let listed = sh.run(&["settings"]);
+        assert!(
+            listed.out.lines().any(|l| l.starts_with("vat_rate ")
+                && l.contains(" host ")
+                && l.ends_with("\"0.2\" (group operator, decimal, in fraction)")),
+            "{}",
+            listed.out
+        );
+        // Unset since, it is not given its first value again.
+        ok(
+            &sh.run(&["settings", "unset", "vat_rate"]),
+            "retired `vat_rate` at position 7\n",
+        );
+        let third = sh.run(&["apply", &bundle]);
+        assert!(
+            third
+                .out
+                .contains("setting `vat_rate` was unset since, kept unset"),
+            "{}",
+            third.out
+        );
+    }
+}
