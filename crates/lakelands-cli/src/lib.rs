@@ -8,6 +8,8 @@
 //! no command enum and no layer between the command and the catalog.
 //! `import` makes a lake from an export, through `lakelands_store::import`
 //! over the same engines.
+//! `settings` shows every listed setting with its value for a lake, and
+//! writes a lake setting through the catalog.
 //!
 //! Opening a lake is one function, [`open_store`], and [`run`] takes it
 //! as a parameter so that tests can pass another. `open_store` opens a
@@ -46,10 +48,11 @@ pub mod example;
 pub mod mirror;
 mod orders;
 mod root;
+mod settings;
 pub mod ticker;
 use lakelands_server::say;
 
-pub use root::{CONFIG, Config};
+pub use root::{CONFIG, Config, KeysConfig};
 pub use say::Failure;
 
 /// A lake being opened.
@@ -347,6 +350,28 @@ fn command() -> Command {
                 ),
         )
         .subcommand(
+            Command::new("settings")
+                .about("Show every setting with its value for the lake; set or unset a lake setting")
+                .long_about(
+                    "Show every setting with its value for the lake, kept in the lake, its location or \
+                     the server's configuration (`docs/settings.md`); it only reads, beside a running \
+                     serve. `set` and `unset` write a lake setting, judged as any write of it is.",
+                )
+                .subcommand(
+                    Command::new("set")
+                        .about("Set a lake setting")
+                        .arg(Arg::new("key").value_name("KEY").required(true).help("The setting's key"))
+                        .arg(Arg::new("value").value_name("VALUE").required(true).help("Its value, as JSON; any other text is taken as a text"))
+                        .arg(Arg::new("type").long("type").value_name("TYPE").help("Set it for this type: the key `<KEY>.<TYPE>`")),
+                )
+                .subcommand(
+                    Command::new("unset")
+                        .about("Retire a lake setting, so it reads its default again")
+                        .arg(Arg::new("key").value_name("KEY").required(true).help("The setting's key"))
+                        .arg(Arg::new("type").long("type").value_name("TYPE").help("Retire it for this type: the key `<KEY>.<TYPE>`")),
+                ),
+        )
+        .subcommand(
             Command::new("serve")
                 .about("Serve the lake to agents")
                 .arg(Arg::new("mcp").long("mcp").action(ArgAction::SetTrue).help("Serve over the Model Context Protocol")),
@@ -355,8 +380,9 @@ fn command() -> Command {
 
 /// Run one command line. Output goes to `out`, failures to `err`; the
 /// answer is the process's exit status: 0 done, 1 refused or failed,
-/// 2 the command line was not understood. `verify` answers its own:
-/// 0 the log holds, 1 it is damaged, 3 it could not be checked.
+/// 2 the command line was not understood, or `settings` was asked to
+/// write a setting kept in a file. `verify` answers its own: 0 the log
+/// holds, 1 it is damaged, 3 it could not be checked.
 pub async fn run<I, T>(args: I, out: &mut dyn Write, err: &mut dyn Write, open: &Opener<'_>) -> u8
 where
     I: IntoIterator<Item = T>,
@@ -376,6 +402,16 @@ where
     };
     if m.subcommand_name() == Some("verify") {
         return verify(&m, out, err, open).await;
+    }
+    let lake = |m: &ArgMatches| {
+        let root = PathBuf::from(m.get_one::<String>("root").map_or(".", String::as_str));
+        let named = m.subcommand()?.1.get_one::<String>("lake").cloned();
+        let root = root::Root::open(&root).ok()?;
+        Some(root.location(named.as_deref()).ok()?.lake.to_string())
+    };
+    if let Some(f) = settings::elsewhere(&m, lake(&m)) {
+        let _ = write!(err, "{f}");
+        return 2;
     }
     match dispatch(&m, out, open).await {
         Ok(()) => 0,
@@ -461,6 +497,7 @@ async fn dispatch(
 
     let root = root::Root::open(&root_dir)?;
     let location = root.location(text(sub, "lake").as_deref())?;
+    let listed = location.clone();
     // `upgrade` reads the log's ends first, to say what it does; with
     // `--check` it opens nothing (`docs/log-format.md` §6).
     if name == "upgrade" {
@@ -478,7 +515,10 @@ async fn dispatch(
     // projection of another layout opens only so.
     let store = if name == "rebuild" {
         open(location, OpenMode::Rebuild, root.seams()).await?
-    } else if name == "feed" || name == "export" {
+    } else if name == "feed"
+        || name == "export"
+        || (name == "settings" && sub.subcommand().is_none())
+    {
         match open(location.clone(), OpenMode::Read, root.seams()).await {
             Ok(store) => store,
             Err(e) if unmade(&e) => open(location, OpenMode::Create, root.seams()).await?,
@@ -544,6 +584,17 @@ async fn dispatch(
         "export" => {
             commands::export(out, &store, Path::new(&text(sub, "to").unwrap_or_default())).await
         }
+        "settings" => match sub.subcommand() {
+            Some((change, of)) => {
+                let key = settings::key_of(of);
+                let raw = (change == "set").then(|| text(of, "value").unwrap_or_default());
+                settings::change(out, catalog.as_ref(), &who, &key, raw.as_deref()).await
+            }
+            None => {
+                let lake = catalog.describe(&who, Default::default()).await?.data;
+                settings::list(out, &lake, &listed, &root.config)
+            }
+        },
         "serve" => serve(&root, store, who, open).await,
         other => unreachable!("clap knows no command `{other}`"),
     }

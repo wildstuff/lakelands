@@ -1087,6 +1087,16 @@ impl<'a> Reader<'a> {
         for e in lake.verbs.iter_mut().filter_map(|v| v.executor.as_mut()) {
             e.bound = executors.iter().any(|x| x.name() == e.name);
         }
+        if self.who.grants.schema {
+            // A setting of a type it is not shown, or naming a field it
+            // does not read, is told as were the type or the field absent.
+            let shown = |ty: &str| self.sight.ty(&ty.into()).is_ok();
+            let reads = |ty: &str, f: &str| self.sight.reads(&ty.into(), &f.into());
+            let told = lakelands_api::settings::told(&self.shape.settings).into_iter();
+            lake.settings = told
+                .filter_map(|s| lakelands_api::settings::seen(s, &shown, &reads))
+                .collect();
+        }
         lake
     }
 

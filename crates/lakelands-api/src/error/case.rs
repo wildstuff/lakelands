@@ -1442,6 +1442,9 @@ catalog! {
         } => "it holds an array of field names of `{ty}`, or null for no index",
         /// A `view_kept` setting that holds no boolean.
         SettingKeptHolds => "it holds `true` for a view that is kept, or `false`",
+        /// A key under the prefix of the store's own settings that names
+        /// none of them.
+        SettingUnlisted { prefix: String } => "keys under `{prefix}.` are the store's own settings, and this is none of them",
         /// A `search_weights` setting of the wrong shape.
         SettingWeightsShape => "it holds an object of `fields` (vector fields and their weights) and `text_weight`, one at least, or null",
         /// A vector index of a field computed at the read.

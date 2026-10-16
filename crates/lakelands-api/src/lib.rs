@@ -33,6 +33,7 @@ pub mod query;
 pub mod read;
 pub mod record;
 pub mod seam;
+pub mod settings;
 pub mod shape;
 pub mod time;
 pub mod tools;

@@ -1096,6 +1096,14 @@ interface types {
         bound: bool,
     }
 
+    /// A lake setting: each one for the lake, and each one the lake
+    /// holds for a type.
+    record setting-value {
+        key: string,
+        value: option<json>,
+        default: json,
+    }
+
     record lake-description {
         lake: lake-id,
         types: list<type-description>,
@@ -1109,6 +1117,9 @@ interface types {
         functions: list<function-decl>,
         triggers: list<trigger-decl>,
         object-sets: list<object-set-decl>,
+        /// The listed lake settings, told to a holder of the schema
+        /// grant.
+        settings: list<setting-value>,
         may: lake-rights,
     }
 

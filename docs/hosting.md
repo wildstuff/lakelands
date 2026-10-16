@@ -198,6 +198,13 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   A value that must be kept from a reader is not put into a setting:
   any reader's expression reads `setting('<key>')`, whatever its grant
   on `sys.setting` and whether or not the setting is restricted.
+  The settings the store itself reads, with those of a lake's location
+  and of the root's `lakelands.json`, are listed in `docs/settings.md`
+  with what each changes, its default and where it is kept, and the
+  bindings apart; `lakelands settings` shows
+  their values for a lake. A key under the prefix of one of the store's
+  own settings that names none of them is refused, naming the prefix
+  (`docs/decisions/063-every-setting-is-in-one-list.md`).
   The aging rules run when the host calls `LakeStore::age(today)`, once
   a day, with the date (`docs/decisions/036-aging-runs-by-date-once.md`);
   `lakelands age --today <YYYY-MM-DD>` is the same call from the CLI, and

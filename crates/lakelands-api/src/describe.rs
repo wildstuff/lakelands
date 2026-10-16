@@ -48,8 +48,26 @@ pub struct LakeDescription {
     /// The object sets in force, of types the principal sees.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub object_sets: Vec<ObjectSetDecl>,
+    /// The listed lake settings (`crate::settings`), told to a holder of
+    /// `schema`: each one for the lake, and each one the lake holds for a
+    /// type.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub settings: Vec<SettingValue>,
     /// What the principal may do beyond the per-type doors.
     pub may: LakeRights,
+}
+
+/// A lake setting: its key, the value the lake holds, and the value it
+/// has where none is held.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SettingValue {
+    /// The key, `<setting>` or `<setting>.<type>`.
+    pub key: String,
+    /// What the lake holds; `None` where it holds none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<crate::Value>,
+    /// Its value where none is held.
+    pub default: crate::Value,
 }
 
 /// Rights of the principal beyond any one type.
