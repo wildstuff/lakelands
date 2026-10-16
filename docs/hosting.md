@@ -303,7 +303,16 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   more for each `checkpoint` that sealed one, not the events the lake
   holds, so a host may open every lake at its start. A damaged index line
   is therefore not found at the open; `verify`, which reads the log,
-  finds it, as does the read that meets it. `index/` is part of the
+  finds it, as does the read that meets it. Neither is a line of the
+  log changed at its own length before the last append, on any engine:
+  the lake opens and is written on (one inside the last append is
+  refused at the open). `lakelands verify` runs it from the command
+  line, beside a `serve`, read-only; for a scheduled check its exit
+  status is 0 when the log holds, 1 when it is damaged (the line names
+  the position where the log lets it), 2 for a command line it does not
+  understand or a range outside the log, and 3 when it could not check
+  (no lake yet, no projection, a memory lake, the database
+  unreachable). `index/` is part of the
   log, not derived data: back it up and restore it with `log/`. A
   segment without its index file, a `projection.db` with no segment
   beside it, and a log whose segments do not follow each other (a

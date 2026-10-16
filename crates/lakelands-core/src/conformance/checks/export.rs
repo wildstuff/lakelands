@@ -78,6 +78,12 @@ check!(
 );
 
 check!(
+    VERIFY_THROUGH = a_verify_reads_no_further_than_it_is_asked,
+    "`LakeStore::verify` (lakelands#1156): a log whose event after the tip is damaged, written in the format before the release's so that its format falls, with one more event after it in the release's, opens to read; `verify` through the tip holds and names it, through the damaged event, and with no end, is refused as `damaged` at its position: an event past the range asked is not read",
+    given
+);
+
+check!(
     PROJECTION_AHEAD = a_projection_folded_past_its_log_opens_only_for_a_rebuild,
     "054 and lakelands#865: a projection folded past its log's tip stands for events the log does not hold. Committed two positions ahead through the engine's seam, the lake is refused as `damaged`, the part the log and the flaw `ends_before` naming the position the projection is folded through, at an open to read, to write and to create, and is left as it was: its tip, that position and its free lease, so the writers appended nothing. An open to rebuild makes the projection from the log as it stands, and the lake answers the record it held",
     given
@@ -1269,6 +1275,76 @@ async fn an_export_holding_an_integer_no_reader_reads_exactly_is_damaged_at_its_
             if held { "be" } else { "not be" }
         );
     }
+    Ok(())
+}
+
+async fn a_verify_reads_no_further_than_it_is_asked(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    use lakelands_api::engine::OpenMode;
+    use lakelands_api::event::{Digest, Event, EventId};
+    use lakelands_api::seam::Seams;
+    let lake = store.lake().clone();
+    let events = crate::conformance::fixture::log_events(store.as_ref()).await?;
+    let taken = |e: &&Event| matches!(e.body, EventBody::LeaseTaken { .. });
+    let (Some(taken), Some(last)) = (events.iter().find(taken), events.last()) else {
+        return Err(Failure::new(
+            "the lake's log holds its writer's `lease_taken`",
+        ));
+    };
+    let (template, known_at, tip) = (taken.clone(), last.known_at, last.position);
+    // Two events after the tip: the first in the format before the
+    // release's, a fall a reader refuses at its position, and the second in
+    // the release's, so the log's end reads as whole on every engine.
+    let lines: crate::conformance::Lines = Box::new(move |(tip, prev), fence| {
+        let event = |position: Position, prev: Digest, v: u32| Event {
+            v,
+            position,
+            id: EventId(format!("{:032x}", position.0)),
+            prev,
+            known_at,
+            fence,
+            body: EventBody::LeaseTaken {
+                fence,
+                holder: "another release".into(),
+            },
+            ..template.clone()
+        };
+        let format = lakelands_api::event::LOG_FORMAT_VERSION;
+        let fallen = event(tip.next(), prev, format - 1);
+        let damaged = crate::conformance::fixture::canonical_line(fallen);
+        let after = event(tip.next().next(), damaged.hash.clone(), format);
+        let after = crate::conformance::fixture::canonical_line(after);
+        (vec![damaged, after], 0)
+    });
+    let c = (given.continued)(Some(store), lake, lines, OpenMode::Read, Seams::default());
+    let c = c
+        .await
+        .map_err(|e| Failure::new(format!("continuing the lake below the store: {e}")))?;
+    let reader = c
+        .opened
+        .map_err(|e| Failure::new(format!("opening the lake to read: {e}")))?;
+    let at = tip.next();
+    let held = reader.verify(None, Some(tip)).await;
+    ensure!(
+        held.as_ref().is_ok_and(|v| v.through == tip),
+        "`verify` through {tip}, before the event at {at} whose format falls, holds and names {tip}; it \
+         answered {held:?}"
+    );
+    for through in [Some(at), None] {
+        let refused = reader.verify(None, through).await;
+        ensure!(
+            matches!(refused.as_ref().err().and_then(Error::situation),
+                Some(Situation::Damaged { position: Some(p), .. }) if *p == at),
+            "`verify` through {through:?} reads the event at {at}, whose format falls, and is \
+             refused as `damaged` there; it answered {refused:?}"
+        );
+    }
+    reader
+        .close()
+        .await
+        .map_err(|e| Failure::new(format!("closing the lake: {e}")))?;
     Ok(())
 }
 

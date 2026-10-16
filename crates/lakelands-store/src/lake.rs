@@ -2231,11 +2231,18 @@ impl Lake {
         // Where a segment after the first begins: behind each sealed one.
         let begins: BTreeSet<Position> = segments.iter().map(|s| s.last.next()).collect();
         let mut last = None;
-        'pages: for page in self.pages(from) {
-            for e in page? {
-                if through.is_some_and(|t| e.position > t) {
-                    break 'pages;
-                }
+        // Page by page, never past `through`: an event after it is not
+        // read, so damage there does not answer for the range asked
+        // (lakelands#1156).
+        let mut at = from;
+        while through.is_none_or(|t| at <= t) {
+            let left = through.map_or(u64::from(PAGE), |t| (t.0 - at.0).saturating_add(1));
+            let page = self.read_events(at, left.min(u64::from(PAGE)) as u32)?;
+            let Some(next) = page.last().map(|e| e.position.next()) else {
+                break;
+            };
+            at = next;
+            for e in page {
                 log::check_link(before.as_ref().map(|(p, h)| (p, h)), &e)?;
                 // No number written as an integer beyond ±(2^53 − 1)
                 // (`docs/log-format.md` §1.2). The seal lets none in; a

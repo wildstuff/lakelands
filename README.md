@@ -201,7 +201,17 @@ lakelands ingest $d/invoices-august.csv --source erp --map $d/invoices.map.json
 lakelands ingest $d/invoices-september.csv --source erp --map $d/invoices.map.json
 lakelands serve --mcp                        # point an MCP client at this command
 # Ask it: which debtors are over their credit limit and more than 30 days overdue?
+lakelands verify                             # every event's hash and every checkpoint, beside the serve
 ```
+
+`lakelands verify` reads the whole log and says whether it holds, or
+the first position where it does not, where the log lets it name one.
+Its exit status is 0 when the log holds, 1 when it is damaged, 2 for a
+command line it does not understand or a range outside the log, and 3
+when it could not check (no lake yet, no projection, a memory lake, the
+database unreachable). A lake's open does not read the whole chain: a
+line of the log changed by hand at its own length, before its last
+append, opens and is written on, and only `verify` finds it.
 
 The agent finds the answer with the lake's generated tools
 (`invoice_find` with an aggregate, `partner_get` with provenance), and
