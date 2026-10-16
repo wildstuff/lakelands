@@ -24,8 +24,8 @@ use crate::read::{Find, Found, Get, ReadAt, Reply};
 use crate::record::{Patch, Record, SourceRecord};
 use crate::seam::ChangeFeed;
 use crate::write::{
-    Committed, Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter,
-    ProposedWrite, Recompute, ValueTypeMigration, ValueTypeReport, WriteOpts,
+    Change, Committed, Declaration, Migration, MigrationReport, Outcome, Plan, Proposal,
+    ProposalFilter, ProposedWrite, Recompute, ValueTypeMigration, ValueTypeReport, WriteOpts,
 };
 
 /// A stream of records, as `ingest` takes it: each from the source it
@@ -161,6 +161,19 @@ pub trait Catalog: Send + Sync {
     /// `decided`.
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome>;
 
+    /// `accept` of a proposed change to the ontology, only where the plan
+    /// of its change made now, as the reviewer is shown it, has the id
+    /// `plan_id`: what the reviewer accepts is what applies. Refused
+    /// `plan_stale` otherwise, and `proposal_plans_nothing` for a proposal
+    /// that changes no declaration
+    /// (`docs/decisions/062-a-change-plans-before-it-acts.md`).
+    async fn accept_planned(
+        &self,
+        who: &Principal,
+        proposal: &ProposalId,
+        plan_id: &str,
+    ) -> Result<Outcome>;
+
     /// Reject a proposal. Nothing is written but the rejection, and the
     /// answer is `Applied` at the rejection's position, with no version.
     async fn reject(
@@ -255,6 +268,18 @@ pub trait Catalog: Send + Sync {
         migration: ValueTypeMigration,
         report_id: &str,
     ) -> Result<Outcome>;
+
+    /// The plan of a change to the ontology: what it would do, in counts
+    /// and the first keys its reader is answered, changing nothing. It is
+    /// the act's own path up to its append, so it refuses what the act
+    /// refuses (`docs/decisions/062-a-change-plans-before-it-acts.md`).
+    async fn plan(&self, who: &Principal, change: Change) -> Result<Reply<Plan>>;
+
+    /// Make a change whose plan the caller was shown: refused `plan_stale`
+    /// where the plan made now, as the caller is shown it, has another id.
+    /// Its outcome carries the plan that applied, as every change to the
+    /// ontology's does.
+    async fn enact(&self, who: &Principal, change: Change, plan_id: &str) -> Result<Outcome>;
 
     /// Feed the lake from a source. The call's source is the default; a
     /// record may name its own. Records are chunked into group-commit

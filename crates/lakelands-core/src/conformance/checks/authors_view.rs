@@ -868,7 +868,14 @@ async fn a_trigger_or_a_verb_under_a_name_its_author_is_not_shown_is_not_granted
     let before = s.head().await.must("reading the head")?;
     let was = stood(l.describe().await?);
     let proposed = |who: &Principal, declarations: Vec<Declaration>| {
-        let (who, cat, write) = (who.clone(), &l.cat, ProposedWrite::Declare { declarations });
+        let (who, cat, write) = (
+            who.clone(),
+            &l.cat,
+            ProposedWrite::Declare {
+                declarations,
+                plan: None,
+            },
+        );
         async move { cat.propose(&who, write, "mine".into()).await }
     };
     let mut told = Vec::new();
@@ -1026,7 +1033,15 @@ async fn a_tool_name_taken_by_what_its_author_is_not_shown_is_not_granted(store:
         let (who, cat) = (who.clone(), &l.cat);
         async move { cat.propose(&who, write, "mine".into()).await }
     };
-    let proposed = |who, declarations| propose(who, ProposedWrite::Declare { declarations });
+    let proposed = |who, declarations| {
+        propose(
+            who,
+            ProposedWrite::Declare {
+                declarations,
+                plan: None,
+            },
+        )
+    };
     let moved = |to: &[(&str, &str)]| ProposedWrite::Migrate {
         migration: Box::new(migration(shape("desk", to))),
         report: Default::default(),
@@ -1053,6 +1068,7 @@ async fn a_tool_name_taken_by_what_its_author_is_not_shown_is_not_granted(store:
     for write in [
         ProposedWrite::Declare {
             declarations: vec![ty("box", &[])],
+            plan: None,
         },
         moved(&[("holds", "vault"), ("near", "desk")]),
     ] {
@@ -1197,7 +1213,10 @@ async fn no_door_leaves_a_lake_with_a_tool_name_problem(store: Store) -> Held {
         let (who, cat) = (l.own.clone(), &l.cat);
         async move { cat.propose(&who, write, "mine".into()).await }
     };
-    let set = |declarations| ProposedWrite::Declare { declarations };
+    let set = |declarations| ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     // `desk` is near `vault`; a relation `far` of it is proposed while its
     // link type's doors are free, then a type takes their names. A
     // relation of 48 characters has link doors, and its link type's doors
@@ -1373,6 +1392,7 @@ async fn a_bundle_takes_no_place_declared_since_it_was_proposed(store: Store) ->
     for d in &offered {
         let write = ProposedWrite::Declare {
             declarations: vec![d.clone()],
+            plan: None,
         };
         match l.cat.propose(&carol, write, "mine".into()).await {
             Ok(Outcome::Proposed { proposal, .. }) => offers.push(proposal),
@@ -1482,6 +1502,7 @@ async fn a_bundle_takes_no_place_declared_since_it_was_proposed(store: Store) ->
     let peek = write_verb("peek", "pad", "state", "'p'");
     let write = ProposedWrite::Declare {
         declarations: vec![peek],
+        plan: None,
     };
     let offer = match l.cat.propose(&carol, write, "mine".into()).await {
         Ok(Outcome::Proposed { proposal, .. }) => proposal,
@@ -1541,6 +1562,7 @@ async fn a_link_type_its_author_is_not_shown_takes_no_field_from_it(store: Store
         let d = Declaration::Type(deal(json!([t(field)])));
         let write = ProposedWrite::Declare {
             declarations: vec![d.clone()],
+            plan: None,
         };
         let moved = migration(deal(json!([t(field)])));
         told.push(declare(&author, json!([t(field)])).await.err());

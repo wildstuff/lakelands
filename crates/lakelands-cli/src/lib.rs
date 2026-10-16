@@ -215,6 +215,12 @@ fn command() -> Command {
         .subcommand(
             Command::new("apply")
                 .about("Declare the types, verbs and rules of an ontology bundle in the lake")
+                .arg(Arg::new("bundle").value_name("DIR").required(true).help("The bundle's directory"))
+                .arg(Arg::new("plan").long("plan").value_name("ID").help("Apply it only if its plan is still this one (the id `lakelands plan` printed)")),
+        )
+        .subcommand(
+            Command::new("plan")
+                .about("Tell what applying an ontology bundle would do to the lake's records, changing nothing")
                 .arg(Arg::new("bundle").value_name("DIR").required(true).help("The bundle's directory")),
         )
         .subcommand(
@@ -533,13 +539,13 @@ async fn dispatch(
     let catalog = store.catalog(WriteContext::default());
     match name {
         "apply" => {
-            commands::apply(
-                out,
-                catalog.as_ref(),
-                &who,
-                Path::new(&text(sub, "bundle").unwrap_or_default()),
-            )
-            .await
+            let (dir, id) = (text(sub, "bundle").unwrap_or_default(), text(sub, "plan"));
+            let at = (Path::new(&dir), id.as_deref());
+            commands::apply(out, catalog.as_ref(), &who, at).await
+        }
+        "plan" => {
+            let dir = text(sub, "bundle").unwrap_or_default();
+            commands::plan(out, catalog.as_ref(), &who, Path::new(&dir)).await
         }
         "recompute" => {
             let (function, ty) = (text(sub, "function"), text(sub, "type"));

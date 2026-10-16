@@ -368,6 +368,29 @@ impl Catalog for Doors {
     ) -> Result<Outcome> {
         self.inner.migrate_apply(who, migration, report_id).await
     }
+    async fn accept_planned(
+        &self,
+        who: &Principal,
+        proposal: &ProposalId,
+        plan_id: &str,
+    ) -> Result<Outcome> {
+        self.inner.accept_planned(who, proposal, plan_id).await
+    }
+    async fn plan(
+        &self,
+        who: &Principal,
+        change: lakelands_api::write::Change,
+    ) -> Result<Reply<lakelands_api::write::Plan>> {
+        self.inner.plan(who, change).await
+    }
+    async fn enact(
+        &self,
+        who: &Principal,
+        change: lakelands_api::write::Change,
+        plan_id: &str,
+    ) -> Result<Outcome> {
+        self.inner.enact(who, change, plan_id).await
+    }
     async fn migrate_value_type(
         &self,
         who: &Principal,

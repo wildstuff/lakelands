@@ -82,6 +82,7 @@ key may hold any character.
 | `GET …/proposals` | proposals | query: `state`, `type`, `kind`, `limit`, `order_by`, `cursor`, `as_of`, `valid_at` |
 | `POST …/proposals` | propose | body: `write` (`upsert`, `retire`, `call`, `declare` with `declarations`, or `migrate` with `migration`), `why` |
 | `POST …/proposals/<id>/accept` | accept | — |
+| `POST …/proposals/<id>/accept_planned` | accept a proposed change to the ontology against the plan of its change at the head | body: `plan_id` |
 | `POST …/proposals/<id>/reject` | reject | body: `reason` (optional) |
 | `POST …/schema/declare_type` | declare a type | body: `type` |
 | `POST …/schema/declare` | declare anything that does not reshape stored records | body: `declaration` |
@@ -90,6 +91,8 @@ key may hold any character.
 | `POST …/schema/recompute` | compute again what a declaration in force computes | body: `function` or `type` |
 | `POST …/schema/migrate` | a migration's preflight | body: `to`, `renames` and `relation_renames`, or `value_type` |
 | `POST …/schema/migrate/apply` | apply a migration | body: `to`, `renames` and `relation_renames`, or `value_type`; and `report_id` |
+| `POST …/schema/plan` | a change's plan: what it would do, changing nothing | body: `change` (`declare` with `declarations`, `add_field` with `type` and `field`, `recompute` with `what`, `migrate` or `migrate_value_type` with `migration`) and its members |
+| `POST …/schema/enact` | make a change against its plan | body: as `…/schema/plan`, and `plan_id` |
 | `POST …/ingest/<source>` | ingest | body: NDJSON, one record per line |
 | `GET …/feed` | the change feed | query: `from`, `kinds`, `types`, `key` (repeated); `Last-Event-ID` |
 
@@ -141,6 +144,12 @@ one in `sys.` or `lakelands.` as `reserved` (403), naming the key.
 declare verbs, triggers, object sets and the rest. Each body member is
 the declaration as the contract writes it, and a member the route does
 not take is refused.
+
+`schema/plan` and `schema/enact` are REST's too; MCP's tools that change
+the ontology take `plan` and `plan_id` instead. A plan, and an answer
+that carries one (a change's outcome, a proposal's, a listed proposal),
+comes with `said`: a sentence per finding, for the person who decides
+on it (`docs/decisions/062-a-change-plans-before-it-acts.md`).
 
 A trigger's `max_depth` caps the reactions to its firings: writes a
 host makes naming a firing as their cause

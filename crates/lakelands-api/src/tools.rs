@@ -123,6 +123,13 @@ pub enum Door {
     /// `migrate`: the preflight, or with a `report_id` argument the
     /// `migrate_apply` door.
     Migrate,
+    /// `plan`: a change's plan. Served over REST only; the tools that make
+    /// a change take `plan` and `plan_id` instead
+    /// (`docs/decisions/062-a-change-plans-before-it-acts.md`).
+    Plan,
+    /// `enact`: a change made against its plan. Served over REST only, as
+    /// `plan` is.
+    Enact,
 }
 
 /// One tool: its name, what it is for, its schemas, and its door.
@@ -563,6 +570,8 @@ fn outcome_schema() -> Value {
                         "items": {"type": "array", "items": {"type": "string"},
                                   "minItems": 2, "maxItems": 2},
                         "description": "For a migration: each field it renamed, old name and new."},
+            "plan": {"type": "object",
+                      "description": "For a change to the ontology: the plan that applied (see `plan`)."},
             "declared": {"type": "array",
                          "items": {"type": "object",
                                    "properties": {
@@ -581,6 +590,50 @@ fn outcome_schema() -> Value {
         "required": ["outcome", "position"],
     })
 }
+
+/// What a change's plan says, as `plan: true` answers it in a reply's
+/// `data` (062).
+fn plan_schema() -> Value {
+    let count = |what: &str| {
+        json!({"type": "array", "description": what, "items": {"type": "object",
+            "properties": {"field": {"type": "string"}, "records": {"type": "integer"},
+                           "sample_keys": {"type": "array", "items": {"type": "string"}}}}})
+    };
+    reply_schema(json!({
+        "type": "object",
+        "properties": {
+            "report_id": {"type": "string",
+                          "description": "Send it back as `plan_id` to make exactly this change."},
+            "at": {"type": "integer"},
+            "types": {"type": "array", "items": {"type": "object", "properties": {
+                "type": {"type": "string"},
+                "recomputed": {"type": "integer",
+                               "description": "Live records computed again."},
+                "unlive": count("Per reference field: the live records left naming no live record."),
+                "breaches": {"type": "array", "items": {"type": "object"},
+                             "description": "Per constraint: the live records that would break it."},
+            }}},
+            "value_types": {"type": "array", "items": {"type": "object"}},
+            "lossless": {"type": "boolean"},
+        },
+        "required": ["report_id", "at", "lossless"],
+    }))
+}
+
+/// The arguments and the answer of a tool that makes a change to the
+/// ontology: planned first with `plan`, made against its plan with
+/// `plan_id`, or made at once (062).
+fn planned(mut input: Value) -> (Value, Value) {
+    let props = &mut input["properties"];
+    props["plan"] = json!({"type": "boolean",
+        "description": "Answer the change's plan and change nothing."});
+    props["plan_id"] = json!({"type": "string",
+        "description": "Make the change only if its plan is still this one (the plan's `report_id`)."});
+    (input, json!({"anyOf": [outcome_schema(), plan_schema()]}))
+}
+
+/// The sentence a tool that makes a change to the ontology ends with.
+const PLAN_FIRST: &str = " Plan it first: with `plan: true` it answers what the change would do, the records it computes again, those it would leave naming no live record and those that would break a constraint, and changes nothing; then call it again with that plan's `report_id` as `plan_id` to make exactly that change, refused `plan_stale` if the lake moved.";
 
 fn reply_schema(data: Value) -> Value {
     json!({
@@ -1220,9 +1273,12 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
         });
         out.push(ToolSpec {
             name: ACCEPT.into(),
-            description: "Accept a proposal: its write is applied.".into(),
+            description: "Accept a proposal: its write is applied. For a change to the ontology, `plan_id` accepts it only if the plan of its change made now has that id: call the change's own tool with `plan: true` for it. The plan `proposals` lists was made when it was proposed, and its id is not one to send.".into(),
             input_schema: obj(
-                props([("proposal", json!({"type": "string"}))]),
+                props([
+                    ("proposal", json!({"type": "string"})),
+                    ("plan_id", json!({"type": "string"})),
+                ]),
                 &["proposal"],
             ),
             output_schema: outcome_schema(),
@@ -1244,37 +1300,43 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
     }
 
     if lake.may.schema {
+        let (input_schema, output_schema) =
+            planned(obj(props([("type", json!({"type": "object"}))]), &["type"]));
         out.push(ToolSpec {
             name: DECLARE_TYPE.into(),
-            description: "Declare a new type, or revise one without reshaping its records.".into(),
-            input_schema: obj(props([("type", json!({"type": "object"}))]), &["type"]),
-            output_schema: outcome_schema(),
+            description: format!(
+                "Declare a new type, or revise one without reshaping its records.{PLAN_FIRST}"
+            ),
+            input_schema,
+            output_schema,
             door: Door::DeclareType,
         });
+        let (input_schema, output_schema) = planned(obj(
+            props([
+                ("type", names(|_| true)),
+                ("field", json!({"type": "object"})),
+            ]),
+            &["type", "field"],
+        ));
         out.push(ToolSpec {
             name: ADD_FIELD.into(),
-            description: "Add one field to a type.".into(),
-            input_schema: obj(
-                props([
-                    ("type", names(|_| true)),
-                    ("field", json!({"type": "object"})),
-                ]),
-                &["type", "field"],
-            ),
-            output_schema: outcome_schema(),
+            description: format!("Add one field to a type.{PLAN_FIRST}"),
+            input_schema,
+            output_schema,
             door: Door::AddField,
         });
+        let (input_schema, output_schema) = planned(obj(
+            props([
+                ("function", json!({"type": "string"})),
+                ("type", names(|_| true)),
+            ]),
+            &[],
+        ));
         out.push(ToolSpec {
             name: RECOMPUTE.into(),
-            description: "Compute again what a declaration in force computes: name a `function`, or a `type` with a field computed outside the lake. Retries a failed call and makes a field that waits.".into(),
-            input_schema: obj(
-                props([
-                    ("function", json!({"type": "string"})),
-                    ("type", names(|_| true)),
-                ]),
-                &[],
-            ),
-            output_schema: outcome_schema(),
+            description: format!("Compute again what a declaration in force computes: name a `function`, or a `type` with a field computed outside the lake. Retries a failed call and makes a field that waits.{PLAN_FIRST}"),
+            input_schema,
+            output_schema,
             door: Door::Recompute,
         });
         // Old name and new name, for a field or a relation.

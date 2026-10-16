@@ -16,13 +16,13 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     FILLED = a_migration_fills_a_fields_initial_into_the_records_that_hold_none,
-    "050 and 027, extended (lakelands#1023): a migration naming a field in `fill` writes its `initial`, of origin `initial` at the migration's position, into each live record that holds no value for it, a restricted one too and a retired one not, which takes it when written again; its preflight counts them in `filled`, naming only keys its reader is answered, and a field made required with `initial` is lossless with `fill` and refused without; an aging rule then moves the old records as the new; `fill` naming a field `to` does not declare, one without `initial`, one twice, or a renamed field by its old name is refused before a record is read; a trigger whose guard reads the field does not fire at the migration, as for every record a migration converts; and a rebuild and an imported copy answer the values and their origin alike",
+    "050 and 027, extended (lakelands#1023): a migration naming a field in `fill` writes its `initial`, of origin `initial` at the migration's position, into each live record that holds no value for it, a restricted one too and a retired one not, which takes it when written again; its preflight counts them in `filled`, a restricted one only to a holder of `restricted` (062), naming only keys its reader is answered, and a field made required with `initial` is lossless with `fill` and refused without; an aging rule then moves the old records as the new; `fill` naming a field `to` does not declare, one without `initial`, one twice, or a renamed field by its old name is refused before a record is read; a trigger whose guard reads the field does not fire at the migration, as for every record a migration converts; and a rebuild and an imported copy answer the values and their origin alike",
     given
 );
 
 check!(
     FILL_IN_FORCE = a_fill_alone_fills_the_type_in_force,
-    "050 and 027, extended (lakelands#1104): a migration to the type in force that names a field in `fill` fills each live record holding none, through `migrate_apply` and through an accepted proposal alike, with origin `initial` at its position, a record held from its author too, whose preview names only the keys that author is shown; the type's version and schema hash move as a fill inside a changing migration moves them; the same migration again counts no record and its apply appends nothing"
+    "050 and 027, extended (lakelands#1104): a migration to the type in force that names a field in `fill` fills each live record holding none, through `migrate_apply` and through an accepted proposal alike, with origin `initial` at its position, a record held from its author too, whose preview counts and names only the records that author is shown (062); the type's version and schema hash move as a fill inside a changing migration moves them; the same migration again counts no record and its apply appends nothing"
 );
 
 check!(
@@ -676,7 +676,8 @@ async fn a_migration_fills_a_fields_initial_into_the_records_that_hold_none(
         })
         .collect();
     let report = preview(&l, &l.own, filling.clone()).await?;
-    // A reader with `schema` but no `restricted` is told the count, not `t2`.
+    // A reader with `schema` but no `restricted` is told neither `t2` nor
+    // its count (062).
     let grants = Grants {
         schema: true,
         restricted: false,
@@ -693,8 +694,8 @@ async fn a_migration_fills_a_fields_initial_into_the_records_that_hold_none(
     if lossy.lossless
         || !report.lossless
         || filled(&report) != [r#"status 2 [RecordKey("t1"), RecordKey("t2")]"#]
-        || filled(&told) != [r#"status 2 [RecordKey("t1")]"#]
-        || !told.more
+        || filled(&told) != [r#"status 1 [RecordKey("t1")]"#]
+        || told.more
         || blind != [(vec![], vec![])]
     {
         wrong.push(format!(
@@ -888,7 +889,7 @@ async fn a_fill_alone_fills_the_type_in_force(store: Store) -> Held {
         .map(|k| [open(k, "status"), open(k, "size")])
         .concat();
     ensure!(
-        told == r#"[{"field":"status","records":2,"sample_keys":["f1"]}]"#
+        told == r#"[{"field":"status","records":1,"sample_keys":["f1"]}]"#
             && got == want
             && again.filled.iter().all(|f| f.records == 0)
             && unmoved

@@ -408,7 +408,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 21
-< {"declared":[{"appended":true,"kind":"type","name":"vendor","since":21,"version":1}],"outcome":"applied","position":21}
+< {"declared":[{"appended":true,"kind":"type","name":"vendor","since":21,"version":1}],"outcome":"applied","plan":{"at":20,"lossless":true,"report_id":"{report_id}"},"position":21,"said":["The change would leave every stored record as it is."]}
 
 > POST /lakes/finance/schema/add_field
 > authorization: Bearer k-owner
@@ -416,7 +416,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 22
-< {"declared":[{"appended":true,"kind":"type","name":"vendor","since":22,"version":2}],"outcome":"applied","position":22}
+< {"declared":[{"appended":true,"kind":"type","name":"vendor","since":22,"version":2}],"outcome":"applied","plan":{"at":21,"lossless":true,"report_id":"{report_id}"},"position":22,"said":["The change would leave every stored record as it is."]}
 
 > POST /lakes/finance/schema/migrate/apply
 > authorization: Bearer k-owner
@@ -432,7 +432,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 22
-< {"data":{"dropped":[["city",0]],"fields":[],"from_schema_hash":"090f9f437d456f2b56a86f9eb2ebc1ac05fdb615bd5448a851763fa1c739cc92","lossless":true,"records_scanned":0,"report_id":"{report_id}","to_schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","type":"vendor"},"position":22}
+< {"data":{"dropped":[["city",0]],"fields":[],"from_schema_hash":"090f9f437d456f2b56a86f9eb2ebc1ac05fdb615bd5448a851763fa1c739cc92","lossless":true,"recomputed":0,"records_scanned":0,"report_id":"{report_id}","to_schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","type":"vendor"},"position":22}
 
 > POST /lakes/finance/schema/migrate/apply
 > authorization: Bearer k-owner
@@ -440,7 +440,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 23
-< {"outcome":"applied","position":23}
+< {"outcome":"applied","plan":{"at":22,"lossless":true,"report_id":"{report_id}","types":[{"dropped":[["city",0]],"fields":[],"from_schema_hash":"090f9f437d456f2b56a86f9eb2ebc1ac05fdb615bd5448a851763fa1c739cc92","lossless":true,"recomputed":0,"records_scanned":0,"report_id":"{report_id}","to_schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","type":"vendor"}]},"position":23,"said":["The change would leave every stored record as it is."]}
 
 # ingest: NDJSON in, one line per commit window out (windows of two
 # records here). A line that is not a record ends it; what came before is
@@ -536,7 +536,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 30
-< {"declared":[{"appended":true,"kind":"type","name":"contract","since":30,"version":1}],"outcome":"applied","position":30}
+< {"declared":[{"appended":true,"kind":"type","name":"contract","since":30,"version":1}],"outcome":"applied","plan":{"at":29,"lossless":true,"report_id":"{report_id}"},"position":30,"said":["The change would leave every stored record as it is."]}
 
 > PUT /lakes/finance/types/partner/records/P-1
 > authorization: Bearer k-owner
@@ -676,7 +676,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 37
-< {"declared":[{"appended":true,"kind":"trigger","name":"went_paid","since":37,"version":1}],"outcome":"applied","position":37}
+< {"declared":[{"appended":true,"kind":"trigger","name":"went_paid","since":37,"version":1}],"outcome":"applied","plan":{"at":36,"lossless":true,"report_id":"{report_id}"},"position":37,"said":["The change would leave every stored record as it is."]}
 
 > POST /lakes/finance/schema/declare
 > authorization: Bearer k-clerk
@@ -694,7 +694,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 39
-< {"declared":[{"appended":true,"kind":"type","name":"memo2","since":38,"version":1},{"appended":true,"kind":"trigger","name":"memo_written","since":39,"version":1}],"outcome":"applied","position":39}
+< {"declared":[{"appended":true,"kind":"type","name":"memo2","since":38,"version":1},{"appended":true,"kind":"trigger","name":"memo_written","since":39,"version":1}],"outcome":"applied","plan":{"at":37,"lossless":true,"report_id":"{report_id}"},"position":39,"said":["The change would leave every stored record as it is."]}
 
 > POST /lakes/finance/schema/apply
 > authorization: Bearer k-owner
@@ -753,7 +753,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 43
-< {"declared":[{"appended":true,"kind":"type","name":"lease","since":43,"version":1}],"outcome":"applied","position":43}
+< {"declared":[{"appended":true,"kind":"type","name":"lease","since":43,"version":1}],"outcome":"applied","plan":{"at":42,"lossless":true,"report_id":"{report_id}"},"position":43,"said":["The change would leave every stored record as it is."]}
 
 > PUT /lakes/finance/types/partner/records/P-2
 > authorization: Bearer k-owner
@@ -800,7 +800,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 48
-< {"declared":[{"appended":true,"kind":"value_type","name":"tier","since":48,"version":1}],"outcome":"applied","position":48}
+< {"declared":[{"appended":true,"kind":"value_type","name":"tier","since":48,"version":1}],"outcome":"applied","plan":{"at":47,"lossless":true,"report_id":"{report_id}"},"position":48,"said":["The change would leave every stored record as it is."]}
 
 > POST /lakes/finance/schema/migrate
 > authorization: Bearer k-owner
@@ -818,7 +818,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 49
-< {"outcome":"applied","position":49}
+< {"outcome":"applied","plan":{"at":48,"lossless":true,"report_id":"{report_id}","value_types":[{"fields":[],"fits":true,"from_version":1,"misfits":0,"records_scanned":0,"report_id":"{report_id}","value_type":"tier"}]},"position":49,"said":["The change would leave every stored record as it is."]}
 
 > POST /lakes/finance/schema/migrate
 > authorization: Bearer k-owner
@@ -841,7 +841,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 50
-< {"declared":[{"appended":true,"kind":"verb","name":"register","since":50,"version":1}],"outcome":"applied","position":50}
+< {"declared":[{"appended":true,"kind":"verb","name":"register","since":50,"version":1}],"outcome":"applied","plan":{"at":49,"lossless":true,"report_id":"{report_id}"},"position":50,"said":["The change would leave every stored record as it is."]}
 
 > POST /lakes/finance/verbs/register
 > authorization: Bearer k-owner

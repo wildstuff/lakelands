@@ -56,6 +56,7 @@ fn a_write_answers_applied_or_proposed_and_both_carry_a_position() {
         set_off: Default::default(),
         renamed: Vec::new(),
         declared: Vec::new(),
+        plan: None,
     };
     assert_eq!(
         serde_json::to_value(&applied).unwrap(),

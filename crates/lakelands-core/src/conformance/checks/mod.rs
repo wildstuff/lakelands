@@ -63,6 +63,7 @@ mod only;
 mod only_proposals;
 mod paging;
 mod paths;
+mod plan;
 mod positions;
 mod proposal_names;
 mod proposals;
@@ -432,7 +433,10 @@ pub const ALL: &[Check] = &[
     references::REFERENCE_WITHIN_A_WINDOW,
     computed_reference::COMPUTED_REFERENCE,
     computed_reference::COMPUTED_REFERENCE_CELLS,
-    computed_reference::COMPUTED_REFERENCE_LEFT,
+    plan::PLAN_TELLS,
+    plan::PLAN_REFUSES,
+    plan::PLAN_SHOWN,
+    plan::PLAN_ACCEPTED,
     values::DECIMAL_NOT_A_NUMBER,
     values::GEO_VALUES,
     values::JSON_VALUES,

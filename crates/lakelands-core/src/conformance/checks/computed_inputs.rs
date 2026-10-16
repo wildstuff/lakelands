@@ -258,7 +258,10 @@ async fn a_computed_field_is_read_no_further_than_what_it_is_computed_from(
     let fields = [text("a"), text("b"), computed("x", upper(), &[])];
     let new = json!({"declare": "type", "name": "new", "fields": fields});
     let declarations = vec![serde_json::from_value(new).expect("a type")];
-    let bundle = ProposedWrite::Declare { declarations };
+    let bundle = ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     let proposed = l.cat.propose(&l.own, bundle, "a type".into()).await;
     proposed.must("proposing a type")?;
     let listed = l.cat.proposals(&l.own, Default::default()).await;

@@ -1329,6 +1329,10 @@ catalog! {
         PayloadRequired { verb: VerbName, member: FieldName } => "verb `{verb}` requires `{member}` in its payload",
         /// A payload member a verb does not declare.
         PayloadUndeclared { verb: VerbName, member: FieldName } => "verb `{verb}` has no `{member}` in its payload",
+        /// A change enacted against a plan of another head, or one its caller was not shown.
+        PlanStale => "the lake moved since that plan, or it is not the one this caller was shown; plan the change again",
+        /// A proposal accepted against a plan that changes no declaration.
+        ProposalPlansNothing { proposal: ProposalId } => "the proposal `{proposal}` changes no declaration, so it has no plan; accept it without one",
         /// A purge's report of another purge or head.
         PurgeReportStale => "that report is not of this purge at this head; run the preflight again",
         /// A purge of records another hand wrote too.

@@ -3031,6 +3031,51 @@ pub(crate) fn computes_again(o: &Ontology, declaration: &Declaration) -> Vec<Typ
     }
 }
 
+/// The fields `declaration` computes again, per type: those naming a
+/// function it declares; of a type it declares, those computed otherwise
+/// than in force, and those computed outside the lake, which it settles
+/// again (062). What reads them is not among them.
+pub(crate) fn fields_again(o: &Ontology, declaration: &Declaration) -> Vec<(TypeName, FieldName)> {
+    let computed = |f: &FieldDecl| f.derived.is_some() || f.function.is_some() || f.embed.is_some();
+    let how = |f: &FieldDecl| {
+        (
+            f.derived.clone(),
+            f.function.clone(),
+            f.embed.clone(),
+            f.at_read(),
+        )
+    };
+    match declaration {
+        Declaration::Function(fun) => (o.types.values())
+            .flat_map(|t| {
+                let named = |d: &&FieldDecl| d.function.as_deref() == Some(fun.name.as_str());
+                (t.decl.fields.iter().filter(named)).map(|d| (t.decl.name.clone(), d.name.clone()))
+            })
+            .collect(),
+        Declaration::Type(t) => {
+            let Some(old) = o.types.get(&t.name) else {
+                return vec![];
+            };
+            let outside = crate::backed::computed_outside(o, t);
+            let backed = |n: &str| {
+                o.functions
+                    .get(n)
+                    .is_some_and(|f| crate::backed::is_backed(&f.decl))
+            };
+            (t.fields.iter().filter(|f| computed(f)))
+                .filter(|f| {
+                    let was = old.decl.fields.iter().find(|x| x.name == f.name);
+                    was.is_none_or(|was| how(was) != how(f))
+                        || outside
+                            && (f.embed.is_some() || f.function.as_deref().is_some_and(backed))
+                })
+                .map(|f| (t.name.clone(), f.name.clone()))
+                .collect()
+        }
+        _ => vec![],
+    }
+}
+
 /// Whether `new` computes its records otherwise than `old`: its derived
 /// expressions, the functions its fields name, what its embeddings are made
 /// from, or which are computed at the read (saying `write` where nothing

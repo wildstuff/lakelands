@@ -1175,6 +1175,17 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
         e.is_some_and(|e| e.fields_read().into_iter().all(reads))
     };
     report.breaches.retain(constraint);
+    // A reference left naming no live record, to one who reads it in both
+    // shapes and is shown its target type (062).
+    let target = |f: &FieldName| {
+        (m.to.fields.iter().find(|x| &x.name == f))?
+            .ty
+            .target
+            .clone()
+    };
+    report
+        .unlive
+        .retain(|u| read(&u.field) && target(&u.field).is_some_and(|t| sees(&t).is_some()));
     report.references.retain(|r| match r.ty == m.to.name {
         true => holds(&to, &r.field) && sourced(&r.field),
         false => known(&r.ty, &r.field),
@@ -1183,10 +1194,17 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
         |c: &lakelands_api::write::FieldConversion| c.not_convertible > c.sample_keys.len() as u64;
     let collide: u64 = report.rekeyed.iter().map(|r| r.collisions).sum();
     let unfilled = |f: &lakelands_api::write::FieldFill| f.records > f.sample_keys.len() as u64;
-    report.more = *report != whole
+    // What a reference's count left out is told by the plan, from the
+    // declarations alone, never by what the count held (062).
+    let without = |r: &MigrationReport| MigrationReport {
+        unlive: Vec::new(),
+        ..r.clone()
+    };
+    report.more = without(report) != without(&whole)
         || report.fields.iter().any(unnamed)
         || report.filled.iter().any(unfilled)
         || (report.breaches.iter()).any(|b| b.records > b.sample_keys.len() as u64)
+        || (report.unlive.iter()).any(|u| u.records > u.sample_keys.len() as u64)
         || collide > report.sample_collisions.len() as u64;
 }
 

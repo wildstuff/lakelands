@@ -436,6 +436,7 @@ async fn a_valid_time_names_a_stored_date_time_field(store: Store) -> Held {
     let declared = || vec![lakelands_api::write::Declaration::Type(text.clone())];
     let proposed = lakelands_api::write::ProposedWrite::Declare {
         declarations: declared(),
+        plan: None,
     };
     for (door, answer) in [
         (

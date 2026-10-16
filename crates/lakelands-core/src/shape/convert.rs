@@ -223,6 +223,8 @@ pub fn referring(
         carried: Vec::new(),
         restated: Vec::new(),
         filled: Vec::new(),
+        recomputed: Some(0),
+        unlive: Vec::new(),
     };
     report.report_id = canonical::sha256_hex(
         &serde_json::to_value(&report).expect("a migration report serialises to JSON"),

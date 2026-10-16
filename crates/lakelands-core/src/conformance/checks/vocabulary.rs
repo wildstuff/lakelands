@@ -364,7 +364,14 @@ async fn a_host_external_verb_on_its_own_system_type_is_admitted(
         let (cat, own) = (cat.clone(), own.clone());
         async move {
             let declarations = vec![d.clone()];
-            let proposed = cat.propose(&own, ProposedWrite::Declare { declarations }, "w".into());
+            let proposed = cat.propose(
+                &own,
+                ProposedWrite::Declare {
+                    declarations,
+                    plan: None,
+                },
+                "w".into(),
+            );
             let proposed = proposed
                 .await
                 .map(|o| matches!(o, Outcome::Proposed { .. }));

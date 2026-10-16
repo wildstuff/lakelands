@@ -529,6 +529,8 @@ What a refusal is about.
 | `patch_empty` | — | nothing to write: the patch carries no field | A patch with no field. |
 | `payload_required` | `verb` (VerbName), `member` (FieldName) | verb `{verb}` requires `{member}` in its payload | A payload member a verb requires that is not given. |
 | `payload_undeclared` | `verb` (VerbName), `member` (FieldName) | verb `{verb}` has no `{member}` in its payload | A payload member a verb does not declare. |
+| `plan_stale` | — | the lake moved since that plan, or it is not the one this caller was shown; plan the change again | A change enacted against a plan of another head, or one its caller was not shown. |
+| `proposal_plans_nothing` | `proposal` (ProposalId) | the proposal `{proposal}` changes no declaration, so it has no plan; accept it without one | A proposal accepted against a plan that changes no declaration. |
 | `purge_report_stale` | — | that report is not of this purge at this head; run the preflight again | A purge's report of another purge or head. |
 | `purge_shared` | `source` (SourceId), `type` (TypeName, optional), `count` (usize), `first` (list of RecordName) | the purge of `{source}`[ from `{type}`] is refused whole: {count} record(s) it brought in were also written by another hand (a principal, or another source), and a purge never half-removes a record; retire them or clear those fields, then purge again. First: {first} | A purge of records another hand wrote too. |
 | `required` | `type` (TypeName), `field` (FieldName) | `{type}` requires a value for `{field}` | A record with no value for a required field. |

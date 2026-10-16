@@ -1276,6 +1276,13 @@
    "verb": "v"
   },
   {
+   "code": "plan_stale"
+  },
+  {
+   "code": "proposal_plans_nothing",
+   "proposal": "p-1"
+  },
+  {
    "code": "purge_report_stale"
   },
   {

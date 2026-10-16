@@ -2559,7 +2559,7 @@ impl<'a> Reader<'a> {
                     return Ok(None);
                 }
             }
-            ProposedWrite::Declare { declarations } => {
+            ProposedWrite::Declare { declarations, .. } => {
                 // One in force under a name the bundle declares, which its
                 // reader is not shown: the bundle would take its place, and
                 // its accept's refusal would name it (lakelands#915).
@@ -2731,9 +2731,29 @@ impl<'a> Reader<'a> {
                 }
             }
         }
+        // A migration's report kept before reports counted what they
+        // compute again computed none, on both sides (062).
+        if let ProposedWrite::Migrate { report, .. } = &mut logged
+            && report.recomputed.is_none()
+        {
+            report.recomputed = Some(0);
+            let before = Position(at.0.saturating_sub(1));
+            report.report_id = crate::writes::report_id(report, Some(before));
+        }
         // `more` is what the trim left out, not what the completion added.
         let mut shown = logged.clone();
         let known = self.known_shape(asked, &mut shown, lake, at, (left, then))?;
+        // A bundle's plan is its proposer's, its counts made over the
+        // lake as it stood then: to a reader kept from a field a count may
+        // rest on one it may not read, there or in any lake since, and to a
+        // holder of `only` it counts records outside its pairs. Either is
+        // shown none; one who holds `schema` asks `plan` for one made now
+        // (062).
+        if (kept || rights::holds_only(self.who))
+            && let ProposedWrite::Declare { plan, .. } = &mut shown
+        {
+            *plan = None;
+        }
         let shown = known.then_some(shown);
         // A value type's report is made again for its reader, its conditions
         // judged and its id made over what it is shown: the logged one is
@@ -2745,7 +2765,17 @@ impl<'a> Reader<'a> {
             all.grants = lakelands_api::Grants::owner();
             self.value_type_shown(&all, &|_, _| true, &mut whole, at);
         }
-        let more = shown.as_ref() != Some(&whole);
+        // A plan is compared on neither side: what its trim leaves out is
+        // what its reader may not be told, and counting it would tell twins
+        // apart. The act judges every record all the same (062).
+        let planless = |w: &ProposedWrite| {
+            let mut w = w.clone();
+            if let ProposedWrite::Declare { plan, .. } = &mut w {
+                *plan = None;
+            }
+            w
+        };
+        let more = shown.as_ref().map(planless) != Some(planless(&whole));
         Ok(Some((shown, more)))
     }
 
@@ -2894,6 +2924,30 @@ impl<'a> Reader<'a> {
                 let all = || self.sight.describe(&self.who.lake);
                 let described = || lake.get_or_init(all);
                 rights::shown_report(then, made, migration, report, described, sees);
+                // One kept before a report counted what it computes again
+                // computed none (062).
+                report.recomputed.get_or_insert(0);
+                // A first key only where its reader is answered it now: the
+                // report was kept as its proposer saw it (062).
+                let to = &migration.to.name;
+                let keys = (report.unlive.iter_mut().map(|u| (to, &mut u.sample_keys)))
+                    .chain(report.filled.iter_mut().map(|f| (to, &mut f.sample_keys)))
+                    .chain(report.fields.iter_mut().map(|c| (to, &mut c.sample_keys)))
+                    .chain(
+                        report
+                            .breaches
+                            .iter_mut()
+                            .map(|b| (&b.ty, &mut b.sample_keys)),
+                    );
+                for (ty, keys) in keys {
+                    let mut shown = Vec::new();
+                    for k in keys.drain(..) {
+                        if crate::reads::answered(self.view.as_ref(), self.sight, ty, &k)? {
+                            shown.push(k);
+                        }
+                    }
+                    *keys = shown;
+                }
                 // One listing: its `to` hash is that of the `to` it lists.
                 let find = |n: &TypeName| listing.ty(n).ok();
                 rights::shown_hashes(then, made, migration, report, &find);
@@ -2904,7 +2958,11 @@ impl<'a> Reader<'a> {
             }
             // Each declaration as `describe` would show it once the bundle
             // is in force; one it would not show leaves the list.
-            ProposedWrite::Declare { declarations } => {
+            ProposedWrite::Declare { declarations, plan } => {
+                // Its plan as the reader may know it (062).
+                if let Some(p) = plan {
+                    crate::writes::shown_plan(p, self.sight, self.view.as_ref())?;
+                }
                 // The reader as the bundle in force would show it its
                 // references (024, extended), from its grants as asked: a
                 // reference hidden by the lake as it stands may be shown.

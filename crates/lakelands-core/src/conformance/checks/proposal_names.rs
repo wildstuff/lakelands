@@ -72,7 +72,10 @@ async fn proposed(store: &dyn LakeStore) -> Result<Lake, Failure> {
         serde_json::from_value(ledger).expect("a type"),
     ];
     let hidden = vec![trigger_on("held_too", "account", Some("holder = 'y'"))];
-    let declare = |declarations| ProposedWrite::Declare { declarations };
+    let declare = |declarations| ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     let (ty, opts) = (|| "account".into(), WriteOpts::default);
     let saved = patch(json!({"kind": "savings"}));
     let upsert = |key: &str| ProposedWrite::Upsert {
@@ -187,7 +190,10 @@ async fn a_proposed_shape_names_only_what_its_reader_may_know_of(store: Store) -
                        "fields": [text("number"), n], "view": view});
     let tally: Declaration = serde_json::from_value(tally).expect("a view");
     let declarations = vec![tally.clone()];
-    let write = ProposedWrite::Declare { declarations };
+    let write = ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     let o = l.cat.propose(&l.own, write, "view".into()).await;
     o.must("the owner proposing `view`")?;
     let rekey = ["\"payment\"", "\"entry\"", "\"holder\""];
@@ -339,6 +345,7 @@ async fn a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_fi
     ] {
         let write = ProposedWrite::Declare {
             declarations: vec![serde_json::from_value(d).expect("a declaration")],
+            plan: None,
         };
         l.cat.propose(&l.own, write, why.into()).await.must(why)?;
     }

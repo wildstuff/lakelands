@@ -510,7 +510,10 @@ async fn a_declaration_that_is_the_one_in_force_appends_nothing(store: Store) ->
     );
     // An accepted proposal of declarations in force: its acceptance alone.
     let declarations = vec![scaled(3), bill(&["net"])];
-    let proposed = ProposedWrite::Declare { declarations };
+    let proposed = ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     let proposed = l.cat.propose(&l.own, proposed, "again".into()).await;
     let Outcome::Proposed { proposal, .. } = proposed.must("proposing")? else {
         return Err(Failure::new("a proposed set is not answered as proposed"));

@@ -407,7 +407,14 @@ async fn a_verb_on_a_link_type_keeps_what_the_link_door_keeps(store: Store) -> H
         let moved = verb("move", end);
         let declared = cat.declare(own, moved.clone()).await;
         let declarations = vec![moved.clone()];
-        let proposed = cat.propose(own, ProposedWrite::Declare { declarations }, "why".into());
+        let proposed = cat.propose(
+            own,
+            ProposedWrite::Declare {
+                declarations,
+                plan: None,
+            },
+            "why".into(),
+        );
         let (proposed, applied) = (proposed.await, cat.apply(own, vec![moved]).await);
         ensure!(
             matches!(invalid_case(&declared), Some(Case::LinkEndAsField { end: e }) if e == end)
@@ -1224,7 +1231,10 @@ async fn a_set_declares_a_relation_and_what_stands_on_its_link_type(store: Store
     // in the listing and at the accept and the reject (013, extended).
     let named = |set: &[Declaration]| set.iter().map(Declaration::what).collect::<Vec<_>>();
     let declarations = set("pact");
-    let write = ProposedWrite::Declare { declarations };
+    let write = ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     let proposed = cat.propose(own, write, "one set".into()).await;
     let Outcome::Proposed { proposal, .. } = proposed.must("proposing the set for `pact`")? else {
         return Err(Failure::new("a proposal answers `proposed`"));
@@ -1239,7 +1249,7 @@ async fn a_set_declares_a_relation_and_what_stands_on_its_link_type(store: Store
         let entry = all.must("a reviewer's listing")?.data;
         let entry = entry.into_iter().find(|p| p.id == proposal);
         listed.push(entry.map(|p| match p.write {
-            Some(ProposedWrite::Declare { declarations }) => (named(&declarations), p.more),
+            Some(ProposedWrite::Declare { declarations, .. }) => (named(&declarations), p.more),
             _ => (Vec::new(), p.more),
         }));
     }
@@ -1294,7 +1304,10 @@ async fn a_set_declares_a_relation_and_what_stands_on_its_link_type(store: Store
     // relation without its link fields; so its accept is not `blind`'s,
     // and the owner's applies it (lakelands#867).
     let declarations = set("bare").split_off(4);
-    let write = ProposedWrite::Declare { declarations };
+    let write = ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     let bare = cat.propose(own, write, "the owner alone".into()).await;
     let Outcome::Proposed { proposal: bare, .. } = bare.must("proposing `bare` alone")? else {
         return Err(Failure::new("a proposal answers `proposed`"));
@@ -1303,10 +1316,12 @@ async fn a_set_declares_a_relation_and_what_stands_on_its_link_type(store: Store
     let entry = all.must("a reviewer's listing")?.data;
     let entry = entry.into_iter().find(|p| p.id == bare);
     let link_fields = match entry.as_ref().map(|p| (&p.write, p.more)) {
-        Some((Some(ProposedWrite::Declare { declarations }), true)) => match &declarations[..] {
-            [Declaration::Type(t)] => t.relations.iter().map(|r| r.fields.len()).collect(),
-            _ => Vec::new(),
-        },
+        Some((Some(ProposedWrite::Declare { declarations, .. }), true)) => {
+            match &declarations[..] {
+                [Declaration::Type(t)] => t.relations.iter().map(|r| r.fields.len()).collect(),
+                _ => Vec::new(),
+            }
+        }
         _ => Vec::new(),
     };
     let refused = cat.accept(&blind, &bare).await.map(|_| ());
@@ -1346,7 +1361,10 @@ async fn a_set_declares_a_relation_and_what_stands_on_its_link_type(store: Store
         let lt = format!("sys.link.{ty}.with");
         let set = vec![stamp("late", &lt), Declaration::Type(owner(ty, vec![]))];
         let applied = cat.apply(own, set.clone()).await;
-        let write = ProposedWrite::Declare { declarations: set };
+        let write = ProposedWrite::Declare {
+            declarations: set,
+            plan: None,
+        };
         let proposed = cat.propose(own, write, "one set".into()).await;
         let at_verb =
             json!({"code": "undeclared", "type": lt, "at": [{"code": "verb", "name": "late"}]});
@@ -1377,6 +1395,7 @@ async fn a_set_declares_a_relation_and_what_stands_on_its_link_type(store: Store
     let beside = vec![peek.clone(), Declaration::Type(owner("deal", vec![with]))];
     let write = ProposedWrite::Declare {
         declarations: beside.clone(),
+        plan: None,
     };
     let proposed = cat.propose(&kept, write, "one set".into()).await;
     let (beside, alone) = (

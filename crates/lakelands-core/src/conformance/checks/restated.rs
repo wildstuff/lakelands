@@ -425,7 +425,16 @@ async fn what_a_migration_restates_is_shown_as_its_fields_are_and_holds_at_the_a
         let (migration, report) = (Box::new(m), Default::default());
         ids.push(proposed(&l, ProposedWrite::Migrate { migration, report }).await?);
     }
-    ids.push(proposed(&l, ProposedWrite::Declare { declarations }).await?);
+    ids.push(
+        proposed(
+            &l,
+            ProposedWrite::Declare {
+                declarations,
+                plan: None,
+            },
+        )
+        .await?,
+    );
     // Written since: a `nick` that is no number.
     let bob = json!({"name": "bob", "secret": "t", "nick": "x"});
     l.upsert("person", "bob", bob).await?;

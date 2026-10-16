@@ -462,6 +462,7 @@ async fn a_trigger_max_depth_above_the_lakes_ceiling_is_refused(
                 own,
                 ProposedWrite::Declare {
                     declarations: vec![deep()],
+                    plan: None,
                 },
                 "deeper".into(),
             )
@@ -480,6 +481,7 @@ async fn a_trigger_max_depth_above_the_lakes_ceiling_is_refused(
             own,
             ProposedWrite::Declare {
                 declarations: vec![trigger("pending", None, Some(ceiling))],
+                plan: None,
             },
             "at the ceiling".into(),
         )
