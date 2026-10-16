@@ -5,7 +5,7 @@
 //! ignored so that no other run of the crate's tests runs it beside them.
 //!
 //! It holds only where that one run owns the database: CI's job, or a
-//! slot's own container running one suite at a time. Another run in the
+//! worktree's own container running one suite at a time. Another run in the
 //! same database leaves schemas while it runs.
 
 mod common;
