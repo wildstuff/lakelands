@@ -79,11 +79,12 @@ CREATE TABLE IF NOT EXISTS applied (
     at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS routes (
-    at INTEGER NOT NULL, kind TEXT NOT NULL, ty TEXT, key TEXT
+    at INTEGER NOT NULL, kind TEXT NOT NULL, ty TEXT, key TEXT, source TEXT
 );
 CREATE INDEX IF NOT EXISTS routes_kind ON routes (kind, at);
 CREATE INDEX IF NOT EXISTS routes_ty ON routes (ty, at);
 CREATE INDEX IF NOT EXISTS routes_key ON routes (key, at);
+CREATE INDEX IF NOT EXISTS routes_source ON routes (source, at);
 CREATE TABLE IF NOT EXISTS text_index (
     ty TEXT NOT NULL, field TEXT NOT NULL, value TEXT NOT NULL, key TEXT NOT NULL,
     PRIMARY KEY (ty, field, value, key)
@@ -319,7 +320,7 @@ pub(crate) fn routes(
 /// raised whenever a table changes so that a projection made before
 /// would answer wrongly, not fail: one made with another layout is never
 /// read, and is rebuilt from the log.
-pub(crate) const LAYOUT: u64 = 2;
+pub(crate) const LAYOUT: u64 = 3;
 
 /// The layout `conn`'s projection was made with: none where it holds no
 /// `meta`, or was made before projections were marked.

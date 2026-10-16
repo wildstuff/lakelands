@@ -148,6 +148,11 @@ engine_check!(
 );
 
 engine_check!(
+    SOURCE_ROUTES = the_index_answers_a_sources_positions_in_order_to_its_through,
+    "058 and seams §ProjectionView (lakelands#1151): `of_source` answers the positions of the applied events of a source, each once however many types it is about, in order, at most `limit` with `through` the last of them, else through the range asked, nothing past a view's position, and nothing decided where a rebuild's refold has not reached the range"
+);
+
+engine_check!(
     FIRST_APPLIED = the_first_applied_position_is_kept,
     "seams §ProjectionStore: marking an id applied twice keeps the first position, so a redelivery is recognised where the event first took effect"
 );
@@ -1578,6 +1583,7 @@ fn unrouted(id: &EventId, at: u64) -> lakelands_api::engine::Applied {
             ty: None,
             key: None,
         }],
+        source: None,
     }
 }
 
@@ -1628,6 +1634,7 @@ fn the_index_answers_a_filters_positions_in_order_to_its_through(engine: &dyn La
         at: Position(*at),
         kind,
         about: about.clone(),
+        source: None,
     };
     let (first, rest) = events.split_at(5);
     fold(engine, 5, |p| {
@@ -1725,6 +1732,85 @@ fn the_index_answers_a_filters_positions_in_order_to_its_through(engine: &dyn La
         rebuilt == [(vec![1, 2, 3], Some(3)), (vec![], None)],
         "a view at 9 taken before a clear and a refold through 3 answered {rebuilt:?} for \
          `invoice` from 0 and from 4; it answers [1, 2, 3] through 3, and decides nothing"
+    );
+    Ok(())
+}
+
+fn the_index_answers_a_sources_positions_in_order_to_its_through(engine: &dyn LakeEngine) -> Held {
+    use lakelands_api::engine::{About, Applied};
+    let about = |ty: &str| About {
+        ty: Some(ty.into()),
+        key: Some("A".into()),
+    };
+    let events: [(u64, Option<&str>, Vec<About>); 6] = [
+        (1, Some("s1"), vec![about("invoice")]),
+        (2, Some("s2"), vec![about("invoice")]),
+        (3, None, vec![about("invoice")]),
+        (4, Some("s1"), vec![about("invoice"), about("memo")]),
+        (5, Some("s2"), vec![about("memo")]),
+        (6, Some("s1"), vec![about("memo")]),
+    ];
+    let applied = |(at, source, about): &(u64, Option<&str>, Vec<About>)| Applied {
+        id: EventId(format!("e{at}")),
+        at: Position(*at),
+        kind: "record_ingested",
+        about: about.clone(),
+        source: source.map(Into::into),
+    };
+    let marked = |p: &dyn lakelands_api::engine::ProjectionStore, from: usize, to: usize| {
+        events[from..to]
+            .iter()
+            .try_for_each(|e| p.mark_applied(&applied(e)))
+    };
+    fold(engine, 4, |p| marked(p, 0, 4))?;
+    fold(engine, 6, |p| marked(p, 4, 6))?;
+    let ask = |v: &dyn lakelands_api::engine::ProjectionView, source: &str, from, to, n| {
+        let m = v.of_source(&source.into(), Position(from), Position(to), n);
+        let m = m.must(&format!(
+            "asking the index for {source} from {from} through {to}"
+        ))?;
+        Ok::<_, Failure>((
+            m.positions.iter().map(|p| p.0).collect::<Vec<_>>(),
+            m.through.map(|p| p.0),
+        ))
+    };
+    let (head, then) = (view(engine, None)?, view(engine, Some(Position(4)))?);
+    let got = [
+        ask(head.as_ref(), "s1", 0, 6, 100)?,
+        ask(head.as_ref(), "s2", 0, 6, 100)?,
+        ask(head.as_ref(), "s3", 0, 6, 100)?,
+        ask(head.as_ref(), "s1", 0, 6, 2)?,
+        ask(head.as_ref(), "s1", 5, 6, 2)?,
+        ask(head.as_ref(), "s1", 2, 3, 9)?,
+        ask(then.as_ref(), "s1", 0, 6, 100)?,
+    ];
+    let want = [
+        (vec![1, 4, 6], Some(6)),
+        (vec![2, 5], Some(6)),
+        (vec![], Some(6)),
+        (vec![1, 4], Some(4)),
+        (vec![6], Some(6)),
+        (vec![], Some(3)),
+        (vec![1, 4], Some(4)),
+    ];
+    ensure!(
+        got == want,
+        "the index answered {got:?} for s1, s2 and s3 through 6, s1 with a limit of 2 from 0 \
+         and from 5, s1 from 2 through 3, and s1 at a view at 4; it answers {want:?}"
+    );
+    // A view taken before a rebuild's `clear` decides only what the refold
+    // has reached.
+    let before = view(engine, None)?;
+    (engine.projection().clear()).must("clearing the projection")?;
+    fold(engine, 2, |p| marked(p, 0, 2))?;
+    let rebuilt = [
+        ask(before.as_ref(), "s1", 0, 6, 100)?,
+        ask(before.as_ref(), "s1", 3, 6, 100)?,
+    ];
+    ensure!(
+        rebuilt == [(vec![1], Some(2)), (vec![], None)],
+        "a view at 6 taken before a clear and a refold through 2 answered {rebuilt:?} for s1 \
+         from 0 and from 3; it answers [1] through 2, and decides nothing"
     );
     Ok(())
 }

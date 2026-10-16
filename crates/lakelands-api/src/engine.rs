@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Result;
 use crate::event::{Digest, EventId, SegmentDigest};
 use crate::expr::Expr;
-use crate::id::{FieldName, LakeId, Position, RecordKey, RelationName, TypeName};
+use crate::id::{FieldName, LakeId, Position, RecordKey, RelationName, SourceId, TypeName};
 use crate::location::Location;
 use crate::query::{Edge, Walk};
 use crate::read::Order;
@@ -287,8 +287,9 @@ impl Reclaimed {
 }
 
 /// An event the fold applied, as the projection remembers it: its id,
-/// and the kind and the types and keys the change feed's filter reads it
-/// by (`docs/seams.md` §`ChangeFeed`).
+/// the kind and the types and keys the change feed's filter reads it by
+/// (`docs/seams.md` §`ChangeFeed`), and the source it is of, which
+/// forgetting a source reads it by.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Applied {
     /// The event's identifier.
@@ -300,6 +301,10 @@ pub struct Applied {
     /// What it is about, one entry a type it concerns; never empty, so an
     /// event about nothing is one entry with neither.
     pub about: Vec<About>,
+    /// The source it is of: a `record_ingested`'s is its envelope's; any
+    /// other event's is the one its seal names, as a recorded output
+    /// computed from a source's values does, else its envelope's.
+    pub source: Option<SourceId>,
 }
 
 /// A type and a key an event is about, as a feed filter reads them: the
@@ -501,6 +506,25 @@ pub trait ProjectionView {
         through: Position,
         limit: u32,
     ) -> Result<Matched>;
+
+    /// The positions from `from` through `through` whose events are of
+    /// `source`, by what [`ProjectionStore::mark_applied`] kept of them, in
+    /// order and at most `limit` (0 is read as 1), decided as
+    /// [`Self::matching`] decides them. An engine that keeps no source in
+    /// its index answers that it decides nothing, and the store reads the
+    /// log.
+    fn of_source(
+        &self,
+        _source: &SourceId,
+        _from: Position,
+        _through: Position,
+        _limit: u32,
+    ) -> Result<Matched> {
+        Ok(Matched {
+            positions: Vec::new(),
+            through: None,
+        })
+    }
 }
 
 /// The engine's vector index, beside the projection: its write side and

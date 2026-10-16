@@ -1042,6 +1042,7 @@ dependencies = [
  "lakelands-server",
  "lakelands-store",
  "postgres",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",

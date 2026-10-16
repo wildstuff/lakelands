@@ -153,6 +153,15 @@ impl ProjectionView for CountingView<'_> {
     ) -> Result<lakelands_api::engine::Matched> {
         self.inner.matching(filter, from, through, limit)
     }
+    fn of_source(
+        &self,
+        source: &lakelands_api::SourceId,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<lakelands_api::engine::Matched> {
+        self.inner.of_source(source, from, through, limit)
+    }
 }
 
 impl LakeEngine for Counting {

@@ -261,6 +261,18 @@ impl ProjectionView for ProbedView<'_> {
         }
         self.inner.matching(filter, from, through, limit)
     }
+    fn of_source(
+        &self,
+        source: &lakelands_api::SourceId,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<lakelands_api::engine::Matched> {
+        if self.probe.undecided.load(Ordering::SeqCst) {
+            return Ok(lakelands_core::feed::undecided());
+        }
+        self.inner.of_source(source, from, through, limit)
+    }
 }
 
 impl LakeEngine for Probed {

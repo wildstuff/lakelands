@@ -149,6 +149,8 @@ The first version carries no per-copy erasure across lakes.
 - **the values of the source that are plaintext in the log**: written before the field was erasable, or before the feature. Shredding cannot reach them, so the act refuses while they exist and names the count;
 - **the time it expects to hold the writer's lock**: the log's events at the engine's measured rebuild rate, so a host can choose its moment. Every write waits while the act rebuilds.
 
+The preflight and the act each count from the source's own events, which the feed index names (`ProjectionView::of_source`), not from a walk of the whole log; where the index decides nothing, as while the projection is rebuilt, they walk the log from there. The judgement is the same either way: a field erasable now, under the names it bears now.
+
 ### A lake 0.14.0 writes holds plaintext, and the feature starts where it starts
 
 The feature is a format step: the `sealed` member, the declaration's `erasable`, and `source_forgotten`. From 0.14.0 on, every format step carries its converter (054). A lake 0.14.0 wrote is upgraded and read, and its events keep their bytes, so its values stay plaintext.
@@ -189,3 +191,4 @@ What it gives up is plaintext in the log for the fields that opt in. Those field
 ## How it came to be
 
 - The act scrubs by rebuilding the projection after the keys are destroyed, where it was first written as an incremental scrub of every kept state before the keys were destroyed. The operator decided it (lakelands#1042): the projection is then the fold of the log and the key store by construction, and no second path has to stay equal to a rebuild. The price is the rebuild's time under the writer's lock, which the preflight names; an incremental scrub, for hosts that forget often on large lakes, is its own later step.
+- The preflight and the act read the source's events by the feed index, where each walked the whole log, the act under the writer's lock: about 6 s at 200 000 events, on either engine, to count what the source's 2 000 held (lakelands#1151).

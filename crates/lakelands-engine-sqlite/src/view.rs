@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 use lakelands_api::engine::{Declared, Matched, ProjectionView, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName};
+use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, TypeName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::read::{Direction, Order};
@@ -1129,6 +1129,24 @@ impl ProjectionView for SqliteView<'_> {
                 )?]),
             }?;
             Ok(feed::merged(lists, limit, last))
+        })
+    }
+
+    fn of_source(
+        &self,
+        source: &SourceId,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<Matched> {
+        self.read(feed::undecided(), |r| {
+            let Some(last) = feed::last_decided(from, through.min(r.at), r.folded) else {
+                return Ok(feed::undecided());
+            };
+            let by = Some(("source", source.as_str()));
+            let all = &FeedFilter::default();
+            let positions = projection::routes(r.conn, all, by, [from, last], limit)?;
+            Ok(feed::merged([positions], limit, last))
         })
     }
 }

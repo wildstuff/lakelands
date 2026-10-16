@@ -127,6 +127,11 @@ pub fn open_store(location: Location, mode: OpenMode, host: Seams) -> Opening {
             OpenMode::Rebuild => OpenMode::Rebuild,
         };
         let store = lakelands_store::open(location, seams, mode).await?;
+        // A projection an older build laid out was rebuilt by this open
+        // (lakelands#1151).
+        if let Some(why) = store.rebuilt_at_open() {
+            eprintln!("lakelands: the projection was rebuilt from the log at this open: {why}");
+        }
         // An owed reclaim kept no writer out; the host is told (lakelands#1161).
         if let Some(why) = store.reclaim_owed() {
             eprintln!(
@@ -293,7 +298,7 @@ fn command() -> Command {
         .subcommand(Command::new("compact").about("Give back the storage the lake's projection no longer uses"))
         .subcommand(
             Command::new("upgrade")
-                .about("Open the lake for writing once, which upgrades one written in an older log format; the events stay as they were written")
+                .about("Open the lake for writing once, which upgrades one written in an older log format, the events staying as they were written, and rebuilds a projection an older build laid out")
                 .arg(
                     Arg::new("check")
                         .long("check")
