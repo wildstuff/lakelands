@@ -123,6 +123,18 @@ link type as on any type.
   does (`docs/decisions/032-a-reference-names-a-live-record.md`,
   lakelands#1071).
 - A link field is never renamed: a rename is a drop plus an add.
+- A migration's `to` meets every check of its link types that
+  `declare` makes, a reshaping one too: a link field only those checks
+  refuse is refused by the preflight and by the apply, naming the link
+  type, and an embedding no bound backend makes is refused as unbound
+  there, as on the type itself (lakelands#1124). One it renames, or a
+  relation it renames, is compared with the one it is renamed from:
+  its vectors are carried, so it needs no backend. A name a rename frees
+  and `to` declares again is a field anew. What it needs bound is asked
+  after its renames are judged, against the links stored too, so a
+  malformed rename is told so whatever is bound. A link field that a
+  link field its author may not know of reads stands to that author as
+  it is (027): no check of the link type names the hidden one.
 - The link type is classified at every declaration, against the one in
   force. A relation dropped by `migrate` and declared again with
   another target, or with a field retyped, would reshape the retired

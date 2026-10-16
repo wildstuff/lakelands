@@ -43,6 +43,7 @@ mod fusion;
 mod graph_measures;
 mod graph_steps;
 mod grid;
+mod hidden_readers;
 mod host_cause;
 mod ingest;
 mod initial;
@@ -247,6 +248,7 @@ pub const ALL: &[Check] = &[
     authors_view::DECLARED_SINCE_NOT_TAKEN,
     authors_view::HIDDEN_LINK_TYPE_NOT_GRANTED,
     authors_view::HIDDEN_FIELD_KEPT,
+    hidden_readers::HIDDEN_READER_STANDS,
     authors_view::HIDDEN_NAME_NOT_LEARNED,
     authors_view::HIDDEN_NAME_JUDGED_AS_ABSENT,
     authors_view::HIDDEN_NAME_NOT_IN_THE_SHAPE,
@@ -299,6 +301,7 @@ pub const ALL: &[Check] = &[
     links::SET_NAMES_ITS_LINK_TYPE,
     links::REMOVED_KEEPS_READERS,
     links::REMOVED_RETIRES_LINKS,
+    links::LINK_CHECKS_MIGRATED,
     walks::UNDECLARED_RELATION,
     walks::TOO_DEEP,
     walks::WALK_ORDER,

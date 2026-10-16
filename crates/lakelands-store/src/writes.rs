@@ -44,8 +44,8 @@ use lakelands_api::error::{
 };
 use lakelands_api::event::{Digest, Event, EventBody, EventId, Procedure};
 use lakelands_api::ontology::{
-    Assignment, Authority, ConstraintDecl, FieldDecl, RelationDecl, Risk, TriggerDecl, TypeDecl,
-    ValueTypeDecl, VerbDecl, VerbEffect,
+    Assignment, Authority, ConstraintDecl, EmbedDecl, FieldDecl, RelationDecl, Risk, TriggerDecl,
+    TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
 };
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::{Origin, StoredRecord};
@@ -3603,8 +3603,14 @@ impl Call<'_> {
     /// A function computed outside the store is declared only where a
     /// backing of its kind is bound; replay never asks. An embedding is
     /// compared with the one `in_force` holds, where there is one to
-    /// compare with.
-    fn check_bound(&self, d: &Declaration, in_force: Option<&Ontology>) -> Result<()> {
+    /// compare with: across a migration's renames, with the field or the
+    /// relation it is renamed from, whose vectors it carries.
+    fn check_bound(
+        &self,
+        d: &Declaration,
+        in_force: Option<&Ontology>,
+        m: Option<&Migration>,
+    ) -> Result<()> {
         // A trigger's ceiling lies within the lake's (021).
         if let Declaration::Trigger(t) = d
             && let Some(m) = t.max_depth
@@ -3625,10 +3631,14 @@ impl Call<'_> {
             }));
         }
         if let Declaration::Type(t) = d {
-            self.check_embeddings(t, in_force)?;
+            let renames = m.map_or(&[][..], |m| &m.renames);
+            self.check_embeddings(t, in_force, (&t.name, renames))?;
             // A relation's fields embed on its link type's records.
+            let moved = m.map(links::moved).unwrap_or_default();
             for lt in links::link_types_of(t) {
-                self.check_embeddings(&lt, in_force)?;
+                let was = moved.iter().find(|(_, new)| **new == lt.name);
+                let was = was.map_or(&lt.name, |(old, _)| old);
+                self.check_embeddings(&lt, in_force, (was, &[]))?;
             }
         }
         Ok(())
@@ -3638,8 +3648,22 @@ impl Call<'_> {
     /// backend names their model and makes vectors of their dimensions,
     /// unless `in_force` holds the field with the same embedding: one
     /// declared unchanged makes nothing due, so a lake with no backend
-    /// bound can still restate or grow the type around it.
-    fn check_embeddings(&self, t: &TypeDecl, in_force: Option<&Ontology>) -> Result<()> {
+    /// bound can still restate or grow the type around it. `named` and
+    /// `renames` give the type and its fields as `in_force` holds them,
+    /// before a migration renames them.
+    fn check_embeddings(
+        &self,
+        t: &TypeDecl,
+        in_force: Option<&Ontology>,
+        (named, renames): (&TypeName, &[(FieldName, FieldName)]),
+    ) -> Result<()> {
+        // The name a field holds in force: the one it is renamed from, or
+        // its own, unless a rename frees that name and `to` declares it
+        // anew, a field with none in force.
+        let old = |n: &FieldName| match renames.iter().find(|(_, new)| new == n) {
+            Some((old, _)) => Some(old.clone()),
+            None => (!renames.iter().any(|(old, _)| old == n)).then(|| n.clone()),
+        };
         let (bound, mut was) = (self.lake.embed(), None);
         for f in &t.fields {
             let Some(e) = &f.embed else {
@@ -3652,12 +3676,16 @@ impl Call<'_> {
             {
                 continue;
             }
-            let was = was.get_or_insert_with(|| in_force.and_then(|o| o.as_declared(&t.name).ok()));
+            let was = was.get_or_insert_with(|| in_force.and_then(|o| o.as_declared(named).ok()));
             let kept = was
                 .iter()
                 .flat_map(|w| &w.fields)
-                .find(|k| k.name == f.name);
-            if kept.is_some_and(|k| k.embed == f.embed && k.ty.dimensions == f.ty.dimensions) {
+                .find(|k| Some(&k.name) == old(&f.name).as_ref());
+            let from: Option<Vec<FieldName>> = e.from.iter().map(old).collect();
+            let same = |k: &EmbedDecl| k.model == e.model && from.as_ref() == Some(&k.from);
+            if kept.is_some_and(|k| {
+                k.ty.dimensions == f.ty.dimensions && k.embed.as_ref().is_some_and(same)
+            }) {
                 continue;
             }
             let bound = bound.map(|b| lakelands_api::error::Bound {
@@ -3692,7 +3720,7 @@ impl Call<'_> {
         if !rights::reads_all(self.who) {
             declare::check_declaration(&w.ontology, &declaration, false)?;
         }
-        self.check_bound(&declaration, Some(&w.ontology))?;
+        self.check_bound(&declaration, Some(&w.ontology), None)?;
         self.verbs_still_read(&w.ontology, std::slice::from_ref(&declaration))?;
         let (sent, from) = ([declaration.clone()], head(&w).next());
         if w.ontology.in_force(&declaration) {
@@ -3773,7 +3801,7 @@ impl Call<'_> {
             }
         };
         // Its purpose is the calls: it needs the backend whatever is in force.
-        self.check_bound(&declaration, None)?;
+        self.check_bound(&declaration, None, None)?;
         let now = self.lake.clock(&mut w);
         let drafts = self.bundle_drafts(&w, vec![declaration], now, 0)?;
         let events = self.lake.append(&mut w, drafts)?;
@@ -3846,8 +3874,13 @@ impl Call<'_> {
         // One who reads every field and holds `schema` is shown the lake
         // whole: its view is the lake, and nothing it adds or changes
         // probes a field it may not read.
-        let set = |seen: &Ontology, shaped: &[Declaration]| match self.check_set((seen, o), shaped)
-        {
+        // A migration's `to` is judged for what it needs bound by its
+        // preflight, across its renames (lakelands#1124).
+        let set = |seen: &Ontology, shaped: &[Declaration]| match self.check_set(
+            (seen, o),
+            shaped,
+            !reshapes,
+        ) {
             Err(e) if reshapes => declare::unless_a_migration(e),
             checked => checked,
         };
@@ -4009,8 +4042,10 @@ impl Call<'_> {
     /// and answers that view, for [`Self::preflight_plan`] to judge its
     /// names against.
     fn authored(&self, o: &Ontology, m: &mut Migration) -> Result<Option<Authored>> {
-        if o.types.contains_key(&m.to.name) {
-            Sight::held(self.who, o).ty(&m.to.name)?;
+        if let Some(before) = o.types.get(&m.to.name) {
+            let sees = Sight::held(self.who, o);
+            sees.ty(&m.to.name)?;
+            reads_stand(&sees, &before.decl, &m.to, Some(m))?;
         }
         self.reads_as_author(o, &[Declaration::Type(m.to.clone())], true)?;
         initials(o, &mut m.to);
@@ -4028,6 +4063,13 @@ impl Call<'_> {
     /// Reads each type of `declarations` that is declared already as its
     /// author's view of it ([`as_author`]).
     fn redeclared(&self, o: &Ontology, declarations: &mut [Declaration]) -> Result<()> {
+        for d in declarations.iter() {
+            if let Declaration::Type(t) = d
+                && let Some(before) = o.types.get(&t.name)
+            {
+                reads_stand(&Sight::held(self.who, o), &before.decl, t, None)?;
+            }
+        }
         self.reads_as_author(o, declarations, false)?;
         // An `initial` is read against the value types the set declares.
         let mut after = std::borrow::Cow::Borrowed(o);
@@ -4050,16 +4092,17 @@ impl Call<'_> {
     /// every other declaration of the set already in it, every problem
     /// collected into one refusal.
     fn check_bundle(&self, ontology: &Ontology, declarations: &[Declaration]) -> Result<()> {
-        self.check_set((ontology, ontology), declarations)?;
+        self.check_set((ontology, ontology), declarations, true)?;
         self.verbs_still_read(ontology, declarations)
     }
 
     /// [`Self::check_bundle`] against `ontology` as the set's author is
-    /// shown `held`, the lake's own.
+    /// shown `held`, the lake's own; what each needs bound only if `bound`.
     fn check_set(
         &self,
         (ontology, held): (&Ontology, &Ontology),
         declarations: &[Declaration],
+        bound: bool,
     ) -> Result<()> {
         if declarations.is_empty() {
             return Err(invalid(Case::SetEmpty));
@@ -4095,9 +4138,12 @@ impl Call<'_> {
                     put_as_appended(probe.to_mut(), other, shown);
                 }
             }
-            if let Err(e) = declare::check_declaration(&probe, d, false)
-                .and_then(|()| self.check_bound(d, Some(ontology)))
-            {
+            let checked = declare::check_declaration(&probe, d, false);
+            let checked = checked.and_then(|()| match bound {
+                true => self.check_bound(d, Some(ontology), None),
+                false => Ok(()),
+            });
+            if let Err(e) = checked {
                 problems.push((d.place(), e));
             }
         }
@@ -5202,6 +5248,10 @@ impl Call<'_> {
                 links: moved,
             });
         }
+        // What `declare` needs bound, on the type and its link types, at
+        // the preflight as at the apply, once the renames it reads are
+        // judged, against the links stored too (lakelands#1124).
+        self.check_bound(&to, Some(&w.ontology), Some(m))?;
         for d in carried(&w.ontology, m) {
             let key = lakelands_core::engines::declaration_key(&d);
             let (kind, name) = key.split_once(' ').unwrap_or_default();
@@ -5317,7 +5367,6 @@ impl Call<'_> {
                 reason: Refusal::TooLarge { max },
             });
         }
-        self.check_embeddings(&m.to, Some(&w.ontology))?;
         let report_id = report.report_id;
         let schema_hash = shape::schema_hash(&m.to).map_err(invalid)?;
         let version = w.ontology.next_version(&Declaration::Type(m.to.clone()));
@@ -5957,9 +6006,6 @@ fn as_author(
     };
     let untold = |c: &ConstraintDecl| !read(c).iter().all(|n| sees.reads_from(&before.name, n));
     put_back(&before.constraints, untold, &mut to.constraints);
-    let constrained: Vec<FieldName> = (before.constraints.iter().filter(|c| untold(c)))
-        .flat_map(read)
-        .collect();
     // A valid time over a field it may not know of is not named to it, so
     // left out it stands as declared (024 and 027, extended).
     let unseen = |v: &Option<FieldName>| {
@@ -6015,20 +6061,114 @@ fn as_author(
         }
     }
     put_back(&before.relations, unshown, &mut to.relations);
+    Ok(())
+}
+
+/// A field a part its author may not know of reads stands, to that
+/// author, as it is, judged on what it sent before anything else is: the
+/// parts are an embedding, a derived or computed field, a relation it is
+/// not shown, a constraint it is not told and a link field, and each
+/// field of theirs it may know of (lakelands#1124).
+fn reads_stand(
+    sees: &Sight<'_>,
+    before: &TypeDecl,
+    to: &TypeDecl,
+    m: Option<&Migration>,
+) -> Result<()> {
+    let (renames, relations, fill) = m.map_or((&[][..], &[][..], &[][..]), |m| {
+        (&m.renames[..], &m.relation_renames[..], &m.fill[..])
+    });
+    let who = sees.who();
+    let hidden = |t: &TypeDecl, f: &FieldDecl| rights::field_access(who, t, f) == Access::None;
+    let known = |t: &TypeDecl, fields: &[FieldDecl], n: &FieldName| {
+        fields.iter().any(|f| &f.name == n && !hidden(t, f))
+    };
+    let unshown = |r: &RelationDecl| !sees.relation(before, r);
+    let read = |c: &ConstraintDecl| -> Vec<FieldName> {
+        let e = c.holds.typed().ok();
+        e.map_or_else(Vec::new, |e| e.fields_read().into_iter().cloned().collect())
+    };
+    let untold = |c: &ConstraintDecl| !read(c).iter().all(|n| sees.reads_from(&before.name, n));
+    let constrained: Vec<FieldName> = (before.constraints.iter().filter(|c| untold(c)))
+        .flat_map(read)
+        .collect();
     // What a relation it is not shown reads: its `via`, its match's own side.
     let hid = before.relations.iter().filter(|r| unshown(r));
     let owner_reads: Vec<FieldName> = hid
         .clone()
         .flat_map(|r| r.derived.iter().flat_map(|d| d.reads()[0].clone()))
         .collect();
-    let matched = hid.flat_map(|r| r.via.iter()).chain(&owner_reads);
-    let mut reads = (unknown.iter().copied())
-        .flat_map(|f| (f.depends_on.iter()).chain(f.embed.iter().flat_map(|e| &e.from)))
-        .chain(matched)
-        .chain(&constrained);
-    match reads.find(|n| !to.fields.iter().any(|t| &t.name == *n)) {
+    let reads = (before.fields.iter().filter(|f| hidden(before, f)))
+        .flat_map(inputs)
+        .chain(hid.flat_map(|r| r.via.iter()))
+        .chain(&owner_reads)
+        .chain(&constrained)
+        .filter(|n| known(before, &before.fields, n));
+    stands(&to.name, reads, &before.fields, &to.fields, renames, fill)?;
+    for r in &to.relations {
+        // A renamed relation is the one it was, under its old name.
+        let was = relations.iter().find(|(_, new)| new == &r.name);
+        let name = was.map_or(&r.name, |(old, _)| old);
+        let shown = |o: &&RelationDecl| &o.name == name && !unshown(o);
+        let Some(old) = before.relations.iter().find(shown) else {
+            continue;
+        };
+        let link = links::link_type(&before.name, old);
+        let reads = (old.fields.iter().filter(|f| hidden(&link, f)))
+            .flat_map(inputs)
+            .filter(|n| known(&link, &old.fields, n));
+        stands(&link.name, reads, &old.fields, &r.fields, &[], &[])?;
+    }
+    Ok(())
+}
+
+/// The fields a computed field reads: its `depends_on`, and what an
+/// embedding is made from.
+fn inputs(f: &FieldDecl) -> impl Iterator<Item = &FieldName> {
+    (f.depends_on.iter()).chain(f.embed.iter().flat_map(|e| &e.from))
+}
+
+/// A field a part its author may not know of reads stands, to that
+/// author, as it is: removed, renamed (its name freed, taken by another
+/// or swapped), retyped, made sensitive, made computed or computed
+/// otherwise, or filled, it is refused on that field
+/// before anything judges the hidden part, which would name it
+/// (lakelands#1124). The owner, or one shown the part, may.
+fn stands<'a>(
+    ty: &TypeName,
+    reads: impl IntoIterator<Item = &'a FieldName>,
+    before: &[FieldDecl],
+    to: &[FieldDecl],
+    renames: &[(FieldName, FieldName)],
+    fill: &[FieldName],
+) -> Result<()> {
+    let moved = |n: &FieldName| renames.iter().any(|(old, new)| old == n || new == n);
+    let computing = |f: &FieldDecl| (f.derived.clone(), f.function.clone(), f.embed.clone());
+    let changed = |n: &FieldName| {
+        let (was, is) = (
+            before.iter().find(|f| &f.name == n),
+            to.iter().find(|f| &f.name == n),
+        );
+        match (was, is) {
+            // Made sensitive, or computed otherwise; taking `sensitive`
+            // away is a change the report lists (027), and no part's check
+            // minds it.
+            (Some(w), Some(i)) => {
+                let computed = computing(i) != (None, None, None);
+                w.ty != i.ty
+                    || (!w.sensitive && i.sensitive)
+                    || (computed && (computing(w), &w.depends_on) != (computing(i), &i.depends_on))
+            }
+            (_, None) => true,
+            (None, Some(_)) => false,
+        }
+    };
+    match reads
+        .into_iter()
+        .find(|n| moved(n) || fill.contains(n) || changed(n))
+    {
         Some(n) => {
-            let (field, ty) = (n.clone(), to.name.clone());
+            let (field, ty) = (n.clone(), ty.clone());
             Err(invalid_field(n, Case::FieldReadElsewhere { field, ty }))
         }
         None => Ok(()),

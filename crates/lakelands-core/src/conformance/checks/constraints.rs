@@ -38,7 +38,7 @@ check!(
 
 check!(
     CONSTRAINT_HELD_ON_EVERY_WALK = a_walk_of_the_lake_leaves_no_record_breaking_a_constraint,
-    "lakelands#1119: a declaration that computes a type's records again, a value type's migration that renames what they hold, and a re-key that rewrites what other types' records hold of a moved key each judge the records as they would leave them, against each constraint that refuses, where a field it reads moved; one that would leave a record breaking it is refused `constraint_left_broken`, naming the constraint, the type and the count, appending nothing, and `not_granted`, naming nothing, to an author who does not read every field it reads; a migration's preflight lists in `breaches` the records as it computes them again and as its re-key rewrites their references"
+    "lakelands#1119: a declaration that computes a type's records again, a value type's migration that renames what they hold, and a re-key that rewrites what other types' records hold of a moved key each judge the records as they would leave them, against each constraint that refuses, where a field it reads moved; one that would leave a record breaking it is refused `constraint_left_broken`, naming the constraint, the type and the count, appending nothing, and to an author who does not read every field it reads `not_granted`, naming nothing, or `field_read_elsewhere` on a field it computes again that the constraint reads (lakelands#1124); a migration's preflight lists in `breaches` the records as it computes them again and as its re-key rewrites their references"
 );
 
 check!(
@@ -66,7 +66,7 @@ check!(
 check!(
     CONSTRAINT_BROKEN_IN_THE_PREFLIGHT =
         a_migration_lists_the_records_its_constraints_would_find_broken,
-    "lakelands#1119: a migration whose `to` declares a constraint lists in its preflight, per constraint, the live records it would leave breaking it, as converted, with the first keys its reader is answered; one that refuses makes the migration lossy and its apply is refused, one that admits is listed and applies; one who does not read every field a constraint reads, kept from one or masked, is not told its entry nor the constraint in `restated`, and no record is counted against it for them; a migration that may move a field such a constraint that refuses reads, converted, filled, renamed, added or computed again, is not granted to them, decided before any record is read, so the answer is the same whatever the records hold; the constraint, which its declaration or migration leaves out, stands as declared"
+    "lakelands#1119: a migration whose `to` declares a constraint lists in its preflight, per constraint, the live records it would leave breaking it, as converted, with the first keys its reader is answered; one that refuses makes the migration lossy and its apply is refused, one that admits is listed and applies; one who does not read every field a constraint reads, kept from one or masked, is not told its entry nor the constraint in `restated`, and no record is counted against it for them; a migration that may move a field such a constraint that refuses reads, converted, filled, renamed, added or computed again, is not granted to them, or refused `field_read_elsewhere` on a field it fills or computes again (lakelands#1124), decided before any record is read, so the answer is the same whatever the records hold; the constraint, which its declaration or migration leaves out, stands as declared"
 );
 
 /// A type of invoices: `paid` never beyond `amount`, and a closed one
@@ -350,13 +350,13 @@ async fn a_walk_of_the_lake_leaves_no_record_breaking_a_constraint(store: Store)
     known["fields"][3]["depends_on"] = json!(["paid"]);
     let d: Declaration = serde_json::from_value(known).map_err(|e| Failure::new(e.to_string()))?;
     let untold = l.cat.declare(&masked, d).await;
-    let not_granted =
-        |a: &lakelands_api::Result<Outcome>| matches!(reason(a), Some(Refusal::NotGranted));
+    let elsewhere = matches!(case_of(&untold),
+        Some(Case::FieldReadElsewhere { field, .. }) if field.as_str() == "rest");
     ensure!(
-        left_broken(&under, ("covered", "bill", 1)) && not_granted(&untold),
+        left_broken(&under, ("covered", "bill", 1)) && elsewhere,
         "a declaration whose computing again leaves `B-1` breaking `covered` is refused \
-         `constraint_left_broken` to the owner and `not_granted` to one masked from `amount`: \
-         {under:?}, {untold:?}"
+         `constraint_left_broken` to the owner and `field_read_elsewhere` on `rest` to one \
+         masked from `amount`: {under:?}, {untold:?}"
     );
     head_unmoved(store.as_ref(), head, "a walk that breaks a constraint").await?;
     try_declare(&l, bill("amount - paid - 10"))
@@ -847,8 +847,8 @@ async fn a_migration_lists_the_records_its_constraints_would_find_broken(store: 
         "the constraint its author may not read stands: {held:?}"
     );
     // Twins that differ only in a hidden value: filling `paid` under a
-    // constraint that reads `amount` is not granted to one kept from it,
-    // whether a record would break it or not.
+    // constraint that reads `amount` is refused on `paid` to one kept from
+    // it, whether a record would break it or not.
     let hold = |name: &str, with_amount: bool| {
         let mut fields = vec![
             json!({"name": "no", "type": {"kind": "text"}}),
@@ -901,14 +901,16 @@ async fn a_migration_lists_the_records_its_constraints_would_find_broken(store: 
             .map(|r| r.data.lossless);
         answers.push((
             name,
-            matches!(reason(&theirs), Some(Refusal::NotGranted)),
+            matches!(case_of(&theirs),
+                Some(Case::FieldReadElsewhere { field, .. }) if field.as_str() == "paid"),
             owner,
         ));
     }
     ensure!(
         answers.iter().all(|a| a.1) && matches!(answers[..], [(_, _, Ok(true)), (_, _, Ok(false))]),
-        "filling `paid` under `fits` is not granted to one kept from `amount`, `h` at 100 or \
-         at 50, and to the owner lossless at 100, lossy at 50: {answers:?}"
+        "filling `paid` under `fits` is refused `field_read_elsewhere` on `paid` to one kept \
+         from `amount`, `h` at 100 or at 50, and to the owner lossless at 100, lossy at 50: \
+         {answers:?}"
     );
     Ok(())
 }

@@ -128,6 +128,11 @@ check!(
     "027 and §2.3: narrowing a relation's cardinality is a migration, and its preflight refuses it while live links would break the narrower rule"
 );
 
+check!(
+    LINK_CHECKS_MIGRATED = a_migration_meets_its_link_types_checks,
+    "027, 028 and 035, extended (lakelands#1124): a link field that only the checks of its link type refuse (a `json` field named like a type, a derived field that depends on no field, one a function computes from an input the link does not hold, an embedding that is not derived) is refused alike, naming the link type under its owner's links, by `declare`, by a migration that keeps the owner's shape and by one that reshapes it, at the preflight and at the apply, appending nothing and leaving the link type undeclared, and an embedding on the links with no backend bound is refused as unbound by a reshaping migration, at the preflight and at the apply, and at the accept of one proposed while it was bound; a change only a migration may make is told after every other check, so `declare` tells such a fault before a reshape, and of several such changes the first, in a fixed order: the type's reshape, then each link type's, then a constraint added"
+);
+
 const LT: &str = "sys.link.invoice.approved_by";
 pub(super) const SEPT: &str = "2026-09-01T00:00:00.000000Z";
 const OCT: &str = "2026-10-01T00:00:00.000000Z";
@@ -1760,5 +1765,161 @@ async fn a_removed_relations_link_type_keeps_its_trigger_its_set_and_its_view(
         after == "[] []",
         "`fed` declared again starts with no link; the set and the view read {after}"
     );
+    Ok(())
+}
+
+async fn a_migration_meets_its_link_types_checks(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let ty = |v: Value| -> TypeDecl {
+        serde_json::from_value(v).expect("the check's declaration reads")
+    };
+    let text = |n: &str| json!({"name": n, "type": {"kind": "text"}});
+    l.declare(ty(json!({"name": "clerk", "fields": [text("n")]})))
+        .await?;
+    l.declare_json(
+        json!({"declare": "function", "name": "doubled", "backing": "expr",
+        "expr": "x * 2", "inputs": [{"name": "x", "type": {"kind": "number"}}]}),
+    )
+    .await?;
+    // `bill` holds a link type of its own, whose `note` a later shape
+    // retypes, and a record whose amount a reshape converts.
+    let bill = |amount: &str, note: &str, more: Option<Value>, guarded: bool| {
+        let mut rels = vec![
+            json!({"name": "checked_by", "target": "clerk", "cardinality": "many_to_many",
+            "fields": [{"name": "note", "type": {"kind": note}}]}),
+        ];
+        rels.extend(more.map(|f| {
+            let fields = if f.is_array() { f } else { json!([f]) };
+            json!({"name": "signed_by", "target": "clerk", "cardinality": "many_to_many",
+                "fields": fields})
+        }));
+        let mut t = json!({"name": "bill", "fields": [{"name": "amount", "type": {"kind": amount}}],
+            "relations": rels});
+        if guarded {
+            t["constraints"] = json!([{"name": "kept", "holds": "amount = amount"}]);
+        }
+        ty(t)
+    };
+    l.declare(bill("number", "text", None, false)).await?;
+    l.upsert("bill", "b1", json!({"amount": 5})).await?;
+    let faults = json!([
+        ["a json field named like a type", {"name": "clerk", "type": {"kind": "json"}}, "json_named_as_type"],
+        ["a derived field on no field", {"name": "w", "type": {"kind": "text"},
+            "authority": "derived", "derived": "'a'", "depends_on": ["zz"]}, "unknown_field"],
+        ["a function's input the link lacks", {"name": "w", "type": {"kind": "number"},
+            "authority": "derived", "function": "doubled"}, "unknown_field"],
+        ["an embedding not derived", {"name": "w", "type": {"kind": "vector", "dimensions": 3},
+            "embed": {"from": ["zz"], "model": "m"}}, "embed_not_derived"]
+    ]);
+    let lt = lakelands_api::TypeName::from("sys.link.bill.signed_by");
+    let pre = |t| l.cat.migrate(&l.own, migration(t));
+    let report = pre(bill("text", "text", None, false)).await;
+    let id = report
+        .must("the reshape alone is a migration")?
+        .data
+        .report_id;
+    let apply = |t| l.cat.migrate_apply(&l.own, migration(t), &id);
+    for fault in faults.as_array().into_iter().flatten() {
+        let (what, f, code) = (fault[0].as_str().unwrap_or(""), &fault[1], &fault[2]);
+        let before = store.head().await.must("reading the head")?;
+        let same = bill("number", "text", Some(f.clone()), false);
+        let reshape = bill("text", "text", Some(f.clone()), false);
+        let answers = [
+            ("declare", l.try_declare(same.clone()).await.map(drop)),
+            (
+                "declare, reshaped",
+                l.try_declare(reshape.clone()).await.map(drop),
+            ),
+            ("a migration's preflight", pre(same).await.map(drop)),
+            (
+                "a reshaping migration's preflight",
+                pre(reshape.clone()).await.map(drop),
+            ),
+            (
+                "a reshaping migration's apply",
+                apply(reshape).await.map(drop),
+            ),
+        ];
+        for (door, r) in answers {
+            let said = crate::conformance::fixture::invalid_said(&r);
+            let said = said.and_then(|s| serde_json::to_value(s).ok());
+            ensure!(
+                said.is_some_and(|v| &v["code"] == code && v.to_string().contains("\"links\"")),
+                "{what} sent by {door} is refused `{code}` naming the link type under `bill`'s \
+                 links; it answered {r:?}"
+            );
+        }
+        head_unmoved(store.as_ref(), before, what).await?;
+        let shown = l.cat.describe_type(&l.own, &lt, Default::default()).await;
+        ensure!(
+            shown.is_err(),
+            "{what} leaves `{lt}` undeclared; it is described {shown:?}"
+        );
+    }
+    // An embedding no bound backend makes is refused as unbound by a
+    // reshaping migration too, at the preflight and at the apply.
+    let before = store.head().await.must("reading the head")?;
+    let embedded = json!([text("t"), {"name": "v", "type": {"kind": "vector", "dimensions": 3},
+        "authority": "derived", "embed": {"from": ["t"], "model": crate::conformance::backing::EMBED_MODEL}}]);
+    let to = bill("text", "text", Some(embedded), false);
+    let unbound = [
+        ("preflight", pre(to.clone()).await.map(drop)),
+        ("apply", apply(to.clone()).await.map(drop)),
+    ];
+    for (door, r) in unbound {
+        ensure!(
+            matches!(r, Err(Error::Unbound { .. })),
+            "an embedding on `signed_by`'s links with no backend bound is refused as unbound \
+             by a reshaping migration's {door}; it answered {r:?}"
+        );
+    }
+    head_unmoved(store.as_ref(), before, "an unbound embedding").await?;
+    // Proposed with its backend bound, it is refused at the accept once
+    // another model's backend is bound in its place.
+    let bind = |model| store.bind_embed(crate::conformance::backing::embedder_as(model, 3));
+    bind(crate::conformance::backing::EMBED_MODEL).must("binding the suite's backend")?;
+    let (migration, report) = (Box::new(migration(to)), Default::default());
+    let write = ProposedWrite::Migrate { migration, report };
+    let Ok(Outcome::Proposed { proposal, .. }) = l.cat.propose(&l.own, write, "v".into()).await
+    else {
+        return Err(Failure::new("proposing the reshape with its backend bound"));
+    };
+    bind("another-model").must("binding another model's backend")?;
+    let accepted = l.cat.accept(&l.own, &proposal).await;
+    ensure!(
+        matches!(accepted, Err(Error::Unbound { .. })),
+        "a reshape proposed with its backend bound is refused as unbound at the accept once \
+         another is bound; it answered {accepted:?}"
+    );
+    // Of several changes only a migration may make, the first is told:
+    // `checked_by`, dropped, is declared again to another target, which
+    // reshapes the links its link type holds as history.
+    l.declare(ty(json!({"name": "auditor", "fields": [text("n")]})))
+        .await?;
+    let dropped =
+        ty(json!({"name": "bill", "fields": [{"name": "amount", "type": {"kind": "number"}}]}));
+    l.migrate(dropped).await?;
+    let again = |amount: &str| {
+        let mut t = bill(amount, "text", None, true);
+        t.relations[0].target = "auditor".into();
+        t
+    };
+    let mut guarded = bill("number", "text", None, true);
+    guarded.relations.clear();
+    let order = [
+        (again("text"), "reshapes"),
+        (again("number"), "reshapes_links"),
+        (guarded, "constraint_needs_migrate"),
+    ];
+    for (to, code) in order {
+        let r = l.try_declare(to).await;
+        let told = crate::conformance::fixture::invalid_said(&r)
+            .and_then(|s| serde_json::to_value(s).ok())
+            .is_some_and(|v| v["code"] == code);
+        ensure!(
+            told,
+            "`declare` of `bill` tells `{code}` first; it answered {r:?}"
+        );
+    }
     Ok(())
 }

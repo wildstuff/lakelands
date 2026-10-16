@@ -1469,11 +1469,17 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             kept_names(o, t)?;
             read_as_stored(o, t)?;
             constraints(o, t)?;
+            // A change only a migration may make is told after every other
+            // check, on the type and on each of its link types, so that a
+            // migration meets them all; the first found, in a fixed order:
+            // the type's, each link type's as declared, the constraints'
+            // (027, lakelands#1124).
+            let mut migrates = None;
             if let Some(current) = o.types.get(&t.name)
                 && let Change::Migrate { reasons } = shape::classify(&current.decl, t)
             {
                 let ty = t.name.clone();
-                return Err(invalid(Case::Reshapes { ty, reasons }));
+                migrates = Some(invalid(Case::Reshapes { ty, reasons }));
             }
             // A relation's link type is a type like any: its fields are
             // checked as a type's, with `t` in force (its `from` points
@@ -1493,7 +1499,8 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     && let Change::Migrate { reasons } = shape::classify(&current.decl, &lt)
                 {
                     let (ty, links) = (t.name.clone(), lt.name.clone());
-                    return Err(invalid(Case::ReshapesLinks { ty, links, reasons }));
+                    let e = || invalid(Case::ReshapesLinks { ty, links, reasons });
+                    migrates.get_or_insert_with(e);
                 }
             }
             // A constraint added or tightened may be broken by stored
@@ -1512,7 +1519,12 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     (t.constraints.iter()).find(|c| !held.iter().any(|h| loosens(c, h)))
             {
                 let (ty, constraint) = (t.name.clone(), c.name.clone());
-                return Err(invalid(Case::ConstraintNeedsMigrate { ty, constraint }));
+                migrates.get_or_insert_with(|| {
+                    invalid(Case::ConstraintNeedsMigrate { ty, constraint })
+                });
+            }
+            if let Some(e) = migrates {
+                return Err(e);
             }
         }
         Declaration::ValueType(v) => {

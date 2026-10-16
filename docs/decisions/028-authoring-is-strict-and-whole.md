@@ -274,7 +274,9 @@ shares (016, extended): the lake, the context, the door's own checks,
 the append.
 
 **`declare`**: the `schema` grant (`not_granted`); the declaration's
-own checks, strict and whole as above; then what it needs bound: a
+own checks, strict and whole as above, on the type and on each of its
+link types, a change only a migration may make told last (027,
+lakelands#1124); then what it needs bound: a
 trigger's `max_depth` within the lake's (`invalid`), a backed
 function's backing (`unbound`), each embedding's model (`unbound`).
 

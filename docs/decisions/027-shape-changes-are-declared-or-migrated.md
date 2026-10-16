@@ -13,6 +13,35 @@ happen to every stored record, and is applied only by a call that names
 that report and only when the report is lossless. A rename is never
 inferred from two declarations; only a migration names it.
 
+### A change only a migration may make is told last
+
+`declare` refuses a reshaping change, a reshape of a link type's
+retired links and a constraint added or tightened, each of which
+`migrate` makes, only once every other check of the declaration has
+passed, on the type and on each of its link types (lakelands#1124). Of
+several, the first is told, in a fixed order: the type's reshape, then
+each link type's in declared order, then the constraint's. So a
+declaration that both reshapes and holds a fault is told the fault,
+which the migration it is sent to would refuse as well, and a
+migration's `to` meets every check `declare` makes of it: one that
+reshapes is not spared the checks of its link types. What it needs
+bound is checked after them all (028), so `declare` tells a reshape
+beside an embedding no bound backend makes `reshapes`, and a migration
+of it is refused as unbound. A lake that took such a migration before
+this rule keeps what it took.
+
+A field that a part its author may not know of reads (an embedding, a
+derived or computed field, a relation it is not shown, a constraint it
+is not told, a link field) stands to that author as it is: its author's
+migration or declaration that removes it, renames it, frees its name,
+renames another onto it, retypes it, makes it sensitive, makes it
+computed or names it in `fill` is refused on that field as
+`field_read_elsewhere`, before anything else judges the change, so no
+check reaches the hidden part and names it
+(lakelands#1124). The price is the author's: it may not change a field
+that something it may not know of reads, even where that part would
+take the change. The owner may, and so may one shown the part.
+
 ### An annotation is a change of meaning
 
 A revision that changes only a declaration's `annotations`, a value
