@@ -98,6 +98,7 @@ fn a_setting_is_told_as_its_reader_sees_the_type() {
         key: key.into(),
         value: Some(value),
         default: Value::Null,
+        declared: None,
     };
     let shown = |ty: &str| ty != "secret";
     let reads = |_: &str, f: &str| f != "m";

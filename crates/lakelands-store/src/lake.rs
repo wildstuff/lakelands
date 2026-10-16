@@ -39,7 +39,7 @@ use lakelands_api::seam::{EmbedBackend, Seams};
 use lakelands_api::write::{Declaration, Migration, Proposal, ProposalFilter, ProposalState};
 use lakelands_api::{
     Error, FieldName, LakeId, Position, Principal, ProposalId, RecordKey, Refusal, Result,
-    SourceId, Timestamp, TypeName, Value, ValueTypeName, WriteContext,
+    SourceId, Timestamp, TypeName, Value, ValueTypeName, Version, WriteContext,
 };
 use lakelands_core::sight::{InForce, Sight};
 use lakelands_core::{damaged, shape};
@@ -497,7 +497,22 @@ impl Lake {
                 }
                 types.extend(held);
             }
-            types.retain(|t| !w.ontology.types.contains_key(&t.name));
+            // The store's own types are declared again where the lake holds
+            // an older form, one without a field they have since gained: a
+            // field added, which reshapes no record (063, extended).
+            let own = |t: &lakelands_api::ontology::TypeDecl| {
+                [SETTING_TYPE, AGING_RULE_TYPE].contains(&t.name.as_str())
+            };
+            let older = |t: &lakelands_api::ontology::TypeDecl| {
+                let held = w.ontology.types.get(&t.name);
+                held.is_some_and(|h| {
+                    let has = |f: &lakelands_api::ontology::FieldDecl| {
+                        h.decl.fields.iter().any(|g| g.name == f.name)
+                    };
+                    !t.fields.iter().all(has)
+                })
+            };
+            types.retain(|t| !w.ontology.types.contains_key(&t.name) || (own(t) && older(t)));
             // No door leaves a lake with a problem among its tools' names,
             // and this is one (027, extended): each type is judged beside
             // the lake and the types before it, before anything is
@@ -507,21 +522,45 @@ impl Lake {
                 crate::declare::tool_names(&with, &d)?;
                 crate::writes::put_as_appended(&mut with, &d, Some);
             }
+            let grouped = types.iter().any(|t| t.name.as_str() == SETTING_TYPE)
+                && w.ontology.types.contains_key(&TypeName::from(SETTING_TYPE));
             for t in types {
                 let hash = shape::schema_hash(&t).map_err(|e| {
                     let _ = e;
                     let flaw = Flaw::NoSchemaHash { ty: t.name.clone() };
                     damaged(Part::Projection, None, flaw)
                 })?;
+                let declaration = Declaration::Type(t);
+                let version = w.ontology.next_version(&declaration);
                 drafts.push(Draft::system(
                     now,
                     EventBody::Declared {
-                        declaration: Declaration::Type(t),
+                        declaration,
                         schema_hash: Some(hash),
-                        version: 1,
+                        version,
                         with_the_set: false,
                     },
                 ));
+            }
+            // The settings the lake held before `sys.setting` had a
+            // `group` are stamped in the same append, so no record stands
+            // in a group its declaration does not name (063, extended).
+            if grouped {
+                let ty = TypeName::from(SETTING_TYPE);
+                for r in lake.engine.view(None)?.scan(&ty, &every(false))? {
+                    let group = crate::writes::setting_group(&w.ontology, r.key.as_str());
+                    if r.fields.get("group").unwrap_or(&Value::Null) == &group {
+                        continue;
+                    }
+                    let body = EventBody::RecordUpserted {
+                        ty: ty.clone(),
+                        key: r.key.clone(),
+                        version: Version(r.version.0 + 1),
+                        patch: [("group".into(), group)].into(),
+                        made: false,
+                    };
+                    drafts.push(Draft::system(now, body));
+                }
             }
             lake.append(&mut w, drafts)?;
             // What a crash left of a forgetting is finished first (058).

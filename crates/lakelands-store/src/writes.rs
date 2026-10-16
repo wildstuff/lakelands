@@ -52,8 +52,8 @@ use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::seam::VerbExecutor;
 use lakelands_api::write::{
     Breach, Carried, Carrier, Declaration, FieldFill, InForce, Migration, MigrationReport, Misfit,
-    ObjectSetDecl, Outcome, ProposalState, ProposedWrite, Recompute, RelationRename, ValueRenamed,
-    ValueTypeMigration, ValueTypeReport, ValueTypeUse, WriteOpts,
+    ObjectSetDecl, Outcome, ProposalState, ProposedWrite, Recompute, RelationRename, SettingDecl,
+    ValueRenamed, ValueTypeMigration, ValueTypeReport, ValueTypeUse, WriteOpts,
 };
 use lakelands_api::{
     Access, ConstraintName, Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal,
@@ -1468,6 +1468,75 @@ pub(crate) fn tools_as_shown(
     granted(all == problems(seen, set))
 }
 
+/// The group a setting's record holds: its declaration's, `store` for one
+/// of the store's own, none for a host's key it does not declare (063,
+/// extended).
+pub(crate) fn setting_group(o: &Ontology, key: &str) -> Value {
+    use lakelands_api::settings::{STORE_GROUP, lake_setting, unlisted};
+    if let Some(e) = o.settings.get(key) {
+        return e.decl.group.clone().map_or(Value::Null, Value::String);
+    }
+    match lake_setting(key).is_some() || unlisted(key).is_some() {
+        true => Value::String(STORE_GROUP.to_owned()),
+        false => Value::Null,
+    }
+}
+
+/// A host's setting's value judged as a write of a field of its declared
+/// type, in the form that write keeps (063, extended).
+fn judged(o: &Ontology, decl: &TypeDecl, s: &SettingDecl, value: &Value) -> Result<Value> {
+    let field = FieldDecl {
+        ty: s.ty.clone(),
+        ..FieldDecl::of("value", s.ty.kind)
+    };
+    let patch = [("value".into(), value.clone())].into();
+    let place = Place::Setting { key: s.key.clone() };
+    let kept = check_values(o, decl, &patch, &[field]).map_err(|e| e.within(place))?;
+    Ok(kept.get("value").cloned().unwrap_or_else(|| value.clone()))
+}
+
+/// A write of `sys.setting` with its group stamped by the store, where the
+/// record does not hold it yet, and a declared setting's value judged by
+/// its kind: a write that names another group is refused, naming
+/// `group` (063, extended). To a writer the declaration is not told
+/// (`told`), the key is undeclared: a group it names is judged against
+/// none and its value is not judged, so no refusal tells it the
+/// declaration; the true group is stamped all the same, and the grant
+/// then refuses the write as it refuses an undeclared key's.
+fn stamped(
+    o: &Ontology,
+    decl: &TypeDecl,
+    key: &RecordKey,
+    before: Option<&BTreeMap<FieldName, Value>>,
+    told: &dyn Fn(&SettingDecl) -> bool,
+    patch: &mut Patch,
+) -> Result<()> {
+    let group = setting_group(o, key.as_str());
+    let declared = o.settings.get(key.as_str()).filter(|s| told(&s.decl));
+    let named = match o.settings.get(key.as_str()) {
+        Some(_) if declared.is_none() => Value::Null,
+        _ => group.clone(),
+    };
+    let field = FieldName::from("group");
+    if patch.get(&field).is_some_and(|g| *g != named) {
+        let at = vec![Place::Setting {
+            key: key.to_string(),
+        }];
+        let case = Case::SettingGroupStamped;
+        return Err(invalid_field(&field, Said { at, case }));
+    }
+    if before.and_then(|b| b.get(&field)).unwrap_or(&Value::Null) != &group {
+        patch.insert(field, group);
+    }
+    let value = FieldName::from("value");
+    let held = patch.get(&value).filter(|v| !v.is_null()).cloned();
+    if let (Some(s), Some(v)) = (declared, held) {
+        let kept = judged(o, decl, &s.decl, &v)?;
+        patch.insert(value, kept);
+    }
+    Ok(())
+}
+
 /// What a declaration is and its name, as a refusal names them.
 fn naming(d: &Declaration) -> (Naming, String) {
     match d {
@@ -1477,6 +1546,8 @@ fn naming(d: &Declaration) -> (Naming, String) {
         Declaration::Trigger(t) => (Naming::Trigger, t.name.to_string()),
         Declaration::ObjectSet(o) => (Naming::ObjectSet, o.name.to_string()),
         Declaration::Function(f) => (Naming::Function, f.name.to_string()),
+        Declaration::Setting(s) => (Naming::Setting, s.key.clone()),
+        _ => unreachable!("a declaration of a kind this release does not know"),
     }
 }
 
@@ -2501,6 +2572,11 @@ impl Decide<'_> {
         if live.is_none() {
             fill_key_fields(w, decl, key, &mut patch, self.door, who)?;
         }
+        if decl.name.as_str() == SETTING_TYPE {
+            let told = |s: &SettingDecl| sees.setting_visible(s);
+            let before = live.map(|b| &b.fields);
+            stamped(&w.ontology, decl, key, before, &told, &mut patch)?;
+        }
         check_key_agrees(decl, key, live, &patch)?;
         // An authored write of a link has both ends live and answered
         // (035). `link` sends them; a verb's patch holds only what it sets,
@@ -3100,10 +3176,17 @@ impl Call<'_> {
             } => {
                 pinned = pin(ty)?;
                 let mut plan = d.plan(Op::Upsert(ty, key, patch), opts.expected_version)?;
-                let EventBody::RecordUpserted { patch: checked, .. } = plan.drafts.remove(0).body
+                let EventBody::RecordUpserted {
+                    patch: mut checked, ..
+                } = plan.drafts.remove(0).body
                 else {
                     unreachable!("an authored record write is an upsert")
                 };
+                // A setting's group is stamped at the accept, from the
+                // declaration then in force (063, extended).
+                if ty.as_str() == SETTING_TYPE && !patch.contains_key("group") {
+                    checked.remove("group");
+                }
                 *patch = checked;
             }
             ProposedWrite::Retire { ty, key, opts } => {
@@ -4225,6 +4308,15 @@ impl Call<'_> {
             (declarations.iter()).for_each(|d| whole.put(d.clone(), 0, None));
             whole
         });
+        // A setting's held value is judged by the lake as the bundle
+        // leaves it (063, extended).
+        let settled = (declarations.iter())
+            .any(|d| matches!(d, Declaration::Setting(_)))
+            .then(|| {
+                let mut whole = w.ontology.clone();
+                (declarations.iter()).for_each(|d| whole.put(d.clone(), 0, None));
+                whole
+            });
         for declaration in declarations {
             let declared = position_after(w, first + drafts.len());
             // A type's hash and link types, or the memberships a set decides.
@@ -4240,6 +4332,10 @@ impl Call<'_> {
                     let after = after.as_ref().expect("a bundle with a set has its copy");
                     let with = (w, after, &mut decided);
                     (None, self.set_drafts(with, set, declared, now)?)
+                }
+                Declaration::Setting(s) => {
+                    let whole = (settled.as_ref()).expect("a bundle with a setting has its copy");
+                    (None, self.restamped((w, whole), s, now)?)
                 }
                 _ => (None, Vec::new()),
             };
@@ -4276,6 +4372,50 @@ impl Call<'_> {
             drafts.extend(changes);
         }
         Ok(drafts)
+    }
+
+    /// The record of a host's setting the lake holds, stamped again in the
+    /// declaration's append where the declaration moves it to another
+    /// group, and its value rewritten in the form its declared kind keeps;
+    /// one whose value that kind refuses is refused, naming the setting.
+    /// The kind is judged by the lake as the whole bundle leaves it, so a
+    /// value type declared beside the setting is the one it reads (063,
+    /// extended).
+    fn restamped(
+        &self,
+        (w, whole): (&Writer, &Ontology),
+        s: &SettingDecl,
+        now: Timestamp,
+    ) -> Result<Vec<Draft>> {
+        let ty = TypeName::from(SETTING_TYPE);
+        let key = RecordKey::from(s.key.as_str());
+        let view = self.lake.engine.view(None)?;
+        let Some(held) = view.get(&ty, &key)?.filter(|r| !r.retired) else {
+            return Ok(Vec::new());
+        };
+        let decl = w.ontology.ty(&ty)?;
+        let mut patch = Patch::new();
+        if let Some(v) = held.fields.get("value").filter(|v| !v.is_null()) {
+            let kept = judged(whole, decl, s, v)?;
+            if &kept != v {
+                patch.insert("value".into(), kept);
+            }
+        }
+        let group = s.group.clone().map_or(Value::Null, Value::String);
+        if held.fields.get("group").unwrap_or(&Value::Null) != &group {
+            patch.insert("group".into(), group);
+        }
+        if patch.is_empty() {
+            return Ok(Vec::new());
+        }
+        let body = EventBody::RecordUpserted {
+            ty,
+            key,
+            version: Version(held.version.0 + 1),
+            patch,
+            made: false,
+        };
+        Ok(vec![Draft::system(now, body)])
     }
 
     /// The records of `types` as `whole` computes them again leave each

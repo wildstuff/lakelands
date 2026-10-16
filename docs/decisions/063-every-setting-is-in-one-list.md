@@ -61,7 +61,8 @@ the engines' tuning and the root's sections, member for member and
 default for default, both ways.
 
 A host's own keys under `sys.setting`, which its expressions read as
-`setting('<key>')`, are its own and are not listed. A key under the
+`setting('<key>')`, are its own and are not listed; a host declares them
+in the lake (below). A key under the
 prefix of a listed lake setting (the key up to its first dot) that names
 none of them is refused, naming the prefix: a misspelt setting is told,
 never kept as a host's key the store does not read.
@@ -88,8 +89,8 @@ built, which is the business of whoever may change it. A holder of
 type or the field absent: nothing of a type it is not shown, and of one
 it is shown only the fields it reads, a setting left naming none not
 told at all. A host's own keys
-are not told there; a reader reads them through `sys.setting` under its
-grants, as any record.
+it has not declared are not told there; a reader reads them through
+`sys.setting` under its grants, as any record.
 
 ### `lakelands settings` shows them and writes only the lake's
 
@@ -104,3 +105,55 @@ never edits a file an operator keeps. So are the last parts of such a
 key (`max_limit`, `tuning.mmap_mb`), naming the full key, and a
 section's name (`deliver`, `tuning`), naming its file: written to the lake, each
 would be a host's own key that nothing reads.
+
+### A host declares its own settings
+
+A host's own key under `sys.setting` may be declared, as a type is: a
+declaration of kind `setting` names the key, the `type` of its value (a
+field type, a value type included), and, for people and agents, its
+`unit` and `description`, and the `group` it belongs to. It is declared
+again to change and never withdrawn; a bundle declares it in its
+`settings/` lane, and the first value beside it, in one `apply`.
+
+- **Its value holds its kind.** Every write of a declared key's `value`
+  is judged as a write of a field of the declared type is, and kept in
+  the form that write keeps: `"19%"` for a `decimal` is refused, naming
+  `value` within the setting. `value` is required, and `null` is
+  refused as its absence, for the owner as for anyone: a setting is
+  unset by retiring its record (`lakelands settings unset`). So
+  `setting('<key>')` reads a declared setting as its kind wherever an
+  expression reads it, and an undeclared key reads as the JSON it holds.
+- **Its key is the host's.** A key the store reads, or one under such a
+  key's prefix, is refused, naming the prefix; so is a key whose held
+  value the declared type refuses, naming the setting.
+- **Its group decides who writes it.** `sys.setting` holds a `group`,
+  which the store stamps at every write: the declaration's group for a
+  declared key, `store` for the store's own settings, none for an
+  undeclared key. A write naming another group is refused, naming
+  `group`. A grant names who writes which settings by its `only` on
+  `sys.setting`, as it admits any record, and never by a list of
+  principals; a holder outside a group is refused its settings as it is
+  refused an undeclared key, and learns nothing of them: to a writer
+  the declaration is not told, the key is undeclared, so a value its
+  kind refuses and a group guessed right or wrong are answered as they
+  are for a key nobody declared. A host may not
+  declare into `store`. A declaration that moves a setting to another
+  group stamps its record again in the declaration's own append, so no
+  record stands in a group its declaration does not name.
+- **`describe` tells the declaration** (kind, unit, meaning, group), with
+  the value the lake holds, to a holder of `schema` and to a principal
+  that may write the setting, and to no other reader. The group itself
+  stands in the log as a field of the record: a reader of `sys.setting`
+  reads it under that type's grants, as it reads the value, and finds
+  the records of a group by it; only the declaration is withheld.
+
+Any expression reads any setting, whatever its reader's grant on
+`sys.setting`: a value that must be kept from a reader, a secret above
+all, is never a setting. `lakelands settings` lists a lake's declared
+settings beside the store's, with their group, and `settings set` judges
+a value by its declared kind.
+
+`sys.setting` gained `group` as a field added, which reshapes no record:
+a writer's open declares the store's own types again, one version on,
+where the lake holds an older form of them, and stamps the settings the
+lake holds with their group in the same append.

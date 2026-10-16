@@ -150,7 +150,10 @@ def page(settings, bound):
         "`lakelands settings` shows each one with the value it has for a lake. A host's own "
         "keys under `sys.setting`, which its expressions read as `setting('<key>')`, are its "
         "own and not listed here; a key under the prefix of a listed lake setting that names "
-        "none of them is refused.",
+        "none of them is refused. A host may declare its own keys in the lake, with a kind, "
+        "a unit, a meaning and a group (`lakelands settings` lists them for a lake). Any "
+        "expression reads any setting, whatever its reader's grants: a value that must be "
+        "kept from a reader, a secret above all, is never a setting.",
     ]
     for layer, (title, intro) in LAYERS.items():
         lines += ["", f"## {title}", "", intro]

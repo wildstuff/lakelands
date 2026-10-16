@@ -106,8 +106,10 @@ pub async fn apply_bundle(
     if what.is_empty() && !bundle.aging_rules.is_empty() {
         return aging_rules(out, catalog, who, bundle.aging_rules).await;
     }
+    let proposed;
     match catalog.apply(who, bundle.declarations).await {
         Ok(outcome) => {
+            proposed = matches!(outcome, lakelands_api::Outcome::Proposed { .. });
             // Each declaration as it stands: one already in force says
             // since when, and a bundle wholly in force says it appended
             // nothing (lakelands#1106).
@@ -141,7 +143,95 @@ pub async fn apply_bundle(
             return Err(f);
         }
     }
-    aging_rules(out, catalog, who, bundle.aging_rules).await
+    aging_rules(out, catalog, who, bundle.aging_rules).await?;
+    if proposed {
+        // A value is judged by its declaration, which is only proposed.
+        for value in &bundle.settings {
+            let name = value.get("key").and_then(Value::as_str).unwrap_or_default();
+            put(
+                out,
+                format!(
+                    "  setting `{name}`: its first value waits until the declarations are \
+                     accepted; apply the bundle again then"
+                ),
+            )?;
+        }
+        return Ok(());
+    }
+    first_values(out, catalog, who, bundle.settings).await
+}
+
+/// Write each setting's first value the bundle gives, only where the lake
+/// never held one: a value an operator wrote since stands, and one an
+/// operator retired stays retired
+/// (`docs/decisions/063-every-setting-is-in-one-list.md`).
+async fn first_values(
+    out: Out<'_>,
+    catalog: &dyn Catalog,
+    who: &Principal,
+    values: Vec<lakelands_api::Patch>,
+) -> Result<(), Failure> {
+    let ty = TypeName::from(lakelands_api::seam::SETTING_TYPE);
+    for value in values {
+        let name = value
+            .get("key")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let key = RecordKey::from(name.as_str());
+        let get = lakelands_api::Get {
+            key: key.clone(),
+            with_meta: false,
+            at: ReadAt::default(),
+            params: Default::default(),
+        };
+        match catalog.get(who, &ty, get).await {
+            Ok(_) => {
+                put(
+                    out,
+                    format!("  setting `{name}` holds a value already, kept"),
+                )?;
+                continue;
+            }
+            Err(lakelands_api::Error::NotFound { .. }) => {}
+            Err(e) => return Err(e.into()),
+        }
+        let retired = lakelands_api::Find {
+            // A quote in the key is doubled, as a text literal holds one.
+            filter: Some(
+                format!("key = '{}'", name.replace('\'', "''"))
+                    .as_str()
+                    .into(),
+            ),
+            retired: true,
+            ..Default::default()
+        };
+        let found = catalog.find(who, &ty, retired).await?.data;
+        if matches!(found, lakelands_api::read::Found::Records { retired: Some(n), .. } if n > 0) {
+            put(
+                out,
+                format!("  setting `{name}` was unset since, kept unset"),
+            )?;
+            continue;
+        }
+        let outcome = (catalog
+            .upsert(who, &ty, &key, value, Default::default())
+            .await)
+            .map_err(|e| {
+                let mut f = Failure::from(e);
+                f.what = format!("setting `{name}`: {}", f.what);
+                f.todo =
+                    "correct its value and apply the bundle again; the declarations were applied"
+                        .to_owned();
+                f
+            })?;
+        let at = outcome.position();
+        put(
+            out,
+            format!("  setting `{name}` given its first value at position {at}"),
+        )?;
+    }
+    Ok(())
 }
 
 /// `recompute`: compute again what the named function or type in force

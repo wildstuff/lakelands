@@ -17,6 +17,7 @@
 //! verbs/<name>.yaml           one verb per file
 //! triggers/<name>.yaml        one trigger per file
 //! object_sets/<name>.yaml     one object set per file
+//! settings/<key>.yaml         one host setting per file
 //! aging_rules/<name>.yaml     one aging rule per file
 //! ```
 //!
@@ -24,7 +25,7 @@
 //! choose; the declaration's name is its `name` key. Anything whose path
 //! has a segment starting with `.` is ignored, and so is a file outside
 //! the lanes that is not YAML (a `README.md`). Refused: a YAML file
-//! outside the seven lanes, a file in a lane that is not YAML, and a
+//! outside the eight lanes, a file in a lane that is not YAML, and a
 //! directory inside a lane.
 //!
 //! # Rules every file follows
@@ -246,6 +247,21 @@
 //! description: Open invoices issued more than thirty days ago.
 //! ```
 //!
+//! A host's setting, `settings/vat_rate.yaml`: its key, the kind of value
+//! it holds, its unit, what it changes and its group, and the value it is
+//! first given, which `lakelands apply` writes only where the lake holds
+//! none, so an operator's later value stands
+//! (`docs/decisions/063-every-setting-is-in-one-list.md`):
+//!
+//! ```yaml
+//! key: vat_rate
+//! type: { kind: decimal }
+//! unit: fraction
+//! description: The VAT rate applied to net amounts.
+//! group: operator
+//! value: "0.19"
+//! ```
+//!
 //! An aging rule, `aging_rules/invoice_overdue.yaml`, holds the fields of
 //! one `sys.aging_rule` record (`docs/seams.md` §`SystemVocabulary`). Its
 //! `when` must parse, and when `on` is a type of the bundle, `field` is
@@ -266,10 +282,11 @@
 //!
 //! The declarations come out in one order whatever order the files were
 //! given in: value types, types, functions, verbs, triggers, object
-//! sets, each lane sorted by name. Value types come before the types
-//! that use them, and types before the verbs, triggers and sets that
-//! name them. The aging rules come out beside them, sorted by name, as
-//! the records `lakelands apply` writes after the declarations.
+//! sets, settings, each lane sorted by name or key. Value types come
+//! before the types and settings that use them, and types before the
+//! verbs, triggers and sets that name them. The aging rules and the
+//! settings' first values come out beside them, sorted by name and key,
+//! as the records `lakelands apply` writes after the declarations.
 
 mod doc;
 mod lower;
@@ -289,18 +306,23 @@ use lakelands_api::tools::{NameProblem, name_problems};
 use lakelands_api::write::Declaration;
 use lakelands_api::{Patch, TypeName, VerbName};
 
-use doc::{AgingRuleDoc, FunctionDoc, ObjectSetDoc, TriggerDoc, TypeDoc, ValueTypeDoc, VerbDoc};
+use doc::{
+    AgingRuleDoc, FunctionDoc, ObjectSetDoc, SettingDoc, TriggerDoc, TypeDoc, ValueTypeDoc, VerbDoc,
+};
 use lower::{Known, Lower};
 
 /// A bundle, loaded: its declarations in the order a lake takes them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bundle {
-    /// Value types, types, functions, verbs, triggers, object sets, each
-    /// lane sorted by name.
+    /// Value types, types, functions, verbs, triggers, object sets,
+    /// settings, each lane sorted by name or key.
     pub declarations: Vec<Declaration>,
     /// Aging rules, as the fields of their `sys.aging_rule` records,
     /// sorted by name.
     pub aging_rules: Vec<Patch>,
+    /// The settings' first values, as the fields of their `sys.setting`
+    /// records, sorted by key.
+    pub settings: Vec<Patch>,
 }
 
 /// One problem with a bundle, against the file it is in.
@@ -368,7 +390,7 @@ pub enum Problem {
     Contradiction,
 }
 
-/// The seven lanes of a bundle, in the order their declarations come out;
+/// The eight lanes of a bundle, in the order their declarations come out;
 /// the aging rules last.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Lane {
@@ -378,17 +400,19 @@ enum Lane {
     Verbs,
     Triggers,
     ObjectSets,
+    Settings,
     AgingRules,
 }
 
 impl Lane {
-    const ALL: [Lane; 7] = [
+    const ALL: [Lane; 8] = [
         Lane::ValueTypes,
         Lane::Types,
         Lane::Functions,
         Lane::Verbs,
         Lane::Triggers,
         Lane::ObjectSets,
+        Lane::Settings,
         Lane::AgingRules,
     ];
 
@@ -400,6 +424,7 @@ impl Lane {
             Lane::Verbs => "verbs",
             Lane::Triggers => "triggers",
             Lane::ObjectSets => "object_sets",
+            Lane::Settings => "settings",
             Lane::AgingRules => "aging_rules",
         }
     }
@@ -453,6 +478,7 @@ struct Docs<'a> {
     verbs: Vec<(&'a str, VerbDoc)>,
     triggers: Vec<(&'a str, TriggerDoc)>,
     object_sets: Vec<(&'a str, ObjectSetDoc)>,
+    settings: Vec<(&'a str, SettingDoc)>,
     aging_rules: Vec<(&'a str, AgingRuleDoc)>,
 }
 
@@ -466,6 +492,8 @@ struct Reading<'a> {
     declared: BTreeMap<String, &'a str>,
     /// Every aging rule's name, with the file that wrote it first.
     rules: BTreeMap<String, &'a str>,
+    /// Every setting's key, with the file that declared it first.
+    settings: BTreeMap<String, &'a str>,
     errors: Vec<BundleError>,
 }
 
@@ -554,6 +582,20 @@ impl<'a> Reading<'a> {
                     self.docs.object_sets.push((file, d));
                 }
             }
+            Lane::Settings => {
+                if let Some(d) = self.doc::<SettingDoc>(file, text, lane) {
+                    if let Some(first) = self.settings.get(&d.key) {
+                        let message = format!(
+                            "setting `{}` is already declared in {first}; a setting is declared once in a bundle",
+                            d.key
+                        );
+                        self.fail(file, Problem::DuplicateName, message);
+                    } else {
+                        self.settings.insert(d.key.clone(), file);
+                        self.docs.settings.push((file, d));
+                    }
+                }
+            }
             Lane::AgingRules => {
                 if let Some(d) = self.doc::<AgingRuleDoc>(file, text, lane) {
                     if let Some(first) = self.rules.get(&d.name) {
@@ -632,11 +674,12 @@ pub fn parse(files: &[(String, String)]) -> Result<Bundle, Vec<BundleError>> {
         mut errors,
         ..
     } = r;
-    let (declarations, aging_rules) = lower_all(docs, &known, &mut errors);
+    let (declarations, aging_rules, settings) = lower_all(docs, &known, &mut errors);
     if errors.is_empty() {
         Ok(Bundle {
             declarations,
             aging_rules,
+            settings,
         })
     } else {
         errors.sort_by(|a, b| a.file.cmp(&b.file));
@@ -788,7 +831,7 @@ fn lower_all(
     docs: Docs<'_>,
     known: &Known,
     errors: &mut Vec<BundleError>,
-) -> (Vec<Declaration>, Vec<Patch>) {
+) -> (Vec<Declaration>, Vec<Patch>, Vec<Patch>) {
     fn each<'a, D, T>(
         docs: Vec<(&'a str, D)>,
         known: &Known,
@@ -824,6 +867,9 @@ fn lower_all(
         each(docs.object_sets, known, errors, lower::object_set),
         |d| d.name.clone(),
     );
+    let settings = sorted(each(docs.settings, known, errors, lower::setting), |d| {
+        d.0.key.clone()
+    });
 
     let tool_owners: Vec<(Owner, &str)> = types
         .iter()
@@ -869,7 +915,12 @@ fn lower_all(
             .into_iter()
             .map(|(_, d)| Declaration::ObjectSet(d)),
     );
-    (out, aging_rules)
+    let mut values = Vec::new();
+    for (_, (d, value)) in settings {
+        values.extend(value);
+        out.push(Declaration::Setting(d));
+    }
+    (out, aging_rules, values)
 }
 
 /// A declaration a lake derives tool names from.

@@ -283,7 +283,7 @@ the writer chose.
 
 | Kind | Payload | Fold |
 |---|---|---|
-| `declared` | `declaration`, `version` (integer), `schema_hash` (string, types only), `with_the_set` (`true`, or absent) | A declaration enters the ontology, or replaces its earlier version, from this position on. `declaration.declare` is `type`, `value_type`, `verb`, `trigger`, `object_set` or `function`, with the declaration's members beside it. `version` is 1 for the first declaration of that `declare` and `name`, one more for each later one. A new version here never reshapes stored records. `with_the_set: true` says that another `declared` of the same set follows in this append: a set that holds a function, or a type the lake held before it, carries it on every `declared` but its last, the link types the system declares among them. The records the set's declarations compute again are computed once, at the set's last `declared`, with the ontology as the whole set leaves it; at a position inside the set they read as before it. A log never ends inside a set, where its last `declared` carries it (the memberships an object set of the set changed come after their `declared` and carry no mark), and a fold refuses one that does. |
+| `declared` | `declaration`, `version` (integer), `schema_hash` (string, types only), `with_the_set` (`true`, or absent) | A declaration enters the ontology, or replaces its earlier version, from this position on. `declaration.declare` is `type`, `value_type`, `verb`, `trigger`, `object_set`, `function` or, from format 17, `setting`, with the declaration's members beside it. `version` is 1 for the first declaration of that `declare` and `name`, one more for each later one. A new version here never reshapes stored records. `with_the_set: true` says that another `declared` of the same set follows in this append: a set that holds a function, or a type the lake held before it, carries it on every `declared` but its last, the link types the system declares among them. The records the set's declarations compute again are computed once, at the set's last `declared`, with the ontology as the whole set leaves it; at a position inside the set they read as before it. A log never ends inside a set, where its last `declared` carries it (the memberships an object set of the set changed come after their `declared` and carry no mark), and a fold refuses one that does. |
 | `value_type_migrated` | `declaration`, `version`, `renames`, `report_id`, `types` | A value type's new declaration enters the ontology at `version`, as a `declared` of it would, and every stored record of the `types` that holds an old value of `renames` (a list of `[old, new]` text pairs) in a field of the value type holds the new one, retired and restricted records included, by the fold: a field computed by a function with a backing keeps what its backing answered. A record it changes stands at this position, with its version, its flags and each field's provenance as they were; one it does not change is as it was. The pairs map each value as it stood before the event, so a chain (`a → b`, `b → c`) and a swap read the same in any order. `types` names, in name order, every type, not a view, with a field of the value type; a fold refuses an event whose `types` differs. After it, the derived fields and the fields computed by a function of those types are computed again, as of this event, as a `declared` that revises them computes them (§2.3), and their calls are owed with this event as their cause. The system's `declared` of each type whose field's `initial` named an old value follows in the same append, one set; then the set memberships the renamed records change, each caused by this event (§2.5). |
 | `migrated` | `migration` (`to`, `renames`; `relation_renames` and `fill`, each left out when empty), `schema_hash`, `version`, `report_id`, `rekeyed` (`[]`) | A type's shape changes and every stored record of it is converted by the fold, by the lossless conversions the preflight report `report_id` checked. Each live record that then holds no value for a field `fill` names takes that field's `initial` from `to`, with the provenance of origin `initial` at this position (050); a retired record is left as it was. When `rekeyed` lists keys, the fold also moves those records to their new keys (§2.3). When `relation_renames` lists pairs of an old and a new name, each renamed relation keeps its edges, and the fold moves the link records of one carried by them to the link type of its new name (§2.3, "Link records"). From format 15 on, where `to` computes otherwise than the type did (its derived expressions, the functions its fields name, what its embeddings are made from, or which are computed at the read), or where `fill` is not empty and the type computes, the derived fields and the fields computed by a function of the type are computed again, as of this event, as a `declared` that revises them computes them (§2.3), and the set memberships that moves follow in the same append, each caused by this event (§2.5); a field computed by a function with a backing keeps what its backing answered until its call answers. A `migrated` of format 14 is folded as that format wrote it. |
 
@@ -887,7 +887,12 @@ the first release with real installations
   and ask `exists` (055). 16 → 17: none. Format 17 is 0.16.0's one
   step, taken before any form it adds (lakelands#1164); each is said
   here by the change that adds it, and a log of format 16 holds none of
-  them. No step changes a fold, so the projection stays. A step that changes how an event folds
+  them: a field's `authority: verb` (lakelands#1130), and a `setting`
+  declaration and the `group` of `sys.setting` (lakelands#996). A
+  writer's open of a lake whose `sys.setting` has no `group` declares
+  it again, one version on, after `lake_upgraded`, and in the same
+  append stamps each setting the lake holds with its group, `store` on
+  the store's own. No step changes a fold, so the projection stays. A step that changes how an event folds
   says so here, and a writer's open then rebuilds the projection.
 - **A writer's open upgrades.** Where the newest event, read under the
   writer's lease, is in an older format the release reads, the open
@@ -974,7 +979,7 @@ below; no other spelling is read.
 | a constraint's `at_ingest` (default `refuse`, which is never written) | `refuse`, `admit` |
 | a verb's `effect` | `write` (with `set`), `external` (with `executor`) |
 | a verb's `scope` (default `record`, which is never written) | `record`, `type` |
-| `declaration.declare` | `type`, `value_type`, `verb`, `trigger`, `object_set`, `function` |
+| `declaration.declare` | `type`, `value_type`, `verb`, `trigger`, `object_set`, `function`, `setting` (from format 17) |
 | a proposal's `write.write` | `upsert`, `retire`, `call` |
 
 A **declaration** is an object whose `declare` names what it declares,
@@ -993,6 +998,7 @@ with that declaration's members beside it. Every member not marked
 | `trigger` | `name` and `on` (required), `when`, `description` (none), `max_depth` (none: an integer at most the lake's `max_reactive_depth`) |
 | `object_set` | `name`, `of` and `where` (required), `description` (none) |
 | `function` | `name` and `backing` (required), `inputs` (`[]`), `expr` (none), `config` (`null`), `description` (none) |
+| `setting` (from format 17) | `key` and `type` (required; a field's `type`), `unit`, `description`, `group` (none). A host's own key of `sys.setting`; its records of `sys.setting` carry `group` as the store stamps it from this declaration (lakelands#996) |
 
 An **annotation map** (`annotations`) is an object from a key
 to any JSON value but `null`. A key is two or more ASCII identifiers

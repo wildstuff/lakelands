@@ -348,6 +348,7 @@ pub struct ObjectSetDecl {
 /// sits (`docs/decisions/028-authoring-is-strict-and-whole.md`, extended).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "declare", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Declaration {
     /// A type, new or revised without reshaping stored records.
     Type(TypeDecl),
@@ -361,6 +362,8 @@ pub enum Declaration {
     ObjectSet(ObjectSetDecl),
     /// A function a backing computes.
     Function(FunctionDecl),
+    /// A host's own setting: its kind, its meaning and its group.
+    Setting(SettingDecl),
 }
 
 /// The kind of a declaration. A later kind is an addition.
@@ -380,17 +383,20 @@ pub enum DeclarationKind {
     ObjectSet,
     /// A function.
     Function,
+    /// A host's own setting.
+    Setting,
 }
 
 impl DeclarationKind {
     /// Every kind.
-    pub(crate) const ALL: [DeclarationKind; 6] = [
+    pub(crate) const ALL: [DeclarationKind; 7] = [
         DeclarationKind::Type,
         DeclarationKind::ValueType,
         DeclarationKind::Verb,
         DeclarationKind::Trigger,
         DeclarationKind::ObjectSet,
         DeclarationKind::Function,
+        DeclarationKind::Setting,
     ];
 
     /// Its name, as the declaration's `declare` member writes it.
@@ -402,6 +408,7 @@ impl DeclarationKind {
             DeclarationKind::Trigger => "trigger",
             DeclarationKind::ObjectSet => "object_set",
             DeclarationKind::Function => "function",
+            DeclarationKind::Setting => "setting",
         }
     }
 }
@@ -460,6 +467,7 @@ impl Declaration {
             Declaration::Trigger(t) => (DeclarationKind::Trigger, t.name.as_str()),
             Declaration::ObjectSet(o) => (DeclarationKind::ObjectSet, o.name.as_str()),
             Declaration::Function(f) => (DeclarationKind::Function, f.name.as_str()),
+            Declaration::Setting(s) => (DeclarationKind::Setting, s.key.as_str()),
         }
     }
 
@@ -484,6 +492,7 @@ impl Declaration {
             Declaration::Function(f) => Place::Function {
                 name: f.name.clone(),
             },
+            Declaration::Setting(s) => Place::Setting { key: s.key.clone() },
         }
     }
 
@@ -530,7 +539,7 @@ impl Declaration {
             Declaration::Verb(v) => fields("payload", &[], &v.payload, &mut out),
             Declaration::Function(f) => fields("inputs", &[], &f.inputs, &mut out),
             Declaration::ValueType(v) => out.push((String::new(), Vec::new(), &v.annotations)),
-            Declaration::Trigger(_) | Declaration::ObjectSet(_) => {}
+            Declaration::Trigger(_) | Declaration::ObjectSet(_) | Declaration::Setting(_) => {}
         }
         out
     }
@@ -654,6 +663,7 @@ impl Declaration {
             Declaration::Trigger(t) => all.push(("when".into(), t.when.as_ref())),
             Declaration::ObjectSet(s) => all.push(("where".into(), Some(&s.filter))),
             Declaration::Function(f) => all.push(("expr".into(), f.expr.as_ref())),
+            Declaration::Setting(_) => {}
         }
         let held = all.into_iter().filter_map(|(path, c)| Some((path, c?)));
         held.collect()
@@ -688,6 +698,7 @@ const DECLARATION_KINDS: &[&str] = &[
     "trigger",
     "object_set",
     "function",
+    "setting",
 ];
 
 // Read by hand, not derived: a derived internally tagged enum buffers the
@@ -702,8 +713,10 @@ impl<'de> Deserialize<'de> for Declaration {
             Some(_) => return Err(D::Error::custom("`declare` is not a string")),
             None => return Err(D::Error::missing_field("declare")),
         };
+        // A setting is named by its key.
+        let named = if kind == "setting" { "key" } else { "name" };
         let name = members
-            .get("name")
+            .get(named)
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned);
         let members = serde_json::Value::Object(members);
@@ -714,6 +727,7 @@ impl<'de> Deserialize<'de> for Declaration {
             "trigger" => serde_path_to_error::deserialize(members).map(Declaration::Trigger),
             "object_set" => serde_path_to_error::deserialize(members).map(Declaration::ObjectSet),
             "function" => serde_path_to_error::deserialize(members).map(Declaration::Function),
+            "setting" => serde_path_to_error::deserialize(members).map(Declaration::Setting),
             other => return Err(D::Error::unknown_variant(other, DECLARATION_KINDS)),
         };
         read.map_err(|e| D::Error::custom(refusal(&kind, name.as_deref(), &e)))
@@ -774,6 +788,30 @@ pub struct FunctionDecl {
     /// What the function computes, for people and agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+/// A setting a host declares (`docs/decisions/063-every-setting-is-in-one-list.md`,
+/// extended): every write of its key is judged as a write of a field of
+/// `type` is, `setting('<key>')` reads it as that kind, and only a
+/// principal whose grant admits its `group` writes it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SettingDecl {
+    /// The setting's key under `sys.setting`.
+    pub key: String,
+    /// The kind of value it holds.
+    #[serde(rename = "type")]
+    pub ty: crate::ontology::FieldType,
+    /// The unit its value is in, for people and agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    /// What it changes, for people and agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The group of settings it belongs to, which a grant's `only` on
+    /// `sys.setting` names; none where absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 /// A change of a type's shape that stored records must follow.

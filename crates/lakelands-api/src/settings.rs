@@ -23,6 +23,10 @@ use serde::{Deserialize, Serialize};
 use crate::Value;
 use crate::describe::SettingValue;
 
+/// The group of the store's own lake settings: a grant's `only` on
+/// `sys.setting` names it, and no host's setting is in it.
+pub const STORE_GROUP: &str = "store";
+
 /// Where a setting is kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -459,6 +463,7 @@ pub fn told(settings: &BTreeMap<String, Value>) -> Vec<SettingValue> {
             key: s.key.to_owned(),
             value: settings.get(s.key).cloned(),
             default: s.default_value(),
+            declared: None,
         });
     let typed = settings
         .iter()
@@ -467,6 +472,7 @@ pub fn told(settings: &BTreeMap<String, Value>) -> Vec<SettingValue> {
                 key: key.clone(),
                 value: Some(value.clone()),
                 default: value_of(settings, s, None),
+                declared: None,
             }),
             _ => None,
         });

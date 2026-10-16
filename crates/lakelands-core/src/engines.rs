@@ -75,6 +75,8 @@ pub fn declaration_key(d: &Declaration) -> String {
         Declaration::Trigger(t) => format!("trigger {}", t.name),
         Declaration::ObjectSet(o) => format!("object_set {}", o.name),
         Declaration::Function(f) => format!("function {}", f.name),
+        Declaration::Setting(s) => format!("setting {}", s.key),
+        _ => unreachable!("a declaration of a kind this release does not know"),
     }
 }
 
@@ -1561,7 +1563,7 @@ pub fn declared_on(d: &Declaration, stands: &impl Fn(&str) -> Option<TypeName>) 
         Declaration::Verb(v) => v.on.clone(),
         Declaration::Trigger(t) => t.on.clone(),
         Declaration::ObjectSet(s) => s.of.clone(),
-        Declaration::ValueType(_) | Declaration::Function(_) => return Vec::new(),
+        _ => return Vec::new(),
     };
     let mut out = vec![on];
     out.extend(stands(&declaration_key(d)).filter(|was| !out.contains(was)));

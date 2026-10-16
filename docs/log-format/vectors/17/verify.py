@@ -308,6 +308,12 @@ SHOWS = {
         and e["body"].get("keys") == ["1"] and "sealed" not in e),
     "verb_authority": shows("a declared type with a field only its verbs write, `authority: verb`")(
         lambda e: any(f.get("authority") == "verb" for f in declaration(e).get("fields", []))),
+    "setting_declared": shows("a declared host setting with its type, unit, meaning and group")(
+        lambda e: declaration(e).get("declare") == "setting" and declaration(e).get("key") == "vat_rate"
+        and declaration(e).get("type") == {"kind": "decimal"} and declaration(e).get("group") == "operator"),
+    "setting_group": shows("a `sys.setting` record carrying the `group` stamped from its declaration")(
+        lambda e: e["body"]["kind"] == "record_upserted" and e["body"]["type"] == "sys.setting"
+        and e["body"]["patch"].get("group") == "operator"),
     "lake_upgraded": shows("a `lake_upgraded` from the format before to the one this lake is written in")(
         lambda e: e["body"]["kind"] == "lake_upgraded" and e["body"]["from"] == e["v"] - 1 and e["body"]["to"] == e["v"]),
 }

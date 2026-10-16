@@ -88,7 +88,28 @@ fn cases() -> Vec<Case> {
             }),
             names: &["format", "write", "fields[0]", "memo"],
         },
+        // A host's setting is named by its key.
+        Case {
+            route: "schema/declare",
+            tool: None,
+            args: json!({"declaration": setting()}),
+            names: &["colour", "declaration", "batch.size"],
+        },
+        Case {
+            route: "proposals",
+            tool: Some("propose"),
+            args: json!({
+                "write": {"write": "declare", "declarations": [setting()]},
+                "why": "a setting",
+            }),
+            names: &["colour", "write", "batch.size"],
+        },
     ]
+}
+
+/// A host's setting with `colour`, which no setting has.
+fn setting() -> Value {
+    json!({"declare": "setting", "key": "batch.size", "type": {"kind": "number"}, "colour": "red"})
 }
 
 /// `text` names everything `names` lists, or says what it lacks.

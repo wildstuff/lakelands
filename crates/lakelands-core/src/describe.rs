@@ -29,7 +29,7 @@ use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::{
     Authority, Derived, RelationDecl, Risk, TypeDecl, VerbDecl, VerbEffect, ViewDecl,
 };
-use lakelands_api::write::{Declaration, FunctionDecl};
+use lakelands_api::write::{Declaration, FunctionDecl, SettingDecl};
 use lakelands_api::{Access, FieldName, LakeId, Principal, TypeName, ValueTypeName};
 
 use crate::rights::{field_access, granted_access, only_holder, pinnable, type_access};
@@ -322,6 +322,8 @@ impl Sight<'_> {
             }
             Declaration::Function(f) => self.function_visible(f),
             Declaration::ValueType(v) => self.uses_shown(&v.name, declared),
+            Declaration::Setting(s) => self.setting_visible(s),
+            _ => false,
         }
     }
 
@@ -609,6 +611,29 @@ pub(crate) fn parsed(c: &Condition) -> Option<Expr> {
 }
 
 impl Sight<'_> {
+    /// Whether its principal is told a host's setting declaration: a
+    /// holder of `schema`, or one who may write the setting, writing
+    /// `value` of `sys.setting` under a grant whose `only` there admits
+    /// the setting's key and group (063, extended).
+    pub fn setting_visible(&self, s: &SettingDecl) -> bool {
+        let who = self.who();
+        if who.grants.schema {
+            return true;
+        }
+        let ty = TypeName::from(lakelands_api::seam::SETTING_TYPE);
+        let Some(t) = self.force.ty(&ty) else {
+            return false;
+        };
+        let value = t.fields.iter().find(|f| f.name.as_str() == "value");
+        let writes = value.is_some_and(|f| field_access(who, t, f).writes());
+        let admits = |(f, v): &(FieldName, lakelands_api::Value)| match f.as_str() {
+            "key" => v.as_str() == Some(s.key.as_str()),
+            "group" => v.as_str().is_some() && v.as_str() == s.group.as_deref(),
+            _ => false,
+        };
+        writes && crate::rights::own_only(who, &ty).iter().all(admits)
+    }
+
     /// Whether a function may be shown to its principal: it computes at
     /// least one field, and every type where it does is shown to it,
     /// which reads that field and every input, which the function reads

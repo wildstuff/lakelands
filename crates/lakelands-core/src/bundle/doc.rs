@@ -225,6 +225,20 @@ pub(super) struct AgingRuleDoc {
     pub description: Option<String>,
 }
 
+/// `settings/<key>.yaml`: a host's setting, and the value it is first
+/// given.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SettingDoc {
+    pub key: String,
+    #[serde(rename = "type")]
+    pub ty: TypeSpec,
+    pub unit: Option<String>,
+    pub description: Option<String>,
+    pub group: Option<String>,
+    pub value: Option<serde_json::Value>,
+}
+
 /// `functions/<name>.yaml`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

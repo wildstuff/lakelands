@@ -695,11 +695,26 @@ fn in_force() -> InForce {
     }
 }
 
+fn setting_decl() -> lakelands_api::write::SettingDecl {
+    lakelands_api::write::SettingDecl {
+        key: "vat_rate".into(),
+        ty: lakelands_api::ontology::FieldDecl::of(
+            "v",
+            lakelands_api::ontology::StorageKind::Decimal,
+        )
+        .ty,
+        unit: Some("fraction".into()),
+        description: Some("d".into()),
+        group: Some("operator".into()),
+    }
+}
+
 fn setting_value() -> SettingValue {
     SettingValue {
         key: "sort_index.invoice".into(),
         value: Some(serde_json::json!(["due"])),
         default: Value::Null,
+        declared: Some(setting_decl()),
     }
 }
 
@@ -830,6 +845,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         ("trigger_decl", members(&trigger_decl())),
         ("object_set_decl", members(&object_set_decl())),
         ("function_decl", members(&function_decl())),
+        ("setting_decl", members(&setting_decl())),
         (
             "migration",
             members(&Migration {
@@ -1419,6 +1435,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 DeclarationKind::Trigger,
                 DeclarationKind::ObjectSet,
                 DeclarationKind::Function,
+                DeclarationKind::Setting,
             ],
             None,
         ),
@@ -1793,7 +1810,9 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Declaration::Verb(_)
             | Declaration::Trigger(_)
             | Declaration::ObjectSet(_)
-            | Declaration::Function(_) => {}
+            | Declaration::Function(_)
+            | Declaration::Setting(_) => {}
+            _ => unreachable!("a declaration of a kind the WIT does not mirror"),
         }
     }
     let _ = declarations;
@@ -1838,6 +1857,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     config: Value::Null,
                     description: None,
                 }),
+                Declaration::Setting(setting_decl()),
             ],
             Some("declare"),
         ),

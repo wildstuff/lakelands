@@ -8,7 +8,7 @@ use std::sync::Arc;
 use lakelands_api::engine::{Declared, ProjectionView};
 use lakelands_api::ontology::{FieldDecl, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl};
 use lakelands_api::tools::{self, MAX_TOOL_NAME, NameSource};
-use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl};
+use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl, SettingDecl};
 use lakelands_api::{Error, FieldName, Missing, Position, TypeName, VerbName};
 
 /// A type's fields and its relations' link fields: all that may be computed.
@@ -48,6 +48,8 @@ pub struct Ontology {
     pub object_sets: BTreeMap<String, Entry<ObjectSetDecl>>,
     /// Functions, by name.
     pub functions: BTreeMap<String, Arc<Entry<FunctionDecl>>>,
+    /// A host's own settings, by key (063, extended).
+    pub settings: BTreeMap<String, Entry<SettingDecl>>,
     /// Each type's `depends_on` lists as they were declared, field by
     /// field: the completed lists are made again from them.
     listed: BTreeMap<TypeName, Vec<Vec<FieldName>>>,
@@ -281,6 +283,8 @@ impl Ontology {
                     self.types.insert(name, kept.unwrap_or_else(|| Arc::new(e)));
                 }
             }
+            Declaration::Setting(t) => put(&mut self.settings, t.key.clone(), t, v, h, s),
+            _ => {}
         }
     }
 
@@ -388,6 +392,8 @@ impl Ontology {
             Declaration::Trigger(t) => of(self.triggers.get(t.name.as_str()), Declaration::Trigger),
             Declaration::ObjectSet(s) => of(self.object_sets.get(&s.name), Declaration::ObjectSet),
             Declaration::Function(f) => of(self.functions.get(&f.name), Declaration::Function),
+            Declaration::Setting(s) => of(self.settings.get(&s.key), Declaration::Setting),
+            _ => None,
         }
     }
 
@@ -403,6 +409,8 @@ impl Ontology {
             Declaration::Trigger(t) => of(self.triggers.get(t.name.as_str())),
             Declaration::ObjectSet(s) => of(self.object_sets.get(&s.name)),
             Declaration::Function(f) => of(self.functions.get(&f.name)),
+            Declaration::Setting(s) => of(self.settings.get(&s.key)),
+            _ => None,
         }
     }
 
@@ -431,6 +439,8 @@ impl Ontology {
             Declaration::Trigger(t) => is(self.triggers.get(t.name.as_str()), t),
             Declaration::ObjectSet(s) => is(self.object_sets.get(&s.name), s),
             Declaration::Function(f) => is(self.functions.get(&f.name), f),
+            Declaration::Setting(s) => is(self.settings.get(&s.key), s),
+            _ => false,
         }
     }
 
@@ -475,6 +485,7 @@ impl Ontology {
         each(&self.verbs, Declaration::Verb, &mut out);
         each(&self.triggers, Declaration::Trigger, &mut out);
         each(&self.object_sets, Declaration::ObjectSet, &mut out);
+        each(&self.settings, Declaration::Setting, &mut out);
         out
     }
 }

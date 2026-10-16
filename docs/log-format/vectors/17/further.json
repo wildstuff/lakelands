@@ -246,6 +246,18 @@
       "about": "A `declared` type `parcel` whose `state` only its verbs write (`authority: verb`, lakelands#1130), with an `initial`: `upsert` and `ingest` are refused it, a verb's `set` writes it. A form format 17 holds and 16 does not.",
       "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"no\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"verb\",\"initial\":\"packed\",\"name\":\"state\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"name\":\"parcel\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"85651fec5755256f128198773bd169ede975a723d9876e787029611bc381b381\",\"id\":\"00000000000000000000000000000030\",\"known_at\":\"2026-10-05T09:00:19.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":48,\"prev\":\"2be3698504b5169af0797561212e06eb48cbd5b6537c0d97d06e5f04322170b9\",\"v\":17,\"writer\":\"agent:agent\"}",
       "hash": "85651fec5755256f128198773bd169ede975a723d9876e787029611bc381b381"
+    },
+    {
+      "shows": "setting_declared",
+      "about": "A `declared` setting `vat_rate` of the host (063, extended, lakelands#996): a `decimal`, with its unit, its meaning and its group `operator`. Every write of `vat_rate` is judged as a write of a decimal field. A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"setting\",\"description\":\"The VAT rate on net amounts.\",\"group\":\"operator\",\"key\":\"vat_rate\",\"type\":{\"kind\":\"decimal\"},\"unit\":\"fraction\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"b241cc1546c22fbede4f8804921e533b9f0e88b05cc71f4cca63edb45510d3f8\",\"id\":\"00000000000000000000000000000031\",\"known_at\":\"2026-10-05T09:00:20.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":49,\"prev\":\"85651fec5755256f128198773bd169ede975a723d9876e787029611bc381b381\",\"v\":17,\"writer\":\"agent:agent\"}",
+      "hash": "b241cc1546c22fbede4f8804921e533b9f0e88b05cc71f4cca63edb45510d3f8"
+    },
+    {
+      "shows": "setting_group",
+      "about": "A `record_upserted` of the `sys.setting` `vat_rate` carrying the `group` the store stamps from its declaration, which a grant's `only` on `sys.setting` names. A member format 17's `sys.setting` holds and 16's does not.",
+      "line": "{\"body\":{\"key\":\"vat_rate\",\"kind\":\"record_upserted\",\"made\":true,\"patch\":{\"group\":\"operator\",\"key\":\"vat_rate\",\"value\":\"0.19\"},\"type\":\"sys.setting\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"fb6bee21cc01fdc64947a174dad634770cb36ec7c293deafe3d2ed72f652da21\",\"id\":\"00000000000000000000000000000032\",\"known_at\":\"2026-10-05T09:00:21.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":50,\"prev\":\"b241cc1546c22fbede4f8804921e533b9f0e88b05cc71f4cca63edb45510d3f8\",\"v\":17,\"writer\":\"agent:agent\"}",
+      "hash": "fb6bee21cc01fdc64947a174dad634770cb36ec7c293deafe3d2ed72f652da21"
     }
   ],
   "misplaced": [
