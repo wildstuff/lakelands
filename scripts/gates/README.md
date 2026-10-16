@@ -1,8 +1,9 @@
 # Gates
 
-Fifteen scripts that hold the rules of `CLAUDE.md` mechanically. CI runs
-each one as its own job on every pull request; run them locally before
-pushing:
+One script per rule that review alone would miss, and `all.sh`, which
+runs them all. CI runs each gate as its own job on every pull request,
+and a red gate keeps the pull request from merging. Run them locally
+before pushing:
 
 ```
 scripts/gates/all.sh                  # every gate, one line each
@@ -20,14 +21,14 @@ what it counts.
 | Gate | Holds |
 |---|---|
 | `no-external-platform-deps` | nothing from the originating platform in any `Cargo.lock`; no manifest path leaves the repository |
-| `cfg-budget` | at most 20 `cfg(feature)` sites; features are engine names only |
+| `cfg-budget` | at most `BUDGET` (in the script) `cfg(feature)` sites; features are engine names only, never `default`, and an optional dependency hides behind `dep:` |
 | `vocabulary` | the platform's words stay out of `src/` and every `.rs` under `crates/`; one of them stays out of the repository and its commit messages |
 | `single-catalog` | tool names come only from the generator in `lakelands-api`; the generic names are read from the generator's `GENERIC_TOOLS`, so the gate keeps no list of its own |
-| `seam-width` | the store facade (`LakeStore`) and the engine traits have at most 110 methods together |
-| `core-size` | api + core + store + sqlite and pg engines (`lakelands-api`, `lakelands-core`, `lakelands-store`, `lakelands-engine-sqlite`, `lakelands-engine-pg`) in two budgets, each against a ratchet base that only moves down: the product code at most 38k lines (`core-size.product.base`), and the specification at most 46.5k (`core-size.spec.base`), which is `src/conformance/**`, every `tests.rs` and everything under a `tests/` directory in `src/`; a product file holding a test, or a `#[cfg(test)]` other than before `mod tests;`, is red |
+| `seam-width` | the store facade (`LakeStore`) and the engine traits have at most `BUDGET` (in the script) methods together, each defined once |
+| `core-size` | the core crates (the script's `CRATES`) in two budgets, each a ratchet base under a ceiling: the product code within `core-size.product.base` and `PRODUCT_CEILING`, and the specification within `core-size.spec.base` and `SPEC_CEILING`. The specification is `src/conformance/**`, every `tests.rs` and everything under a `tests/` directory in `src/`; a product file holding a test, or a `#[cfg(test)]` other than before `mod tests;`, is red. `docs/budgets.md` records every raise |
 | `conformance-required` | every engine crate is on `conformance/roster`, and CI runs the suite for every required one |
-| `dco` | every commit is signed off |
-| `no-external-decisions` | no citation of the platform's decision records, planning threads or issue numbers, in files or commit messages |
+| `dco` | every commit but a merge carries a `Signed-off-by:` naming its author exactly (`CONTRIBUTING.md`) |
+| `no-external-decisions` | no citation of the originating platform's decision records or planning threads, and no bare `#` followed by four or more digits (`lakelands#N` and full URLs are fine), in any tracked file or commit message |
 | `doc-heads-its-item` | a new item is never inserted between another item and its doc comment: no added `fn`, `struct`, `enum`, `const`, `static`, `type`, `trait`, `impl` or `mod` whose doc block is headed by an unchanged `///` line |
 | `detail-sources` | an error's foreign words (`scrubbed`, by any path or alias) are made only in the product files the gate lists, each with why its words quote no record and no host path, and no product file outside the client reads a closed set (`Error`, `Situation`, `Detail`, `Seam`, `Exchange`, `Flaw`, `Remote`, `Case`, `Place`, `Said`, `Refusal`, `Missing`, `NameProblem`, `NameSource`) from JSON by name |
 | `refusals` | `docs/refusals.md` is what the catalog says; no two templates of a closed set can say the same sentence; no code the last release shipped is gone without its row in `scripts/refusals.withdrawn`, renamed or lost a parameter, and no code with a row is in the catalog; no row the last release's page lists as withdrawn has left the list, and that page's "Withdrawn" table is the one the gate reads; no case is built with a parameter made by `format!`; only the wire's reader makes an `Unknown` |

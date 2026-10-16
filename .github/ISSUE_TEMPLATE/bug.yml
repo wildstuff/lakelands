@@ -1,0 +1,54 @@
+name: Bug
+description: Lakelands did something it should not, or did not do what its docs say.
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: What `lakelands --version` prints, or the crate version a host depends on.
+    validations:
+      required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Engine
+      options: [mem, sqlite, pg]
+    validations:
+      required: true
+  - type: input
+    id: engine-version
+    attributes:
+      label: PostgreSQL version
+      description: For the pg engine only.
+  - type: dropdown
+    id: door
+    attributes:
+      label: Door
+      options: [CLI, MCP, REST, a host's own code]
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps
+      description: >-
+        The commands or calls that build the lake and show the problem. Name
+        the lake's position where an answer is wrong. Do not attach a lake's
+        files, and leave out anything private.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+      description: What should have happened, and the page of `docs/` that says so if there is one.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+      description: What happened instead, with the refusal's code if there was one.
+    validations:
+      required: true
