@@ -90,7 +90,6 @@ macro_rules! catalog {
             }
         }
 
-        #[allow(deprecated)]
         impl ::std::fmt::Display for $set {
             fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 match self {
@@ -104,7 +103,6 @@ macro_rules! catalog {
             }
         }
 
-        #[allow(deprecated)]
         impl $crate::error::Param for $set {
             $(const JOIN: &'static str = $join;)?
 
@@ -1380,10 +1378,6 @@ catalog! {
         VerbTypeTakesNoKey { verb: VerbName, #[serde(rename = "type")] ty: TypeName } => "verb `{verb}` is called on the type `{ty}`, not on a record: it takes no key",
         /// A verb's assignment computing what its field does not take.
         VerbValueUnfit { verb: VerbName, field: FieldName } => "verb `{verb}` computes a value that does not fit `{field}`",
-        #[deprecated(since = "0.15.0", note = "answered as linked_already_from / linked_already_to")]
-        /// Deprecated since 0.15.0 and never answered: a link one ingest
-        /// window made already is refused as over the lake.
-        WindowLinksAlready { from: RecordKey, to: RecordKey, relation: RelationName, cardinality: Cardinality } => "the window links `{from}` to `{to}` over `{relation}` already, and it allows one ({cardinality})",
         /// An ingest of a record an insert-only type holds already.
         WrittenOnce { #[serde(rename = "type")] ty: TypeName, key: RecordKey } => "`{ty}` `{key}` is written once: its type is insert-only, and a record stands at the key, live or retired",
         /// A pinned proposal's accept after its record or type changed.

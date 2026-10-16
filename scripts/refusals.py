@@ -173,8 +173,7 @@ def catalog():
                 elif c in " \t":
                     pass
                 else:
-                    # A deprecation keeps its code (056).
-                    if start and depth == 0 and entries.startswith("#[", k) and not entries.startswith("#[deprecated", k):
+                    if start and depth == 0 and entries.startswith("#[", k):
                         line = entries[k : entries.find("\n", k)]
                         SHAPE.append(f"{set_name}: a case carries an attribute of its own ({line}); its code is its name")
                     start = False

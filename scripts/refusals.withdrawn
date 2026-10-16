@@ -43,3 +43,4 @@ Unmocked | pattern_to | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_c
 Unmocked | pattern_projection | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot`
 Unmocked | hops | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot`
 Unmocked | proposer | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot`
+Case | window_links_already | v0.15.1 | 0.16.0 | it was deprecated since 0.15.0 and never answered: a link that breaks its relation's cardinality is answered `linked_already_from` / `linked_already_to`

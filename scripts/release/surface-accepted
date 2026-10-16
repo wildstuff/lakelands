@@ -8,3 +8,4 @@
 baseline v0.15.0
 lakelands-api	enum_marked_non_exhaustive	enum Authority
 lakelands-api	enum_marked_non_exhaustive	enum Declaration
+lakelands-api	enum_variant_missing	variant Case::WindowLinksAlready
