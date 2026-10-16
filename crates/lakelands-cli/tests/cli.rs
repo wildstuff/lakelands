@@ -1877,3 +1877,269 @@ fn a_keyring_inside_a_lakes_directory_is_refused() {
         );
     }
 }
+
+/// The members a struct declares, as its derived `Deserialize` names
+/// them to `deserialize_struct`: read from the type, so a member added is
+/// seen whether or not a configuration holds it.
+fn members_of<'de, T: serde::Deserialize<'de>>() -> &'static [&'static str] {
+    use serde::de::{Error, Visitor, value};
+    struct Names<'a>(&'a mut &'static [&'static str]);
+    impl<'de> serde::Deserializer<'de> for Names<'_> {
+        type Error = value::Error;
+        fn deserialize_any<V: Visitor<'de>>(self, _: V) -> Result<V::Value, value::Error> {
+            Err(value::Error::custom("not a struct"))
+        }
+        fn deserialize_struct<V: Visitor<'de>>(
+            self,
+            _: &'static str,
+            fields: &'static [&'static str],
+            _: V,
+        ) -> Result<V::Value, value::Error> {
+            *self.0 = fields;
+            Err(value::Error::custom("only its members are read"))
+        }
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes
+            byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct map enum
+            identifier ignored_any
+        }
+    }
+    let mut names: &'static [&'static str] = &[];
+    let _ = T::deserialize(Names(&mut names));
+    names
+}
+
+/// Every member of the root's `lakelands.json`, read from `Config` and
+/// each struct of its sections, is a root setting or binding of the list,
+/// and each one of the list is such a member: a section or a member added
+/// to the configuration and not listed is red, as is one listed that no
+/// struct holds. `lakelands`, `owner` and `principals` are neither (063).
+/// A setting's default is the section's.
+#[test]
+fn the_root_s_settings_are_the_list_s() {
+    use lakelands_api::settings::{BINDINGS, Layer, SETTINGS};
+    use std::collections::BTreeSet;
+    let sections: [(&str, &[&str]); 10] = [
+        ("", members_of::<lakelands_cli::Config>()),
+        ("server", members_of::<lakelands_server::HttpConfig>()),
+        ("aging", members_of::<lakelands_cli::ticker::AgingConfig>()),
+        ("deliver", members_of::<lakelands_backings::DeliverConfig>()),
+        ("embed", members_of::<lakelands_backings::EmbedConfig>()),
+        ("backings", members_of::<lakelands_backings::Config>()),
+        (
+            "backings.http",
+            members_of::<lakelands_backings::HttpConfig>(),
+        ),
+        (
+            "backings.exec",
+            members_of::<lakelands_backings::ExecConfig>(),
+        ),
+        (
+            "mirror",
+            members_of::<lakelands_cli::mirror::MirrorConfig>(),
+        ),
+        ("keys", members_of::<lakelands_cli::KeysConfig>()),
+    ];
+    let neither = ["lakelands", "owner", "principals"];
+    let path = |s: &str, m: &str| match s {
+        "" => m.to_owned(),
+        s => format!("{s}.{m}"),
+    };
+    let every: BTreeSet<String> = (sections.iter())
+        .flat_map(|(s, ms)| ms.iter().map(|m| path(s, m)))
+        .collect();
+    for n in neither {
+        assert!(every.contains(n), "`{n}` is a member of the root");
+    }
+    for (s, ms) in &sections[1..] {
+        assert!(
+            !ms.is_empty() && every.contains(*s),
+            "`{s}` is a section of the root"
+        );
+    }
+    let declared: BTreeSet<String> = (every.iter())
+        .filter(|k| !neither.contains(&k.as_str()) && !sections.iter().any(|(s, _)| s == k))
+        .cloned()
+        .collect();
+    let listed: BTreeSet<String> = (SETTINGS.iter().map(|s| (s.key, s.layer)))
+        .chain(BINDINGS.iter().map(|b| (b.key, b.layer)))
+        .filter(|(_, layer)| *layer == Layer::Root)
+        .map(|(k, _)| k.to_owned())
+        .collect();
+    assert_eq!(declared, listed, "the root's members and the list's");
+    let config: lakelands_cli::Config = serde_json::from_value(serde_json::json!({
+        "lakelands": 1, "owner": "owner",
+        "server": {"bind": "127.0.0.1:7700"},
+        "aging": {},
+        "deliver": {"endpoints": [], "ca_file": "ca.pem"},
+        "embed": {"endpoint": "http://127.0.0.1:9/", "model": "m", "dimensions": 2,
+            "api_key_file": "k", "ca_file": "ca.pem"},
+        "backings": {"http": {"hosts": [], "ca_file": "ca.pem"}, "exec": {"commands": {}}},
+        "mirror": {"connections": []},
+        "keys": {"keyring": "keys"},
+    }))
+    .unwrap();
+    let held = serde_json::to_value(&config).unwrap();
+    for s in SETTINGS.iter().filter(|s| s.layer == Layer::Root) {
+        let at = format!("/{}", s.key.replace('.', "/"));
+        if !s.default_value().is_null() {
+            assert_eq!(held.pointer(&at), Some(&s.default_value()), "`{}`", s.key);
+        }
+    }
+}
+
+/// `settings` lists every setting with its value for the lake; `set` and
+/// `unset` write a lake setting through the store's judge, and a setting
+/// kept in a file is refused with exit 2, naming the file.
+#[test]
+fn settings_lists_every_setting_and_sets_only_the_lake_s() {
+    for backend in BACKENDS {
+        let sh = Shell::on("settings", backend);
+        sh.lake();
+        sh.run(&["apply", &sh.fixture()]);
+        let set = sh.run(&[
+            "settings",
+            "set",
+            "sort_index",
+            r#"["amount"]"#,
+            "--type",
+            "invoice",
+        ]);
+        ok(
+            &set,
+            "set `sort_index.invoice` to [\"amount\"] at position 8\n",
+        );
+        ok(&sh.run(&["settings"]), SETTINGS_SET);
+
+        let bad = sh.run(&[
+            "settings",
+            "set",
+            "sort_index",
+            r#"["nope"]"#,
+            "--type",
+            "invoice",
+        ]);
+        assert_eq!((bad.code, bad.out.as_str()), (1, ""));
+        assert!(
+            bad.err.contains("`sort_index.invoice`") && bad.err.contains("`nope`"),
+            "{}",
+            bad.err
+        );
+        let unlisted = sh.run(&["settings", "set", "sort_index", r#"["amount"]"#]);
+        assert!(
+            unlisted.code == 1 && unlisted.err.contains("`sort_index.`"),
+            "{}",
+            unlisted.err
+        );
+
+        let kept = sh.run(&["settings", "set", "limits.max_limit", "5"]);
+        assert_eq!((kept.code, kept.out.as_str()), (2, ""));
+        assert_eq!(
+            kept.err,
+            "error: `limits.max_limit` is not a lake setting: it is kept in lakes/finance.json\n  \
+             what to do: edit `limits.max_limit` in lakes/finance.json and open the lake again\n"
+        );
+        // Its last part alone would be a host's key that nothing reads.
+        let bare = sh.run(&["settings", "set", "max_limit", "5"]);
+        assert_eq!((bare.code, bare.out.as_str()), (2, ""));
+        assert!(
+            bare.err.starts_with(
+                "error: `max_limit` is not a lake setting: `limits.max_limit` is kept in lakes/finance.json\n"
+            ),
+            "{}",
+            bare.err
+        );
+        let shared = sh.run(&["settings", "set", "timeout_secs", "5"]);
+        assert!(
+            shared.code == 2
+                && shared
+                    .err
+                    .contains("`deliver.timeout_secs` in lakelands.json")
+                && shared
+                    .err
+                    .contains("`embed.timeout_secs` in lakelands.json"),
+            "{}",
+            shared.err
+        );
+        let served = sh.run(&["settings", "unset", "server.bind"]);
+        assert_eq!((served.code, served.out.as_str()), (2, ""));
+        assert!(
+            served.err.contains("it is kept in lakelands.json"),
+            "{}",
+            served.err
+        );
+        // So would its last parts, and a section's name.
+        let suffix = sh.run(&["settings", "set", "tuning.mmap_mb", "5"]);
+        assert!(
+            suffix.code == 2
+                && suffix.err.contains(
+                    "`tuning.mmap_mb` is not a lake setting: `engine.tuning.mmap_mb` is kept in lakes/finance.json"
+                ),
+            "{}",
+            suffix.err
+        );
+        let inner = sh.run(&["settings", "set", "tuning", "{}"]);
+        assert!(
+            inner.code == 2
+                && inner.err.contains(
+                    "`tuning` is not a lake setting: it is a section of lakes/finance.json"
+                ),
+            "{}",
+            inner.err
+        );
+        let section = sh.run(&["settings", "set", "deliver", "{}"]);
+        assert_eq!(
+            (section.code, section.err.as_str()),
+            (
+                2,
+                "error: `deliver` is not a lake setting: it is a section of lakelands.json\n  \
+                 what to do: edit its members in lakelands.json and open the root again\n"
+            )
+        );
+
+        let unset = sh.run(&["settings", "unset", "sort_index", "--type", "invoice"]);
+        ok(&unset, "retired `sort_index.invoice` at position 9\n");
+        let listed = sh.run(&["settings"]);
+        assert!(!listed.out.contains("sort_index.invoice"), "{}", listed.out);
+    }
+}
+
+const SETTINGS_SET: &str = "\
+sort_index.<type>                       lake      null (default)
+sort_index.invoice                      lake      [\"amount\"] (default null)
+vector_index.<type>                     lake      null (default)
+lookup_index.<type>                     lake      null (default)
+search_weights.<type>                   lake      null (default)
+view_kept.<type>                        lake      false (default)
+limits.default_limit                    location  50 (default)
+limits.max_limit                        location  1000 (default)
+limits.max_depth                        location  16 (default)
+limits.max_reactive_depth               location  8 (default)
+limits.commit_window_events             location  32 (default)
+limits.max_graph_nodes                  location  100000 (default)
+limits.max_offset                       location  100000 (default)
+limits.max_set_changes                  location  20000 (default)
+engine.tuning.writer_cache_kb           location  65536 (default)
+engine.tuning.reader_cache_kb           location  16384 (default)
+engine.tuning.mmap_mb                   location  256 (default)
+engine.tuning.wal_autocheckpoint_pages  location  20000 (default)
+server.bind                             root      not configured: lakelands.json has no `server`
+server.allowed_origins                  root      not configured: lakelands.json has no `server`
+server.session_idle_secs                root      not configured: lakelands.json has no `server`
+server.feed_poll_millis                 root      not configured: lakelands.json has no `server`
+server.feed_floor_millis                root      not configured: lakelands.json has no `server`
+aging.utc_offset                        root      not configured: lakelands.json has no `aging`
+aging.check_secs                        root      not configured: lakelands.json has no `aging`
+deliver.poll_millis                     root      not configured: lakelands.json has no `deliver`
+deliver.batch                           root      not configured: lakelands.json has no `deliver`
+deliver.retry_first_secs                root      not configured: lakelands.json has no `deliver`
+deliver.retry_max_secs                  root      not configured: lakelands.json has no `deliver`
+deliver.timeout_secs                    root      not configured: lakelands.json has no `deliver`
+deliver.max_reply_bytes                 root      not configured: lakelands.json has no `deliver`
+embed.model                             root      not configured: lakelands.json has no `embed`
+embed.dimensions                        root      not configured: lakelands.json has no `embed`
+embed.send_dimensions                   root      not configured: lakelands.json has no `embed`
+embed.max_batch                         root      not configured: lakelands.json has no `embed`
+embed.timeout_secs                      root      not configured: lakelands.json has no `embed`
+embed.max_reply_bytes                   root      not configured: lakelands.json has no `embed`
+";

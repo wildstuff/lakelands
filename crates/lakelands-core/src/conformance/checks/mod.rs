@@ -644,6 +644,7 @@ pub const ALL: &[Check] = &[
     settings::SETTING_RESTRICTED,
     settings::SETTING_AS_OF_THE_WRITE,
     settings::VIEW_KEPT_HOLDS_A_BOOLEAN,
+    settings::SETTINGS_TOLD,
     feed::LIMIT_ZERO_IS_ONE,
     feed::MADE,
     feed::BY_KEY,

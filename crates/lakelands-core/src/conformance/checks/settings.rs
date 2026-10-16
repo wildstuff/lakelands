@@ -223,3 +223,106 @@ async fn a_view_kept_setting_holds_true_or_false(store: Store) -> Held {
     );
     Ok(())
 }
+
+check!(
+    SETTINGS_TOLD = describe_tells_the_lake_s_settings_to_a_holder_of_schema,
+    "063 (lakelands#1172): `describe` tells a holder of `schema` each listed lake setting for the lake, with what the lake holds and its default, and each one the lake holds for a type, with the lake's value as its default, and none of a host's own keys; it tells no other reader any; to a holder of `schema` kept from a type or a field, a setting is told as were the type or the field absent: nothing of the type, and of a type it is shown only the fields it reads, as of the type's twin without the field; a key under a listed setting's prefix that names none of them is refused, naming the key and the prefix, appending nothing"
+);
+
+async fn describe_tells_the_lake_s_settings_to_a_holder_of_schema(store: Store) -> Held {
+    use super::only::holder;
+    use crate::conformance::fixture::{field_access, head_unmoved, invalid_said, try_upsert};
+    use lakelands_api::error::{Case, Place, Said};
+    use lakelands_api::settings::{Layer, PerType, SETTINGS};
+    use serde_json::Value;
+    let l = Lake::of(store.as_ref());
+    let number = |n: &str| field(n, StorageKind::Number);
+    // `bare` is `row` without `m`: the twin of `row` to one kept from `m`.
+    for (ty, fields) in [
+        ("row", vec!["n", "m"]),
+        ("bare", vec!["n"]),
+        ("secret", vec!["x"]),
+    ] {
+        l.declare(type_decl(ty, fields.into_iter().map(number).collect()))
+            .await?;
+    }
+    for (ty, fields) in [
+        ("row", json!(["n", "m"])),
+        ("bare", json!(["n"])),
+        ("secret", json!(["x"])),
+    ] {
+        l.set(&format!("sort_index.{ty}"), fields).await?;
+    }
+    l.set("threshold", json!(1)).await?;
+    let told = |d: lakelands_api::describe::LakeDescription| {
+        let s = d.settings.into_iter();
+        s.map(|s| (s.key, s.value, s.default)).collect::<Vec<_>>()
+    };
+    let owner = told(l.describe().await?);
+    let wide = SETTINGS
+        .iter()
+        .filter(|s| s.layer == Layer::Lake && s.per_type != PerType::Only);
+    let wide: Vec<_> = wide
+        .map(|s| (s.key.to_owned(), None, s.default_value()))
+        .collect();
+    let typed = |ty: &str, v: Value| (format!("sort_index.{ty}"), Some(v), json!(null));
+    let mut want = wide.clone();
+    want.push(typed("bare", json!(["n"])));
+    want.push(typed("row", json!(["n", "m"])));
+    want.push(typed("secret", json!(["x"])));
+    let reader = field_access(store.as_ref(), "reader", "row", &[]);
+    let theirs = l.cat.describe(&reader, Default::default()).await;
+    let theirs = told(theirs.must("describing the lake as a reader")?.data);
+    ensure!(
+        owner == want && theirs.is_empty(),
+        "the owner, who holds `schema`, is told {owner:?}, where {want:?}; a reader without \
+         `schema` is told {theirs:?}, where nothing"
+    );
+    // A holder of `schema` kept from `secret` and from `row.m` is told
+    // `row` as the owner is told its twin `bare`, and nothing of `secret`,
+    // as were the type absent.
+    let arch = holder(
+        store.as_ref(),
+        "arch",
+        json!({"default": "write", "schema": true, "types": {
+            "secret": {"default": "none"}, "row": {"fields": {"m": "none"}}}}),
+    );
+    let arch = l.cat.describe(&arch, Default::default()).await;
+    let arch = told(arch.must("describing the lake to arch")?.data);
+    let twin = (owner.iter())
+        .find(|(k, ..)| k == "sort_index.bare")
+        .map(|(_, v, _)| v.clone());
+    let mut as_absent = wide;
+    as_absent.push(typed("bare", json!(["n"])));
+    as_absent.push(typed("row", json!(["n"])));
+    let row = (arch.iter())
+        .find(|(k, ..)| k == "sort_index.row")
+        .map(|(_, v, _)| v.clone());
+    ensure!(
+        arch == as_absent && row == twin,
+        "a holder of `schema` kept from `secret` and `row.m` is told {arch:?}, where \
+         {as_absent:?}: `row` as its twin `bare` ({twin:?}), and nothing of `secret`"
+    );
+    let head = store.head().await.must("reading the head")?;
+    let (ty, key) = (lakelands_api::seam::SETTING_TYPE, "sort_index");
+    let said = try_upsert(
+        l.cat.as_ref(),
+        &l.own,
+        ty,
+        key,
+        json!({"key": key, "value": ["n"]}),
+    )
+    .await;
+    let want = Said {
+        at: vec![Place::Setting { key: key.into() }],
+        case: Case::SettingUnlisted {
+            prefix: "sort_index".into(),
+        },
+    };
+    ensure!(
+        invalid_said(&said) == Some(&want),
+        "`sort_index`, under the prefix of the lake's own `sort_index.<type>` and naming no \
+         type, is refused as {want:?}; it answered {said:?}"
+    );
+    head_unmoved(store.as_ref(), head, "an unlisted setting").await
+}

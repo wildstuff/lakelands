@@ -1507,6 +1507,10 @@
    "code": "setting_kept_holds"
   },
   {
+   "code": "setting_unlisted",
+   "prefix": "s"
+  },
+  {
    "code": "setting_weights_shape"
   },
   {

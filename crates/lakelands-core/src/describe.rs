@@ -77,6 +77,7 @@ impl Sight<'_> {
             functions,
             triggers,
             object_sets,
+            settings: Default::default(),
             may: LakeRights {
                 review: who.grants.review,
                 schema: who.grants.schema,

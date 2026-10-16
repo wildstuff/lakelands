@@ -419,6 +419,15 @@ pub fn check_setting<'a>(
         Err(crate::Error::Refused { field, reason })
     };
     let known = |ty: &str| Some((shown(&ty.into())?, declared(&ty.into())?));
+    if let Some(prefix) = crate::settings::unlisted(key) {
+        return refused(
+            "key",
+            Case::SettingUnlisted {
+                prefix: prefix.into(),
+            }
+            .into(),
+        );
+    }
     if let Some(ty) = key.strip_prefix(VIEW_KEPT_SETTING) {
         let Some((seen, view)) = known(ty).and_then(|(s, d)| Some((s, d.view.as_deref()?))) else {
             return refused("key", Case::NoView { ty: ty.into() }.into());

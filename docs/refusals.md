@@ -574,6 +574,7 @@ What a refusal is about.
 | `setting_field_names` | `value` (Value) | it holds field names, and {value} is not one | An index setting holding something other than field names. |
 | `setting_index_shape` | `type` (TypeName) | it holds an array of field names of `{type}`, or null for no index | An index setting that is no list. |
 | `setting_kept_holds` | — | it holds `true` for a view that is kept, or `false` | A `view_kept` setting that holds no boolean. |
+| `setting_unlisted` | `prefix` (String) | keys under `{prefix}.` are the store's own settings, and this is none of them | A key under the prefix of the store's own settings that names none of them. |
 | `setting_weights_shape` | — | it holds an object of `fields` (vector fields and their weights) and `text_weight`, one at least, or null | A `search_weights` setting of the wrong shape. |
 | `vector_index_at_read` | `field` (FieldName) | `{field}` is computed at the read; a vector index keeps stored values | A vector index of a field computed at the read. |
 | `vector_index_kind` | `field` (FieldName), `kind` (StorageKind) | `{field}` is of kind {kind}; a vector index keeps vector fields | A vector index of a field that is no vector. |

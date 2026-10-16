@@ -22,8 +22,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use lakelands_api::describe::{
-    ExecutorDescription, FieldDescription, Kept, LakeDescription, LakeRights, NotKept, SortedWhole,
-    TypeAccess, TypeDescription, TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
+    ExecutorDescription, FieldDescription, Kept, LakeDescription, LakeRights, NotKept,
+    SettingValue, SortedWhole, TypeAccess, TypeDescription, TypeLifecycle, TypeLineage, TypeRights,
+    VerbDescription,
 };
 use lakelands_api::expr::Condition;
 use lakelands_api::location::Limits;
@@ -694,6 +695,14 @@ fn in_force() -> InForce {
     }
 }
 
+fn setting_value() -> SettingValue {
+    SettingValue {
+        key: "sort_index.invoice".into(),
+        value: Some(serde_json::json!(["due"])),
+        default: Value::Null,
+    }
+}
+
 /// The serde members of a value, as a set of names.
 fn members<T: Serialize>(value: &T) -> BTreeSet<String> {
     match serde_json::to_value(value).expect("serialises") {
@@ -1115,6 +1124,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 description: Some("d".into()),
             }),
         ),
+        ("setting_value", members(&setting_value())),
         (
             "executor_description",
             members(&ExecutorDescription {
@@ -1147,6 +1157,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 functions: vec![function_decl()],
                 triggers: vec![trigger_decl()],
                 object_sets: vec![object_set_decl()],
+                settings: vec![setting_value()],
                 may: LakeRights::default(),
             }),
         ),

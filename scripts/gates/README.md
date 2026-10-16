@@ -35,6 +35,7 @@ what it counts.
 | `records-resolve` | every `docs/decisions/NNN-<slug>.md` path in the tree names a record, every link from one record to another does, and every pointer of a record that moved (`NNN § <heading>`, in a span of two backticks where the heading holds a code span) names a heading its record has; it does not read a record cited by its bare number, a link written with `./` or from a page outside the records, or a link's anchor |
 | `vectors-kept` | every vector directory of a format below the newest (`docs/log-format/vectors/<N>/`) is named in `docs/log-format/vectors/kept` with the tag that shipped it, the tag is in the repository, and the directory holds that tag's files under the path named, byte for byte, none more and none less; and every kept lake (`docs/log-format/lakes/<N>/`) is named in `docs/log-format/lakes/kept` with the digest of its files, which it still has, and no line the list held where the pull request branched is changed or gone |
 | `conflict-markers` | no tracked file holds a line of an unresolved merge: seven `<` or seven `>` and a space at its start, or seven `=` alone |
+| `settings` | `docs/settings.md` is what the list of settings (`lakelands_api::settings::SETTINGS`) says; every lake setting the store reads is listed, and every listed one is read; no product file names a setting's key, or reads the settings, by a literal |
 
 The three budget gates (`core-size`, `seam-width`, `cfg-budget`) let a
 number go down by itself. A ceiling or a ratchet base that is higher
