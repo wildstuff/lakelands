@@ -1084,7 +1084,10 @@ async fn a_pattern_is_refused_for_what_it_says_and_a_step_reads_what_it_keeps(
         Some(Said::from(Case::InverseTwice { inverse, target }).within(Place::Type { name }))
     };
     let declarations = vec![memo("memo", "customer")];
-    let proposed = ProposedWrite::Declare { declarations };
+    let proposed = ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     let doors = [
         cat.declare(own, memo("memo", "customer")).await,
         cat.propose(own, proposed, "a memo".into()).await,
@@ -1129,12 +1132,18 @@ async fn a_pattern_is_refused_for_what_it_says_and_a_step_reads_what_it_keeps(
     let mut told = Vec::new();
     for who in [&outsider, own] {
         let declarations = vec![memo("slip", "customer")];
-        let slip = ProposedWrite::Declare { declarations };
+        let slip = ProposedWrite::Declare {
+            declarations,
+            plan: None,
+        };
         told.push(invalid_said(&cat.propose(who, slip, "a slip".into()).await).cloned());
     }
     told.push(invalid_said(&cat.declare(&architect, memo("slip", "customer")).await).cloned());
     let declarations = vec![under("zzz", "slip", "customer")];
-    let free = ProposedWrite::Declare { declarations };
+    let free = ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     let free = cat.propose(&outsider, free, "a slip".into()).await;
     let mut added = type_decl("memo", vec![field("m", StorageKind::Text)]);
     added.relations = [("for", "seller"), ("also", "customer")]

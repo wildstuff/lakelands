@@ -74,6 +74,10 @@ pub enum Outcome {
         /// other write.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         declared: Vec<InForce>,
+        /// For a change to the ontology: the plan that applied, as the one
+        /// answered may know of it (062). `None` for every other write.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plan: Option<Box<Plan>>,
     },
     /// The write was recorded as a proposal and waits for review.
     Proposed {
@@ -84,6 +88,10 @@ pub enum Outcome {
         /// Why it was not applied at once (the verb's declared risk, a
         /// policy of the lake).
         why: String,
+        /// For a proposed change to the ontology: its plan, as the one
+        /// answered may know of it (062).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plan: Option<Box<Plan>>,
     },
 }
 
@@ -185,6 +193,13 @@ pub enum ProposedWrite {
     Declare {
         /// The declarations.
         declarations: Vec<Declaration>,
+        /// Their plan when they were proposed, as one who reads everything
+        /// and holds no `restricted` was shown it; each reader is shown it
+        /// as its listing shows a report. The store answers it; whatever a
+        /// proposer sends is replaced
+        /// (`docs/decisions/062-a-change-plans-before-it-acts.md`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plan: Option<Box<Plan>>,
     },
     /// A type's migration, as `migrate_apply` applies it, with the report
     /// its preflight answered when it was proposed.
@@ -212,6 +227,26 @@ pub enum ProposedWrite {
 }
 
 impl ProposedWrite {
+    /// The change to the ontology it proposes, as `plan` plans it; `None`
+    /// for a write of records.
+    pub fn change(&self) -> Option<Change> {
+        match self {
+            ProposedWrite::Declare { declarations, .. } => Some(Change::Declare {
+                declarations: declarations.clone(),
+            }),
+            ProposedWrite::Migrate { migration, .. } => Some(Change::Migrate {
+                migration: migration.clone(),
+            }),
+            ProposedWrite::MigrateValueType { to, renames, .. } => Some(Change::MigrateValueType {
+                migration: Box::new(ValueTypeMigration {
+                    to: (**to).clone(),
+                    renames: renames.clone(),
+                }),
+            }),
+            _ => None,
+        }
+    }
+
     /// Which kind of write it is.
     pub fn kind(&self) -> ProposalKind {
         match self {
@@ -1232,6 +1267,19 @@ pub struct MigrationReport {
     /// listed only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub breaches: Vec<Breach>,
+    /// The live records of the type the change computes again, as the
+    /// fold does, whatever they then hold: a migration's count, 0 where it
+    /// computes none again; a declaration's where its walk judges
+    /// something. `None` where a declaration computes every record of the
+    /// type again and nothing is judged: it is not counted
+    /// (`docs/decisions/062-a-change-plans-before-it-acts.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recomputed: Option<u64>,
+    /// Per reference field the change may move: the live records it would
+    /// leave naming no live record. Told, and never refused: a change is
+    /// its author's act (032, 062).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unlive: Vec<Unlive>,
     /// True when every stored value converts without loss, every record
     /// a re-key moves takes a new key of its own, and no record breaks a
     /// constraint that refuses. It speaks of
@@ -1283,6 +1331,85 @@ pub struct Breach {
     pub records: u64,
     /// Up to five of their keys, the smallest its reader is answered.
     pub sample_keys: Vec<RecordKey>,
+}
+
+/// The live records a change would leave whose reference names no live
+/// record: one that does not exist, or is retired. A held record counts
+/// as live, to every reader (062).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unlive {
+    /// The reference field.
+    pub field: FieldName,
+    /// How many live records it would leave so. A held one is counted
+    /// only for a reader who holds `restricted`.
+    pub records: u64,
+    /// Up to five of their keys, the smallest its reader is answered.
+    pub sample_keys: Vec<RecordKey>,
+}
+
+/// A change to the ontology, as `plan` plans it and `enact` makes it
+/// (`docs/decisions/062-a-change-plans-before-it-acts.md`): what the doors
+/// `apply`, `add_field`, `recompute`, `migrate_apply` and
+/// `migrate_value_type_apply` each make.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, tag = "change", rename_all = "snake_case")]
+pub enum Change {
+    /// Declarations, applied together as `apply` applies them.
+    Declare {
+        /// The declarations.
+        declarations: Vec<Declaration>,
+    },
+    /// One field added to a type, as `add_field` adds it.
+    AddField {
+        /// The type.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// The field.
+        field: Box<FieldDecl>,
+    },
+    /// What a declaration in force computes, computed again.
+    Recompute {
+        /// What is computed again.
+        what: Recompute,
+    },
+    /// A type's migration.
+    Migrate {
+        /// The migration.
+        migration: Box<Migration>,
+    },
+    /// A value type's migration.
+    MigrateValueType {
+        /// The migration.
+        migration: Box<ValueTypeMigration>,
+    },
+}
+
+/// What a change would do, before it does it: told to its author, and
+/// carried by its proposal to whoever accepts it
+/// (`docs/decisions/062-a-change-plans-before-it-acts.md`). It is the act's
+/// own path up to its append, so it refuses what the act refuses, and
+/// `enact` acts only on the plan its caller was shown.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Plan {
+    /// Names this plan; `enact` must repeat it. As a migration's report id:
+    /// the SHA-256 of `{"plan": …, "head": …}` in canonical form, the plan
+    /// as its reader is shown it with this member empty.
+    pub report_id: String,
+    /// The head it was made at.
+    pub at: Position,
+    /// Each type whose stored records the change would change, by name: a
+    /// migration's report, of the type migrated or of one a declaration
+    /// computes again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<MigrationReport>,
+    /// A value type's migration's report.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub value_types: Vec<ValueTypeReport>,
+    /// True when no section loses a value or breaks a constraint that
+    /// refuses: the change can be made as planned. A proposal's plan of
+    /// declarations only tells, and is judged on the records its proposer
+    /// is told of; its accept still refuses on every record.
+    pub lossless: bool,
 }
 
 /// How the values of one field convert to its new type.

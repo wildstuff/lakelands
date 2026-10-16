@@ -7,7 +7,7 @@ interface schema {
     use types.{
         principal, read-at, type-name, lake-description-reply, type-description-reply,
         declaration, field-decl, migration, migration-report-reply, outcome, error,
-        value-type-migration, value-type-report-reply, recomputed,
+        value-type-migration, value-type-report-reply, recomputed, change, plan-reply,
     };
     use store.{catalog};
 
@@ -30,4 +30,10 @@ interface schema {
     /// Put a value type's migration in force against the report
     /// `migrate-value-type` answered.
     migrate-value-type-apply: func(catalog: borrow<catalog>, who: principal, migration: value-type-migration, report-id: string) -> result<outcome, error>;
+    /// What a change to the ontology would do, before it does it: its
+    /// plan, on the act's own path. Nothing is written
+    /// (`docs/decisions/062-a-change-plans-before-it-acts.md`).
+    plan: func(catalog: borrow<catalog>, who: principal, change: change) -> result<plan-reply, error>;
+    /// Make a change against the plan `plan` answered.
+    enact: func(catalog: borrow<catalog>, who: principal, change: change, plan-id: string) -> result<outcome, error>;
 }

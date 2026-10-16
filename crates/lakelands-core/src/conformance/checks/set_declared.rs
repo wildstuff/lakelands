@@ -122,7 +122,10 @@ async fn a_sets_declaration_decides_the_membership_of_the_records_there(
     for declarations in [vec![set(), verb], vec![set()]] {
         let proposed = l.cat.propose(
             &l.own,
-            ProposedWrite::Declare { declarations },
+            ProposedWrite::Declare {
+                declarations,
+                plan: None,
+            },
             "why".into(),
         );
         let Outcome::Proposed { proposal, .. } = proposed.await.must("a proposal")? else {

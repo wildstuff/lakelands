@@ -20,9 +20,9 @@ use lakelands_api::seam::{
     ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter, Seams, VerbInvocation,
 };
 use lakelands_api::write::{
-    AgeReport, CompactReport, Declaration, ForgetReport, Migration, MigrationReport, Outcome,
-    Proposal, ProposalFilter, ProposedWrite, PurgeReport, Recompute, ValueTypeMigration,
-    ValueTypeReport, WriteOpts,
+    AgeReport, Change, CompactReport, Declaration, ForgetReport, Migration, MigrationReport,
+    Outcome, Plan, Proposal, ProposalFilter, ProposedWrite, PurgeReport, Recompute,
+    ValueTypeMigration, ValueTypeReport, WriteOpts,
 };
 use lakelands_api::{
     Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
@@ -585,7 +585,18 @@ impl Catalog for Doors {
 
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome> {
         let (p, asked) = (proposal.clone(), who.clone());
-        let accept = move |c: &Call<'_>| c.accept(&p, &asked);
+        let accept = move |c: &Call<'_>| c.accept(&p, &asked, None);
+        self.detached(who, MadeDue::Accepted, accept).await
+    }
+
+    async fn accept_planned(
+        &self,
+        who: &Principal,
+        proposal: &ProposalId,
+        plan_id: &str,
+    ) -> Result<Outcome> {
+        let (p, asked, id) = (proposal.clone(), who.clone(), plan_id.to_owned());
+        let accept = move |c: &Call<'_>| c.accept(&p, &asked, Some(&id));
         self.detached(who, MadeDue::Accepted, accept).await
     }
 
@@ -675,6 +686,15 @@ impl Catalog for Doors {
             })
         })
         .await
+    }
+
+    async fn plan(&self, who: &Principal, change: Change) -> Result<Reply<Plan>> {
+        self.write(who, move |c| c.plan(change)).await
+    }
+
+    async fn enact(&self, who: &Principal, change: Change, plan_id: &str) -> Result<Outcome> {
+        let id = plan_id.to_owned();
+        self.write_settled(who, move |c| c.enact(change, &id)).await
     }
 
     async fn migrate_value_type_apply(

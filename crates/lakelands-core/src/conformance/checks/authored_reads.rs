@@ -168,6 +168,7 @@ async fn a_declaration_reads_only_what_its_author_may_read(store: Store) -> Held
         let field = serde_json::from_value(x).expect("a field");
         let bundle = ProposedWrite::Declare {
             declarations: vec![set.clone()],
+            plan: None,
         };
         let migrate = ProposedWrite::Migrate {
             migration: Box::new(to.clone()),
@@ -323,7 +324,10 @@ async fn a_declaration_reads_only_what_its_author_may_read(store: Store) -> Held
     // The same through an accept: the owner proposes a set over `b`.
     for (who, name) in [(&partial, "by_b"), (&full, "by_b_too")] {
         let declarations = vec![object_set_on(name, "account", "b = '2'")];
-        let bundle = ProposedWrite::Declare { declarations };
+        let bundle = ProposedWrite::Declare {
+            declarations,
+            plan: None,
+        };
         let proposed = c.propose(&l.own, bundle, "why".into()).await;
         let Outcome::Proposed { proposal, .. } = proposed.must("proposing a set")? else {
             return Err(Failure::new("the set is proposed".to_owned()));
@@ -388,6 +392,7 @@ async fn a_type_its_author_is_not_shown_is_a_type_that_is_not_declared(store: St
         ];
         let bundle = ProposedWrite::Declare {
             declarations: on.to_vec(),
+            plan: None,
         };
         let field = |f: &str| serde_json::from_value(text(f)).expect("a field");
         let mut answers = vec![
@@ -416,6 +421,7 @@ async fn a_type_its_author_is_not_shown_is_a_type_that_is_not_declared(store: St
         let d = decl(json!({"declare": "type", "name": "account", "fields": fields}));
         let bundle = ProposedWrite::Declare {
             declarations: vec![d.clone()],
+            plan: None,
         };
         refused.push(c.declare(&blank, d).await);
         refused.push(c.propose(&blank, bundle, "why".into()).await);

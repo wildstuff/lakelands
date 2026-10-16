@@ -124,13 +124,11 @@ for the partner to be committed.
   computes every record's reference again, with no writer and no
   judgement, and the records may then name what a writer could not
   have written. The next write of such a record that sends no field
-  the reference is computed from is applied. Nothing tells the declarer
-  of them: a declaration's outcome and a migration's preview name none,
-  `get` answers the keys as computed, and a `find` reads no path through
-  a reference. A pattern over a relation the reference carries (`via`)
-  leaves those records out, so they can be counted only where the host
-  has declared such a relation (lakelands#922; telling them is
-  lakelands#1140, part of lakelands#1141's plan before the act).
+  the reference is computed from is applied. The declarer is told of
+  them by the change's plan, before the act and in its outcome: per
+  reference field, the live records it would leave naming no live record
+  (`unlive`, `docs/decisions/062-a-change-plans-before-it-acts.md`,
+  lakelands#1140). The act is never refused for them.
 
 ## How it came to be
 

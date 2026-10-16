@@ -466,9 +466,29 @@ fn write_opts() -> WriteOpts {
     }
 }
 
+fn unlive() -> lakelands_api::write::Unlive {
+    lakelands_api::write::Unlive {
+        field: "r".into(),
+        records: 1,
+        sample_keys: vec!["k".into()],
+    }
+}
+
+fn plan() -> lakelands_api::write::Plan {
+    lakelands_api::write::Plan {
+        report_id: "p".into(),
+        at: Position(1),
+        types: vec![migration_report()],
+        value_types: vec![lakelands_api::write::ValueTypeReport::default()],
+        lossless: true,
+    }
+}
+
 fn migration_report() -> MigrationReport {
     MigrationReport {
         breaches: vec![breach()],
+        recomputed: Some(1),
+        unlive: vec![unlive()],
         ty: "invoice".into(),
         from_schema_hash: "a".into(),
         to_schema_hash: "b".into(),
@@ -949,10 +969,31 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 },
                 renamed: vec![("a".into(), "b".into())],
                 declared: vec![in_force()],
+                plan: Some(Box::new(plan())),
             });
             m.remove("outcome");
             m
         }),
+        ("proposed", {
+            let mut m = members(&Outcome::Proposed {
+                position: Position(1),
+                proposal: "p".into(),
+                why: "w".into(),
+                plan: Some(Box::new(plan())),
+            });
+            m.remove("outcome");
+            m
+        }),
+        ("declare_write", {
+            let mut m = members(&ProposedWrite::Declare {
+                declarations: vec![],
+                plan: Some(Box::new(plan())),
+            });
+            m.remove("write");
+            m
+        }),
+        ("plan", members(&plan())),
+        ("unlive", members(&unlive())),
         ("in_force", members(&in_force())),
         (
             "proposal",
@@ -1507,11 +1548,13 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     set_off: Default::default(),
                     renamed: Vec::new(),
                     declared: Vec::new(),
+                    plan: None,
                 },
                 Outcome::Proposed {
                     position: Position(1),
                     proposal: "p".into(),
                     why: "w".into(),
+                    plan: None,
                 },
             ],
             Some("outcome"),
@@ -1666,6 +1709,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 },
                 ProposedWrite::Declare {
                     declarations: vec![],
+                    plan: None,
                 },
                 ProposedWrite::Migrate {
                     migration: Box::new(lakelands_api::write::Migration::to(

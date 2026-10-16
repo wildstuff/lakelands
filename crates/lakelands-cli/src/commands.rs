@@ -29,7 +29,7 @@ use lakelands_api::{Catalog, LakeStore, Principal};
 use lakelands_core::{bundle, canonical, export};
 use serde::Deserialize;
 
-use crate::say::Failure;
+use crate::say::{self, Failure};
 
 type Out<'a> = &'a mut dyn Write;
 
@@ -72,15 +72,10 @@ pub async fn apply(
     out: Out<'_>,
     catalog: &dyn Catalog,
     who: &Principal,
-    dir: &Path,
+    (dir, plan_id): (&Path, Option<&str>),
 ) -> Result<(), Failure> {
-    if !dir.is_dir() {
-        return Err(Failure::new(
-            format!("{} is not a bundle directory", dir.display()),
-            "name the directory that holds the bundle's types/, verbs/ and other lanes",
-        ));
-    }
-    apply_bundle(out, catalog, who, bundle::load_dir(dir)).await
+    is_bundle(dir)?;
+    apply_bundle(out, catalog, who, (bundle::load_dir(dir), plan_id)).await
 }
 
 /// Apply a bundle as `apply` does, from what its loader answered: a
@@ -89,16 +84,9 @@ pub async fn apply_bundle(
     out: Out<'_>,
     catalog: &dyn Catalog,
     who: &Principal,
-    loaded: Result<bundle::Bundle, Vec<bundle::BundleError>>,
+    (loaded, plan_id): (Loaded, Option<&str>),
 ) -> Result<(), Failure> {
-    let bundle = loaded.map_err(|problems| {
-        // One `error:` line per problem; Failure prints the first prefix.
-        let lines: Vec<String> = problems.iter().map(ToString::to_string).collect();
-        Failure::new(
-            lines.join("\nerror: "),
-            "correct the bundle and apply it again; nothing was applied",
-        )
-    })?;
+    let bundle = loaded.map_err(refused)?;
     // The bundle is applied as one set: validated together, appended in
     // one append at one position, or refused whole. A bundle of aging
     // rules alone declares nothing.
@@ -107,15 +95,27 @@ pub async fn apply_bundle(
         return aging_rules(out, catalog, who, bundle.aging_rules).await;
     }
     let proposed;
-    match catalog.apply(who, bundle.declarations).await {
+    // Against its plan, where one is named (062).
+    let applied = match plan_id {
+        Some(id) => {
+            let change = lakelands_api::write::Change::Declare {
+                declarations: bundle.declarations,
+            };
+            catalog.enact(who, change, id).await
+        }
+        None => catalog.apply(who, bundle.declarations).await,
+    };
+    match applied {
         Ok(outcome) => {
             proposed = matches!(outcome, lakelands_api::Outcome::Proposed { .. });
             // Each declaration as it stands: one already in force says
             // since when, and a bundle wholly in force says it appended
             // nothing (lakelands#1106).
-            let declared = match &outcome {
-                lakelands_api::Outcome::Applied { declared, .. } => declared.clone(),
-                lakelands_api::Outcome::Proposed { .. } => Vec::new(),
+            let (declared, plan) = match &outcome {
+                lakelands_api::Outcome::Applied { declared, plan, .. } => {
+                    (declared.clone(), plan.clone())
+                }
+                lakelands_api::Outcome::Proposed { .. } => (Vec::new(), None),
             };
             let held = |i: usize| declared.get(i).filter(|d| !d.appended).map(|d| d.since);
             let header = match (0..what.len()).all(|i| held(i).is_some()) {
@@ -135,6 +135,14 @@ pub async fn apply_bundle(
                     Some(since) => put(out, format!("  {w}, in force since position {since}"))?,
                     None => put(out, format!("  {w}"))?,
                 }
+            }
+            // What it did to stored records, where it did anything.
+            for line in plan
+                .iter()
+                .filter(|p| !p.types.is_empty())
+                .flat_map(|p| say::plan(p))
+            {
+                put(out, line)?;
             }
         }
         Err(e) => {
@@ -232,6 +240,67 @@ async fn first_values(
         )?;
     }
     Ok(())
+}
+
+/// `plan`: what applying a bundle would do, changing nothing, and the
+/// plan's id to apply exactly that (`Catalog::plan`, 062).
+pub async fn plan(
+    out: Out<'_>,
+    catalog: &dyn Catalog,
+    who: &Principal,
+    dir: &Path,
+) -> Result<(), Failure> {
+    let bundle = bundle_at(dir)?;
+    let change = lakelands_api::write::Change::Declare {
+        declarations: bundle.declarations,
+    };
+    let plan = catalog.plan(who, change).await.map_err(|e| {
+        let mut f = Failure::from(e);
+        f.todo = "correct the bundle and plan it again; nothing was applied".to_owned();
+        f
+    })?;
+    for line in say::plan(&plan.data) {
+        put(out, line)?;
+    }
+    put(
+        out,
+        format!(
+            "plan {}: apply it with `lakelands apply {} --plan {}`",
+            plan.data.report_id,
+            dir.display(),
+            plan.data.report_id
+        ),
+    )
+}
+
+/// What a bundle's loader answers.
+type Loaded = Result<bundle::Bundle, Vec<bundle::BundleError>>;
+
+/// The bundle in `dir`, read whole.
+fn bundle_at(dir: &Path) -> Result<bundle::Bundle, Failure> {
+    is_bundle(dir)?;
+    bundle::load_dir(dir).map_err(refused)
+}
+
+/// Refused unless `dir` is a directory a bundle can be read from.
+fn is_bundle(dir: &Path) -> Result<(), Failure> {
+    match dir.is_dir() {
+        true => Ok(()),
+        false => Err(Failure::new(
+            format!("{} is not a bundle directory", dir.display()),
+            "name the directory that holds the bundle's types/, verbs/ and other lanes",
+        )),
+    }
+}
+
+/// A bundle its loader refused, every problem named.
+fn refused(problems: Vec<bundle::BundleError>) -> Failure {
+    // One `error:` line per problem; Failure prints the first prefix.
+    let lines: Vec<String> = problems.iter().map(ToString::to_string).collect();
+    Failure::new(
+        lines.join("\nerror: "),
+        "correct the bundle and apply it again; nothing was applied",
+    )
 }
 
 /// `recompute`: compute again what the named function or type in force

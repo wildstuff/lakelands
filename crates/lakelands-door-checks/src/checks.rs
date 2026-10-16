@@ -1400,6 +1400,7 @@ pub async fn a_field_built_from_a_hidden_one_is_hidden_too(store: Arc<dyn LakeSt
     };
     let declare = ProposedWrite::Declare {
         declarations: vec![Declaration::Type(memo("minute", true))],
+        plan: None,
     };
     for write in [migrate, declare] {
         let proposed = c.propose(owner, write, "adding x".into()).await;
@@ -1494,6 +1495,7 @@ pub async fn a_type_its_proposer_is_not_shown_is_a_type_that_is_not_declared(
         let writes = [
             ProposedWrite::Declare {
                 declarations: vec![trigger],
+                plan: None,
             },
             ProposedWrite::Migrate {
                 migration,
@@ -1520,6 +1522,7 @@ pub async fn a_type_its_proposer_is_not_shown_is_a_type_that_is_not_declared(
     );
     let bundle = ProposedWrite::Declare {
         declarations: vec![Declaration::Type(shape("vault"))],
+        plan: None,
     };
     let e = c.propose(stranger, bundle, "why".into()).await.unwrap_err();
     assert!(
@@ -4957,7 +4960,10 @@ pub async fn a_reviewer_not_shown_a_type_finds_no_proposal_on_it(store: Arc<dyn 
     let stub = json!({"declare": "type", "name": "stub",
                       "fields": [{"name": "i", "type": {"kind": "reference", "target": INVOICE}}]});
     let declarations = vec![serde_json::from_value(stub).unwrap()];
-    let write = ProposedWrite::Declare { declarations };
+    let write = ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     let o = f
         .catalog
         .propose(&f.cast.owner, write, "a stub".into())
@@ -5096,6 +5102,7 @@ pub async fn a_reviewer_not_shown_a_type_finds_no_proposal_on_it(store: Arc<dyn 
     let writes = [
         ProposedWrite::Declare {
             declarations: vec![serde_json::from_value(again).unwrap()],
+            plan: None,
         },
         ProposedWrite::Migrate {
             migration: Box::new(Migration::to(
@@ -5883,7 +5890,10 @@ pub async fn a_proposal_names_what_its_reader_may_know_and_says_there_is_more(
     let vault = vec![serde_json::from_value(vault).expect("a type")];
     let stated = vec![trigger("stated", "status = 'x'")];
     for (who, declarations) in [(clerk, stated), (keeper, vault)] {
-        let bundle = ProposedWrite::Declare { declarations };
+        let bundle = ProposedWrite::Declare {
+            declarations,
+            plan: None,
+        };
         let proposed = c.propose(who, bundle, "a bundle".into()).await;
         proposed.expect("a principal without `schema` proposes a bundle");
     }
@@ -5891,7 +5901,10 @@ pub async fn a_proposal_names_what_its_reader_may_know_and_says_there_is_more(
         let declarations = vec![trigger("noted", &format!("{field} = 'x'"))];
         let (c, who) = (c.clone(), who.clone());
         let proposed = async move {
-            let bundle = ProposedWrite::Declare { declarations };
+            let bundle = ProposedWrite::Declare {
+                declarations,
+                plan: None,
+            };
             c.propose(&who, bundle, "a bundle".into()).await
         };
         async move {
@@ -5949,7 +5962,7 @@ pub async fn a_proposal_names_what_its_reader_may_know_and_says_there_is_more(
         let said: Vec<bool> = listed.iter().map(|p| p.more).collect();
         let shown: Vec<String> = (listed.iter().filter_map(|p| p.write.as_ref()))
             .flat_map(|w| match w {
-                ProposedWrite::Declare { declarations } => declarations.clone(),
+                ProposedWrite::Declare { declarations, .. } => declarations.clone(),
                 _ => Vec::new(),
             })
             .map(|d| json!(d)["name"].as_str().unwrap_or_default().to_owned())
@@ -6022,6 +6035,7 @@ pub async fn a_schema_proposal_is_refused_by_kind_at_propose_and_at_accept(
             &f.cast.clerk,
             ProposedWrite::Declare {
                 declarations: vec![ticket],
+                plan: None,
             },
             "tickets".into(),
         )
@@ -8551,7 +8565,13 @@ pub async fn a_migration_shows_a_field_by_its_shape_to_one_who_does_not_read_it(
     let (migration, report) = (Box::new(m.clone()), Default::default());
     let migrate = ProposedWrite::Migrate { migration, report };
     let declarations = vec![declare(&declared)];
-    for write in [migrate, ProposedWrite::Declare { declarations }] {
+    for write in [
+        migrate,
+        ProposedWrite::Declare {
+            declarations,
+            plan: None,
+        },
+    ] {
         let proposed = c.propose(own, write, "why".into()).await.unwrap();
         let Outcome::Proposed { proposal, .. } = proposed else {
             panic!("a proposal is due: {proposed:?}");
@@ -12631,11 +12651,14 @@ pub async fn a_view_is_keyed_by_its_groups_where_their_values_come_from(store: A
     let mut again = view("kn_view", "name", &f("name", "text"), false);
     again["description"] = json!("again");
     let declarations = vec![serde_json::from_value(again).expect("a declaration reads")];
-    let bundle = ProposedWrite::Declare { declarations };
+    let bundle = ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     (c.propose(own, bundle, "why".into()).await).expect("the owner proposes `kn_view` again");
     let listed = c.proposals(eve, ProposalFilter::default()).await;
     for p in listed.expect("eve lists").data {
-        let Some(ProposedWrite::Declare { declarations }) = p.write else {
+        let Some(ProposedWrite::Declare { declarations, .. }) = p.write else {
             continue;
         };
         for d in declarations {
@@ -12710,6 +12733,7 @@ pub async fn a_view_is_keyed_by_its_groups_where_their_values_come_from(store: A
     });
     let bundle = ProposedWrite::Declare {
         declarations: again.collect(),
+        plan: None,
     };
     (c.propose(own, bundle, "why".into()).await).expect("the owner proposes them again");
     for who in [eve, wes] {
@@ -12719,7 +12743,7 @@ pub async fn a_view_is_keyed_by_its_groups_where_their_values_come_from(store: A
             .expect("a reader lists")
             .data
         {
-            let Some(ProposedWrite::Declare { declarations }) = p.write else {
+            let Some(ProposedWrite::Declare { declarations, .. }) = p.write else {
                 continue;
             };
             for d in declarations {
@@ -13938,6 +13962,7 @@ pub async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not
         (
             ProposedWrite::Declare {
                 declarations: vec![pay],
+                plan: None,
             },
             "a bundle",
         ),
@@ -14029,7 +14054,10 @@ pub async fn a_valid_time_names_a_date_time_field(store: Arc<dyn LakeStore>) {
     };
     let m = Migration::to(to);
     let declarations = vec![text.clone()];
-    let proposed = lakelands_api::write::ProposedWrite::Declare { declarations };
+    let proposed = lakelands_api::write::ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     for (door, answer) in [
         ("a migration", c.migrate(own, m).await.map(drop)),
         ("`apply`", c.apply(own, vec![text]).await.map(drop)),

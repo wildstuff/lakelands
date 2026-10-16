@@ -100,6 +100,9 @@ interface store {
         call: func(who: principal, verb: verb-name, key: option<record-key>, payload: patch, opts: write-opts) -> result<outcome, error>;
         propose: func(who: principal, write: proposed-write, why: string) -> result<outcome, error>;
         accept: func(who: principal, proposal: proposal-id) -> result<outcome, error>;
+        /// Accept a proposed change to the ontology against the plan of
+        /// its change made now.
+        accept-planned: func(who: principal, proposal: proposal-id, plan-id: string) -> result<outcome, error>;
         reject: func(who: principal, proposal: proposal-id, reason: string) -> result<outcome, error>;
         proposals: func(who: principal, filter: proposal-filter) -> result<proposals-reply, error>;
         /// Feed the lake the records of one delivery from a source. The

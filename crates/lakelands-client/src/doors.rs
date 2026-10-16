@@ -28,8 +28,8 @@ use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
 use lakelands_api::read::{Find, Found, Get, ReadAt, Reply};
 use lakelands_api::record::{Patch, Record};
 use lakelands_api::write::{
-    Committed, Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter,
-    ProposedWrite, Recompute, ValueTypeMigration, ValueTypeReport, WriteOpts,
+    Change, Committed, Declaration, Migration, MigrationReport, Outcome, Plan, Proposal,
+    ProposalFilter, ProposedWrite, Recompute, ValueTypeMigration, ValueTypeReport, WriteOpts,
 };
 use serde_json::{Value, json};
 use tokio::time::Instant;
@@ -245,6 +245,20 @@ impl Catalog for RemoteCatalog {
         self.go(who, Call::new(Method::POST, path)).await
     }
 
+    async fn accept_planned(
+        &self,
+        who: &Principal,
+        proposal: &ProposalId,
+        plan_id: &str,
+    ) -> Result<Outcome> {
+        let path = format!(
+            "proposals/{}/accept_planned",
+            seg(proposal.as_str(), Segment::Proposal)?
+        );
+        let call = Call::new(Method::POST, path).json(&json!({ "plan_id": plan_id }));
+        self.go(who, call).await
+    }
+
     async fn reject(
         &self,
         who: &Principal,
@@ -310,6 +324,18 @@ impl Catalog for RemoteCatalog {
         let mut body = json!(migration);
         body["report_id"] = json!(report_id);
         let call = Call::new(Method::POST, "schema/migrate/apply".into()).json(&body);
+        self.go(who, call).await
+    }
+
+    async fn plan(&self, who: &Principal, change: Change) -> Result<Reply<Plan>> {
+        let call = Call::new(Method::POST, "schema/plan".into()).json(&json!(change));
+        self.go(who, call).await
+    }
+
+    async fn enact(&self, who: &Principal, change: Change, plan_id: &str) -> Result<Outcome> {
+        let mut body = json!(change);
+        body["plan_id"] = json!(plan_id);
+        let call = Call::new(Method::POST, "schema/enact".into()).json(&body);
         self.go(who, call).await
     }
 

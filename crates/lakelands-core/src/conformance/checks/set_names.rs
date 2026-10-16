@@ -347,6 +347,7 @@ async fn a_named_set_is_read_by_the_right_to_read_what_its_filter_reads(store: S
         };
         let write = lakelands_api::write::ProposedWrite::Declare {
             declarations: vec![d],
+            plan: None,
         };
         l.cat.propose(&kept, write, "mine".into())
     };
@@ -381,7 +382,10 @@ async fn a_named_set_is_read_by_the_right_to_read_what_its_filter_reads(store: S
     // it, is told that the name is taken by a set of `invoice`.
     let again = |who: &Principal, of: &str, name: &str| {
         let declarations = vec![object_set_on(name, of, "true")];
-        let write = lakelands_api::write::ProposedWrite::Declare { declarations };
+        let write = lakelands_api::write::ProposedWrite::Declare {
+            declarations,
+            plan: None,
+        };
         let (who, cat) = (who.clone(), &l.cat);
         async move { cat.propose(&who, write, "mine".into()).await }
     };
@@ -423,6 +427,7 @@ async fn a_named_set_is_read_by_the_right_to_read_what_its_filter_reads(store: S
         let d = trigger_on("mine", TYPE, Some(&format!("in_set('{n}')")));
         let write = lakelands_api::write::ProposedWrite::Declare {
             declarations: vec![d],
+            plan: None,
         };
         l.cat.propose(&nok, write, "mine".into())
     };

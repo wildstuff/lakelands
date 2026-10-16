@@ -55,6 +55,8 @@ struct Handed {
     /// The pages of proposals asked, and the whole listings.
     pages: AtomicUsize,
     wholes: AtomicUsize,
+    /// The counts asked.
+    counts: AtomicUsize,
 }
 
 struct Counting {
@@ -102,6 +104,7 @@ impl ProjectionView for CountingView<'_> {
         Ok(rows)
     }
     fn count(&self, ty: &TypeName, scan: &Scan) -> Result<u64> {
+        self.handed.counts.fetch_add(1, Ordering::SeqCst);
         self.inner.count(ty, scan)
     }
     fn edges(
@@ -908,4 +911,108 @@ async fn a_listing_reads_the_declarations_past_once() {
         listed.len()
     );
     drop(store);
+}
+
+/// A plan reads the records its references name a page of keys at a time,
+/// never one by one (lakelands#1141): 400 records name 100 targets, and the
+/// plan of the function that computes them, declared again, asks no record
+/// alone but its first keys.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plan_reads_the_targets_its_references_name_a_page_at_a_time() {
+    let (store, cat, who, handed) = notes("plan-pages").await;
+    drop(store);
+    let f = |expr: &str| {
+        json!({"declare": "function", "name": "f", "backing": "expr", "expr": expr,
+            "inputs": [{"name": "s", "type": {"kind": "text"}}]})
+    };
+    for d in [
+        json!({"declare": "type", "name": "p", "fields": [{"name": "n", "type": {"kind": "text"}}]}),
+        f("s"),
+        json!({"declare": "type", "name": "t", "fields": [{"name": "s", "type": {"kind": "text"}},
+            {"name": "r", "type": {"kind": "reference", "target": "p"}, "authority": "derived",
+             "function": "f", "depends_on": ["s"]}]}),
+    ] {
+        cat.declare(&who, serde_json::from_value(d).unwrap())
+            .await
+            .unwrap();
+    }
+    let put = |ty: &'static str, key: String, fields: serde_json::Value| {
+        let (cat, who) = (cat.clone(), who.clone());
+        async move {
+            let patch = serde_json::from_value(fields).unwrap();
+            let key = key.as_str().into();
+            cat.upsert(&who, &ty.into(), &key, patch, Default::default())
+                .await
+                .unwrap();
+        }
+    };
+    for i in 0..100 {
+        put("p", format!("a{i}"), json!({"n": "x"})).await;
+    }
+    for i in 0..400 {
+        put(
+            "t",
+            format!("k{i:03}"),
+            json!({"s": format!("a{}", i % 100)}),
+        )
+        .await;
+    }
+    handed.gets.store(0, Ordering::SeqCst);
+    handed.ones.store(0, Ordering::SeqCst);
+    let declarations = vec![serde_json::from_value(f("if(s = 'a0', 'none', s)")).unwrap()];
+    let change = lakelands_api::write::Change::Declare { declarations };
+    let plan = cat.plan(&who, change).await.unwrap().data;
+    let unlive = &plan.types[0].unlive[0];
+    let (gets, ones) = (
+        handed.gets.load(Ordering::SeqCst),
+        handed.ones.load(Ordering::SeqCst),
+    );
+    assert_eq!(unlive.records, 4, "{plan:?}");
+    assert!(
+        ones <= unlive.sample_keys.len() && gets <= ones + 2,
+        "the plan asked {gets} reads by key, {ones} of them for one record alone"
+    );
+}
+
+/// A declaration that computes a type again of which nothing is judged (no
+/// constraint, no reference) plans with no walk and no count: every record
+/// is computed again, uncounted (lakelands#1141).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plan_with_nothing_judged_reads_no_record() {
+    let (store, cat, who, handed) = notes("plan-uncounted").await;
+    drop(store);
+    let g = |expr: &str| {
+        json!({"declare": "function", "name": "g", "backing": "expr", "expr": expr,
+            "inputs": [{"name": "s", "type": {"kind": "text"}}]})
+    };
+    for d in [
+        g("s"),
+        json!({"declare": "type", "name": "tx", "fields": [{"name": "s", "type": {"kind": "text"}},
+            {"name": "d", "type": {"kind": "text"}, "authority": "derived", "function": "g",
+             "depends_on": ["s"]}]}),
+    ] {
+        cat.declare(&who, serde_json::from_value(d).unwrap())
+            .await
+            .unwrap();
+    }
+    for i in 0..50 {
+        let patch = serde_json::from_value(json!({"s": format!("a{i}")})).unwrap();
+        let key = format!("x{i}").as_str().into();
+        cat.upsert(&who, &"tx".into(), &key, patch, Default::default())
+            .await
+            .unwrap();
+    }
+    for n in [&handed.rows, &handed.scans, &handed.counts, &handed.gets] {
+        n.store(0, Ordering::SeqCst);
+    }
+    let declarations = vec![serde_json::from_value(g("if(s = 'a0', 'b', s)")).unwrap()];
+    let change = lakelands_api::write::Change::Declare { declarations };
+    let plan = cat.plan(&who, change).await.unwrap().data;
+    let read = [&handed.rows, &handed.scans, &handed.counts].map(|n| n.load(Ordering::SeqCst));
+    assert_eq!(plan.types[0].recomputed, None, "{plan:?}");
+    assert_eq!(
+        read,
+        [0, 0, 0],
+        "the plan read rows, scans and counts of `tx`"
+    );
 }

@@ -288,7 +288,8 @@ async fn make(
     let files: Vec<(String, String)> = (example.files.iter())
         .map(|(p, text)| ((*p).to_owned(), (*text).to_owned()))
         .collect();
-    commands::apply_bundle(out, catalog.as_ref(), &who, bundle::parse(&files)).await?;
+    let loaded = (bundle::parse(&files), None);
+    commands::apply_bundle(out, catalog.as_ref(), &who, loaded).await?;
     let mut pinned = Position(0);
     for (n, (data, map, source)) in example.ingests.iter().enumerate() {
         let (data, map) = (file(example, data)?, file(example, map)?);

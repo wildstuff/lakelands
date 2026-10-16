@@ -434,6 +434,14 @@ interface types {
         sample-keys: list<record-key>,
     }
 
+    /// The live records a change would leave whose reference names no
+    /// live record (`docs/decisions/062-a-change-plans-before-it-acts.md`).
+    record unlive {
+        field: field-name,
+        records: u64,
+        sample-keys: list<record-key>,
+    }
+
     record field-conversion {
         field: field-name,
         %from: field-type,
@@ -463,6 +471,12 @@ interface types {
         /// Per constraint, the live records the migration would leave
         /// breaking it.
         breaches: list<breach>,
+        /// The live records the change computes again; none where a
+        /// declaration computes every record again and nothing is judged.
+        recomputed: option<u64>,
+        /// Per reference field the change may move, the live records it
+        /// would leave naming no live record.
+        unlive: list<unlive>,
         /// Every kept value converts, every moved record gets a key and no
         /// record breaks a constraint that refuses; it says nothing of what
         /// `dropped` removes.
@@ -687,6 +701,8 @@ interface types {
         /// For `declare` and `apply`: each declaration sent, in the order
         /// sent, as it stands in force after the call.
         declared: list<in-force>,
+        /// For a change to the ontology: the plan that applied.
+        plan: option<plan>,
     }
 
     /// A declaration's kind. A later kind is an addition.
@@ -707,6 +723,8 @@ interface types {
         position: position,
         proposal: proposal-id,
         why: string,
+        /// For a proposed change to the ontology: its plan.
+        plan: option<plan>,
     }
 
     /// What every write answers (`docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`).
@@ -738,6 +756,8 @@ interface types {
     /// Declarations proposed together, as `apply` would apply them.
     record declare-write {
         declarations: list<declaration>,
+        /// Their plan when they were proposed; the store answers it.
+        plan: option<plan>,
     }
 
     /// A migration proposed, with the report its preflight answered then.
@@ -1150,6 +1170,36 @@ interface types {
     record hits-reply { position: position, data: hits }
     record proposals-reply { position: position, data: list<proposal> }
     record migration-report-reply { position: position, data: migration-report }
+
+    /// What a change to the ontology would do, before it does it (062).
+    record plan {
+        report-id: string,
+        at: position,
+        /// Each type whose stored records it would change.
+        types: list<migration-report>,
+        value-types: list<value-type-report>,
+        /// No section loses a value or breaks a constraint that refuses; a
+        /// proposal's plan of declarations judges it on the records its
+        /// proposer is told of.
+        lossless: bool,
+    }
+
+    record plan-reply { position: position, data: plan }
+
+    /// One field added to a type, as `add-field` adds it.
+    record field-added {
+        %type: type-name,
+        field: field-decl,
+    }
+
+    /// A change to the ontology, as `plan` plans it and `enact` makes it.
+    variant change {
+        declare(list<declaration>),
+        add-field(field-added),
+        recompute(recomputed),
+        migrate(migration),
+        migrate-value-type(value-type-migration),
+    }
 
     /// A value type's preflight: what its new declaration would refuse
     /// among the values stored under it.

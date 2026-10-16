@@ -583,6 +583,14 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
             BodyAs::Nothing,
             Writes::No,
         ),
+        (["proposals", id, "accept_planned"], Method::POST) => r(
+            Door::Accept,
+            "POST …/proposals/<id>/accept_planned",
+            arg("proposal", id),
+            &[],
+            BodyAs::Args,
+            Writes::No,
+        ),
         (["proposals", id, "reject"], Method::POST) => r(
             Door::Reject,
             "POST …/proposals/<id>/reject",
@@ -626,6 +634,22 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
         (["schema", "recompute"], Method::POST) => r(
             Door::Recompute,
             "POST …/schema/recompute",
+            none,
+            &[],
+            BodyAs::Args,
+            Writes::No,
+        ),
+        (["schema", "plan"], Method::POST) => r(
+            Door::Plan,
+            "POST …/schema/plan",
+            none,
+            &[],
+            BodyAs::Args,
+            Writes::No,
+        ),
+        (["schema", "enact"], Method::POST) => r(
+            Door::Enact,
+            "POST …/schema/enact",
             none,
             &[],
             BodyAs::Args,

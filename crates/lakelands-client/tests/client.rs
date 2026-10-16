@@ -114,6 +114,8 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
         more: true,
         relations: Vec::new(),
         carried: Vec::new(),
+        recomputed: None,
+        unlive: Vec::new(),
     };
     let errors = [
         (401, refused(None, Refusal::NotGranted)),

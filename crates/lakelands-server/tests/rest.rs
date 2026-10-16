@@ -1151,3 +1151,131 @@ async fn a_feed_stream_reads_the_log_at_most_once_a_floor() {
     );
     task.abort();
 }
+
+/// The operator's case (lakelands#1141): an agent proposes a change to the
+/// ontology and is told its plan; the lake is written meanwhile; the
+/// person who reviews reads the plan the proposal keeps beside the plan of
+/// its change at the head, then accepts against the plan at the head. What
+/// each says, `said`, is pinned.
+#[tokio::test]
+async fn an_operator_reads_a_proposals_plan_beside_the_plan_at_the_head_and_accepts() {
+    let store = rest_lake(Backend::Memory).await;
+    let (c, owner) = (store.catalog(WriteContext::default()), common::owner());
+    let f = |expr: &str| {
+        json!({"declare": "function", "name": "f", "backing": "expr", "expr": expr,
+            "inputs": [{"name": "s", "type": {"kind": "text"}}]})
+    };
+    for d in [
+        json!({"declare": "type", "name": "p", "fields": [{"name": "n", "type": {"kind": "text"}}]}),
+        f("s"),
+        json!({"declare": "type", "name": "t", "fields": [{"name": "s", "type": {"kind": "text"}},
+            {"name": "r", "type": {"kind": "reference", "target": "p"}, "authority": "derived",
+             "function": "f", "depends_on": ["s"]}]}),
+    ] {
+        c.declare(&owner, serde_json::from_value(d).unwrap())
+            .await
+            .unwrap();
+    }
+    let put = |ty: &str, key: &str, fields: serde_json::Value| {
+        let (c, owner, ty, key) = (c.clone(), owner.clone(), ty.to_owned(), key.to_owned());
+        async move {
+            let patch = serde_json::from_value(fields).unwrap();
+            c.upsert(
+                &owner,
+                &ty.as_str().into(),
+                &key.as_str().into(),
+                patch,
+                WriteOpts::default(),
+            )
+            .await
+            .unwrap();
+        }
+    };
+    for k in ["a0", "a1", "a2"] {
+        put("p", k, json!({"n": "x"})).await;
+    }
+    for (k, s) in [("k1", "a0"), ("k2", "a1"), ("k3", "a2")] {
+        put("t", k, json!({ "s": s })).await;
+    }
+    c.retire(&owner, &"p".into(), &"a2".into(), WriteOpts::default())
+        .await
+        .unwrap();
+    let (addr, task) = serve(store.clone()).await;
+    let call = |key: &str, start: String, body: serde_json::Value| {
+        let auth = format!("authorization: Bearer {key}");
+        async move {
+            let body = body.to_string();
+            let mut block = vec![start.as_str(), auth.as_str()];
+            if body != "null" {
+                block.push(&body);
+            }
+            let (status, _, body) = exchange(addr, &block).await;
+            assert!(status.starts_with('2'), "{start}: {status} {body}");
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()
+        }
+    };
+    let declarations = json!([f("if(s = 'a0', 'none', s)")]);
+    let proposed = call(
+        "k-clerk",
+        "POST /lakes/finance/proposals".into(),
+        json!({"write": {"write": "declare", "declarations": declarations}, "why": "a new rule"}),
+    )
+    .await;
+    let id = proposed["proposal"].as_str().unwrap().to_owned();
+    put("t", "k4", json!({"s": "a0"})).await;
+    let listed = call(
+        "k-owner",
+        "GET /lakes/finance/proposals".into(),
+        json!(null),
+    )
+    .await;
+    let stored = listed["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == id.as_str());
+    let change = json!({"change": "declare", "declarations": declarations});
+    let now = call("k-owner", "POST /lakes/finance/schema/plan".into(), change).await;
+    let plan_id = now["data"]["report_id"].as_str().unwrap().to_owned();
+    // The route takes no accept without a plan.
+    let route = format!("POST /lakes/finance/proposals/{id}/accept_planned");
+    let (status, _, _) = exchange(addr, &[&route, "authorization: Bearer k-owner", "{}"]).await;
+    assert!(
+        status.starts_with('4'),
+        "an accept_planned without `plan_id`: {status}"
+    );
+    let accepted = call(
+        "k-owner",
+        format!("POST /lakes/finance/proposals/{id}/accept_planned"),
+        json!({ "plan_id": plan_id }),
+    )
+    .await;
+    task.abort();
+    let said = |v: &serde_json::Value| v["said"].clone();
+    assert_eq!(
+        [
+            said(&proposed),
+            said(stored.unwrap()),
+            said(&now),
+            said(&accepted)
+        ],
+        [
+            json!([
+                "3 records of `t` would be computed again.",
+                "2 records of `t` would be left with `r` naming no live record: `k1`, `k3`."
+            ]),
+            json!([
+                "3 records of `t` would be computed again.",
+                "2 records of `t` would be left with `r` naming no live record: `k1`, `k3`."
+            ]),
+            json!([
+                "4 records of `t` would be computed again.",
+                "3 records of `t` would be left with `r` naming no live record: `k1`, `k3`, `k4`."
+            ]),
+            json!([
+                "4 records of `t` would be computed again.",
+                "3 records of `t` would be left with `r` naming no live record: `k1`, `k3`, `k4`."
+            ]),
+        ]
+    );
+}

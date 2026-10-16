@@ -554,11 +554,13 @@ fn the_outcome_schema_names_every_member_an_outcome_answers() {
             since: crate::Position(4),
             appended: true,
         }],
+        plan: None,
     };
     let proposed = Outcome::Proposed {
         position: crate::Position(4),
         proposal: "p".into(),
         why: "w".into(),
+        plan: None,
     };
     let schema = outcome_schema();
     let described = schema["properties"].as_object().expect("properties");

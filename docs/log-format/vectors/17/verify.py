@@ -229,6 +229,9 @@ SHOWS = {
         lambda e: bool((proposed(e, "declare") or {}).get("declarations"))),
     "proposed_migrate": shows("a proposed migration with its preflight's report")(
         lambda e: (proposed(e, "migrate") or {}).get("report", {}).get("lossless") is True),
+    "proposed_plan": shows("a proposed set of declarations carrying its plan")(
+        lambda e: any(t.get("recomputed") and t.get("unlive")
+                      for t in ((proposed(e, "declare") or {}).get("plan") or {}).get("types", []))),
     "annotations": shows("a declaration carrying annotations")(
         lambda e: e["body"]["kind"] == "declared" and annotated(e["body"])),
     "derived_relation": shows("a declared type with a derived relation")(

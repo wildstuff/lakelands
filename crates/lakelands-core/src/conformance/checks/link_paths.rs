@@ -538,7 +538,10 @@ async fn a_proposed_call_reaches_the_link_it_reads(store: Store) -> Held {
     let requires = "with.note = 'a' and with.to.discount_days > 0";
     let peek = verb("peek", "low", requires, ("grade", "'p'"));
     let declarations = vec![serde_json::from_value(peek).expect("a declaration")];
-    let declare = ProposedWrite::Declare { declarations };
+    let declare = ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     let proposed = l.cat.propose(&l.own, declare, "why".into()).await;
     let Ok(Outcome::Proposed { proposal: dp, .. }) = proposed else {
         return Err(Failure::new(format!(

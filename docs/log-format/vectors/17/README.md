@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 50, each
+- `further.json`: the lake's next events, positions 8 to 51, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -87,7 +87,10 @@ The files:
     `operator` with its unit and meaning (49), and its record of
     `sys.setting` carrying the `group` the store stamps from that
     declaration (50): a declaration kind and a member format 17 holds and
-    16 does not (lakelands#996).
+    16 does not (lakelands#996);
+  - a `write_proposed` whose `declare` carries its plan, the records it
+    would compute again and those it would leave naming no live record
+    (51) (`docs/decisions/062-a-change-plans-before-it-acts.md`).
 
   Its `misplaced` holds four lines that are not of the lake. Each
   stands at its position after the event before it, in the release's

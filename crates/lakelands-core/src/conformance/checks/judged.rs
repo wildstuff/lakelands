@@ -476,7 +476,10 @@ async fn provenance_is_refused_where_no_record_stands(store: Store) -> Held {
         let declarations = vec![d.clone()];
         let proposed = l.cat.propose(
             &l.own,
-            ProposedWrite::Declare { declarations },
+            ProposedWrite::Declare {
+                declarations,
+                plan: None,
+            },
             "why".into(),
         );
         let (proposed, applied) = (proposed.await, l.cat.apply(&l.own, vec![d]).await);

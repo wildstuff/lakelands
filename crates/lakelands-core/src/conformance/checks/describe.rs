@@ -412,6 +412,7 @@ async fn a_description_says_only_what_its_reader_is_shown(store: Store) -> Held 
     ];
     let again = ProposedWrite::Declare {
         declarations: vec![Declaration::Type(invoice.clone())],
+        plan: None,
     };
     let invoice_as_declared = invoice.clone();
     for t in [
@@ -439,6 +440,7 @@ async fn a_description_says_only_what_its_reader_is_shown(store: Store) -> Held 
     let theirs = [
         ProposedWrite::Declare {
             declarations: vec![Declaration::Type(mine)],
+            plan: None,
         },
         ProposedWrite::Migrate {
             migration: Box::new(Migration::to(wider)),
@@ -517,7 +519,7 @@ async fn a_description_says_only_what_its_reader_is_shown(store: Store) -> Held 
     let listed = listed.must("listing the proposals as `far`")?.data;
     let again = listed.iter().find(|p| p.why == "again");
     let relations = again.and_then(|p| match p.write.as_ref()? {
-        ProposedWrite::Declare { declarations } => match declarations.first() {
+        ProposedWrite::Declare { declarations, .. } => match declarations.first() {
             Some(Declaration::Type(t)) => Some(t.relations.len()),
             _ => None,
         },

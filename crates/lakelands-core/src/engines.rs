@@ -1578,7 +1578,7 @@ fn touched(write: &ProposedWrite, stands: &impl Fn(&str) -> Option<TypeName>) ->
     match write {
         ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => vec![ty.clone()],
         ProposedWrite::Call { verb, .. } => stands(&format!("verb {verb}")).into_iter().collect(),
-        ProposedWrite::Declare { declarations } => (declarations.iter())
+        ProposedWrite::Declare { declarations, .. } => (declarations.iter())
             .flat_map(|d| declared_on(d, stands))
             .collect(),
         ProposedWrite::Migrate { migration, .. } => vec![migration.to.name.clone()],
