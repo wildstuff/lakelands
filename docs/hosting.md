@@ -364,6 +364,19 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   the seal answers its own. Then the host opens the lake again and sends
   nothing again: the handle opened then reads the checkpoint where it is
   in the log (lakelands#623).
+  A write answered `unsynced` has met a second failed sync: the handle
+  is done, and refuses appends, seals and taking the lease until the
+  lake is opened again
+  (`docs/decisions/060-an-append-syncs-its-two-files-at-once.md`). The
+  host closes the handle (`LakeStore::close()`, or drops it) and then
+  opens the lake again. In that order: the writer's lease is an OS lock,
+  held by the old handle until it is closed, in this process too, and an
+  open made while it is held is refused the lease. The open checks the
+  last group and writes it again, that group alone: an `unsure` append
+  that came before may or may not be in the log, so the host reads it
+  back by its id, or sends it again under its idempotency key, before it
+  counts it lost. A pool that keeps one open lake per tenant closes the
+  refusing handle before it opens the next.
   In a quiet hour the host can call `LakeStore::compact()` (`lakelands
   compact`) to give back the storage the projection no longer uses; it
   changes no answer and appends nothing, and writes wait while it runs
