@@ -83,7 +83,9 @@ and its format 15 the first step: 0.14.0 reads 14 and 15 and writes 15.
 0.15.0 takes the second, to 16, once, by a step of its own before any
 change that writes a form 15 does not hold: it reads 14 to 16 and writes
 16, so a 0.14.0 binary refuses its lakes by their number
-(lakelands#1096).
+(lakelands#1096). 0.16.0 takes the third, to 17, the same way: it reads
+14 to 17 and writes 17, so a 0.15.0 binary refuses its lakes by their
+number (lakelands#1164).
 
 **How a lake is upgraded** (`docs/log-format.md` §6):
 
@@ -202,3 +204,6 @@ them.
   refused with the way, and a lake's format changes only where it is
   marked. Before, a lake of format 14 was refused under 0.14.0's format
   15 (lakelands#962).
+- 0.16.0's step, to 17, is taken as 0.15.0's to 16 was: one step of its
+  own before any form it adds, the vectors of 16 kept as v0.15.0 holds
+  them (lakelands#1164).

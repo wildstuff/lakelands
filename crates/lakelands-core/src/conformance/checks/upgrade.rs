@@ -23,6 +23,12 @@ check!(
 );
 
 check!(
+    FORMAT_16_UPGRADED = a_lake_of_format_16_is_upgraded_and_read,
+    "054 and log-format §6 (lakelands#1164): the vectors of format 16, as v0.15.0 shipped them, imported on this engine, keep every event as it was written, `v` 16 included, and are followed by a writer's `lease_taken` and one `lake_upgraded` from 16 to the format this release writes, and every later event in that format; the lake then opens read-only, verifies whole, `describe` shows its two types and `find` answers its records; and a writer's open appends its own `lease_taken` and no second `lake_upgraded`",
+    given
+);
+
+check!(
     FORMAT_15_UPGRADED = a_lake_of_format_15_is_upgraded_and_read,
     "054 and log-format §6 (lakelands#1096): the vectors of format 15, as v0.14.0 shipped them, imported on this engine, keep every event as it was written, `v` 15 included, and are followed by a writer's `lease_taken` and one `lake_upgraded` from 15 to the format this release writes, and every later event in that format; the lake then opens read-only, verifies whole, `describe` shows its two types and `find` answers its records; and a writer's open appends its own `lease_taken` and no second `lake_upgraded`",
     given
@@ -41,6 +47,10 @@ async fn a_lake_of_format_14_is_upgraded_and_read(store: Store, given: Given) ->
 
 async fn a_lake_of_format_15_is_upgraded_and_read(store: Store, given: Given) -> Held {
     vectors_upgraded(store, given, 15).await
+}
+
+async fn a_lake_of_format_16_is_upgraded_and_read(store: Store, given: Given) -> Held {
+    vectors_upgraded(store, given, 16).await
 }
 
 /// The vectors of the older format `old`, imported, upgraded and read.
@@ -125,7 +135,7 @@ check!(
 
 check!(
     LAKE_16_READ = the_lake_of_format_16_is_read_as_it_answered,
-    "054 (lakelands#962): the lake v0.15.0 made through its doors (`docs/log-format/lakes/16/`), in format 16, imported on this engine, keeps its events as written and is read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; the walk over its relation with the link's fields; and, what format 16 adds (058), its sealed values read whole with the file keyring's file it ships and a forgotten source's values read as erased, each with its provenance; imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies",
+    "054 (lakelands#962): the lake v0.15.0 made through its doors (`docs/log-format/lakes/16/`), in format 16, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; the walk over its relation with the link's fields; and, what format 16 adds (058), its sealed values read whole with the file keyring's file it ships and a forgotten source's values read as erased, each with its provenance; imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies",
     given
 );
 

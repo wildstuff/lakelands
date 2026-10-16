@@ -16,6 +16,11 @@ release's code.
 
 **A format step** (`docs/log-format.md` §6) copies the newest directory
 to the next number and runs `python3 verify.py --stamp N` in the copy.
+The stamp leaves `further.json`'s `lake_upgraded` line stepping between
+the two formats before, and its own check fails on it: that line's
+`from` and `to`, its `about` and the copy's README entry for it are put
+right by hand, and the stamp is run again, which rewrites its hash and
+then passes.
 At the release that ships it, the step adds the directory it leaves
 behind to `kept`, with that release's tag. The paths that name the
 newest directory move with it:
@@ -23,5 +28,6 @@ newest directory move with it:
 `crates/lakelands-core/src/conformance/checks/schema.rs`,
 `crates/lakelands-engine-sqlite/tests/lake_directory.rs`,
 `crates/lakelands-engine-sqlite/tests/sealed_in_one_step.rs`,
+`crates/lakelands-store/src/sealing/tests.rs`,
 `crates/lakelands-store/tests/export.rs`,
 `crates/lakelands-store/tests/lake.rs` and `docs/log-format.md`.

@@ -657,6 +657,7 @@ pub const ALL: &[Check] = &[
     search_axes::WEIGHTS_SET,
     upgrade::FORMAT_14_UPGRADED,
     upgrade::FORMAT_15_UPGRADED,
+    upgrade::FORMAT_16_UPGRADED,
     upgrade::LAKE_14_READ,
     upgrade::LAKE_14_MIGRATED_READ,
     upgrade::LAKE_15_READ,

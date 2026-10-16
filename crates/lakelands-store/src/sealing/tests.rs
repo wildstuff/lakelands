@@ -7,10 +7,10 @@ use sha2::{Digest as _, Sha256};
 
 use super::{digest, open, seal};
 
-/// The lines of `vectors/16/further.json` that show `shows`.
+/// The lines of `vectors/17/further.json` that show `shows`.
 fn line(shows: &str) -> Event {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/16/further.json");
+        .join("../../docs/log-format/vectors/17/further.json");
     let further: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     let entries = further["events"].as_array().unwrap();
     let entry = entries.iter().find(|e| e["shows"] == shows).unwrap();
