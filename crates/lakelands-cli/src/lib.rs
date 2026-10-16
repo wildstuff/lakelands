@@ -1,7 +1,8 @@
 //! The `lakelands` command-line door.
 //!
 //! `init` and `lake new` lay out a root: a directory with a
-//! configuration and one location per lake. `apply`, `ingest`, `feed`,
+//! configuration and one location per lake; `init --example` also makes
+//! a lake from an example the binary carries ([`example`]). `apply`, `ingest`, `feed`,
 //! `age`, `purge`, `forget`, `rebuild`, `compact`, `export` and `serve`
 //! open a lake at its location and call the library in-process: there is
 //! no command enum and no layer between the command and the catalog.
@@ -41,6 +42,7 @@ use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, WriteContext};
 
 mod commands;
+pub mod example;
 pub mod mirror;
 mod orders;
 mod root;
@@ -163,7 +165,7 @@ fn command() -> Command {
         .subcommand(
             Command::new("init")
                 .about("Create a Lakelands root in a directory")
-                .override_usage("lakelands init [DIR] [--owner <ID>]\n       lakelands init --root <DIR> [--owner <ID>]")
+                .override_usage("lakelands init [DIR] [--owner <ID>] [--example [<NAME>]]\n       lakelands init --root <DIR> [--owner <ID>] [--example [<NAME>]]")
                 .long_about(
                     "Create a Lakelands root in a directory, created if missing. Name the directory \
                      as the argument (`lakelands init DIR`) or with --root (`lakelands init --root DIR`); \
@@ -180,6 +182,14 @@ fn command() -> Command {
                         .value_name("ID")
                         .default_value("owner")
                         .help("The id recorded as the writer when you act as the owner"),
+                )
+                .arg(
+                    Arg::new("example")
+                        .long("example")
+                        .value_name("NAME")
+                        .num_args(0..=1)
+                        .default_missing_value("")
+                        .help("Make a lake from an example this binary carries, with an MCP configuration for it; without a name, list them"),
                 ),
         )
         .subcommand(
@@ -397,6 +407,11 @@ async fn dispatch(
             // The argument names the new root; without one, --root does.
             let dir = text(sub, "dir").map_or_else(|| root_dir.clone(), PathBuf::from);
             let owner = text(sub, "owner").unwrap_or_default();
+            match text(sub, "example").as_deref() {
+                Some("") => return example::list(out),
+                Some(name) => return example::init(out, &dir, &owner, name, open).await,
+                None => {}
+            }
             root::init(&dir, &owner)?;
             say(
                 out,

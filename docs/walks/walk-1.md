@@ -35,9 +35,14 @@ records it and goes on; it is never smoothed over on the spot.
 | `data/invoices-september.csv` | the export of 30 September: the same invoices, one now paid, two new |
 | `data/partners.map.json`, `data/invoices.map.json` | the column maps `lakelands ingest --map` takes |
 
+The `lakelands` binary carries these files: `lakelands init --example
+liquidity` makes the lake from them (below).
+
 Two tests keep these from rotting: `crates/lakelands-cli/tests/walk_1.rs`
 loads the bundle and runs the commands below on the real store, over
-SQLite and in memory, and
+SQLite and in memory; holds that the binary carries exactly the files
+of `examples/liquidity/`; and makes the lake with `init --example`, as
+one command, and asks the question below on it. And
 `crates/lakelands-store/tests/walk_1.rs` asks the question below on the
 real store and checks the answers on this page.
 
@@ -121,6 +126,40 @@ Tools. **The answer as of the August ingest:** P-100, P-200 and P-300
 Cedar Logistics. P-300 dropped out because INV-3002 was paid in
 September.
 
+## From a release binary
+
+The binary from a release carries the example, so no checkout is
+needed. One command does what the seven below do, and writes Claude
+Code's MCP configuration for the lake:
+
+```sh
+lakelands init walk --example liquidity
+cd walk && claude    # approve the server `lakelands` when it asks
+```
+
+| Prints | Expected |
+|---|---|
+| first | ``created a Lakelands root in walk with the lake `liquidity`, from the example `liquidity` `` |
+| `apply`'s lines | as below: the eight declarations in force from position 12, the aging rule at 13 |
+| `ingest`'s lines | the same counts as below, through positions **17**, **41** and **47** |
+| the configuration | `wrote …/walk/.mcp.json`, with the server `lakelands`: this binary's own absolute path, with `--root` the root's absolute path, `--lake liquidity serve --mcp`; and that command line for any other MCP client |
+| what to do | `next: cd …/walk && claude`, the question, the walk's answer at the head, the answer **as the lake stood at position 41**, and this page at the binary's own tag |
+
+One process takes the lake's writer once, so the positions after the
+first append are less than the seven commands' by one for each command
+that wrote before: 17, 41 and 47 where the seven commands print 18, 43
+and 50. The August ingest's position is the one the command prints, and
+it is the one the agent pins below. A `.mcp.json` that is in `walk`
+already is not rewritten: the command prints the entry to add; says
+that this `lakelands` server is there; or says that its `lakelands` names
+another command or root, and prints the entry to put in its place. A run
+that fails after it made the root removes what it made, so the same
+command can run again.
+
+Ask Claude Code the question. Its calls are the ones under "The agent's
+calls", with the positions of this path: the head after the ingests is
+47, and each `serve --mcp` adds one.
+
 ## The commands
 
 From a fresh clone, in the repository's root. `cargo install` puts
@@ -164,8 +203,9 @@ first append (`lake_created`, `lease_taken`, the `sys.setting` and
 `sys.aging_rule` declarations), then, for every command that writes, one
 `lease_taken` as that process becomes the lake's writer before its own
 events. Write down the position the
-August ingest prints: it is the one the walk pins. A different number is
-not a rift if the records and the answers are right.
+August ingest prints: it is the one the walk pins (43 here, 41 after
+`init --example`). A different number is not a rift if the records and
+the answers are right.
 
 ## The agent's calls
 
@@ -276,13 +316,15 @@ it came from, for example P-300's:
 ```
 
 `writer` is the principal the CLI ingested as (the root's owner), and
-`known_at` the time of the ingest.
+`known_at` the time of the ingest. On the lake `init --example` makes,
+`position` is 16.
 
 **The agent's answer:** P-100 Harbor Supplies (10710.00 overdue against
 10000.00) and P-200 Northwind Tools (5950.00 against 5000.00), with
 their credit limits taken from `crm`'s export of 31 August.
 
-**5. `pin`** — `{ "as_of": 43 }` (the August ingest's position):
+**5. `pin`** — `{ "as_of": 43 }` (the August ingest's position, as the
+ingest printed it; 41 on the lake `init --example` makes):
 `{ "position": <head>, "pinned": 43 }`. Calls 5 to 8 are one turn, so one run:
 
 ```sh
@@ -296,7 +338,8 @@ cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve
   tools/call pin '{"clear": true}'
 ```
 
-**6. `invoice_find`**, the same arguments. Expected, at position 43:
+**6. `invoice_find`**, the same arguments. Expected, at the August
+ingest's position (43, or 41):
 P-100 `10710.00`, P-200 `5950.00`, **P-300 `8330.00`**, P-400
 `7140.00`.
 
