@@ -91,7 +91,8 @@ Each is red when:
 - `dco`: a commit is not signed off by its author;
 - `no-external-decisions`: a file or a commit message cites that
   platform's decision records or planning threads, or holds a bare `#`
-  followed by four or more digits (write `lakelands#N` or a full URL);
+  followed by four or more digits (write `lakelands#N` or a full URL;
+  GitHub's merge subject on a message's first line is exempt);
 - `doc-heads-its-item`: a new item is inserted between another item and
   its doc comment;
 - `detail-sources`: an error's free text is made from a library's words
