@@ -208,8 +208,12 @@ fn command() -> Command {
                                 .long("engine")
                                 .value_name("ENGINE")
                                 .default_value("sqlite")
-                                .help("Where the lake is kept: `sqlite` on disk, or `memory` for as long as the process runs"),
-                        ),
+                                .help("Where the lake is kept: `sqlite` on disk, `postgres` in a database, or `memory` for as long as the process runs"),
+                        )
+                        .arg(Arg::new("url").long("url").value_name("URL").help("For `postgres`: the database's URL. The location file holds it as plain text, a password in it too: keep the root's `lakes/` to its operator"))
+                        .arg(Arg::new("schema").long("schema").value_name("NAME").help("For `postgres`: the schema; `lakelands_<id>` when left out"))
+                        .arg(Arg::new("no-tls").long("no-tls").action(clap::ArgAction::SetTrue).help("For `postgres`: connect without TLS"))
+                        .arg(Arg::new("ca-file").long("ca-file").value_name("PEM").help("For `postgres`: the certificate authorities to verify the server against")),
                 ),
         )
         .subcommand(
@@ -463,7 +467,13 @@ async fn dispatch(
             let (_, new) = sub.subcommand().expect("a lake subcommand is required");
             let id = text(new, "id").unwrap_or_default();
             let engine = text(new, "engine").unwrap_or_default();
-            root.new_lake(&id, &engine)?;
+            let pg = root::PgNew {
+                url: text(new, "url"),
+                schema: text(new, "schema"),
+                tls_disabled: new.get_flag("no-tls"),
+                ca_file: text(new, "ca-file").map(PathBuf::from),
+            };
+            root.new_lake(&id, &engine, &pg)?;
             return say(
                 out,
                 format!(

@@ -268,7 +268,11 @@ async fn make(
     example: &Example,
     open: &Opener<'_>,
 ) -> Result<Position, Failure> {
-    root::Root::open_to_add_a_lake(dir)?.new_lake(example.name, "sqlite")?;
+    root::Root::open_to_add_a_lake(dir)?.new_lake(
+        example.name,
+        "sqlite",
+        &root::PgNew::default(),
+    )?;
     let root = root::Root::open(dir)?;
     let location = root.location(Some(example.name))?;
     let store = open(location, OpenMode::Create, root.seams()).await?;

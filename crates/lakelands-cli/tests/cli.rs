@@ -312,6 +312,110 @@ Options:
     }
 }
 
+#[cfg(feature = "pg")]
+#[test]
+fn lake_new_writes_a_postgres_location_as_hosting_shows_it() {
+    let sh = Shell::on("lake-new-pg", Backend::Store);
+    let root = sh.root.display().to_string();
+    assert_eq!(sh.raw(&["lakelands", "init", &root]).code, 0);
+    fails(
+        &sh.run(&["lake", "new", "books", "--engine", "postgres"]),
+        "error: a PostgreSQL lake needs `--url`\n  what to do: name the database, as `--url postgres://user@host/database`; the location file holds the URL, password included, as plain text\n",
+    );
+    assert!(!sh.root.join("lakes/books.json").exists());
+    let url = "postgres://lakelands:secret@db.example:5432/lakes";
+    ok(
+        &sh.run(&["lake", "new", "books", "--engine", "postgres", "--url", url]),
+        "created lake `books` (engine postgres) in lakes/books.json\n",
+    );
+    let written = fs::read_to_string(sh.root.join("lakes/books.json")).unwrap();
+    let location: Location = serde_json::from_str(&written).unwrap();
+    assert_eq!(location, Location::postgres("books", url));
+    #[cfg(unix)]
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(
+            &fs::metadata(sh.root.join("lakes/books.json"))
+                .unwrap()
+                .permissions()
+        ) & 0o777,
+        0o600,
+        "a location that may hold a password is its operator's alone"
+    );
+    fails(
+        &sh.run(&["lake", "new", "x", "--url", url]),
+        "error: `--url`, `--schema`, `--no-tls` and `--ca-file` are for `postgres`, not `sqlite`\n  what to do: leave them out, or choose `--engine postgres`\n",
+    );
+    fails(
+        &sh.run(&[
+            "lake",
+            "new",
+            "x",
+            "--engine",
+            "postgres",
+            "--url",
+            url,
+            "--no-tls",
+            "--ca-file",
+            "/c.pem",
+        ]),
+        "error: `--no-tls` and `--ca-file` contradict each other\n  what to do: a CA file verifies a TLS connection: leave one of them out\n",
+    );
+    assert!(!sh.root.join("lakes/x.json").exists());
+    ok(
+        &sh.run(&[
+            "lake",
+            "new",
+            "ledger",
+            "--engine",
+            "postgres",
+            "--url",
+            url,
+            "--schema",
+            "ledger_s",
+            "--ca-file",
+            "/etc/ssl/ca.pem",
+        ]),
+        "created lake `ledger` (engine postgres) in lakes/ledger.json\n",
+    );
+    let written = fs::read_to_string(sh.root.join("lakes/ledger.json")).unwrap();
+    let written: serde_json::Value = serde_json::from_str(&written).unwrap();
+    assert_eq!(written["engine"]["schema"], "ledger_s");
+    assert_eq!(written["engine"]["tls"]["ca_file"], "/etc/ssl/ca.pem");
+    ok(
+        &sh.run(&[
+            "lake", "new", "local", "--engine", "postgres", "--url", url, "--no-tls",
+        ]),
+        "created lake `local` (engine postgres) in lakes/local.json\n",
+    );
+    let written = fs::read_to_string(sh.root.join("lakes/local.json")).unwrap();
+    let written: serde_json::Value = serde_json::from_str(&written).unwrap();
+    assert_eq!(written["engine"]["tls"]["mode"], "disable");
+    fails(
+        &sh.run(&["lake", "new", "books", "--engine", "postgres", "--url", url]),
+        "error: lake `books` exists already in <root>; nothing was changed\n  what to do: choose another name, or keep working with the lake that is there\n",
+    );
+}
+
+#[cfg(not(feature = "pg"))]
+#[test]
+fn lake_new_refuses_postgres_in_a_build_without_it() {
+    let sh = Shell::on("lake-new-no-pg", Backend::Store);
+    let root = sh.root.display().to_string();
+    assert_eq!(sh.raw(&["lakelands", "init", &root]).code, 0);
+    fails(
+        &sh.run(&[
+            "lake",
+            "new",
+            "books",
+            "--engine",
+            "postgres",
+            "--url",
+            "postgres://h/d",
+        ]),
+        "error: this build of lakelands has no PostgreSQL engine\n  what to do: build it with the `pg` feature, or choose `sqlite` or `memory`\n",
+    );
+}
+
 #[test]
 fn lake_new_writes_a_location_and_refuses_to_overwrite_it() {
     for backend in BACKENDS {
