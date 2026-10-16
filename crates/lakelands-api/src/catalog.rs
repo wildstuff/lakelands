@@ -373,6 +373,13 @@ pub trait LakeStore: Send + Sync {
     /// position it was rebuilt through.
     async fn rebuild(&self) -> Result<Position>;
 
+    /// Why a forgetting's reclaim is still owed, where the last one tried
+    /// failed: the writer opened without it and tries it at its next
+    /// open (`docs/decisions/058-a-source-may-be-forgotten.md`).
+    fn reclaim_owed(&self) -> Option<String> {
+        None
+    }
+
     /// Withhold a record from principals without the `restricted` grant —
     /// a retention hold. The record and its history stay; reads by
     /// principals without the grant no longer see it. The reason is

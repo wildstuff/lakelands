@@ -6,15 +6,19 @@
 //! open. The checks bring the key store of [`super::erasable`].
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use lakelands_api::event::{Event, EventBody};
+use lakelands_api::engine::{
+    CanonicalEvent, EngineOpener, Lease, OpenMode, ProjectionStore, ProjectionView, Ranked,
+    Rankings, VectorIndex,
+};
+use lakelands_api::event::{Digest, Event, EventBody, SegmentDigest};
 use lakelands_api::id::KeyId;
 use lakelands_api::ontology::{FieldDecl, StorageKind};
 use lakelands_api::read::Found;
 use lakelands_api::seam::{DataKey, KeyStore, Seams};
 use lakelands_api::write::ForgetReport;
-use lakelands_api::{Error, LakeId, LakeStore, Position, SourceId};
+use lakelands_api::{Error, LakeId, LakeStore, Location, Position, SourceId, TypeName};
 use serde_json::{Value, json};
 
 use super::erasable::{Keys, again, person, read, with};
@@ -593,6 +597,258 @@ async fn an_export_imports_with_its_keys_or_with_its_forgetting(
     ensure!(
         held.is_empty(),
         "the import destroyed the backup's keys of crm: {held:?}"
+    );
+    Ok(())
+}
+
+check!(
+    RECLAIM_OWED = a_reclaim_that_fails_keeps_no_writer_out,
+    "058, extended (lakelands#1161): a forgetting whose reclaim fails answers its failure with the values erased already, and owes the reclaim, saying why; the lake's next writer opens though the reclaim fails again, still owing it, writes and reads the values erased; the open after the reclaim can run finishes it and owes nothing, and the act's repeat answers it done; a rebuild a forgetting still owes refuses the writer's open while it fails, as before",
+    given
+);
+
+/// How many of the next reclaims, and of the next clears a rebuild
+/// begins with, fail.
+type Fails = Arc<[AtomicU32; 2]>;
+
+/// The harness's engine with a projection whose next reclaims and
+/// clears fail as [`Fails`] says (lakelands#1161).
+struct Reclaims {
+    inner: Box<dyn lakelands_api::engine::LakeEngine>,
+    fails: Fails,
+}
+
+/// The harness's engine opener, making [`Reclaims`].
+struct ReclaimsOpener {
+    inner: Arc<dyn EngineOpener>,
+    fails: Fails,
+}
+
+/// Whether the next call `i` of [`Fails`] counts fails, counting it.
+fn fails(fails: &Fails, i: usize) -> bool {
+    let n = &fails[i];
+    n.load(Ordering::SeqCst) > 0 && n.fetch_sub(1, Ordering::SeqCst) > 0
+}
+
+impl EngineOpener for ReclaimsOpener {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn log_ends(
+        &self,
+        location: &Location,
+    ) -> lakelands_api::Result<Option<(CanonicalEvent, CanonicalEvent)>> {
+        self.inner.log_ends(location)
+    }
+    fn open(
+        &self,
+        location: &Location,
+        mode: OpenMode,
+    ) -> lakelands_api::Result<Box<dyn lakelands_api::engine::LakeEngine>> {
+        let (inner, fails) = (self.inner.open(location, mode)?, self.fails.clone());
+        Ok(Box::new(Reclaims { inner, fails }))
+    }
+}
+
+impl lakelands_api::engine::LakeEngine for Reclaims {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn rebuild_rate(&self) -> u64 {
+        self.inner.rebuild_rate()
+    }
+    fn lake(&self) -> &LakeId {
+        self.inner.lake()
+    }
+    fn take_lease(&self, holder: &str) -> lakelands_api::Result<Lease> {
+        self.inner.take_lease(holder)
+    }
+    fn release_lease(&self, lease: &Lease) -> lakelands_api::Result<()> {
+        self.inner.release_lease(lease)
+    }
+    fn tip(&self) -> lakelands_api::Result<Option<(Position, Digest)>> {
+        self.inner.tip()
+    }
+    fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> lakelands_api::Result<()> {
+        self.inner.append(lease, events)
+    }
+    fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> lakelands_api::Result<()> {
+        self.inner.import(lease, events)
+    }
+    fn read(&self, from: Position, limit: u32) -> lakelands_api::Result<Vec<CanonicalEvent>> {
+        self.inner.read(from, limit)
+    }
+    fn seal_segment(
+        &self,
+        lease: &Lease,
+        imported: bool,
+        first: &mut dyn FnMut(&SegmentDigest) -> lakelands_api::Result<Vec<CanonicalEvent>>,
+    ) -> lakelands_api::Result<Option<SegmentDigest>> {
+        self.inner.seal_segment(lease, imported, first)
+    }
+    fn segments(&self) -> lakelands_api::Result<Vec<SegmentDigest>> {
+        self.inner.segments()
+    }
+    fn projection(&self) -> &dyn ProjectionStore {
+        self
+    }
+    fn view(&self, as_of: Option<Position>) -> lakelands_api::Result<Box<dyn ProjectionView + '_>> {
+        self.inner.view(as_of)
+    }
+    fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> lakelands_api::Result<Ranked> {
+        self.inner.ranked(ty, asked, k)
+    }
+    fn vectors(&self) -> Option<&dyn VectorIndex> {
+        self.inner.vectors()
+    }
+}
+
+impl ProjectionStore for Reclaims {
+    fn begin(&self) -> lakelands_api::Result<()> {
+        self.inner.projection().begin()
+    }
+    fn commit(&self, through: Position) -> lakelands_api::Result<()> {
+        self.inner.projection().commit(through)
+    }
+    fn rollback(&self) {
+        self.inner.projection().rollback()
+    }
+    fn folded_through(&self) -> lakelands_api::Result<Option<Position>> {
+        self.inner.projection().folded_through()
+    }
+    fn put_declaration(
+        &self,
+        declaration: &lakelands_api::write::Declaration,
+        version: u32,
+        schema_hash: Option<&str>,
+        at: Position,
+    ) -> lakelands_api::Result<()> {
+        (self.inner.projection()).put_declaration(declaration, version, schema_hash, at)
+    }
+    fn put_record(
+        &self,
+        record: &lakelands_api::record::StoredRecord,
+    ) -> lakelands_api::Result<()> {
+        self.inner.projection().put_record(record)
+    }
+    fn end_head_only(&self, name: &TypeName, at: Position) -> lakelands_api::Result<()> {
+        self.inner.projection().end_head_only(name, at)
+    }
+    fn put_proposal(
+        &self,
+        proposal: &lakelands_api::write::Proposal,
+        at: Position,
+    ) -> lakelands_api::Result<()> {
+        self.inner.projection().put_proposal(proposal, at)
+    }
+    fn put_membership(
+        &self,
+        set: &str,
+        ty: &TypeName,
+        key: &lakelands_api::RecordKey,
+        member: bool,
+        at: Position,
+    ) -> lakelands_api::Result<()> {
+        (self.inner.projection()).put_membership(set, ty, key, member, at)
+    }
+    fn put_output(
+        &self,
+        seam: &str,
+        input: &Digest,
+        output: &Value,
+        at: Position,
+    ) -> lakelands_api::Result<()> {
+        self.inner.projection().put_output(seam, input, output, at)
+    }
+    fn mark_applied(&self, applied: &lakelands_api::engine::Applied) -> lakelands_api::Result<()> {
+        self.inner.projection().mark_applied(applied)
+    }
+    fn clear(&self) -> lakelands_api::Result<()> {
+        match fails(&self.fails, 1) {
+            true => Err(crashed()),
+            false => self.inner.projection().clear(),
+        }
+    }
+    fn compact(&self) -> lakelands_api::Result<lakelands_api::engine::Reclaimed> {
+        match fails(&self.fails, 0) {
+            true => Err(crashed()),
+            false => self.inner.projection().compact(),
+        }
+    }
+}
+
+async fn a_reclaim_that_fails_keeps_no_writer_out(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let keys = Arc::new(Keys::default());
+    let seams = || with(&keys);
+    let fails: Fails = Arc::new([AtomicU32::new(0), AtomicU32::new(0)]);
+    let wrap: crate::conformance::Wrap = {
+        let fails = fails.clone();
+        Arc::new(move |inner| {
+            Arc::new(ReclaimsOpener {
+                inner,
+                fails: fails.clone(),
+            }) as Arc<dyn EngineOpener>
+        })
+    };
+    let fault = |store: Store, what: &str| {
+        let (open, what) = ((given.fault)(store, seams(), wrap.clone()), what.to_owned());
+        async move {
+            open.await
+                .map_err(|e| Failure::new(format!("the writer's open {what} was refused: {e}")))
+        }
+    };
+    let mut store = fault(store, "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    lake(&l).await?;
+    people(store.as_ref(), &l).await?;
+    let crm: SourceId = "crm".into();
+    // The act's reclaim fails: the values are erased, the reclaim owed.
+    fails[0].store(1, Ordering::SeqCst);
+    let act = store.forget_source(&crm, None).await;
+    ensure!(
+        act.is_err() && store.reclaim_owed().is_some(),
+        "a forgetting whose reclaim fails answers its failure and owes the reclaim; it answered \
+         {act:?}, owing {:?}",
+        store.reclaim_owed()
+    );
+    erased(&l, None).await?;
+    // The next writer opens though the reclaim fails again.
+    fails[0].store(1, Ordering::SeqCst);
+    store = fault(store, "while its reclaim fails").await?;
+    let (tried, owed) = (fails[0].load(Ordering::SeqCst) == 0, store.reclaim_owed());
+    ensure!(
+        tried && owed.is_some(),
+        "the writer's open tries the owed reclaim and, failing, still owes it, saying why: tried \
+         {tried}, owing {owed:?}"
+    );
+    let l = Lake::of(store.as_ref());
+    erased(&l, None).await?;
+    l.upsert("person", "p2", json!({"note": "written"})).await?;
+    // The open after the reclaim can run finishes it.
+    store = fault(store, "once its reclaim runs").await?;
+    let done = store.forget_source(&crm, None).await;
+    ensure!(
+        store.reclaim_owed().is_none() && done.as_ref().is_ok_and(|r| r.reclaimed.is_none()),
+        "the open that can reclaim finishes it and owes nothing, and the act's repeat answers it \
+         done: owing {:?}, the repeat {done:?}",
+        store.reclaim_owed()
+    );
+    // A rebuild still owed refuses the writer's open while it fails.
+    let l = Lake::of(store.as_ref());
+    let eve = source_record("person", "p5", json!({"id": "p5", "name": "Eve"}));
+    l.ingest("crm2", vec![eve])
+        .await
+        .must("ingesting from crm2")?;
+    fails[1].store(2, Ordering::SeqCst);
+    let stopped = store.forget_source(&"crm2".into(), None).await;
+    let refused = (given.fault)(store, seams(), wrap.clone()).await.map(drop);
+    ensure!(
+        stopped.is_err() && refused.is_err() && fails[1].load(Ordering::SeqCst) == 0,
+        "a forgetting whose rebuild fails, and the writer's open whose rebuild of it fails \
+         again, are refused; they answered {stopped:?} and {refused:?}"
     );
     Ok(())
 }

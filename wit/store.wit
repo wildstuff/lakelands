@@ -29,6 +29,9 @@ interface store {
         lake: func() -> lake-id;
         /// Whether this handle holds the lake's writer lease.
         is-writer: func() -> bool;
+        /// Why a forgetting's reclaim is still owed, where the last one
+        /// tried failed: the writer opened without it.
+        reclaim-owed: func() -> option<string>;
         limits: func() -> limits;
         /// The lake's last position.
         head: func() -> result<position, error>;

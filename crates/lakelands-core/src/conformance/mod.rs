@@ -202,6 +202,20 @@ pub trait Harness: Send + Sync {
         })
     }
 
+    /// How this harness opens a lake it handed out again through an engine
+    /// the check wraps around its own: the [`Fault`] a check that injects
+    /// a fault below the store is given. A harness without one answers
+    /// `unbound`.
+    fn faulter(&self) -> Fault {
+        Arc::new(|_, _, _| {
+            Box::pin(async {
+                let op = "fault".to_owned();
+                let seam = lakelands_api::error::Seam::Operation { op };
+                Err(lakelands_api::Error::unbound(seam))
+            })
+        })
+    }
+
     /// How this harness opens a twin of a lake it handed out: a brand-new
     /// lake of its engine under the same id, in a place of its own
     /// ([`Twin`]). A harness without one answers `unbound`.
@@ -265,12 +279,30 @@ pub struct Given {
     pub continued: Continue,
     /// How the harness opens a twin of the check's lake.
     pub twin: Twin,
+    /// How the harness opens the check's lake again through a wrapped
+    /// engine.
+    pub fault: Fault,
 }
 
 /// Closes a lake the harness opened and opens it again for writing with
 /// `seams` and the harness's engine, as a host's next process opens it:
 /// the same lake, a new writer.
 pub type Reopen = Arc<dyn Fn(Arc<dyn LakeStore>, Seams) -> FreshLake<'static> + Send + Sync>;
+
+/// Closes a lake the harness opened and opens it again for writing, as
+/// [`Reopen`] does, through the engine [`Wrap`] makes of the harness's
+/// own: a fault a check injects below the store, on every engine
+/// (lakelands#1161). It is a seam of the suite, not of the store.
+pub type Fault = Arc<dyn Fn(Arc<dyn LakeStore>, Seams, Wrap) -> FreshLake<'static> + Send + Sync>;
+
+/// What a check makes of the harness's engine opener for a [`Fault`].
+pub type Wrap = Arc<
+    dyn Fn(
+            Arc<dyn lakelands_api::engine::EngineOpener>,
+        ) -> Arc<dyn lakelands_api::engine::EngineOpener>
+        + Send
+        + Sync,
+>;
 
 /// Closes a lake the harness opened and opens it again for writing, as
 /// [`Reopen`] does, with its location's limits replaced by these.
@@ -632,6 +664,7 @@ async fn run_check(harness: &dyn Harness, check: &Check) -> Result<(), Failure> 
         import: harness.importer(),
         continued: harness.continuer(),
         twin: harness.twinner(),
+        fault: harness.faulter(),
     };
     match caught((check.run)(store, given)).await {
         Ok(outcome) => outcome,

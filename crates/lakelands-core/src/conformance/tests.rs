@@ -25,7 +25,7 @@ use lakelands_api::{
 
 use super::fixture::Must;
 use super::{
-    Check, Failure, FreshLake, Harness, Held, Relimit, Reopen, Report, Store, Tally, checks,
+    Check, Failure, Fault, FreshLake, Harness, Held, Relimit, Reopen, Report, Store, Tally, checks,
     run_all, run_checks, run_one,
 };
 
@@ -203,6 +203,9 @@ impl Harness for DownHarness {
         Arc::new(|_, _| Box::pin(async { Err(down()) }))
     }
     fn relimiter(&self) -> Relimit {
+        Arc::new(|_, _, _| Box::pin(async { Err(down()) }))
+    }
+    fn faulter(&self) -> Fault {
         Arc::new(|_, _, _| Box::pin(async { Err(down()) }))
     }
     fn scratch(&self) -> std::path::PathBuf {

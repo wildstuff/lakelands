@@ -738,7 +738,11 @@ impl ProjectionStore for PgLake {
     /// outside a transaction; never `VACUUM FULL`, which would lock every
     /// reader out while it rewrote. Readers go on reading. A `VACUUM` that
     /// fails cannot be rolled back, but it changes no row a view reads at
-    /// any point. The log's tables are not touched.
+    /// any point. The log's tables are not touched. It runs without
+    /// parallel workers, which ask the server for shared memory of
+    /// `maintenance_work_mem`'s size that a container's `/dev/shm` may not
+    /// hold: a reclaim that fits beats a fast one that fails
+    /// (lakelands#1161).
     fn compact(&self) -> Result<Reclaimed> {
         let writing = self.writing()?;
         let transaction = lock(&self.transaction);
@@ -752,7 +756,10 @@ impl ProjectionStore for PgLake {
         let _ = db.batch("ROLLBACK");
         let before = size(&mut db, &self.target.schema, &tables)?;
         let listed: Vec<String> = tables.iter().map(|t| self.names.t(t)).collect();
-        db.batch(&format!("VACUUM (ANALYZE) {}", listed.join(", ")))?;
+        db.batch(&format!(
+            "VACUUM (ANALYZE, PARALLEL 0) {}",
+            listed.join(", ")
+        ))?;
         let after = size(&mut db, &self.target.schema, &tables)?;
         Ok(Reclaimed {
             before: Some(before),
