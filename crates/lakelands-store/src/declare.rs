@@ -487,7 +487,12 @@ fn initial(o: &Ontology, owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) 
     let why = match of {
         None => Case::InitialNotOfType,
         Some(t) if t.view.is_some() => Case::InitialInView,
-        Some(_) if !f.authority.is_authored() || f.derived.is_some() => Case::InitialNotAuthored,
+        Some(_)
+            if !matches!(f.authority, Authority::Authored | Authority::Verb)
+                || f.derived.is_some() =>
+        {
+            Case::InitialNotAuthored
+        }
         Some(t) if t.key.contains(&f.name) => Case::InitialKey,
         Some(t) if f.ty.kind == StorageKind::Reference || names(t) => Case::InitialReference,
         Some(_) if f.on_input_change == OnInputChange::Clear => Case::InitialCleared,
@@ -524,6 +529,20 @@ fn erasable(o: &Ontology, owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>)
     Err(invalid_field(&f.name, at(&on, why)))
 }
 
+/// A field only verbs write (lakelands#1130) is no key, required only with
+/// an `initial`, as a verb writes a record that stands, and not computed.
+fn verb_written(owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) -> Result<()> {
+    let why = match of {
+        _ if f.authority != Authority::Verb => return Ok(()),
+        _ if f.derived.is_some() => Case::VerbComputed,
+        Some(t) if t.key.contains(&f.name) => Case::VerbKey,
+        Some(_) if f.required && f.initial.is_none() => Case::VerbRequired,
+        _ => return Ok(()),
+    };
+    let on = [owner, &[of_field(&f.name), Place::Authority]].concat();
+    Err(invalid_field(&f.name, at(&on, why)))
+}
+
 /// Refuse `computed_at` on a field no record holds: a verb's payload's, a
 /// function's input.
 fn computed_here(on: &[Place], f: &FieldDecl) -> Result<()> {
@@ -548,6 +567,7 @@ fn field_type(
     name(Naming::Field, f.name.as_str())?;
     initial(o, owner, f, of)?;
     erasable(o, owner, f, of)?;
+    verb_written(owner, f, of)?;
     let ty = &f.ty;
     let on = [owner, &[of_field(&f.name)]].concat();
     let wrong = |c: Case| invalid_field(&f.name, at(&on, c));
@@ -1426,8 +1446,50 @@ fn constraints(o: &Ontology, t: &TypeDecl) -> Result<()> {
             let (ty, field) = (t.name.clone(), n.clone());
             return wrong(Case::UnknownField { ty, field });
         }
+        initial_holds(t, c, &e)?;
     }
     Ok(())
+}
+
+/// A constraint reading only fields verbs alone write is judged over their
+/// `initial`s, which no create can replace (lakelands#1130); a field with
+/// none is null. One an ingest admits a breach of is not: an ingest makes
+/// records of the type whatever it holds.
+fn initial_holds(t: &TypeDecl, c: &ConstraintDecl, e: &lakelands_api::expr::Expr) -> Result<()> {
+    let read = e.fields_read();
+    let by_verbs =
+        |n: &&FieldName| (t.fields.iter()).any(|f| &f.name == *n && f.authority == Authority::Verb);
+    if read.is_empty() || !read.iter().all(by_verbs) || !c.at_ingest.refuses() {
+        return Ok(());
+    }
+    let after: std::collections::BTreeMap<FieldName, lakelands_api::Value> = (t.fields.iter())
+        .filter(|f| f.authority == Authority::Verb)
+        .filter_map(|f| Some((f.name.clone(), f.initial.clone()?)))
+        .collect();
+    let scope = lakelands_core::expr::WriteScope {
+        after: &after,
+        before: None,
+        retiring: false,
+        meta: None,
+        settings: None,
+        now: lakelands_api::Timestamp(0),
+    };
+    if lakelands_core::expr::holds(e, &scope).unwrap_or(false) {
+        return Ok(());
+    }
+    let unset = |n: &&&FieldName| !after.contains_key(**n);
+    let constraint = c.name.clone();
+    let (field, case) = match read.iter().find(unset) {
+        Some(n) => {
+            let field = (**n).clone();
+            (field.clone(), Case::NoInitialBreaks { constraint, field })
+        }
+        None => {
+            let field = (*read.first().expect("a field read")).clone();
+            (field.clone(), Case::InitialBreaks { constraint, field })
+        }
+    };
+    Err(crate::writes::constraint(Some(field), case))
 }
 
 /// A new field may not begin with `_`: under a pattern's bound name the

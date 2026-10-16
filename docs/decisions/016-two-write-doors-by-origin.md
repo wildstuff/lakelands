@@ -23,6 +23,49 @@ outcome and appends nothing. The key is recorded in the log.
 The source's own offset belongs to the caller; the lake's position
 belongs to the store. The two are never mixed.
 
+### A field may be written by its type's verbs alone
+
+A field declared `authority: verb` is written only by its type's
+declared verbs, their `set`, called or accepted as a proposal of the
+call, and by what the store writes as declared: the field's `initial`
+(050) and an aging rule (036) (lakelands#1130). A lifecycle an operator
+declares, its states and the verbs that move a record between them,
+then holds at every door: each move passes the verb's `requires` and
+the gate its risk puts in front of it (013). `upsert`, a proposed
+`upsert`, `link`, `ingest` (and so a mirror's copy) and a host's
+reaction, which is one of these, are refused the field. A component's
+guest door calls the same doors. An aging rule may move such a field: the
+rule is a transition the owner declared, and whoever may write
+`sys.aging_rule` holds that right.
+
+Since no create can send such a field, a constraint that reads only
+fields its verbs write is judged at the declaration over their
+`initial`s: one that breaks is refused `initial_breaks`, and a field with
+no `initial` is judged as null and, where the constraint refuses that,
+refused `no_initial_breaks`. A constraint with `at_ingest: admit` is
+taken, since an ingest makes records whatever they hold, and so is one
+that reads a field authors write too. A grant's `only` on such a field
+admits a create where the field's `initial` is the value it names.
+
+| door ↓ / authority → | `authored` | `source` | `shared` | `derived` | `verb` |
+|---|---|---|---|---|---|
+| `upsert`, `link`, an accepted `upsert` | ✓ | | ✓ | | refused |
+| `ingest`, a mirror's copy | | ✓ | ✓ | | refused |
+| a declared verb's `set`, `initial`, aging | ✓ | | ✓ | | ✓ |
+
+The refusal is `verbs_only`, naming the verbs that set the field which
+its writer is shown and may call, so it knows the way; where it is shown
+none it is `wrong_door`, as for a field of another authority, so a verb
+kept from a writer is told to it by nothing (006). A writer kept from
+the field is answered `unknown_field` first, as for a field the type
+does not have. The event a verb writes stays `record_upserted`, caused
+by its `verb_called` and carrying the verb as its procedure.
+
+The declaration refuses `verb` where no record could be made: on a key
+field, on a required field without an `initial`, and on a field the
+fold computes; and a constraint that reads only such fields is judged
+over their `initial`s, which no create can replace (`initial_breaks`).
+
 ### A window is decided whole, and a record that changes nothing is a duplicate
 
 `ingest` takes its stream in group-commit windows: a window closes when it
@@ -140,9 +183,11 @@ verb's effect, a proposal and its acceptance, and `ingest`:
 3. the key is not empty and holds no NUL: `invalid`;
 4. the door and the grants: a view is `invalid` (018, extended); then
    field by field, in name order, a field the type does not declare is
-   `invalid`, one another authority writes is `wrong_door`, and one the
-   principal may not write is `not_granted`, each naming the field, so
-   the first offending field by name is the one named;
+   `invalid`, one another authority writes is `wrong_door`, or
+   `verbs_only` where only its type's verbs write it and its writer is
+   shown one, and one the principal may not write is `not_granted`, each
+   naming the field, so the first offending field by name is the one
+   named;
 5. every value fits its field, in name order: `constraint`, naming it;
 6. on a create, the key fields the patch leaves out are filled from the
    key: a key that does not split into them is `invalid`; a filled
@@ -283,3 +328,4 @@ is just another caller later, not a change to the contract.
 - One ingest may carry many sources: a record may name its own `source`, which its event and its id take in place of the call's (lakelands#1041).
 - A source id is formed as a key is, not empty and holding no NUL, and a source record with a member it does not have is refused, never read without it (lakelands#1081).
 - A window is the store's: no rule is judged over one, and a link that breaks its relation's cardinality with an earlier link of its window is answered as over the lake, the other end named by the same rule; `window_links_already` is never answered from 0.15.0 (lakelands#886).
+- A field may be written by its type's verbs alone, `authority: verb`; the other doors are refused it as `verbs_only`, naming the verbs its writer is shown, or `wrong_door` (lakelands#1130).

@@ -190,7 +190,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 365, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 372, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -392,7 +392,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 40] = [
+const SHOWN: [&str; 41] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -433,10 +433,11 @@ const SHOWN: [&str; 40] = [
     "trigger_across",
     "constraints",
     "source_forgotten",
+    "verb_authority",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 47;
+const LAST: u64 = 48;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
@@ -624,6 +625,8 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
             B::SourceForgotten { source, keys }
                 if source == "crm" && keys.len() == 1 && keys[0].as_str() == "1"
         ),
+        "verb_authority" => matches!(declared, Some(D::Type(t))
+            if t.fields.iter().any(|f| f.authority == lakelands_api::ontology::Authority::Verb)),
         other => panic!("`further.json` shows `{other}`, which this test has no check for"),
     }
 }

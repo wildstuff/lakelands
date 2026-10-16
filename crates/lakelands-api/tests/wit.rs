@@ -1386,7 +1386,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             checks.push(($wit, case_names(&[$($ty::$v),+], None)));
         }};
     }
-    units!("authority", Authority, [Authored, Source, Shared, Derived]);
+    // `#[non_exhaustive]`: its list is kept whole inside its crate.
+    checks.push(("authority", case_names(&Authority::ALL, None)));
     units!("on_input_change", OnInputChange, [Keep, Clear]);
     units!("computed_at", ComputedAt, [Write, Read]);
     units!(
@@ -1533,6 +1534,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
         match r {
             Refusal::NotGranted
             | Refusal::WrongDoor
+            | Refusal::VerbsOnly { .. }
             | Refusal::Reserved
             | Refusal::Invalid { .. }
             | Refusal::Constraint { .. }
@@ -1555,6 +1557,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             &[
                 Refusal::NotGranted,
                 Refusal::WrongDoor,
+                Refusal::VerbsOnly { verbs: vec![] },
                 Refusal::Reserved,
                 Refusal::Invalid(said()),
                 Refusal::Constraint(said()),

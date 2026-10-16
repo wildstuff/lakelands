@@ -57,7 +57,8 @@ Every failure is one of five errors, and the set is closed:
 
 - `refused`: the store would not do it, with the field it concerns and a
   reason from a closed list (no grant, another authority writes the
-  field, a reserved name, a request that does not fit the lake's map, a
+  field, only the type's verbs write the field (naming those its writer
+  may call), a reserved name, a request that does not fit the lake's map, a
   broken constraint or precondition, a reaction chain too deep, a
   request that would reach, skip or change more than the lake allows, a
   migration that would lose information, a proposal already decided, a
@@ -263,3 +264,4 @@ engine will never produce.
   the request too large, and what is not found names a function; the
   contract's `Refusal` and `Missing` hold both, and the lists left them
   out.
+- A refusal's reason gained `verbs_only`, naming the verbs that alone write a field (lakelands#1130).

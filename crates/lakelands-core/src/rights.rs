@@ -567,13 +567,16 @@ pub fn holds_nothing_across<'d>(
 }
 
 /// Whether `who` can make a record of `decl` that its grant admits: it
-/// writes every field its `only` names at the authored door (051).
+/// writes every field its `only` names at the authored door (051), or the
+/// field is one only verbs write whose `initial` a create gives it is the
+/// value its `only` names.
 pub fn creates(who: &Principal, decl: &TypeDecl) -> bool {
-    own_only(who, &decl.name).iter().all(|(f, _)| {
+    own_only(who, &decl.name).iter().all(|(f, v)| {
         let field = decl.fields.iter().find(|d| &d.name == f);
-        field.is_some_and(|d| {
-            matches!(d.authority, Authority::Authored | Authority::Shared)
-                && field_access(who, decl, d).writes()
+        field.is_some_and(|d| match d.authority {
+            Authority::Authored | Authority::Shared => field_access(who, decl, d).writes(),
+            Authority::Verb => d.initial.as_ref() == Some(v),
+            _ => false,
         })
     })
 }
@@ -699,10 +702,13 @@ pub fn searched_fields<'d>(
 /// The door a write comes through.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Door {
-    /// `upsert`, a verb, an accepted proposal.
+    /// `upsert`, `link`, an accepted proposal of either.
     Authored,
     /// `ingest`.
     Source,
+    /// A declared verb's write, called or accepted, and what the store
+    /// writes as declared: an aging rule's, the fold of an author's write.
+    Verb,
 }
 
 impl Door {
@@ -711,7 +717,8 @@ impl Door {
         matches!(
             (self, authority),
             (_, Authority::Shared)
-                | (Door::Authored, Authority::Authored)
+                | (Door::Authored | Door::Verb, Authority::Authored)
+                | (Door::Verb, Authority::Verb)
                 | (Door::Source, Authority::Source)
         )
     }

@@ -140,7 +140,7 @@ interface types {
         dimensions: option<u32>,
     }
 
-    enum authority { authored, source, shared, derived }
+    enum authority { authored, source, shared, derived, verb }
 
     enum on-input-change { keep, clear }
 
@@ -1192,6 +1192,7 @@ interface types {
     variant refusal {
         not-granted,
         wrong-door,
+        verbs-only(list<verb-name>),
         reserved,
         invalid(said),
         constraint(said),

@@ -306,6 +306,8 @@ SHOWS = {
     "source_forgotten": shows("a `source_forgotten` naming the source and the versions of its key")(
         lambda e: e["body"]["kind"] == "source_forgotten" and e["body"].get("source") == "crm"
         and e["body"].get("keys") == ["1"] and "sealed" not in e),
+    "verb_authority": shows("a declared type with a field only its verbs write, `authority: verb`")(
+        lambda e: any(f.get("authority") == "verb" for f in declaration(e).get("fields", []))),
     "lake_upgraded": shows("a `lake_upgraded` from the format before to the one this lake is written in")(
         lambda e: e["body"]["kind"] == "lake_upgraded" and e["body"]["from"] == e["v"] - 1 and e["body"]["to"] == e["v"]),
 }

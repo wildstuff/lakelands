@@ -886,6 +886,12 @@ impl Sight<'_> {
         })
     }
 
+    /// Whether its principal is shown `v` and may call it: `describe`
+    /// lists it.
+    pub fn verb_shown(&self, v: &VerbDecl) -> bool {
+        self.verb_description(v).is_some()
+    }
+
     fn verb_description(&self, v: &VerbDecl) -> Option<VerbDescription> {
         let (who, t) = (self.who(), self.force.ty(&v.on)?);
         // A verb that waits for review is proposed, and a holder of `only`

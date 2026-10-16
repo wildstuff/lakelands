@@ -325,6 +325,12 @@ pub enum Refusal {
     /// The field is written by another authority, through another door
     /// (a source field through `upsert`, a derived field by anyone).
     WrongDoor,
+    /// Only its type's verbs write the field: these, which its writer may
+    /// call; shown none, it is `wrong_door` (lakelands#1130).
+    VerbsOnly {
+        /// The verbs that write the field, by name.
+        verbs: Vec<crate::id::VerbName>,
+    },
     /// The name is in a reserved namespace: `sys.` for a type,
     /// `sys.` and `lakelands.` for an annotation key; or a verb is
     /// declared on a system type that is not a relation's link type.
@@ -422,6 +428,14 @@ impl fmt::Display for Refusal {
         match self {
             Refusal::NotGranted => write!(f, "you hold no grant for this"),
             Refusal::WrongDoor => write!(f, "another authority writes this field"),
+            Refusal::VerbsOnly { verbs } => {
+                let named: Vec<String> = verbs.iter().map(|v| format!("`{v}`")).collect();
+                write!(
+                    f,
+                    "only the type's verbs write this field: {}",
+                    named.join(", ")
+                )
+            }
             Refusal::Reserved => write!(f, "the name is in a reserved namespace"),
             Refusal::Invalid(said)
             | Refusal::Constraint(said)

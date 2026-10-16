@@ -207,7 +207,7 @@ impl FieldDescription {
     }
 
     /// Whether the principal may write the field through an authored
-    /// door (`upsert`, a verb).
+    /// door (`upsert`, `link`): not one only the type's verbs write.
     pub fn authored_writable(&self) -> bool {
         self.access.writes() && matches!(self.authority, Authority::Authored | Authority::Shared)
     }
