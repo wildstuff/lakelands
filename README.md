@@ -8,7 +8,28 @@ source and its time, and the log is hash-chained, so anyone can check
 what the agent knew and who changed it — without us. Your agent reaches
 it over MCP, on your machine; engine and on-disk format are Apache-2.0.
 
-Underneath, a landscape of typed, auditable lakes — not a data lake.
+## The problem
+
+Agents now write into memory: they file an invoice, mark a contract as
+reviewed, note that a customer changed their address. Then someone asks
+the questions that matter, and most stores cannot answer them:
+
+- **Where did this value come from?** The import, a person, or the
+  agent's own guess?
+- **Since when has it held — and what did the agent see when it
+  decided?** A store that updates in place has already forgotten.
+- **Who changed it, and was it allowed to?** A second writer quietly
+  overwrites the first; a re-import erases a verdict a human wrote.
+- **Has anything been rewritten since?** You are asked to trust the
+  service that holds the memory.
+
+A folder of notes the agent greps, a vector index, a database that
+updates in place: each stores what the agent wrote and loses how it got
+there. Lakelands keeps both, and lets anyone check them.
+
+## What it is
+
+A landscape of typed, auditable lakes — not a data lake.
 Every lake has a map (its ontology), keeps its
 whole history in layers (its event log), is fed and drained by streams
 (its changes), and can be searched from any point on the map. Agents get
@@ -104,6 +125,33 @@ claim Lakelands makes about its data is one you can recompute:
   re-implementation, and proves itself against the open conformance
   suite ([`docs/conformance.md`](docs/conformance.md)) — SQLite,
   PostgreSQL and in-memory pass all of it.
+
+## Where Lakelands fits
+
+Other open stores for agents are good at other things. This is the
+terrain Lakelands is built for, and where it is not the right tool.
+
+| You need … | What usually fills it | What Lakelands adds, or leaves to them |
+|---|---|---|
+| graph and vector search in one fast engine, at scale | graph-vector databases | Lakelands searches (full-text, vectors, typed filters, walks over relations), but its terrain is what a value *means* and *where it came from*, not traversal speed. It runs no speed contest; its load run and its 24-hour soak ([`docs/soak.md`](docs/soak.md)) test that every acknowledged write survives a killed process. |
+| the history of every row, in SQL | bitemporal SQL databases | Lakelands is bitemporal too, and adds the ontology, provenance and write rights per field, a hash-chained log and agent tools generated from the types. |
+| memory for an agent, as a service | hosted memory layers | Lakelands is not a service. The parts that make memory trustworthy — history, provenance, the verifier — run on your machine, under Apache-2.0. |
+| raw files now, meaning later | data lakes | The opposite: schema first, every write governed by its declared authority. |
+| notes your agent reads and greps | a Markdown vault | Typed records with a source and a time on every field, and tools instead of grep. |
+
+**Choose something else when:**
+
+- **many writers hammer one dataset at once.** A lake has one writer;
+  throughput comes from many lakes, not from one.
+- **you need queries across tenants.** There is no query across lakes;
+  data crosses only as a mirror that carries its provenance.
+- **the work is heavy graph analytics.** Walks have ceilings, and a walk
+  past its ceiling is refused, not run.
+- **you want a managed service.** There is none; you run it, on SQLite or
+  your own PostgreSQL.
+- **you want to store first and model later.** Lakelands asks for the
+  map first. An agent can draw it over MCP (`declare_type`, `add_field`),
+  but there is always a map.
 
 > **Status: `0.15.0`.** Lakelands `0.15.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
