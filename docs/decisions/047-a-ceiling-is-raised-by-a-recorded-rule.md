@@ -24,7 +24,7 @@ A ceiling is raised, and a ratchet base raised with it, only when all of this ho
    Convenience is not a reason, nor is a feature no host asked for, nor code a shared helper would replace.
 2. **Cutting came first.** The newest diet inventory for that budget is on record, and it does not yield the room.
 3. **The raise is sized to the need:** the measured lines of the pull requests it is for, rounded up to the next 500.
-4. **It is recorded.** Slot a's word on the issue names the raise, and the raise is one row in `docs/budgets.md`: the date, the budget, from → to, the issues it is for, and the reason in one sentence. The operator may set any ceiling by a decision on lakelands#20, and that decision is a row too.
+4. **It is recorded.** A maintainer's word on the issue names the raise, and the raise is one row in `docs/budgets.md`: the date, the budget, from → to, the issues it is for, and the reason in one sentence. The operator may set any ceiling by a decision on lakelands#20, and that decision is a row too.
 5. **The gate holds it.** `core-size`, `seam-width` and `cfg-budget` are red when a ceiling or a ratchet base is higher than on the pull request's base commit, unless the same pull request adds the row whose "to" is the new number.
 
 ### The raises are the rows of the table in `docs/budgets.md`
@@ -32,20 +32,20 @@ A ceiling is raised, and a ratchet base raised with it, only when all of this ho
 The raises are the rows of the table in `docs/budgets.md` (§Raises), oldest first. What a row there does not say of its raise:
 
 - **The second raise:** the product code, from 36 000 to 36 500 lines, by the operator's decision, for what a host needs in 0.9.0 to move its data onto a lake (lakelands#481). The diet went on beside it.
-- **The third raise:** the specification, from 42 000 to 42 500 lines, by slot a's word under the rule, for the checks of two fixes that pin a rule of rights (lakelands#509). It is the first raise the rule makes without the operator's own decision; the operator was told.
+- **The third raise:** the specification, from 42 000 to 42 500 lines, by a maintainer's word under the rule, for the checks of two fixes that pin a rule of rights (lakelands#509). It is the first raise the rule makes without the operator's own decision; the operator was told.
 - **The fourth raise** (the specification, from 42 500 to 43 000 lines) rides in the pull request of the code it is for.
 - **The fifth raise** (the specification, from 43 000 to 44 000 lines) is for three pull requests that need the room at once.
 - **The eighth raise** (the specification, from 44 500 to 45 000 lines) rides in the pull request of the code it is for.
 - **The ninth raise** (the product code, from 37 000 to 37 500 lines, for two fixes, lakelands#527 and lakelands#538) rides in the first of their pull requests.
 - **The tenth raise** (the specification, from 45 000 to 45 500 lines) rides in the pull request of the code it is for.
-- **The eleventh raise** (the product code, from 37 500 to 38 000 lines) is for five pull requests measured before any of them was pushed: sets composed by name (lakelands#552), arithmetic on durations (lakelands#549), a bucket from a chosen start (lakelands#559), an identical declaration that appends nothing (lakelands#565) and PostgreSQL's transaction written by pages (lakelands#480). It stands alone: three slots push them in an order no one of them decides, and a raise that rode in one would hold the others.
+- **The eleventh raise** (the product code, from 37 500 to 38 000 lines) is for five pull requests measured before any of them was pushed: sets composed by name (lakelands#552), arithmetic on durations (lakelands#549), a bucket from a chosen start (lakelands#559), an identical declaration that appends nothing (lakelands#565) and PostgreSQL's transaction written by pages (lakelands#480). It stands alone: three authors push them in an order no one of them decides, and a raise that rode in one would hold the others.
 - **The twelfth raise** (the specification, from 45 500 to 46 000 lines) stands alone with the eleventh.
 - **The thirteenth raise** (the specification, from 46 000 to 46 500 lines) rides in the pull request of the code it is for.
 - **The fourteenth raise** (the product code, from 38 000 to 38 500 lines) and **the fifteenth** (the specification, from 46 500 to 48 000 lines) both ride in the pull request of the code they are for.
 - **The sixteenth raise** (the product code, from 38 500 to 39 000 lines) is for SQLite's order index, marked by the declaration that first declares its field (lakelands#591), and for a recomputation folded as a step (lakelands#523).
 - **The twenty-second raise** (the specification, from 49 500 to 50 000 lines) is for the twin of a kept view (lakelands#575): run on the store's build of the kept view it found a difference before that build merged.
 - **The twenty-eighth raise** (the product code, from 41 000 to 42 500 lines) is for the store's part of a kept view (lakelands#575): 1 299 lines as measured after 105 were cut and what waited was taken out.
-- **The thirtieth raise:** the specification, from 52 500 to 53 000 lines, by slot a's word under the rule, for the rows of an initial value (lakelands#551: the event that makes a record fills each field that declares `initial`, its refusals, the hash, and a purge that takes a record whose state an author moved). Its measure is its row's.
+- **The thirtieth raise:** the specification, from 52 500 to 53 000 lines, by a maintainer's word under the rule, for the rows of an initial value (lakelands#551: the event that makes a record fills each field that declares `initial`, its refusals, the hash, and a purge that takes a record whose state an author moved). Its measure is its row's.
 
 ## Why
 

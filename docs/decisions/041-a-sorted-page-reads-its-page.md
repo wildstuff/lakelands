@@ -241,7 +241,7 @@ admits each.
 under a text, then a walk of every holder by cursor, 1 000 a page. The
 first page's median of five, then the walk. Before, the page read every
 holder and sorted them, as it still does where the field is not
-indexed. The other slots were building on the same machine (load about
+indexed. Other worktrees were building on the same machine (load about
 5).
 
 | SQLite, text held by | way | before | after |
@@ -363,7 +363,7 @@ built against the same tree with the engines' sources before it, in
 release builds: both builds' binaries ran in turn against the same
 lakes, with no build between. A figure is the median of ten rounds, in
 milliseconds, with the fastest and the slowest round; a round is the
-median of five pages, a fresh view a page. The other slots were
+median of five pages, a fresh view a page. Other worktrees were
 building on the same machine throughout (load 9 to 25), so the rounds
 spread widely, and the fastest round is the least disturbed one.
 
