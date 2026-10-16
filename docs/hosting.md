@@ -496,18 +496,31 @@ of heap, on a 12-core machine at a load of 17 to 31.
 
 **A projection is read only by the layout that made it.** A SQLite or
 PostgreSQL projection is marked with its engine's layout number when it
-is made, and a build whose engine lays the projection out otherwise
-refuses to open it, for reading or writing, naming the number found, the
-number wanted and `lakelands rebuild` (`projection_layout` in
-`docs/refusals.md`). A SQLite `projection.db` that holds no table yet is
+is made, and a build whose engine lays the projection out otherwise does
+not read it. A SQLite `projection.db` that holds no table yet is
 none of that: its maker has connected and not made the tables, and a
 reader that comes in that moment is answered `no_projection`, as the
-moment before, and opens a moment later. Nothing repairs a projection
-of another layout in place. `lakelands rebuild`, or
-a host's own open with `OpenMode::Rebuild`, opens it, drops the
-projection under the lease, makes it anew and folds the whole log; the
-open is the rebuild. `LakeStore::rebuild` on an open lake does the same
-for a lake that opened.
+moment before, and opens a moment later.
+- **An older build's projection is rebuilt by the first writer's open.**
+  The open takes the lease, drops the projection, makes it anew and
+  folds the whole log, and holds the writer that long; the CLI says so
+  (`the projection was rebuilt from the log at this open`), and a host
+  reads why from `LakeStore::rebuilt_at_open`. 0.16.0 is such a step
+  for both engines: the first open of 0.16.0 rebuilds the projection,
+  about 8 s per 100 000 records on SQLite and 47 s on
+  PostgreSQL (at 1 000 000 records 80 s and 7.5 min; one event a
+  record, a release build). `lakelands upgrade` runs that open at a moment
+  the operator picks, also for a lake already in this release's log
+  format, and `lakelands upgrade --check` names the layout it found.
+- **A reader waits for the writer.** A read-only open of it is refused
+  before anything is read, naming the number found, the number wanted
+  and `lakelands rebuild` (`projection_layout` in `docs/refusals.md`).
+- **A newer build's projection, or one with no mark, is refused** at
+  every open, as above. `lakelands rebuild`, or a host's own open with
+  `OpenMode::Rebuild`, opens it, drops the projection under the lease,
+  makes it anew and folds the whole log; the open is the rebuild.
+  `LakeStore::rebuild` on an open lake does the same for a lake that
+  opened.
 
 **A lake outlives a release from log format 14 on.** A release writes
 one log format and reads every one from 14, the format of the first

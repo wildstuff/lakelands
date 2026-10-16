@@ -923,7 +923,9 @@ pub async fn rebuild(out: Out<'_>, store: &Arc<dyn LakeStore>) -> Result<(), Fai
 /// read-only open finds it, and, where it is older than the one this
 /// release writes, open it for writing once: that open appends
 /// `lake_upgraded` and writes the new format from there; the events
-/// before stay as they were written. `check` stops before that open.
+/// before stay as they were written. A lake in this release's format
+/// whose projection an older build laid out is opened for writing once
+/// too, which rebuilds the projection. `check` stops before that open.
 pub async fn upgrade(
     out: Out<'_>,
     location: lakelands_api::Location,
@@ -936,7 +938,8 @@ pub async fn upgrade(
     use lakelands_api::event::{EventBody, LOG_FORMAT_VERSION as TO};
     let lake = location.lake.clone();
     // A lake already in this release's format opens to read; an older one
-    // is refused by its format, which the refusal names.
+    // is refused by its format, and a projection an older build laid out
+    // by its layout, which the refusal names.
     let from = match open(location.clone(), OpenMode::Read, seams.clone()).await {
         Ok(_) => {
             return put(
@@ -946,6 +949,35 @@ pub async fn upgrade(
         }
         Err(e) => match e.situation() {
             Some(Situation::LogUpgradeOwed { found, .. }) => *found,
+            Some(Situation::ProjectionLayout {
+                found: Some(found),
+                wanted,
+                ..
+            }) if found < wanted => {
+                let found = *found;
+                if check {
+                    let said = format!(
+                        "{lake} is written in log format {TO}, its projection in layout \
+                         {found}: an open for writing rebuilds it; nothing was opened for writing"
+                    );
+                    return put(out, said);
+                }
+                let started = std::time::Instant::now();
+                let store = open(location, OpenMode::Write, seams).await?;
+                let secs = started.elapsed().as_secs_f64();
+                // Another writer may have rebuilt it since the read-only open.
+                let said = match store.rebuilt_at_open() {
+                    Some(_) => {
+                        format!(
+                            "rebuilt the projection of {lake} from layout {found} in {secs:.1} s"
+                        )
+                    }
+                    None => format!(
+                        "{lake}'s projection: another writer rebuilt it from layout {found}"
+                    ),
+                };
+                return put(out, said);
+            }
             _ => return Err(e.into()),
         },
     };
@@ -954,8 +986,8 @@ pub async fn upgrade(
             out,
             format!(
                 "{lake} is written in log format {from}: an open for writing appends \
-                 `lake_upgraded` from {from} to {TO} and keeps the projection; nothing was \
-                 opened for writing"
+                 `lake_upgraded` from {from} to {TO}, and rebuilds the projection where an \
+                 older build laid it out; nothing was opened for writing"
             ),
         );
     }

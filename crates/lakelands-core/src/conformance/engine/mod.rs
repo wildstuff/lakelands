@@ -179,6 +179,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::LATER_OUTPUT_HOLDS,
     reads::FIRST_APPLIED,
     reads::ROUTES,
+    reads::SOURCE_ROUTES,
     reads::PROPOSALS,
     reads::LINK_EDGES,
     reads::EDGES_READ_WHAT_THEY_REACH,

@@ -17,7 +17,7 @@ use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
-use lakelands_api::{Position, RecordKey, RelationName, Result, TypeName, Value};
+use lakelands_api::{Position, RecordKey, RelationName, Result, SourceId, TypeName, Value};
 use lakelands_core::engines as core_engines;
 
 use crate::lake::Lake;
@@ -345,6 +345,16 @@ impl ProjectionView for HeldNow<'_> {
         limit: u32,
     ) -> Result<Matched> {
         self.then.matching(filter, from, through, limit)
+    }
+
+    fn of_source(
+        &self,
+        source: &SourceId,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<Matched> {
+        self.then.of_source(source, from, through, limit)
     }
 }
 

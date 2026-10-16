@@ -145,11 +145,12 @@ CREATE TABLE IF NOT EXISTS {s}.outputs (
     id TEXT PRIMARY KEY, at BIGINT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS {s}.routes (
-    at BIGINT NOT NULL, kind TEXT NOT NULL, ty TEXT, key TEXT
+    at BIGINT NOT NULL, kind TEXT NOT NULL, ty TEXT, key TEXT, source TEXT
 );
 CREATE INDEX IF NOT EXISTS routes_kind ON {s}.routes (kind, at);
 CREATE INDEX IF NOT EXISTS routes_ty ON {s}.routes (ty, at);
 CREATE INDEX IF NOT EXISTS routes_key ON {s}.routes (key, at);
+CREATE INDEX IF NOT EXISTS routes_source ON {s}.routes (source, at);
 CREATE TABLE IF NOT EXISTS {s}.text_index (
     ty TEXT NOT NULL, field TEXT NOT NULL, value TEXT NOT NULL, key TEXT NOT NULL
 );
@@ -213,7 +214,7 @@ fn heads_sql(s: &str) -> String {
 /// table changes so that a projection made before would answer wrongly,
 /// not fail: one made with another layout is never read, and is rebuilt
 /// from the log.
-pub(crate) const LAYOUT: u64 = 3;
+pub(crate) const LAYOUT: u64 = 4;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
@@ -1019,10 +1020,18 @@ pub(crate) struct Buffer {
     members: BTreeMap<(Vec<String>, i64), bool>,
     /// Applied ids, each with the first position it was marked at.
     applied: BTreeMap<String, i64>,
-    /// The feed index's rows of the events applied: position, kind, type
-    /// and key.
-    routes: Vec<(i64, &'static str, Option<String>, Option<String>)>,
+    /// The feed index's rows of the events applied.
+    routes: Vec<Route>,
 }
+
+/// A row of the feed index: position, kind, type, key and source.
+type Route = (
+    i64,
+    &'static str,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 impl Buffer {
     /// The puts it holds, of every kind.
@@ -1072,7 +1081,8 @@ impl Buffer {
         self.applied.entry(applied.id.0.clone()).or_insert(at);
         for a in &applied.about {
             let (ty, key) = (a.ty.as_ref().map(|t| t.to_string()), a.key.as_ref());
-            (self.routes).push((at, applied.kind, ty, key.map(|k| k.to_string())));
+            let (key, source) = (key.map(|k| k.to_string()), applied.source.clone());
+            (self.routes).push((at, applied.kind, ty, key, source.map(|s| s.to_string())));
         }
     }
 
@@ -1194,19 +1204,21 @@ impl Buffer {
         }
         if !self.routes.is_empty() {
             let (mut at, mut kinds, mut tys, mut keys) = (vec![], vec![], vec![], vec![]);
-            for (p, kind, ty, key) in &self.routes {
+            let mut sources = vec![];
+            for (p, kind, ty, key, source) in &self.routes {
                 at.push(*p);
                 kinds.push(*kind);
                 tys.push(ty.as_deref());
                 keys.push(key.as_deref());
+                sources.push(source.as_deref());
             }
             db.execute(
                 &format!(
-                    "INSERT INTO {} (at, kind, ty, key) \
-                     SELECT * FROM unnest($1::int8[], $2::text[], $3::text[], $4::text[])",
+                    "INSERT INTO {} (at, kind, ty, key, source) SELECT * FROM \
+                     unnest($1::int8[], $2::text[], $3::text[], $4::text[], $5::text[])",
                     names.t("routes")
                 ),
-                &[&at, &kinds, &tys, &keys],
+                &[&at, &kinds, &tys, &keys, &sources],
             )?;
         }
         Ok(rebuilt)

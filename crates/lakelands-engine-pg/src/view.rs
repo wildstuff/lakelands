@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use lakelands_api::engine::{Declared, Matched, ProjectionView, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName};
+use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, TypeName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::read::{Direction, Order};
@@ -1236,6 +1236,29 @@ impl ProjectionView for PgView<'_> {
                 &query,
                 &[values, &from, &last_at, &n, &kinds, &types, &keys],
             )?;
+            let positions = rows.iter().map(|row| Position(row.get::<_, i64>(0) as u64));
+            Ok(feed::merged([positions.collect()], limit, last))
+        })
+    }
+
+    fn of_source(
+        &self,
+        source: &SourceId,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<Matched> {
+        self.read_locked(Some("routes"), feed::undecided(), |r| {
+            let folded = r.folded.map(|f| Position(f as u64));
+            let to = through.min(Position(r.at as u64));
+            let Some(last) = feed::last_decided(from, to, folded) else {
+                return Ok(feed::undecided());
+            };
+            let (values, none) = (vec![source.to_string()], Vec::<String>::new());
+            let (from, last_at, n) = (from.0 as i64, last.0 as i64, i64::from(limit.max(1)));
+            let query = projection::routes_sql(r.names, Some("source"));
+            let rows =
+                (r.db).query(&query, &[&values, &from, &last_at, &n, &none, &none, &none])?;
             let positions = rows.iter().map(|row| Position(row.get::<_, i64>(0) as u64));
             Ok(feed::merged([positions.collect()], limit, last))
         })

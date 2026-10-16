@@ -405,6 +405,13 @@ pub trait LakeStore: Send + Sync {
         None
     }
 
+    /// Why the writer's open rebuilt the projection, where it did: an
+    /// older build laid it out, and the open folded the whole log
+    /// (`docs/decisions/004-the-change-feed-is-the-log.md`).
+    fn rebuilt_at_open(&self) -> Option<String> {
+        None
+    }
+
     /// Withhold a record from principals without the `restricted` grant —
     /// a retention hold. The record and its history stay; reads by
     /// principals without the grant no longer see it. The reason is

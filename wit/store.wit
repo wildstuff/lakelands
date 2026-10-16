@@ -32,6 +32,9 @@ interface store {
         /// Why a forgetting's reclaim is still owed, where the last one
         /// tried failed: the writer opened without it.
         reclaim-owed: func() -> option<string>;
+        /// Why the writer's open rebuilt the projection, where it did: an
+        /// older build laid it out.
+        rebuilt-at-open: func() -> option<string>;
         limits: func() -> limits;
         /// The lake's last position.
         head: func() -> result<position, error>;

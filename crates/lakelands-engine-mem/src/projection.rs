@@ -21,7 +21,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use lakelands_api::engine::{About, Applied, Declared};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{FieldName, Position, ProposalId, RecordKey, RelationName, TypeName};
+use lakelands_api::id::{
+    FieldName, Position, ProposalId, RecordKey, RelationName, SourceId, TypeName,
+};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::Edge;
 use lakelands_api::read::Direction;
@@ -149,8 +151,8 @@ pub(crate) struct Projection {
     pub(crate) outputs: BTreeMap<(String, Digest), History<Value>>,
     pub(crate) applied: BTreeMap<EventId, Position>,
     /// The feed's index of the log: every applied position's kind and
-    /// what its event is about, and the positions of each kind, type and
-    /// key.
+    /// what its event is about, and the positions of each kind, type, key
+    /// and source.
     pub(crate) routes: Routes,
     pub(crate) folded: Option<Position>,
     /// Per type, every record state put, by position and key: the keys a
@@ -182,6 +184,7 @@ pub(crate) struct Routes {
     pub(crate) kinds: BTreeMap<&'static str, BTreeSet<Position>>,
     pub(crate) types: BTreeMap<TypeName, BTreeSet<Position>>,
     pub(crate) keys: BTreeMap<RecordKey, BTreeSet<Position>>,
+    pub(crate) sources: BTreeMap<SourceId, BTreeSet<Position>>,
 }
 
 impl Routes {
@@ -194,6 +197,9 @@ impl Routes {
             if let Some(key) = &about.key {
                 self.keys.entry(key.clone()).or_default().insert(a.at);
             }
+        }
+        if let Some(source) = a.source {
+            self.sources.entry(source).or_default().insert(a.at);
         }
         self.events.insert(a.at, (a.kind, a.about));
     }

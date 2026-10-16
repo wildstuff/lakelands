@@ -83,15 +83,20 @@ one call, and a `limit` without a filter held every event it asked for.
   not fail: a filtered poll over it would find nothing, and a consumer
   would skip events without being told. So the SQLite and PostgreSQL
   engines mark a projection with their layout number in `meta` when they
-  make it, and a writer's, a creator's or a reader's open of one marked
-  otherwise, or not at all, is refused before any of its tables is read
-  or made (`projection_layout`, naming the number found, the number
-  wanted and `lakelands rebuild`). An engine raises its number whenever
-  a table changes so that an older projection would answer wrongly. A
-  lake is opened `OpenMode::Rebuild` to rebuild it: the store takes the
-  lease, `clear` drops the projection and makes it at the engine's
-  layout, and the whole log is folded. Nothing repairs a projection at an
-  open the host did not ask to rebuild.
+  make it, and the engine refuses an open of one marked otherwise, or
+  not at all, before any of its tables is read or made
+  (`projection_layout`, naming the number found, the number wanted and
+  `lakelands rebuild`). An engine raises its number whenever a table
+  changes so that an older projection would answer wrongly. A lake is
+  opened `OpenMode::Rebuild` to rebuild it: the store takes the lease,
+  `clear` drops the projection and makes it at the engine's layout, and
+  the whole log is folded. A writer's open of a projection an **older**
+  build laid out is that rebuild: the store opens the lake so, says why
+  (`LakeStore::rebuilt_at_open`), and holds the writer that long, as an
+  upgrade's open is where a release pays for its steps. A reader's open
+  of it, and any open of one a newer build laid out or that carries no
+  mark, stays refused: nothing is rebuilt that the host's release did
+  not lay out.
 
 **Why.** Before, a poll with a filter read and verified every event from
 its position to the head, whatever matched: about 24 µs an event, 2.4 s
@@ -469,3 +474,8 @@ own pace, and adding one changes nothing in the lake.
   head once the log is past `after`, never past what a poll reads, and
   the store's own consumers wait so instead of sleeping. Positions and
   acknowledgements stay the consumer's (lakelands#1061).
+- The index keeps each event's source, and a writer's open of a
+  projection an older build laid out rebuilds it, where every open
+  refused it until the host ran `lakelands rebuild`; the first layout
+  step after real installations would otherwise have kept every lake
+  closed until its operator acted (lakelands#1151).

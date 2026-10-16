@@ -57,6 +57,7 @@ async fn a_window_with_an_applied_id_is_judged_as_each_record_asks() {
         at: head,
         kind: "record_ingested",
         about,
+        source: None,
     };
     (p.begin().and_then(|()| p.mark_applied(&applied)))
         .and_then(|()| p.commit(head))

@@ -803,6 +803,10 @@ impl LakeStore for Store {
         self.lake.reclaim_owed()
     }
 
+    fn rebuilt_at_open(&self) -> Option<String> {
+        self.lake.rebuilt_at_open()
+    }
+
     async fn restrict(&self, ty: &TypeName, key: &RecordKey, reason: String) -> Result<Position> {
         let (lake, ty, key) = (self.lake.clone(), ty.clone(), key.clone());
         exec::run(move || writes::restrict(&lake, &ty, &key, Some(reason))).await

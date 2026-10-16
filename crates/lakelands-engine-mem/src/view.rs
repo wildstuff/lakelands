@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use lakelands_api::engine::{Declared, Matched, ProjectionView, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName};
+use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, TypeName};
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::FeedFilter;
@@ -387,6 +387,24 @@ impl ProjectionView for MemView {
                 }
             };
             feed::merged(lists, limit, last)
+        }))
+    }
+
+    fn of_source(
+        &self,
+        source: &SourceId,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<Matched> {
+        Ok(self.read(|p, at| {
+            let Some(last) = at.and_then(|at| feed::last_decided(from, at.min(through), p.folded))
+            else {
+                return feed::undecided();
+            };
+            let set = p.routes.sources.get(source).into_iter();
+            let positions = set.flat_map(|s| s.range(from..=last).take(limit.max(1) as usize));
+            feed::merged([positions.copied().collect()], limit, last)
         }))
     }
 }

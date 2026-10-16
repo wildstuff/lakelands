@@ -18,7 +18,7 @@ use lakelands_api::engine::{
 };
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, SegmentDigest};
-use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
+use lakelands_api::id::{LakeId, Position, RecordKey, SourceId, TypeName};
 use lakelands_api::location::SqliteTuning;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
@@ -579,13 +579,16 @@ impl ProjectionStore for SqliteLake {
                 .and_then(|mut s| s.execute(params![applied.id.0, at]))
                 .map_err(sql)?;
             let mut route = conn
-                .prepare_cached("INSERT INTO routes (at, kind, ty, key) VALUES (?1, ?2, ?3, ?4)")
+                .prepare_cached(
+                    "INSERT INTO routes (at, kind, ty, key, source) VALUES (?1, ?2, ?3, ?4, ?5)",
+                )
                 .map_err(sql)?;
+            let source = applied.source.as_ref().map(SourceId::as_str);
             for a in &applied.about {
                 let (ty, key) = (a.ty.as_ref().map(TypeName::as_str), a.key.as_ref());
                 let key = key.map(RecordKey::as_str);
                 route
-                    .execute(params![at, applied.kind, ty, key])
+                    .execute(params![at, applied.kind, ty, key, source])
                     .map_err(sql)?;
             }
             Ok(())

@@ -348,6 +348,7 @@ fn declarations_memberships_proposals_outputs_and_applied_ids_keep_history() {
                 ty: None,
                 key: None,
             }],
+            source: None,
         })
         .unwrap();
     });

@@ -231,6 +231,24 @@ pub struct Lake {
     /// Why a forgetting's reclaim is still owed, where the last one failed
     /// (lakelands#1161).
     reclaim_owed: Mutex<Option<String>>,
+    /// Why the writer's open rebuilt the projection: an older build laid
+    /// it out (lakelands#1151).
+    rebuilt_at_open: Option<String>,
+}
+
+/// Why a writer's open rebuilds the projection `e` refuses: an older
+/// build laid it out. None for any other refusal.
+fn older_layout(e: &Error) -> Option<String> {
+    match e.situation() {
+        Some(Situation::ProjectionLayout {
+            found: Some(found),
+            wanted,
+            ..
+        }) if found < wanted => Some(format!(
+            "an older build laid it out (layout {found}; this build's is {wanted})"
+        )),
+        _ => None,
+    }
 }
 
 /// The opener `seams` passes for the engine `location` names.
@@ -414,7 +432,8 @@ impl Lake {
     /// take the lease unless opening read-only, create the lake if asked
     /// and absent, and fold whatever the log holds beyond the projection.
     /// Opened for a rebuild, the projection is cleared under the lease
-    /// first, so the whole log is folded: that open is the rebuild.
+    /// first, so the whole log is folded: that open is the rebuild. So is
+    /// a writer's open of a projection an older build laid out.
     pub fn open(location: &Location, seams: Seams, mode: OpenMode) -> Result<Lake> {
         let opener = opener(location, &seams)?;
         // A lake of a format this release does not read is not opened: its
@@ -425,7 +444,17 @@ impl Lake {
         if mode == OpenMode::Read {
             log::read_as_is(&location.lake, written)?;
         }
-        let engine: Arc<dyn LakeEngine> = Arc::from(opener.open(location, mode)?);
+        // A writer's open of a projection an older build laid out rebuilds
+        // it, as an upgrade's open is the place a release pays for its
+        // steps; a reader's, and one of a newer layout or of none, is
+        // refused (004).
+        let (engine, rebuilt_at_open) = match opener.open(location, mode) {
+            Err(e) if mode != OpenMode::Read && older_layout(&e).is_some() => {
+                (opener.open(location, OpenMode::Rebuild)?, older_layout(&e))
+            }
+            opened => (opened?, None),
+        };
+        let engine: Arc<dyn LakeEngine> = Arc::from(engine);
         // A writer is judged before it takes the lease: an engine may cut
         // its log back to what is committed as it hands the lease out,
         // and a lake that is refused is left as it was found. A rebuild
@@ -440,10 +469,11 @@ impl Lake {
                 Some(engine.take_lease(&format!("lakelands process {}", std::process::id()))?)
             }
         };
-        if mode == OpenMode::Rebuild {
+        if mode == OpenMode::Rebuild || rebuilt_at_open.is_some() {
             engine.projection().clear()?;
         }
-        let lake = Lake::assemble(location, seams, engine, lease.clone());
+        let mut lake = Lake::assemble(location, seams, engine, lease.clone());
+        lake.rebuilt_at_open = rebuilt_at_open;
         lake.catch_up()?;
         if let Some(lease) = lease {
             let mut w = lake.writer();
@@ -626,6 +656,7 @@ impl Lake {
             shapes: Mutex::new(Vec::new()),
             rebuilds: AtomicU64::new(0),
             reclaim_owed: Mutex::new(None),
+            rebuilt_at_open: None,
         }
     }
 
@@ -1659,6 +1690,13 @@ impl Lake {
         // lost, and fails closed (058).
         let (mut erased, mut dropped) = (Vec::new(), false);
         let source = (e.sealed.as_ref()).and_then(|s| s.source.as_ref().or(e.source.as_ref()));
+        // The index keeps the source as the log names it, before an erasure
+        // takes the seal away: an ingest's is its envelope's, as forgetting
+        // walks it, and any other event's the one its seal names first.
+        let indexed = match &e.body {
+            EventBody::RecordIngested { .. } => e.source.clone(),
+            _ => source.or(e.source.as_ref()).cloned(),
+        };
         let e = match (&e.sealed, source) {
             (Some(sealed), Some(source)) => {
                 let mut plain = e.clone();
@@ -1726,6 +1764,7 @@ impl Lake {
             at: e.position,
             kind: e.body.kind(),
             about: lakelands_core::feed::about(&e.body),
+            source: indexed,
         })?;
         match &e.body {
             EventBody::LakeCreated { .. }
@@ -2244,6 +2283,11 @@ impl Lake {
     /// failed: the writer's open goes on without it (lakelands#1161).
     pub fn reclaim_owed(&self) -> Option<String> {
         lakelands_core::lock(&self.reclaim_owed).clone()
+    }
+
+    /// Why the writer's open rebuilt the projection, where it did.
+    pub fn rebuilt_at_open(&self) -> Option<String> {
+        self.rebuilt_at_open.clone()
     }
 
     /// Check the hash chain between two positions, every checkpoint in

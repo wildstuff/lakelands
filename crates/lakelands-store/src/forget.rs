@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 
 use lakelands_api::engine::ProjectionView;
 use lakelands_api::error::Case;
-use lakelands_api::event::EventBody;
+use lakelands_api::event::{Event, EventBody};
 use lakelands_api::principal::Renamed;
 use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::write::{ForgetField, ForgetRecords, ForgetReport, RecordField, TypeRetired};
@@ -140,33 +140,29 @@ fn found(
     // nothing of what was personal, so its plaintext counts whole.
     let (mut outputs, mut plaintext) = (0, 0);
     let renames = lake.renames(Some(view))?;
-    for page in lake.pages(Position::GENESIS) {
-        for e in page? {
-            let sealed = e.sealed.as_ref();
-            match &e.body {
-                EventBody::RecordIngested { ty, patch, .. }
-                    if e.source.as_ref() == Some(source) =>
-                {
-                    let sealed: &[FieldName] = sealed.map_or(&[], |s| &s.fields);
-                    let plain = patch
-                        .iter()
-                        .filter(|(f, v)| !v.is_null() && !sealed.contains(f));
-                    for (f, _) in plain {
-                        let (ty, f) = named_now(&renames, e.position, ty, f);
-                        let erasable = match ontology.ty(&ty) {
-                            Ok(decl) => decl.fields.iter().any(|d| d.name == f && d.erasable),
-                            Err(_) => true,
-                        };
-                        plaintext += u64::from(erasable);
-                    }
+    each_of(lake, view, source, |e| {
+        let sealed = e.sealed.as_ref();
+        match &e.body {
+            EventBody::RecordIngested { ty, patch, .. } if e.source.as_ref() == Some(source) => {
+                let sealed: &[FieldName] = sealed.map_or(&[], |s| &s.fields);
+                let plain = patch
+                    .iter()
+                    .filter(|(f, v)| !v.is_null() && !sealed.contains(f));
+                for (f, _) in plain {
+                    let (ty, f) = named_now(&renames, e.position, ty, f);
+                    let erasable = match ontology.ty(&ty) {
+                        Ok(decl) => decl.fields.iter().any(|d| d.name == f && d.erasable),
+                        Err(_) => true,
+                    };
+                    plaintext += u64::from(erasable);
                 }
-                EventBody::OutputRecorded {
-                    output: Some(_), ..
-                } if sealed.and_then(|s| s.source.as_ref()) == Some(source) => outputs += 1,
-                _ => {}
             }
+            EventBody::OutputRecorded {
+                output: Some(_), ..
+            } if sealed.and_then(|s| s.source.as_ref()) == Some(source) => outputs += 1,
+            _ => {}
         }
-    }
+    })?;
     let events = view.position().map_or(0, |p| p.0);
     let rate = lake.engine.rebuild_rate().max(1);
     let report = ForgetReport {
@@ -189,6 +185,43 @@ fn found(
     };
     Ok((report, retire))
 }
+
+/// Call `f` with each event of `source` through `view`'s position, and
+/// perhaps others, in log order: those the feed index decides, read at the
+/// positions it names, then every event from where it decides no more, as
+/// while the projection is rebuilt.
+fn each_of(
+    lake: &Lake,
+    view: &dyn ProjectionView,
+    source: &SourceId,
+    mut f: impl FnMut(&Event),
+) -> Result<()> {
+    let Some(head) = view.position() else {
+        return Ok(());
+    };
+    let mut from = Position::GENESIS;
+    while from <= head {
+        let m = view.of_source(source, from, head, MATCHED)?;
+        let Some(through) = m.through else { break };
+        lake.read_these(&m.positions)?.iter().for_each(&mut f);
+        from = through.next();
+    }
+    if from > head {
+        return Ok(());
+    }
+    for page in lake.pages(from) {
+        for e in page? {
+            if e.position > head {
+                return Ok(());
+            }
+            f(&e);
+        }
+    }
+    Ok(())
+}
+
+/// How many positions of a source one read of the feed index answers.
+const MATCHED: u32 = 1024;
 
 /// The names a type and a field bear now, from those an event at `at`
 /// wrote them under: each rename since, in the order of the log.

@@ -1070,7 +1070,8 @@ fn upgrade_takes_a_lake_of_the_format_before_one_step_once() {
         &sh.run(&["upgrade", "--check"]),
         &format!(
             "finance is written in log format {OLD}: an open for writing appends `lake_upgraded` \
-             from {OLD} to {NEW} and keeps the projection; nothing was opened for writing\n"
+             from {OLD} to {NEW}, and rebuilds the projection where an older build laid it \
+             out; nothing was opened for writing\n"
         ),
     );
     let run = sh.run(&["upgrade"]);
@@ -1085,6 +1086,76 @@ fn upgrade_takes_a_lake_of_the_format_before_one_step_once() {
     ok(
         &sh.run(&["upgrade"]),
         &format!("finance is written in log format {NEW}: nothing to upgrade\n"),
+    );
+}
+
+/// `upgrade` on a lake of this release's format whose projection an
+/// older build laid out (lakelands#1151): `--check` says the open for
+/// writing rebuilds it and opens none; the upgrade rebuilds it once.
+#[test]
+fn upgrade_rebuilds_a_projection_an_older_build_laid_out() {
+    let sh = Shell::on("upgrade-layout", Backend::Store);
+    sh.lake();
+    let file = sh.root.join("lakes").join("finance.json");
+    let mut at: lakelands_api::Location =
+        serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
+    let lakelands_api::location::EngineConfig::Sqlite { dir, .. } = &mut at.engine else {
+        panic!("a store lake is SQLite's")
+    };
+    *dir = sh.root.join(&*dir);
+    let path = dir.join("projection.db");
+    // Made outside the shell, whose process keeps every store it opened.
+    let seams = Seams {
+        engines: vec![Arc::new(lakelands_engine_sqlite::SqliteOpener)],
+        ..Seams::default()
+    };
+    block_on(async {
+        let store = lakelands_store::open(at, seams, OpenMode::Create)
+            .await
+            .unwrap();
+        store.close().await.unwrap();
+    });
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let wanted: i64 =
+        (db.query_row("SELECT v FROM meta WHERE k = 'layout'", [], |r| r.get(0))).unwrap();
+    let older = wanted - 1;
+    db.execute_batch(&format!(
+        "DROP INDEX routes_source; ALTER TABLE routes DROP COLUMN source;
+         UPDATE meta SET v = {older} WHERE k = 'layout';"
+    ))
+    .unwrap();
+    drop(db);
+    let v = lakelands_api::event::LOG_FORMAT_VERSION;
+    ok(
+        &sh.run(&["upgrade", "--check"]),
+        &format!(
+            "finance is written in log format {v}, its projection in layout {older}: an open \
+             for writing rebuilds it; nothing was opened for writing\n"
+        ),
+    );
+    let run = sh.run(&["upgrade"]);
+    let said = format!("rebuilt the projection of finance from layout {older} in ");
+    assert!(
+        run.code == 0 && run.out.starts_with(&said),
+        "{} {}{}",
+        run.code,
+        run.out,
+        run.err
+    );
+    // The disk, not the shell's store: the projection is laid out anew.
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let now: i64 =
+        (db.query_row("SELECT v FROM meta WHERE k = 'layout'", [], |r| r.get(0))).unwrap();
+    let source: i64 = (db.query_row(
+        "SELECT count(*) FROM pragma_table_info('routes') WHERE name = 'source'",
+        [],
+        |r| r.get(0),
+    ))
+    .unwrap();
+    assert_eq!(
+        (now, source),
+        (wanted, 1),
+        "the projection is at layout {wanted} again"
     );
 }
 
