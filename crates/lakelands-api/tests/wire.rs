@@ -25,6 +25,7 @@ fn find_takes_where_as_text_and_the_time_axes_flat() {
         ReadAt {
             as_of: Some(Position(42)),
             valid_at: Some(Timestamp::parse("2026-09-01").unwrap()),
+            clock: None,
         }
     );
     assert!(find.with_meta);

@@ -16,7 +16,7 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     CONDITIONAL_WALK = a_derived_relation_with_a_where_connects_only_the_pairs_it_holds_for,
-    "044, extended (lakelands#960): a derived relation with a `where` connects two matching records only where the condition holds over the owner's record (`from`) and the target's (`to`): an open invoice inside its terms' discount period reaches its terms, a closed one, one past its period, one whose terms hold no period (null) and one whose terms no record holds reach none, and a condition that answers null (`from.b` unset, `if(from.b, null, true)` with `b` true) or a value that is no boolean (`from.status`) connects nothing, one that answers true connecting, while the same match without a condition reaches every matching terms; out, in and by the inverse alike, and `degree` and `components` count only the edges that hold; as of an earlier position the values are read as they stood and the clock is the read's, so an edge whose period has run out since is not answered there"
+    "044, extended (lakelands#960): a derived relation with a `where` connects two matching records only where the condition holds over the owner's record (`from`) and the target's (`to`): an open invoice inside its terms' discount period reaches its terms, a closed one, one past its period, one whose terms hold no period (null) and one whose terms no record holds reach none, and a condition that answers null (`from.b` unset, `if(from.b, null, true)` with `b` true) or a value that is no boolean (`from.status`) connects nothing, one that answers true connecting, while the same match without a condition reaches every matching terms; out, in and by the inverse alike, and `degree` and `components` count only the edges that hold; as of an earlier position the values are read as they stood and the clock is that position's `known_at` (lakelands#571), so a read as of it repeats: an edge whose period has run out since is answered there, and not at the head"
 );
 
 check!(
@@ -287,8 +287,9 @@ async fn a_derived_relation_with_a_where_connects_only_the_pairs_it_holds_for(
         "`i3` moved into its period reaches `t1` from that write on and not as of before it; \
          as of before {then:?}, at the head {now:?}"
     );
-    // And the clock is the read's: a period that runs out three seconds after
-    // the write is out in a read as of that write made later.
+    // And the clock as of a position is its event's `known_at`: a period that
+    // runs out three seconds after the write is in as of that write, read
+    // before and after it runs out, and out at the head after (lakelands#571).
     l.upsert("terms", "t0", json!({"no": "t0", "discount_days": 0}))
         .await?;
     let wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
@@ -306,11 +307,12 @@ async fn a_derived_relation_with_a_where_connects_only_the_pairs_it_holds_for(
     ))
     .await;
     let after = reached(cat, own, i6, ("discountable", Walk::Out), Some(written)).await?;
+    let head = reached(cat, own, i6, ("discountable", Walk::Out), None).await?;
     ensure!(
-        before == vec!["t0".to_owned()] && after.is_empty(),
-        "a read as of a position reads the condition with its own clock: `i6` reaches `t0` \
-         before its period runs out and not after, as of the same position; it reached \
-         {before:?}, then {after:?}"
+        before == vec!["t0".to_owned()] && after == before && head.is_empty(),
+        "a read as of a position reads the condition under that position's clock: `i6` \
+         reaches `t0` as of its write, before its period runs out and after, and not at the \
+         head after; it reached {before:?}, then {after:?}, and at the head {head:?}"
     );
     Ok(())
 }

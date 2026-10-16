@@ -1398,6 +1398,7 @@ async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_kno
         let at = lakelands_api::ReadAt {
             as_of: at,
             valid_at: None,
+            clock: None,
         };
         let d = l
             .cat

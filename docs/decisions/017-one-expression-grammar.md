@@ -31,7 +31,8 @@ replay reproduces them.
 `now()` and `today()` are the fold's clock in a derived field computed
 at the write (052), the `known_at` of the event folded: a derived "days
 overdue" is as of the record's last write. A read that computes it asks
-as of the read.
+as of the read: under the instant `valid_at` names, else as of a
+position under that event's `known_at`, else the wall clock (052).
 
 ### A duration divides by a duration, and multiplies and divides by a number
 

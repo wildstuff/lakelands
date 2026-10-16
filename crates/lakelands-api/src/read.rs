@@ -25,7 +25,12 @@ pub struct Reply<T> {
 }
 
 /// The two time axes of a read. Absent means the head of the log and
-/// now; the two combine and neither stands in for the other.
+/// now; the two combine and neither stands in for the other. They also
+/// give the read's clock, the one `now()` and `today()` read: the clock a
+/// cursor carries where a read continues one, else the instant `valid_at`
+/// names, else the host's `clock`, else the `known_at` of the event at
+/// `as_of`, else the wall clock
+/// (`docs/decisions/052-a-field-may-be-computed-at-the-read.md`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadAt {
     /// Transaction time: read the lake as it was at this position.
@@ -34,6 +39,13 @@ pub struct ReadAt {
     /// Business time: read what was true in the world at this instant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_at: Option<Timestamp>,
+    /// The host's clock for the read, where it keeps one: an MCP session's
+    /// pin of the head keeps the instant it was set at. No wire carries
+    /// it, so no caller names it, and a remote catalog does not carry it
+    /// either: it is an in-process host's. A listing judges under it, as
+    /// under a cursor's clock.
+    #[serde(skip)]
+    pub clock: Option<Timestamp>,
 }
 
 /// The values a read binds to a view's parameters, by name. Empty for
@@ -236,12 +248,14 @@ pub struct Find {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
     /// Continue after an earlier page. The cursor carries the position
-    /// its first page was read at, and the read is pinned to it.
+    /// its first page was read at and the clock that page read; every
+    /// page it continues is read at that position under that clock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<Cursor>,
     /// Continue strictly after a sort position the caller names: the
     /// position a cursor carries, said in the open. The read is pinned by
-    /// `at` as any `find` is, so without `as_of` it reads the head. Given
+    /// `at` as any `find` is, so without `as_of` it reads the head, and
+    /// it carries no clock: the page reads the clock its `at` gives. Given
     /// with `cursor` or `aggregate`, it is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<After>,

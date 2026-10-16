@@ -19,7 +19,7 @@ use lakelands_api::error::{Case, Error, Place, Refusal, Said, Situation};
 use lakelands_api::id::Position;
 use lakelands_api::read::ReadAt;
 use lakelands_api::tools::{Door, ToolSpec, tools};
-use lakelands_api::{Catalog, LakeStore, Principal, WriteContext};
+use lakelands_api::{Catalog, LakeStore, Principal, Timestamp, WriteContext};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
@@ -49,6 +49,12 @@ pub(crate) fn error(id: Value, code: i64, message: impl Into<String>) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message.into()}})
 }
 
+/// The instant a pin of the head is set at.
+fn wall_clock() -> Timestamp {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    Timestamp(now.map_or(0, |d| d.as_micros() as i64))
+}
+
 fn result(id: Value, result: Value) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "result": result})
 }
@@ -58,7 +64,9 @@ pub struct Session {
     store: Arc<dyn LakeStore>,
     catalog: Arc<dyn Catalog>,
     who: Principal,
-    pin: Option<Position>,
+    /// The pinned position, and the instant a pin of the head was set at,
+    /// the clock its reads read (052).
+    pin: Option<(Position, Option<Timestamp>)>,
     /// Whether the transport can carry notifications.
     notifies: bool,
     /// What the session is told of, shared with its pump.
@@ -107,7 +115,7 @@ impl Session {
 
     /// The position reads are pinned to, if any.
     pub fn pinned(&self) -> Option<Position> {
-        self.pin
+        self.pin.map(|(p, _)| p)
     }
 
     /// Answer one JSON-RPC message: the response to a request, then any
@@ -251,12 +259,17 @@ impl Session {
         vec![result(id, answer)]
     }
 
-    /// Pin reads: a read tool that names no `as_of` is read at the pin.
-    fn pinned_args(&self, mut a: Map<String, Value>) -> Map<String, Value> {
-        if let (Some(p), false) = (self.pin, a.contains_key("cursor")) {
-            a.entry("as_of").or_insert(json!(p.0));
+    /// Pin reads: a read tool that names no `as_of` is read at the pin,
+    /// and under its clock if it pinned the head.
+    fn pinned_args(&self, mut a: Map<String, Value>) -> (Map<String, Value>, Option<Timestamp>) {
+        let own = a.contains_key("cursor") || a.contains_key("as_of");
+        match self.pin {
+            Some((p, clock)) if !own => {
+                a.insert("as_of".into(), json!(p.0));
+                (a, clock)
+            }
+            _ => (a, None),
         }
-        a
     }
 
     async fn door(&mut self, spec: &ToolSpec, a: Map<String, Value>) -> Result<Value, Fault> {
@@ -271,7 +284,7 @@ impl Session {
                 | Door::Query
                 | Door::Search
                 | Door::Proposals => self.pinned_args(a),
-                _ => a,
+                _ => (a, None),
             };
             return doors::run(self.catalog.as_ref(), &self.who, &spec.door, &spec.name, a).await;
         }
@@ -292,9 +305,10 @@ impl Session {
                     reason: Refusal::OutOfRange { head },
                 }));
             }
-            (false, at) => Some(at.unwrap_or(head)),
+            (false, Some(at)) => Some((at, None)),
+            (false, None) => Some((head, Some(wall_clock()))),
         };
-        Ok(json!({"position": head.0, "pinned": self.pin.map(|p| p.0)}))
+        Ok(json!({"position": head.0, "pinned": self.pinned().map(|p| p.0)}))
     }
 }
 

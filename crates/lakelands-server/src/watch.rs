@@ -706,6 +706,7 @@ fn as_of(at: Position) -> ReadAt {
     ReadAt {
         as_of: Some(at),
         valid_at: None,
+        clock: None,
     }
 }
 

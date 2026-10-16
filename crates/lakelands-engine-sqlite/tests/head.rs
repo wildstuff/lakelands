@@ -111,6 +111,7 @@ async fn a_read_as_of_the_head_is_never_refused_while_a_writer_appends() {
             at: ReadAt {
                 as_of: Some(head),
                 valid_at: None,
+                clock: None,
             },
             limit: Some(1),
             ..Default::default()

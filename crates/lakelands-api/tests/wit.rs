@@ -379,6 +379,7 @@ fn read_at() -> ReadAt {
     ReadAt {
         as_of: Some(Position(1)),
         valid_at: Some(t()),
+        clock: None,
     }
 }
 

@@ -857,7 +857,7 @@ async fn door(
             }
         }
     }
-    let v = doors::run(catalog.as_ref(), who, &r.door, r.label, a)
+    let v = doors::run(catalog.as_ref(), who, &r.door, r.label, (a, None))
         .await
         .map_err(fault_answer)?;
     let status = if v["outcome"] == "proposed" {

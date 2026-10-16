@@ -71,6 +71,7 @@ mod provenance;
 mod purge;
 mod reactions;
 mod reactive_depth;
+mod read_clock;
 mod readers_view;
 mod reads_kept;
 mod rebuild;
@@ -239,6 +240,7 @@ pub const ALL: &[Check] = &[
     computed_at::AT_THE_READ,
     computed_at::SAID_WHEN,
     computed_at::MOVED,
+    read_clock::READ_CLOCK,
     authored_reads::AUTHOR_READS,
     renamed_grants::GRANT_FOLLOWS,
     authored_reads::HIDDEN_TYPE,

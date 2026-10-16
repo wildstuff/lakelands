@@ -1282,6 +1282,7 @@ async fn deep(plan: &Plan, dir: &Path, root: &Path, desk: &Desk, n: u64) -> Resu
         let at = ReadAt {
             as_of,
             valid_at: None,
+            clock: None,
         };
         for ty in TYPES {
             let live = all(desk.cat.as_ref(), &who("desk"), ty, at).await?;

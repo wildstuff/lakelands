@@ -273,6 +273,7 @@ impl Reader<'_> {
             door: "query".into(),
             ty: p.start.ty.clone(),
             of: super::pattern_read(p),
+            now: Some(self.now),
         })
     }
 

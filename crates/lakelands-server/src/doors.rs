@@ -19,7 +19,7 @@ use lakelands_api::write::{
     Change, Declaration, FunctionDecl, Migration, ObjectSetDecl, ProposalFilter, ProposedWrite,
     SettingDecl, ValueTypeMigration, WriteOpts,
 };
-use lakelands_api::{Catalog, Principal};
+use lakelands_api::{Catalog, Principal, Timestamp};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde::de::value::StringDeserializer;
@@ -499,13 +499,14 @@ pub(crate) fn unknown_argument(spec: &ToolSpec, arguments: &Map<String, Value>) 
 /// Run one catalog door with its arguments, as `who`. `label` names the
 /// door in a refusal of the arguments. [`Door::Pin`], [`Door::Subscribe`] and
 /// [`Door::Unsubscribe`] belong to the MCP session, which answers them
-/// itself; here they are refused.
+/// itself; here they are refused. A read is clocked by `clock` where the
+/// session keeps one (`ReadAt::clock`, a pin of the head).
 pub(crate) async fn run(
     c: &dyn Catalog,
     who: &Principal,
     door: &Door,
     label: &str,
-    a: Map<String, Value>,
+    (a, clock): (Map<String, Value>, Option<Timestamp>),
 ) -> Result<Value, Fault> {
     #[derive(Deserialize)]
     struct Write {
@@ -535,8 +536,16 @@ pub(crate) async fn run(
         opts: WriteOpts,
     }
     let mut answer = match door {
-        Door::Find { ty } => to_json(&c.find(who, ty, args::<Find>(label, &a)?).await?),
-        Door::Get { ty } => to_json(&c.get(who, ty, args::<Get>(label, &a)?).await?),
+        Door::Find { ty } => {
+            let mut f: Find = args(label, &a)?;
+            f.at.clock = clock;
+            to_json(&c.find(who, ty, f).await?)
+        }
+        Door::Get { ty } => {
+            let mut g: Get = args(label, &a)?;
+            g.at.clock = clock;
+            to_json(&c.get(who, ty, g).await?)
+        }
         Door::Upsert { ty } => {
             let w: Write = args(label, &a)?;
             to_json(&c.upsert(who, ty, &w.key, w.fields, w.opts).await?)
@@ -568,7 +577,8 @@ pub(crate) async fn run(
                 #[serde(flatten)]
                 at: ReadAt,
             }
-            let d: D = args(label, &a)?;
+            let mut d: D = args(label, &a)?;
+            d.at.clock = clock;
             match d.ty {
                 Some(ty) => to_json(&c.describe_type(who, &ty, d.at).await?),
                 None => to_json(&c.describe(who, d.at).await?),
@@ -582,8 +592,16 @@ pub(crate) async fn run(
             let tool = label.into();
             return Err(Fault::arguments(Case::NoSession { tool }));
         }
-        Door::Query => to_json(&c.query(who, args::<Pattern>(label, &a)?).await?),
-        Door::Search => to_json(&c.search(who, args::<Search>(label, &a)?).await?),
+        Door::Query => {
+            let mut p: Pattern = args(label, &a)?;
+            p.at.clock = clock;
+            to_json(&c.query(who, p).await?)
+        }
+        Door::Search => {
+            let mut s: Search = args(label, &a)?;
+            s.at.clock = clock;
+            to_json(&c.search(who, s).await?)
+        }
         Door::Propose => {
             #[derive(Deserialize)]
             struct P {
@@ -593,7 +611,11 @@ pub(crate) async fn run(
             let p: P = args(label, &a)?;
             to_json(&c.propose(who, p.write, p.why).await?)
         }
-        Door::Proposals => to_json(&c.proposals(who, args::<ProposalFilter>(label, &a)?).await?),
+        Door::Proposals => {
+            let mut f: ProposalFilter = args(label, &a)?;
+            f.at.clock = clock;
+            to_json(&c.proposals(who, f).await?)
+        }
         Door::Accept | Door::Reject => {
             #[derive(Deserialize)]
             struct D {
@@ -842,7 +864,7 @@ mod tests {
                 let (cat, who) = (cat.clone(), who.clone());
                 async move {
                     let a = a.as_object().cloned().unwrap_or_default();
-                    run(cat.as_ref(), &who, &Door::Migrate, "migrate", a).await
+                    run(cat.as_ref(), &who, &Door::Migrate, "migrate", (a, None)).await
                 }
             };
             for (args, field) in [
