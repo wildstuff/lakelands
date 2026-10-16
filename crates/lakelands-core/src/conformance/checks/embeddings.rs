@@ -13,7 +13,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use lakelands_api::error::Seam;
+use lakelands_api::error::{Case, Seam};
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{Authority, FieldDecl, FieldType, StorageKind};
 use lakelands_api::principal::TypeGrants;
@@ -28,8 +28,8 @@ use crate::conformance::backing::{
 };
 use crate::conformance::fixture::{
     Caller, Lake, Must, derived, doors, embedding, field, field_access, get_at, head_unmoved,
-    join_all, migration, outputs_from, owner, principal, read, recorded_outputs, refused_on,
-    source_record, sourced, type_decl, value,
+    invalid_case, join_all, migration, outputs_from, owner, patch, principal, read,
+    recorded_outputs, refused_on, source_record, sourced, type_decl, value,
 };
 use crate::conformance::{Failure, Given, Held, Reopen, Store, backing};
 
@@ -1063,7 +1063,7 @@ check!(
 
 check!(
     EMBED_UNBOUND_KEPT = a_declaration_that_keeps_an_embedding_needs_no_backend,
-    "022, extended, and lakelands#641: with no backend bound, a declaration that keeps a type's embedding as in force is admitted (restated, alone or in a set, with a relation whose link type embeds; a field added beside it; a migration), while one that adds an embedding or changes its model, dimensions or `from` is refused as unbound, naming the field, and so is `recompute` of the type",
+    "022, extended, and lakelands#641: with no backend bound, a declaration that keeps a type's embedding as in force is admitted (restated, alone or in a set, with a relation whose link type embeds; a field added beside it; a migration, one renaming the relation or the embedding and a field it is made from, or swapping two fields it is made from in its order, which carries the vectors), while one that adds an embedding or changes its model, dimensions or `from` is refused as unbound, naming the field, a migration at its preflight as at its apply (lakelands#1124), and so are one made from a name a rename frees and declares again and `recompute` of the type; a relation rename that changes its link embedding, or one onto a name whose links are stored beside an embedding added, is told so, not unbound; a set adding an embedding is refused as unbound",
     reopens
 );
 
@@ -1097,7 +1097,7 @@ async fn quay(
 /// `berth`, whose `moors` to `note` carries `near`, the embedding of its
 /// link's `memo`.
 fn berths() -> lakelands_api::ontology::TypeDecl {
-    let mut ty = type_decl("berth", vec![]);
+    let mut ty = type_decl("berth", vec![field("name", StorageKind::Text)]);
     let fields = vec![
         field("memo", StorageKind::Text),
         embedding("near", 2, &["memo"], EMBED_MODEL),
@@ -1109,13 +1109,28 @@ fn berths() -> lakelands_api::ontology::TypeDecl {
     ty
 }
 
-/// `note` and `berths` declared with the suite's backend, and the lake
-/// opened again with none bound.
+/// `note` and `berths` declared with the suite's backend, with the
+/// note `kept` moored by the berth `b`, and the lake opened again with
+/// none bound.
 async fn unbound_notes(store: Store, reopen: &Reopen) -> Result<Store, Failure> {
     let store = reopen(store, with_embedder(Some(backing::embedder())))
         .await
         .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
-    notes(store.as_ref()).await?.declare(berths()).await?;
+    let l = notes(store.as_ref()).await?;
+    l.declare(berths()).await?;
+    l.upsert("note", "kept", json!({"title": "Kept quay"}))
+        .await?;
+    l.upsert("berth", "b", json!({"name": "b"})).await?;
+    let (ty, rel, memo) = (
+        "berth".into(),
+        "moors".into(),
+        patch(json!({"memo": "Kept quay"})),
+    );
+    let (b, kept) = ("b".into(), "kept".into());
+    let moored = l
+        .cat
+        .link(&l.own, &ty, &b, &rel, &kept, memo, Default::default());
+    moored.await.must("mooring `b` to `kept`")?;
     reopen(store, with_embedder(None))
         .await
         .map_err(|e| reopen_failed("with no embedding backend", e))
@@ -1193,13 +1208,10 @@ async fn a_declaration_that_keeps_an_embedding_needs_no_backend(
     let set = vec![lakelands_api::write::Declaration::Type(kept.clone())];
     let fut = l.cat.apply(&l.own, set);
     fut.await.must("applying `note` as in force")?;
-    // Other dimensions reshape the field: a migration, checked the same way.
+    // Other dimensions reshape the field: a migration, checked the same
+    // way at its preflight and at its apply (lakelands#1124).
     let wider = migration(notes_by(&["title", "body"], EMBED_MODEL, 3));
-    let report = l.cat.migrate(&l.own, wider.clone()).await;
-    let id = report
-        .must("the preflight of `vec` with 3 dimensions")?
-        .data
-        .report_id;
+    let report = l.cat.migrate(&l.own, wider.clone()).await.map(drop);
     let added = notes_with(
         kept.fields[2].clone(),
         vec![embedding("vec2", 2, &["body"], EMBED_MODEL)],
@@ -1207,28 +1219,40 @@ async fn a_declaration_that_keeps_an_embedding_needs_no_backend(
     let recompute = lakelands_api::write::Recompute::Type("note".into());
     for (got, named, what) in [
         (
-            l.try_declare(notes_by(&["title"], EMBED_MODEL, 2)).await,
+            l.try_declare(notes_by(&["title"], EMBED_MODEL, 2))
+                .await
+                .map(drop),
             "vec",
             "`note` with its `from` changed",
         ),
         (
             l.try_declare(notes_by(&["title", "body"], "another-model", 2))
-                .await,
+                .await
+                .map(drop),
             "vec",
             "`note` with its model changed",
         ),
         (
-            l.try_declare(added).await,
+            l.try_declare(added.clone()).await.map(drop),
             "vec2",
             "`note` with an embedding added",
         ),
         (
-            l.cat.migrate_apply(&l.own, wider, &id).await,
+            l.cat
+                .apply(&l.own, vec![lakelands_api::write::Declaration::Type(added)])
+                .await
+                .map(drop),
+            "vec2",
+            "a set adding that embedding",
+        ),
+        (report, "vec", "the preflight of `vec` with 3 dimensions"),
+        (
+            l.cat.migrate_apply(&l.own, wider, "-").await.map(drop),
             "vec",
             "`vec` migrated to 3 dimensions",
         ),
         (
-            l.cat.recompute(&l.own, recompute).await,
+            l.cat.recompute(&l.own, recompute).await.map(drop),
             "vec",
             "`recompute` of `note`",
         ),
@@ -1247,6 +1271,103 @@ async fn a_declaration_that_keeps_an_embedding_needs_no_backend(
     );
     l.declare(tagged).await?;
     l.migrate(kept).await?;
+    // A migration carries the vectors of what it renames, so nothing is
+    // due: a relation, and a field with one its embedding is made from.
+    let mut docked = berths();
+    docked.relations[0].name = "docks".into();
+    let docked = lakelands_api::write::Migration {
+        relation_renames: vec![("moors".into(), "docks".into())],
+        ..migration(docked)
+    };
+    let report = l.cat.migrate(&l.own, docked.clone()).await;
+    let id = report
+        .must("the preflight of `moors` renamed")?
+        .data
+        .report_id;
+    l.cat
+        .migrate_apply(&l.own, docked, &id)
+        .await
+        .must("renaming `moors`")?;
+    // `note` with its fields under these names, `vec2` made from `from`.
+    let note = |names: [&str; 2], from: [&str; 2], more: Vec<FieldDecl>| {
+        let fields = names.map(|n| field(n, StorageKind::Text)).to_vec();
+        let vec2 = embedding("vec2", 2, &from, EMBED_MODEL);
+        type_decl("note", [fields, vec![vec2], more].concat())
+    };
+    let renamed = note(["title", "text"], ["title", "text"], vec![]);
+    l.migrate_renaming(renamed, &[("body", "text"), ("vec", "vec2")])
+        .await?;
+    // A name a rename frees and `to` declares again is a field anew, whose
+    // text no vector was made of; a swap that keeps the text keeps it.
+    let mut fresh = field("text", StorageKind::Text);
+    fresh.initial = Some(json!("fresh"));
+    let reused = lakelands_api::write::Migration {
+        renames: vec![("text".into(), "words".into())],
+        fill: vec!["text".into()],
+        ..migration(note(["title", "words"], ["title", "text"], vec![fresh]))
+    };
+    let reused = l.cat.migrate(&l.own, reused).await.map(drop);
+    l.migrate_renaming(
+        note(["text", "title"], ["text", "title"], vec![]),
+        &[("title", "text"), ("text", "title")],
+    )
+    .await?;
+    // A malformed rename is told so whatever is bound: its relation's
+    // link fields change.
+    let mut piers = berths();
+    piers.relations[0].name = "piers".into();
+    piers.relations[0].fields[1] = embedding("near", 3, &["memo"], EMBED_MODEL);
+    let piers = lakelands_api::write::Migration {
+        relation_renames: vec![("docks".into(), "piers".into())],
+        ..migration(piers)
+    };
+    let piers = l.cat.migrate(&l.own, piers).await;
+    // So is a rename onto a name whose links are stored, beside an
+    // embedding added: `old1`'s link outlives the relation.
+    let mut held = berths();
+    held.relations[0].name = "docks".into();
+    held.relations
+        .push(lakelands_api::ontology::RelationDecl::to("old1", "note"));
+    l.declare(held.clone()).await?;
+    let (ty, rel, nothing) = ("berth".into(), "old1".into(), patch(json!({})));
+    let (b, kept) = ("b".into(), "kept".into());
+    let linked = l
+        .cat
+        .link(&l.own, &ty, &b, &rel, &kept, nothing, Default::default());
+    linked.await.must("linking `b` over `old1`")?;
+    held.relations.pop();
+    l.migrate(held).await?;
+    let mut onto = berths();
+    onto.relations[0].name = "old1".into();
+    onto.fields
+        .push(embedding("vnew", 2, &["name"], EMBED_MODEL));
+    let onto = lakelands_api::write::Migration {
+        relation_renames: vec![("docks".into(), "old1".into())],
+        ..migration(onto)
+    };
+    let onto = l.cat.migrate(&l.own, onto).await;
+    let (link, note) = (
+        l.all_found("sys.link.berth.docks", Default::default())
+            .await?,
+        l.read("note", "kept").await?,
+    );
+    let near = link.first().and_then(|r| value(r, "near")).cloned();
+    ensure!(
+        is_east(&near) && is_east(&value(&note, "vec2").cloned()),
+        "with none bound, `moors` renamed `docks`, `vec` renamed `vec2` with its `body`, and \
+         `title` and `text` swapped are taken and carry their vectors; the link reads \
+         {near:?}, `kept` {:?}",
+        value(&note, "vec2")
+    );
+    ensure!(
+        matches!(reused.as_ref().err().and_then(Error::seam), Some(Seam::Embedding { field, .. }) if field == "vec2")
+            && matches!(invalid_case(&piers), Some(Case::RelationRenameChanges))
+            && matches!(invalid_case(&onto), Some(Case::RenameNameHeld)),
+        "with none bound, `vec2` made from a `text` declared anew is refused as unbound, a \
+         rename that changes `near` is told so, and so is one onto `old1`, whose link is \
+         stored; they answered {}, {piers:?} and {onto:?}",
+        answered(&reused)
+    );
     Ok(())
 }
 
