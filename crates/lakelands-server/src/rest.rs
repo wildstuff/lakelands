@@ -88,7 +88,10 @@ fn status_of(e: &Error) -> StatusCode {
     match e {
         Error::Ingested { error, .. } => status_of(error),
         Error::Refused { reason, .. } => match reason {
-            Refusal::NotGranted | Refusal::WrongDoor | Refusal::Reserved => StatusCode::FORBIDDEN,
+            Refusal::NotGranted
+            | Refusal::WrongDoor
+            | Refusal::VerbsOnly { .. }
+            | Refusal::Reserved => StatusCode::FORBIDDEN,
             Refusal::Decided | Refusal::Unanswered(_) => StatusCode::CONFLICT,
             Refusal::Invalid(_)
             | Refusal::Constraint(_)

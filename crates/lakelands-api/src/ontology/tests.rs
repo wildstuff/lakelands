@@ -86,3 +86,19 @@ fn a_path_steps_from_a_relation_carried_by_links_to_its_link() {
     assert_eq!(read("with"), Vec::<String>::new());
     assert_eq!(read("by.name"), Vec::<String>::new());
 }
+
+/// `Authority::ALL` holds every authority in its place: a new one stops
+/// this compiling until it is placed, since the type is `#[non_exhaustive]`
+/// only outside this crate.
+#[test]
+fn every_authority_is_listed() {
+    let place = |a: Authority| match a {
+        Authority::Authored => 0,
+        Authority::Source => 1,
+        Authority::Shared => 2,
+        Authority::Derived => 3,
+        Authority::Verb => 4,
+    };
+    let places: Vec<usize> = Authority::ALL.into_iter().map(place).collect();
+    assert_eq!(places, (0..5).collect::<Vec<_>>());
+}

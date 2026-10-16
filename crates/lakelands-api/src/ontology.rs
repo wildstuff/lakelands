@@ -184,6 +184,7 @@ impl FieldType {
 /// principals of that authority may.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Authority {
     /// Written by authors, through `upsert` and verbs.
     #[default]
@@ -195,9 +196,21 @@ pub enum Authority {
     Shared,
     /// Computed by the fold from other fields; no door writes it.
     Derived,
+    /// Written only by the type's verbs' `set`, its `initial` and an aging
+    /// rule; `upsert` and `ingest` are refused it (lakelands#1130).
+    Verb,
 }
 
 impl Authority {
+    /// Every authority, in declaration order.
+    pub const ALL: [Authority; 5] = [
+        Authority::Authored,
+        Authority::Source,
+        Authority::Shared,
+        Authority::Derived,
+        Authority::Verb,
+    ];
+
     /// Whether this is the default, `authored`.
     pub fn is_authored(&self) -> bool {
         *self == Authority::Authored

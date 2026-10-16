@@ -2366,8 +2366,35 @@ impl Decide<'_> {
     /// its values, each in its written form.
     pub(crate) fn checked(&self, decl: &TypeDecl, key: &RecordKey, patch: &Patch) -> Result<Patch> {
         check_key(key)?;
-        rights::check_write(self.who, decl, self.door, patch)?;
+        rights::check_write(self.who, decl, self.door, patch)
+            .map_err(|e| self.verbs_only(decl, e))?;
         check_values(&self.w.ontology, decl, patch, &decl.fields)
+    }
+
+    /// A field only verbs write, refused here: named the verbs its writer is
+    /// shown and may call, else `wrong_door` (lakelands#1130).
+    fn verbs_only(&self, decl: &TypeDecl, e: Error) -> Error {
+        let Error::Refused {
+            field: Some(field),
+            reason: Refusal::WrongDoor,
+        } = &e
+        else {
+            return e;
+        };
+        let ours = |f: &FieldDecl| &f.name == field && f.authority == Authority::Verb;
+        let sees = Sight::held(self.who, &self.w.ontology);
+        let sets = |v: &VerbDecl| matches!(&v.effect, VerbEffect::Write { set } if set.iter().any(|a| &a.field == field));
+        let verbs: Vec<VerbName> = (self.w.ontology.verbs.values().map(|e| &e.decl))
+            .filter(|v| v.on == decl.name && sets(v) && sees.verb_shown(v))
+            .map(|v| v.name.clone())
+            .collect();
+        match decl.fields.iter().any(ours) && !verbs.is_empty() {
+            true => Error::Refused {
+                field: Some(field.clone()),
+                reason: Refusal::VerbsOnly { verbs },
+            },
+            false => e,
+        }
     }
 
     /// Decide one authored record write (`upsert`, a verb, aging): its
@@ -2480,7 +2507,7 @@ impl Decide<'_> {
         // so the ends the record holds are judged beside it. A source's
         // window is judged by what it sends (016).
         let end = |f: &FieldName| [links::FROM, links::TO].contains(&f.as_str());
-        let authored = matches!(self.door, Door::Authored) && links::is_link_type(&decl.name);
+        let authored = !matches!(self.door, Door::Source) && links::is_link_type(&decl.name);
         let held = live.filter(|_| authored);
         let held = held.into_iter().flat_map(|b| &b.fields);
         let ends: Patch = (held.filter(|(f, _)| end(f) && !patch.contains_key(*f)))
@@ -2497,7 +2524,7 @@ impl Decide<'_> {
         let made = live.is_none();
         let (ty, key) = (decl.name.clone(), key.clone());
         let draft = self.draft(match self.door {
-            Door::Authored => EventBody::RecordUpserted {
+            Door::Authored | Door::Verb => EventBody::RecordUpserted {
                 ty,
                 key,
                 version,
@@ -2711,8 +2738,11 @@ impl Decide<'_> {
                 ..self.envelope.clone()
             };
             let of_the_call = std::mem::replace(&mut self.envelope, of_the_write);
+            // Through the verbs' own door: a field only its verbs write is
+            // written here and refused at `upsert` (lakelands#1130).
+            let door = std::mem::replace(&mut self.door, Door::Verb);
             let write = self.record(&verb.on, key, &patch, expected, Some(record));
-            self.envelope = of_the_call;
+            (self.envelope, self.door) = (of_the_call, door);
             let write = self.planned(write?)?;
             plan.drafts.extend(write.drafts);
             plan.after = write.after;

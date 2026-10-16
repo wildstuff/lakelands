@@ -1905,7 +1905,7 @@ created before it the next time a writer opens that lake. Its key is
 |---|---|---|
 | `name` | text, required | the rule's name, an identifier |
 | `on` | text, required | the type it ages |
-| `field` | text, required | the field it moves; `authored` or `shared`, never derived |
+| `field` | text, required | the field it moves; `authored`, `shared` or `verb`, never derived |
 | `from` | json, required | the value that ages |
 | `to` | json, required | the value it becomes |
 | `when` | text, required | a condition in the one grammar, over the record's fields |

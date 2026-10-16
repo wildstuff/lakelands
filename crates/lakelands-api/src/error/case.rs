@@ -613,6 +613,8 @@ catalog! {
         Initial => "`initial`",
         /// A field's `erasable`.
         Erasable => "`erasable`",
+        /// A field's `authority`.
+        Authority => "`authority`",
         /// The link types of a type's relations.
         Links { name: TypeName } => "the links of `{name}`",
         /// A pattern's start.
@@ -831,6 +833,19 @@ catalog! {
         ErasableKey => "a key's field is the record's key, which stays plaintext in every event",
         /// A field that names a record declared erasable.
         ErasableReference => "a field that names a record is read by every walk, so it stays plaintext",
+        /// A field only verbs write declared required with no `initial`.
+        VerbRequired => "a required field is written by every create, and a verb writes only a record that stands; it needs an `initial`",
+        /// A field only verbs write that the fold computes.
+        VerbComputed => "the fold computes it, so no door writes it, a verb's neither",
+        /// An `initial` of fields only verbs write that a type's constraint
+        /// refuses: no create could hold it.
+        InitialBreaks { constraint: ConstraintName, field: FieldName } => "the `initial` of `{field}`, which only the type's verbs write, breaks the constraint `{constraint}`: no record of the type could be made",
+        /// A field only verbs write with no `initial`, which a create
+        /// leaves null, where a constraint reading only such fields
+        /// refuses that.
+        NoInitialBreaks { constraint: ConstraintName, field: FieldName } => "`{field}`, which only the type's verbs write, has no `initial`, and a create leaves it null, which the constraint `{constraint}` refuses: no record of the type could be made",
+        /// A key field only verbs write.
+        VerbKey => "a key's field is written by every create, and a verb writes only a record that stands",
         /// An `expr` function with no expression.
         ExprNoExpression => "it is backed by `expr` and has no expression",
         /// An expression on a function another backing computes.
@@ -850,7 +865,7 @@ catalog! {
         /// An `initial` value on a key field.
         InitialKey => "a key's field is given by the record's key",
         /// An `initial` value on a field its authors do not write alone.
-        InitialNotAuthored => "only a field its authors alone write takes one, not one a source writes or the fold computes",
+        InitialNotAuthored => "only a field its authors or its type's verbs alone write takes one, not one a source writes or the fold computes",
         /// An `initial` value on a field of no type.
         InitialNotOfType => "only a field of a type declares one",
         /// An `initial` value on a field that names a record.
@@ -1376,7 +1391,7 @@ catalog! {
 
         // ---- aging
         /// An aging rule's field that its door does not write.
-        AgingAuthority { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`{ty}`.`{field}` is not `authored` or `shared`; aging writes it as `upsert` does",
+        AgingAuthority { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`{ty}`.`{field}` is not `authored`, `shared` or `verb`; aging writes it as `upsert` or a verb does",
         /// An aging rule on a key field.
         AgingKey { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`{ty}`.`{field}` is part of the key; aging never moves a key",
         /// An aging rule's member with no value.

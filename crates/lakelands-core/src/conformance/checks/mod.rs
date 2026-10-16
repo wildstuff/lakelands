@@ -105,6 +105,7 @@ mod value_types;
 mod values;
 mod vector_index;
 mod verb_reads;
+mod verb_written;
 mod verbs_on_type;
 mod versions;
 mod view_kept;
@@ -662,6 +663,8 @@ pub const ALL: &[Check] = &[
     upgrade::FORMAT_14_UPGRADED,
     upgrade::FORMAT_15_UPGRADED,
     upgrade::FORMAT_16_UPGRADED,
+    verb_written::VERB_ONLY,
+    verb_written::VERB_ONLY_TOLD,
     upgrade::LAKE_14_READ,
     upgrade::LAKE_14_MIGRATED_READ,
     upgrade::LAKE_15_READ,

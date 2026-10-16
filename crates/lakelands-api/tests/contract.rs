@@ -14,6 +14,7 @@ fn intent(e: &Error) -> &'static str {
         Error::Refused { reason, .. } => match reason {
             Refusal::NotGranted => "the principal lacks a grant; nothing was written",
             Refusal::WrongDoor => "the field belongs to another authority's door",
+            Refusal::VerbsOnly { .. } => "only the type's verbs write the field; call one it names",
             Refusal::Reserved => "a `sys.` name is the system's",
             Refusal::Invalid { .. } => "the request does not fit the lake's map",
             Refusal::Constraint { .. } => "a value breaks a declared constraint",

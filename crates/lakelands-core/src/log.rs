@@ -140,7 +140,8 @@ const SEALED_FROM: u32 = 16;
 ///   that read across an edge (055).
 /// - **16 → 17:** none. Format 17 is 0.16.0's one step, taken before any
 ///   form it adds (lakelands#1164): a log of format 16 holds none of them,
-///   each named here by the change that adds it.
+///   each named here by the change that adds it: a field's
+///   `authority: verb` (lakelands#1130).
 #[doc(hidden)]
 pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
     debug_assert!(reads_format(v), "format {v} is not one this release reads");

@@ -194,6 +194,25 @@
    "code": "erasable_reference"
   },
   {
+   "code": "verb_required"
+  },
+  {
+   "code": "verb_computed"
+  },
+  {
+   "code": "initial_breaks",
+   "constraint": "c",
+   "field": "f"
+  },
+  {
+   "code": "no_initial_breaks",
+   "constraint": "c",
+   "field": "f"
+  },
+  {
+   "code": "verb_key"
+  },
+  {
    "code": "expr_no_expression"
   },
   {
@@ -2214,6 +2233,9 @@
   },
   {
    "code": "erasable"
+  },
+  {
+   "code": "authority"
   },
   {
    "code": "links",

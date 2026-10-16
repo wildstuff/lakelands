@@ -97,7 +97,10 @@ pub fn check(
     let Some(f) = decl.fields.iter().find(|f| f.name == field) else {
         return Err(wrong("field", Case::UnknownField { ty, field }));
     };
-    if !matches!(f.authority, Authority::Authored | Authority::Shared) {
+    if !matches!(
+        f.authority,
+        Authority::Authored | Authority::Shared | Authority::Verb
+    ) {
         return Err(wrong("field", Case::AgingAuthority { ty, field }));
     }
     if decl.key.contains(&field) {
@@ -149,7 +152,7 @@ pub fn check_authority(who: &Principal, ontology: &Ontology, rule: &Rule) -> Res
     // A rule moves every owner's records: never one a holder of `only` writes (051).
     crate::writes::granted(!rights::only_holder(who, decl, ontology))?;
     let patch: Patch = [(rule.field.clone(), rule.to.clone())].into();
-    rights::check_write(who, decl, Door::Authored, &patch)?;
+    rights::check_write(who, decl, Door::Verb, &patch)?;
     rights::check_probe(who, decl, derive::reads(&rule.when).iter())
 }
 
@@ -212,6 +215,8 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
         let now = lake.clock(&mut w);
         let from = canonical::to_vec(&rule.from);
         let mut d = call.decide(&w, view.as_ref(), now, 0);
+        // A rule writes as declared: a `verb` field too (lakelands#1130).
+        d.door = Door::Verb;
         d.envelope = Envelope {
             procedure: Some(procedure),
             ..Envelope::of(Origin::System)

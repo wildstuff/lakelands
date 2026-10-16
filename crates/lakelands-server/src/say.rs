@@ -134,6 +134,10 @@ impl From<Error> for Failure {
                     "source fields arrive through `lakelands ingest`; authored fields through writes and verbs"
                         .to_owned()
                 }
+                Refusal::VerbsOnly { .. } => {
+                    "call one of the verbs it names, which writes the field under its own condition"
+                        .to_owned()
+                }
                 Refusal::Reserved => "choose a name that does not begin with `sys.`; a verb names no \
                                       `sys.` type but a relation's link type"
                     .to_owned(),

@@ -4,7 +4,8 @@
 
 ### An authored field of a type's own may declare `initial`
 
-An authored field of a type's own may declare `initial`: a literal the
+An authored field of a type's own, or one only its verbs write
+(`authority: verb`, lakelands#1130), may declare `initial`: a literal the
 field takes when its record comes to exist and the write that made it
 gives the field none.
 
@@ -80,6 +81,8 @@ field by a patch that names it.
 
 ### `initial` is declared only on an authored field of a type's own
 
+A field only its type's verbs write takes it as an authored one does
+(lakelands#1130).
 A field whose authority is `source`, `shared` or `derived`; one that is
 derived, computed or an embedding; a key field; a reference, and a
 relation's `via` field; a field cleared when an input changes; a field

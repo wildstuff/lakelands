@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 47, each
+- `further.json`: the lake's next events, positions 8 to 48, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -79,7 +79,10 @@ The files:
   - a type declared with two constraints, one that admits at ingest and
     one that reads `previous` (46);
   - a `source_forgotten` of `crm`, naming its key's version `1` (47):
-    a reader that folds the lake reads every value `crm` sealed as erased.
+    a reader that folds the lake reads every value `crm` sealed as erased;
+  - a type `parcel` whose `state` only its verbs write, `authority:
+    verb`, with an `initial` (48): a form format 17 holds and 16 does
+    not (lakelands#1130).
 
   Its `misplaced` holds four lines that are not of the lake. Each
   stands at its position after the event before it, in the release's

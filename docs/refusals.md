@@ -217,6 +217,7 @@ Where in a declaration or a request a case is said.
 | `constraint` | — | `constraint` | A value type's or a type's `constraint`. |
 | `initial` | — | `initial` | A field's `initial` value. |
 | `erasable` | — | `erasable` | A field's `erasable`. |
+| `authority` | — | `authority` | A field's `authority`. |
 | `links` | `name` (TypeName) | the links of `{name}` | The link types of a type's relations. |
 | `start` | — | the start | A pattern's start. |
 | `step` | `step` (usize), `relation` (RelationName) | step {step} over `{relation}` | A pattern's step, by its number from 1 and its relation. |
@@ -295,6 +296,11 @@ What a refusal is about.
 | `erasable_not_of_type` | — | only a field of a type declares it | A field of no type declared erasable. |
 | `erasable_key` | — | a key's field is the record's key, which stays plaintext in every event | A key field declared erasable. |
 | `erasable_reference` | — | a field that names a record is read by every walk, so it stays plaintext | A field that names a record declared erasable. |
+| `verb_required` | — | a required field is written by every create, and a verb writes only a record that stands; it needs an `initial` | A field only verbs write declared required with no `initial`. |
+| `verb_computed` | — | the fold computes it, so no door writes it, a verb's neither | A field only verbs write that the fold computes. |
+| `initial_breaks` | `constraint` (ConstraintName), `field` (FieldName) | the `initial` of `{field}`, which only the type's verbs write, breaks the constraint `{constraint}`: no record of the type could be made | An `initial` of fields only verbs write that a type's constraint refuses: no create could hold it. |
+| `no_initial_breaks` | `constraint` (ConstraintName), `field` (FieldName) | `{field}`, which only the type's verbs write, has no `initial`, and a create leaves it null, which the constraint `{constraint}` refuses: no record of the type could be made | A field only verbs write with no `initial`, which a create leaves null, where a constraint reading only such fields refuses that. |
+| `verb_key` | — | a key's field is written by every create, and a verb writes only a record that stands | A key field only verbs write. |
 | `expr_no_expression` | — | it is backed by `expr` and has no expression | An `expr` function with no expression. |
 | `expression_not_expr` | `backing` (String) | it has an expression but is backed by `{backing}` | An expression on a function another backing computes. |
 | `function_input_kind` | `function` (String), `input` (FieldName), `kind` (StorageKind), `type` (TypeName), `held` (StorageKind) | the function `{function}` takes `{input}` as a {kind}, and `{type}` holds it as a {held} | A function's input the type holds as another kind. |
@@ -304,7 +310,7 @@ What a refusal is about.
 | `initial_cleared` | — | its inputs would clear it at their next change | An `initial` value on a field its inputs clear. |
 | `initial_in_view` | — | a view's records are computed, and none is created | An `initial` value on a view's field. |
 | `initial_key` | — | a key's field is given by the record's key | An `initial` value on a key field. |
-| `initial_not_authored` | — | only a field its authors alone write takes one, not one a source writes or the fold computes | An `initial` value on a field its authors do not write alone. |
+| `initial_not_authored` | — | only a field its authors or its type's verbs alone write takes one, not one a source writes or the fold computes | An `initial` value on a field its authors do not write alone. |
 | `initial_not_of_type` | — | only a field of a type declares one | An `initial` value on a field of no type. |
 | `initial_reference` | — | a field that names a record is checked against that record by the door that writes it | An `initial` value on a field that names a record. |
 | `inverse_twice` | `inverse` (RelationName), `target` (TypeName) | `{inverse}` is already the inverse of a relation onto `{target}`; an inverse names one relation | An inverse two relations name onto one target. |
@@ -549,7 +555,7 @@ What a refusal is about.
 | `written_once` | `type` (TypeName), `key` (RecordKey) | `{type}` `{key}` is written once: its type is insert-only, and a record stands at the key, live or retired | An ingest of a record an insert-only type holds already. |
 | `write_changed_since_proposed` | `type` (TypeName), `key` (RecordKey, optional) | `{type}`[ `{key}`] changed since this write was proposed; propose it again | A pinned proposal's accept after its record or type changed. |
 | `writer_nul` | — | a principal's id holds no NUL character | A principal whose id holds a NUL. |
-| `aging_authority` | `type` (TypeName), `field` (FieldName) | `{type}`.`{field}` is not `authored` or `shared`; aging writes it as `upsert` does | An aging rule's field that its door does not write. |
+| `aging_authority` | `type` (TypeName), `field` (FieldName) | `{type}`.`{field}` is not `authored`, `shared` or `verb`; aging writes it as `upsert` or a verb does | An aging rule's field that its door does not write. |
 | `aging_key` | `type` (TypeName), `field` (FieldName) | `{type}`.`{field}` is part of the key; aging never moves a key | An aging rule on a key field. |
 | `aging_no_value` | `member` (FieldName) | an aging rule's `{member}` holds a value | An aging rule's member with no value. |
 | `aging_not_a_date` | `today` (Timestamp) | `today` is a date, at UTC midnight; `{today}` is not | An aging day that is no UTC midnight. |
@@ -1065,7 +1071,7 @@ These types are said by a name of a closed list:
 
 Which authority writes a field. It decides which door may carry the field: a source feed through `ingest`, an author through `upsert` or a verb, the store itself through the fold. Grants then decide which principals of that authority may.
 
-`authored`, `source`, `shared`, `derived`
+`authored`, `source`, `shared`, `derived`, `verb`
 
 ### `Cardinality`
 

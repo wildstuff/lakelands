@@ -249,7 +249,7 @@ pub fn apply(
             version,
             patch,
             ..
-        } => (ty, key, *version, patch, Door::Authored),
+        } => (ty, key, *version, patch, Door::Verb),
         EventBody::RecordIngested {
             ty,
             key,

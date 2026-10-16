@@ -240,6 +240,12 @@
       "about": "A host forgot `crm`: its key's version `1` is destroyed, and every value it sealed folds as erased, before this position and after (§2.3, 058).",
       "line": "{\"body\":{\"keys\":[\"1\"],\"kind\":\"source_forgotten\",\"source\":\"crm\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"2be3698504b5169af0797561212e06eb48cbd5b6537c0d97d06e5f04322170b9\",\"id\":\"0000000000000000000000000000002f\",\"known_at\":\"2026-10-05T09:00:18.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":47,\"prev\":\"c65cda2cb54c6f0e779e9f4d7a619ae346c6f9561ad69de34de42406624d3a28\",\"v\":17,\"writer\":\"system:lakelands\"}",
       "hash": "2be3698504b5169af0797561212e06eb48cbd5b6537c0d97d06e5f04322170b9"
+    },
+    {
+      "shows": "verb_authority",
+      "about": "A `declared` type `parcel` whose `state` only its verbs write (`authority: verb`, lakelands#1130), with an `initial`: `upsert` and `ingest` are refused it, a verb's `set` writes it. A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"no\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"verb\",\"initial\":\"packed\",\"name\":\"state\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"name\":\"parcel\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"85651fec5755256f128198773bd169ede975a723d9876e787029611bc381b381\",\"id\":\"00000000000000000000000000000030\",\"known_at\":\"2026-10-05T09:00:19.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":48,\"prev\":\"2be3698504b5169af0797561212e06eb48cbd5b6537c0d97d06e5f04322170b9\",\"v\":17,\"writer\":\"agent:agent\"}",
+      "hash": "85651fec5755256f128198773bd169ede975a723d9876e787029611bc381b381"
     }
   ],
   "misplaced": [
