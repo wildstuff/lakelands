@@ -70,11 +70,14 @@ impl Root {
         );
         match &root.pg {
             None => assert_eq!(root.run(&["lake", "new", "ledger"]).code, 0),
+            // The location is the file `lake new` writes, not one made
+            // by hand: the lake opens from what an operator gets.
             Some((url, schema)) => {
-                let location = serde_json::json!({"lake": "ledger", "engine": {
-                    "engine": "postgres", "url": url, "schema": schema, "tls": {"mode": "disable"}}});
-                fs::create_dir_all(root.dir.join("lakes")).unwrap();
-                fs::write(root.dir.join("lakes/ledger.json"), location.to_string()).unwrap();
+                let made = root.run(&[
+                    "lake", "new", "ledger", "--engine", "postgres", "--url", url, "--schema",
+                    schema, "--no-tls",
+                ]);
+                assert_eq!(made.code, 0, "{}{}", made.out, made.err);
             }
         }
         root
