@@ -1,31 +1,37 @@
 # Lakelands
 
-**The open ontology store for AI agents.**
+**The open ontology store. Every value typed, traced and verifiable.**
 
-Don't trust your agent's memory — verify it. Lakelands is the ground AI
-agents work on: an ontology types every write, every field keeps its
-source and its time, and the log is hash-chained, so anyone can check
-what the agent knew and who changed it — without us. Your agent reaches
-it over MCP, on your machine; engine and on-disk format are Apache-2.0.
+An ontology types every write, every field keeps its source and its
+time, and the log is hash-chained, so anyone can check what was known,
+since when, and who changed it — without us. Files, streams, REST and
+agents over MCP all write into the same lake under the same rules. It
+runs on your machine; engine and on-disk format are Apache-2.0.
+
+Lakelands is the engine [The Wild](https://github.com/wildstuff/wild)
+is built on. Use it on its own as a store, or take The Wild for the
+whole thing: connectors, agents that build their own tools, and live
+apps on top.
 
 ## The problem
 
-Agents now write into memory: they file an invoice, mark a contract as
-reviewed, note that a customer changed their address. Then someone asks
-the questions that matter, and most stores cannot answer them:
+Whatever writes into a store — an import, a person, an agent — most
+stores keep the value and lose how it got there. Ask the questions
+that matter and they cannot answer them:
 
-- **Where did this value come from?** The import, a person, or the
-  agent's own guess?
-- **Since when has it held — and what did the agent see when it
-  decided?** A store that updates in place has already forgotten.
+- **Where did this value come from?** An import, a person, or an
+  agent's guess?
+- **Since when has it held — and what did we know when we decided?**
+  A store that updates in place has already forgotten.
 - **Who changed it, and was it allowed to?** A second writer quietly
   overwrites the first; a re-import erases a verdict a human wrote.
 - **Has anything been rewritten since?** You are asked to trust the
-  service that holds the memory.
+  system that holds it.
 
-A folder of notes the agent greps, a vector index, a database that
-updates in place: each stores what the agent wrote and loses how it got
-there. Lakelands keeps both, and lets anyone check them.
+Once agents act on these values — file an invoice, mark a contract as
+reviewed, chase a payment — a value nobody can trace is no longer an
+inconvenience; it is a decision made on a guess. Lakelands keeps every
+value together with how it got there, and lets anyone check both.
 
 ## What it is
 
@@ -107,11 +113,12 @@ language.
 
 ## Verify it
 
-A memory you are asked to trust is a memory nobody can check. Every
+A value you are asked to trust is a value nobody can check. Every
 claim Lakelands makes about its data is one you can recompute:
 
-- **What the agent saw.** Every reply carries the position it was read
-  at. Pin an earlier position and the lake answers as it did then.
+- **What was known, and when.** Every reply — to a person or an agent —
+  carries the position it was read at. Pin an earlier position and the
+  lake answers as it did then.
 - **Where a value came from.** Every field records who wrote it, when
   the lake learned it and when its source saw it — per field, not per
   record.
