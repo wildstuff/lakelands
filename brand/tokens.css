@@ -1,0 +1,110 @@
+/* generated from brand/tokens.json by scripts/brand/tokens-css.pl; do not edit */
+:root, [data-theme="dark"] {
+  --depth-900: #0c1a21;
+  --depth-800: #102a33;
+  --depth-700: #174552;
+  --depth-600: #1f5b66;
+  --lagoon-500: #2f7f86;
+  --shallows-300: #7fc4c4;
+  --perch-300: #9cc9b6;
+  --sand-200: #e8dcc4;
+  --foam-100: #f4ecdb;
+  --buoy-500: #e0773a;
+  --buoy-700: #9a4718;
+  --mist-400: #a9b8b8;
+  --slate-600: #4a5b60;
+  --line-700: #2a3d45;
+  --line-200: #d5c9b0;
+  --surface: var(--depth-900);
+  --surface-raised: var(--depth-800);
+  --ink: var(--foam-100);
+  --ink-muted: var(--mist-400);
+  --accent: var(--buoy-500);
+  --accent-ink: var(--buoy-500);
+  --hairline: var(--line-700);
+  --water: var(--lagoon-500);
+}
+[data-theme="light"] {
+  --surface: var(--foam-100);
+  --surface-raised: var(--sand-200);
+  --ink: var(--depth-900);
+  --ink-muted: var(--slate-600);
+  --accent-ink: var(--buoy-700);
+  --hairline: var(--line-200);
+}
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-18: 72px;
+  --space-24: 96px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+  --font-display: "Red Hat Display", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Red Hat Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.hero {
+  font-family: var(--font-display);
+  font-size: 84px;
+  line-height: 84px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+}
+.title {
+  font-family: var(--font-display);
+  font-size: 56px;
+  line-height: 60px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.heading {
+  font-family: var(--font-display);
+  font-size: 32px;
+  line-height: 38px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+.wordmark {
+  font-family: var(--font-display);
+  font-size: 44px;
+  line-height: 44px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.body {
+  font-family: var(--font-display);
+  font-size: 18px;
+  line-height: 28px;
+  font-weight: 400;
+}
+.small {
+  font-family: var(--font-display);
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 400;
+}
+.label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+.code {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 400;
+}
+.category {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  line-height: 22px;
+  font-weight: 400;
+}

@@ -255,6 +255,7 @@ jobs:
           - vectors-kept
           - conflict-markers
           - settings
+          - brand-tokens
     name: gate (${{ matrix.gate }})
     steps:
       - uses: actions/checkout@v4
