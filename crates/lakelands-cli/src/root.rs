@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use lakelands_api::engine::OpenMode;
 use lakelands_api::id::LakeId;
-use lakelands_api::location::{EngineConfig, Location};
+use lakelands_api::location::{EngineConfig, Location, PgTlsMode};
 use lakelands_api::principal::{Grants, Principal, PrincipalKind};
 use lakelands_api::seam::{Credential, EmbedBackend, PrincipalResolver, Seams};
 use lakelands_server::HttpConfig;
@@ -160,11 +160,12 @@ fn canonical(path: &Path) -> PathBuf {
 fn write_new<T: Serialize>(file: &Path, value: &T) -> Result<(), Failure> {
     let mut text = serde_json::to_string_pretty(value).expect("configuration serialises");
     text.push('\n');
-    match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(file)
-    {
+    let mut open = fs::OpenOptions::new();
+    open.write(true).create_new(true);
+    // A location may hold a database password: its operator's alone.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+    match open.open(file) {
         Ok(mut f) => std::io::Write::write_all(&mut f, text.as_bytes()).map_err(|e| io(file, e)),
         Err(e) if e.kind() == ErrorKind::AlreadyExists => Err(Failure::new(
             format!("{} exists already; nothing was changed", show(file)),
@@ -179,6 +180,54 @@ fn io(p: &Path, e: std::io::Error) -> Failure {
         format!("could not use {}: {e}", show(p)),
         "check that the path exists and that you may read and write it",
     )
+}
+
+/// What `lake new --engine postgres` is given: the database's URL, which
+/// the location file then holds in plain text, and its schema and TLS.
+#[derive(Default)]
+pub struct PgNew {
+    pub url: Option<String>,
+    pub schema: Option<String>,
+    pub tls_disabled: bool,
+    pub ca_file: Option<PathBuf>,
+}
+
+impl PgNew {
+    /// Whether any member was given.
+    fn given(&self) -> bool {
+        self.url.is_some() || self.schema.is_some() || self.tls_disabled || self.ca_file.is_some()
+    }
+
+    /// The location of lake `id` in PostgreSQL, from what was given.
+    fn location(&self, id: &str) -> Result<Location, Failure> {
+        if !cfg!(feature = "pg") {
+            return Err(Failure::new(
+                "this build of lakelands has no PostgreSQL engine",
+                "build it with the `pg` feature, or choose `sqlite` or `memory`",
+            ));
+        }
+        let Some(url) = &self.url else {
+            return Err(Failure::new(
+                "a PostgreSQL lake needs `--url`",
+                "name the database, as `--url postgres://user@host/database`; the location file holds the URL, password included, as plain text",
+            ));
+        };
+        if self.tls_disabled && self.ca_file.is_some() {
+            return Err(Failure::new(
+                "`--no-tls` and `--ca-file` contradict each other",
+                "a CA file verifies a TLS connection: leave one of them out",
+            ));
+        }
+        let mut location = Location::postgres(id, url.clone());
+        if let EngineConfig::Postgres { schema, tls, .. } = &mut location.engine {
+            schema.clone_from(&self.schema);
+            if self.tls_disabled {
+                tls.mode = PgTlsMode::Disable;
+            }
+            tls.ca_file.clone_from(&self.ca_file);
+        }
+        Ok(location)
+    }
 }
 
 impl Root {
@@ -339,7 +388,7 @@ impl Root {
     }
 
     /// Write a new lake's location. Refuses to overwrite one.
-    pub fn new_lake(&self, id: &str, engine: &str) -> Result<Location, Failure> {
+    pub fn new_lake(&self, id: &str, engine: &str, pg: &PgNew) -> Result<Location, Failure> {
         let valid = lakelands_core::names::is_lake_id(id);
         if !valid {
             return Err(Failure::new(
@@ -347,16 +396,6 @@ impl Root {
                 "use up to 63 lower-case letters, digits, `-` and `_`, starting with a letter or a digit",
             ));
         }
-        let location = match engine {
-            "sqlite" => Location::sqlite(id, Path::new("lakes").join(id)),
-            "memory" => Location::memory(id),
-            other => {
-                return Err(Failure::new(
-                    format!("there is no engine `{other}`"),
-                    "choose `sqlite` (kept on disk) or `memory` (gone when the process ends)",
-                ));
-            }
-        };
         let file = self.lake_file(id);
         if file.exists() {
             return Err(Failure::new(
@@ -367,6 +406,25 @@ impl Root {
                 "choose another name, or keep working with the lake that is there",
             ));
         }
+        if engine != "postgres" && pg.given() {
+            return Err(Failure::new(
+                format!(
+                    "`--url`, `--schema`, `--no-tls` and `--ca-file` are for `postgres`, not `{engine}`"
+                ),
+                "leave them out, or choose `--engine postgres`",
+            ));
+        }
+        let location = match engine {
+            "sqlite" => Location::sqlite(id, Path::new("lakes").join(id)),
+            "memory" => Location::memory(id),
+            "postgres" => pg.location(id)?,
+            other => {
+                return Err(Failure::new(
+                    format!("there is no engine `{other}`"),
+                    "choose `sqlite` (kept on disk), `postgres` (in a database) or `memory` (gone when the process ends)",
+                ));
+            }
+        };
         fs::create_dir_all(self.dir.join("lakes")).map_err(|e| io(&self.dir, e))?;
         write_new(&file, &location)?;
         Ok(location)

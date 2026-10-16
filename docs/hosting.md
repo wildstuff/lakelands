@@ -24,8 +24,11 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   accepted when it
   passes the conformance suite.
 
-  A PostgreSQL lake's location file (`lakes/<id>.json` in a root; `lake
-  new` does not write one for PostgreSQL yet):
+  A PostgreSQL lake's location file (`lakes/<id>.json` in a root;
+  `lakelands lake new <id> --engine postgres --url <URL>` writes it,
+  with `--schema`, `--no-tls` and `--ca-file` for the members below, and
+  holds the URL, a password in it too, as plain text, so keep `lakes/`
+  to the operator; the first open tells whether the URL connects):
 
   ```json
   {
@@ -467,7 +470,7 @@ into a second root and compares the two feeds. From the CLI:
 ```sh
 lakelands --root old export --to /tmp/finance
 lakelands init new
-# write new/lakes/finance.json: the PostgreSQL location shown above
+lakelands --root new lake new finance --engine postgres --url postgres://...
 lakelands --root new import /tmp/finance
 ```
 
@@ -475,8 +478,8 @@ lakelands --root new import /tmp/finance
 read from the export's first event: a lake's name is inside every hash,
 so an import cannot rename it, and `--lake`, when given, must name the
 same lake. The lake's location must exist and the lake must hold
-nothing: `lakelands lake new <id>` writes a SQLite location and opens
-nothing, and a PostgreSQL location is written by hand. A lake kept in
+nothing: `lakelands lake new <id>` writes a SQLite location, and with
+`--engine postgres --url <URL>` a PostgreSQL one, and opens nothing. A lake kept in
 memory is refused, since it would end with the command's process. The
 command prints the lake, how many events and files it imported, the
 head and the head's hash, which is the last line of the old lake's
