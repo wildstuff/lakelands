@@ -10,6 +10,8 @@
 #   - a bare `#` followed by four or more digits. `lakelands#N` and full
 #     URLs are allowed; so are HTML character references (`&#8212;`) and
 #     colour literals in attribute or style position (`fill="#000000"`).
+# Exempt is exactly GitHub's own merge subject, the first line of a
+# commit message: "Merge pull request #N from <branch>", and nothing else.
 # This script is the only file that may spell the patterns out.
 . "$(dirname "$0")/lib.sh"
 
@@ -22,6 +24,11 @@ check() { # reads text on stdin, prints "<line>: <match>" per violation
             print "$.: $1\n";
         }
     '
+}
+
+# Blanks the number of GitHub's merge subject on line 1, keeping the line.
+merge_subject_out() {
+    perl -pe 's{^(Merge pull request )#[0-9]+( from \S+)$}{$1$2} if $. == 1'
 }
 
 # A checker that does not compile would find nothing and pass.
@@ -40,7 +47,7 @@ while IFS= read -r commit; do
     n=$((n + 1))
     while IFS= read -r hit; do
         fail "commit $(git log -1 --format='%h' "$commit") message line $hit"
-    done < <(git log -1 --format='%B' "$commit" | check)
+    done < <(git log -1 --format='%B' "$commit" | merge_subject_out | check)
 done < <(git rev-list "$range")
 
 verdict "$files file(s), $n commit message(s)"
