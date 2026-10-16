@@ -552,7 +552,6 @@ What a refusal is about.
 | `verb_type_no_version` | `verb` (VerbName), `type` (TypeName) | verb `{verb}` is called on the type `{type}`: there is no record version to compare | A verb on its type called with a version. |
 | `verb_type_takes_no_key` | `verb` (VerbName), `type` (TypeName) | verb `{verb}` is called on the type `{type}`, not on a record: it takes no key | A verb on its type called with a key. |
 | `verb_value_unfit` | `verb` (VerbName), `field` (FieldName) | verb `{verb}` computes a value that does not fit `{field}` | A verb's assignment computing what its field does not take. |
-| `window_links_already` | `from` (RecordKey), `to` (RecordKey), `relation` (RelationName), `cardinality` (Cardinality) | the window links `{from}` to `{to}` over `{relation}` already, and it allows one ({cardinality}) | Deprecated since 0.15.0 and never answered: a link one ingest window made already is refused as over the lake. |
 | `written_once` | `type` (TypeName), `key` (RecordKey) | `{type}` `{key}` is written once: its type is insert-only, and a record stands at the key, live or retired | An ingest of a record an insert-only type holds already. |
 | `write_changed_since_proposed` | `type` (TypeName), `key` (RecordKey, optional) | `{type}`[ `{key}`] changed since this write was proposed; propose it again | A pinned proposal's accept after its record or type changed. |
 | `writer_nul` | — | a principal's id holds no NUL character | A principal whose id holds a NUL. |
@@ -1048,6 +1047,7 @@ whose own page says its sentence.
 | `Unmocked::pattern_projection` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
 | `Unmocked::hops` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
 | `Unmocked::proposer` | v0.12.0 | 0.13.0 | it was said only inside `Case::mock_cannot` |
+| `Case::window_links_already` | v0.15.1 | 0.16.0 | it was deprecated since 0.15.0 and never answered: a link that breaks its relation's cardinality is answered `linked_already_from` / `linked_already_to` |
 
 ## Parameter types
 

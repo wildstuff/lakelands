@@ -1402,13 +1402,6 @@
    "verb": "v"
   },
   {
-   "cardinality": "one_to_one",
-   "code": "window_links_already",
-   "from": "k",
-   "relation": "r",
-   "to": "k"
-  },
-  {
    "code": "written_once",
    "key": "k",
    "type": "t"
