@@ -87,6 +87,9 @@ jobs:
       - run: cargo test --locked -p lakelands-cli -p lakelands-server
       - run: df -h /
       - run: cargo test --locked -p lakelands-cli -p lakelands-server -- --test-threads=1
+      # The CLI without its default features: the rows that only a build
+      # without the PostgreSQL client can run.
+      - run: cargo test --locked -p lakelands-cli --no-default-features --test cli lake_new_refuses_postgres
 
   # The engines come from conformance/roster, never from this file.
   roster:
