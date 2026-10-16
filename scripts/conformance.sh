@@ -69,11 +69,12 @@ for engine in ${engines[@]+"${engines[@]}"}; do
     echo "conformance: $engine runs ${tests[*]}"
     cargo nextest run --locked ${flags[@]+"${flags[@]}"} \
         -p "lakelands-engine-$engine" "${tests[@]}"
-    # The mirror's checks run on every engine the CLI carries; the
-    # workspace job has no server, so its PostgreSQL row runs here.
+    # The mirror's and `verify`'s checks run on every engine the CLI
+    # carries; the workspace job has no server, so their PostgreSQL rows
+    # run here.
     if needs_server "$engine"; then
-        echo "conformance: $engine runs the CLI's mirror checks"
-        cargo nextest run --locked -p lakelands-cli --test mirror
+        echo "conformance: $engine runs the CLI's mirror and verify checks"
+        cargo nextest run --locked -p lakelands-cli --test mirror --test verify
         # Last, once every test above has ended: none left its schema
         # behind (lakelands#1011). This holds only where this run owns the
         # database, as CI's job and a slot's own container running one

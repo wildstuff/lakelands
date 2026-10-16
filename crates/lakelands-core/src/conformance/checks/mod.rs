@@ -628,6 +628,7 @@ pub const ALL: &[Check] = &[
     export::ONE_FORMAT,
     export::ANOTHER_RELEASES,
     export::PROJECTION_AHEAD,
+    export::VERIFY_THROUGH,
     export::IMPORT_UNKNOWN_MEMBER,
     export::IMPORTED_VIEW_CYCLE,
     export::IMPORT_CONTEXT_CAUSE,

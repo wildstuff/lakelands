@@ -205,7 +205,7 @@ impl From<Error> for Failure {
             Error::Unavailable { situation }
                 if matches!(**situation, Situation::Damaged { .. }) =>
             {
-                "restore the lake's files from a backup; where the projection alone is damaged, \
+                "restore the lake from a backup; where the projection alone is damaged, \
                  `lakelands rebuild` makes it anew from the log"
                     .to_owned()
             }

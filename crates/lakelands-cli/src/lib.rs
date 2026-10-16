@@ -36,7 +36,7 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use lakelands_api::engine::OpenMode;
 use lakelands_api::error::{Error, Result};
 use lakelands_api::id::{LakeId, Position};
-use lakelands_api::location::Location;
+use lakelands_api::location::{EngineConfig, Location};
 use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, WriteContext};
 
@@ -289,6 +289,31 @@ fn command() -> Command {
                 ),
         )
         .subcommand(
+            Command::new("verify")
+                .about("Check the lake's log: every event's hash and every checkpoint; it only reads, beside a running serve")
+                .after_help(
+                    "Exit status: 0 the log holds; 1 the log is damaged, at the position the line \
+                     names where the log lets it; 2 the command line was not understood, or its \
+                     range is not one of the log (--from past --through or past the head); 3 the \
+                     log could not be checked (no lake yet, no projection, a memory lake, the \
+                     database unreachable, the storage failing).",
+                )
+                .arg(
+                    Arg::new("from")
+                        .long("from")
+                        .value_name("POSITION")
+                        .value_parser(clap::value_parser!(u64))
+                        .help("The first position to check (the log's first, if left out)"),
+                )
+                .arg(
+                    Arg::new("through")
+                        .long("through")
+                        .value_name("POSITION")
+                        .value_parser(clap::value_parser!(u64))
+                        .help("The last position to check (the head, if left out)"),
+                ),
+        )
+        .subcommand(
             Command::new("export")
                 .about("Write the lake's log as its segment files and a manifest; it only reads, beside a running serve")
                 .arg(
@@ -320,7 +345,8 @@ fn command() -> Command {
 
 /// Run one command line. Output goes to `out`, failures to `err`; the
 /// answer is the process's exit status: 0 done, 1 refused or failed,
-/// 2 the command line was not understood.
+/// 2 the command line was not understood. `verify` answers its own:
+/// 0 the log holds, 1 it is damaged, 3 it could not be checked.
 pub async fn run<I, T>(args: I, out: &mut dyn Write, err: &mut dyn Write, open: &Opener<'_>) -> u8
 where
     I: IntoIterator<Item = T>,
@@ -338,6 +364,9 @@ where
             return 0;
         }
     };
+    if m.subcommand_name() == Some("verify") {
+        return verify(&m, out, err, open).await;
+    }
     match dispatch(&m, out, open).await {
         Ok(()) => 0,
         Err(f) => {
@@ -503,6 +532,112 @@ async fn dispatch(
         "serve" => serve(&root, store, who, open).await,
         other => unreachable!("clap knows no command `{other}`"),
     }
+}
+
+/// Run `verify`: the lake's log checked from its first position or `--from`
+/// through its head or `--through`, opened only to read, so beside a
+/// `serve` that holds the writer. A lake whose open finds it damaged is
+/// answered as one `verify` finds damaged. Its exit status is its own: 0
+/// the log holds, 1 it is damaged, 3 it could not be checked.
+async fn verify(m: &ArgMatches, out: &mut dyn Write, err: &mut dyn Write, open: &Opener<'_>) -> u8 {
+    use lakelands_api::error::Situation;
+    // A failure on `err` and its exit status: 2 for what the command line
+    // asked, 3 where the log could not be checked.
+    let failed = |err: &mut dyn Write, f: Failure, code: u8| {
+        let _ = write!(err, "{f}");
+        code
+    };
+    let sub = m.subcommand_matches("verify").expect("the verify command");
+    let root_dir = PathBuf::from(m.get_one::<String>("root").map_or(".", String::as_str));
+    let root = match root::Root::open(&root_dir) {
+        Ok(root) => root,
+        Err(f) => return failed(err, f, 3),
+    };
+    let location = match root.location(sub.get_one::<String>("lake").map(String::as_str)) {
+        Ok(location) => location,
+        Err(f) => return failed(err, f, 3),
+    };
+    let lake = location.lake.clone();
+    if matches!(location.engine, EngineConfig::Memory) {
+        let what = format!(
+            "lake `{lake}` is kept in memory: a memory lake lives only in the process that runs \
+             it, so there is nothing to verify"
+        );
+        return failed(
+            err,
+            Failure::new(what, "verify a lake kept on disk or in a database"),
+            3,
+        );
+    }
+    let at = |id: &str| sub.get_one::<u64>(id).copied().map(Position);
+    if let (Some(from), Some(through)) = (at("from"), at("through"))
+        && from > through
+    {
+        let what = format!("--from {from} is past --through {through}");
+        return failed(
+            err,
+            Failure::new(what, "give a --from no later than --through"),
+            2,
+        );
+    }
+    // Read only: no lease taken, nothing appended, and a lake never
+    // opened is not made by checking it.
+    let checked = match open(location, OpenMode::Read, root.seams()).await {
+        Err(e) if matches!(e.situation(), Some(Situation::NoLake { .. })) => {
+            let what = format!("there is no lake `{lake}` to verify yet");
+            let todo = "a lake is made by the first command that writes to it";
+            return failed(err, Failure::new(what, todo), 3);
+        }
+        Err(e) if matches!(e.situation(), Some(Situation::NoProjection { .. })) => {
+            let what = format!("the log of lake `{lake}` is there, its projection is not");
+            let todo =
+                "`lakelands rebuild` makes the projection from the log; verify then reads it";
+            return failed(err, Failure::new(what, todo), 3);
+        }
+        Err(e) => Err(e),
+        Ok(store) => store.verify(at("from"), at("through")).await,
+    };
+    let said = match checked {
+        Ok(v) => vec![format!(
+            "lake `{lake}`: the log holds from position {} through {}: every event links to the \
+             one before it, and every checkpoint matches its segments (last hash {})",
+            v.from, v.through, v.hash.0
+        )],
+        Err(Error::Unavailable { situation })
+            if matches!(*situation, Situation::Damaged { .. }) =>
+        {
+            let Situation::Damaged { position, .. } = &*situation else {
+                unreachable!("matched as damaged")
+            };
+            let before = position
+                .map(|p| format!(" taken before position {p}"))
+                .unwrap_or_default();
+            let todo = format!(
+                "  what to do: restore the lake from a backup{before}; nothing was changed"
+            );
+            let lines = vec![format!("lake `{lake}`: {situation}"), todo];
+            for line in lines {
+                if writeln!(out, "{line}").is_err() {
+                    return 3;
+                }
+            }
+            return 1;
+        }
+        // A range past the head is the command line's.
+        Err(
+            e @ Error::Refused {
+                reason: lakelands_api::Refusal::OutOfRange { .. },
+                ..
+            },
+        ) => return failed(err, e.into(), 2),
+        Err(e) => return failed(err, e.into(), 3),
+    };
+    for line in said {
+        if writeln!(out, "{line}").is_err() {
+            return 3;
+        }
+    }
+    0
 }
 
 /// Whether `e` says the place holds no lake yet, or one whose making
