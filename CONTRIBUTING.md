@@ -102,7 +102,12 @@ Each is red when:
 - `records-resolve`: a path or pointer to a decision record names none;
 - `vectors-kept`: the test vectors or kept lakes of a shipped log format
   changed;
-- `conflict-markers`: a file holds an unresolved merge.
+- `conflict-markers`: a file holds an unresolved merge;
+- `settings`: `docs/settings.md` is not what the list of settings says
+  (`python3 scripts/settings.py --write` makes it), or a setting the
+  store reads is not in the list;
+- `brand-tokens`: `brand/tokens.css` is not what
+  `scripts/brand/tokens-css.pl` makes from `brand/tokens.json`.
 
 `scripts/gates/README.md` says exactly what each one reads, and each
 script's header states its rule.
