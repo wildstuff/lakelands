@@ -121,8 +121,9 @@ pub fn init(dir: &Path, owner: &str) -> Result<(), Failure> {
         mirror: None,
         keys: None,
     };
-    fs::create_dir_all(dir.join("lakes")).map_err(|e| io(dir, e))?;
-    write_new(&file, &config)
+    fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
+    write_new(&file, &config)?;
+    fs::create_dir_all(dir.join("lakes")).map_err(|e| io(dir, e))
 }
 
 /// `path` with its links followed and its `.` and `..` taken out: its

@@ -42,7 +42,7 @@ fn read(file: &Path) -> Result<String, Failure> {
     })
 }
 
-fn put(out: Out<'_>, line: impl std::fmt::Display) -> Result<(), Failure> {
+pub(crate) fn put(out: Out<'_>, line: impl std::fmt::Display) -> Result<(), Failure> {
     writeln!(out, "{line}").map_err(|e| {
         Failure::new(
             format!("could not write output: {e}"),
@@ -80,7 +80,18 @@ pub async fn apply(
             "name the directory that holds the bundle's types/, verbs/ and other lanes",
         ));
     }
-    let bundle = bundle::load_dir(dir).map_err(|problems| {
+    apply_bundle(out, catalog, who, bundle::load_dir(dir)).await
+}
+
+/// Apply a bundle as `apply` does, from what its loader answered: a
+/// directory's, or the files of an example this binary carries.
+pub async fn apply_bundle(
+    out: Out<'_>,
+    catalog: &dyn Catalog,
+    who: &Principal,
+    loaded: Result<bundle::Bundle, Vec<bundle::BundleError>>,
+) -> Result<(), Failure> {
+    let bundle = loaded.map_err(|problems| {
         // One `error:` line per problem; Failure prints the first prefix.
         let lines: Vec<String> = problems.iter().map(ToString::to_string).collect();
         Failure::new(
@@ -321,14 +332,14 @@ struct CsvMap {
 }
 
 /// The records of an NDJSON file, one per non-blank line.
-fn ndjson(file: &Path, text: &str) -> Result<Vec<SourceRecord>, Failure> {
+fn ndjson(file: &str, text: &str) -> Result<Vec<SourceRecord>, Failure> {
     text.lines()
         .enumerate()
         .filter(|(_, l)| !l.trim().is_empty())
         .map(|(n, l)| {
             serde_json::from_str(l).map_err(|e| {
                 Failure::new(
-                    format!("line {} of {} is not a source record: {e}", n + 1, file.display()),
+                    format!("line {} of {file} is not a source record: {e}", n + 1),
                     "each line must be one JSON object with `type`, `key` and `fields`; nothing was ingested",
                 )
             })
@@ -377,13 +388,12 @@ fn csv_rows(text: &str) -> Result<Vec<Vec<String>>, String> {
 async fn csv(
     catalog: &dyn Catalog,
     who: &Principal,
-    file: &Path,
-    text: &str,
-    map_file: &Path,
+    (file, text): (&str, &str),
+    (map_file, map): (&str, &str),
 ) -> Result<Vec<SourceRecord>, Failure> {
-    let map: CsvMap = serde_json::from_str(&read(map_file)?).map_err(|e| {
+    let map: CsvMap = serde_json::from_str(map).map_err(|e| {
         Failure::new(
-            format!("{} is not a column map: {e}", map_file.display()),
+            format!("{map_file} is not a column map: {e}"),
             "a map names `type`, the `key` column, and `fields` from column to field",
         )
     })?;
@@ -401,8 +411,7 @@ async fn csv(
             "correct the file and run the command again; nothing was ingested",
         )
     };
-    let mut rows =
-        csv_rows(text).map_err(|e| bad(format!("{} is not CSV: {e}", file.display())))?;
+    let mut rows = csv_rows(text).map_err(|e| bad(format!("{file} is not CSV: {e}")))?;
     if rows.is_empty() {
         return Ok(Vec::new());
     }
@@ -410,8 +419,7 @@ async fn csv(
     let column = |name: &str| {
         header.iter().position(|h| h == name).ok_or_else(|| {
             bad(format!(
-                "{} has no column `{name}`, which the map names",
-                file.display()
+                "{file} has no column `{name}`, which the map names"
             ))
         })
     };
@@ -506,9 +514,31 @@ pub async fn ingest(
     map: Option<&Path>,
 ) -> Result<(), Failure> {
     let text = read(file)?;
+    let map = match map {
+        Some(m) => Some((m.display().to_string(), read(m)?)),
+        None => None,
+    };
+    let map = map
+        .as_ref()
+        .map(|(name, text)| (name.as_str(), text.as_str()));
+    let file = (file.display().to_string(), text);
+    ingest_text(out, catalog, who, (&file.0, &file.1), source, map).await?;
+    Ok(())
+}
+
+/// Feed the lake as `ingest` does, from a file's name and text and, for
+/// CSV, its map's; answer the position the last window committed through.
+pub async fn ingest_text(
+    out: Out<'_>,
+    catalog: &dyn Catalog,
+    who: &Principal,
+    file: (&str, &str),
+    source: &str,
+    map: Option<(&str, &str)>,
+) -> Result<Option<Position>, Failure> {
     let records = match map {
-        Some(m) => csv(catalog, who, file, &text, m).await?,
-        None => ndjson(file, &text)?,
+        Some(m) => csv(catalog, who, file, m).await?,
+        None => ndjson(file.0, file.1)?,
     };
     let mut acks = catalog
         .ingest(
@@ -517,8 +547,10 @@ pub async fn ingest(
             Box::pin(Items(records.into_iter())),
         )
         .await?;
+    let mut through = None;
     while let Some(ack) = std::future::poll_fn(|cx| acks.as_mut().poll_next(cx)).await {
         let c = ack?;
+        through = Some(c.position);
         put(
             out,
             format!(
@@ -527,7 +559,7 @@ pub async fn ingest(
             ),
         )?;
     }
-    Ok(())
+    Ok(through)
 }
 
 /// `feed`: the change feed from a position, one event per line in the

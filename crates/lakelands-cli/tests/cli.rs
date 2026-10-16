@@ -294,18 +294,19 @@ fn init_help_says_where_the_root_comes_from() {
             &sh.raw(&["lakelands", "init", "-h"]),
             "Create a Lakelands root in a directory
 
-Usage: lakelands init [DIR] [--owner <ID>]
-       lakelands init --root <DIR> [--owner <ID>]
+Usage: lakelands init [DIR] [--owner <ID>] [--example [<NAME>]]
+       lakelands init --root <DIR> [--owner <ID>] [--example [<NAME>]]
 
 Arguments:
   [DIR]  The directory to hold the root; --root when left out
 
 Options:
-      --owner <ID>  The id recorded as the writer when you act as the owner [default: owner]
-      --root <DIR>  The Lakelands root to work in [default: .]
-      --as <NAME>   Act as this principal from the root's configuration instead of the owner
-      --lake <ID>   The lake to work on; may be left out when the root holds only one
-  -h, --help        Print help (see more with '--help')
+      --owner <ID>        The id recorded as the writer when you act as the owner [default: owner]
+      --root <DIR>        The Lakelands root to work in [default: .]
+      --as <NAME>         Act as this principal from the root's configuration instead of the owner
+      --example [<NAME>]  Make a lake from an example this binary carries, with an MCP configuration for it; without a name, list them
+      --lake <ID>         The lake to work on; may be left out when the root holds only one
+  -h, --help              Print help (see more with '--help')
 ",
         );
     }

@@ -185,13 +185,31 @@ terrain Lakelands is built for, and where it is not the right tool.
 
 ## Try it
 
-This follows the first walk (`docs/walks/walk-1.md`), whose example
-lake ships in `examples/liquidity/`. It runs on the SQLite engine, the
-default: a lake kept in memory lives only as long as its process, so a
-sequence of commands cannot walk one.
+With the `lakelands` binary from a release (or `cargo install --path
+crates/lakelands-cli`), one command makes the first walk's lake and
+connects Claude Code to it:
 
 ```sh
-cargo install --path crates/lakelands-cli    # or the binary from the release
+lakelands init walk --example liquidity
+cd walk && claude    # approve the server `lakelands` when it asks
+```
+
+Ask it: *which debtors are over their credit limit and more than 30 days
+overdue?* The agent finds the answer with the lake's generated tools
+(`invoice_find` with an aggregate, `partner_get` with provenance), and
+can pin an earlier position to ask what the lake knew last month. The
+command prints the walk's answers and that position.
+
+The example (`examples/liquidity/`) is inside the binary, so nothing is
+fetched. `init` writes `walk/.mcp.json`, Claude Code's project
+configuration, whose server is the binary that ran it; a `.mcp.json`
+that is there already is left as it is, and the command prints the entry
+to add. For any other MCP client it prints the server's command line.
+
+What it does, as the seven commands of the first walk
+(`docs/walks/walk-1.md`) on the SQLite engine, from a checkout:
+
+```sh
 lakelands init walk && cd walk
 lakelands lake new liquidity
 lakelands apply ../examples/liquidity
@@ -200,7 +218,6 @@ lakelands ingest $d/partners.csv --source crm --map $d/partners.map.json
 lakelands ingest $d/invoices-august.csv --source erp --map $d/invoices.map.json
 lakelands ingest $d/invoices-september.csv --source erp --map $d/invoices.map.json
 lakelands serve --mcp                        # point an MCP client at this command
-# Ask it: which debtors are over their credit limit and more than 30 days overdue?
 lakelands verify                             # every event's hash and every checkpoint, beside the serve
 ```
 
@@ -213,10 +230,7 @@ database unreachable). A lake's open does not read the whole chain: a
 line of the log changed by hand at its own length, before its last
 append, opens and is written on, and only `verify` finds it.
 
-The agent finds the answer with the lake's generated tools
-(`invoice_find` with an aggregate, `partner_get` with provenance), and
-can pin an earlier position to ask what the lake knew last month. The
-walk's page lists every call and the answer it must give.
+The walk's page lists every call and the answer it must give.
 
 ## Read further
 
