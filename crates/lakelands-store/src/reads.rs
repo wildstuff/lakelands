@@ -1071,8 +1071,9 @@ impl<'a> Reader<'a> {
             .collect();
         let links = |s: &&TypeName| lakelands_core::links::is_link_type(s) || self.computes(s);
         // To a reader the settings are narrowed to, a view that names a
-        // setting, or reads `sys.setting` or a view computed for it.
-        let narrowed = self.sight.narrows(&SETTING.into());
+        // setting, or reads `sys.setting` or a view computed for it: one
+        // told them otherwise than whole ([`Self::told`]).
+        let narrowed = !std::ptr::eq(self.told(), &self.shape.settings);
         let settings = |s: &&TypeName| {
             s.as_str() == SETTING || (find(s).is_some_and(|d| d.view.is_some()) && self.computes(s))
         };
@@ -1181,11 +1182,13 @@ impl<'a> Reader<'a> {
         let host: Vec<_> = host.collect();
         if self.who.grants.schema {
             // A setting of a type it is not shown, or naming a field it
-            // does not read, is told as were the type or the field absent.
+            // does not read, is told as were the type or the field absent,
+            // and one for a source only where nothing is held from it.
             let shown = |ty: &str| self.sight.ty(&ty.into()).is_ok();
             let reads = |ty: &str, f: &str| self.sight.reads(&ty.into(), &f.into());
             let told = lakelands_api::settings::told(&self.shape.settings).into_iter();
             lake.settings = told
+                .filter(|s| self.sight.setting_told(&s.key))
                 .filter_map(|s| lakelands_api::settings::seen(s, &shown, &reads))
                 .collect();
         }

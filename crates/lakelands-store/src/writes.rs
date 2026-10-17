@@ -386,6 +386,14 @@ pub(crate) fn refused(reason: Refusal) -> Error {
     Error::Refused { field, reason }
 }
 
+/// Refuse a write or retire of a setting its writer is not told whether it
+/// exists, a source's (063), before anything of it is read: the same in a
+/// lake that holds it and in one that does not, a proposal's and an
+/// ingest's too.
+pub(crate) fn untold_setting(sees: &Sight<'_>, decl: &TypeDecl, key: &RecordKey) -> Result<()> {
+    granted(decl.name.as_str() != SETTING_TYPE || sees.setting_told(key.as_str()))
+}
+
 /// Refuse as not granted unless `ok`.
 pub(crate) fn granted(ok: bool) -> Result<()> {
     if ok {
@@ -2506,6 +2514,7 @@ impl Decide<'_> {
         let decl = self.w.ontology.ty(ty)?;
         rights::not_a_view(decl)?;
         granted(rights::may_retire(self.who, decl))?;
+        untold_setting(&Sight::held(self.who, &self.w.ontology), decl, key)?;
         let before = self.reached(decl, key, expected)?;
         // A setting naming what its writer is not told keeps that: the rest
         // of it is cleared, and the setting is not told to it after (063).
@@ -2752,6 +2761,7 @@ impl Decide<'_> {
     ) -> Result<RecordPlan> {
         let (w, view, who) = (self.w, self.view, self.who);
         let sees = Sight::held(who, &w.ontology);
+        untold_setting(&sees, decl, key)?;
         // A holder of `only` is judged against the record it owns at the
         // key: another's is, to its write, a key that is free, refused
         // only once every check has passed, so no probe tells them apart
@@ -2993,8 +3003,9 @@ impl Decide<'_> {
         let (Some(sealed), Some(source), true) = (&d.sealed, d.source.as_ref(), ingested) else {
             return Ok(None);
         };
-        let used = (source, &sealed.key, self.next);
-        crate::sealing::first_use(&self.pending.sealed, self.view, used)
+        let used = (source, &sealed.key, self.next, self.now);
+        let read = (&self.pending.sealed, self.view, &*self.call.lake.keys);
+        crate::sealing::first_use(read, used)
     }
 
     /// A planned record write with what it sets off: its own event, which
@@ -3426,12 +3437,16 @@ impl Call<'_> {
         // A holder of `only` changes no shape, and proposes no write that
         // anything but the write itself could move off its pairs (051).
         granted(!write.is_schema() || !rights::holds_only(self.who))?;
-        // A setting its proposer is told narrowed is proposed merged with
-        // what stands then, so its accept is refused once that changed (063).
+        // A setting its proposer may be told narrowed, as one who does not
+        // read every field may, is proposed merged with what stands then,
+        // so its accept is refused once that changed (063). A source's
+        // setting is refused whole to one not told it, so nothing is merged
+        // into it.
         let pin = |ty: &TypeName| {
             ordinary_door(ty)?;
             let sees = Sight::held(self.who, &w.ontology);
-            Ok::<_, Error>(self.pin(&w, sees.ty(ty)?, None)? || sees.narrows(ty))
+            let narrowed = sees.narrows(ty) && !rights::reads_all(self.who);
+            Ok::<_, Error>(self.pin(&w, sees.ty(ty)?, None)? || narrowed)
         };
         let mut d = self.decide(&w, view.as_ref(), now, 1);
         let mut pinned = false;

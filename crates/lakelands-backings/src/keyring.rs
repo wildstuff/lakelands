@@ -8,8 +8,9 @@
 //! hex, and whether the source's keys were destroyed. It is written whole,
 //! to a file beside it that then takes its name, readable by its owner
 //! alone. A destroyed source keeps its entry with no key, so it is never
-//! given one again. A backup of the directory restores what it held: only
-//! the operator can keep backups honest.
+//! given one again; a destroyed version goes with every older one, and
+//! the file keeps those after it. A backup of the directory restores
+//! what it held: only the operator can keep backups honest.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -178,6 +179,24 @@ impl KeyStore for FileKeyring {
             let versions = ring.sources.entry(source.clone()).or_default();
             versions.keys.clear();
             versions.destroyed = true;
+            Ok(())
+        })
+    }
+
+    fn destroy_version(&self, lake: &LakeId, source: &SourceId, id: &KeyId) -> Result<()> {
+        self.change(lake, |ring| {
+            let keys = ring.sources.get_mut(source).map(|v| &mut v.keys);
+            let at = keys
+                .as_ref()
+                .and_then(|k| k.iter().position(|(i, _)| i == id));
+            let (Some(keys), Some(i)) = (keys, at) else {
+                let (source, key) = (source.clone(), id.clone());
+                return Err(lakelands_core::invalid(Case::KeyVersionNotHeld {
+                    source,
+                    key,
+                }));
+            };
+            keys.drain(..=i).for_each(|(_, mut key)| key.zeroize());
             Ok(())
         })
     }

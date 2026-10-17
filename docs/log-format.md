@@ -239,8 +239,10 @@ version, which the key store answers by.
   oldest of the versions that sealed the values the call reads. A
   value's version is the one its event names in `sealed`. A source seals
   with the newest version its key store holds when it is first needed,
-  and a store without the newest the log used is refused, so the
-  versions a source seals with only rise. The fold therefore keeps each
+  and with a new one the key store makes at its first value past the
+  start of each of its key periods (`key_period`), and a store without
+  the newest the log used is refused, so the versions a source seals
+  with only rise. The fold therefore keeps each
   version with the position of its first use, and a value's version is
   the last first used at or before its position. So a rebuild finds the
   output again whatever the key store holds now, and the output lives

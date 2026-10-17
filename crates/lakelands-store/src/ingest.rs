@@ -46,7 +46,7 @@ use lakelands_core::rights::Door;
 use crate::exec;
 use crate::lake::{Lake, Reads, Writer};
 use crate::log::{self, Draft};
-use crate::sealing::{USED, used_by, versions};
+use crate::sealing::turns;
 use crate::writes::Call;
 use lakelands_core::{canonical, links};
 
@@ -194,6 +194,7 @@ fn judge(
     for (i, r) in records.iter().enumerate() {
         let judged = (|| {
             let decl = sees.ty(&r.ty)?;
+            crate::writes::untold_setting(&sees, decl, &r.key)?;
             // The key's form before the door, as `upsert` checks it. Then the
             // door: a patch that carries a field the source is not the
             // authority on is refused whole, even when that field's value is
@@ -232,12 +233,13 @@ fn judge(
                 .map(|f| f.name.clone())
                 .collect();
             fields.sort();
-            let used = |s| view.output(USED, &used_by(s));
             let sealing = match fields.is_empty() {
                 true => None,
                 false => {
-                    let used = versions(used(source)?.map(|(_, v)| v).as_ref());
-                    Some(lake.keys.sealing(source, &used)?)
+                    let list = lake.keys.listed(view, source)?;
+                    let rotate = turns(&w.settings, list.as_deref(), source, now);
+                    let newest = list.as_ref().and_then(|l| l.firsts.last());
+                    Some(lake.keys.sealing(source, newest.map(|(k, _)| k), rotate)?)
                 }
             };
             let sealed = (sealing.as_ref()).map(|(key, _)| Sealed {

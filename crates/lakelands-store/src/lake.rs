@@ -1733,8 +1733,9 @@ impl Lake {
         if let (EventBody::RecordIngested { .. }, Some(sealed), Some(source)) =
             (&e.body, &e.sealed, &e.source)
         {
-            let used = (source, &sealed.key, e.position);
-            if let Some((at, list)) = crate::sealing::first_use(&staged.outputs, view, used)? {
+            let used = (source, &sealed.key, e.position, e.known_at);
+            let read = (&staged.outputs, view, &*self.keys);
+            if let Some((at, list)) = crate::sealing::first_use(read, used)? {
                 projection.put_output(&at.0, &at.1, &list, e.position)?;
                 staged
                     .outputs
@@ -2222,9 +2223,11 @@ impl Lake {
 
     /// [`Self::rebuild`], under the writer's lock its caller holds.
     fn rebuild_held(&self, w: &mut Writer) -> Result<()> {
-        // No shape is kept from here until the fold is whole again.
+        // No shape is kept from here until the fold is whole again, and no
+        // list of a source's versions.
         self.rebuilds.fetch_add(1, Ordering::SeqCst);
         lakelands_core::lock(&self.shapes).clear();
+        self.keys.unlist();
         let folded = (|| {
             self.engine.projection().clear()?;
             w.ontology = Ontology::default().named();
@@ -2241,6 +2244,7 @@ impl Lake {
         })();
         self.rebuilds.fetch_add(1, Ordering::SeqCst);
         lakelands_core::lock(&self.shapes).clear();
+        self.keys.unlist();
         folded?;
         // Everything the log holds is folded again: the head is its tip.
         self.publish(w);

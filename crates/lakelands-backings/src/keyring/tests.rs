@@ -105,3 +105,35 @@ fn the_kept_lakes_key_file_is_read_as_written() {
             .is_empty()
     );
 }
+
+/// A version destroyed goes with every older one, from another keyring
+/// over the same directory too; the newer ones still open, a version not
+/// held is refused, and the source is given a key again.
+#[test]
+fn a_destroyed_version_takes_the_older_ones_and_leaves_the_newer() {
+    let dir = scratch("version");
+    let (lake, crm) = (LakeId::from("orders"), SourceId::from("crm"));
+    let ring = FileKeyring::new(&dir);
+    let ids: Vec<_> = (0..3).map(|_| ring.create(&lake, &crm).unwrap()).collect();
+    let newest = ring.key(&lake, &crm, &ids[2]).unwrap().unwrap().0;
+    ring.destroy_version(&lake, &crm, &ids[1]).unwrap();
+    let again = FileKeyring::new(&dir);
+    assert_eq!(again.ids(&lake, &crm).unwrap(), [ids[2].clone()]);
+    assert!(again.key(&lake, &crm, &ids[0]).unwrap().is_none());
+    assert!(again.key(&lake, &crm, &ids[1]).unwrap().is_none());
+    assert_eq!(again.key(&lake, &crm, &ids[2]).unwrap().unwrap().0, newest);
+    for (source, id) in [(&crm, &ids[0]), (&SourceId::from("erp"), &ids[2])] {
+        let refused = again.destroy_version(&lake, source, id).unwrap_err();
+        let not_held = matches!(
+            refused.case().map(|s| &s.case),
+            Some(Case::KeyVersionNotHeld { .. })
+        );
+        assert!(not_held, "{refused}");
+    }
+    assert_eq!(again.ids(&lake, &crm).unwrap(), [ids[2].clone()]);
+    again.destroy_version(&lake, &crm, &ids[2]).unwrap();
+    assert!(again.ids(&lake, &crm).unwrap().is_empty());
+    let next = again.create(&lake, &crm).unwrap();
+    assert_eq!(again.ids(&lake, &crm).unwrap(), [next]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -1365,6 +1365,11 @@
    "source": "src"
   },
   {
+   "code": "key_version_not_held",
+   "key": "1",
+   "source": "src"
+  },
+  {
    "code": "source_id_form"
   },
   {
@@ -1522,6 +1527,9 @@
   },
   {
    "code": "setting_kept_holds"
+  },
+  {
+   "code": "setting_key_period"
   },
   {
    "code": "setting_unlisted",

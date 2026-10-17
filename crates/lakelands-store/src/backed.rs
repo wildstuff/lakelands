@@ -170,6 +170,25 @@ impl Outputs<'_> {
         }
     }
 
+    /// The list [`crate::sealing::USED`] keeps for `source`: the
+    /// transaction's last the reader may read, else the view's, read once
+    /// a position where the reader has the keys ([`Keys::listed`]).
+    ///
+    /// [`Keys::listed`]: crate::sealing::Keys::listed
+    fn used(&self, source: &lakelands_api::SourceId) -> Result<Option<Arc<crate::sealing::List>>> {
+        use crate::sealing::{List, USED, used_by};
+        let input = used_by(source);
+        let staged = (self.staged).and_then(|s| s.get(&(USED.to_owned(), input.clone())));
+        let read = |(at, _): &&(Position, Value)| self.before.is_none_or(|before| *at < before);
+        if let Some((_, v)) = staged.and_then(|all| all.iter().rev().find(read)) {
+            return Ok(Some(Arc::new(List::of(v.clone()))));
+        }
+        match self.keys {
+            Some(keys) => keys.listed(self.view, source),
+            None => Ok((self.view.output(USED, &input)?).map(|(_, v)| Arc::new(List::of(v)))),
+        }
+    }
+
     /// What the lake recorded for a call, if anything: the transaction's
     /// last recording the reader may read, else the view's.
     fn recorded(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
@@ -442,15 +461,15 @@ fn input_of(
             Input::Plain(digest(call))
         });
     };
-    let used = outputs.recorded(crate::sealing::USED, &crate::sealing::used_by(&source))?;
-    let firsts = crate::sealing::firsts(used.as_ref());
+    let list = outputs.used(&source)?;
+    let firsts = list.as_ref().map_or(&[][..], |l| &l.firsts[..]);
     let sealing = (event.sealed.as_ref())
         .filter(|_| matches!(event.body, EventBody::RecordIngested { .. }))
         .filter(|s| s.source.as_ref().or(event.source.as_ref()) == Some(&source))
         .map(|s| &s.key);
     let rank = |k: &&lakelands_api::id::KeyId| firsts.iter().position(|(f, _)| f == *k);
     let oldest = (read.iter())
-        .filter_map(|p| crate::sealing::sealed_at(&firsts, *p))
+        .filter_map(|p| crate::sealing::sealed_at(firsts, *p))
         .min_by_key(rank);
     let first = firsts.first().map(|(k, _)| k);
     let Some(key) = version.or(oldest).or(first).or(sealing).cloned() else {
