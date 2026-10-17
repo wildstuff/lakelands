@@ -173,6 +173,11 @@ pub const SETTINGS: &[Setting] = &[
         ..location("limits.max_set_changes", "20000")
     },
     Setting {
+        range: "a count",
+        says: "The largest `top` a search's `rerank` may ask for; a larger one is refused, naming this setting.",
+        ..location("limits.max_rerank_top", "100")
+    },
+    Setting {
         range: "KiB",
         says: "SQLite: the writer connection's page cache.",
         ..location("engine.tuning.writer_cache_kb", "65536")

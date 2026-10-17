@@ -1195,6 +1195,14 @@ catalog! {
         MeasureNoWhere { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `where`",
         /// A `model` on a hybrid search that brings no query vector.
         ModelWithoutVector => "`model` names the model of a query vector the search brings, and it brings no `vector`; where the field is an embedding, the lake makes that one itself, with that model",
+        /// A `rerank` whose `top` is 0.
+        RerankTopZero => "`rerank.top` is how many of the search's first hits the second stage ranks, and it is 1 at least",
+        /// A `rerank` whose `top` is above the lake's bound.
+        RerankTopAbove { max: u32 } => "`rerank.top` is above the lake's `limits.max_rerank_top`, {max}; ask for a window of at most {max}, or raise the setting in the lake's location",
+        /// A `rerank` of a vector search that gives no text.
+        RerankNeedsText => "a vector search has no text for the second stage to rank against; give `rerank.text`",
+        /// A start's `rerank` beside no `search`.
+        RerankWithoutSearch => "`rerank` is the second stage of a search, and the start has no `search`",
         /// A step over a relation no type declares, where the start names
         /// no type.
         NoRelationAnywhere { relation: RelationName } => "no type has a relation `{relation}` to walk",

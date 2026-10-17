@@ -1007,6 +1007,19 @@
    "code": "model_without_vector"
   },
   {
+   "code": "rerank_top_zero"
+  },
+  {
+   "code": "rerank_top_above",
+   "max": 1
+  },
+  {
+   "code": "rerank_needs_text"
+  },
+  {
+   "code": "rerank_without_search"
+  },
+  {
    "code": "no_relation_anywhere",
    "relation": "r"
   },

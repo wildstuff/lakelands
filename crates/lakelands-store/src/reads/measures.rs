@@ -265,6 +265,9 @@ impl Reader<'_> {
         (offset, after): (usize, Option<super::SortKey>),
         params: Params,
     ) -> Cursor {
+        let staged = (p.start.rerank.as_ref())
+            .and_then(|_| self.second.borrow().decided.clone())
+            .unwrap_or_default();
         encode(&CursorState {
             at: self.position,
             after,
@@ -274,6 +277,8 @@ impl Reader<'_> {
             ty: p.start.ty.clone(),
             of: super::pattern_read(p),
             now: Some(self.now),
+            staged,
+            model: None,
         })
     }
 

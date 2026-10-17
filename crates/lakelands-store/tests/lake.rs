@@ -1573,6 +1573,7 @@ async fn a_filtered_search_pulls_until_its_page_is_full() {
         filter: Some(Condition::from("n >= 295")),
         with_meta: false,
         at: ReadAt::default(),
+        rerank: None,
     };
     let first = cat.search(&o, search(None)).await.unwrap().data;
     assert_eq!(
@@ -1663,6 +1664,7 @@ async fn a_hybrid_search_embeds_its_text_through_the_bound_backend() {
                 filter: None,
                 with_meta: false,
                 at: ReadAt::default(),
+                rerank: None,
             },
         )
         .await
@@ -2553,6 +2555,7 @@ async fn search_finds_a_restricted_record_only_with_the_grant() {
         filter: None,
         with_meta: false,
         at: ReadAt::default(),
+        rerank: None,
     };
     let with = cat.search(&o, search()).await.unwrap().data;
     assert_eq!(with.hits.len(), 1, "the restricted grant finds it");
@@ -2813,6 +2816,7 @@ async fn another_model_bound_later_is_unbound_for_search_and_makes_no_embedding(
                 filter: None,
                 with_meta: false,
                 at: ReadAt::default(),
+                rerank: None,
             },
         )
         .await;
@@ -2853,6 +2857,7 @@ async fn another_model_bound_later_is_unbound_for_search_and_makes_no_embedding(
                 filter: None,
                 with_meta: false,
                 at: ReadAt::default(),
+                rerank: None,
             },
         )
         .await;

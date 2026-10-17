@@ -737,6 +737,7 @@ pub fn pattern(ty: &str, key: Option<&str>, steps: Vec<Step>, project: Projectio
             search: None,
             params: Default::default(),
             named: None,
+            rerank: None,
         },
         steps,
         to: None,

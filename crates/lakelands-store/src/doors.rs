@@ -144,6 +144,61 @@ fn reading<T>(
 }
 
 impl Doors {
+    /// What the bound reranker scores a window at, by key. A read: nothing
+    /// is recorded, and a window with no candidate asks nothing. A failure,
+    /// or other scores than candidates, is `Unavailable`; the stage is
+    /// never skipped for the first stage's order (067). With the scores and
+    /// the model, the read that ranks by them: at the window's position and
+    /// on its clock, so that both read one window.
+    async fn rerank(
+        &self,
+        at: Clocked,
+        window: Reply<crate::reads::Window>,
+    ) -> Result<((crate::reads::Scores, Option<String>), Clocked)> {
+        let Some(stage) = self.lake.rerank() else {
+            return Err(Error::unbound(Seam::Rerank));
+        };
+        let (position, window) = (window.position, window.data);
+        let pinned = (
+            ReadAt {
+                as_of: Some(position),
+                ..at.0
+            },
+            Some(window.now),
+        );
+        let model = Some(stage.model().to_owned());
+        if window.candidates.is_empty() {
+            return Ok(((Default::default(), model), pinned));
+        }
+        let keys: Vec<_> = window.candidates.iter().map(|c| c.key.clone()).collect();
+        let call = lakelands_api::seam::RerankCall {
+            lake: self.lake.id.clone(),
+            ty: window.ty,
+            query: window.query,
+            candidates: window.candidates,
+        };
+        let failed = |exchange| {
+            let remote = Remote::Reranker {
+                model: stage.model().to_owned(),
+            };
+            Error::unavailable(Situation::Remote { remote, exchange })
+        };
+        let scores = (stage.rerank(&call).await).map_err(|e| match e {
+            e @ Error::Unavailable { .. } => e,
+            other => failed(Exchange::Failed {
+                cause: Box::new(other),
+            }),
+        })?;
+        if scores.len() != keys.len() {
+            let (answered, asked) = (scores.len() as u64, keys.len() as u64);
+            return Err(failed(Exchange::Scores { answered, asked }));
+        }
+        if scores.iter().any(|s| !s.is_finite()) {
+            return Err(failed(Exchange::ScoreNotFinite));
+        }
+        Ok(((keys.into_iter().zip(scores).collect(), model), pinned))
+    }
+
     async fn read<T, F>(&self, who: &Principal, at: Clocked, f: F) -> Result<Reply<T>>
     where
         T: Send + 'static,
@@ -495,8 +550,22 @@ impl Catalog for Doors {
         let at = cursor_at(pattern.at, pattern.cursor.as_ref())?;
         // A start by search ranks as `search` does (025).
         let ranks = pattern.start.search.is_some();
-        self.read_to(who, at, ranks, move |r, pulled| r.query(&pattern, pulled))
-            .await
+        // A start with a second stage ranks its window through the bound
+        // reranker on a first page, as `search` does (067).
+        let (mut at, mut scores) = (at, None);
+        if pattern.start.rerank.is_some() && pattern.cursor.is_none() {
+            let p = pattern.clone();
+            let window = self.read_to(who, at, true, move |r, pulled| r.query_window(&p, pulled));
+            let (scored, pinned) = self.rerank(at, window.await?).await?;
+            (scores, at) = (Some(scored), pinned);
+        }
+        self.read_to(who, at, ranks, move |r, pulled| {
+            if let Some((scores, model)) = &scores {
+                r.stage(scores.clone(), model.clone());
+            }
+            r.query(&pattern, pulled)
+        })
+        .await
     }
 
     async fn search(&self, who: &Principal, mut search: Search) -> Result<Reply<Hits>> {
@@ -582,8 +651,22 @@ impl Catalog for Doors {
             }
             *vector = vectors.pop();
         }
-        self.read_to(who, at, true, move |r, pulled| r.search(&search, pulled))
-            .await
+        // The second stage ranks a window of the first on a first page, and
+        // a cursor carries its order after (067).
+        let (mut at, mut scores) = (at, None);
+        if search.rerank.is_some() && search.cursor.is_none() {
+            let s = search.clone();
+            let window = self.read_to(who, at, true, move |r, pulled| r.rerank_window(&s, pulled));
+            let (scored, pinned) = self.rerank(at, window.await?).await?;
+            (scores, at) = (Some(scored), pinned);
+        }
+        self.read_to(who, at, true, move |r, pulled| {
+            if let Some((scores, model)) = &scores {
+                r.stage(scores.clone(), model.clone());
+            }
+            r.search(&search, pulled)
+        })
+        .await
     }
 
     async fn propose(&self, who: &Principal, write: ProposedWrite, why: String) -> Result<Outcome> {
@@ -916,6 +999,11 @@ impl LakeStore for Store {
 
     fn bind_embed(&self, backend: Arc<dyn lakelands_api::seam::EmbedBackend>) -> Result<()> {
         self.lake.bind_embed(backend);
+        Ok(())
+    }
+
+    fn bind_rerank(&self, backend: Arc<dyn lakelands_api::seam::Reranker>) -> Result<()> {
+        self.lake.bind_rerank(backend);
         Ok(())
     }
 

@@ -354,6 +354,8 @@ catalog! {
         KeyStore => "a key store, which seals a source's values of an erasable field (the host bound none)",
         /// A key store that destroys a version of a source's key with those before it.
         KeyVersions => "a key store that destroys a version of a source's key with every older one (the bound one destroys only a whole source's)",
+        /// A reranker, the second stage of a search.
+        Rerank => "a reranker, the second stage of a search (the host bound none)",
         /// A vector index, which this engine keeps none of.
         VectorIndex => "a vector index (this engine keeps none)",
         /// An engine, whose opener was not passed in.
@@ -540,6 +542,8 @@ catalog! {
     pub enum Remote {
         /// The embedding backend of a model.
         Embedding { model: String } => "the embedding backend `{model}`",
+        /// The reranker of a lake.
+        Reranker { model: String } => "the reranker `{model}`",
         /// A verb's executor.
         Executor { name: String } => "the verb executor `{name}`",
         /// A function's backing.
@@ -597,6 +601,10 @@ catalog! {
         NotSent => "cannot be sent this request",
         /// It answered other vectors than texts asked.
         Vectors { answered: u64, asked: u64 } => "answered {answered} vectors for {asked} texts",
+        /// It answered other scores than candidates asked.
+        Scores { answered: u64, asked: u64 } => "answered {answered} scores for {asked} candidates",
+        /// It answered a score that is not a number.
+        ScoreNotFinite => "answered a score that is not a finite number",
         /// It answered a vector with no direction to rank along.
         NoDirection { why: Aimless } => "answered a vector that {why}",
         /// It answered what is not JSON.

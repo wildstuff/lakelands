@@ -154,6 +154,7 @@ async fn a_type_made_of_another_is_shown_only_with_it(store: Store) -> Held {
             filter: None,
             with_meta: false,
             at: Default::default(),
+            rerank: None,
         };
         // A walk's answer; "no relation" where it is the answer for none, alike.
         let walk = |from: &'static str, key: &'static str, by: &'static str| async move {

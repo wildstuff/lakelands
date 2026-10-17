@@ -106,6 +106,7 @@ async fn search_of(
         filter: filter.map(Into::into),
         with_meta: false,
         at: read_at(at),
+        rerank: None,
     };
     let got = doors(store).search(who, s).await?;
     let scored = |h: &lakelands_api::query::Hit| {

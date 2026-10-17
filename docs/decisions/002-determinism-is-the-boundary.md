@@ -85,3 +85,6 @@ narrow contract that a host implements.
   declaration in force appends none (lakelands#565).
 - An output the log holds is named by its position, not carried again
   (lakelands#663).
+- A reranker's call is a read: it records nothing, and a replay never makes
+  one (`docs/decisions/067-a-search-may-take-a-second-stage.md`,
+  lakelands#993).

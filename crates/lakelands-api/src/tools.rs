@@ -153,6 +153,16 @@ const SUBSCRIBE: &str = "subscribe";
 const UNSUBSCRIBE: &str = "unsubscribe";
 const QUERY: &str = "query";
 const SEARCH: &str = "search";
+
+/// The second stage a search or a pattern's start asks for.
+fn rerank_schema() -> Value {
+    json!({"type": "object", "properties": {
+        "top": {"type": "integer", "minimum": 1,
+                "description": "How many of the first hits the lake's reranker ranks again, at most the lake's `limits.max_rerank_top`; the answer ends at this window."},
+        "text": {"type": "string",
+                 "description": "What the window is ranked against; the search's own text when left out, so a vector search must give it."}},
+        "required": ["top"]})
+}
 const PROPOSE: &str = "propose";
 const PROPOSALS: &str = "proposals";
 const ACCEPT: &str = "accept";
@@ -1099,6 +1109,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 json!({"type": "object", "properties": {
                     "type": names(|t| t.may.find), "key": {"type": "string"},
                     "where": {"type": "string"}, "search": {"type": "object"},
+                    "rerank": rerank_schema(),
                     "params": {"type": "object",
                                "description": "The parameters of a view the pattern starts on, by name."},
                     "as": {"type": "string", "description": BINDING}}}),
@@ -1179,15 +1190,17 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             ("k", json!({"type": "integer", "minimum": 1})),
             ("cursor", json!({"type": "string"})),
             ("where", json!({"type": "string"})),
+            ("rerank", rerank_schema()),
             ("with_meta", json!({"type": "boolean"})),
         ]);
         time_axes(&mut p);
         out.push(ToolSpec {
             name: SEARCH.into(),
-            description: "Ranked search over one type, lexical, by vector or both. Hits come best first, each with a score; page with `cursor`.".into(),
+            description: "Ranked search over one type, lexical, by vector or both. Hits come best first, each with a score; page with `cursor`. With `rerank` the lake's reranker ranks the first `top` hits again and the answer ends at that window.".into(),
             input_schema: obj(p, &["type", "mode"]),
             output_schema: reply_schema(json!({"type": "object", "properties": {
                 "hits": {"type": "array"}, "ranked_by": {"type": "string"},
+                "truncated": {"type": "boolean", "description": "A reranked search only: the first stage holds more hits than the window, unranked and not answered."},
                 "axes": {"type": "array"}, "next_cursor": {"type": "string"}}})),
             door: Door::Search,
         });

@@ -120,6 +120,13 @@ The most memberships one declaration of an object set may change over the record
 - **Takes:** a count.
 - **Default:** `20000`.
 
+### `limits.max_rerank_top`
+
+The largest `top` a search's `rerank` may ask for; a larger one is refused, naming this setting.
+
+- **Takes:** a count.
+- **Default:** `100`.
+
 ### `engine.tuning.writer_cache_kb`
 
 SQLite: the writer connection's page cache.

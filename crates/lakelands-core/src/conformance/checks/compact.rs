@@ -254,6 +254,7 @@ async fn answers(
             filter: None,
             with_meta: true,
             at,
+            rerank: None,
         };
         out.push((
             format!("a lexical search at {p}"),
@@ -267,6 +268,7 @@ async fn answers(
             filter: None,
             with_meta: true,
             at,
+            rerank: None,
         };
         out.push((
             format!("a vector search at {p}"),

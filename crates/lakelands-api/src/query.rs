@@ -69,6 +69,10 @@ pub struct Start {
     /// Records a search finds, best first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search: Option<SearchMode>,
+    /// A second stage for `search`: the pattern starts from the reranked
+    /// window, best first (`docs/decisions/067-a-search-may-take-a-second-stage.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank: Option<Rerank>,
     /// The values bound to the parameters of a view the pattern starts on.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: Params,
@@ -224,6 +228,7 @@ impl Pattern {
                 key: Some(key),
                 filter: None,
                 search: None,
+                rerank: None,
                 params: Default::default(),
                 named: None,
             },
@@ -407,6 +412,43 @@ pub enum SearchMode {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
     },
+}
+
+/// The second stage of a search: the first `top` hits of its ranking,
+/// ranked again by the lake's reranker against a text
+/// (`docs/decisions/067-a-search-may-take-a-second-stage.md`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rerank {
+    /// How many of the first stage's hits the stage ranks, 1 at least and
+    /// at most the lake's `max_rerank_top`. The answer ends at this window.
+    pub top: u32,
+    /// What the window is ranked against; absent, the search's own text.
+    /// A vector search has none, so it must give one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+impl Rerank {
+    /// What the stage asks of `mode` that cannot be: no window, or no text
+    /// to rank against.
+    pub fn misfit(&self, mode: &SearchMode) -> Option<Case> {
+        let texted = !matches!(mode, SearchMode::Vector { .. });
+        match (self.top, &self.text) {
+            (0, _) => Some(Case::RerankTopZero),
+            (_, None) if !texted => Some(Case::RerankNeedsText),
+            _ => None,
+        }
+    }
+
+    /// The text the window is ranked against: its own, else the search's.
+    pub fn query<'a>(&'a self, mode: &'a SearchMode) -> &'a str {
+        match (&self.text, mode) {
+            (Some(text), _) => text,
+            (_, SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. }) => text,
+            (_, SearchMode::Vector { .. }) => "",
+        }
+    }
 }
 
 /// One further vector field of a vector search.
@@ -606,6 +648,9 @@ pub struct Search {
     /// Only records matching this filter.
     #[serde(default, rename = "where", skip_serializing_if = "Option::is_none")]
     pub filter: Option<Condition>,
+    /// A second stage over the first `top` hits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank: Option<Rerank>,
     /// Return each field's provenance with its value.
     #[serde(default)]
     pub with_meta: bool,
@@ -633,6 +678,8 @@ struct SearchWire {
     #[serde(default, rename = "where")]
     filter: Option<Condition>,
     #[serde(default)]
+    rerank: Option<Rerank>,
+    #[serde(default)]
     with_meta: bool,
     #[serde(default, flatten)]
     at: ReadAt,
@@ -649,14 +696,15 @@ impl<'de> Deserialize<'de> for Search {
         let mode =
             serde_json::from_value(Value::Object(mode.collect())).map_err(D::Error::custom)?;
         let w: SearchWire = serde_json::from_value(Value::Object(own)).map_err(D::Error::custom)?;
-        let (ty, k, cursor, filter, with_meta, at) =
-            (w.ty, w.k, w.cursor, w.filter, w.with_meta, w.at);
+        let (ty, k, cursor, filter, rerank, with_meta, at) =
+            (w.ty, w.k, w.cursor, w.filter, w.rerank, w.with_meta, w.at);
         Ok(Search {
             ty,
             mode,
             k,
             cursor,
             filter,
+            rerank,
             with_meta,
             at,
         })
@@ -674,8 +722,14 @@ pub struct Hits {
     /// The mode that actually ranked them (a hybrid search without a
     /// vector or a backend is lexical, and says so here): `lexical`,
     /// `vector`, `hybrid`, or `index` and `hybrid (index)` when the vector
-    /// field is one the lake asks an index for, whose set the hits are.
+    /// field is one the lake asks an index for, whose set the hits are; a
+    /// search with a second stage adds ` + rerank`.
     pub ranked_by: String,
+    /// Whether the first stage holds more hits than the second stage's
+    /// window took, unranked and not answered. Only a reranked search
+    /// ends at a window.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
     /// Each axis that ranked, in the order the fusion sums them.
     #[serde(default)]
     pub axes: Vec<Axis>,
@@ -684,7 +738,7 @@ pub struct Hits {
 /// One axis a search ranked by.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Axis {
-    /// `lexical` or `vector`.
+    /// `lexical`, `vector` or `rerank`.
     pub axis: String,
     /// The vector field it ranked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -700,7 +754,7 @@ pub struct Axis {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight: Option<f64>,
     /// The model the caller named for this axis's query vector, as it
-    /// was named: over a field declared as an embedding the field's own,
+    /// was named (for the `rerank` axis, the reranker's own): over a field declared as an embedding the field's own,
     /// and over any other field not judged, since the lake knows no model
     /// of its own there.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -33,6 +33,8 @@ fn a_cursor_round_trips_and_a_foreign_one_is_refused() {
         ty: Some("note".into()),
         of: String::new(),
         now: Some(Timestamp(5)),
+        staged: Vec::new(),
+        model: None,
     });
     let back = decode(&c).unwrap();
     assert_eq!((back.at, back.now), (Position(7), Some(Timestamp(5))));

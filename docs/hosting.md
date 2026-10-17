@@ -9,7 +9,7 @@ contract is right and this page is wrong.
 
 ## What a host implements
 
-Lakelands has seven seams. A host implements the ones it needs and
+Lakelands has nine seams. A host implements the ones it needs and
 passes them in `Seams`; every one but the engine has a default, and for
 the engine a host passes Lakelands' own openers. A host that passes
 those and nothing else has a working store. Two seams point the other
@@ -106,6 +106,18 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   declaring the type again. Every live record is then embedded again, and
   a declaration also retries recorded failures. See `docs/seams.md`
   §`EmbedBackend`.
+- **`Reranker`.** A host may plug in a scorer of (query, text) pairs, a
+  cross-encoder, as the second stage of a search. A search or a pattern's
+  start that takes `rerank: { top, text? }` has the first `top` hits of
+  its ranking scored by the bound reranker and answers them in that
+  order, ending at the window; the cursor carries the order, so a page
+  after the first asks nothing. The reranker is handed the key and the
+  searchable text its reader reads, and nothing it may not; its call is a
+  read and records nothing. Without one such a search is refused as
+  `Unbound`, and a reranker that fails makes it `Unavailable`; neither
+  falls back to the first stage. `limits.max_rerank_top` (100) bounds
+  `top`. Bind it at open in `Seams::rerank` or later with
+  `LakeStore::bind_rerank`. See `docs/seams.md` §`Reranker`.
 - **`VerbExecutor`.** A verb declared `low` runs at once; any other
   lands as `WriteProposed`, and the store records `accept` and `reject`
   as events. A verb that writes authored fields runs in the store; a
