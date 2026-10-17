@@ -266,3 +266,4 @@ engine will never produce.
   out.
 - A refusal's reason gained `verbs_only`, naming the verbs that alone write a field (lakelands#1130).
 - A refusal's reason gained `declined`, with the case `call_declined`, for a call a host's executor declines by policy (lakelands#812).
+- `verbs_only` also answers a retirement of a type only its verbs retire, with no field, and its sentence and `wrong_door`'s no longer say "field" (lakelands#1148).

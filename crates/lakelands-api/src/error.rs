@@ -336,12 +336,14 @@ pub enum Refusal {
     /// The principal holds no grant for it.
     NotGranted,
     /// The field is written by another authority, through another door
-    /// (a source field through `upsert`, a derived field by anyone).
+    /// (a source field through `upsert`, a derived field by anyone), or
+    /// `retire` is used where only its type's verbs retire the record.
     WrongDoor,
-    /// Only its type's verbs write the field: these, which its writer may
-    /// call; shown none, it is `wrong_door` (lakelands#1130).
+    /// Only its type's verbs write the field, or retire the record
+    /// (lakelands#1148): these, which its writer may call; shown none, it
+    /// is `wrong_door` (lakelands#1130).
     VerbsOnly {
-        /// The verbs that write the field, by name.
+        /// The verbs that write the field or retire the record, by name.
         verbs: Vec<crate::id::VerbName>,
     },
     /// The name is in a reserved namespace: `sys.` for a type,
@@ -446,14 +448,10 @@ impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Refusal::NotGranted => write!(f, "you hold no grant for this"),
-            Refusal::WrongDoor => write!(f, "another authority writes this field"),
+            Refusal::WrongDoor => write!(f, "another authority does this, through another door"),
             Refusal::VerbsOnly { verbs } => {
                 let named: Vec<String> = verbs.iter().map(|v| format!("`{v}`")).collect();
-                write!(
-                    f,
-                    "only the type's verbs write this field: {}",
-                    named.join(", ")
-                )
+                write!(f, "only the type's verbs do this: {}", named.join(", "))
             }
             Refusal::Reserved => write!(f, "the name is in a reserved namespace"),
             Refusal::Invalid(said)

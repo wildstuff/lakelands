@@ -25,7 +25,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::error::Case;
-use lakelands_api::ontology::{Authority, FieldDecl, TypeDecl, VerbDecl, VerbEffect};
+use lakelands_api::ontology::{Authority, FieldDecl, RetiredBy, TypeDecl, VerbDecl, VerbEffect};
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Migration, MigrationReport};
@@ -723,6 +723,13 @@ impl Door {
                 | (Door::Verb, Authority::Verb)
                 | (Door::Source, Authority::Source)
         )
+    }
+
+    /// Whether a record of a type its `retired_by` names may be retired
+    /// through this door: a type only its verbs retire, by a verb alone
+    /// (lakelands#1148).
+    pub fn admits_retirement(self, by: RetiredBy) -> bool {
+        by.is_authors() || self == Door::Verb
     }
 }
 

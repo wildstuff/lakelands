@@ -11,7 +11,7 @@ use crate::expr::Condition;
 use crate::id::{FieldName, LakeId, RelationName, TypeName, ValueTypeName, VerbName};
 use crate::ontology::{
     Annotations, Authority, ComputedAt, EmbedDecl, FieldDecl, FieldType, OnInputChange,
-    RelationDecl, Risk, TriggerDecl, ValueTypeDecl, VerbScope, ViewDecl,
+    RelationDecl, RetiredBy, Risk, TriggerDecl, ValueTypeDecl, VerbScope, ViewDecl,
 };
 use crate::principal::Access;
 use crate::write::{FunctionDecl, ObjectSetDecl};
@@ -270,6 +270,7 @@ pub struct TypeRights {
     /// `retire`: every field of the type is writable, whatever its
     /// authority, as the principal's grants resolve it. A principal who
     /// may write only some fields of a record may not remove all of them.
+    /// Never on a type only its verbs retire (lakelands#1148).
     pub retire: bool,
     /// `link` and `unlink`: the relations carried by link records whose
     /// links the principal may write through those doors.
@@ -291,6 +292,10 @@ pub struct TypeLineage {
     /// Whether a source writes each of its records once (lakelands#1044).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub insert_only: bool,
+    /// Who retires its records: only its verbs, or its authors too
+    /// (lakelands#1148).
+    #[serde(default, skip_serializing_if = "RetiredBy::is_authors")]
+    pub retired_by: RetiredBy,
     /// For a view type: the type it is computed from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view_of: Option<TypeName>,
@@ -449,9 +454,14 @@ pub struct VerbDescription {
     /// there.
     pub external: bool,
     /// For a verb that reaches outside the lake: its executor, and whether
-    /// this lake's host binds it. Absent for a verb that sets fields.
+    /// this lake's host binds it. Absent for a verb that sets fields or
+    /// retires its record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executor: Option<ExecutorDescription>,
+    /// Whether it retires the record it is called on (lakelands#1148).
+    /// Left out where it does not.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retires: bool,
     /// What it does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,

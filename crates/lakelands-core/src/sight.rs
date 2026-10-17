@@ -313,7 +313,8 @@ impl<'o> Sight<'o> {
     /// Whether its principal may call `verb` on `on`, its type: its
     /// effect writes a field, and every one it writes is granted to it,
     /// or, for a verb that reaches outside the lake, it may write the type
-    /// as a whole; and it reads every field the verb reads (024, extended).
+    /// as a whole, or, for one that retires, it may retire the type's
+    /// records; and it reads every field the verb reads (024, extended).
     pub fn callable(&self, on: &TypeDecl, verb: &VerbDecl) -> bool {
         let writes = |f: &FieldName| self.who.grants.access(&on.name, f).writes();
         rights::reads_what_verb_reads(&self.who, on, verb, &|n| self.force.ty(n))
@@ -322,6 +323,10 @@ impl<'o> Sight<'o> {
                     !set.is_empty() && set.iter().all(|a| writes(&a.field))
                 }
                 VerbEffect::External { .. } => rights::type_access(&self.who, &on.name).writes(),
+                // A retirement is called as `retire` is used: by one who
+                // may write every field of the type (lakelands#1148).
+                VerbEffect::Retire => rights::may_retire(&self.who, on),
+                _ => false,
             }
     }
 }

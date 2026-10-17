@@ -87,6 +87,7 @@ mod restated;
 mod restriction;
 mod retarget;
 mod retire;
+mod retired_by_verbs;
 mod risky_calls;
 mod row_pages;
 mod schema;
@@ -708,6 +709,8 @@ pub const ALL: &[Check] = &[
     upgrade::LAYOUT_REBUILT,
     verb_written::VERB_ONLY,
     verb_written::VERB_ONLY_TOLD,
+    retired_by_verbs::RETIRED_BY_VERBS,
+    retired_by_verbs::RETIRED_BY_VERBS_TOLD,
     upgrade::LAKE_14_READ,
     upgrade::LAKE_14_MIGRATED_READ,
     upgrade::LAKE_15_READ,

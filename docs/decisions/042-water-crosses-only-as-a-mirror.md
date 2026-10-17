@@ -63,6 +63,13 @@ Two further rules follow from the tree:
   state. A held record's copy is held, so a mirror whose source principal
   holds `restricted` is refused at the start unless its target writer
   holds it too (lakelands#772): it writes with the grants it is given.
+  A target type marked `retired_by: verbs` refuses the crossing of a
+  retirement as it refuses any `retire` (016): the mirror stops that
+  type there and journals the refusal, and the copy stays live. Since
+  the refusal comes before the record is looked for, this holds for a
+  key that never crossed too, whose retirement the mirror otherwise
+  passes over as nothing to retire. The operator takes the mark off the
+  target type, or mirrors into one that is not marked (lakelands#1148).
 
 The mirror reads the feed for order and position only. The feed is the
 log unmasked, not filtered per principal
@@ -143,3 +150,5 @@ resumes from the position it stopped at once the target admits it.
   writer does not is refused at the start (lakelands#772).
 - A mirrored type may declare a derived relation: it was refused as one
   whose links are authored (lakelands#902).
+- A target type only its verbs retire stops the crossing of a
+  retirement, as it refuses `retire` (lakelands#1148).

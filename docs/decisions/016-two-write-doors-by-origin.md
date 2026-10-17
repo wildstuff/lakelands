@@ -66,6 +66,42 @@ field, on a required field without an `initial`, and on a field the
 fold computes; and a constraint that reads only such fields is judged
 over their `initial`s, which no create can replace (`initial_breaks`).
 
+### A type's records may be retired by its verbs alone
+
+A type marked `retired_by: verbs` has its records retired only by its
+declared verbs whose effect is `retire`, called or accepted as a
+proposal of the call (013) (lakelands#1148). The lifecycle a field only
+verbs write holds at every door for the record's state; this holds it
+for the record's end: a host that declares "an order ends only by
+`cancel` or `archive`" has each end pass the verb's `requires` and the
+gate its risk puts in front of it. `retire`, a proposed `retire` and
+its accept are refused, and so a host's reaction and a component's
+guest door, which call the same doors, and a mirror's crossing of a
+retirement (042). The default, `retired_by: authors`, is never
+written.
+
+What the store retires as the system stays: a purge of a source (039),
+a forgetting (058), and the links of a relation a migration removes
+(027). The mark speaks of who among the lake's writers ends a record,
+not of the host's own acts on its sources and shapes. `unlink` stays
+too: a link type is the store's, and a verb does not retire a link.
+Nothing that reads the log judges a door again: an import, a rebuild
+and an upgrade fold what was written.
+
+The refusal is `verbs_only` with no field, naming the type's retire
+verbs its writer is shown and may call; where it is shown none it is
+`wrong_door`, alike whether such a verb is hidden or absent (006). It is
+judged after `not_granted` and before the record, so a writer that may
+not retire the type learns nothing new of it, and a key no record holds
+is answered as a live one.
+
+The declaration refuses the mark on a view, whose records are never
+retired (`retired_by_view`), a retire verb on a relation's link type
+(`retire_verb_link`) and one on its type (`type_verb_writes`). A type
+marked with no retire verb is taken: a verb may come later, and
+`describe` names the mark. The mark is not in the schema hash, so
+marking a type, or taking the mark off, is a change of meaning (027).
+
 ### A window is decided whole, and a record that changes nothing is a duplicate
 
 `ingest` takes its stream in group-commit windows: a window closes when it
@@ -220,7 +256,8 @@ their order is stated, not checked.
 **`retire`**: the lake, the context, a link type at the ordinary door
 (`wrong_door`), the retry, the type is declared (`not_found`), it is
 not a view (`invalid`), the principal may write every field of it
-(`not_granted`), the record is live (`not_found`), the expected version
+(`not_granted`), the type is retired by its authors (`verbs_only`, or
+`wrong_door`), the record is live (`not_found`), the expected version
 (`conflict`), the append.
 
 **`ingest`**: the lake, the context and the `ingest` grant
@@ -329,3 +366,4 @@ is just another caller later, not a change to the contract.
 - A source id is formed as a key is, not empty and holding no NUL, and a source record with a member it does not have is refused, never read without it (lakelands#1081).
 - A window is the store's: no rule is judged over one, and a link that breaks its relation's cardinality with an earlier link of its window is answered as over the lake, the other end named by the same rule; `window_links_already` is never answered from 0.15.0 (lakelands#886).
 - A field may be written by its type's verbs alone, `authority: verb`; the other doors are refused it as `verbs_only`, naming the verbs its writer is shown, or `wrong_door` (lakelands#1130).
+- A type's records may be retired by its verbs alone, `retired_by: verbs`; `retire`, a proposed `retire` and its accept are refused as `verbs_only`, naming the retire verbs its writer is shown, or `wrong_door`, and the system's retirements stay (lakelands#1148).

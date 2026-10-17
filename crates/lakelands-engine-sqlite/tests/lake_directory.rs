@@ -70,6 +70,7 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
             constraints: Default::default(),
             annotations: Default::default(),
             insert_only: false,
+            retired_by: Default::default(),
             name: "entry".into(),
             key: vec![],
             fields: vec![note],

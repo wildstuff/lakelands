@@ -16,7 +16,8 @@ use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::{
-    Annotations, Authority, Cardinality, ComputedAt, OnInputChange, Risk, StorageKind, VerbScope,
+    Annotations, Authority, Cardinality, ComputedAt, OnInputChange, RetiredBy, Risk, StorageKind,
+    VerbScope,
 };
 
 /// `value_types/<name>.yaml`.
@@ -54,6 +55,8 @@ pub(super) struct TypeDoc {
     pub language: Option<String>,
     #[serde(default)]
     pub insert_only: bool,
+    #[serde(default)]
+    pub retired_by: RetiredBy,
     pub description: Option<String>,
     pub label: Option<String>,
     #[serde(default)]
@@ -187,6 +190,8 @@ pub(super) struct VerbDoc {
     pub requires: Option<Cond>,
     pub set: Option<Named<Cond>>,
     pub executor: Option<String>,
+    #[serde(default)]
+    pub retire: bool,
     pub description: Option<String>,
 }
 

@@ -132,12 +132,18 @@ impl From<Error> for Failure {
                     "act as a principal whose grants allow it, or ask the lake's owner for a grant"
                         .to_owned()
                 }
+                Refusal::WrongDoor if field.is_none() => {
+                    "another door does it: a relation's authored links through `link` and `unlink`, \
+                     a source's links through `lakelands ingest`, a derived relation's by the lake \
+                     alone, and a record only its type's verbs retire through one of those verbs"
+                        .to_owned()
+                }
                 Refusal::WrongDoor => {
                     "source fields arrive through `lakelands ingest`; authored fields through writes and verbs"
                         .to_owned()
                 }
                 Refusal::VerbsOnly { .. } => {
-                    "call one of the verbs it names, which writes the field under its own condition"
+                    "call one of the verbs it names, which does it under its own condition"
                         .to_owned()
                 }
                 Refusal::Reserved => "choose a name that does not begin with `sys.`; a verb names no \

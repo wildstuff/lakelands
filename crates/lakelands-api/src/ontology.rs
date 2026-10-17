@@ -217,6 +217,29 @@ impl Authority {
     }
 }
 
+/// Who retires a type's records (lakelands#1148).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum RetiredBy {
+    /// Its authors, through `retire`, and its verbs whose effect retires.
+    #[default]
+    Authors,
+    /// Only its verbs whose effect is `retire`: `retire` is refused, and
+    /// a purge, a forgetting and a migration still retire as the system.
+    Verbs,
+}
+
+impl RetiredBy {
+    /// Every value, in declaration order.
+    pub const ALL: [RetiredBy; 2] = [RetiredBy::Authors, RetiredBy::Verbs];
+
+    /// Whether this is the default, `authors`.
+    pub fn is_authors(&self) -> bool {
+        *self == RetiredBy::Authors
+    }
+}
+
 /// What the fold does to a field when one of its inputs changes
 /// (`docs/decisions/012-writes-touch-only-their-fields.md`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1024,6 +1047,11 @@ pub struct TypeDecl {
     /// the schema hash.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub insert_only: bool,
+    /// Who retires its records: its authors through `retire` (the
+    /// default), or only its verbs whose effect is `retire`
+    /// (lakelands#1148). Not part of the schema hash.
+    #[serde(default, skip_serializing_if = "RetiredBy::is_authors")]
+    pub retired_by: RetiredBy,
     /// What the type means. Not part of the schema hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -1106,6 +1134,7 @@ impl Risk {
 /// What a verb does when it runs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "effect", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum VerbEffect {
     /// Writes authored fields of the record it is called on: each field
     /// is set from an expression over the payload (`payload.<name>`) and
@@ -1120,6 +1149,19 @@ pub enum VerbEffect {
         /// The executor the host binds for it.
         executor: String,
     },
+    /// Retires the record it is called on, as `retire` does; on a type
+    /// retired by its verbs, the only door that does (lakelands#1148).
+    Retire,
+}
+
+impl VerbEffect {
+    /// The fields it sets: none but a write's.
+    pub fn set(&self) -> &[Assignment] {
+        match self {
+            VerbEffect::Write { set } => set,
+            VerbEffect::External { .. } | VerbEffect::Retire => &[],
+        }
+    }
 }
 
 /// What a verb is called on: one record of its type, or its type
@@ -1188,10 +1230,7 @@ impl VerbDecl {
     /// those of its set values but for `payload.<name>`, a member of the
     /// call's payload. `None` where one of them does not parse.
     pub fn record_paths(&self) -> Option<Vec<Vec<FieldName>>> {
-        let set = match &self.effect {
-            VerbEffect::Write { set } => set.as_slice(),
-            VerbEffect::External { .. } => &[],
-        };
+        let set = self.effect.set();
         let values = set.iter().map(|a| (&a.value, true));
         let mut read = Vec::new();
         for (c, value) in self.requires.iter().map(|r| (r, false)).chain(values) {
@@ -1224,10 +1263,7 @@ impl VerbDecl {
     /// The relations an `exists(…)` of the verb's `requires` and set values
     /// names.
     pub fn exists_relations(&self) -> Vec<FieldName> {
-        let set = match &self.effect {
-            VerbEffect::Write { set } => set.as_slice(),
-            VerbEffect::External { .. } => &[],
-        };
+        let set = self.effect.set();
         let mut out = Vec::new();
         let values = set.iter().map(|a| &a.value);
         for e in self
@@ -1286,6 +1322,7 @@ struct VerbWire {
 enum EffectKind {
     Write,
     External,
+    Retire,
 }
 
 impl TryFrom<VerbWire> for VerbDecl {
@@ -1295,6 +1332,12 @@ impl TryFrom<VerbWire> for VerbDecl {
         let effect = match (w.effect, w.set, w.executor) {
             (EffectKind::Write, Some(set), None) => VerbEffect::Write { set },
             (EffectKind::External, None, Some(executor)) => VerbEffect::External { executor },
+            (EffectKind::Retire, None, None) => VerbEffect::Retire,
+            (EffectKind::Retire, ..) => {
+                return Err(
+                    "a verb whose `effect` is `retire` has no member `set` or `executor`".into(),
+                );
+            }
             (EffectKind::Write, _, Some(_)) => {
                 return Err("a verb whose `effect` is `write` has no member `executor`".into());
             }
