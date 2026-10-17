@@ -84,6 +84,7 @@ mod rekey;
 mod relation_renamed;
 mod renamed_grants;
 mod report_names;
+mod required_at_create;
 mod restated;
 mod restriction;
 mod retarget;
@@ -265,6 +266,9 @@ pub const ALL: &[Check] = &[
     computed_inputs::COMPUTED_AS_ITS_INPUTS,
     function_input::ANY_KIND_INPUT,
     function_input::INPUT_KIND_REDECLARED,
+    required_at_create::REQUIRED_AT_CREATE,
+    required_at_create::REQUIRED_TWIN,
+    required_at_create::REQUIRED_OUTSIDE,
     computed_at::AT_THE_READ,
     computed_at::SAID_WHEN,
     computed_at::MOVED,

@@ -1456,46 +1456,52 @@ fn constraints(o: &Ontology, t: &TypeDecl) -> Result<()> {
             let (ty, field) = (t.name.clone(), n.clone());
             return wrong(Case::UnknownField { ty, field });
         }
-        initial_holds(t, c, &e)?;
+        initial_holds(o, t, c, &e)?;
     }
     Ok(())
 }
 
-/// A constraint reading only fields verbs alone write is judged over their
-/// `initial`s, which no create can replace (lakelands#1130); a field with
-/// none is null. One an ingest admits a breach of is not: an ingest makes
-/// records of the type whatever it holds.
-fn initial_holds(t: &TypeDecl, c: &ConstraintDecl, e: &lakelands_api::expr::Expr) -> Result<()> {
+/// A constraint reading only fields no create can send, those verbs alone
+/// write and those computed from them, is judged over what a create leaves
+/// of them (lakelands#1130, lakelands#1169): their `initial`s, which no
+/// create can replace, and a field with none is null. One an ingest admits
+/// a breach of is not: an ingest makes records of the type whatever it
+/// holds. Where it reads a field a create can send it is taken: the create
+/// must send a value, and `describe` tells it.
+fn initial_holds(
+    o: &Ontology,
+    t: &TypeDecl,
+    c: &ConstraintDecl,
+    e: &lakelands_api::expr::Expr,
+) -> Result<()> {
+    let resolved = crate::record::resolve_functions(t, o);
+    let fixed = derive::fixed(&resolved);
     let read = e.fields_read();
-    let by_verbs =
-        |n: &&FieldName| (t.fields.iter()).any(|f| &f.name == *n && f.authority == Authority::Verb);
-    if read.is_empty() || !read.iter().all(by_verbs) || !c.at_ingest.refuses() {
+    if read.is_empty() || !read.iter().all(|n| fixed.contains(*n)) || !c.at_ingest.refuses() {
         return Ok(());
     }
-    let after: std::collections::BTreeMap<FieldName, lakelands_api::Value> = (t.fields.iter())
-        .filter(|f| f.authority == Authority::Verb)
-        .filter_map(|f| Some((f.name.clone(), f.initial.clone()?)))
-        .collect();
-    let scope = lakelands_core::expr::WriteScope {
-        after: &after,
-        before: None,
-        retiring: false,
-        meta: None,
-        settings: None,
-        now: lakelands_api::Timestamp(0),
+    let value_types: Vec<_> = o.value_types.values().map(|v| v.decl.clone()).collect();
+    let broken = derive::breaks(&resolved, &value_types);
+    let Some((_, part)) = broken.iter().find(|(b, _)| b.name == c.name) else {
+        return Ok(());
     };
-    if lakelands_core::expr::holds(e, &scope).unwrap_or(false) {
-        return Ok(());
-    }
-    let unset = |n: &&&FieldName| !after.contains_key(**n);
+    // The fields verbs write that the part that breaks reads, through the
+    // computed ones.
+    let leaves = derive::leaves(&resolved, part);
+    let leaves: Vec<&FieldDecl> = (t.fields.iter())
+        .filter(|f| leaves.contains(&f.name))
+        .collect();
     let constraint = c.name.clone();
-    let (field, case) = match read.iter().find(unset) {
-        Some(n) => {
-            let field = (**n).clone();
+    let (field, case) = match leaves.iter().find(|f| f.initial.is_none()) {
+        Some(f) => {
+            let field = f.name.clone();
             (field.clone(), Case::NoInitialBreaks { constraint, field })
         }
         None => {
-            let field = (*read.first().expect("a field read")).clone();
+            let field = leaves.first().map_or_else(
+                || (**read.first().expect("a field read")).clone(),
+                |f| f.name.clone(),
+            );
             (field.clone(), Case::InitialBreaks { constraint, field })
         }
     };

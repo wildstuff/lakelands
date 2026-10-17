@@ -595,6 +595,7 @@ fn field_description() -> FieldDescription {
         depends_on: vec!["e".into()],
         on_input_change: OnInputChange::Keep,
         initial: Some(serde_json::json!("new")),
+        required_at_create: true,
         filterable: true,
         searchable: true,
         sensitive: true,

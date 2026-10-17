@@ -27,11 +27,15 @@ use lakelands_api::describe::{
 use lakelands_api::engine::Declared;
 use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::{
-    Authority, Derived, RelationDecl, Risk, TypeDecl, VerbDecl, VerbEffect, ViewDecl,
+    Authority, ConstraintDecl, Derived, FieldDecl, RelationDecl, Risk, TypeDecl, ValueTypeDecl,
+    VerbDecl, VerbEffect, ViewDecl,
 };
 use lakelands_api::write::{Declaration, FunctionDecl, SettingDecl};
 use lakelands_api::{Access, FieldName, LakeId, Principal, TypeName, ValueTypeName};
 
+use std::collections::BTreeSet;
+
+use crate::derive;
 use crate::rights::{field_access, granted_access, only_holder, pinnable, type_access};
 use crate::sight::Sight;
 
@@ -814,6 +818,32 @@ pub(crate) fn relation_shown<'a>(
         && to.iter().all(|n| known(target, n))
 }
 
+/// `t` with each `expr` function's expression in place of its name, and the
+/// value types its fields name: what the record a create leaves is
+/// computed from.
+fn bare_inputs(t: &TypeDecl, declared: &[Declared]) -> (TypeDecl, Vec<ValueTypeDecl>) {
+    let mut out = t.clone();
+    for f in &mut out.fields {
+        let function = declared.iter().find_map(|d| match &d.declaration {
+            Declaration::Function(g) if Some(&g.name) == f.function.as_ref() => Some(g),
+            _ => None,
+        });
+        if let Some(g) = function {
+            f.derived = g.expr.clone();
+        }
+    }
+    let named = |v: &&ValueTypeDecl| {
+        t.fields
+            .iter()
+            .any(|f| f.ty.value_type.as_ref() == Some(&v.name))
+    };
+    let types = declared.iter().filter_map(|d| match &d.declaration {
+        Declaration::ValueType(v) => Some(v),
+        _ => None,
+    });
+    (out, types.filter(named).cloned().collect())
+}
+
 impl Sight<'_> {
     fn type_description(
         &self,
@@ -823,12 +853,41 @@ impl Sight<'_> {
     ) -> Option<TypeDescription> {
         let (who, find) = (self.who(), &|n: &TypeName| self.force.ty(n));
         self.ty(&t.name).ok()?;
+        // What a create that sends nothing but the key breaks (lakelands#1169):
+        // told of a field to a reader shown the constraint too.
+        let (resolved, value_types) = bare_inputs(t, declared);
+        let broken = match t.view {
+            None => derive::breaks(&resolved, &value_types),
+            Some(_) => Vec::new(),
+        };
+        let told = |(c, _): &&(&ConstraintDecl, BTreeSet<FieldName>)| {
+            let e = c.holds.typed().ok();
+            e.is_some_and(|e| self.reads_all(e.fields_read(), &t.name))
+        };
+        // Told of the fields that feed a broken constraint through the
+        // derived ones, those a create may send, and one only verbs write
+        // with no `initial`: one with an `initial` is a choice no create
+        // changes, and the field asked for is another.
+        let fed: BTreeSet<FieldName> = (broken.iter().filter(told))
+            .flat_map(|(_, reads)| derive::leaves(&resolved, reads))
+            .collect();
+        let required = |f: &FieldDecl| {
+            let asked = match f.authority {
+                Authority::Authored | Authority::Shared => true,
+                Authority::Verb => f.initial.is_none(),
+                _ => false,
+            };
+            asked && fed.contains(&f.name)
+        };
         let fields: Vec<FieldDescription> = t
             .fields
             .iter()
             .map(|f| (f, field_access(who, t, f)))
             .filter(|(_, a)| *a != Access::None)
-            .map(|(f, a)| FieldDescription::of(f, a))
+            .map(|(f, a)| FieldDescription {
+                required_at_create: a.reads() && required(f),
+                ..FieldDescription::of(f, a)
+            })
             .collect();
         let is_view = t.view.is_some();
         // A link type's records are written through its relation's link

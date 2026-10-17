@@ -95,6 +95,33 @@ At accept, a proposal whose write now breaks a constraint is refused
 reads. Any other reviewer is told `write_changed_since_proposed`, as
 for every refusal it may not be told (013).
 
+### A constraint a create can never pass is refused at the declaration; one it can is told
+
+A constraint judges the record a create leaves, which holds each field's
+`initial` or none. Where the constraint reads only fields no create can
+send, those only verbs write and those computed from them through derived
+fields and `expr` functions, that record is the same for every create, so
+a constraint it breaks could never be passed, and the declaration is
+refused `initial_breaks`, or `no_initial_breaks` where a field has no
+`initial`, naming the field verbs write that the constraint reads
+(lakelands#1130, lakelands#1169). A constraint that an ingest admits a
+breach of is taken. A condition that reads a setting or the clock,
+itself or through a field computed from one, is not decided by the
+record, so it is the write's to judge, here and in what `describe_type`
+tells below; a condition beside it under `and` that the record decides
+is still judged.
+
+Where the constraint reads a field a create can send, the declaration is
+taken as it was: `positive: size > 0` over a `size` whose `initial` is 0
+says that a create must send `size`. `describe_type` tells it: each
+field that feeds a constraint the create's record breaks, followed
+through the derived fields to those a create sends, is
+`required_at_create`, to a reader shown the field and the constraint, and
+the generated `upsert` tool says a create sends it. A derived field is
+not told, the fields it is computed from are; nor is a field only verbs
+write whose `initial` is set, a choice no create changes, so the field
+asked for is another. A create without it is refused `constraint_broken`.
+
 ### A constraint is added or changed by a migration
 
 `declare` refuses a constraint added to a type already declared, or

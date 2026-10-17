@@ -791,12 +791,25 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
                 (f.name.to_string(), json!({"anyOf": [s, {"type": "null"}]}))
             })
             .collect();
+        // A create must send what a constraint needs of it (lakelands#1169).
+        let needed: Vec<&str> = (ty.fields.iter())
+            .filter(|f| f.required_at_create && f.authored_writable())
+            .map(|f| f.name.as_str())
+            .collect();
+        let mut fields_note =
+            "Only the fields to change: an absent field is unchanged, null clears it.".to_owned();
+        if !needed.is_empty() {
+            fields_note.push_str(&format!(
+                " To create the record, send also: {}.",
+                needed.join(", ")
+            ));
+        }
         let mut p = props([
             ("key", key_schema(ty, true)),
             (
                 "fields",
                 json!({"type": "object", "properties": writable, "additionalProperties": false,
-                       "description": "Only the fields to change: an absent field is unchanged, null clears it."}),
+                       "description": fields_note}),
             ),
         ]);
         write_opts(&mut p);
