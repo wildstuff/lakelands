@@ -459,6 +459,105 @@ async fn through_the_hub_a_pump_tells_what_its_principal_may_see_alike_of_twins(
     assert_eq!(told[0].len(), 2, "of INV-1 and INV-2 only: {:?}", told[0]);
 }
 
+/// A setting naming `secret`, which the watcher may not read, is told it
+/// as in a twin lake whose setting never named it (lakelands#1198): a
+/// change of `secret` alone is not told, a record left naming only
+/// `secret` is told as retired, one that comes to name more as made, and
+/// the retire of a record it is not told not at all; a subscription to
+/// retirements alone is told that retirement, and a set over the settings
+/// is never told it.
+#[tokio::test]
+async fn a_setting_s_changes_are_told_as_of_its_twin_without_what_is_not_told() {
+    let k = "sort_index.invoice";
+    let set = |v: Value| json!({"key": k, "value": v});
+    // The owner's writes, and those of the twin that never named `secret`:
+    // `None` writes nothing there, and `Some(None)` retires.
+    let steps = [
+        (Some(json!(["secret"])), None),
+        (
+            Some(json!(["status", "secret"])),
+            Some(Some(json!(["status"]))),
+        ),
+        (Some(json!(["secret", "status"])), None),
+        (Some(json!(["secret"])), Some(None)),
+        (None, None),
+    ];
+    let mut told = Vec::new();
+    for twin in [false, true] {
+        let store = common::lake_on(Backend::Memory).await;
+        declare(
+            store.as_ref(),
+            json!({"declare": "object_set", "name": "indexes", "of": "sys.setting",
+                   "where": format!("key = '{k}'")}),
+        )
+        .await;
+        let mut all = Stdio::open(store.clone(), watcher()).await;
+        let mut retired = Stdio::open(store.clone(), watcher()).await;
+        all.call("subscribe", json!({})).await;
+        retired
+            .call("subscribe", json!({"kinds": ["record_retired"]}))
+            .await;
+        for (hidden, bare) in &steps {
+            let step = match (twin, hidden, bare) {
+                (false, Some(v), _) => Some(Some(v.clone())),
+                (false, None, _) => Some(None),
+                (true, _, step) => step.clone(),
+            };
+            match step {
+                Some(Some(v)) => {
+                    write(store.as_ref(), "sys.setting", k, set(v)).await;
+                }
+                Some(None) => {
+                    let (c, ty) = (store.catalog(WriteContext::default()), "sys.setting".into());
+                    let opts = WriteOpts::default();
+                    c.retire(&common::owner(), &ty, &k.into(), opts)
+                        .await
+                        .unwrap();
+                }
+                None => {}
+            }
+        }
+        let last = write(
+            store.as_ref(),
+            "invoice",
+            "INV-1",
+            json!({"status": "paid"}),
+        )
+        .await;
+        let mut changes = Vec::new();
+        while changes
+            .last()
+            .is_none_or(|m: &Value| m["params"]["position"] != json!(last))
+        {
+            changes.push(all.change().await);
+        }
+        // The retirement is the first change of its kind either twin has.
+        let retirement = retired.change().await;
+        // Positions differ between the twins: what each change says.
+        let said = |m: &Value| {
+            let mut p = m["params"].clone();
+            p.as_object_mut().unwrap().remove("position");
+            p
+        };
+        told.push((
+            changes.iter().map(said).collect::<Vec<_>>(),
+            said(&retirement),
+        ));
+    }
+    assert_eq!(told[0], told[1], "the watcher is told alike of the twins");
+    let kinds: Vec<_> = (told[0].0.iter()).map(|p| p["kind"].clone()).collect();
+    assert_eq!(
+        kinds,
+        [
+            json!("record_upserted"),
+            json!("record_retired"),
+            json!("record_upserted")
+        ],
+        "the setting made, retired, and the invoice: {:?}",
+        told[0]
+    );
+}
+
 /// A subscription to other kinds leaves the pump's hub for the hub of its
 /// new kinds: what the new kinds name is told, what only the old ones
 /// named is not.

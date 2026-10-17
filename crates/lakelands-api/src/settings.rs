@@ -480,27 +480,46 @@ pub fn told(settings: &BTreeMap<String, Value>) -> Vec<SettingValue> {
 }
 
 /// `s` as told to a reader shown the types `shown` answers and reading
-/// the fields `reads` answers: a setting of a type it is not shown is
-/// not told, and one that names fields is told only those it reads, as
-/// were the others absent; one left naming none is not told.
+/// the fields `reads` answers, its value [`narrowed`].
 pub fn seen(
     mut s: SettingValue,
     shown: &dyn Fn(&str) -> bool,
     reads: &dyn Fn(&str, &str) -> bool,
 ) -> Option<SettingValue> {
-    let Some((_, Some(ty))) = lake_setting(&s.key) else {
-        return Some(s);
+    match s.value.take() {
+        Some(v) => s.value = Some(narrowed(&s.key, v, shown, reads)?),
+        None => {
+            narrowed(&s.key, Value::Null, shown, reads)?;
+        }
+    }
+    Some(s)
+}
+
+/// The value of the setting `key` as told to a reader shown the types
+/// `shown` answers and reading the fields `reads` answers: a setting of a
+/// type it is not shown is not told, and one that names fields is told
+/// only those it reads, as were the others absent; one left naming none
+/// is not told. A host's own key and a setting for the lake are told
+/// whole.
+pub fn narrowed(
+    key: &str,
+    mut value: Value,
+    shown: &dyn Fn(&str) -> bool,
+    reads: &dyn Fn(&str, &str) -> bool,
+) -> Option<Value> {
+    let Some((_, Some(ty))) = lake_setting(key) else {
+        return Some(value);
     };
     if !shown(ty) {
         return None;
     }
     let read = |name: &str| reads(ty, name);
-    let kept = match s.value.as_mut() {
-        Some(Value::Array(names)) if !names.is_empty() => {
+    let kept = match &mut value {
+        Value::Array(names) if !names.is_empty() => {
             names.retain(|n| n.as_str().is_some_and(read));
             !names.is_empty()
         }
-        Some(Value::Object(o)) => {
+        Value::Object(o) => {
             if let Some(Value::Object(fields)) = o.get_mut("fields") {
                 fields.retain(|n, _| read(n));
                 if fields.is_empty() {
@@ -511,7 +530,64 @@ pub fn seen(
         }
         _ => true,
     };
-    kept.then_some(s)
+    kept.then_some(value)
+}
+
+/// What a write of `written` to the setting `key` leaves where `stored`
+/// stands, by a writer kept from the fields `hidden` answers: every field
+/// `stored` names that is hidden stays, after those written, so a write
+/// drops nothing its writer is not told; one the writer names itself (a
+/// field it is shown masked) stands once, as written. `written` as it is
+/// where `stored` names none.
+pub fn kept(
+    key: &str,
+    stored: &Value,
+    written: Value,
+    hidden: &dyn Fn(&str, &str) -> bool,
+) -> Value {
+    let Some((_, Some(ty))) = lake_setting(key) else {
+        return written;
+    };
+    let unread = |name: &str| hidden(ty, name);
+    match (stored, written) {
+        (Value::Array(was), written @ (Value::Array(_) | Value::Null)) => {
+            let hidden = was.iter().filter(|n| n.as_str().is_some_and(unread));
+            let hidden: Vec<Value> = hidden.cloned().collect();
+            match written {
+                _ if hidden.is_empty() => written,
+                Value::Array(mut names) => {
+                    let more: Vec<Value> =
+                        hidden.into_iter().filter(|n| !names.contains(n)).collect();
+                    names.extend(more);
+                    Value::Array(names)
+                }
+                _ => Value::Array(hidden),
+            }
+        }
+        (Value::Object(was), written @ (Value::Object(_) | Value::Null)) => {
+            let fields = was.get("fields").and_then(Value::as_object);
+            let hidden = fields.into_iter().flatten().filter(|(n, _)| unread(n));
+            let hidden: serde_json::Map<String, Value> =
+                hidden.map(|(n, w)| (n.clone(), w.clone())).collect();
+            if hidden.is_empty() {
+                return written;
+            }
+            let mut o = match written {
+                Value::Object(o) => o,
+                _ => serde_json::Map::new(),
+            };
+            let fields = o
+                .entry("fields")
+                .or_insert_with(|| Value::Object(Default::default()));
+            if let Value::Object(fields) = fields {
+                for (n, w) in hidden {
+                    fields.entry(n).or_insert(w);
+                }
+            }
+            Value::Object(o)
+        }
+        (_, written) => written,
+    }
 }
 
 #[cfg(test)]

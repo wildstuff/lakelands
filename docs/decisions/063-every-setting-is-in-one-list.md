@@ -92,6 +92,75 @@ told at all. A host's own keys
 it has not declared are not told there; a reader reads them through
 `sys.setting` under its grants, as any record.
 
+### A setting's record is told as `describe` tells it
+
+A lake setting for a type is a record of `sys.setting`, and its key
+names the type. So every door that reads that record tells it as
+`describe` tells the setting (lakelands#1198): to a reader kept from the
+type, the record is not there; to one kept from a field the value
+names, the value names only the fields it reads, and a record left
+naming none is not there. The records are told so as the engine hands
+them to the read, before anything reads them, so it holds for `get`,
+`find` with its `where`, its order, its total and an aggregate, a
+query's pages, a read as of a position, and a proposal's write; and for
+`setting('<key>')` in every expression a read evaluates for its reader:
+a `where`, a field computed at the read, a view computed for it. A
+view whose computation names a setting, or reads `sys.setting` or such
+a view, is computed, never served kept, for a reader the settings are
+narrowed to, so it answers what its computation answers. A reader kept
+from `secret` reads `sys.setting` as in a lake where `secret` was never
+declared. A proposal's write is told as of where it was proposed: one
+that tells a reader nothing of a record it was not told then is not
+there to it, whatever became of the record since.
+
+A change notification of such a record compares what its reader is told
+of it before the change and after: a change to what it is not told
+alone is not told, a record that becomes one it is not told is told as
+retired, and one that becomes one it is told is told as the write that
+made it, which names every field the record holds. Every reader is
+told a setting's change so: a notification of `sys.setting` names a
+field only where the value it is told changed. A set's change and a
+trigger's firing over `sys.setting` are told only to one who reads
+every field of every type, as a condition over a field a reader may not
+read is never told it. That departs from the twin, which would tell a
+condition that reads no setting narrowed to its reader; it tells less,
+never more.
+
+A write by that reader never drops what it is not told. A write of the
+setting keeps the entries of the stored value that name a field it is
+kept from, after the ones it writes, in their order: the owner's
+`["due", "salary"]`, written `["due", "x"]` by a writer kept from
+`salary`, holds `["due", "x", "salary"]`, and the writer reads
+`["due", "x"]`, as its twin would. A null it writes is no value, and
+is refused as a null over its twin is. Its retire clears only what it
+is told: the record keeps the rest, and is not there to it after. A write or a
+retire it proposes is proposed as that write, merged with what stands
+then: it is listed to it as it wrote it, and its accept is refused once
+the record changed, as a pinned proposal's is. Every setting proposal
+by a proposer who does not read every field is pinned so, whether or
+not anything was merged into it. Its write is judged as it wrote it,
+before its expected version is, so a type or field it is
+not shown is refused as one that is not declared, whatever version it
+expects. A record it is not told is none to its write: its expected
+version is judged as at a key never set, and a write that leaves its
+value is refused as a write without a value is. What a write answers
+is the record's own: its version counts every write of the key, the
+ones the writer is not told too. So the version, and the refusal of
+an accept pinned to it, tell such a writer that the record changed;
+and every reader's version of the record, as `get` and `find` answer
+it, its value's provenance (`known_at`, `position`, `writer`), and the
+`latest` order and the orders by those move with a change to entries
+it is not told. They tell that the record changed, when and by whom,
+never what: one record per setting and type would end that, a change
+of the log's form (lakelands#1210). An empty list it writes over
+entries it is not told departs from the twin, which tells `[]`: the entries
+stay, so the record names only fields the writer is kept from and is
+not there to it, and a proposal of it is listed to it as a retire.
+
+What the store computes at a write, a derived field stored and a view
+kept, reads every setting, as the lake does; a record's grants show it.
+An export and a mirror are the owner's and copy the records whole.
+
 ### `lakelands settings` shows them and writes only the lake's
 
 `lakelands settings` prints every listed setting with the value it has
@@ -148,8 +217,10 @@ again to change and never withdrawn; a bundle declares it in its
   the records of a group by it; only the declaration is withheld.
 
 Any expression reads any setting, whatever its reader's grant on
-`sys.setting`: a value that must be kept from a reader, a secret above
-all, is never a setting. `lakelands settings` lists a lake's declared
+`sys.setting`, save a lake setting for a type, which an expression
+evaluated at a read reads as its reader is told it (above): a value
+that must be kept from a reader, a secret above all, is never a
+setting. `lakelands settings` lists a lake's declared
 settings beside the store's, with their group, and `settings set` judges
 a value by its declared kind.
 

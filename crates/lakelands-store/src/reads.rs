@@ -65,6 +65,7 @@ use lakelands_api::read::{
     After as ReadAfter, AggFunc, Aggregate, Find, Found, Get, Group, Order, OrderBy, Params, ReadAt,
 };
 use lakelands_api::record::StoredRecord;
+use lakelands_api::seam::SETTING_TYPE as SETTING;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposedWrite};
 use lakelands_api::{
     Cursor, Error, FieldName, Missing, Position, Principal, Record, RecordKey, Refusal,
@@ -150,6 +151,9 @@ pub struct Reader<'a> {
     past: RefCell<Past>,
     /// The settings at the read's position, read once.
     settings: OnceCell<BTreeMap<String, Value>>,
+    /// The settings as its reader is told them, where that is not whole
+    /// ([`Self::told`]).
+    told: OnceCell<Option<BTreeMap<String, Value>>>,
 }
 
 /// What a read holds of the declarations' past (lakelands#1064): those in
@@ -608,6 +612,7 @@ impl<'a> Reader<'a> {
             members: RefCell::default(),
             past: RefCell::default(),
             settings: OnceCell::new(),
+            told: OnceCell::new(),
         })
     }
 
@@ -638,8 +643,17 @@ impl<'a> Reader<'a> {
 
     /// Records of `ty` as an engine holds them, as this read answers them:
     /// each field computed at the read computed over the record as stored,
-    /// with this read's clock, the one a `where` reads.
+    /// with this read's clock, the one a `where` reads; a setting as its
+    /// reader is told it, none it is not told ([`Sight::told`]), so a
+    /// `where`, an order and an aggregate read what it is told.
     fn at_read(&self, ty: &TypeName, mut rows: Vec<StoredRecord>) -> Vec<StoredRecord> {
+        if self.sight.narrows(ty) {
+            let told = |r: StoredRecord| match self.sight.told(&r)? {
+                std::borrow::Cow::Owned(o) => Some(o),
+                std::borrow::Cow::Borrowed(_) => Some(r),
+            };
+            rows = rows.into_iter().filter_map(told).collect();
+        }
         let o = &self.shape.ontology;
         let Some(decl) = o
             .ty(ty)
@@ -653,17 +667,17 @@ impl<'a> Reader<'a> {
             o.value_type_list(),
         );
         for r in &mut rows {
-            core_derive::at_read(&decl, &value_types, r, &self.shape.settings, self.now);
+            core_derive::at_read(&decl, &value_types, r, self.told(), self.now);
         }
         rows
     }
 
     /// Whether the store evaluates `e` over records of `decl` itself: it
     /// needs the store, or reads a field computed at the read, which no
-    /// engine holds.
+    /// engine holds, or a setting its reader may be told narrowed.
     fn store_only(&self, decl: &TypeDecl, e: &Expr) -> bool {
         let at_read = |n: &&FieldName| decl.fields.iter().any(|f| &f.name == *n && f.at_read());
-        needs_store(e) || e.fields_read().iter().any(at_read)
+        needs_store(e) || e.fields_read().iter().any(at_read) || self.sight.narrows(&decl.name)
     }
 
     /// Refuse an order by a field computed at the read: it moves with the
@@ -890,6 +904,21 @@ impl<'a> Reader<'a> {
         Ok(Some(by.into_values().cloned().collect()))
     }
 
+    /// The settings at the read's position as its reader is told them
+    /// ([`Sight::settings`]): what every expression the read evaluates
+    /// reads by `setting('…')`, a view's computation too, so a view whose
+    /// computation names a setting is computed for a reader they are
+    /// narrowed to ([`Self::computes`]).
+    fn told(&self) -> &BTreeMap<String, Value> {
+        let told = self
+            .told
+            .get_or_init(|| match self.sight.settings(&self.shape.settings) {
+                std::borrow::Cow::Borrowed(_) => None,
+                std::borrow::Cow::Owned(s) => Some(s),
+            });
+        told.as_ref().unwrap_or(&self.shape.settings)
+    }
+
     /// The settings at the read's position, read once a read.
     fn settings(&self) -> Result<&BTreeMap<String, Value>> {
         if let Some(s) = self.settings.get() {
@@ -995,8 +1024,9 @@ impl<'a> Reader<'a> {
 
     /// Whether the principal may see a stored record at this read, before
     /// masking: live, restricted only with the grant, admitted by its
-    /// `only`, valid at `valid_at` when asked. A link record's ends are
-    /// judged a page at a time ([`Self::admitted_ends`]).
+    /// `only`, a setting it is told ([`Sight::told`]), valid at `valid_at`
+    /// when asked. A link record's ends are judged a page at a time
+    /// ([`Self::admitted_ends`]).
     fn live(&self, decl: &TypeDecl, r: &StoredRecord) -> bool {
         self.live_by(decl, &self.sight.admit(&decl.name), r)
     }
@@ -1007,6 +1037,7 @@ impl<'a> Reader<'a> {
         (!r.retired || self.retired.get())
             && !self.sight.withheld(r)
             && admit.holds(&r.fields)
+            && self.sight.told(r).is_some()
             && (self.valid_at_for(decl))
                 .is_none_or(|t| valid_time::record_holds(decl, &r.fields, t))
             && (self.valid_for(decl).1).is_none_or(|b| self.holds(&b, r, false))
@@ -1016,7 +1047,8 @@ impl<'a> Reader<'a> {
     /// admitted records of what it reads, never served kept: under its
     /// `only` (051), or, without `restricted`, over a link type, or a view
     /// computed so, whose links are judged by their ends, as no kept face
-    /// can (006).
+    /// can (006); or whose computation names a setting the reader is told
+    /// otherwise than the fold reads it ([`Self::told`]).
     fn computes(&self, ty: &TypeName) -> bool {
         if let Some(known) = self.computes_known.borrow().get(ty) {
             return *known;
@@ -1033,18 +1065,30 @@ impl<'a> Reader<'a> {
     fn computes_once(&self, ty: &TypeName) -> bool {
         let find = |t: &TypeName| self.shape.ontology.ty(t).ok();
         let view = find(ty).and_then(|d| d.view.as_deref());
-        let mut sources = view
+        let sources: Vec<&TypeName> = view
             .into_iter()
-            .flat_map(|v| std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source)));
-        let links = |s: &TypeName| lakelands_core::links::is_link_type(s) || self.computes(s);
+            .flat_map(|v| std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source)))
+            .collect();
+        let links = |s: &&TypeName| lakelands_core::links::is_link_type(s) || self.computes(s);
+        // To a reader the settings are narrowed to, a view that names a
+        // setting, or reads `sys.setting` or a view computed for it.
+        let narrowed = self.sight.narrows(&SETTING.into());
+        let settings = |s: &&TypeName| {
+            s.as_str() == SETTING || (find(s).is_some_and(|d| d.view.is_some()) && self.computes(s))
+        };
         rights::computed_only(self.who, ty, &find)
-            || (!self.who.grants.restricted && sources.any(links))
+            || (!self.who.grants.restricted && sources.iter().any(links))
+            || (narrowed
+                && (find(ty).is_some_and(|d| crate::kept::names_settings(&self.shape.ontology, d))
+                    || sources.iter().any(settings)))
     }
 
     /// Whether this reader is admitted every record of `decl` as stored.
     fn whole(&self, decl: &TypeDecl) -> bool {
         let admit = self.sight.admit(&decl.name);
-        admit.pairs().is_some_and(|p| p.is_empty()) && !self.sight.judges_ends(decl)
+        admit.pairs().is_some_and(|p| p.is_empty())
+            && !self.sight.judges_ends(decl)
+            && !self.sight.narrows(&decl.name)
     }
 
     /// Of link records of `decl`, which have every end this reader holds
@@ -1248,7 +1292,7 @@ impl<'a> Reader<'a> {
         let record = RecordScope {
             fields: &r.fields,
             meta: meta.then_some(&r.meta),
-            settings: Some(&self.shape.settings),
+            settings: Some(self.told()),
             now: self.now,
         };
         let members = self.members.borrow();
@@ -1297,8 +1341,9 @@ impl<'a> Reader<'a> {
         let Some(equal) = self.sight.admit(&decl.name).pairs().map(<[_]>::to_vec) else {
             return Ok(0);
         };
-        // A link's ends are judged a page at a time, never by the engine.
-        let ends = self.sight.judges_ends(decl);
+        // A link's ends are judged a page at a time, never by the engine,
+        // and so is a setting its reader may not be told.
+        let ends = self.sight.judges_ends(decl) || self.sight.narrows(&decl.name);
         let bounded = self.with_bound(decl, filter);
         let filter = bounded.as_ref();
         if ends || filter.is_some_and(|e| kept || self.store_only(decl, e)) {
@@ -1420,7 +1465,7 @@ impl<'a> Reader<'a> {
         };
         let mut out = Vec::new();
         loop {
-            let rows = self.at_read(&decl.name, self.view.scan(&decl.name, &scan)?);
+            let rows = self.view.scan(&decl.name, &scan)?;
             // An engine answers a kept name as of an earlier position in
             // key order by its statement's plan alone, and this read goes
             // on from a page's last key: a page in another order would
@@ -1440,6 +1485,8 @@ impl<'a> Reader<'a> {
                     last = Some(&r.key);
                 }
             }
+            // The engine's page, before a setting is told, says where the
+            // next one starts and whether there is one.
             let last_page = rows.len() < scan.limit as usize;
             if let Some(last) = rows.last() {
                 scan.after = Some(After {
@@ -1447,6 +1494,7 @@ impl<'a> Reader<'a> {
                     key: last.key.clone(),
                 });
             }
+            let rows = self.at_read(&decl.name, rows);
             let ends = self.admitted_ends(decl, &rows)?;
             for (r, _) in rows.into_iter().zip(ends).filter(|(_, ends)| *ends) {
                 if self.live_by(decl, &admit, &r) && here.is_none_or(|e| self.holds(e, &r, true)) {
@@ -1770,7 +1818,7 @@ impl<'a> Reader<'a> {
                 .or_default();
         }
         // One group's measures, seeing the values `given` by name.
-        let settings = Some(&self.shape.settings);
+        let settings = Some(self.told());
         // A measure that fails is named with its group, as one that does
         // not land is (023, lakelands#925).
         let failed = |group: &RecordKey, name: FieldName, why: Case| {
@@ -1895,7 +1943,7 @@ impl<'a> Reader<'a> {
         let mut members = aggregate::Grouping::new(keys, &measures, self.now);
         self.each_member(&source, down, COUNT_PAGE, |r| {
             if here.is_none_or(|w| self.holds(w, r, true)) {
-                members.add((&r.fields, Some(&r.meta)), Some(&self.shape.settings));
+                members.add((&r.fields, Some(&r.meta)), Some(self.told()));
             }
             Ok(())
         })?;
@@ -2219,8 +2267,9 @@ impl<'a> Reader<'a> {
             };
             let after = Self::skipped(&find.order_by, after, skip, &page)?;
             page(after, limit + 1)?.into_iter().map(row).collect()
-        } else if decl.view.is_some() {
-            // A view's records are computed from its source, whole.
+        } else if decl.view.is_some() || self.sight.narrows(&decl.name) {
+            // A view's records are computed from its source, whole, and
+            // settings a reader may be told narrowed are ordered as told.
             let all = self.records(&decl, filter.as_ref())?;
             let mut keyed: Vec<_> = all.into_iter().map(row).collect();
             keyed.sort_by(|a, b| Self::compare(&find.order_by, &a.0, &b.0));
@@ -2389,7 +2438,7 @@ impl<'a> Reader<'a> {
         };
         let mut grouping = aggregate::grouping(a, self.now).map_err(named)?;
         self.each_member(decl, filter, COUNT_PAGE, |r| {
-            grouping.add((&r.fields, Some(&r.meta)), Some(&self.shape.settings));
+            grouping.add((&r.fields, Some(&r.meta)), Some(self.told()));
             Ok(())
         })?;
         let mut groups = aggregate::answer(grouping, a).map_err(named)?;
@@ -2704,7 +2753,8 @@ impl<'a> Reader<'a> {
         // link's end it is not answered, held or another's (lakelands#1008,
         // lakelands#1016): an `only` lists in part only what it is shown,
         // trimmed (lakelands#867). A retired record that is not held is,
-        // as to its writes, a free key.
+        // as to its writes, a free key, and so is a setting its reader is
+        // not told (063).
         let (g, view) = (&self.who.grants, self.view.as_ref());
         if !g.restricted || rights::holds_only(self.who) {
             // A retarget reaches records of its new targets alone: where none
@@ -2757,9 +2807,8 @@ impl<'a> Reader<'a> {
                     let keys: Vec<RecordKey> = keys.iter().cloned().collect();
                     for page in keys.chunks(COUNT_PAGE) {
                         let there = view.get_many(t, page)?;
-                        let held = there
-                            .iter()
-                            .filter(|r| !r.retired || self.sight.withheld(r));
+                        let live = |r: &&StoredRecord| !r.retired && self.sight.told(r).is_some();
+                        let held = there.iter().filter(|r| live(r) || self.sight.withheld(r));
                         let held: Vec<&RecordKey> = held.map(|r| &r.key).collect();
                         if !held.is_empty() && !answered_of(view, self.sight, t, &held, held.len())?
                         {
@@ -2767,6 +2816,21 @@ impl<'a> Reader<'a> {
                         }
                     }
                 }
+            }
+        }
+        // A setting's write as its reader is told it: a retire, or one
+        // that leaves a record it is told none, of a record it was not told
+        // where it was proposed is not there to it, as in its twin, whatever
+        // became of the record since (063).
+        let mut told = logged.clone();
+        self.told_setting(&mut told);
+        if let ProposedWrite::Retire { ty, key, .. } = &told
+            && self.sight.narrows(ty)
+        {
+            let then = self.lake.engine.view(Some(at))?;
+            let there = then.get(ty, key)?.filter(|r| !r.retired);
+            if there.is_none_or(|r| self.sight.told(&r).is_none()) {
+                return Ok(None);
             }
         }
         // A migration's report kept before reports counted what they
@@ -2796,8 +2860,11 @@ impl<'a> Reader<'a> {
         // A value type's report is made again for its reader, its conditions
         // judged and its id made over what it is shown: the logged one is
         // its proposer's, so the reader's is compared with the whole one,
-        // as a reader shown everything is shown it.
+        // as a reader shown everything is shown it. A setting is compared
+        // as its reader is told it, as its twin without what it is not
+        // told lists it (063).
         let mut whole = logged.clone();
+        self.told_setting(&mut whole);
         if matches!(whole, ProposedWrite::MigrateValueType { .. }) {
             let mut all = asked.clone();
             all.grants = lakelands_api::Grants::owner();
@@ -2815,6 +2882,33 @@ impl<'a> Reader<'a> {
         };
         let more = shown.as_ref().map(planless) != Some(planless(&whole));
         Ok(Some((shown, more)))
+    }
+
+    /// `write`, where it is a setting's upsert its reader may be told
+    /// narrowed, as it is told it ([`Sight::setting`]): its value narrowed,
+    /// or its retire where none is left.
+    fn told_setting(&self, write: &mut ProposedWrite) {
+        let ProposedWrite::Upsert {
+            ty,
+            key,
+            patch,
+            opts,
+        } = write
+        else {
+            return;
+        };
+        if !self.sight.narrows(ty) {
+            return;
+        }
+        let value = patch.get("value").cloned().unwrap_or(Value::Null);
+        let Some(told) = self.sight.setting(key.as_str(), value) else {
+            let (ty, key, opts) = (ty.clone(), key.clone(), opts.clone());
+            *write = ProposedWrite::Retire { ty, key, opts };
+            return;
+        };
+        if let Some(v) = patch.get_mut("value") {
+            *v = told;
+        }
     }
 
     /// A proposed write as its reader may know it (013 and 024, extended):
@@ -2878,22 +2972,33 @@ impl<'a> Reader<'a> {
             Ok::<_, Error>(only(ty, &fields))
         };
         let answered = |ty: &TypeName, key: &RecordKey| answered(view, self.sight, ty, key);
+        // A setting as its reader is told it ([`Self::entry`]).
+        self.told_setting(write);
         match write {
             // A field the reader may not know of and a masked one both
             // leave the patch: it holds values, and no place for a name.
             // So does one it could not read where the write was proposed,
             // a reference to a type re-keyed since among them: its value
             // is the old key (lakelands#913). A retired record that is not
-            // held is a free key, as to the reader's own writes.
+            // held is a free key, as to the reader's own writes, and so is
+            // a setting it is not told (063).
             ProposedWrite::Upsert { ty, key, patch, .. } => {
                 let admitted = after(ty, key, patch)?;
                 let then_reads = |f: &FieldName| then.is_none_or(|(s, _)| s.reads(ty, f));
                 patch.retain(|field, _| read(ty, field) && then_reads(field));
                 let stored = self.view.get(ty, key)?;
-                let free = stored.is_some_and(|r| r.retired && !self.sight.withheld(&r));
+                let untold = |r: &StoredRecord| r.retired || self.sight.told(r).is_none();
+                let free = stored.is_some_and(|r| untold(&r) && !self.sight.withheld(&r));
                 Ok(admitted && (free || answered(ty, key)?))
             }
-            ProposedWrite::Retire { ty, key, .. } => answered(ty, key),
+            // A setting retired or not told now is a free key, as to an upsert;
+            // the entry was judged where it was proposed (063).
+            ProposedWrite::Retire { ty, key, .. } => {
+                let stored = self.view.get(ty, key)?.filter(|_| self.sight.narrows(ty));
+                let untold = |r: &StoredRecord| r.retired || self.sight.told(r).is_none();
+                let free = stored.is_some_and(|r| untold(&r) && !self.sight.withheld(&r));
+                Ok(free || answered(ty, key)?)
+            }
             // A payload is what the verb's fields become: whole to a reader
             // who may read each field the verb sets, as it is declared and
             // as it was where the call was proposed, or see the type an
@@ -4295,8 +4400,7 @@ impl<'a> Reader<'a> {
                 })
                 .collect();
             let refs: Vec<&BTreeMap<FieldName, Value>> = as_fields.iter().collect();
-            let groups =
-                aggregate::aggregate(&refs, a, &self.shape.settings, self.now).map_err(invalid)?;
+            let groups = aggregate::aggregate(&refs, a, self.told(), self.now).map_err(invalid)?;
             return Ok(Ok(QueryResult::Groups { rows: groups }));
         }
         let order: Vec<Order> = p.order_by.clone();
@@ -4937,7 +5041,7 @@ fn derived_edges(
                     };
                     let scope = Ends {
                         ends,
-                        settings: &r.shape.settings,
+                        settings: r.told(),
                         now: r.now,
                     };
                     if let Some(Some(e)) = filter
@@ -5033,7 +5137,8 @@ fn in_force_under(o: &Ontology, d: &Declaration) -> Option<Declaration> {
 /// as a read of it answers (lakelands#871). A key no record holds keeps
 /// nothing from it. A read the engine fails is the caller's error, never
 /// a hold (lakelands#927). One who holds `restricted` and no `only` is
-/// answered every record of a type it is shown, and is asked no read.
+/// answered every record of a type it is shown, a setting it may not be
+/// told aside ([`Sight::told`]), and is asked no read.
 pub(crate) fn answered(
     view: &dyn ProjectionView,
     sees: &Sight,
@@ -5056,7 +5161,7 @@ pub(crate) fn answered_of(
     let (Ok(decl), who) = (sees.ty(ty), sees.who()) else {
         return Ok(false);
     };
-    if who.grants.restricted && !rights::holds_only(who) {
+    if who.grants.restricted && !rights::holds_only(who) && !sees.narrows(ty) {
         return Ok(keys.len() >= need);
     }
     let mut found = 0;
@@ -5074,7 +5179,7 @@ pub(crate) fn answered_of(
         let held = rows
             .iter()
             .zip(ends)
-            .filter(|(r, ends)| !(*ends && sees.answers(ty, r)));
+            .filter(|(r, ends)| !(*ends && sees.answers(ty, r) && sees.told(r).is_some()));
         found += page.len() - held.count();
         if found >= need {
             return Ok(true);

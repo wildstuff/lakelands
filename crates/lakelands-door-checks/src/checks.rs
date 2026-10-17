@@ -9946,7 +9946,8 @@ fn answered<T: std::fmt::Debug>(r: Result<T, Error>) -> String {
 /// value, and a field it is not shown is one the type does not declare; a
 /// view it is shown without its definition cannot be kept, and nothing
 /// says why. `propose` answers as `upsert` does. A standing setting is
-/// written by one shown everything it names, and retired by any who may.
+/// told to a writer as were what it is not shown absent, and its write
+/// keeps what it is not told (lakelands#1198).
 pub async fn a_setting_is_judged_by_what_its_writer_is_shown(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let (c, owner, tuner) = (&f.catalog, &f.cast.owner, &f.cast.tuner);
@@ -10062,9 +10063,11 @@ pub async fn a_setting_is_judged_by_what_its_writer_is_shown(store: Arc<dyn Lake
         assert_eq!(proposed, written, "`{k}` is refused when it is proposed");
     }
 
-    // (vi) A standing setting that names what the tuner is not shown: the
-    // judge reads the value a write leaves, so the tuner neither extends
-    // it nor patches beside it; it retires it.
+    // (vi) A standing setting that names only what the tuner is not shown
+    // is, to the tuner, no setting (lakelands#1198): a write naming what
+    // it is not shown is refused as one naming what is not declared, a
+    // write beside the value as one without a value, a retire as of no
+    // record; its own write keeps what it is not told, after its own.
     let k = "sort_index.invoice";
     let stands = set_as(c, owner, k, json!(["secret"])).await;
     stands.expect("the owner indexes `secret`");
@@ -10075,11 +10078,29 @@ pub async fn a_setting_is_judged_by_what_its_writer_is_shown(store: Arc<dyn Lake
     let (setting, opts) = (ty("sys.setting"), WriteOpts::default);
     let beside = c.upsert(tuner, &setting, &key(k), beside, opts()).await;
     let beside = answered(beside);
-    assert!(beside.contains("UnknownField"), "{beside}");
+    assert!(beside.contains("Required"), "{beside}");
     let retired = c.retire(tuner, &setting, &key(k), opts()).await;
-    retired.expect("a retirement is not judged");
+    assert!(
+        answered(retired).contains("NotFound"),
+        "no record to retire"
+    );
     let own = set_as(c, tuner, k, json!(["status"])).await;
     own.expect("the tuner indexes what it is shown");
+    let get = Get {
+        key: key(k),
+        with_meta: false,
+        params: Default::default(),
+        at: Default::default(),
+    };
+    let held = c
+        .get(owner, &setting, get)
+        .await
+        .expect("the owner reads it");
+    assert_eq!(
+        held.data.fields.get("value"),
+        Some(&json!(["status", "secret"])),
+        "the tuner's write keeps `secret`, after its own"
+    );
 }
 
 /// `vault` with a record `v1` and a retired `v0`, the verbs `seal` on a

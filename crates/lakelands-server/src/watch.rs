@@ -25,13 +25,20 @@
 //!   type that declares an `initial` value: the fold filled those the
 //!   patch left out. Which fields declare one is read from the
 //!   principal's own description, so a field it reads masked, whose
-//!   `initial` it is not shown, is told by its patch alone.
+//!   `initial` it is not shown, is told by its patch alone. A write of a
+//!   setting is told by the record as the principal is told it before
+//!   and after (`docs/decisions/063-every-setting-is-in-one-list.md`): a
+//!   field only where the value it is told changed; a record it is no
+//!   longer told as retired, to a subscription that asks for
+//!   retirements; one it is told first as made.
 //! - **`trigger_fired` and `object_set_changed`** say that a condition
 //!   held for the record, and a trigger's guard or a set's filter may read
 //!   any field of its type. So they are told only to a principal who reads
 //!   every field of the type in full at that position: a condition over a
 //!   field it may not read, or reads masked, is never probed this way
 //!   (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
+//!   A condition over `sys.setting` is told only to one who reads every
+//!   field of every type, the only principal no setting is told narrowed.
 //!
 //! **What a gap says.** The positions a session is told are a subset of
 //! the log's, so a gap between two says that something happened the
@@ -47,7 +54,8 @@
 //!
 //! **What one change costs.** Each change a session is told costs one
 //! read: the record at the event's position, which decides whether the
-//! principal may see it then. The fields a type shows the principal,
+//! principal may see it then; a setting's write costs one more, the
+//! record before it. The fields a type shows the principal,
 //! which of them it is shown declare an `initial` value, and whether it
 //! reads the type whole are read once per type and kept for the pump's
 //! life.
@@ -83,9 +91,9 @@ use lakelands_api::event::{Event, EventBody};
 use lakelands_api::id::{Position, RecordKey, TypeName};
 use lakelands_api::principal::{Grants, PrincipalKind};
 use lakelands_api::read::{Get, ReadAt};
-use lakelands_api::seam::{ChangeFeed, FeedFilter};
+use lakelands_api::seam::{ChangeFeed, FeedFilter, SETTING_TYPE};
 use lakelands_api::tools::CHANGE_KINDS;
-use lakelands_api::{Catalog, LakeStore, Principal, WriteContext};
+use lakelands_api::{Catalog, LakeStore, Principal, Record, WriteContext};
 use serde_json::{Map, Value, json};
 use tokio::sync::{Notify, mpsc};
 
@@ -95,6 +103,19 @@ pub const QUEUE: usize = 256;
 
 /// The method of a change notification.
 pub const CHANGED: &str = "notifications/lakelands/changed";
+
+/// The kind a retirement is told as.
+const RETIRED: &str = "record_retired";
+
+/// Whether a subscription reads the feed's events of `kind`: those it
+/// asked for, and a write where it asked for retirements of settings, as
+/// a setting's write may be told as one (063). No source writes a
+/// setting.
+fn reads_kind(s: &Subscription, kind: &str) -> bool {
+    let asked = |k: &str| s.kinds.iter().any(|a| a == k);
+    let settings = (s.types.as_ref()).is_none_or(|t| t.iter().any(|t| t.as_str() == SETTING_TYPE));
+    asked(kind) || (asked(RETIRED) && settings && kind == "record_upserted")
+}
 
 /// One message on a session's queue.
 #[derive(Clone, Debug, PartialEq)]
@@ -331,7 +352,8 @@ pub async fn pump(
         ];
         let from = match &subscription {
             Some(s) => {
-                kinds.extend(s.kinds.iter().cloned());
+                let read = CHANGE_KINDS.iter().filter(|k| reads_kind(s, k));
+                kinds.extend(read.map(|k| (*k).to_owned()));
                 next.min(declared)
             }
             None => declared,
@@ -396,7 +418,7 @@ pub async fn pump(
                 }
                 "declared" | "migrated" | "value_type_migrated" => None,
                 kind => match &subscription {
-                    Some(s) if e.position >= next && s.kinds.iter().any(|k| k == kind) => {
+                    Some(s) if e.position >= next && reads_kind(s, kind) => {
                         match view.of(e, s).await {
                             Seen::Shown(params) => Some(Queued {
                                 generation: Some(generation),
@@ -512,12 +534,13 @@ impl<'a> View<'a> {
         let mut extra = Map::new();
         let mut condition = false;
         let mut named = None;
-        let made = matches!(
+        let mut kind = e.body.kind();
+        let mut made = matches!(
             e.body,
             EventBody::RecordUpserted { made: true, .. }
                 | EventBody::RecordIngested { made: true, .. }
         );
-        let (ty, key, fields, read_at) = match &e.body {
+        let (ty, key, mut fields, read_at) = match &e.body {
             EventBody::RecordUpserted { ty, key, patch, .. }
             | EventBody::RecordIngested { ty, key, patch, .. } => (
                 ty,
@@ -564,23 +587,48 @@ impl<'a> View<'a> {
         {
             return Seen::Hidden;
         }
+        let written = matches!(e.body, EventBody::RecordUpserted { .. });
+        let setting = written && ty.as_str() == SETTING_TYPE;
+        if !setting && !s.kinds.iter().any(|k| k == kind) {
+            return Seen::Hidden;
+        }
         // The record as the principal could read it then: a record it may
         // not read, or of a type it may not read, is never named.
-        let got = self
-            .catalog
-            .get(
-                self.who,
-                ty,
-                Get {
-                    key: key.clone(),
-                    with_meta: false,
-                    at: as_of(read_at),
-                    params: Default::default(),
-                },
-            )
-            .await;
-        if let Err(e) = got {
-            return failed(&e);
+        let got = self.read(ty, key, read_at).await;
+        if !setting && let Err(seen) = got {
+            return seen;
+        }
+        // A setting's write as its principal is told the record before it
+        // and after: what it is not told alone is not told, and a record
+        // it is no longer told is told as retired (063).
+        if setting {
+            let was = match at.0.checked_sub(1) {
+                Some(p) => self.told(ty, key, Position(p)).await,
+                None => Ok(None),
+            };
+            let (was, now) = match (was, got.map(Some).or_else(untold)) {
+                (Ok(was), Ok(now)) => (was, now),
+                (Err(seen), _) | (_, Err(seen)) => return seen,
+            };
+            match (was, now) {
+                (None, None) => return Seen::Hidden,
+                (Some(_), None) => (kind, fields) = (RETIRED, None),
+                // As the write that made it, which names every field it holds.
+                (None, Some(now)) => {
+                    let held = now.fields.keys().chain(&now.masked);
+                    (made, fields) = (true, Some(held.map(|f| f.to_string()).collect()));
+                }
+                (Some(was), Some(now)) => {
+                    let differs = |f: &String| {
+                        let f = lakelands_api::FieldName::from(f.as_str());
+                        was.fields.get(&f) != now.fields.get(&f)
+                    };
+                    fields = fields.map(|f| f.into_iter().filter(differs).collect());
+                }
+            }
+            if !s.kinds.iter().any(|k| k == kind) {
+                return Seen::Hidden;
+            }
         }
         if condition {
             match self.whole(ty, read_at).await {
@@ -624,7 +672,7 @@ impl<'a> View<'a> {
         let mut params = Map::from_iter([
             ("lake".to_owned(), json!(e.lake)),
             ("position".to_owned(), json!(at.0)),
-            ("kind".to_owned(), json!(e.body.kind())),
+            ("kind".to_owned(), json!(kind)),
             ("type".to_owned(), json!(ty)),
             ("key".to_owned(), json!(key)),
         ]);
@@ -633,6 +681,29 @@ impl<'a> View<'a> {
         }
         params.extend(extra);
         Seen::Shown(Value::Object(params))
+    }
+
+    /// The record `key` of `ty` as the principal may read it at `at`.
+    async fn read(&self, ty: &TypeName, key: &RecordKey, at: Position) -> Result<Record, Seen> {
+        let get = Get {
+            key: key.clone(),
+            with_meta: false,
+            at: as_of(at),
+            params: Default::default(),
+        };
+        let got = self.catalog.get(self.who, ty, get).await;
+        got.map(|r| r.data).map_err(|e| failed(&e))
+    }
+
+    /// The record `key` of `ty` as the principal is told it at `at`;
+    /// `None` where it is not.
+    async fn told(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        at: Position,
+    ) -> Result<Option<Record>, Seen> {
+        self.read(ty, key, at).await.map(Some).or_else(untold)
     }
 
     /// The field names of `ty` the principal is shown at `at`: those it
@@ -662,6 +733,16 @@ impl<'a> View<'a> {
     async fn whole(&mut self, ty: &TypeName, at: Position) -> Result<bool, Seen> {
         if let Some(w) = self.whole.get(ty) {
             return Ok(*w);
+        }
+        // A setting may be told narrowed to one who does not read every
+        // field of every type, so a condition over it is never its (063).
+        let all = Grants {
+            restricted: true,
+            ..self.who.grants.clone()
+        };
+        if ty.as_str() == SETTING_TYPE && !all.reads_everything() {
+            self.whole.insert(ty.clone(), false);
+            return Ok(false);
         }
         let d = self
             .catalog
@@ -699,6 +780,14 @@ impl View<'_> {
             self.listed = Some(sets.chain(triggers).collect());
         }
         Ok(self.listed.get_or_insert_default())
+    }
+}
+
+/// A read that hides the record answers none; any other failure is its.
+fn untold(seen: Seen) -> Result<Option<Record>, Seen> {
+    match seen {
+        Seen::Hidden => Ok(None),
+        other => Err(other),
     }
 }
 

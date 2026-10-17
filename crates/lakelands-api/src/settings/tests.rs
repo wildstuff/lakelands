@@ -121,6 +121,50 @@ fn a_setting_is_told_as_its_reader_sees_the_type() {
     assert_eq!(seen(at("view_kept.row", json!(true))), Some(json!(true)));
 }
 
+/// A write keeps what its writer is not told of the value it replaces,
+/// after what it writes; a host's key and a setting naming nothing hidden
+/// take what is written.
+#[test]
+fn a_write_keeps_what_its_writer_is_not_told() {
+    let hidden = |_: &str, f: &str| f == "m";
+    let kept = |key: &str, stored: Value, written: Value| kept(key, &stored, written, &hidden);
+    let row = "sort_index.row";
+    assert_eq!(
+        kept(row, json!(["n", "m"]), json!(["k", "n"])),
+        json!(["k", "n", "m"])
+    );
+    assert_eq!(kept(row, json!(["m", "n"]), Value::Null), json!(["m"]));
+    assert_eq!(kept(row, json!(["n"]), json!(["k"])), json!(["k"]));
+    assert_eq!(kept(row, json!(["n"]), Value::Null), Value::Null);
+    let weights = "search_weights.row";
+    assert_eq!(
+        kept(
+            weights,
+            json!({"fields": {"m": 1.0, "n": 2.0}}),
+            json!({"text_weight": 0.5})
+        ),
+        json!({"text_weight": 0.5, "fields": {"m": 1.0}})
+    );
+    assert_eq!(
+        kept(weights, json!({"fields": {"m": 1.0}}), Value::Null),
+        json!({"fields": {"m": 1.0}})
+    );
+    assert_eq!(kept("threshold", json!(["m"]), json!(1)), json!(1));
+    // One it names itself, shown it masked, stands once, as written.
+    assert_eq!(
+        kept(row, json!(["m", "n"]), json!(["m", "k"])),
+        json!(["m", "k"])
+    );
+    assert_eq!(
+        kept(
+            weights,
+            json!({"fields": {"m": 1.0}}),
+            json!({"fields": {"m": 2.0}})
+        ),
+        json!({"fields": {"m": 2.0}})
+    );
+}
+
 /// What a location holds beside its settings is the list's location
 /// bindings, both ways: the engines' members and the key's handle.
 #[test]

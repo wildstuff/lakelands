@@ -211,7 +211,8 @@ pub fn type_access(who: &Principal, ty: &TypeName) -> Access {
 }
 
 /// A stored record as a sight's principal may see it; `None` when the
-/// record is retired, or held from it ([`Sight::withheld`]).
+/// record is retired, or held from it ([`Sight::withheld`]), or a setting
+/// it is not told ([`Sight::told`]).
 pub fn visible(
     sees: &crate::sight::Sight,
     decl: &TypeDecl,
@@ -221,6 +222,7 @@ pub fn visible(
     if stored.retired || sees.withheld(stored) {
         return None;
     }
+    let stored = sees.told(stored)?;
     let who = sees.who();
     let mut fields = BTreeMap::new();
     let mut masked = Vec::new();
