@@ -3352,6 +3352,19 @@ impl<'a> Reader<'a> {
                 return Err(core_engines::dimensions(query, declared, &s.ty, field));
             }
         }
+        // A vector the caller names a model for is of that model: over a
+        // field the reader is shown as an embedding it must be the field's
+        // own, judged after its length (lakelands#994). Over any other
+        // field the lake knows no model, and the axis only names it.
+        for (field, named) in s.mode.models() {
+            let held = declared(field).and_then(|f| f.embed.as_ref());
+            if let (Some(query), Some(e)) = (named, held)
+                && query != e.model
+            {
+                let field = field.as_str();
+                return Err(core_engines::model(query, &e.model, &s.ty, field));
+            }
+        }
         let filter = self.record_filter(&decl, s.filter.as_ref(), &[Place::Where])?;
         Ok((decl, text_fields, filter, ranks))
     }
@@ -3472,11 +3485,18 @@ impl<'a> Reader<'a> {
         // it, as the vectors are; a ranking over no field the head shows
         // the reader has no candidate, and is not asked.
         let (mut asked, mut lists, mut axes) = (Rankings::default(), Vec::new(), Vec::new());
+        // The model a caller named for its own vector, as it named it.
+        let models = s.mode.models();
+        let named = |f: &FieldName| {
+            let m = models.iter().find(|(n, _)| *n == f);
+            m.and_then(|(_, m)| m.map(str::to_owned))
+        };
         let axis = |field: Option<&FieldName>| Axis {
             axis: (if field.is_some() { "vector" } else { "lexical" }).into(),
             field: field.cloned(),
             candidates: None,
             weight: None,
+            model: field.and_then(named),
         };
         // A ranking the search does not weigh takes its type's setting, as
         // the read finds it at its position (lakelands#561); a field the

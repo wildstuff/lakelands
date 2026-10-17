@@ -875,6 +875,8 @@ interface types {
         field: field-name,
         vector: list<f32>,
         weight: option<f64>,
+        /// The model that made the vector, if the caller names it.
+        model: option<string>,
     }
 
     record vector-search {
@@ -882,6 +884,8 @@ interface types {
         vector: list<f32>,
         weight: option<f64>,
         also: list<vector-term>,
+        /// The model that made the vector, if the caller names it.
+        model: option<string>,
     }
 
     record hybrid-search {
@@ -891,6 +895,8 @@ interface types {
         fields: option<list<field-name>>,
         weight: option<f64>,
         text-weight: option<f64>,
+        /// The model that made the vector, if the caller names it.
+        model: option<string>,
     }
 
     variant search-mode {
@@ -1001,12 +1007,13 @@ interface types {
     /// One axis a search ranked by: `lexical` or `vector`, a vector
     /// axis's field, and, where the search fuses, the candidates it handed
     /// the fusion for this reader, up to the lake's `max_limit`, with the
-    /// weight it ranked by.
+    /// weight it ranked by and the model the caller named for its vector.
     record axis {
         axis: string,
         field: option<field-name>,
         candidates: option<u64>,
         weight: option<f64>,
+        model: option<string>,
     }
 
     // ------------------------------------------------------------------

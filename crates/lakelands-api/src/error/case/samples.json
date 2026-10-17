@@ -1004,6 +1004,9 @@
    "measure": "s"
   },
   {
+   "code": "model_without_vector"
+  },
+  {
    "code": "no_relation_anywhere",
    "relation": "r"
   },
@@ -1095,6 +1098,11 @@
    "code": "query_dimensions",
    "held": 1,
    "query": 1
+  },
+  {
+   "code": "query_model",
+   "held": "s",
+   "query": "s"
   },
   {
    "code": "retired_with_aggregate"

@@ -1468,6 +1468,17 @@ pub fn dimensions(query: usize, held: usize, ty: &TypeName, field: &str) -> Erro
     invalid(at.within(At::Type { name }))
 }
 
+/// The refusal of a query vector the caller says `query` made, where
+/// `ty.field` is the embedding of `held`. Like [`dimensions`], it is
+/// judged by the declaration, after the reader is shown the field.
+pub fn model(query: &str, held: &str, ty: &TypeName, field: &str) -> Error {
+    let (query, held) = (query.to_owned(), held.to_owned());
+    let case = Case::QueryModel { query, held };
+    let (name, field) = (ty.clone(), field.into());
+    let at = Said::from(case).within(At::Field { name: field });
+    invalid(at.within(At::Type { name }))
+}
+
 /// Best first by score, ties by key, at most `k`.
 pub fn rank(hits: &mut Vec<(RecordKey, f64)>, k: u32) {
     hits.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));

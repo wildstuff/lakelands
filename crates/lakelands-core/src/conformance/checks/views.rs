@@ -692,6 +692,7 @@ async fn a_search_on_a_view_is_refused_naming_it(store: Store) -> Held {
             vector: Some(near().1),
             weight: None,
             text_weight: None,
+            model: None,
         },
     ] {
         let what = format!("{mode:?}");

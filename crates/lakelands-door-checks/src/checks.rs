@@ -11195,6 +11195,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
         vector: vec![1.0, 0.0],
         weight: None,
         also: Vec::new(),
+        model: None,
     };
     let hybrid = || SearchMode::Hybrid {
         text: "quay".into(),
@@ -11203,6 +11204,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
         fields: None,
         weight: None,
         text_weight: None,
+        model: None,
     };
     assert!(indexed().await.is_empty(), "no setting, nothing indexed");
     assert_eq!(ranked_by(by_vector("v"), None).await, "vector");
@@ -11231,6 +11233,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
         fields: None,
         weight: None,
         text_weight: None,
+        model: None,
     };
     let (lexical, v) = (String::from("lexical"), Some(String::from("v")));
     let vector = || (String::from("vector"), v.clone());
@@ -11812,6 +11815,7 @@ pub async fn a_vector_ranking_reads_a_vector_field(store: Arc<dyn LakeStore>) {
         fields: None,
         weight: None,
         text_weight: None,
+        model: None,
     };
     let along = |field: &str, also: &[&str]| SearchMode::Vector {
         field: field.into(),
@@ -11822,8 +11826,10 @@ pub async fn a_vector_ranking_reads_a_vector_field(store: Arc<dyn LakeStore>) {
                 field: (*f).into(),
                 vector: vec![1.0, 0.0],
                 weight: None,
+                model: None,
             })
             .collect(),
+        model: None,
     };
     let not_vector = |field: &str, kind: &str| json!({"code": "search_not_vector", "field": field, "kind": kind});
     let needs = |field: &str| json!({"code": "search_needs_vector", "field": field});
@@ -12079,6 +12085,7 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
                     fields: fields.clone(),
                     weight: None,
                     text_weight: None,
+                    model: None,
                 },
             ),
             (
@@ -12090,6 +12097,7 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
                     fields: fields.clone(),
                     weight: None,
                     text_weight: None,
+                    model: None,
                 },
             ),
         ]
@@ -12390,6 +12398,7 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
         fields: None,
         weight,
         text_weight,
+        model: None,
     };
     let fields = |weight, also: &str, also_weight| SearchMode::Vector {
         field: "v".into(),
@@ -12399,7 +12408,9 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
             field: also.into(),
             vector: vec![1.0, 0.0],
             weight: also_weight,
+            model: None,
         }],
+        model: None,
     };
     let (t, v) = (1.0 / 60.0, [1.0 / 60.0, 1.0 / 61.0, 1.0 / 62.0]);
     for (mode, by, want) in [
@@ -12453,6 +12464,7 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
         vector: vec![1.0, 0.0],
         weight: Some(2.0),
         also: Vec::new(),
+        model: None,
     };
     for (mode, on) in [
         (lone, Some("v")),

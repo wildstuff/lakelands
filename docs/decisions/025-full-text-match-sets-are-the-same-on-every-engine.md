@@ -281,6 +281,30 @@ ranked nothing would answer no hits for a lone search, which reads as
 "nothing is near". The rule is exact: a cosine over finite 32-bit
 floats, summed in doubles, neither overflows nor underflows.
 
+### A query vector may name its model, and over an embedding it must be the field's
+
+A vector of the right length made by another model was ranked by the
+cosine across two spaces, and answered as any other. So each vector a
+search brings, `vector`, an entry of `also` and a hybrid search's, may
+name its `model`.
+
+- **Over a field declared as an embedding,** a `model` other than the
+  field's `embed.model` is refused as invalid before anything is
+  ranked, naming both (`query_model`). It is judged by the head's
+  declaration, as the length is, after the vector's length, and after
+  the caller is judged to see the field, so a caller kept from the field
+  is answered as for any vector and told no model.
+- **Over a vector field that is no embedding** the lake knows no model,
+  so `model` is not judged; the field's axis names it, as it names it
+  wherever it was given.
+- **A vector without `model`** is ranked as before.
+- **A hybrid search that brings no `vector`** takes no `model`: the
+  lake makes that vector of the field's own model, so a `model` there
+  names nothing the caller brought. It is refused by the search's shape
+  alone (`model_without_vector`), with the other misfits and before any
+  field is judged for the caller, so the answer tells nothing of the
+  field.
+
 ### A vector ranking reads a vector field
 
 A vector search over a text or a number field answered no hits and said
@@ -832,3 +856,5 @@ Of an index asked for:
   (lakelands#901).
 - Added: where a measure lands, a view's in its field and an
   aggregate's in none (lakelands#839).
+- Added: a query vector may name its model, and over an embedding a
+  vector of another model is refused (lakelands#994).

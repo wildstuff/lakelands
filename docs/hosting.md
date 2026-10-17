@@ -1245,8 +1245,10 @@ them:
   StorageKind::Text) }`, `TypeDecl { fields, ..TypeDecl::named("invoice") }`,
   `RelationDecl::to("partner", "partner")`, and `SearchMode::lexical(text)`,
   `::vector` and `::hybrid` (0.9.0 added `weight` and `also` to a vector
-  search and `weight` and `text_weight` to a hybrid one; a mode built by
-  its constructor leaves them out). `TypeDecl`, `FieldDecl`, `RelationDecl`,
+  search and `weight` and `text_weight` to a hybrid one, and 0.16.0
+  `model` to both and to a vector term, and to `Axis`; a mode built by
+  its constructor leaves them out, and a `VectorTerm` written as a
+  struct literal names `model`). `TypeDecl`, `FieldDecl`, `RelationDecl`,
   `TypeDescription`, `FieldDescription`, `LakeDescription` and
   `TypeLifecycle` all implement `Default`. A name left at its default is
   empty, and the store refuses it at declare. A field's kind defaults to

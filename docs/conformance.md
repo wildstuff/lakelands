@@ -257,6 +257,11 @@ belongs in the suite, not beside one engine:
 - `a_backing_is_told_the_write_that_set_its_call_off` — 064: a backing is told the event that made its call due, its writer, the record, the source of an ingest, the write's context and an accept; the cause is no part of the call, so the same input is one call whoever writes it
 - `an_expr_function_declares_no_risk_and_a_risk_is_described` — 064: an `expr` function, which reaches nothing outside the lake, is refused a risk above low; a function's declared risk is what describe answers
 
+**query model**
+
+- `a_query_vector_of_another_model_than_its_fields_is_refused` — 025, extended: a query vector the caller names a model for is refused before anything is ranked where the field is the embedding of another model, after its length is judged, for a vector search, a term of `also` and a hybrid search alike; a hybrid search that brings no vector and names a model is refused by its shape, calling no embedding backend; a pattern started from such a search is refused alike; the field's own model ranks exactly as naming none, every hit and score alike for a vector search and a hybrid search, and over a field that is no embedding the model is not judged but named in the axis
+- `a_query_models_refusal_names_no_model_to_one_not_shown_the_field` — 025, extended (and 006): a caller kept from a field is refused a vector naming another model for that field, exactly as in a twin lake where the field is a plain vector, and, at `none`, as in one with no such field: the model is judged only after the caller is shown the field; a hybrid search naming a model without a vector is refused alike in all three, to every caller
+
 **views**
 
 - `a_view_groups_its_source_and_sums_it_exactly` — the ontology: a view type is computed from its source's records, one record per group, measures exact for decimals

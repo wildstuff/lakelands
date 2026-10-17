@@ -1193,6 +1193,8 @@ catalog! {
         MeasureNoType { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `type`: it reads every link of a relation, whatever it reaches",
         /// A measure's step with a `where`.
         MeasureNoWhere { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `where`",
+        /// A `model` on a hybrid search that brings no query vector.
+        ModelWithoutVector => "`model` names the model of a query vector the search brings, and it brings no `vector`; where the field is an embedding, the lake makes that one itself, with that model",
         /// A step over a relation no type declares, where the start names
         /// no type.
         NoRelationAnywhere { relation: RelationName } => "no type has a relation `{relation}` to walk",
@@ -1241,6 +1243,9 @@ catalog! {
         ProposalOrder { members: Names, field: FieldName, by: OrderBy } => "`order_by` orders proposals by their members ({members}) and their values, and `{field}` by `{by}` is not one",
         /// A query vector of another length than the field declares.
         QueryDimensions { query: usize, held: usize } => "the query vector has {query} dimensions, and the field holds vectors of {held}",
+        /// A query vector the caller names another model for than the one
+        /// the field is the embedding of.
+        QueryModel { query: String, held: String } => "the query vector is of the model `{query}`, and the field holds vectors of `{held}`",
         /// A `retired` count beside an aggregate.
         RetiredWithAggregate => "`retired` counts the retired records a page's `where` matches; an `aggregate` answers groups, so give one",
         /// A search's `fields` that names none.
