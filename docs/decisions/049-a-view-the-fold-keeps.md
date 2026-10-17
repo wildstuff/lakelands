@@ -17,7 +17,10 @@ would have to reproduce one.
   A write of it for a view that cannot be kept is refused, naming the
   measure and why. The value `false`, and a setting never written or
   retired, ask for nothing; any other value is refused as invalid,
-  naming `value`.
+  naming `value`. While an object set holds the view, or a view over
+  it, the value `false` and its retirement are refused
+  `view_kept_for_set`, naming the set
+  (`docs/decisions/066-a-set-holds-a-kept-view.md`).
 - **What can be kept is read off the declaration.** A view with no
   parameter and no clock, that reads no field computed at the read
   (052), each of whose aggregate calls is a function of

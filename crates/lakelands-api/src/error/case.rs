@@ -940,8 +940,8 @@ catalog! {
         ReferenceNoTarget => "a reference names its target type",
         /// A scale on a value type that is no decimal.
         ScaleNotDecimal => "only a decimal has a scale",
-        /// An object set of a view.
-        SetOfView { #[serde(rename = "type")] ty: TypeName } => "it holds `{ty}`, a view; a view's records are computed on read, and an object set holds stored records only",
+        /// An object set of a view the lake does not keep.
+        SetOfView { #[serde(rename = "type")] ty: TypeName } => "it holds `{ty}`, a view the lake does not keep, and a set holds records the lake keeps: set `view_kept.{ty}` to keep it first",
         /// An object set declared again over another type.
         SetRetyped { was: TypeName, #[serde(rename = "type")] ty: TypeName } => "it holds records of `{was}`; a set of `{ty}` takes another name",
         /// A view reading a source twice.
@@ -979,6 +979,11 @@ catalog! {
         ViewCycle { chain: Names } => "its view closes a cycle, reading {chain} in turn; a view may not read itself, through other views or directly",
         /// A view's field nothing fills.
         ViewFieldUnfilled { field: FieldName } => "its field `{field}` is neither a `group_by` field nor a measure of its view, so nothing would fill it",
+        /// A view a set holds no longer kept.
+        ViewKeptForSet { #[serde(rename = "type")] ty: TypeName } => "it holds `{ty}`, a view the lake keeps, and the view stays kept while the set holds it: withdraw the set first",
+        /// A change of a view's source that no write decides a set over the
+        /// view again for.
+        ViewSourceStepped { #[serde(rename = "type")] ty: TypeName, source: TypeName } => "it holds `{ty}`, a view over `{source}`, and the change moves records of `{source}` where no write decides the set again: withdraw the set, make the change, then declare the set again",
         /// A view's `key` that names other fields than its `group_by`.
         ViewKey { group_by: Option<Names> } => "a view's records are keyed by its `group_by`[ ({group_by})|, and it has none]; its `key` names the same fields in that order, or is left out",
         /// A stored relation on a view.

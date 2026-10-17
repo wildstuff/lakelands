@@ -2026,8 +2026,8 @@ fn partner_totals_view() -> TypeDecl {
 }
 
 /// A view is never written: a trigger on one would never fire, and an
-/// object set holds stored records, so `declare` refuses both, naming
-/// the declaration and the view.
+/// object set of one the lake does not keep would never be decided, so
+/// `declare` refuses both, naming the declaration and the view.
 pub async fn nothing_that_never_acts_is_declared_on_a_view(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let owner = &f.cast.owner;

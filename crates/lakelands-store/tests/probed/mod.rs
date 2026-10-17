@@ -79,6 +79,8 @@ pub struct Probe {
     pub rows: Mutex<std::collections::BTreeMap<TypeName, usize>>,
     /// How many times a kept view's state was read (`sys:kept`).
     pub states: AtomicUsize,
+    /// The keys each type was read at by `get` and `get_many`, in all.
+    pub gets: Mutex<std::collections::BTreeMap<TypeName, usize>>,
     /// The last record put under each kept name and key.
     pub kept: Mutex<std::collections::BTreeMap<(TypeName, RecordKey), StoredRecord>>,
     /// The entries of the kept views' orders put since the last clear, by
@@ -125,7 +127,8 @@ impl Probe {
     }
 
     /// A read of `ty`'s records by key, failed where `fail_get` names it.
-    fn got(&self, ty: &TypeName) -> Result<()> {
+    fn got(&self, ty: &TypeName, n: usize) -> Result<()> {
+        *self.gets.lock().unwrap().entry(ty.clone()).or_default() += n;
         if self.fail_get.lock().unwrap().as_ref() != Some(ty) {
             return Ok(());
         }
@@ -177,11 +180,11 @@ impl ProjectionView for ProbedView<'_> {
         self.inner.declarations()
     }
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
-        self.probe.got(ty)?;
+        self.probe.got(ty, 1)?;
         self.inner.get(ty, key)
     }
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
-        self.probe.got(ty)?;
+        self.probe.got(ty, keys.len())?;
         self.inner.get_many(ty, keys)
     }
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {

@@ -65,7 +65,7 @@ use Hidden::*;
 
 check!(
     GRID = the_rights_grid_holds_over_every_feature,
-    "006, 024 and 051 (lakelands#962): on twin lakes that differ only in a held record, another's record, another's link, a link to a trip another's `only` keeps, a field kept from a reader or a type kept from a reviewer, either in its values (each record its own, ordered one way in one lake and the other way in the other) or in whether it is there at all (the second lake holding it, and each link that reaches it, as one record of a type no reader is shown), each reader not shown that part, every one of them holding `review` and `ingest` so that those doors reach the part (without `restricted`, `only` on a type, on a link type and on an end's type, masked, at `none` and `write_only` on a field, `review` and `schema` kept from a type) is answered alike to the byte by `get`, `get` as of a position, `find` with rows, total and its count of the retired, over a held claim and one of another's that are retired beside the hidden ones (lakelands#1024), a count and a group, a `where` and an order on the hidden field and its sum, min and max, a lexical and a vector search, a pattern's rows, graph, path, degree and components, `describe` and `describe_type`, the proposals listed, unfiltered, of a pair that hides a link as well, where the owner proposed a call on each link with its label, and the preview of a migration that makes the hidden field a number, sent as its author is shown the type, and of the value type of the hidden texts tightened, and through each feature that reaches the part: a set of a set over the hidden field, read by `find`, a count, a group and an order; a relation matched on owners, and one under a condition over the hidden field, each walked, a path taken over it and measured by degree and components, but toward the one claim of an owner, which no other is a peer of; a relation whose target is the link type, its links read at every door; and a view over valid-timed trips and the same view kept with a valid time of its own (lakelands#910), each read at a valid time by `find`, a count, a group, a `where` and an order, and a total of the view that merges the trips in (lakelands#911), read at a valid time by `find` and a count, as is a trip whose valid time alone the twins hold otherwise, to a reader that reads it masked and to one that holds it and the kept view's valid time at `none`; after every read each reader writes, the owner last: the hidden field again, a link to the hidden record and from it, its unlinking and a link ingested, a verb's call, on a link too, and one whose `requires` reads the hidden field across a ticket's reference, a reference to it written and one computed from its key, a proposed retirement, an accept and a reject of the owner's proposal to write the hidden record again and of its call on the hidden link, and a retirement, each answered alike; on twins of the ontology that declare the same names, differing in a claim's derived field's description and expression and its link's field's type and description, kept from a reader holding `schema`, in a trip's verb's assignment and `requires` and its trigger's `when`, kept from that reviewer kept from trips and from one kept from them without `schema`, and in the body of a function computing a trip's field and the `one_of` of that field's value type, kept from the latter, `describe` and `describe_type` answer alike, and so do, after the writes, the claim or the trip declared again as the reader knows it with a field of its own, a verb and a trigger moved onto the claim and the function declared anew under the hidden names, the two applied together and the named alone, each proposed so, and the type previewed and proposed as a migration, while the owner's `describe`, and `describe_type` of the pair's types, read before those doors and before the owner declares, stay as they were but for a reader's own field, the head, the version and the hash (lakelands#917); the owner's answers differ at each of the 522 cells whose door shows the hidden part, so no twin is blind; twins whose logs part outside what they hide, in an event's kind, type, key or value, are a broken fixture, a set's memberships aside, which follow from the records; an instant the store stamps from its clock is compared by its rank among its answer's own, a fixture field bearing such a name refused, and the head an answer was read at, which those memberships move, is left out, with a proposal's id, which is a position, and the delivery the store names an ingest by, which is one too, and how far a write's consequences reach, which a write tells on purpose (006: that something reacted), as an upsert in a pair of existence is not asked, a create on a free key, which a write tells on purpose too (006: what a holder's write tells), and a report's counts are left out, which 006 keeps whole on purpose, with what follows from them (`lossless`, `fits`, `more` and the report's id); the feed, the log as the host reads it, answers no principal and is no door of the grid; so a leak through an instant's absolute value, the head, a write's reach, a free key or a report's count is out of the grid's reach",
+    "006, 024 and 051 (lakelands#962): on twin lakes that differ only in a held record, another's record, another's link, a link to a trip another's `only` keeps, a field kept from a reader or a type kept from a reviewer, either in its values (each record its own, ordered one way in one lake and the other way in the other) or in whether it is there at all (the second lake holding it, and each link that reaches it, as one record of a type no reader is shown), each reader not shown that part, every one of them holding `review` and `ingest` so that those doors reach the part (without `restricted`, `only` on a type, on a link type and on an end's type, masked, at `none` and `write_only` on a field, `review` and `schema` kept from a type) is answered alike to the byte by `get`, `get` as of a position, `find` with rows, total and its count of the retired, over a held claim and one of another's that are retired beside the hidden ones (lakelands#1024), a count and a group, a `where` and an order on the hidden field and its sum, min and max, a lexical and a vector search, a pattern's rows, graph, path, degree and components, `describe` and `describe_type`, the proposals listed, unfiltered, of a pair that hides a link as well, where the owner proposed a call on each link with its label, and the preview of a migration that makes the hidden field a number, sent as its author is shown the type, and of the value type of the hidden texts tightened, and through each feature that reaches the part: a set of a set over the hidden field, read by `find`, a count, a group and an order; a set of a kept view of the claims' totals by owner (lakelands#1185), read by `find` and a count; a relation matched on owners, and one under a condition over the hidden field, each walked, a path taken over it and measured by degree and components, but toward the one claim of an owner, which no other is a peer of; a relation whose target is the link type, its links read at every door; and a view over valid-timed trips and the same view kept with a valid time of its own (lakelands#910), each read at a valid time by `find`, a count, a group, a `where` and an order, and a total of the view that merges the trips in (lakelands#911), read at a valid time by `find` and a count, as is a trip whose valid time alone the twins hold otherwise, to a reader that reads it masked and to one that holds it and the kept view's valid time at `none`; after every read each reader writes, the owner last: the hidden field again, a link to the hidden record and from it, its unlinking and a link ingested, a verb's call, on a link too, and one whose `requires` reads the hidden field across a ticket's reference, a reference to it written and one computed from its key, a proposed retirement, an accept and a reject of the owner's proposal to write the hidden record again and of its call on the hidden link, and a retirement, each answered alike; on twins of the ontology that declare the same names, differing in a claim's derived field's description and expression and its link's field's type and description, kept from a reader holding `schema`, in a trip's verb's assignment and `requires` and its trigger's `when`, kept from that reviewer kept from trips and from one kept from them without `schema`, and in the body of a function computing a trip's field and the `one_of` of that field's value type, kept from the latter, `describe` and `describe_type` answer alike, and so do, after the writes, the claim or the trip declared again as the reader knows it with a field of its own, a verb and a trigger moved onto the claim and the function declared anew under the hidden names, the two applied together and the named alone, each proposed so, and the type previewed and proposed as a migration, while the owner's `describe`, and `describe_type` of the pair's types, read before those doors and before the owner declares, stay as they were but for a reader's own field, the head, the version and the hash (lakelands#917); the owner's answers differ at each of the 528 cells whose door shows the hidden part, so no twin is blind; twins whose logs part outside what they hide, in an event's kind, type, key or value, are a broken fixture, a set's memberships aside, which follow from the records; an instant the store stamps from its clock is compared by its rank among its answer's own, a fixture field bearing such a name refused, and the head an answer was read at, which those memberships move, is left out, with a proposal's id, which is a position, and the delivery the store names an ingest by, which is one too, and how far a write's consequences reach, which a write tells on purpose (006: that something reacted), as an upsert in a pair of existence is not asked, a create on a free key, which a write tells on purpose too (006: what a holder's write tells), and a report's counts are left out, which 006 keeps whole on purpose, with what follows from them (`lossless`, `fits`, `more` and the report's id); the feed, the log as the host reads it, answers no principal and is no door of the grid; so a leak through an instant's absolute value, the head, a write's reach, a free key or a report's count is out of the grid's reach",
     given
 );
 
@@ -75,7 +75,7 @@ check!(
 const KNOWN: &[(&str, u32)] = &[];
 
 /// The cells whose owner's answers differ between the twins.
-const CONTROLS: usize = 522;
+const CONTROLS: usize = 528;
 
 /// The link type of `claim.on_trip`.
 const LINK: &str = "sys.link.claim.on_trip";
@@ -93,6 +93,10 @@ const KEPT: &str = "trip_kept";
 
 /// A total of [`VIEW`] with the trips merged in, ungrouped.
 const MERGED: &str = "trip_merged";
+
+/// The claims' totals by owner, kept, and the set of the owners whose
+/// total is large (lakelands#1185).
+const OWNERS: &str = "claim_owners";
 const SINCE: &str = "2020-01-01T00:00:00Z";
 const VALID_AT: &str = "2021-01-01T00:00:00Z";
 
@@ -194,6 +198,8 @@ enum Feature {
     ViewKept,
     /// A view merging the trips into a view of them, read at a valid time.
     ViewMerged,
+    /// A set of a kept view of the claims, read by its name.
+    SetOfView,
     /// The declarations themselves: described, and sent again by the
     /// declaration doors.
     Ontology,
@@ -219,7 +225,7 @@ impl Feature {
             LinkOfLink => true,
             ViewValid | ViewKept => matches!(door, Get | Rows | Count | Group | Where | Order),
             // One total, with no field of the trip's to group, filter or order by.
-            ViewMerged => matches!(door, Rows | Count),
+            ViewMerged | SetOfView => matches!(door, Rows | Count),
             Ontology => false,
         }
     }
@@ -272,6 +278,7 @@ impl Hidden {
                 (Plain, LINK, "c9:t1", "label"),
                 (SetOfSet, "claim", "c9", "note"),
                 (SetOfSet, "claim", "c9", "amount"),
+                (SetOfView, OWNERS, "", "amount"),
                 (DerivedRelation, "claim", "c9", "note"),
                 (ConditionalEdge, "claim", "c9", "note"),
                 (LinkOfLink, MEMO_LINK, "m9:c9%3At1", "label"),
@@ -282,6 +289,7 @@ impl Hidden {
                 (Plain, LINK, "c2:t1", "label"),
                 (SetOfSet, "claim", "c2", "note"),
                 (SetOfSet, "claim", "c2", "amount"),
+                (SetOfView, OWNERS, "", "amount"),
                 (DerivedRelation, "claim", "c2", "note"),
                 (ConditionalEdge, "claim", "c2", "note"),
                 (LinkOfLink, MEMO_LINK, "m2:c2%3At1", "label"),
@@ -675,6 +683,9 @@ impl Door {
             if feature == SetOfSet {
                 find["where"] = json!(format!("in_set('outer_{field}')"));
             }
+            if feature == SetOfView {
+                find["where"] = json!("in_set('large')");
+            }
             if matches!(feature, ViewValid | ViewKept | ViewMerged) {
                 find["valid_at"] = json!(VALID_AT);
             }
@@ -971,6 +982,9 @@ fn declarations() -> Vec<Value> {
         "fields": [{"name": "n", "type": {"kind": "decimal"}}, {"name": "m", "type": {"kind": "decimal"}}],
         "view": {"source": VIEW, "group_by": [], "measures": [{"name": "n", "expr": "sum(n)"}],
                  "merge": [{"source": "trip", "group_by": [], "measures": [{"name": "m", "expr": "count()"}]}]}});
+    let owners = json!({"declare": "type", "name": OWNERS, "key": ["owner"],
+        "fields": [{"name": "owner", "type": {"kind": "text"}}, {"name": "total", "type": {"kind": "number"}}],
+        "view": {"source": "claim", "group_by": ["owner"], "measures": [{"name": "total", "expr": "sum(amount)"}]}});
     vec![
         json!({"declare": "value_type", "name": "word", "kind": "text"}),
         trip,
@@ -985,6 +999,7 @@ fn declarations() -> Vec<Value> {
         view,
         kept,
         merged,
+        owners,
         ty(
             "ticket",
             json!([to("claim", "claim"), text("ok")]),
@@ -1050,6 +1065,7 @@ async fn plain(
         l.declare_json(d).await?;
     }
     l.set(&format!("view_kept.{KEPT}"), json!(true)).await?;
+    l.set(&format!("view_kept.{OWNERS}"), json!(true)).await?;
     let vaulted = |ty: &str, key: &str| gone && b && hidden.hides(ty, key, "");
     let in_vault = |ty: &'static str, key: &str| if vaulted(ty, key) { VAULT } else { ty };
     let put = |ty: &str, key: &str, fields: Value| -> Result<Value, Failure> {
@@ -1184,6 +1200,9 @@ async fn plain(
         l.declare_json(set(format!("outer_{f}"), format!("in_set('inner_{f}')")))
             .await?;
     }
+    let large =
+        json!({"declare": "object_set", "name": "large", "of": OWNERS, "where": "total > 500"});
+    l.declare_json(large).await?;
     Ok((mark, ids))
 }
 

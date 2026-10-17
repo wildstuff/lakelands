@@ -49,6 +49,7 @@ mod host_settings;
 mod ingest;
 mod initial;
 mod judged;
+mod kept_sets;
 mod key_versions;
 mod keys;
 mod landing;
@@ -446,6 +447,11 @@ pub const ALL: &[Check] = &[
     sets_across::SET_ACROSS_DECLARED,
     sets_across::SET_ACROSS_READ,
     sets_across::SET_ACROSS_HELD,
+    kept_sets::KEPT_SET,
+    kept_sets::KEPT_SET_REFUSED,
+    kept_sets::KEPT_SET_REMADE,
+    kept_sets::KEPT_SET_BOUND,
+    kept_sets::KEPT_SET_HELD,
     link_triggers::LINK_TRIGGER_FIRES,
     link_triggers::VIA_LINK_TYPE_REFUSED,
     bundles::BUNDLE_WHOLE,

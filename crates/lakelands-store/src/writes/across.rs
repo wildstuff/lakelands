@@ -195,10 +195,15 @@ impl Decide<'_> {
     }
 
     /// Whether `record` is a member of `s` as the append leaves what its
-    /// `where` reads across an edge.
-    pub(super) fn member(&self, s: &ObjectSetDecl, record: &StoredRecord) -> Result<bool> {
-        let w = self.w;
-        self.with_heads(|h| member_of((s, &w.ontology), record, w, self.now, h))
+    /// `where` reads across an edge, under `settings`.
+    pub(super) fn member(
+        &self,
+        s: &ObjectSetDecl,
+        record: &StoredRecord,
+        settings: &BTreeMap<String, Value>,
+    ) -> Result<bool> {
+        let o = &self.w.ontology;
+        self.with_heads(|h| member_of((s, o), record, settings, self.now, h))
     }
 
     /// What a write that leaves `after` (it was `before`) sets off across
