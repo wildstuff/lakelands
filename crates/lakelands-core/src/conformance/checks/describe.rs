@@ -119,6 +119,8 @@ fn function(name: &str, input: &str, expr: &str) -> FunctionDecl {
 fn trigger(name: &str, when: &str) -> TriggerDecl {
     TriggerDecl {
         max_depth: None,
+        when_strict: false,
+        on_changes: None,
         name: name.into(),
         on: "ledger".into(),
         when: Some(Condition::from(when)),

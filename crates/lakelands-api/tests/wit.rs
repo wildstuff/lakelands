@@ -26,6 +26,7 @@ use lakelands_api::describe::{
     SettingValue, SortedWhole, TypeAccess, TypeDescription, TypeLifecycle, TypeLineage, TypeRights,
     VerbDescription,
 };
+use lakelands_api::event::ChangeKind;
 use lakelands_api::expr::Condition;
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
@@ -549,6 +550,8 @@ fn migration_report() -> MigrationReport {
 fn trigger_decl() -> TriggerDecl {
     TriggerDecl {
         max_depth: Some(2),
+        when_strict: true,
+        on_changes: Some(vec![ChangeKind::Upserted]),
         name: "t".into(),
         on: "invoice".into(),
         when: Some(cond()),
@@ -1502,6 +1505,11 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
         [OneToOne, OneToMany, ManyToOne, ManyToMany]
     );
     units!("risk", Risk, [Low, Medium, High]);
+    units!(
+        "change_kind",
+        ChangeKind,
+        [Upserted, Ingested, Retired, Forgotten, Purged, Recomputed]
+    );
     units!("at_ingest", AtIngest, [Refuse, Admit]);
     // Marked `non_exhaustive`: listed by hand, a new kind added here too.
     checks.push((
@@ -1942,6 +1950,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 }),
                 Declaration::Trigger(TriggerDecl {
                     max_depth: Some(2),
+                    when_strict: false,
+                    on_changes: None,
                     name: "t".into(),
                     on: "t".into(),
                     when: None,

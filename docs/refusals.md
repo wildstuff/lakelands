@@ -435,6 +435,7 @@ What a refusal is about.
 | `relation_holds_many` | `relation` (RelationName), `cardinality` (Cardinality) | `{relation}` may hold several links from a record ({cardinality}): a path reads a relation that holds at most one, `many_to_one` or `one_to_one`; walk it in a pattern | A path through a relation that may hold several links from a record. |
 | `relation_via_field` | `relation` (RelationName), `field` (FieldName) | `{relation}` is carried by the field `{field}`: a path steps through `{field}` | A path through a relation carried by a reference field. |
 | `retired_only_in_guard` | — | retired() has meaning only in a trigger's guard | A `retired` outside a trigger's guard. |
+| `created_only_in_guard` | — | created() has meaning only in a trigger's guard | A `created` outside a trigger's guard. |
 | `set_cycle` | `set` (String), `through` (Names) | in_set('{set}') names a set that names it in turn, through {through} | A set that names itself through others. |
 | `set_of_other_type` | `set` (String), `of` (TypeName), `type` (TypeName) | in_set('{set}') names a set of `{of}`, not of `{type}` | A set of another type named in a filter. |
 | `set_undeclared` | `set` (String) | in_set('{set}') names an object set that is not declared | A set named in a filter that is not declared. |
@@ -904,6 +905,8 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `sealed_on` | `kind` (String) | a `{kind}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries | An event other than `record_ingested` and `output_recorded` carries `sealed`. |
 | `sealed_before` | `v` (u32) | an event of format {v} carries `sealed`, which format 16 added | An event of a format before 16 carries `sealed`. |
 | `forgotten_before` | `v` (u32) | an event of format {v} is a `source_forgotten`, which format 16 added | A `source_forgotten` in a format before the one that added it. |
+| `change_before` | `v` (u32) | a `trigger_fired` of format {v} carries `change` or `created`, which format 17 added | A `trigger_fired` before format 17 carries `change` or `created`. |
+| `dropped_before` | `v` (u32) | an event of format {v} is a `trigger_dropped`, which format 17 added | A `trigger_dropped` in a format before the one that added it. |
 | `delivery_on` | `kind` (String), `v` (u32) | a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries | An event other than a `record_ingested` of format 17 on carries `delivery`. |
 | `upstream_on` | `kind` (String) | a `{kind}` event carries `upstream`, which only a `record_ingested` event carries | An event other than `record_ingested` carries `upstream`. |
 | `hash_mismatch` | — | the hash does not match the event | The hash does not match the event. |

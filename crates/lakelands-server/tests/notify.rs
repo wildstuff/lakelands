@@ -1001,7 +1001,9 @@ async fn declare(store: &dyn LakeStore, d: Value) {
 
 /// A trigger or an object set says a condition held, and a condition may
 /// read any field of its type: a principal who does not read every field
-/// in full is never told of one (024). The owner, who does, is.
+/// in full is never told of one (024), nor of a firing dropped past its
+/// depth (lakelands#1216), and one not shown the type is told of neither.
+/// The owner, who reads it all, is.
 #[tokio::test]
 async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_whole_type() {
     for backend in [Backend::Memory, Backend::Sqlite] {
@@ -1014,16 +1016,31 @@ async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_who
         .await;
         declare(
             store.as_ref(),
+            json!({"declare": "trigger", "name": "no_reaction", "on": "invoice",
+                   "when": "secret = 's3'", "max_depth": 0}),
+        )
+        .await;
+        declare(
+            store.as_ref(),
             json!({"declare": "object_set", "name": "secretive", "of": "invoice",
                    "where": "secret = 's3'"}),
         )
         .await;
+        for (name, depth) in [("partnered", json!(null)), ("partner_dropped", json!(0))] {
+            declare(
+                store.as_ref(),
+                json!({"declare": "trigger", "name": name, "on": "partner",
+                       "max_depth": depth}),
+            )
+            .await;
+        }
         let mut owner = Stdio::open(store.clone(), common::owner()).await;
         let mut watcher = Stdio::open(store.clone(), watcher()).await;
         for s in [&mut owner, &mut watcher] {
             s.call(
                 "subscribe",
-                json!({"kinds": ["trigger_fired", "object_set_changed", "record_upserted"]}),
+                json!({"kinds": ["trigger_fired", "trigger_dropped", "object_set_changed",
+                    "record_upserted"]}),
             )
             .await;
         }
@@ -1034,25 +1051,45 @@ async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_who
             json!({"status": "paid", "secret": "s3"}),
         )
         .await;
-        // The owner is told of the write, the firing and the set change.
+        // The owner is told of the write, the firing, the firing dropped
+        // and the set change.
         let mut told = Vec::new();
-        while told.len() < 3 {
+        while told.len() < 4 {
             let m = owner.change().await;
             told.push(m["params"]["kind"].as_str().unwrap().to_owned());
         }
         told.sort();
         assert_eq!(
             told,
-            ["object_set_changed", "record_upserted", "trigger_fired"],
+            [
+                "object_set_changed",
+                "record_upserted",
+                "trigger_dropped",
+                "trigger_fired"
+            ],
             "{backend:?}"
         );
         // The watcher, who may not read `secret`, is told of the write's
-        // `status` only; the next thing it is told is a later write.
+        // `status` only; of a partner, which it is not shown, it is told
+        // neither the firing nor the drop; the next thing it is told is a
+        // later write.
         let m = watcher.change().await;
         assert_eq!(
             (&m["params"]["kind"], &m["params"]["position"]),
             (&json!("record_upserted"), &json!(p)),
             "{backend:?}: {m}"
+        );
+        write(store.as_ref(), "partner", "P-1", json!({"name": "Acme"})).await;
+        let mut partner = Vec::new();
+        while partner.len() < 3 {
+            let m = owner.change().await;
+            partner.push(m["params"]["kind"].as_str().unwrap().to_owned());
+        }
+        partner.sort();
+        assert_eq!(
+            partner,
+            ["record_upserted", "trigger_dropped", "trigger_fired"],
+            "{backend:?}: the owner is told of the partner's firing and drop"
         );
         let later = write(
             store.as_ref(),

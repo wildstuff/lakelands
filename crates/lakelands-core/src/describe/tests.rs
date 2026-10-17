@@ -214,6 +214,8 @@ fn a_declaration_is_shown_as_the_one_in_force_and_listed_as_it_is_proposed() {
     let trigger = |when: Option<&str>| {
         Declaration::Trigger(lakelands_api::ontology::TriggerDecl {
             max_depth: None,
+            when_strict: false,
+            on_changes: None,
             name: "held".into(),
             on: "invoice".into(),
             when: when.map(Into::into),

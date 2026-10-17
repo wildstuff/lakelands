@@ -138,6 +138,8 @@ async fn lake() -> Arc<dyn LakeStore> {
             &own,
             Declaration::Trigger(TriggerDecl {
                 max_depth: None,
+                when_strict: false,
+                on_changes: None,
                 name: name.into(),
                 on: "invoice".into(),
                 when: Some(Condition::from(format!("status = '{value}'").as_str())),

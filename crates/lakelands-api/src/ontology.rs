@@ -1361,8 +1361,9 @@ impl TryFrom<VerbWire> for VerbDecl {
 }
 
 /// A trigger: a condition the store watches. When a write makes it
-/// hold, the store appends `TriggerFired` in the same append. What
-/// reacts to it is the host's business.
+/// hold, the store appends `TriggerFired` in the same append, or
+/// `TriggerDropped` where the write is at or past the depth a reaction
+/// to it could write at. What reacts to it is the host's business.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TriggerDecl {
@@ -1378,12 +1379,27 @@ pub struct TriggerDecl {
     /// What the trigger is for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// How deep a reaction to this trigger's firing may be: a reactive
-    /// write whose `cause` names a firing of it, deeper than this, is
-    /// refused `too_deep`. At most the lake's `max_reactive_depth`
+    /// How deep a reaction to this trigger's firing may be: a write at
+    /// this depth or deeper drops the firing (`TriggerDropped`), and a
+    /// reactive write whose `cause` names a firing or a drop of it,
+    /// deeper than this, is refused `too_deep`. At most the lake's
+    /// `max_reactive_depth`
     /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_depth: Option<u32>,
+    /// Whether the trigger fires only where its `when` reads every field,
+    /// and every `previous(f)`, it asks for: one absent or null fails the
+    /// guard as a whole, through `not`, `and`, `or` and `changed`. `false`
+    /// by default: an absent field is null, and a comparison with it is
+    /// false (lakelands#1215).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub when_strict: bool,
+    /// The kinds of change that fire it; every kind where absent. A
+    /// trigger that names `[upserted, ingested]` stays silent when a
+    /// source is forgotten or purged, or a field is filled
+    /// (lakelands#1217).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_changes: Option<Vec<crate::event::ChangeKind>>,
 }
 
 #[cfg(test)]
