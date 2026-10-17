@@ -47,6 +47,8 @@ interface types {
     type source-id = string;
     type proposal-id = string;
     type idempotency-key = string;
+    /// One delivery of a source: the caller's id, or the store's `d<position>`.
+    type delivery-id = string;
     /// A page token of a list-shaped read, bound to its first page's
     /// position.
     type cursor = string;
@@ -681,6 +683,11 @@ interface types {
         idempotency-key: option<idempotency-key>,
     }
 
+    /// Options an `ingest` takes.
+    record ingest-opts {
+        delivery: option<delivery-id>,
+    }
+
     record applied {
         position: position,
         version: option<version>,
@@ -817,6 +824,7 @@ interface types {
         position: position,
         records: u32,
         duplicates: u32,
+        delivery: option<delivery-id>,
     }
 
     // ------------------------------------------------------------------

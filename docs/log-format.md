@@ -50,6 +50,7 @@ every kind, and `body`, which holds the kind and its payload.
 | `cause` | integer | consequences | The position of the event this one follows from: a verb's write names its `verb_called`, an accepted proposal's write names its `write_accepted`, a fired trigger names the write that fired it. An event of a host's write that the store sets no cause for names the position the host gave, at or below the head when it was appended (`docs/decisions/021-the-write-context-belongs-to-the-host.md`); any kind may carry it. |
 | `fence` | integer | always | The fencing token of the writer lease the event was appended under (§4); `0` for the event at position 0, which is written before any lease exists in the lake. |
 | `idempotency_key` | string | when given | The caller's idempotency key of an authored write. |
+| `delivery` | string | from format 17, on every `record_ingested` this release writes | The delivery the record came in: the id the caller gave its `ingest`, or the store's own, `d` and the position of the first event the call appended. A caller's id is not empty, holds no `0x00` and is not of the store's form. Only on `record_ingested`, and not before format 17; a reader refuses it elsewhere, naming the kind and the format. It is not part of the ingest id (§3). |
 | `sealed` | object | from format 16, when a source's key seals a value | `{ "key", "fields" }`, or `{ "key", "source" }`: the version of the source's key, and the members of the patch it seals, or, with `source`, the recorded output it seals (§1.4). Only on `record_ingested` and `output_recorded`; a reader refuses it on any other kind, naming the kind. |
 | `body` | object | always | The kind and its payload (§2). |
 | `hash` | string | always | SHA-256 of the event's canonical bytes without `hash`, as 64 lower-case hex digits (§1.2). |
@@ -234,9 +235,16 @@ version, which the key store answers by.
   the `output` is a sealed value whose nonce is made from the source, the
   seam and the `input`, and the `input` is HMAC-SHA-256 under a key
   derived from the source's (HKDF-SHA-256 with an empty salt, info
-  `lakelands:output:v1`), always under the version of the key the
-  source first sealed with, which the fold keeps, so a rebuild finds the
-  output again whatever the key store holds now. A call whose inputs hold
+  `lakelands:output:v1`), under the version that seals the output: the
+  oldest of the versions that sealed the values the call reads. A
+  value's version is the one its event names in `sealed`. A source seals
+  with the newest version its key store holds when it is first needed,
+  and a store without the newest the log used is refused, so the
+  versions a source seals with only rise. The fold therefore keeps each
+  version with the position of its first use, and a value's version is
+  the last first used at or before its position. So a rebuild finds the
+  output again whatever the key store holds now, and the output lives
+  as long as the oldest key period it read. A call whose inputs hold
   erasable values of two sources is not made; the field holds no value
   and says why.
 - **What equality tells.** A value's own ciphertext tells no equality
@@ -664,7 +672,9 @@ So the separators are unambiguous.
   ‖ source ‖ 0x00 ‖ type ‖ 0x00 ‖ key ‖ 0x00 ‖ version_before ‖ 0x00 ‖
   canonical(patch))`. `version_before` is the record's `version` before
   the event, in decimal digits: `0` for a key not yet written, otherwise
-  the event's own `version` minus one.
+  the event's own `version` minus one. The envelope's `delivery` is not
+  part of it: the same record delivered again under another delivery is
+  a duplicate, and stays with the delivery that first wrote it.
   `patch` is the patch exactly as the event stores it: the store has
   already checked that every field in it is a `source` or `shared` field
   (a record carrying any other field is refused whole, never trimmed,
@@ -887,12 +897,25 @@ the first release with real installations
   and ask `exists` (055). 16 → 17: none. Format 17 is 0.16.0's one
   step, taken before any form it adds (lakelands#1164); each is said
   here by the change that adds it, and a log of format 16 holds none of
-  them: a field's `authority: verb` (lakelands#1130), and a `setting`
-  declaration and the `group` of `sys.setting` (lakelands#996). A
+  them: a field's `authority: verb` (lakelands#1130); a `setting`
+  declaration and the `group` of `sys.setting` (lakelands#996), and a
   writer's open of a lake whose `sys.setting` has no `group` declares
   it again, one version on, after `lake_upgraded`, and in the same
   append stamps each setting the lake holds with its group, `store` on
-  the store's own. No step changes a fold, so the projection stays. A step that changes how an event folds
+  the store's own; a `record_ingested`'s `delivery` (§1.1), so an
+  ingest of format 16 is in no delivery; and a recorded output's
+  `input` digested under the oldest version that sealed the values it
+  reads (§1.4), where 16 took the source's first version. Over values
+  its first version sealed the two agree, and an output of 16 names
+  that version in its `sealed`. A call over a value a second version
+  sealed, which a lake of 16 holds only where its key store gained one,
+  is digested otherwise: the rebuild at the first open of 0.16.0 does
+  not find its output, and the call is made once more. This step
+  changes the fold's own list of the versions a source sealed with,
+  which now keeps each with the position of its first use; the
+  projection is laid out anew at that open anyway (lakelands#1151), so
+  no list of 16 is read. No other step changes a fold, so the
+  projection stays. A step that changes how an event folds
   says so here, and a writer's open then rebuilds the projection.
 - **A writer's open upgrades.** Where the newest event, read under the
   writer's lease, is in an older format the release reads, the open

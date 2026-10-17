@@ -207,6 +207,7 @@ pub const ALL: &[Check] = &[
     ingest::SAME_KEY_TWICE,
     ingest::FOREIGN_FIELD_REFUSED,
     ingest::UPSTREAM_PER_FIELD,
+    ingest::DELIVERY_NAMED,
     ingest::UPSERT_REFUSES_SOURCE_FIELD,
     constraints::CONSTRAINT_HELD_AT_EVERY_DOOR,
     constraints::CONSTRAINT_JUDGED_THROUGH_WHAT_MOVES,

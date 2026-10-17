@@ -24,8 +24,9 @@ use crate::read::{Find, Found, Get, ReadAt, Reply};
 use crate::record::{Patch, Record, SourceRecord};
 use crate::seam::ChangeFeed;
 use crate::write::{
-    Change, Committed, Declaration, Migration, MigrationReport, Outcome, Plan, Proposal,
-    ProposalFilter, ProposedWrite, Recompute, ValueTypeMigration, ValueTypeReport, WriteOpts,
+    Change, Committed, Declaration, IngestOpts, Migration, MigrationReport, Outcome, Plan,
+    Proposal, ProposalFilter, ProposedWrite, Recompute, ValueTypeMigration, ValueTypeReport,
+    WriteOpts,
 };
 
 /// A stream of records, as `ingest` takes it: each from the source it
@@ -294,6 +295,25 @@ pub trait Catalog: Send + Sync {
         source: &SourceId,
         records: SourceStream,
     ) -> Result<CommitStream>;
+
+    /// [`Catalog::ingest`] under `opts`: its records in the delivery
+    /// `opts` names, which every `record_ingested` of the call and every
+    /// [`Committed`] carries. A catalog that does not carry a delivery to
+    /// the store refuses one, rather than drop it.
+    async fn ingest_with(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        opts: IngestOpts,
+        records: SourceStream,
+    ) -> Result<CommitStream> {
+        match opts.delivery {
+            Some(_) => Err(crate::Error::invalid(
+                crate::error::Case::DeliveryNotCarried,
+            )),
+            None => self.ingest(who, source, records).await,
+        }
+    }
 }
 
 /// `ingest` for records already in hand: the records as the source
@@ -307,9 +327,26 @@ pub async fn ingest_all(
     source: &SourceId,
     records: Vec<SourceRecord>,
 ) -> Result<Vec<Committed>> {
-    let mut commits = cat
-        .ingest(who, source, Box::pin(InHand(records.into_iter())))
-        .await?;
+    ingest_all_with(
+        cat,
+        who,
+        source,
+        crate::write::IngestOpts::default(),
+        records,
+    )
+    .await
+}
+
+/// [`ingest_all`] under the call's options: its delivery id.
+pub async fn ingest_all_with(
+    cat: &dyn Catalog,
+    who: &Principal,
+    source: &SourceId,
+    opts: crate::write::IngestOpts,
+    records: Vec<SourceRecord>,
+) -> Result<Vec<Committed>> {
+    let records = Box::pin(InHand(records.into_iter()));
+    let mut commits = cat.ingest_with(who, source, opts, records).await?;
     let mut out = Vec::new();
     while let Some(window) = std::future::poll_fn(|cx| commits.as_mut().poll_next(cx)).await {
         out.push(window?);

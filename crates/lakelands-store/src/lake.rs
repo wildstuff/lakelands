@@ -1726,24 +1726,13 @@ impl Lake {
             _ => e,
         };
         let projection = self.engine.projection();
-        // The versions of each source's key the log sealed with, in the
-        // order first used ([`crate::sealing::USED`]).
+        // The versions of each source's key the log sealed with, each with
+        // the position of its first use ([`crate::sealing::USED`]).
         if let (EventBody::RecordIngested { .. }, Some(sealed), Some(source)) =
             (&e.body, &e.sealed, &e.source)
         {
-            let at = (
-                crate::sealing::USED.to_owned(),
-                crate::sealing::used_by(source),
-            );
-            let staged_list = staged.outputs.get(&at).and_then(|l| l.last());
-            let list = match staged_list {
-                Some((_, v)) => Some(v.clone()),
-                None => view.output(&at.0, &at.1)?.map(|(_, v)| v),
-            };
-            let mut used = crate::sealing::versions(list.as_ref());
-            if !used.contains(&sealed.key) {
-                used.push(sealed.key.clone());
-                let list = serde_json::to_value(&used).expect("key ids serialise");
+            let used = (source, &sealed.key, e.position);
+            if let Some((at, list)) = crate::sealing::first_use(&staged.outputs, view, used)? {
                 projection.put_output(&at.0, &at.1, &list, e.position)?;
                 staged
                     .outputs

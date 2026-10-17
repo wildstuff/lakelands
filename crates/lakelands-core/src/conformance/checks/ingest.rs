@@ -52,6 +52,11 @@ check!(
 );
 
 check!(
+    DELIVERY_NAMED = an_ingests_delivery_is_the_callers_or_the_stores_own,
+    "log-format §1.1 and §3: every `record_ingested` of a call carries its delivery, the caller's id or else the store's own `d` and the position of the call's first event, and each window answers it; the id is not in the event's id, so the same values delivered again under another id append nothing; a call of several windows carries one id, and a window before its first event names none; an empty id, one holding a NUL, or one of the store's own form, is refused and appends nothing"
+);
+
+check!(
     A_SOURCE_PER_RECORD = one_ingest_carries_a_source_per_record,
     "016 and 039: one ingest may name a source per record, the call's where a record names none: each record's provenance holds its own, a redelivery under it is a duplicate, the same record under another source is a duplicate unchanged and a new event under it changed, and `purge_source` of one takes only its records"
 );
@@ -779,4 +784,91 @@ async fn an_insert_only_type_is_written_once_by_its_source(store: Store) -> Held
     step("plain", &[("p1", "b")], 'x').await?;
     l.declare(marked("plain", false)).await?;
     step("plain", &[("p1", "b")], 'w').await
+}
+
+async fn an_ingests_delivery_is_the_callers_or_the_stores_own(store: Store) -> Held {
+    use lakelands_api::error::Case;
+    use lakelands_api::event::EventBody;
+    use lakelands_api::{DeliveryId, IngestOpts, ingest_all_with};
+    let l = Lake::of(store.as_ref());
+    l.declare(feed()).await?;
+    let source = SourceId::from("sensor");
+    let with = |delivery: Option<&str>| IngestOpts {
+        delivery: delivery.map(DeliveryId::from),
+    };
+    let r = |key: &str, body: &str| source_record("feed", key, json!({"body": body}));
+    // Each call's events and its answer, as the log and the windows hold them.
+    let call = async |delivery: Option<&str>, records: Vec<SourceRecord>| {
+        let before = store.head().await.must("reading the head")?;
+        let said = ingest_all_with(l.cat.as_ref(), &l.own, &source, with(delivery), records).await;
+        let windows = said.must("ingesting with a delivery")?;
+        let events = events_from(store.as_ref(), before.next()).await?;
+        let ingested: Vec<_> = (events.into_iter())
+            .filter(|e| matches!(e.body, EventBody::RecordIngested { .. }))
+            .map(|e| (e.position, e.delivery))
+            .collect();
+        Ok::<_, Failure>((before, windows, ingested))
+    };
+    let (_, windows, ingested) = call(Some("batch-7"), vec![r("r1", "a"), r("r2", "b")]).await?;
+    let named = Some(DeliveryId::from("batch-7"));
+    ensure!(
+        ingested.len() == 2
+            && ingested.iter().all(|(_, d)| *d == named)
+            && windows.iter().all(|w| w.delivery == named),
+        "a call under `batch-7` carries it on each `record_ingested` and in each window; the \
+         log holds {ingested:?}, the windows {windows:?}"
+    );
+    let (before, windows, ingested) = call(None, vec![r("r3", "c")]).await?;
+    let own = Some(DeliveryId::from(format!("d{}", before.next())));
+    ensure!(
+        ingested.len() == 1
+            && ingested.iter().all(|(_, d)| *d == own)
+            && windows.iter().all(|w| w.delivery == own),
+        "a call under no id carries the store's own {own:?}, the position of its first event; \
+         the log holds {ingested:?}, the windows {windows:?}"
+    );
+    // A call of many windows, the first of them all duplicates: one id,
+    // from the first event the call appended, and none before it.
+    let bulk = |n: usize| (0..n).map(|i| r(&format!("b{i}"), "e")).collect::<Vec<_>>();
+    call(Some("bulk"), bulk(32)).await?;
+    let (before, windows, ingested) = call(None, bulk(100)).await?;
+    let own = Some(DeliveryId::from(format!("d{}", before.next())));
+    let (empty, appended): (Vec<_>, Vec<_>) = windows.iter().partition(|w| w.records == 0);
+    ensure!(
+        appended.len() >= 2
+            && ingested.len() == 68
+            && ingested.iter().all(|(_, d)| *d == own)
+            && appended.iter().all(|w| w.delivery == own)
+            && empty.iter().all(|w| w.delivery.is_none()),
+        "a call of several windows under no id carries one id, {own:?}, from its first event, \
+         and a window before that event names none; the log holds {} events, the windows \
+         {windows:?}",
+        ingested.len()
+    );
+    let (before, windows, _) = call(Some("batch-8"), vec![r("r1", "a")]).await?;
+    head_unmoved(store.as_ref(), before, "the same values under `batch-8`").await?;
+    ensure!(
+        windows.iter().map(|w| w.duplicates).sum::<u32>() == 1,
+        "the same values delivered again under another id are a duplicate: {windows:?}"
+    );
+    for id in ["", "d12", "a\0b"] {
+        let before = store.head().await.must("reading the head")?;
+        let what = format!("ingesting under the id {id:?}");
+        let said = ingest_all_with(
+            l.cat.as_ref(),
+            &l.own,
+            &source,
+            with(Some(id)),
+            vec![r("r4", "d")],
+        );
+        let e = refused_unmoved(store.as_ref(), before, &what, said.await).await?;
+        ensure!(
+            matches!(
+                crate::conformance::fixture::invalid_case(&e),
+                Some(Case::DeliveryIdForm)
+            ),
+            "{what} is refused as `delivery_id_form`: {e}"
+        );
+    }
+    Ok(())
 }

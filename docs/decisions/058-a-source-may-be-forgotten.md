@@ -80,7 +80,7 @@ A type whose key holds personal data is given a surrogate key. `hosting.md` says
 - **Equality does not leak** across records or versions, since the nonce differs. Within one record at one state it would, which is the redelivery the id is for.
 
 **Recorded outputs.** A function backing or an embedding that reads an erasable value records an output computed from it (`output_recorded`). That output is encrypted under the same source's key, and is erased with it.
-- Its `input`, the digest a replay finds the output by, is an HMAC under a key derived from the source's key, the version it first sealed with. A SHA-256 of the call would be a digest of plaintext that outlives the key (lakelands#1042).
+- Its `input`, the digest a replay finds the output by, is an HMAC under a key derived from the source's key, the version that seals the output: the oldest of those that sealed the values the call reads. So the output lives as long as the oldest key period it read, and destroying a version, with every older one, takes the outputs of its values. A SHA-256 of the call would be a digest of plaintext that outlives the key (lakelands#1042).
 - **What equality still tells.** A value's own ciphertext tells no equality across records or versions. An output is recorded once for one call (053), so its `input` is the same for two records of one source whose call reads the same values: the log tells that they are equal, never what they are, and never across sources. That is the price of recording once.
 - An output whose inputs hold erasable values of two sources records no value, and names the reason in its `error`. One key per output is all the first version carries.
 

@@ -4,7 +4,10 @@
 //! Records are taken from the stream into a window until it holds the
 //! lake's `commit_window_events` records or 2 ms have passed since its first
 //! record; the window is then decided whole and appended durably, and
-//! answers one [`Committed`] with the position its last event took. A
+//! answers one [`Committed`] with the position its last event took and
+//! the call's delivery: the caller's, else `d<first position>`, the
+//! position of the first event the call appended. Every
+//! `record_ingested` of the call carries it in its envelope. A
 //! window is all or nothing: if one of its records is refused, nothing of
 //! the window is appended, the refusal is the stream's next item and the
 //! stream ends — the caller's own offset says where to resume
@@ -37,7 +40,7 @@ use lakelands_api::event::{EventBody, EventId, Sealed};
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::Origin;
 use lakelands_api::write::Committed;
-use lakelands_api::{Principal, Result, SourceId, SourceRecord, Timestamp};
+use lakelands_api::{DeliveryId, Principal, Result, SourceId, SourceRecord, Timestamp};
 use lakelands_core::rights::Door;
 
 use crate::exec;
@@ -50,11 +53,12 @@ use lakelands_core::{canonical, links};
 /// How long a window waits for more records after its first.
 const WINDOW: Duration = Duration::from_millis(2);
 
-/// Decide and append one window.
+/// Decide and append one window, in the call's `delivery` where one is
+/// named or decided already.
 pub fn window(
     lake: &Lake,
     who: &Principal,
-    context: WriteContext,
+    (context, delivery): (WriteContext, Option<DeliveryId>),
     source: &SourceId,
     (first, records): (u64, Vec<SourceRecord>),
 ) -> Result<Committed> {
@@ -100,8 +104,17 @@ pub fn window(
         }
         asks.found = Some(found);
     };
-    let (drafts, reads, committed, duplicates) = judged?;
+    let (mut drafts, reads, committed, duplicates) = judged?;
     drop(view);
+    let next = w
+        .tip
+        .as_ref()
+        .map_or(lakelands_api::Position::GENESIS, |t| t.0.next());
+    let delivery = delivery.or_else(|| (!drafts.is_empty()).then(|| format!("d{next}").into()));
+    let ingested = |d: &&mut Draft| matches!(d.body, EventBody::RecordIngested { .. });
+    for d in drafts.iter_mut().filter(ingested) {
+        d.delivery = delivery.clone();
+    }
     // A window that appends nothing committed no record, and answers the head.
     let position = if drafts.is_empty() {
         w.tip
@@ -115,6 +128,7 @@ pub fn window(
         position,
         records: committed,
         duplicates,
+        delivery,
     })
 }
 
@@ -383,6 +397,7 @@ pub fn run(
     who: Principal,
     context: WriteContext,
     source: SourceId,
+    mut delivery: Option<DeliveryId>,
     mut records: SourceStream,
 ) -> CommitStream {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Committed>>(4);
@@ -408,10 +423,11 @@ pub fn run(
             if batch.is_empty() {
                 continue;
             }
-            let (l, w, s) = (lake.clone(), who.clone(), source.clone());
+            let (l, w, s, d) = (lake.clone(), who.clone(), source.clone(), delivery.clone());
             let first = next;
             next += batch.len() as u64;
-            let run = move || crate::lake::owing(|| window(&l, &w, context, &s, (first, batch)));
+            let run =
+                move || crate::lake::owing(|| window(&l, &w, (context, d), &s, (first, batch)));
             let mut answer = exec::run(run).await;
             // The calls the window made due are made before it answers, so
             // its position is one the filled fields are visible from.
@@ -421,6 +437,9 @@ pub fn run(
                 c.position = c.position.max(last);
             }
             let answer = answer.map(|(c, _)| c);
+            if let Ok(c) = &answer {
+                delivery.clone_from(&c.delivery);
+            }
             let failed = answer.is_err();
             if tx.send(answer).await.is_err() || failed {
                 return;

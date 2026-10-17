@@ -93,7 +93,7 @@ key may hold any character.
 | `POST …/schema/migrate/apply` | apply a migration | body: `to`, `renames` and `relation_renames`, or `value_type`; and `report_id` |
 | `POST …/schema/plan` | a change's plan: what it would do, changing nothing | body: `change` (`declare` with `declarations`, `add_field` with `type` and `field`, `recompute` with `what`, `migrate` or `migrate_value_type` with `migration`) and its members |
 | `POST …/schema/enact` | make a change against its plan | body: as `…/schema/plan`, and `plan_id` |
-| `POST …/ingest/<source>` | ingest | body: NDJSON, one record per line |
+| `POST …/ingest/<source>` | ingest | body: NDJSON, one record per line; query: `delivery` |
 | `GET …/feed` | the change feed | query: `from`, `kinds`, `types`, `key` (repeated); `Last-Event-ID` |
 
 A parameter or a body member the door does not take is refused before
@@ -214,7 +214,11 @@ and is read as it arrives. A line may name its own `"source"`; one that
 does not is the path's. One call so carries the batches of many sources,
 each record's event stamped with its own. The answer is NDJSON too: one line per commit
 window as it becomes durable,
-`{"position":…,"records":…,"duplicates":…}`. Where a window is cut is
+`{"position":…,"records":…,"duplicates":…,"delivery":…}`. `?delivery=`
+names the call's delivery, which every record's event carries; without
+it the store names its own, `d` and the position of the call's first
+event, and a window before any event of the call names none
+(`docs/log-format.md` §1.1). Where a window is cut is
 the store's, and no answer turns on it: a record is judged over the
 lake and the records before it, and a refused one is refused alike
 wherever the cut fell. What the cut decides is only the refusal's

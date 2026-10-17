@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Case, Place, Said};
 use crate::expr::Condition;
 use crate::id::{
-    ConstraintName, Cursor, FieldName, IdempotencyKey, Position, ProposalId, RecordKey,
+    ConstraintName, Cursor, DeliveryId, FieldName, IdempotencyKey, Position, ProposalId, RecordKey,
     RelationName, SourceId, TriggerName, TypeName, ValueTypeName, VerbName, Version,
 };
 use crate::ontology::{
@@ -35,6 +35,18 @@ pub struct WriteOpts {
     /// recorded in the log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<IdempotencyKey>,
+}
+
+/// Options an `ingest` takes.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IngestOpts {
+    /// The delivery its records came in, as the caller names it (a
+    /// vendor's batch id); else the store's own, `d<first position>`.
+    /// Not part of a record's ingest id: the same content under another
+    /// delivery is a duplicate and stays with the first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<DeliveryId>,
 }
 
 /// What a write did. A writer never has to know in advance whether its
@@ -1432,7 +1444,7 @@ pub struct FieldConversion {
 
 /// The acknowledgement of a batch `ingest` committed: one per
 /// group-commit window.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Committed {
     /// The position of the window's last event; everything in the
     /// window is visible from here.
@@ -1441,6 +1453,10 @@ pub struct Committed {
     pub records: u32,
     /// How many records were already in the log and appended nothing.
     pub duplicates: u32,
+    /// The call's delivery: the caller's, or the store's once a window
+    /// appended; none before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<DeliveryId>,
 }
 
 /// What `LakeStore::age` did for one date

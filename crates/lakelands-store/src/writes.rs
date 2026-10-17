@@ -460,6 +460,9 @@ pub struct Pending {
     /// The records read from the projection, each once; the fold of the
     /// append takes them over ([`crate::lake::Lake::append_after`]).
     reads: crate::lake::Reads,
+    /// The versions of a source's key the append's own events use first,
+    /// as the fold will keep them ([`crate::sealing::first_use`]).
+    sealed: crate::backed::Recorded,
 }
 
 impl Pending {
@@ -1438,6 +1441,19 @@ pub(crate) fn check_key(key: &RecordKey) -> Result<()> {
 pub(crate) fn check_source(source: &SourceId) -> Result<()> {
     if source.as_str().is_empty() || source.as_str().contains('\0') {
         return Err(invalid(Case::SourceIdForm));
+    }
+    Ok(())
+}
+
+/// A caller's delivery id: not empty, no NUL, and not of the store's own
+/// form, `d` and digits, so a selection by delivery names one.
+pub(crate) fn check_delivery(d: &lakelands_api::DeliveryId) -> Result<()> {
+    let s = d.as_str();
+    let own = s
+        .strip_prefix('d')
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    if s.is_empty() || s.contains('\0') || own {
+        return Err(invalid(Case::DeliveryIdForm));
     }
     Ok(())
 }
@@ -2795,7 +2811,18 @@ impl Decide<'_> {
     /// the fold's own function, which hands out no call here.
     fn apply(&self, before: Option<&StoredRecord>, d: &Draft) -> Result<StoredRecord> {
         let (w, event) = (self.w, provisional(self.call.lake, self.next, d));
-        let outputs = &mut Outputs::planning(self.view, &w.plans, &self.call.lake.keys);
+        let staged = match self.first_use(d)? {
+            Some((at, list)) => {
+                let mut staged = self.pending.sealed.clone();
+                staged.entry(at).or_default().push((self.next, list));
+                std::borrow::Cow::Owned(staged)
+            }
+            None => std::borrow::Cow::Borrowed(&self.pending.sealed),
+        };
+        let outputs = &mut Outputs {
+            staged: Some(&staged),
+            ..Outputs::planning(self.view, &w.plans, &self.call.lake.keys)
+        };
         let after = record::apply(&w.ontology, before, &event, &w.settings, outputs)?;
         Ok(after.expect("a record event makes a record"))
     }
@@ -2876,9 +2903,27 @@ impl Decide<'_> {
         Ok(drafts)
     }
 
+    /// The list of the version `d`, landing next, uses first, if it is the
+    /// first use of that version of its source's key.
+    fn first_use(&self, d: &Draft) -> Result<Option<((String, Digest), Value)>> {
+        let ingested = matches!(d.body, EventBody::RecordIngested { .. });
+        let (Some(sealed), Some(source), true) = (&d.sealed, d.source.as_ref(), ingested) else {
+            return Ok(None);
+        };
+        let used = (source, &sealed.key, self.next);
+        crate::sealing::first_use(&self.pending.sealed, self.view, used)
+    }
+
     /// A planned record write with what it sets off: its own event, which
     /// lands next, then the triggers and object-set changes it causes.
     pub(crate) fn planned(&mut self, plan: RecordPlan) -> Result<Plan> {
+        if let Some((at, list)) = self.first_use(&plan.draft)? {
+            self.pending
+                .sealed
+                .entry(at)
+                .or_default()
+                .push((self.next, list));
+        }
         let mut drafts = self.reactions(plan.before.as_ref(), &plan.after)?;
         drafts.insert(0, plan.draft);
         let after = Some(plan.after);

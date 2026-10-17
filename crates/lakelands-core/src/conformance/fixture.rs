@@ -782,6 +782,7 @@ pub async fn declared_below(
                 prev: prev.clone(),
                 fence,
                 body,
+                delivery: None,
                 ..template.clone()
             });
             (tip, prev) = (position, line.hash.clone());

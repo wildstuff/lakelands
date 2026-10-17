@@ -107,6 +107,10 @@ pub struct Event {
     /// The caller's idempotency key, for an authored write that gave one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<IdempotencyKey>,
+    /// The delivery a source's record came in, on a `record_ingested`
+    /// from format 17 on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<crate::id::DeliveryId>,
     /// Which members of the body's `patch`, or its `output`, are sealed
     /// under the source's key, from format 16 on.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -374,11 +374,17 @@ const TWO_SOURCES: &str = "its inputs hold erasable values of two sources, and a
 /// sources of the erasable values it reads, through the fields it reads
 /// and those they are derived from. One source's are digested under the
 /// version of its key `version` names, a recorded output's own, else the
-/// first its log sealed with ([`crate::sealing::USED`]), so the digest is
-/// a function of the log, whatever the key store holds now. On a source's
-/// first sealed write that is the version `event` seals with, which a plan
-/// reads before the fold has recorded it; a source that sealed nothing has
-/// no key to digest under.
+/// oldest of those that sealed the values it reads: the last first used
+/// at or before each value's position ([`crate::sealing::USED`]), as the
+/// fold keeps it and a write's plan stages it for its own events. A value
+/// written in plaintext, before its field was erasable, counts as sealed
+/// by the version in force at its position, which only ever makes an
+/// output die sooner, and as none before any; where no value names one,
+/// the first is taken. So the digest is a
+/// function of the log, whatever the key store holds now, and the output
+/// lives as long as the oldest key period it read: destroying a version,
+/// and every older one with it, takes the outputs of its values. A source
+/// that sealed nothing has no key to digest under.
 fn input_of(
     (decl, computer): (&TypeDecl, &Computer<'_>),
     (fields, metas): (&BTreeMap<FieldName, Value>, &BTreeMap<FieldName, FieldMeta>),
@@ -390,7 +396,7 @@ fn input_of(
         Computer::Function(f) => f.decl.inputs.iter().map(|i| &i.name).collect(),
         Computer::Embed(e, _) => e.from.iter().collect(),
     };
-    let (mut seen, mut sources) = (BTreeSet::new(), BTreeSet::new());
+    let (mut seen, mut sources, mut read) = (BTreeSet::new(), BTreeSet::new(), Vec::new());
     while let Some(n) = todo.pop() {
         let Some(f) = decl
             .fields
@@ -401,7 +407,9 @@ fn input_of(
             continue;
         };
         if f.erasable && fields.contains_key(n) {
-            sources.extend(metas.get(n).and_then(|m| m.source.clone()));
+            let m = metas.get(n).filter(|m| m.source.is_some());
+            sources.extend(m.and_then(|m| m.source.clone()));
+            read.extend(m.map(|m| m.position));
         }
         todo.extend(&f.depends_on);
     }
@@ -415,15 +423,17 @@ fn input_of(
         });
     };
     let used = outputs.recorded(crate::sealing::USED, &crate::sealing::used_by(&source))?;
-    let first = crate::sealing::versions(used.as_ref()).into_iter().next();
+    let firsts = crate::sealing::firsts(used.as_ref());
     let sealing = (event.sealed.as_ref())
         .filter(|_| matches!(event.body, EventBody::RecordIngested { .. }))
-        .filter(|s| s.source.as_ref().or(event.source.as_ref()) == Some(&source));
-    let Some(key) = version
-        .cloned()
-        .or(first)
-        .or(sealing.map(|s| s.key.clone()))
-    else {
+        .filter(|s| s.source.as_ref().or(event.source.as_ref()) == Some(&source))
+        .map(|s| &s.key);
+    let rank = |k: &&lakelands_api::id::KeyId| firsts.iter().position(|(f, _)| f == *k);
+    let oldest = (read.iter())
+        .filter_map(|p| crate::sealing::sealed_at(&firsts, *p))
+        .min_by_key(rank);
+    let first = firsts.first().map(|(k, _)| k);
+    let Some(key) = version.or(oldest).or(first).or(sealing).cloned() else {
         return Ok(Input::Plain(digest(call)));
     };
     let Some(keys) = outputs.keys else {

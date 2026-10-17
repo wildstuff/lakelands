@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 51, each
+- `further.json`: the lake's next events, positions 8 to 52, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -90,14 +90,18 @@ The files:
     16 does not (lakelands#996);
   - a `write_proposed` whose `declare` carries its plan, the records it
     would compute again and those it would leave naming no live record
-    (51) (`docs/decisions/062-a-change-plans-before-it-acts.md`).
+    (51) (`docs/decisions/062-a-change-plans-before-it-acts.md`);
+  - an ingest of `erp` in the delivery `batch-7` its caller named (52),
+    its id made without it: a form format 17 holds and 16 does not
+    (lakelands#1153).
 
-  Its `misplaced` holds four lines that are not of the lake. Each
+  Its `misplaced` holds five lines that are not of the lake. Each
   stands at its position after the event before it, in the release's
   format and with its hash made right, and carries one member where it
   never sits, so a reader refuses it for that alone: `upstream` on a
   `record_retired`, `cause` inside `context`, an `output_recorded`
-  with both `output` and `output_at`, and `sealed` on a `record_retired`.
+  with both `output` and `output_at`, `sealed` on a `record_retired`,
+  and `delivery` on a `record_retired`.
 - `schema-hash.json`: a view type whose conditions are written as text,
   the shape object it hashes (conditions in typed form, Appendix B), the
   shape's canonical bytes, and the schema hash; and the hash of the same
