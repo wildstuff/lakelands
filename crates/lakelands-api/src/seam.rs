@@ -246,6 +246,16 @@ pub trait KeyStore: Send + Sync {
     /// Destroy every version of the source's key.
     fn destroy(&self, lake: &LakeId, source: &SourceId) -> Result<()>;
 
+    /// Destroy the version `id` of the source's key and every older one,
+    /// never one alone: an output sealed under the oldest version its
+    /// call reads then dies with the first of them to go (058). A version
+    /// it does not hold is refused. A key store that destroys only whole
+    /// sources refuses as unbound, as this default does.
+    fn destroy_version(&self, lake: &LakeId, source: &SourceId, id: &KeyId) -> Result<()> {
+        let _ = (lake, source, id);
+        Err(crate::Error::unbound(crate::error::Seam::KeyVersions))
+    }
+
     /// The versions of the source's key, oldest first; none destroyed.
     fn ids(&self, lake: &LakeId, source: &SourceId) -> Result<Vec<KeyId>>;
 }
@@ -371,6 +381,12 @@ pub fn search_weights(value: Option<&Value>) -> (BTreeMap<String, f64>, Option<f
     )
 }
 
+/// The key of the setting that seals a source's values of each period
+/// under a version of its key of their own: `key_period` for the lake,
+/// `key_period.<source>` for a source, `day`, `week` or `month`
+/// (`docs/decisions/058-a-source-may-be-forgotten.md`).
+pub const KEY_PERIOD_SETTING: &str = "key_period";
+
 /// The key prefix of the setting that asks for a view's records to be
 /// kept as its sources are written: the setting `view_kept.<type>`, which
 /// holds when its value is `true`.
@@ -404,6 +420,8 @@ pub fn view_kept(value: Option<&Value>) -> bool {
 ///   `false`; under `true` the view must be one that can be kept
 ///   ([`crate::expr::keepable`]), and the refusal says why it is not to a
 ///   writer shown the view as declared, and to no other.
+/// - `key_period` and `key_period.<source>`, a source id, hold `day`,
+///   `week` or `month`; `None` or `null` names no period.
 ///
 /// It lives in the contract, not in the core; the store is its one
 /// caller.
@@ -430,6 +448,22 @@ pub fn check_setting<'a>(
             }
             .into(),
         );
+    }
+    if let Some(rest) =
+        (key.strip_prefix(KEY_PERIOD_SETTING)).filter(|r| r.is_empty() || r.starts_with('.'))
+    {
+        if rest
+            .strip_prefix('.')
+            .is_some_and(|s| s.is_empty() || s.contains('\0'))
+        {
+            return refused("key", Case::SourceIdForm.into());
+        }
+        let named = |p: &str| crate::Timestamp(0).period_start(p).is_some();
+        return match value {
+            None | Some(Value::Null) => Ok(()),
+            Some(Value::String(p)) if named(p) => Ok(()),
+            Some(_) => refused("value", Case::SettingKeyPeriod.into()),
+        };
     }
     if let Some(ty) = key.strip_prefix(VIEW_KEPT_SETTING) {
         let Some((seen, view)) = known(ty).and_then(|(s, d)| Some((s, d.view.as_deref()?))) else {

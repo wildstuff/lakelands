@@ -193,3 +193,31 @@ fn the_location_s_bindings_are_the_list_s() {
     let listed: std::collections::BTreeSet<String> = bound.map(|b| b.key.to_owned()).collect();
     assert_eq!(members, listed);
 }
+
+/// A source's key period is named by the source, overrides the lake's,
+/// and is told as the lake's is, whatever types its reader is shown.
+#[test]
+fn a_source_s_key_period_overrides_the_lake_s() {
+    let named = |k: &str| lake_setting(k).map(|(s, of)| (s.key, of.map(str::to_owned)));
+    assert_eq!(named("key_period"), Some(("key_period", None)));
+    assert_eq!(
+        named("key_period.crm.eu"),
+        Some(("key_period", Some("crm.eu".into())))
+    );
+    let (s, _) = lake_setting("key_period").unwrap();
+    let mut settings = BTreeMap::new();
+    assert_eq!(value_of(&settings, s, Some("crm")), Value::Null);
+    settings.insert("key_period".to_owned(), json!("month"));
+    settings.insert("key_period.crm".to_owned(), json!("day"));
+    assert_eq!(value_of(&settings, s, Some("crm")), json!("day"));
+    assert_eq!(value_of(&settings, s, Some("erp")), json!("month"));
+    let told = SettingValue {
+        key: "key_period.crm".into(),
+        value: Some(json!("day")),
+        default: json!("month"),
+        declared: None,
+    };
+    let none = |_: &str| false;
+    let told = seen(told, &none, &|_: &str, _: &str| false).and_then(|s| s.value);
+    assert_eq!(told, Some(json!("day")), "a source names no type");
+}

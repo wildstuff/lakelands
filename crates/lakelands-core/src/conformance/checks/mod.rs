@@ -49,6 +49,7 @@ mod host_settings;
 mod ingest;
 mod initial;
 mod judged;
+mod key_versions;
 mod keys;
 mod landing;
 mod latest;
@@ -534,6 +535,9 @@ pub const ALL: &[Check] = &[
     erasable::KEY_MISSING,
     erasable::SEALED_OUTPUT,
     erasable::FIRST_SEALED,
+    key_versions::VERSION_DESTROYED,
+    key_versions::KEY_PERIOD,
+    key_versions::KEY_PERIOD_TOLD,
     forgotten::FORGOTTEN,
     forgotten::FORGET_CRASH,
     forgotten::FORGET_PLAINTEXT,

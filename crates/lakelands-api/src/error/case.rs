@@ -1360,6 +1360,9 @@ catalog! {
         SourceForgotten { source: SourceId } => "the source `{source}` was forgotten, and is never given a key again: it writes nothing more; a device that comes back is a new source",
         /// A source whose keys were destroyed, asked for a new one.
         KeyDestroyed { source: SourceId } => "the keys of the source `{source}` were destroyed, and a forgotten source is never given a key again",
+        /// A version of a source's key the key store does not hold, asked
+        /// to be destroyed.
+        KeyVersionNotHeld { source: SourceId, key: KeyId } => "the key store holds no version `{key}` of the key of the source `{source}` to destroy",
         /// A source id that is empty or holds a NUL.
         SourceIdForm => "a source id is not empty and holds no NUL character",
         /// A delivery id that is empty, holds a NUL, or takes the form
@@ -1447,6 +1450,8 @@ catalog! {
         } => "it holds an array of field names of `{ty}`, or null for no index",
         /// A `view_kept` setting that holds no boolean.
         SettingKeptHolds => "it holds `true` for a view that is kept, or `false`",
+        /// A key period that names none.
+        SettingKeyPeriod => "it holds `day`, `week` or `month`, the period a source's key is used for, or null for no period",
         /// A key under the prefix of the store's own settings that names
         /// none of them.
         SettingUnlisted { prefix: String } => "keys under `{prefix}.` are the store's own settings, and this is none of them",

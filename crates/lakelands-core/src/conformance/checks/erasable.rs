@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use lakelands_api::error::{Seam, Situation};
+use lakelands_api::error::{Case, Seam, Situation};
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::id::KeyId;
 use lakelands_api::ontology::{Authority, FieldDecl, FieldType, StorageKind};
@@ -91,6 +91,22 @@ impl KeyStore for Keys {
         for (_, k) in held.entry((lake.clone(), source.clone())).or_default() {
             *k = None;
         }
+        Ok(())
+    }
+
+    fn destroy_version(
+        &self,
+        lake: &LakeId,
+        source: &SourceId,
+        id: &KeyId,
+    ) -> lakelands_api::Result<()> {
+        let mut held = crate::lock(&self.0);
+        let versions = held.entry((lake.clone(), source.clone())).or_default();
+        let Some(i) = versions.iter().position(|(i, k)| i == id && k.is_some()) else {
+            let (source, key) = (source.clone(), id.clone());
+            return Err(crate::invalid(Case::KeyVersionNotHeld { source, key }));
+        };
+        versions[..=i].iter_mut().for_each(|(_, k)| *k = None);
         Ok(())
     }
 

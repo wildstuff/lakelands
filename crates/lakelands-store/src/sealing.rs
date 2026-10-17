@@ -19,6 +19,7 @@ use aes_gcm_siv::{Aes256GcmSiv, Nonce};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use hmac::{Hmac, Mac};
+use lakelands_api::engine::ProjectionView;
 use lakelands_api::error::{Seam, Situation};
 use lakelands_api::event::{Digest, Event, EventBody, Sealed};
 use lakelands_api::id::KeyId;
@@ -45,6 +46,35 @@ struct Held {
     /// The version of each source's key its new values are sealed with,
     /// and the newest the log had used when it was chosen.
     sealing: BTreeMap<SourceId, (KeyId, Option<KeyId>)>,
+    /// Each source's list [`USED`] as the projection held it at a
+    /// position ([`Keys::listed`]).
+    lists: BTreeMap<SourceId, (Position, Arc<List>)>,
+}
+
+/// The list [`USED`] keeps for a source, read once: as kept, and each
+/// version with the position of its first use, in that order.
+pub struct List {
+    /// The list as kept.
+    pub value: Value,
+    /// Each version with the position of its first use.
+    pub firsts: Vec<(KeyId, Position)>,
+    /// When the newest version was first used, where the list says.
+    pub newest: Option<lakelands_api::Timestamp>,
+}
+
+impl List {
+    /// The list kept as `value`.
+    pub fn of(value: Value) -> List {
+        let firsts = firsts(Some(&value));
+        let last = value.as_array().and_then(|l| l.last());
+        let newest = last.and_then(|l| l.get(2)?.as_i64());
+        let newest = newest.map(lakelands_api::Timestamp);
+        List {
+            value,
+            firsts,
+            newest,
+        }
+    }
 }
 
 impl Keys {
@@ -62,18 +92,25 @@ impl Keys {
 
     /// The version of `source`'s key its new values are sealed with, and
     /// the key: the newest the key store holds, or a new one where it
-    /// holds none and the log holds nothing `source` sealed (`used`, the
-    /// versions the log used, [`USED`]). A key store that lost the last of
-    /// them answers `key_missing` here, at the write, and is never given a
-    /// new key the old values would read as erased. Without a key store,
-    /// refused as `Unbound`.
-    pub fn sealing(&self, source: &SourceId, used: &[KeyId]) -> Result<(KeyId, DataKey)> {
+    /// holds none and the log holds nothing `source` sealed (`newest`, the
+    /// newest version the log used, [`USED`]), or where `rotate` says it
+    /// belongs to a period past ([`rotates`]). A key store that lost the
+    /// last of them answers `key_missing` here, at the write, and is never
+    /// given a new key the old values would read as erased. Without a key
+    /// store, refused as `Unbound`.
+    pub fn sealing(
+        &self,
+        source: &SourceId,
+        newest: Option<&KeyId>,
+        rotate: bool,
+    ) -> Result<(KeyId, DataKey)> {
         // A choice stands while the log's newest version is the one it was
         // made over, or the one chosen: where another writer sealed with a
         // newer one while this one held no lease, it is made again, so the
         // versions a source seals with only rise.
         let held = lock(&self.held).sealing.get(source).cloned();
-        let last = used.last();
+        let last = newest;
+        let held = held.filter(|(id, _)| !(rotate && last == Some(id)));
         let stands =
             |(id, over): &(KeyId, Option<KeyId>)| last == Some(id) || last == over.as_ref();
         let id = held.filter(stands).map(|(id, _)| id);
@@ -82,13 +119,15 @@ impl Keys {
             None => {
                 let store = self.store()?;
                 let ids = store.ids(&self.lake, source)?;
-                if let Some(last) = used.last().filter(|u| !ids.contains(u)) {
+                if let Some(last) = newest.filter(|u| !ids.contains(u)) {
                     let (source, key) = (source.clone(), last.clone());
                     return Err(Error::unavailable(Situation::KeyMissing { source, key }));
                 }
+                // A version made and not yet used is a new period's
+                // already.
                 let id = match ids.last() {
-                    Some(id) => id.clone(),
-                    None => store.create(&self.lake, source)?,
+                    Some(id) if !(rotate && newest == Some(id)) => id.clone(),
+                    _ => store.create(&self.lake, source)?,
                 };
                 let chosen = (id.clone(), last.cloned());
                 lock(&self.held).sealing.insert(source.clone(), chosen);
@@ -123,6 +162,45 @@ impl Keys {
         Ok(Some(k))
     }
 
+    /// The list [`USED`] keeps for `source` as `view` holds it, read from
+    /// the engine once at each position of the view: it grows by an entry
+    /// a key period, and is read at every sealed value, so reading it
+    /// whole each time would cost a write in proportion to the source's
+    /// periods. It changes only with an event that seals, which moves the
+    /// position, and a rebuild, which forgets every list kept
+    /// ([`Self::unlist`]), as [`Self::destroy`] forgets a source's; a view
+    /// of no position is read each time. A rebuild by the writer of
+    /// another process is not seen here: a list read while it refolds is
+    /// kept until the head moves past the position it was read at.
+    pub fn listed(
+        &self,
+        view: &dyn ProjectionView,
+        source: &SourceId,
+    ) -> Result<Option<Arc<List>>> {
+        let at = view.position();
+        let kept = lock(&self.held).lists.get(source).cloned();
+        if let (Some(at), Some((was, list))) = (at, kept)
+            && was == at
+        {
+            return Ok(Some(list));
+        }
+        let Some((_, value)) = view.output(USED, &used_by(source))? else {
+            return Ok(None);
+        };
+        let list = Arc::new(List::of(value));
+        if let Some(at) = at {
+            lock(&self.held)
+                .lists
+                .insert(source.clone(), (at, list.clone()));
+        }
+        Ok(Some(list))
+    }
+
+    /// Forget every list [`Self::listed`] kept: a rebuild folds them again.
+    pub fn unlist(&self) {
+        lock(&self.held).lists.clear();
+    }
+
     /// The versions of `source`'s key the key store holds; none without
     /// a key store, which seals nothing.
     pub fn ids(&self, source: &SourceId) -> Result<Vec<KeyId>> {
@@ -140,6 +218,7 @@ impl Keys {
             let mut held = lock(&self.held);
             held.by.retain(|(s, _), _| s != source);
             held.sealing.remove(source);
+            held.lists.remove(source);
         }
         match &self.store {
             Some(store) if !store.ids(&self.lake, source)?.is_empty() => {
@@ -209,9 +288,39 @@ pub fn used_by(source: &SourceId) -> Digest {
     crate::backed::digest(&Value::from(source.as_str()))
 }
 
-/// The versions of a source's key the list [`USED`] keeps holds.
-pub fn versions(list: Option<&Value>) -> Vec<KeyId> {
-    firsts(list).into_iter().map(|(k, _)| k).collect()
+/// Whether a source whose newest version was first used at `first`
+/// (none where the list does not say) seals a value written at `now`
+/// under a new one: where the source has a key period and `now` is past
+/// the start of a later period than `first`'s
+/// (`lakelands_api::seam::KEY_PERIOD_SETTING`).
+pub fn rotates(
+    first: Option<lakelands_api::Timestamp>,
+    now: lakelands_api::Timestamp,
+    period: Option<&str>,
+) -> bool {
+    let start = |t: lakelands_api::Timestamp| period.and_then(|p| t.period_start(p));
+    match (start(now), first) {
+        (None, _) => false,
+        (Some(_), None) => true,
+        (Some(now), Some(first)) => start(first).is_some_and(|f| f < now),
+    }
+}
+
+/// Whether `source`, whose versions the list [`USED`] keeps as `list`,
+/// seals a value written at `now` under a new version: by its own key
+/// period where the lake's `settings` hold one, else the lake's, from
+/// its newest version's first use ([`rotates`]).
+pub fn turns(
+    settings: &BTreeMap<String, Value>,
+    list: Option<&List>,
+    source: &SourceId,
+    now: lakelands_api::Timestamp,
+) -> bool {
+    use lakelands_api::settings::{lake_setting, value_of};
+    let setting = lake_setting(lakelands_api::seam::KEY_PERIOD_SETTING).map(|(s, _)| s);
+    let period = setting.map(|s| value_of(settings, s, Some(source.as_str())));
+    let first = list.and_then(|l| l.newest);
+    rotates(first, now, period.as_ref().and_then(Value::as_str))
 }
 
 /// The versions the list [`USED`] keeps, each with the position of its
@@ -229,26 +338,28 @@ pub fn firsts(list: Option<&Value>) -> Vec<(KeyId, Position)> {
 }
 
 /// The list [`USED`] keeps for `source` once `key` seals a value at `at`,
-/// with the place it is kept under: none where the list, as `staged` holds
-/// it or else `view`, names `key` already. The fold and a write's plan
-/// both keep it so, and read the same versions.
+/// written at `known`, with the place it is kept under: none where the
+/// list, as `staged` holds it or else `view` ([`Keys::listed`]), names
+/// `key` already. The fold and a write's plan both keep it so, and read
+/// the same versions.
 pub fn first_use(
-    staged: &crate::backed::Recorded,
-    view: &dyn lakelands_api::engine::ProjectionView,
-    (source, key, at): (&SourceId, &KeyId, Position),
+    (staged, view, keys): (&crate::backed::Recorded, &dyn ProjectionView, &Keys),
+    (source, key, at, known): (&SourceId, &KeyId, Position, lakelands_api::Timestamp),
 ) -> Result<Option<((String, Digest), Value)>> {
     let place = (USED.to_owned(), used_by(source));
     let list = match staged.get(&place).and_then(|l| l.last()) {
-        Some((_, v)) => Some(v.clone()),
-        None => view.output(&place.0, &place.1)?.map(|(_, v)| v),
+        Some((_, v)) => Some(Arc::new(List::of(v.clone()))),
+        None => keys.listed(view, source)?,
     };
-    let mut used = firsts(list.as_ref());
-    if used.iter().any(|(k, _)| k == key) {
+    // A source seals with its newest version, so it is looked for first.
+    let named = |l: &Arc<List>| l.firsts.iter().rev().any(|(k, _)| k == key);
+    if list.as_ref().is_some_and(named) {
         return Ok(None);
     }
-    used.push((key.clone(), at));
-    let list = serde_json::to_value(&used).expect("key ids serialise");
-    Ok(Some((place, list)))
+    let used = list.and_then(|l| l.value.as_array().cloned());
+    let mut used = used.unwrap_or_default();
+    used.push(serde_json::json!([key, at, known.0]));
+    Ok(Some((place, Value::Array(used))))
 }
 
 /// The version that sealed a value written at `at`, by `firsts`.

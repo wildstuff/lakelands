@@ -558,6 +558,63 @@ async fn a_setting_s_changes_are_told_as_of_its_twin_without_what_is_not_told() 
     );
 }
 
+/// A source's key period is told only to one from whom nothing is held
+/// (058, 063), so a set over the settings whose condition reads it is
+/// told only to such a one: the owner is told that `threshold` joined a
+/// set that holds while crm's period is `day`, and one who reads every
+/// field without `restricted` is told the write alone.
+#[tokio::test]
+async fn a_set_over_the_settings_is_told_only_to_one_from_whom_nothing_is_held() {
+    let store = common::lake_on(Backend::Memory).await;
+    declare(
+        store.as_ref(),
+        json!({"declare": "object_set", "name": "daily", "of": "sys.setting",
+               "where": "key = 'threshold' and setting('key_period.crm') = 'day'"}),
+    )
+    .await;
+    let period = json!({"key": "key_period.crm", "value": "day"});
+    write(store.as_ref(), "sys.setting", "key_period.crm", period).await;
+    let mut open = common::owner();
+    open.grants.restricted = false;
+    let kinds = json!({"kinds": ["object_set_changed", "record_upserted"]});
+    let mut told = Vec::new();
+    for who in [common::owner(), open] {
+        let mut s = Stdio::open(store.clone(), who).await;
+        s.call("subscribe", kinds.clone()).await;
+        told.push(s);
+    }
+    let threshold = json!({"key": "threshold", "value": 1});
+    write(store.as_ref(), "sys.setting", "threshold", threshold).await;
+    let last = write(
+        store.as_ref(),
+        "invoice",
+        "INV-1",
+        json!({"status": "paid"}),
+    )
+    .await;
+    let mut kinds = Vec::new();
+    for s in &mut told {
+        let mut seen = Vec::new();
+        loop {
+            let m = s.change().await;
+            seen.push(m["params"]["kind"].as_str().unwrap().to_owned());
+            if m["params"]["position"] == json!(last) {
+                break;
+            }
+        }
+        seen.sort();
+        kinds.push(seen);
+    }
+    assert_eq!(
+        kinds,
+        [
+            vec!["object_set_changed", "record_upserted", "record_upserted"],
+            vec!["record_upserted", "record_upserted"]
+        ],
+        "the owner, then the reader without `restricted`"
+    );
+}
+
 /// A subscription to other kinds leaves the pump's hub for the hub of its
 /// new kinds: what the new kinds name is told, what only the old ones
 /// named is not.

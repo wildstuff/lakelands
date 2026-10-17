@@ -2977,8 +2977,9 @@ impl Decide<'_> {
         let (Some(sealed), Some(source), true) = (&d.sealed, d.source.as_ref(), ingested) else {
             return Ok(None);
         };
-        let used = (source, &sealed.key, self.next);
-        crate::sealing::first_use(&self.pending.sealed, self.view, used)
+        let used = (source, &sealed.key, self.next, self.now);
+        let read = (&self.pending.sealed, self.view, &*self.call.lake.keys);
+        crate::sealing::first_use(read, used)
     }
 
     /// A planned record write with what it sets off: its own event, which
@@ -3410,12 +3411,15 @@ impl Call<'_> {
         // A holder of `only` changes no shape, and proposes no write that
         // anything but the write itself could move off its pairs (051).
         granted(!write.is_schema() || !rights::holds_only(self.who))?;
-        // A setting its proposer is told narrowed is proposed merged with
-        // what stands then, so its accept is refused once that changed (063).
+        // A setting its proposer may be told narrowed, as one who does not
+        // read every field may, is proposed merged with what stands then,
+        // so its accept is refused once that changed (063). A source's
+        // setting is told whole or not at all, so nothing is merged into it.
         let pin = |ty: &TypeName| {
             ordinary_door(ty)?;
             let sees = Sight::held(self.who, &w.ontology);
-            Ok::<_, Error>(self.pin(&w, sees.ty(ty)?, None)? || sees.narrows(ty))
+            let narrowed = sees.narrows(ty) && !rights::reads_all(self.who);
+            Ok::<_, Error>(self.pin(&w, sees.ty(ty)?, None)? || narrowed)
         };
         let mut d = self.decide(&w, view.as_ref(), now, 1);
         let mut pinned = false;

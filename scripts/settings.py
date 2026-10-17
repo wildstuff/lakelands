@@ -161,7 +161,11 @@ def page(settings, bound):
         lines += ["", f"## {title}", "", intro]
         for s in (s for s in settings if s["layer"] == layer):
             key = s["key"]
-            shown = {"Only": f"{key}.<type>", "Override": f"{key}` and `{key}.<type>"}
+            shown = {
+                "Only": f"{key}.<type>",
+                "Override": f"{key}` and `{key}.<type>",
+                "Source": f"{key}` and `{key}.<source>",
+            }
             lines += ["", f"### `{shown.get(s['per_type'], key)}`", "", s["says"], ""]
             lines.append(f"- **Takes:** {s['range']}.")
             lines.append(f"- **Default:** `{s['default']}`.")
@@ -171,6 +175,11 @@ def page(settings, bound):
                 lines.append(
                     f"- **Per type:** `{key}.<type>` overrides `{key}` for that type; "
                     "retired, the type has the lake's value again."
+                )
+            elif s["per_type"] == "Source":
+                lines.append(
+                    f"- **Per source:** `{key}.<source>` overrides `{key}` for that source; "
+                    "retired, the source has the lake's value again."
                 )
             if s.get("cost"):
                 lines.append(f"- **Cost:** {s['cost']}.")

@@ -37,8 +37,8 @@
 //!   every field of the type in full at that position: a condition over a
 //!   field it may not read, or reads masked, is never probed this way
 //!   (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
-//!   A condition over `sys.setting` is told only to one who reads every
-//!   field of every type, the only principal no setting is told narrowed.
+//!   A condition over `sys.setting` is told only to one from whom nothing
+//!   is held, the only principal no setting is told narrowed or withheld.
 //!
 //! **What a gap says.** The positions a session is told are a subset of
 //! the log's, so a gap between two says that something happened the
@@ -734,13 +734,9 @@ impl<'a> View<'a> {
         if let Some(w) = self.whole.get(ty) {
             return Ok(*w);
         }
-        // A setting may be told narrowed to one who does not read every
-        // field of every type, so a condition over it is never its (063).
-        let all = Grants {
-            restricted: true,
-            ..self.who.grants.clone()
-        };
-        if ty.as_str() == SETTING_TYPE && !all.reads_everything() {
+        // A setting may be told narrowed, or not at all, to one from whom
+        // something is held, so a condition over it is never its (063).
+        if ty.as_str() == SETTING_TYPE && !self.who.grants.reads_everything() {
             self.whole.insert(ty.clone(), false);
             return Ok(false);
         }
