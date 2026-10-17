@@ -807,6 +807,7 @@ pub const ALL: &[Check] = &[
     withdraw::WITHDRAWN_SET,
     withdraw::WITHDRAWAL_TWIN,
     withdraw::WITHDRAWN_UNSEEN,
+    withdraw::WITHDRAWN_RETIRE,
     after::AFTER_RESUMES,
     describe::DESCRIBE_IS_THE_DECLARATION,
     describe::DESCRIBED_AS_SHOWN,

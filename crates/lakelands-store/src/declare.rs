@@ -1931,9 +1931,10 @@ fn withdrawal(o: &Ontology, w: &Withdrawal) -> Result<()> {
 /// The first reader in force of what `w` withdraws, as a refusal names
 /// it. Nothing reads a trigger. A function is read by each field it
 /// computes; a verb by each field of its type only verbs write that no
-/// other verb of the type sets (lakelands#1130); an object set by each set
-/// and each trigger whose condition names it, itself or through the sets
-/// it names.
+/// other verb of the type sets (lakelands#1130), and the last that retires
+/// a type only its verbs retire by that type (lakelands#1239); an object
+/// set by each set and each trigger whose condition names it, itself or
+/// through the sets it names.
 pub(crate) fn reader(o: &Ontology, w: &Withdrawal) -> Option<String> {
     match w.kind {
         DeclarationKind::Function => function_reader(o, &w.name),
@@ -1944,21 +1945,25 @@ pub(crate) fn reader(o: &Ontology, w: &Withdrawal) -> Option<String> {
 }
 
 /// The first field only verbs write that `verb` alone of its type's verbs
-/// sets: the field `status` of `order`.
+/// sets: the field `status` of `order`; else its type, where it is the last
+/// verb that retires a type only its verbs retire (lakelands#1239).
 fn verb_reader(o: &Ontology, verb: &VerbName) -> Option<String> {
     let v = &o.verbs.get(verb)?.decl;
     let t = &o.types.get(&v.on)?.decl;
     let sets = |v: &lakelands_api::ontology::VerbDecl, f: &FieldName| matches!(&v.effect, VerbEffect::Write { set } if set.iter().any(|a| &a.field == f));
     let others = o.verbs.values().map(|e| &e.decl);
-    let others = |f: &FieldName| {
-        others
-            .clone()
-            .any(|x| x.name != v.name && x.on == t.name && sets(x, f))
+    let others = others.filter(|x| x.name != v.name && x.on == t.name);
+    let only = |f: &&FieldDecl| {
+        f.authority == Authority::Verb
+            && sets(v, &f.name)
+            && !others.clone().any(|x| sets(x, &f.name))
     };
-    let only =
-        |f: &&FieldDecl| f.authority == Authority::Verb && sets(v, &f.name) && !others(&f.name);
-    let f = t.fields.iter().find(only)?;
-    Some(format!("the field `{}` of `{}`", f.name, t.name))
+    if let Some(f) = t.fields.iter().find(only) {
+        return Some(format!("the field `{}` of `{}`", f.name, t.name));
+    }
+    let retires = |v: &lakelands_api::ontology::VerbDecl| matches!(v.effect, VerbEffect::Retire);
+    let last = !t.retired_by.is_authors() && retires(v) && !others.clone().any(retires);
+    last.then(|| format!("the type `{}`", t.name))
 }
 
 /// The first set, then trigger, in force whose condition names the set

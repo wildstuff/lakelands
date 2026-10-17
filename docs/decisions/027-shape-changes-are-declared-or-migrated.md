@@ -615,7 +615,9 @@ function, a field that it computes, of a type, of a relation's links
 named at the relation, or of a link type no relation carries any more,
 named at the link type; for a verb, a field only verbs write that no
 other verb of its type sets, which would be left with no writer but its
-`initial` and aging; for an object set, another set or a trigger's
+`initial` and aging, and then the type itself where it is the last verb
+that retires a type only its verbs retire, whose records no verb could
+retire again (lakelands#1239); for an object set, another set or a trigger's
 `when` that names it. Nothing reads a trigger. A set and the set over it
 go together in one set of declarations. A name not
 in force is refused `withdrawn_undeclared`, and so is one its author is

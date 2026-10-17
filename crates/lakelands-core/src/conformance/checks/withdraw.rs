@@ -56,6 +56,11 @@ check!(
     "027 and 024, extended (lakelands#1219): to a holder of `schema` not shown a type, withdrawing a verb or an object set of it is refused as withdrawing one never declared, word for word, appending nothing; withdrawing a set it is shown that a trigger it is not shown watches, one reading across an edge a field it is kept from, is not granted, by `declare` and by the accept of a proposal made before the trigger, naming neither the trigger nor that field, where the owner is told the trigger"
 );
 
+check!(
+    WITHDRAWN_RETIRE = the_last_verb_that_retires_a_type_is_not_withdrawn,
+    "027 and 016, extended (lakelands#1239): of a type only its verbs retire, a retire verb beside another is withdrawn; the last is refused `withdrawn_in_use`, naming the type, appending nothing; the type marked `retired_by: authors` again, it is withdrawn"
+);
+
 fn withdraw(kind: DeclarationKind, name: &str) -> Declaration {
     Declaration::Withdraw(Withdrawal {
         kind,
@@ -1071,5 +1076,31 @@ async fn a_withdrawal_tells_a_reader_not_shown_its_type_nothing(store: Store) ->
         invalid_like(&e, &case),
         "accepting the withdrawal of `spare`, which `vista` reads too, must be refused as {case}: {e:?}"
     );
+    Ok(())
+}
+
+async fn the_last_verb_that_retires_a_type_is_not_withdrawn(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let order = |by: &str| {
+        json!({"declare": "type", "name": "order", "retired_by": by, "fields": [
+            {"name": "memo", "type": {"kind": "text"}}]})
+    };
+    l.declare_json(order("verbs")).await?;
+    for name in ["cancel", "void"] {
+        l.declare_json(
+            json!({"declare": "verb", "name": name, "on": "order", "risk": "low",
+            "effect": "retire"}),
+        )
+        .await?;
+    }
+    withdrawn_at(&l, s, DeclarationKind::Verb, "cancel", 2).await?;
+    let last = (
+        withdraw(DeclarationKind::Verb, "void"),
+        json!({"code": "withdrawn_in_use", "kind": "verb", "name": "void",
+               "by": "the type `order`"}),
+    );
+    refused_each(&l, s, vec![last]).await?;
+    l.declare_json(order("authors")).await?;
+    withdrawn_at(&l, s, DeclarationKind::Verb, "void", 2).await?;
     Ok(())
 }
