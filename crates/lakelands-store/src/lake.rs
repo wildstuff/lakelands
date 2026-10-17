@@ -422,7 +422,7 @@ macro_rules! kept_at {
     ($w:expr, $view:expr, $projection:expr) => {
         kept::At {
             view: $view,
-            projection: $projection,
+            projection: Some($projection),
             ontology: &$w.ontology,
             settings: &$w.settings,
         }
@@ -2730,19 +2730,48 @@ impl Iterator for Pages<'_> {
 }
 
 /// Records read from the projection, each once: a record's state, or its
-/// absence, by the view's position, its type and its key. A view at one
+/// absence, by the view's position, its type and its key; and the state
+/// the fold kept of a view, by the position and the view. A view at one
 /// position always answers the same, so an answer kept is an answer read
 /// again. The writer lock is held from the decision over them to the
 /// fold, so the fold's view is at the same position as the decision's
 /// unless something else was folded in between; then nothing kept is
 /// used, since the position is part of the key.
 #[derive(Default)]
-pub struct Reads(RefCell<BTreeMap<ReadAt, Option<StoredRecord>>>);
+pub struct Reads(
+    RefCell<BTreeMap<ReadAt, Option<StoredRecord>>>,
+    RefCell<BTreeMap<StateAt, Option<crate::kept::State>>>,
+);
 
 /// A read of one record: the view's position, the type, the key.
 type ReadAt = (Option<Position>, TypeName, RecordKey);
 
+/// A read of a kept view's state: the view's position, the view.
+type StateAt = (Option<Position>, TypeName);
+
 impl Reads {
+    /// Take in what `other` read.
+    pub(crate) fn extend(&self, other: Reads) {
+        self.0.borrow_mut().extend(other.0.into_inner());
+        self.1.borrow_mut().extend(other.1.into_inner());
+    }
+
+    /// The state the fold kept of the view `ty` as `view` holds it, read
+    /// from the view the first time.
+    fn state(
+        &self,
+        view: &dyn ProjectionView,
+        ty: &TypeName,
+    ) -> Result<Option<crate::kept::State>> {
+        let at = (view.position(), ty.clone());
+        if let Some(s) = self.1.borrow().get(&at) {
+            return Ok(s.clone());
+        }
+        let s = crate::kept::state(view, ty)?;
+        self.1.borrow_mut().insert(at, s.clone());
+        Ok(s)
+    }
+
     /// A record as `view` holds it, read from the view the first time.
     pub fn get(
         &self,
@@ -2915,8 +2944,12 @@ fn foreign(o: &Ontology, body: &EventBody) -> Option<Flaw> {
         | EventBody::RecordIngested { ty, .. }
         | EventBody::RecordRetired { ty, .. }
         | EventBody::RecordRestricted { ty, .. }
-        | EventBody::RecordUnrestricted { ty, .. }
-        | EventBody::ObjectSetChanged { ty, .. } => (ty, false),
+        | EventBody::RecordUnrestricted { ty, .. } => (ty, false),
+        // A set of a view holds its groups (lakelands#1185).
+        EventBody::ObjectSetChanged { ty, .. } if o.ty(ty).is_ok_and(|t| t.view.is_some()) => {
+            return None;
+        }
+        EventBody::ObjectSetChanged { ty, .. } => (ty, false),
         _ => return None,
     };
     let ty = ty.clone();
@@ -3459,7 +3492,7 @@ pub struct Staged {
     /// The records this transaction wrote, each under the key and in the
     /// state it has now: ended only where the fold ended a kept view's
     /// record, which `each` leaves out.
-    records: BTreeMap<(TypeName, RecordKey), StoredRecord>,
+    pub(crate) records: BTreeMap<(TypeName, RecordKey), StoredRecord>,
     /// The steps this transaction folded and kept, in the order of their
     /// events.
     pub(crate) steps: Vec<Step>,
@@ -3485,6 +3518,9 @@ pub struct Staged {
     pub(crate) orders: BTreeMap<TypeName, crate::kept::Orders>,
     /// The lake's keys, which a recomputation it keeps computes with.
     keys: Option<Arc<crate::sealing::Keys>>,
+    /// What the write path's run of the hooks overwrote, where it keeps
+    /// that ([`crate::kept::Undo`]).
+    pub(crate) undo: Option<crate::kept::Undo>,
 }
 
 impl Staged {
@@ -3626,9 +3662,37 @@ impl Staged {
         projection.put_membership(set, ty, key, member, at)
     }
 
+    /// The records this transaction read from the projection.
+    pub(crate) fn into_reads(self) -> Reads {
+        self.reads
+    }
+
     /// Remember a record written in this append.
     pub fn put(&mut self, r: StoredRecord) {
-        self.records.insert((r.ty.clone(), r.key.clone()), r);
+        let at = (r.ty.clone(), r.key.clone());
+        match &mut self.undo {
+            Some(undo) => undo.record(at.clone(), self.records.insert(at, r)),
+            None => drop(self.records.insert(at, r)),
+        }
+    }
+
+    /// A record as `view` holds it, before anything this append wrote.
+    pub(crate) fn before(
+        &self,
+        view: &dyn ProjectionView,
+        ty: &TypeName,
+        key: &RecordKey,
+    ) -> Result<Option<StoredRecord>> {
+        self.reads.get(view, ty, key)
+    }
+
+    /// The state the fold kept of `ty` as `view` holds it, read once.
+    pub(crate) fn kept_state(
+        &self,
+        view: &dyn ProjectionView,
+        ty: &TypeName,
+    ) -> Result<Option<crate::kept::State>> {
+        self.reads.state(view, ty)
     }
 }
 

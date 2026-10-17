@@ -720,3 +720,180 @@ async fn an_append_pays_for_the_views_that_read_what_it_wrote() {
     t.feed("a", 10, 1).await;
     assert_eq!(states(), 1, "an append to the view's source");
 }
+
+/// A set of the view pays where a record the view reads is written, and
+/// nowhere else: at an ingest the write path reads the view's state and
+/// the fold reads it not again, and a write of another type reads none
+/// (lakelands#1185).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_set_of_a_view_pays_where_the_view_is_written() {
+    let t = Peaks::new("kept-set-cost").await;
+    let states = || t.probe.states.swap(0, Ordering::SeqCst);
+    t.keep(true).await;
+    t.feed("a", 0, 3).await;
+    let set = json!({"declare": "object_set", "name": "high", "of": "peak", "where": "peak > 5"});
+    t.l.declare_json(set).await.expect("the set");
+    states();
+    t.put("other", "o", json!({"x": "z"})).await;
+    assert_eq!(states(), 0, "an append to a type no view reads");
+    t.feed("a", 10, 1).await;
+    assert_eq!(states(), 1, "an append to the view's source");
+    t.top("a").await;
+    let (peak, high) = (
+        "peak".into(),
+        lakelands_core::conformance::fixture::find_where("in_set('high')"),
+    );
+    let topped = t.l.cat.find(&t.l.own, &peak, high);
+    let topped = topped.await.expect("reading the set");
+    assert!(
+        matches!(topped.data, Found::Records { ref rows, .. } if rows.len() == 1),
+        "`a` is high: {:?}",
+        topped.data
+    );
+}
+
+/// A write refused past `max_set_changes` is undone in the write path's
+/// run of the hooks, which goes on from the writes accepted before it:
+/// an aging run of twelve moves past a ceiling of four reads each group's
+/// kept row once there, however many moves before it were refused, and
+/// the fold reads the four it moved. The write path runs no kept view a
+/// set does not hold: `by_status` is read by the fold alone
+/// (lakelands#1185).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_write_costs_the_writes_before_it_nothing() {
+    let probe = Arc::new(Probe::default());
+    let seams = Seams {
+        engines: vec![Arc::new(ProbedOpener(MemoryOpener::new(), probe.clone()))],
+        ..Seams::default()
+    };
+    let mut at = Location::memory("kept-set-refused");
+    at.limits.max_set_changes = 4;
+    let store = lakelands_store::open(at, seams, OpenMode::Create);
+    let store = store.await.expect("a new lake");
+    let l = Lake::of(store.as_ref());
+    let field = |n: &str, kind: &str| json!({"name": n, "type": {"kind": kind}});
+    for d in [
+        json!({"declare": "type", "name": "invoice",
+            "fields": [field("customer", "text"), field("amount", "decimal"), field("status", "text")]}),
+        json!({"declare": "type", "name": "balance", "key": ["customer"],
+            "fields": [field("customer", "text"), field("total", "decimal")],
+            "view": {"source": "invoice", "where": "status = 'open'", "group_by": ["customer"],
+                "measures": [{"name": "total", "expr": "sum(amount)"}]}}),
+        json!({"declare": "type", "name": "by_status", "key": ["status"],
+            "fields": [field("status", "text"), field("n", "number")],
+            "view": {"source": "invoice", "group_by": ["status"],
+                "measures": [{"name": "n", "expr": "count()"}]}}),
+    ] {
+        l.declare_json(d).await.expect("declaring");
+    }
+    for view in ["balance", "by_status"] {
+        let key = format!("view_kept.{view}");
+        l.set(&key, json!(true)).await.expect("keeping");
+    }
+    let set =
+        json!({"declare": "object_set", "name": "owing", "of": "balance", "where": "total > 100"});
+    l.declare_json(set).await.expect("the set");
+    for i in 0..12 {
+        let open = json!({"customer": format!("c{i:02}"), "amount": "150", "status": "open"});
+        l.upsert("invoice", &format!("i{i:02}"), open)
+            .await
+            .expect("an invoice");
+    }
+    let rule = json!({"on": "invoice", "field": "status", "from": "open", "to": "closed", "when": "amount > 100"});
+    let aging = lakelands_api::seam::AGING_RULE_TYPE;
+    l.upsert(aging, "close", rule).await.expect("the rule");
+    let kept = lakelands_api::seam::kept_name(&"balance".into());
+    probe.gets.lock().unwrap().clear();
+    probe.states.swap(0, Ordering::SeqCst);
+    let today = lakelands_api::Timestamp::from_date(2026, 3, 1).expect("a date");
+    let aged = store.age(today).await.expect("aging");
+    let run = aged.rules.iter().find(|r| r.rule == "close");
+    assert!(
+        run.is_some_and(|r| r.moved == 4 && r.failed_guards == 8),
+        "four moves, eight failed guards: {aged:?}"
+    );
+    let read = probe.gets.lock().unwrap().get(&kept).copied();
+    assert_eq!(read, Some(12 + 4), "each group's kept row read once");
+    let by_status = lakelands_api::seam::kept_name(&"by_status".into());
+    let read = probe.gets.lock().unwrap().get(&by_status).copied();
+    let states = probe.states.load(Ordering::SeqCst);
+    assert_eq!(
+        (read, states),
+        (Some(2), 3),
+        "`by_status` read by the fold alone"
+    );
+}
+
+/// A group flagged as not exact, or whose measure fails, stands for a
+/// failure a write may clear without the flag moving, so a write to it
+/// decides every group of the view for the sets that read it; a write to
+/// an exact group decides its own alone (lakelands#1185).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_to_a_flagged_group_decides_every_group_of_its_view() {
+    let probe = Arc::new(Probe::default());
+    let seams = Seams {
+        engines: vec![Arc::new(ProbedOpener(MemoryOpener::new(), probe.clone()))],
+        ..Seams::default()
+    };
+    let store = lakelands_store::open(Location::memory("kept-flagged"), seams, OpenMode::Create);
+    let store = store.await.expect("a new lake");
+    let l = Lake::of(store.as_ref());
+    let field = |n: &str, kind: &str| json!({"name": n, "type": {"kind": kind}});
+    for d in [
+        json!({"declare": "type", "name": "inv",
+            "fields": [field("customer", "text"), field("amount", "decimal")]}),
+        json!({"declare": "type", "name": "bal", "key": ["customer"],
+            "fields": [field("customer", "text"), field("total", "decimal")],
+            "view": {"source": "inv", "group_by": ["customer"],
+                "measures": [{"name": "total", "expr": "sum(amount)"}]}}),
+        json!({"declare": "type", "name": "tier", "key": ["customer"],
+            "fields": [field("customer", "text"), field("k", "number")],
+            "view": {"source": "bal", "group_by": ["customer"],
+                "measures": [{"name": "k", "expr": "count()"}]}}),
+    ] {
+        l.declare_json(d).await.expect("declaring");
+    }
+    for view in ["bal", "tier"] {
+        l.set(&format!("view_kept.{view}"), json!(true))
+            .await
+            .expect("keeping");
+    }
+    let set = json!({"declare": "object_set", "name": "tiered", "of": "tier", "where": "k >= 1"});
+    l.declare_json(set).await.expect("the set");
+    let groups = 10;
+    for i in 0..groups {
+        let fields = json!({"customer": format!("c{i}"), "amount": "50"});
+        l.upsert("inv", &format!("e{i}"), fields)
+            .await
+            .expect("an invoice");
+    }
+    // `big` holds a sum the fold cannot keep exactly.
+    for (k, a) in [
+        ("b1", "70000000000000000000000000000"),
+        ("b2", "-69999999999999999999999999890"),
+    ] {
+        let fields = json!({"customer": "big", "amount": a});
+        l.upsert("inv", k, fields).await.expect("an invoice");
+    }
+    let snap = |probe: &Probe| {
+        let kept = lakelands_api::seam::kept_name(&"tier".into());
+        let gets = probe.gets.lock().unwrap().get(&kept).copied().unwrap_or(0);
+        let scans = probe.rows.lock().unwrap().get(&kept).copied().unwrap_or(0);
+        (gets, scans, probe.states.load(Ordering::SeqCst))
+    };
+    let a = snap(&probe);
+    l.upsert("inv", "e3", json!({"customer": "c3", "amount": "60"}))
+        .await
+        .expect("a write to an exact group");
+    let b = snap(&probe);
+    l.upsert("inv", "b3", json!({"customer": "big", "amount": "1"}))
+        .await
+        .expect("a write to a flagged group");
+    let c = snap(&probe);
+    let (exact, flagged) = (b.0 + b.1 - a.0 - a.1, c.0 + c.1 - b.0 - b.1);
+    assert!(
+        exact < groups && flagged > groups,
+        "a write to an exact group reads fewer than the {groups} groups' rows and one to a \
+         flagged group reads every group's: {exact} and {flagged}"
+    );
+}

@@ -378,12 +378,46 @@ impl Sight<'_> {
     /// principal: decided for no reader, what such a condition holds for a
     /// record tells what it reads there (055, extended).
     fn across_unheld(&self, c: Option<&Condition>, ty: &TypeName, all: &[Declared]) -> bool {
-        let (Some(c), Some(on)) = (c, self.force.ty(ty)) else {
+        let Some(on) = self.force.ty(ty) else {
+            return true;
+        };
+        if on
+            .view
+            .as_deref()
+            .is_some_and(|v| !self.unheld_under(v, &mut Vec::new()))
+        {
+            return false;
+        }
+        let Some(c) = c else {
             return true;
         };
         let paths = paths_named(c, &sets_of(all));
         let ty = |n: &TypeName| self.force.ty(n);
         paths.is_some_and(|p| crate::rights::holds_nothing_across(self.who(), on, &p, &ty))
+    }
+
+    /// Whether nothing of the records the view `v` reads is held from its
+    /// principal: decided for no reader, a membership over the view's
+    /// whole face tells what each of them adds (lakelands#1185). It holds
+    /// `restricted`, no `only` on a source at any depth nor, of a link
+    /// type, on its ends, and reads every field a source's `where`,
+    /// grouping and measures read. `inside` are the views judged so far.
+    fn unheld_under<'v>(&'v self, v: &'v ViewDecl, inside: &mut Vec<&'v ViewDecl>) -> bool {
+        let who = self.who();
+        let ty = |n: &TypeName| self.force.ty(n);
+        inside.push(v);
+        who.grants.restricted
+            && view_reads(v).is_some_and(|reads| {
+                reads.iter().all(|(from, names)| {
+                    let Some(t) = ty(from) else { return false };
+                    let inner = t.view.as_deref();
+                    let inner = inner.filter(|i| !inside.iter().any(|v| std::ptr::eq(*v, *i)));
+                    crate::rights::own_only(who, from).is_empty()
+                        && crate::rights::held_ends(who, t, &ty).is_empty()
+                        && self.reads_all(names, from)
+                        && inner.is_none_or(|i| self.unheld_under(i, inside))
+                })
+            })
     }
 
     /// [`Self::across_unheld`] of a set's `where`, over the declarations

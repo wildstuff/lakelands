@@ -1,0 +1,178 @@
+# 066 — A set holds a kept view
+
+This record extends `docs/decisions/049-a-view-the-fold-keeps.md` and
+`docs/decisions/055-a-path-steps-through-a-reference.md`.
+
+## What is decided
+
+### An object set may hold the records of a view the lake keeps
+
+An object set's `of` may name a view the lake keeps (049): its members
+are the view's groups, by their keys, and its `where` reads the view's
+fields. A set of a view the lake does not keep is refused
+`set_of_view`, naming the set and saying to set `view_kept.<view>`
+first. Whether a view is kept is a setting's, so this is judged where a
+set of declarations is decided, not by the declaration's own check: a
+proposal of such a set is listed, and its accept is refused while the
+view is not kept.
+
+### A membership is decided at the write that moves the group, by the fold's own code
+
+The fold never appends (049), and a membership lands in the append of
+the write that moves it, caused by that write's event
+(`docs/decisions/004-the-change-feed-is-the-log.md`). So the write path
+computes the view's rows itself: at every write of a record a set's
+view reads, through every door that writes one (`upsert`, a verb, an
+accept, `ingest`, `retire` and revival, a purge, a source forgotten, an
+aging move, a backed field's fill), it runs the fold's own hooks over a
+transaction of its own and no projection, with the records, the
+settings and the earlier writes of the append the fold will read. Each
+group those hooks put or end at the write's event is decided for every
+set of its view; a view of that view is told through the same hooks, so
+a set over the outer view is decided at the same write. A group that
+ends leaves every set.
+
+- **Exact by construction.** One code computes a group's row at the
+  write and in the fold, from the same head and the same earlier writes
+  of the append. The fold is unchanged.
+- **The whole face.** A set is decided for no reader (004): over the
+  group's whole face, restricted members included.
+- **A group the fold flags as not exact** (049: a measure that fails, a
+  sum outside exact arithmetic, a member that does not fold), or one of
+  a view whose inner view has such a group, is decided on what a read of
+  the view computes for it, from its members as the append leaves them.
+  A group whose measure fails, which a read of the view refuses, is a
+  member of no set; so is every group of a view over it while a group it
+  reads there fails, since a read of the outer view refuses too. A write
+  that touches a group flagged before it or after it decides every group
+  of each set's view that reads it: a flag that stays does not say that
+  the failure it stood for has cleared. The cost is a pass over those
+  groups at each write to a flagged group, which is rare; a write to an
+  exact group pays none of it.
+- **A write refused** is undone in the append's run of the hooks: what
+  its run put there is put back as it was, and the next write runs over
+  the writes accepted before it, which are not run again.
+
+A restriction moves no whole face, so a hold placed or lifted decides
+nothing.
+
+### Where the view is made again, every group is decided in that append
+
+A set of declarations that declares the view or one of its sources
+again, a set of a view declared or declared again with another
+condition, and a write of a setting the view's expressions name make
+the view again in the write path as the fold will make it, over the
+head's records and under the declarations and settings the change
+leaves, and decide every group of every set of it, caused by the
+change's own event: the last declaration of the set, or the setting's
+write. A set declared over a view decides its members from the view's
+kept records at the head, as a set of a stored type reads its records.
+
+A write of a setting a set's `where` names decides every group of that
+set in its own append, under the value written, caused by the write's
+event; so does a set of declarations that stamps such a setting again.
+A membership answers what a read's `in_set` answers (below), which reads
+the setting as it is.
+
+### What would leave a set of a view without its rows is refused
+
+While a set holds a view, through any view it reads too:
+
+- ending the view's keeping is refused `view_kept_for_set`, naming the
+  set: its setting written `false` or retired, and a declaration under
+  which the view cannot be kept (049); the to-do is to withdraw the set
+  first (lakelands#1219);
+- a change that moves a value the view reads where no write decides the
+  set again is refused `view_source_stepped`, naming the set, the view
+  and the source. The view reads the fields its sources' `where`,
+  grouping and measures read. Such a change is a migration that takes,
+  renames, declares otherwise or fills such a field, or any field of a
+  source where one it reads is computed; one that re-keys a type a read
+  reference or a read link's end names; one whose relation's change
+  moves the records of a link type the view reads; a value type's rename
+  under a read field; and a set of declarations that computes a read
+  field again. The to-do is to withdraw the set, make the change, and
+  declare the set again, whose declaration decides its members. A
+  migration that moves no value the view reads lands: the fold makes the
+  view again from the same values, and no membership moves.
+
+A plan of such a change (062) refuses it alike, on the same path; a
+proposal's plan tells it not, as it tells no set's decision, and its
+accept is refused. To an
+author not shown the set the refusal names no set: one that moves a
+source is refused `no_longer_declarable`, naming the source the author
+is changing, and any other `not_granted`.
+
+### The bound counts them
+
+Every membership these decisions move counts toward the lake's
+`max_set_changes` (055), with what the same append moves across an edge,
+and so does every group a remake moves. Past it the write is refused
+`too_large`, naming the set to a caller shown it and nothing to another,
+and nothing is appended.
+
+### A set of a view is a reader's only where nothing of a source is held from it
+
+A membership over a group's whole face tells what every member adds,
+restricted ones and another's among them. So, by 055's rule, a set of a
+view is a reader's only where the reader holds `restricted`, holds no
+`only` on a source of the view at any depth (merged sources and the
+ends of a source that is a link type included), and reads every field a
+source's `where`, grouping and measures read. To any other reader the
+set is one that is not declared: `in_set` of it is `set_undeclared`,
+`describe` names it not, and its events are not told to the reader's
+subscription. A writer is told that such a set moved only where it is
+answered the view's group. No membership is kept per face: a reader with
+an `only` would need one for each filter.
+
+### A read's `in_set` reads the set's condition over the view
+
+In a read of the view, `in_set('<set>')` of such a set is its condition
+over the records the read answers. The set is shown only to a reader
+who holds `restricted` and is held nothing of a source, whose read
+answers each group's whole face: the groups its memberships hold, at
+the read's position and as of an earlier one. So it needs no read of
+the memberships, as a set across an edge does (055).
+
+## Why
+
+A host reacts when a computed row starts or stops meeting a condition:
+a customer's balance passes a limit, a stock's total runs low. Without a
+set over the view, the host reads the view after every write and keeps
+the last answer itself, a second source of truth for what the lake
+already computes.
+
+The membership cannot come from the fold: the fold never appends, and a
+membership is an event of the write's own append. Computing the rows in
+the write path by any other code would be a second definition of the
+view that drifts from the first; running the fold's hooks over the
+write's own records is the definition itself.
+
+The refusals take the cases where the write path does not hold the
+records the fold will read: a migration's step and a computation of a
+field again move records the write path never sees as writes. Refusing
+them while a set holds the view keeps every membership exact; deciding
+them would mean running a migration twice.
+
+## What it is not
+
+- **Not a trigger on a view.** A trigger on a kept view is the next
+  step, on the same decision (lakelands#1185).
+- **Not free.** A write of a record a set's view reads pays the view's
+  kept share in the write path too: about what the fold pays for the
+  same write, since the hooks read the group's kept row and an
+  extreme's order entries. At an `ingest` its reads of kept rows and of
+  the views' states are handed to the fold, which does not read them
+  again. The hooks run the views a set holds and those they read
+  through, and no other kept view. A write refused costs the writes
+  before it nothing. A write of any other type pays nothing more. A
+  remake reads every record of the view's sources, as the fold's make
+  does, in the change's own append. A group the fold flags as not exact
+  is the exception: deciding it reads every record of the view's
+  sources, at each write that moves it, as a read of the view computes
+  it while the view holds such a group. A write that decides every group
+  of a view (a setting a set's `where` names, or a write that turns a
+  group the view reads flagged before or after it) pays that for each
+  group while the view reads such a group.
+- **Not per face.** A reader who is not shown the set reads the view,
+  and filters it by its own `where`, as before.

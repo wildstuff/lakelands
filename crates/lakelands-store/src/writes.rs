@@ -77,6 +77,7 @@ use crate::record;
 
 mod across;
 mod plan;
+mod viewed;
 
 use across::Heads;
 pub(crate) use across::reads_across;
@@ -474,6 +475,8 @@ pub struct Pending {
     /// The pending proposals of records' calls, read once at the first
     /// retirement, which closes its record's (064).
     calls: Option<BTreeMap<(TypeName, RecordKey), Vec<ProposalId>>>,
+    /// What it holds of the views its sets of views read.
+    viewed: Option<Box<viewed::Viewed>>,
 }
 
 impl Pending {
@@ -504,6 +507,9 @@ impl Pending {
 
     /// The records this append read from the projection, for its fold.
     pub fn into_reads(self) -> crate::lake::Reads {
+        if let Some(v) = self.viewed {
+            self.reads.extend(v.into_reads());
+        }
         self.reads
     }
 
@@ -825,7 +831,7 @@ fn computed_again(
 fn member_of(
     (set, o): (&ObjectSetDecl, &Ontology),
     record: &StoredRecord,
-    w: &Writer,
+    settings: &BTreeMap<String, Value>,
     now: Timestamp,
     heads: Heads<'_>,
 ) -> Result<bool> {
@@ -839,17 +845,11 @@ fn member_of(
     let scope = RecordScope {
         fields: &record.fields,
         meta: Some(&record.meta),
-        settings: Some(&w.settings),
+        settings: Some(settings),
         now,
     };
     let on = o.ty(&set.of)?;
-    Ok(across::holds(
-        (heads, o, on),
-        record,
-        &e,
-        scope,
-        &w.settings,
-    ))
+    Ok(across::holds((heads, o, on), record, &e, scope, settings))
 }
 
 /// What a path reads across an edge at the head of `view`, to `max`
@@ -1121,7 +1121,9 @@ fn decide(
 ) -> Result<()> {
     for (s, held) in sets {
         let member = held.contains(was);
-        if changes.len() <= max && member != member_of((s, &w.ontology), is, w, now, heads)? {
+        if changes.len() <= max
+            && member != member_of((s, &w.ontology), is, &w.settings, now, heads)?
+        {
             changes.push((s.name.clone(), is.ty.clone(), is.key.clone(), !member));
         }
     }
@@ -2945,14 +2947,15 @@ impl Decide<'_> {
                 let was = self
                     .pending
                     .member(self.view, &s.name, &after.ty, &after.key)?;
-                let is = self.member(s, after)?;
+                let is = self.member(s, after, &w.settings)?;
                 if was != is {
                     own.insert((s.name.clone(), at.0.clone(), at.1.clone()), is);
                     let change = (s.name.clone(), at.0.clone(), at.1.clone(), is);
                     out.push(self.call.changed(change, cause, now));
                 }
             }
-            self.across((before, after), &own, &mut far)
+            self.across((before, after), &own, &mut far)?;
+            self.viewed((before, after), &mut far)
         })();
         if let Err(e) = decided {
             match prior {
@@ -4735,6 +4738,31 @@ impl Call<'_> {
             (declarations.iter()).for_each(|d| whole.put(d.clone(), 0, None));
             whole
         });
+        // The types it declares, and the lake it leaves where a set holds a
+        // view, whose sets it decides (lakelands#1185).
+        let declared: BTreeSet<TypeName> = (declarations.iter())
+            .filter_map(|d| match d {
+                Declaration::Type(t) => Some(t.name.clone()),
+                _ => None,
+            })
+            .collect();
+        let of_view = |s: &ObjectSetDecl, o: &Ontology| o.ty(&s.of).is_ok_and(|t| t.view.is_some());
+        // Of those, only a type, a set, a function or a setting moves one.
+        let moves = |d: &Declaration| {
+            !matches!(
+                d,
+                Declaration::Verb(_) | Declaration::Trigger(_) | Declaration::ValueType(_)
+            )
+        };
+        let viewing = declarations.iter().any(moves)
+            && (w.ontology.object_sets.values()).any(|e| of_view(&e.decl, &w.ontology))
+            || (declarations.iter())
+                .any(|d| matches!(d, Declaration::ObjectSet(s) if after.as_ref().is_some_and(|a| of_view(s, a))));
+        let left = (viewing && !telling).then(|| {
+            let mut left = w.ontology.clone();
+            (declarations.iter()).for_each(|d| left.put(d.clone(), 0, None));
+            left
+        });
         // A setting's held value is judged by the lake as the bundle
         // leaves it (063, extended).
         let settled = (declarations.iter())
@@ -4756,6 +4784,10 @@ impl Call<'_> {
                 // the records as the bundle computes them.
                 Declaration::ObjectSet(set) if again.contains(&set.of) => (None, Vec::new()),
                 Declaration::ObjectSet(_) if telling => (None, Vec::new()),
+                // A set of a view is decided over its kept records, below.
+                Declaration::ObjectSet(set) if after.as_ref().is_some_and(|a| of_view(set, a)) => {
+                    (None, Vec::new())
+                }
                 Declaration::ObjectSet(set) => {
                     let after = after.as_ref().expect("a bundle with a set has its copy");
                     let with = (w, after, &mut decided);
@@ -4805,6 +4837,21 @@ impl Call<'_> {
                 let changes = self.recomputed_sets((w, whole, &decided), &again, &event, now)?;
                 drafts.extend(changes);
             }
+        }
+        if let (Some(last), Some(left)) = (last, &left) {
+            let cause = position_after(w, first + last);
+            // The settings the bundle stamps again, in the form it keeps.
+            let setting = |d: &Draft| match &d.body {
+                EventBody::RecordUpserted { ty, key, patch, .. } if ty.as_str() == SETTING_TYPE => {
+                    Some((key.to_string(), patch.get("value")?.clone()))
+                }
+                _ => None,
+            };
+            let mut settings = w.settings.clone();
+            settings.extend(drafts.iter().filter_map(setting));
+            let moved = (&declared, &fields, &settings);
+            let changes = self.viewed_sets((w, left), moved, (cause, now))?;
+            drafts.extend(changes);
         }
         Ok(Bundled { drafts, types })
     }
@@ -5057,7 +5104,7 @@ impl Call<'_> {
             live(view.as_ref(), ty, |r| {
                 let is = &again(r)?;
                 for (s, held) in &sets {
-                    let member = member_of((s, whole), is, w, now, heads)?;
+                    let member = member_of((s, whole), is, &w.settings, now, heads)?;
                     if held.contains(&r.key) == member {
                         continue;
                     }
@@ -5117,7 +5164,7 @@ impl Call<'_> {
         at_head(view.as_ref(), self.lake.limits.max_depth, |heads| {
             live(view.as_ref(), ty, |r| {
                 for (s, held) in &sets {
-                    let is = member_of((s, after), r, w, now, heads)?;
+                    let is = member_of((s, after), r, &w.settings, now, heads)?;
                     if held.contains(&r.key) != is {
                         if out.len() as u64 >= u64::from(max) {
                             return Err(Error::Refused {
@@ -5234,6 +5281,48 @@ impl Call<'_> {
             let ty = before.name.clone();
             return Err(invalid(Case::MigrationTakesKey { ty }));
         }
+        // The fields whose values it moves: those of its type it takes,
+        // renames, declares otherwise or fills; where it re-keys, the
+        // references to it and its links' ends; and every field of a link
+        // type a relation's change moves records out of.
+        let mut stepped: viewed::Stepped = BTreeMap::new();
+        let kept = |f: &FieldDecl| m.to.fields.iter().any(|t| t == f);
+        let own = before
+            .fields
+            .iter()
+            .filter(|f| !kept(f))
+            .map(|f| f.name.clone());
+        let own = own.chain(m.fill.iter().cloned()).collect();
+        stepped.insert(m.to.name.clone(), Some(own));
+        let rekeyed = m.to.key != before.key;
+        let to_links = links::link_types_of(&m.to);
+        for l in links::link_types_of(&before) {
+            let moved = !to_links.iter().any(|t| t == &l);
+            let ends = [links::FROM, links::TO].map(FieldName::from);
+            let ends = ends.into_iter().filter(|_| rekeyed).collect();
+            stepped.insert(l.name, (!moved).then_some(ends));
+        }
+        for t in w
+            .ontology
+            .types
+            .values()
+            .map(|e| &e.decl)
+            .filter(|_| rekeyed)
+        {
+            let refers = t
+                .fields
+                .iter()
+                .filter(|f| f.ty.target.as_ref() == Some(&m.to.name));
+            let refers: BTreeSet<FieldName> = refers.map(|f| f.name.clone()).collect();
+            let at = stepped
+                .entry(t.name.clone())
+                .or_insert_with(|| Some(BTreeSet::new()));
+            if let Some(fields) = at {
+                fields.extend(refers);
+            }
+        }
+        let changed = (&stepped, Some(&m.to.name));
+        viewed::stepped_under(&w.ontology, changed, judged.unwrap_or(self.who))?;
         if m.to.key != before.key {
             for k in &m.to.key {
                 if !m.to.fields.iter().any(|f| &f.name == k && f.required) {
@@ -6277,6 +6366,19 @@ impl Call<'_> {
             _ => {}
         }
         m.check_renames(&current.decl, accepts).map_err(invalid)?;
+        // A rename rewrites the values of every field that uses it.
+        let named = |f: &&FieldDecl| f.ty.value_type.as_ref() == Some(&to.name);
+        let types = w.ontology.types.values().map(|e| &e.decl);
+        let uses = |t: &TypeDecl| {
+            t.fields
+                .iter()
+                .filter(named)
+                .map(|f| f.name.clone())
+                .collect()
+        };
+        let stepped = types.map(|t| (t.name.clone(), Some(uses(t))));
+        let stepped = stepped.filter(|_| !m.renames.is_empty()).collect();
+        viewed::stepped_under(&w.ontology, (&stepped, None), self.who)?;
         // The new declaration is checked as a declaration of its own; the
         // one in force would refuse it as a tightening.
         let mut probe = w.ontology.clone();
@@ -6492,7 +6594,7 @@ impl Call<'_> {
                 for (s, held) in &sets {
                     let member = held.contains(&r.key);
                     if plan.members.len() <= limit
-                        && member != member_of((s, &probe), &is, w, now, heads)?
+                        && member != member_of((s, &probe), &is, &w.settings, now, heads)?
                     {
                         plan.members
                             .push((s.name.clone(), is.ty.clone(), is.key.clone(), !member));
@@ -6521,7 +6623,7 @@ impl Call<'_> {
                 for (s, held) in &sets {
                     let member = held.contains(&r.key);
                     if plan.members.len() <= limit
-                        && member != member_of((s, &probe), r, w, now, heads)?
+                        && member != member_of((s, &probe), r, &w.settings, now, heads)?
                     {
                         plan.members
                             .push((s.name.clone(), r.ty.clone(), r.key.clone(), !member));

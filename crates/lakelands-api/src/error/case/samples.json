@@ -508,6 +508,15 @@
    "field": "f"
   },
   {
+   "code": "view_kept_for_set",
+   "type": "t"
+  },
+  {
+   "code": "view_source_stepped",
+   "source": "t",
+   "type": "t"
+  },
+  {
    "code": "view_key",
    "group_by": [
     "a"

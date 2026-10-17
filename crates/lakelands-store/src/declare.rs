@@ -1746,7 +1746,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             let on = [Place::ObjectSet {
                 name: s.name.clone(),
             }];
-            let of = declared(o, &s.of, &on)?;
+            declared(o, &s.of, &on)?;
             let ty = s.of.clone();
             // A set is of one type: declared again, it holds that type.
             if let Some(was) = o.object_sets.get(&s.name).filter(|e| e.decl.of != s.of) {
@@ -1756,11 +1756,9 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     at(&on, Case::SetRetyped { was, ty }),
                 ));
             }
-            // A set holds stored records; a view's are computed on read,
-            // and no set is evaluated over them.
-            if of.view.is_some() {
-                return Err(invalid_field(&"of".into(), at(&on, Case::SetOfView { ty })));
-            }
+            // A set of a view holds the records the lake keeps of it: whether
+            // it keeps them is a setting's, judged at the write
+            // (lakelands#1185).
             let named = |n: &str| Some(s).filter(|s| s.name == n).or_else(|| o.set(n));
             set_filter(&named, s, &on)?;
         }

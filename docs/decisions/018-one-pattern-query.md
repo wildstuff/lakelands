@@ -396,8 +396,10 @@ refused when the view is declared, and a search on a view is refused,
 naming it; neither is answered empty. For the same reason a declaration
 that could never act on a view is refused when declared, naming both.
 A trigger on a view would never fire, since no write has the view's
-type. An object set holds stored records, and a set evaluated over
-computed records would be a feature of its own. A relation on a view is
+type. An object set holds stored records, or the groups of a view the
+lake keeps, decided at every write that moves one
+(`docs/decisions/066-a-set-holds-a-kept-view.md`); of a view the lake
+does not keep no write would decide it. A relation on a view is
 refused unless it is derived from matching values. A link names a live,
 written record as its `from` (035), so a relation carried by link
 records could never hold an edge. A view has no stored field for `via`
@@ -635,3 +637,6 @@ used.
   under a bound name the lake's column, where only `_depth` and `_type`
   are; a field an older lake holds under another `_` name is bound as a
   field.
+- An object set may hold the groups of a view the lake keeps, decided
+  at every write that moves one; before, every set of a view was refused
+  (lakelands#1185).

@@ -348,7 +348,7 @@ What a refusal is about.
 | `reads_param_view` | `source` (TypeName), `param` (ParamName) | its view reads `{source}`, a view with the parameter `{param}`; only a read that names a view binds its parameters, so no view reads one | A view reading a view with parameters. |
 | `reference_no_target` | — | a reference names its target type | A reference with no target. |
 | `scale_not_decimal` | — | only a decimal has a scale | A scale on a value type that is no decimal. |
-| `set_of_view` | `type` (TypeName) | it holds `{type}`, a view; a view's records are computed on read, and an object set holds stored records only | An object set of a view. |
+| `set_of_view` | `type` (TypeName) | it holds `{type}`, a view the lake does not keep, and a set holds records the lake keeps: set `view_kept.{type}` to keep it first | An object set of a view the lake does not keep. |
 | `set_retyped` | `was` (TypeName), `type` (TypeName) | it holds records of `{was}`; a set of `{type}` takes another name | An object set declared again over another type. |
 | `source_twice` | `source` (TypeName) | a view reads each source once, and `{source}` is read already | A view reading a source twice. |
 | `target_not_reference` | — | only a reference names a target | A target on what is no reference. |
@@ -367,6 +367,8 @@ What a refusal is about.
 | `via_with_fields` | — | a relation carried by `via` has no fields of its own; fields belong to a relation carried by link records, declared without `via` | A relation carried by `via` with fields. |
 | `view_cycle` | `chain` (Names) | its view closes a cycle, reading {chain} in turn; a view may not read itself, through other views or directly | A view that reads itself. |
 | `view_field_unfilled` | `field` (FieldName) | its field `{field}` is neither a `group_by` field nor a measure of its view, so nothing would fill it | A view's field nothing fills. |
+| `view_kept_for_set` | `type` (TypeName) | it holds `{type}`, a view the lake keeps, and the view stays kept while the set holds it: withdraw the set first | A view a set holds no longer kept. |
+| `view_source_stepped` | `type` (TypeName), `source` (TypeName) | it holds `{type}`, a view over `{source}`, and the change moves records of `{source}` where no write decides the set again: withdraw the set, make the change, then declare the set again | A change of a view's source that no write decides a set over the view again for. |
 | `view_key` | `group_by` (Names, optional) | a view's records are keyed by its `group_by`[ ({group_by})\|, and it has none]; its `key` names the same fields in that order, or is left out | A view's `key` that names other fields than its `group_by`. |
 | `view_relation` | `type` (TypeName), `carrier` (Carrier) | `{type}` is a view, whose records are computed and never written, so a relation carried by {carrier} could never hold an edge; a relation on a view is derived from matching values | A stored relation on a view. |
 | `view_searched` | `searchable` (bool), `embedded` (bool) | it [{?searchable}is searchable\|[{?embedded}carries an embedding\|is a vector]], and a view is not searched; its records are computed on read and no index holds them | A view's field that a search would read. |

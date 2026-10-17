@@ -415,9 +415,10 @@ pub struct ProposalFilter {
     pub at: crate::read::ReadAt,
 }
 
-/// An object set: the records of one type matching a condition. When a
-/// write moves a record into or out of the set, the store appends
-/// `ObjectSetChanged` in the same append.
+/// An object set: the records of one type, or the groups of a view the
+/// lake keeps, matching a condition. When a write moves a record or a
+/// group into or out of the set, the store appends `ObjectSetChanged` in
+/// the same append.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObjectSetDecl {
