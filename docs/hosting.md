@@ -308,15 +308,14 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     own, made at the period's first value: one key a period, made by the
     key store. A version is destroyed only with every older one
     (`KeyStore::destroy_version`), and a host's KMS that destroys only
-    whole sources leaves that call refused. Until the act that takes
-    part of a source back comes, a version is destroyed with the lake
-    closed, by calling `KeyStore::destroy_version`; one who edits the
-    file keyring by hand removes only a source's oldest entries, never one
-    with an older still there. An open lake keeps the keys it
-    holds in memory and goes on sealing with them. Such a version is a
-    lost key, since no act in the log names it: at the next open the
-    values and the outputs it sealed fail closed, `key_missing`, at a
-    rebuild or a re-plan.
+    whole sources leaves that call refused. The act that destroys
+    versions is `remove_values` (below), which names them in the log and
+    drops them from the open lake's memory. A version destroyed any
+    other way, by calling `KeyStore::destroy_version` or by editing the
+    file keyring, is a lost key, since no act in the log names it: an
+    open lake keeps the keys it holds in memory and goes on sealing with
+    them, and at the next open the values and the outputs it sealed fail
+    closed, `key_missing`, at a rebuild or a re-plan.
   - **An export** holds sealed values as ciphertext, and no key. It
     imports with the key store bound, or with none where the export
     holds the source's forgetting, whose values then arrive erased; any
@@ -329,7 +328,8 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     then restart.
   **Taking part of a source back**
   (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`):
-  `LakeStore::remove_values(source, selection, report_id)` takes what a
+  `LakeStore::remove_values(source, selection, require_shredded,
+  report_id)` takes what a
   source wrote before a time (`Selection::WrittenBefore`, the log's
   clock) or in one delivery (`Selection::Delivery`, the id `ingest`
   answered), and nothing another hand wrote. It appends
@@ -352,6 +352,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     seal under a version of their own, and a cut destroys the versions
     of the periods wholly before it. One delivery taken back is
     redacted, and shredded only once such a cut covers it;
+  - **`require_shredded`** refuses the act, `remove_not_shredded`,
+    while a value of an erasable field it takes would be redacted only;
+    a key store that destroys a source's key only whole
+    (`KeyStore::destroys_versions` false) shreds nothing;
   - **the feed** still delivers each event as the log holds it, a
     redacted value of a field that is not erasable in plaintext, as for
     forgetting: a host that relays the feed relays it;

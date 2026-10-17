@@ -211,9 +211,12 @@ impl LakeStore for Store {
         &self,
         source: &lakelands_api::SourceId,
         selection: &lakelands_api::write::Selection,
+        shredded: bool,
         id: Option<&str>,
     ) -> lakelands_api::Result<lakelands_api::write::RemoveReport> {
-        self.inner.remove_values(source, selection, id).await
+        self.inner
+            .remove_values(source, selection, shredded, id)
+            .await
     }
     async fn remove_values_preflight(
         &self,

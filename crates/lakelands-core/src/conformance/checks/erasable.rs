@@ -110,6 +110,10 @@ impl KeyStore for Keys {
         Ok(())
     }
 
+    fn destroys_versions(&self) -> bool {
+        true
+    }
+
     fn ids(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<Vec<KeyId>> {
         let held = crate::lock(&self.0);
         let versions = held

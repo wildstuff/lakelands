@@ -118,8 +118,9 @@ struct Envelope {
     sealed: Option<Sealed>,
 }
 
-/// Of an event's body, its kind, the fence a `lease_taken` names and the
-/// source a `source_forgotten` forgot.
+/// Of an event's body, its kind, the fence a `lease_taken` names, the
+/// source a `source_forgotten` forgot or a `values_removed` took from, and
+/// the versions of its key the latter destroyed.
 #[derive(serde::Deserialize)]
 struct Body {
     kind: String,
@@ -127,6 +128,8 @@ struct Body {
     fence: Option<u64>,
     #[serde(default)]
     source: Option<SourceId>,
+    #[serde(default)]
+    keys: Vec<lakelands_api::id::KeyId>,
 }
 
 /// Of an event's `sealed`, the version of the key and the source of a
@@ -167,14 +170,16 @@ fn events(path: &Path) -> Result<impl Iterator<Item = Result<(CanonicalEvent, En
 /// every key a sealed value names, of a source the export does not forget,
 /// is one the bound key store gives. With none bound such a value is
 /// refused as unbound, and a key the store does not give as missing: the
-/// value would be lost (058). A forgotten source's values arrive erased.
+/// value would be lost (058). A forgotten source's values arrive erased,
+/// and so do those under a version an act of removal destroyed (065).
 /// Answers each file's digest.
 fn check(
     files: &[PathBuf],
     lake: &LakeId,
     keys: Option<&dyn lakelands_api::seam::KeyStore>,
 ) -> Result<Vec<Digest>> {
-    let (mut sealed, mut forgot) = (BTreeSet::new(), BTreeSet::new());
+    let (mut sealed, mut forgot, mut shredded) =
+        (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
     let mut fence = 0;
     let mut digests = Vec::with_capacity(files.len());
     for path in files {
@@ -208,6 +213,13 @@ fn check(
             if event.body.kind == "source_forgotten" {
                 forgot.extend(event.body.source.clone());
             }
+            // A version an act of removal destroyed arrives erased (065).
+            if event.body.kind == "values_removed"
+                && let Some(source) = &event.body.source
+            {
+                let taken = event.body.keys.iter().map(|k| (source.clone(), k.clone()));
+                shredded.extend(taken);
+            }
             if event.fence != fence {
                 let (carried, lease) = (event.fence, fence);
                 let flaw = Flaw::FenceMismatch { carried, lease };
@@ -219,7 +231,10 @@ fn check(
             }
         }
     }
-    for (source, key) in sealed.into_iter().filter(|(s, _)| !forgot.contains(s)) {
+    let kept = |(s, k): &(SourceId, lakelands_api::id::KeyId)| {
+        !forgot.contains(s) && !shredded.contains(&(s.clone(), k.clone()))
+    };
+    for (source, key) in sealed.into_iter().filter(kept) {
         let Some(keys) = keys else {
             return Err(Error::unbound(lakelands_api::error::Seam::KeyStore));
         };

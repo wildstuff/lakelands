@@ -297,3 +297,40 @@ async fn a_foreign_ingest_is_indexed_under_its_envelopes_source() {
         "the act is refused over a plaintext value: {act:?}"
     );
 }
+
+/// A fold that meets a forgotten source's sealed values reads the log
+/// once, not once a value: knowing the source forgotten, it never looks
+/// ahead for an act of removal (065), and a version it looked ahead for
+/// in vain it does not look for again. The act and a rebuild after it
+/// each read a bounded multiple of the log, however many values the
+/// source sealed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_forgotten_sources_values_are_folded_without_reading_ahead_for_each() {
+    let probe = Arc::new(Probe::default());
+    let seams = Seams {
+        engines: vec![Arc::new(ProbedOpener(MemoryOpener::new(), probe.clone()))],
+        keys: Some(Arc::new(Keys::default())),
+        ..Seams::default()
+    };
+    let store = lakelands_store::open(Location::memory("ahead"), seams, OpenMode::Create)
+        .await
+        .unwrap();
+    let l = Lake::of(store.as_ref());
+    l.declare(person(true)).await.unwrap();
+    let p = |key: String| source_record("person", &key, json!({"id": key, "name": key}));
+    for (source, n) in [("crm", 400), ("web", 400)] {
+        let records = (0..n).map(|i| p(format!("{source}{i}"))).collect();
+        l.ingest(source, records).await.unwrap();
+    }
+    let log = store.head().await.unwrap().0 as usize;
+    let crm = SourceId::from("crm".to_owned());
+    probe.events_read.store(0, Ordering::SeqCst);
+    store.forget_source(&crm, None).await.unwrap();
+    let act = probe.events_read.swap(0, Ordering::SeqCst);
+    store.rebuild().await.unwrap();
+    let rebuild = probe.events_read.load(Ordering::SeqCst);
+    assert!(
+        act <= 4 * log && rebuild <= 4 * log,
+        "of a log of {log} events, the act read {act} and the rebuild {rebuild}"
+    );
+}

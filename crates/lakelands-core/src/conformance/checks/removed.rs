@@ -37,9 +37,39 @@ check!(
 );
 
 check!(
+    REMOVED_SHREDDED = a_version_whose_values_are_all_taken_is_destroyed_and_the_rest_redacted,
+    "065: `crm` seals `p1` under its first version and `p2` and `p3` under its second; taking back what it wrote before `p3` destroys the first version, whose values it all selects, and not the second, which also seals `p3`: the preflight names the first version and counts `name` 2 redacted and 1 shredded, `city`, not erasable, 1 redacted, and 1 value of an erasable field redacted only; with `require_shredded` the act is refused naming that count and appends nothing; without it the act names the version in `values_removed`, the key store holds the second alone, the values read as erased at the head and before the act, `p3` keeps its own, `crm` seals on under the second, and a writer opened again, rebuilding with the first version gone, reads them erased, not lost; taking back all it wrote, `require_shredded` too, destroys the second, and `crm` writes on under a new version, before a reopen and after; once `crm` is forgotten, taking back all it wrote with `require_shredded` counts every value shredded",
+    reopens
+);
+
+check!(
+    REMOVED_IMPORT = a_shredding_act_imports_erased_and_destroys_a_backups_versions,
+    "065: an export made after an act destroyed `crm`'s only version imports with the key store as it is now, the fold meeting the values that version sealed before it meets the act: `p1` reads its name erased and keeps its note, before the act and after; imported with a backup of the key store from before the act, the import finishes it: the backup holds the version no more, and the first read answers the name erased",
+    given
+);
+
+check!(
+    REMOVED_WHOLE_KEYS = a_key_store_that_destroys_only_whole_sources_shreds_nothing,
+    "065: with a key store that destroys a source's key only whole, the preflight of taking back all `crm` wrote names no version and counts its erasable value redacted only, `require_shredded` is refused naming that count, and the act without it appends, destroys nothing and is not owed: the version stays, the lake opens again, and the value reads as erased",
+    reopens
+);
+
+check!(
     REMOVED_COMPUTED = what_is_computed_from_a_taken_value_goes_with_it,
     "065: `tracker` writes `place` on the stops `s1` and `s2`, each kept by an author's note; `loud` is computed from `place` by the suite's backing, `vec` embedded from it, and the set `rome` holds the stops in Rome; taking back what `tracker` wrote before `s2` leaves `s1` with no `place`, `loud` nor `vec`, at the head and before the act, with no call made again, and `s1` out of `rome`, while `s2` keeps its own and stays in it; a rebuild answers the same. A membership decided across an edge is lakelands#1232",
     reopens
+);
+
+check!(
+    REMOVED_REPLAYED = an_output_of_a_later_version_replays_after_an_earlier_one_is_destroyed,
+    "065: `crm` seals `p0` and `p1`, both Ada, under its first version, `loud` declared over them so that one fill names the other's output by `output_at`, and `p2` under its second, `loud` computed from `name` by the suite's backing for each, `p0` and `p1` kept by an author's note; taking back what it wrote before `p2` destroys the first version: `p0` and `p1` hold no `loud`, the output named by `output_at` reads as erased, not lost, and `p2`'s output, sealed under the second version, is found again with no call made, after the act, after a reopen and after a rebuild. The versions are made by hand: no check sets the writer's clock, so `key_period`'s rotation is held by its unit tests",
+    reopens
+);
+
+check!(
+    REMOVE_CRASH_SHREDDED = a_shredding_act_a_crash_stopped_is_finished_at_each_step,
+    "065: an act that would destroy `crm`'s version, stopped after its event because the key store failed to destroy it, leaves the version, which seals nothing more: `crm`'s next sealed value on that handle is refused `key_missing`, appending nothing; a rebuild does not count the act done while the version is held, and finishes it, destroying the version; one stopped after the destroy, before its rebuild, refuses `crm`'s next sealed value `key_missing` on that handle, appending nothing, and the writer's next open finishes it, after which `crm` seals under a new version; each appends no second event, and the values read as erased before the act",
+    given
 );
 
 /// `visit` keyed by `id`: `duration`, `place`, `secret` and the reference
@@ -212,7 +242,7 @@ async fn a_sources_values_before_a_time_read_as_erased_at_every_position(store: 
     refused_like(
         "removing with a report of another head",
         store
-            .remove_values(&tracker, &selection, Some(&report.report_id))
+            .remove_values(&tracker, &selection, false, Some(&report.report_id))
             .await,
         &json!({"code": "remove_report_stale"}),
     )?;
@@ -220,7 +250,7 @@ async fn a_sources_values_before_a_time_read_as_erased_at_every_position(store: 
     let report = report.must("the preflight again")?;
     let before = store.head().await.must("reading the head")?;
     let done = store
-        .remove_values(&tracker, &selection, Some(&report.report_id))
+        .remove_values(&tracker, &selection, false, Some(&report.report_id))
         .await;
     let done = done.must("removing tracker's first day")?;
     let events = events_after(store.as_ref(), before).await?;
@@ -278,7 +308,7 @@ async fn a_sources_values_before_a_time_read_as_erased_at_every_position(store: 
     );
     kept_others(&l, before).await?;
     // The act again appends nothing; so does a selection of nothing.
-    let repeat = store.remove_values(&tracker, &selection, None).await;
+    let repeat = store.remove_values(&tracker, &selection, false, None).await;
     repeat.must("removing tracker's first day again")?;
     let none = Selection::WrittenBefore(Timestamp(0));
     refused_like(
@@ -287,12 +317,13 @@ async fn a_sources_values_before_a_time_read_as_erased_at_every_position(store: 
             .remove_values(
                 &tracker,
                 &Selection::WrittenBefore(Timestamp(i64::MAX)),
+                false,
                 None,
             )
             .await,
         &json!({"code": "not_date_time"}),
     )?;
-    let empty = store.remove_values(&tracker, &none, None).await;
+    let empty = store.remove_values(&tracker, &none, false, None).await;
     let empty = empty.must("removing what tracker wrote before 1970")?;
     let after = store.head().await.must("reading the head")?;
     let removed = acts(store.as_ref(), before).await?.len();
@@ -338,7 +369,7 @@ async fn a_sources_values_before_a_time_read_as_erased_at_every_position(store: 
         "the preflight lists `level`, required, left empty on `b1`, and says so: {:?}, {said:?}",
         report.breaches
     );
-    let done = store.remove_values(&tracker, &all, None).await;
+    let done = store.remove_values(&tracker, &all, false, None).await;
     let done = done.must("removing b1's level")?;
     let refused = l
         .cat
@@ -388,7 +419,7 @@ async fn a_delivery_taken_back_reads_as_erased_and_a_later_one_stays(store: Stor
     deliver(Some("b3"), &[("v2", v("v2", 20))]).await?;
     let b3 = Selection::Delivery("b3".into());
     let none = store
-        .remove_values(&tracker, &b3, None)
+        .remove_values(&tracker, &b3, false, None)
         .await
         .must("removing b3")?;
     let after = store.head().await.must("reading the head")?;
@@ -399,7 +430,7 @@ async fn a_delivery_taken_back_reads_as_erased_and_a_later_one_stays(store: Stor
     );
     let own = own.ok_or_else(|| Failure::new("the store named its delivery"))?;
     let theirs = Selection::Delivery(own.clone());
-    let report = store.remove_values(&tracker, &theirs, None).await;
+    let report = store.remove_values(&tracker, &theirs, false, None).await;
     let report = report.must("removing the store's own delivery")?;
     let v4 = at(&l, "visit", "v4", None).await?;
     ensure!(
@@ -409,7 +440,7 @@ async fn a_delivery_taken_back_reads_as_erased_and_a_later_one_stays(store: Stor
     );
     let b1_sel = Selection::Delivery("b1".into());
     let report = store
-        .remove_values(&tracker, &b1_sel, None)
+        .remove_values(&tracker, &b1_sel, false, None)
         .await
         .must("removing b1")?;
     let (v1_then, v1_now) = (
@@ -443,7 +474,7 @@ async fn a_delivery_taken_back_reads_as_erased_and_a_later_one_stays(store: Stor
         "a delivery under `b1` after its removal stays, a rebuild after it too: {v5:?}"
     );
     // Taking `b1` back again takes that later delivery, and only it.
-    let again = store.remove_values(&tracker, &b1_sel, None).await;
+    let again = store.remove_values(&tracker, &b1_sel, false, None).await;
     let again = again.must("removing b1 again")?;
     let v5 = at(&l, "visit", "v5", None).await?;
     ensure!(
@@ -476,7 +507,7 @@ async fn a_removal_a_crash_stopped_is_finished_by_the_next_writers_open(
     // The act's rebuild fails; the writer's next open finishes it.
     let all = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
     fails[1].store(1, Ordering::SeqCst);
-    let stopped = store.remove_values(&tracker, &all, None).await;
+    let stopped = store.remove_values(&tracker, &all, false, None).await;
     ensure!(
         stopped.is_err(),
         "the removal whose rebuild fails answers {stopped:?}"
@@ -505,12 +536,12 @@ async fn a_removal_a_crash_stopped_is_finished_by_the_next_writers_open(
     l.upsert("visit", "v3", json!({"note": "kept"})).await?;
     let again = Selection::WrittenBefore(Timestamp::from_date(9998, 1, 1).expect("a date"));
     fails[1].store(1, Ordering::SeqCst);
-    let stopped = store.remove_values(&tracker, &again, None).await;
+    let stopped = store.remove_values(&tracker, &again, false, None).await;
     ensure!(
         stopped.is_err(),
         "the second removal whose rebuild fails answers {stopped:?}"
     );
-    let repeat = store.remove_values(&tracker, &again, None).await;
+    let repeat = store.remove_values(&tracker, &again, false, None).await;
     repeat.must("repeating the act")?;
     finished(&store, "v2", "v4", 2, "the act's repeat").await?;
     let v3 = at(&l, "visit", "v3", None).await?;
@@ -555,7 +586,7 @@ async fn a_value_taken_from_a_hidden_field_is_told_as_one_never_written(
             .await
             .must("ingesting from tracker")?;
         l.upsert("visit", "v2", json!({"note": "kept"})).await?;
-        s.remove_values(&tracker, &all, None)
+        s.remove_values(&tracker, &all, false, None)
             .await
             .must("removing tracker's values")?;
     }
@@ -669,6 +700,320 @@ fn timeless(said: &[String]) -> Vec<String> {
         .collect()
 }
 
+async fn a_version_whose_values_are_all_taken_is_destroyed_and_the_rest_redacted(
+    store: Store,
+    reopen: crate::conformance::Reopen,
+) -> Held {
+    use super::erasable::{Keys, again, person, with};
+    use lakelands_api::seam::KeyStore;
+    use std::sync::Arc;
+    let keys = Arc::new(Keys::default());
+    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(person()).await?;
+    let crm: SourceId = "crm".into();
+    let p = |k: &str, name: &str| source_record("person", k, json!({"id": k, "name": name}));
+    let ada = source_record(
+        "person",
+        "p1",
+        json!({"id": "p1", "name": "Ada", "city": "Rome"}),
+    );
+    l.ingest("crm", vec![ada]).await.must("ingesting p1")?;
+    let v1 = super::erasable::first(&keys, store.as_ref(), "crm")?;
+    let v2 = keys
+        .create(store.lake(), &crm)
+        .must("making a second version")?;
+    let store = again(&reopen, store, with(&keys), "with a second version").await?;
+    let l = Lake::of(store.as_ref());
+    l.ingest("crm", vec![p("p2", "Bea")])
+        .await
+        .must("ingesting p2")?;
+    l.upsert("person", "p2", json!({"note": "kept"})).await?;
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    let mark = store.head().await.must("reading the head")?;
+    l.ingest("crm", vec![p("p3", "Cy")])
+        .await
+        .must("ingesting p3")?;
+    let after = events_from(store.as_ref(), mark.next()).await?;
+    let cut = after
+        .first()
+        .ok_or_else(|| Failure::new("p3 was logged"))?
+        .known_at;
+    let selection = Selection::WrittenBefore(cut);
+    let report = store.remove_values_preflight(&crm, &selection).await;
+    let report = report.must("the preflight")?;
+    let fields: Vec<_> = (report.fields.iter())
+        .map(|f| (f.field.as_str(), f.redacted, f.shredded))
+        .collect();
+    ensure!(
+        report.keys == [v1.clone()]
+            && fields == [("city", 1, 0), ("name", 2, 1)]
+            && report.unshredded == 1,
+        "the preflight destroys {v1} alone, counts `city` 1 redacted, `name` 2 redacted and 1 \
+         shredded, and 1 value of an erasable field redacted only: {report:?}"
+    );
+    let head = store.head().await.must("reading the head")?;
+    refused_like(
+        "removing with `require_shredded` what would be redacted only",
+        store.remove_values(&crm, &selection, true, None).await,
+        &json!({"code": "remove_not_shredded", "source": "crm", "count": 1}),
+    )?;
+    let unmoved = store.head().await.must("reading the head")?;
+    ensure!(unmoved == head, "the refused act appended up to {unmoved}");
+    store
+        .remove_values(&crm, &selection, false, None)
+        .await
+        .must("removing what crm wrote before p3")?;
+    let named: Vec<_> = (acts(store.as_ref(), head).await?.into_iter())
+        .filter_map(|e| match e.body {
+            EventBody::ValuesRemoved { keys, .. } => Some(keys),
+            _ => None,
+        })
+        .collect();
+    let left = keys.ids(store.lake(), &crm).must("listing crm's keys")?;
+    ensure!(
+        named == [vec![v1.clone()]] && left == [v2.clone()],
+        "`values_removed` names {v1}, and the key store holds {v2} alone: {named:?}, {left:?}"
+    );
+    // Read now, before the act, and by a writer opened again.
+    let erased_all = async |l: &Lake, by: &str| {
+        for when in [None, Some(head)] {
+            let p2 = at(l, "person", "p2", when).await?;
+            let p3 = at(l, "person", "p3", when).await?;
+            ensure!(
+                p2.as_ref()
+                    .is_some_and(|r| erased(r, "name", "crm")
+                        && r.fields.get("note") == Some(&json!("kept")))
+                    && p3
+                        .as_ref()
+                        .is_some_and(|r| r.fields.get("name") == Some(&json!("Cy"))),
+                "{by}, as of {when:?}, `p2` reads its name as erased and keeps its note, and `p3` \
+                 reads Cy: {p2:?}, {p3:?}"
+            );
+        }
+        let p1 = at(l, "person", "p1", Some(head)).await?;
+        ensure!(
+            p1.as_ref()
+                .is_some_and(|r| erased(r, "name", "crm") && erased(r, "city", "crm")),
+            "{by}, before the act `p1` reads its name and city as erased: {p1:?}"
+        );
+        Ok::<_, Failure>(())
+    };
+    erased_all(&l, "after the act").await?;
+    let before = store.head().await.must("reading the head")?;
+    l.ingest("crm", vec![p("p4", "Dee")])
+        .await
+        .must("ingesting p4")?;
+    let sealed: Vec<_> = (events_after(store.as_ref(), before).await?.into_iter())
+        .filter_map(|e| e.sealed.map(|s| s.key))
+        .collect();
+    ensure!(
+        sealed == [v2.clone()],
+        "crm seals p4 under {v2}: {sealed:?}"
+    );
+    let store = again(&reopen, store, with(&keys), "with the first version gone").await?;
+    store
+        .rebuild()
+        .await
+        .must("rebuilding with the first version gone")?;
+    erased_all(&Lake::of(store.as_ref()), "a writer opened again").await?;
+    // All crm wrote taken back: its newest version goes too, and it seals
+    // on under a new one, on this handle and on the next.
+    let all = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+    let done = store.remove_values(&crm, &all, true, None).await;
+    let done = done.must("removing all crm wrote")?;
+    let left = keys.ids(store.lake(), &crm).must("listing crm's keys")?;
+    ensure!(
+        done.keys == [v2.clone()] && left.is_empty(),
+        "taking back all crm wrote destroys {v2}, and the key store holds none: {done:?}, {left:?}"
+    );
+    let l = Lake::of(store.as_ref());
+    l.ingest("crm", vec![p("p5", "Eve")])
+        .await
+        .must("ingesting p5")?;
+    let store = again(&reopen, store, with(&keys), "after crm's last version went").await?;
+    let l = Lake::of(store.as_ref());
+    l.ingest("crm", vec![p("p6", "Fay")])
+        .await
+        .must("ingesting p6 after a reopen")?;
+    store.rebuild().await.must("rebuilding")?;
+    let names = (
+        at(&l, "person", "p5", None).await?,
+        at(&l, "person", "p6", None).await?,
+    );
+    let named = |r: &Option<lakelands_api::Record>, n: &str| {
+        r.as_ref()
+            .is_some_and(|r| r.fields.get("name") == Some(&json!(n)))
+    };
+    ensure!(
+        named(&names.0, "Eve") && named(&names.1, "Fay"),
+        "crm writes on after its last version went, before a reopen and after, and a rebuild \
+         reads `p5` Eve and `p6` Fay: {names:?}"
+    );
+    // Once crm is forgotten, what it sealed is shredded with its keys.
+    store
+        .forget_source(&crm, None)
+        .await
+        .must("forgetting crm")?;
+    let done = store.remove_values(&crm, &all, true, None).await;
+    let done = done.must("removing all crm wrote, forgotten, with `require_shredded`")?;
+    ensure!(
+        done.unshredded == 0 && done.keys.is_empty(),
+        "a forgotten source's values count as shredded, its keys gone with it: {done:?}"
+    );
+    Ok(())
+}
+
+async fn a_shredding_act_imports_erased_and_destroys_a_backups_versions(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    use super::erasable::{Keys, again, person, with};
+    use lakelands_api::seam::KeyStore;
+    use std::sync::Arc;
+    let keys = Arc::new(Keys::default());
+    let store = again(&given.reopen, store, with(&keys), "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(person()).await?;
+    let ada = source_record("person", "p1", json!({"id": "p1", "name": "Ada"}));
+    l.ingest("crm", vec![ada]).await.must("ingesting p1")?;
+    l.upsert("person", "p1", json!({"note": "kept"})).await?;
+    let backup = Arc::new(keys.backup());
+    let crm: SourceId = "crm".into();
+    let before = store.head().await.must("reading the head")?;
+    let all = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+    let done = store.remove_values(&crm, &all, false, None).await;
+    let done = done.must("removing all crm wrote")?;
+    ensure!(
+        done.keys.len() == 1,
+        "the act destroys crm's one version: {done:?}"
+    );
+    let base = given.scratch.clone();
+    let _ = std::fs::remove_dir_all(&base);
+    crate::export::write(store.as_ref(), &base)
+        .await
+        .must("exporting")?;
+    let lake = store.lake().clone();
+    let import = |seams| (given.import)(base.clone(), lake.clone(), None, seams);
+    let read = async |s: &Store| {
+        let l = Lake::of(s.as_ref());
+        let mut said = Vec::new();
+        for when in [Some(before), None] {
+            said.push(at(&l, "person", "p1", when).await?);
+        }
+        Ok::<_, Failure>(said)
+    };
+    let now = import(with(&keys)).await;
+    let now = now.map_err(|e| Failure::new(format!("importing with the key store: {e}")))?;
+    let p1 = read(&now.store).await?;
+    ensure!(
+        p1.iter().all(|r| r.as_ref().is_some_and(
+            |r| erased(r, "name", "crm") && r.fields.get("note") == Some(&json!("kept"))
+        )),
+        "imported with the key store as it is now, `p1` reads its name erased and keeps its \
+         note, before the act and after: {p1:?}"
+    );
+    let restored = import(with(&backup)).await;
+    let restored = restored.map_err(|e| Failure::new(format!("importing with the backup: {e}")))?;
+    let restored = (restored.writer)(restored.store, with(&backup)).await;
+    let restored = restored.map_err(|e| Failure::new(format!("opening the import: {e}")))?;
+    let p1 = read(&restored).await?;
+    let held = backup.ids(store.lake(), &crm).ok().unwrap_or_default();
+    ensure!(
+        held.is_empty()
+            && p1
+                .iter()
+                .all(|r| r.as_ref().is_some_and(|r| erased(r, "name", "crm"))),
+        "imported with a backup from before the act, the import destroys its version, and \
+         `p1` reads its name erased: {held:?}, {p1:?}"
+    );
+    Ok(())
+}
+
+/// A key store that destroys a source's key only whole: `destroy_version`
+/// is the seam's default.
+struct Whole(std::sync::Arc<super::erasable::Keys>);
+
+impl lakelands_api::seam::KeyStore for Whole {
+    fn create(
+        &self,
+        lake: &lakelands_api::LakeId,
+        source: &SourceId,
+    ) -> lakelands_api::Result<lakelands_api::id::KeyId> {
+        self.0.create(lake, source)
+    }
+    fn key(
+        &self,
+        lake: &lakelands_api::LakeId,
+        source: &SourceId,
+        id: &lakelands_api::id::KeyId,
+    ) -> lakelands_api::Result<Option<lakelands_api::seam::DataKey>> {
+        self.0.key(lake, source, id)
+    }
+    fn destroy(
+        &self,
+        lake: &lakelands_api::LakeId,
+        source: &SourceId,
+    ) -> lakelands_api::Result<()> {
+        self.0.destroy(lake, source)
+    }
+    fn ids(
+        &self,
+        lake: &lakelands_api::LakeId,
+        source: &SourceId,
+    ) -> lakelands_api::Result<Vec<lakelands_api::id::KeyId>> {
+        self.0.ids(lake, source)
+    }
+}
+
+async fn a_key_store_that_destroys_only_whole_sources_shreds_nothing(
+    store: Store,
+    reopen: crate::conformance::Reopen,
+) -> Held {
+    use super::erasable::{Keys, again, person};
+    use lakelands_api::seam::{KeyStore, Seams};
+    use std::sync::Arc;
+    let keys = Arc::new(Keys::default());
+    let seams = || Seams {
+        keys: Some(Arc::new(Whole(keys.clone()))),
+        backings: crate::conformance::backing::backings(),
+        ..Seams::default()
+    };
+    let store = again(&reopen, store, seams(), "with a whole key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(person()).await?;
+    let ada = source_record("person", "p1", json!({"id": "p1", "name": "Ada"}));
+    l.ingest("crm", vec![ada]).await.must("ingesting p1")?;
+    l.upsert("person", "p1", json!({"note": "kept"})).await?;
+    let crm: SourceId = "crm".into();
+    let before = store.head().await.must("reading the head")?;
+    let all = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+    let report = store.remove_values_preflight(&crm, &all).await;
+    let report = report.must("the preflight")?;
+    ensure!(
+        report.keys.is_empty() && report.unshredded == 1,
+        "the preflight names no version and 1 value redacted only: {report:?}"
+    );
+    refused_like(
+        "removing with `require_shredded` where no version can be destroyed",
+        store.remove_values(&crm, &all, true, None).await,
+        &json!({"code": "remove_not_shredded", "source": "crm", "count": 1}),
+    )?;
+    store
+        .remove_values(&crm, &all, false, None)
+        .await
+        .must("removing all crm wrote")?;
+    let held = keys.ids(store.lake(), &crm).must("listing crm's keys")?;
+    let store = again(&reopen, store, seams(), "after the act").await?;
+    let p1 = at(&Lake::of(store.as_ref()), "person", "p1", Some(before)).await?;
+    ensure!(
+        held.len() == 1 && p1.as_ref().is_some_and(|r| erased(r, "name", "crm")),
+        "the act destroys nothing, the lake opens again, and `p1` reads its name erased: \
+         {held:?}, {p1:?}"
+    );
+    Ok(())
+}
+
 async fn what_is_computed_from_a_taken_value_goes_with_it(
     store: Store,
     reopen: crate::conformance::Reopen,
@@ -718,7 +1063,7 @@ async fn what_is_computed_from_a_taken_value_goes_with_it(
     let calls = backing::made(TOKEN);
     let tracker: SourceId = "tracker".into();
     store
-        .remove_values(&tracker, &Selection::WrittenBefore(cut), None)
+        .remove_values(&tracker, &Selection::WrittenBefore(cut), false, None)
         .await
         .must("removing what tracker wrote before s2")?;
     let members = async |when: Option<Position>| {
@@ -763,5 +1108,265 @@ async fn what_is_computed_from_a_taken_value_goes_with_it(
             backing::made(TOKEN)
         );
     }
+    Ok(())
+}
+
+async fn an_output_of_a_later_version_replays_after_an_earlier_one_is_destroyed(
+    store: Store,
+    reopen: crate::conformance::Reopen,
+) -> Held {
+    use super::erasable::{Keys, again, person, with};
+    use crate::conformance::backing;
+    use lakelands_api::ontology::StorageKind;
+    use lakelands_api::seam::KeyStore;
+    use std::sync::Arc;
+    const TOKEN: &str = "removed_replayed";
+    let keys = Arc::new(Keys::default());
+    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare_json(
+        json!({"declare": "function", "name": "shout", "backing": backing::KIND,
+        "inputs": [{"name": "name", "type": {"kind": "text"}}],
+        "config": {"token": TOKEN, "echo": "name"}}),
+    )
+    .await?;
+    l.declare(person()).await?;
+    let crm: SourceId = "crm".into();
+    let p = |k: &str, name: &str| source_record("person", k, json!({"id": k, "name": name}));
+    l.ingest("crm", vec![p("p0", "Ada"), p("p1", "Ada")])
+        .await
+        .must("ingesting p0 and p1")?;
+    for k in ["p0", "p1"] {
+        l.upsert("person", k, json!({"note": "kept"})).await?;
+    }
+    // `loud` declared over the two: one output carried, and the other
+    // fill naming it by `output_at`.
+    let mut t = person();
+    let loud =
+        crate::conformance::fixture::computed_by("loud", StorageKind::Text, "shout", &["name"]);
+    t.fields.push(loud);
+    l.declare(t).await?;
+    keys.create(store.lake(), &crm)
+        .must("making a second version")?;
+    let store = again(&reopen, store, with(&keys), "with a second version").await?;
+    let l = Lake::of(store.as_ref());
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    let mark = store.head().await.must("reading the head")?;
+    l.ingest("crm", vec![p("p2", "Bea")])
+        .await
+        .must("ingesting p2")?;
+    let after = events_from(store.as_ref(), mark.next()).await?;
+    let cut = after
+        .first()
+        .ok_or_else(|| Failure::new("p2 was logged"))?
+        .known_at;
+    let calls = backing::made(TOKEN);
+    let done = store
+        .remove_values(&crm, &Selection::WrittenBefore(cut), false, None)
+        .await
+        .must("removing what crm wrote before p2")?;
+    ensure!(
+        done.keys.len() == 1,
+        "the act destroys crm's first version alone: {done:?}"
+    );
+    let replayed = async |store: &Store, by: &str| {
+        let l = Lake::of(store.as_ref());
+        let (p0, p1, p2) = (
+            at(&l, "person", "p0", None).await?,
+            at(&l, "person", "p1", None).await?,
+            at(&l, "person", "p2", None).await?,
+        );
+        let none = |r: &Option<lakelands_api::Record>| {
+            r.as_ref().is_some_and(|r| !r.fields.contains_key("loud"))
+        };
+        ensure!(
+            none(&p0)
+                && none(&p1)
+                && p2
+                    .as_ref()
+                    .is_some_and(|r| r.fields.get("loud") == Some(&json!("Bea")))
+                && backing::made(TOKEN) == calls,
+            "{by}, `p0` and `p1` hold no `loud`, and `p2`'s reads Bea with no call made again: \
+             {p0:?}, {p1:?}, {p2:?}, {} calls after {calls}",
+            backing::made(TOKEN)
+        );
+        Ok::<_, Failure>(())
+    };
+    replayed(&store, "after the act").await?;
+    let store = again(&reopen, store, with(&keys), "after the act").await?;
+    replayed(&store, "after a reopen").await?;
+    store.rebuild().await.must("rebuilding")?;
+    replayed(&store, "after a rebuild").await?;
+    Ok(())
+}
+
+/// A key store whose `destroy_version` fails while `fails` is set.
+struct Failing {
+    keys: std::sync::Arc<super::erasable::Keys>,
+    fails: std::sync::atomic::AtomicBool,
+}
+
+impl lakelands_api::seam::KeyStore for Failing {
+    fn create(
+        &self,
+        lake: &lakelands_api::LakeId,
+        source: &SourceId,
+    ) -> lakelands_api::Result<lakelands_api::id::KeyId> {
+        self.keys.create(lake, source)
+    }
+    fn key(
+        &self,
+        lake: &lakelands_api::LakeId,
+        source: &SourceId,
+        id: &lakelands_api::id::KeyId,
+    ) -> lakelands_api::Result<Option<lakelands_api::seam::DataKey>> {
+        self.keys.key(lake, source, id)
+    }
+    fn destroy(
+        &self,
+        lake: &lakelands_api::LakeId,
+        source: &SourceId,
+    ) -> lakelands_api::Result<()> {
+        self.keys.destroy(lake, source)
+    }
+    fn destroy_version(
+        &self,
+        lake: &lakelands_api::LakeId,
+        source: &SourceId,
+        id: &lakelands_api::id::KeyId,
+    ) -> lakelands_api::Result<()> {
+        if self.fails.load(std::sync::atomic::Ordering::SeqCst) {
+            let lake = "the key store".to_owned();
+            let situation = lakelands_api::error::Situation::Busy { lake };
+            return Err(lakelands_api::Error::unavailable(situation));
+        }
+        self.keys.destroy_version(lake, source, id)
+    }
+    fn destroys_versions(&self) -> bool {
+        true
+    }
+    fn ids(
+        &self,
+        lake: &lakelands_api::LakeId,
+        source: &SourceId,
+    ) -> lakelands_api::Result<Vec<lakelands_api::id::KeyId>> {
+        self.keys.ids(lake, source)
+    }
+}
+
+async fn a_shredding_act_a_crash_stopped_is_finished_at_each_step(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    use super::erasable::{Keys, person};
+    use lakelands_api::seam::{KeyStore, Seams};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    let keys = Arc::new(Keys::default());
+    let failing = Arc::new(Failing {
+        keys: keys.clone(),
+        fails: AtomicBool::new(false),
+    });
+    let fails: super::forgotten::Fails = Arc::new([AtomicU32::new(0), AtomicU32::new(0)]);
+    let wrap = super::forgotten::failing(&fails);
+    let fault = async |store: Store| {
+        let seams = Seams {
+            keys: Some(failing.clone()),
+            ..Seams::default()
+        };
+        let open = (given.fault)(store, seams, wrap.clone()).await;
+        open.map_err(|e| Failure::new(format!("the writer's open was refused: {e}")))
+    };
+    let mut store = fault(store).await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(person()).await?;
+    let crm: SourceId = "crm".into();
+    let all = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+    let p = |k: &str, name: &str| source_record("person", k, json!({"id": k, "name": name}));
+    let start = store.head().await.must("reading the head")?;
+    let erased_before = async |store: &Store, key: &str, before: Position, acts_n: usize| {
+        let l = Lake::of(store.as_ref());
+        let r = at(&l, "person", key, Some(before)).await?;
+        let n = acts(store.as_ref(), start).await?.len();
+        ensure!(
+            r.as_ref().is_some_and(|r| erased(r, "name", "crm")) && n == acts_n,
+            "`{key}` reads its name erased before the act, and the log holds {acts_n} acts: \
+             {r:?}, {n}"
+        );
+        Ok::<_, Failure>(())
+    };
+    // Stopped after the event, the key store failing to destroy.
+    l.ingest("crm", vec![p("p1", "Ada")])
+        .await
+        .must("ingesting p1")?;
+    l.upsert("person", "p1", json!({"note": "kept"})).await?;
+    let v1 = keys.ids(store.lake(), &crm).must("listing crm's keys")?;
+    let before = store.head().await.must("reading the head")?;
+    failing.fails.store(true, Ordering::SeqCst);
+    let stopped = store.remove_values(&crm, &all, false, None).await;
+    let held = keys.ids(store.lake(), &crm).must("listing crm's keys")?;
+    ensure!(
+        stopped.is_err() && held == v1,
+        "the act whose destroy fails answers {stopped:?}, and the version stays: {held:?}"
+    );
+    // The version is named, not yet destroyed: it seals nothing more, or
+    // what it sealed would go with it.
+    let head = store.head().await.must("reading the head")?;
+    let refused = l.ingest("crm", vec![p("p9", "Ivo")]).await;
+    let unmoved = store.head().await.must("reading the head")?;
+    ensure!(
+        matches!(&refused, Err(lakelands_api::Error::Unavailable { situation })
+            if matches!(**situation, lakelands_api::error::Situation::KeyMissing { .. }))
+            && unmoved == head,
+        "while the act's version is not yet destroyed, crm's next sealed value is refused \
+         `key_missing`, appending nothing: {refused:?}, the head moved from {head} to {unmoved}"
+    );
+    // A rebuild does not count the act done while its version is held.
+    failing.fails.store(false, Ordering::SeqCst);
+    store.rebuild().await.must("rebuilding")?;
+    let held = keys.ids(store.lake(), &crm).must("listing crm's keys")?;
+    ensure!(
+        held.is_empty(),
+        "a rebuild after the failed destroy finishes the act: the version is gone: {held:?}"
+    );
+    erased_before(&store, "p1", before, 1).await?;
+    // Stopped after the destroy, before the rebuild.
+    let l = Lake::of(store.as_ref());
+    l.ingest("crm", vec![p("p2", "Bea")])
+        .await
+        .must("ingesting p2")?;
+    l.upsert("person", "p2", json!({"note": "kept"})).await?;
+    let before = store.head().await.must("reading the head")?;
+    fails[1].store(1, Ordering::SeqCst);
+    let stopped = store.remove_values(&crm, &all, false, None).await;
+    let held = keys.ids(store.lake(), &crm).must("listing crm's keys")?;
+    ensure!(
+        stopped.is_err() && held.is_empty(),
+        "the act whose rebuild fails answers {stopped:?}, its version destroyed: {held:?}"
+    );
+    let head = store.head().await.must("reading the head")?;
+    let refused = l.ingest("crm", vec![p("p3", "Cy")]).await;
+    let unmoved = store.head().await.must("reading the head")?;
+    ensure!(
+        matches!(&refused, Err(lakelands_api::Error::Unavailable { situation })
+            if matches!(**situation, lakelands_api::error::Situation::KeyMissing { .. }))
+            && unmoved == head,
+        "while the act is owed, crm's next sealed value is refused `key_missing`, appending \
+         nothing: {refused:?}, the head moved from {head} to {unmoved}"
+    );
+    store = fault(store).await?;
+    erased_before(&store, "p2", before, 2).await?;
+    let l = Lake::of(store.as_ref());
+    l.ingest("crm", vec![p("p3", "Cy")])
+        .await
+        .must("ingesting p3 after the open")?;
+    let p3 = at(&l, "person", "p3", None).await?;
+    let held = keys.ids(store.lake(), &crm).must("listing crm's keys")?;
+    ensure!(
+        p3.as_ref()
+            .is_some_and(|r| r.fields.get("name") == Some(&json!("Cy")))
+            && held.len() == 1,
+        "once the open finished the act, crm seals under a new version: {p3:?}, {held:?}"
+    );
     Ok(())
 }

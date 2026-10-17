@@ -675,9 +675,11 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
         }
         "withdrawn" => matches!(declared, Some(D::Withdraw(w))
             if w.kind == lakelands_api::write::DeclarationKind::Trigger && w.name == "shelved"),
-        "values_removed" => matches!(&event.body, B::ValuesRemoved { source, selection, before }
-            if source == "erp" && before.is_none()
-                && *selection == lakelands_api::write::Selection::Delivery("batch-7".into())),
+        "values_removed" => {
+            matches!(&event.body, B::ValuesRemoved { source, selection, before, keys }
+            if source == "erp" && before.is_none() && keys.is_empty()
+                && *selection == lakelands_api::write::Selection::Delivery("batch-7".into()))
+        }
         "removal_retires" => matches!(&event.body, B::RecordRetired { key, .. } if key == "INV-2"),
         other => panic!("`further.json` shows `{other}`, which this test has no check for"),
     }

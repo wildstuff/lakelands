@@ -79,6 +79,12 @@ source's versions whose values are all in the selection.
   shredded only once a retention cut's prefix covers it. A key outside
   the chain for one delivery is lakelands#1214.
 
+The act names the versions it destroys in its event, and drops them
+from the open lake's memory, so the lake seals and opens with none of
+them again. A source whose newest version an act destroyed is given a
+new one at its next sealed value, not refused as having lost it; a key
+store never gives a new version the id of one it destroyed.
+
 **A version gone with no act in the log is lost, not destroyed.** The
 fold reads a sealed value with no key as erased only where an act in the
 log names that version, a `source_forgotten` of the source or a
@@ -88,7 +94,14 @@ and the fold fails closed, as 058 says.
 The report says, per type and field, how many values were redacted and
 how many shredded. A host whose rule is "destroyed or nothing" asks
 `require: shredded`, and the act is then refused while any selected
-value would only be redacted.
+value of an erasable field would only be redacted. A value of a field
+that is not erasable was never sealed, so it is redacted and counted,
+and never holds the act back.
+
+A key store that destroys a source's key only whole destroys no
+version: the act names none, and every value it takes is redacted only,
+as the report says. The act does not refuse for it, since redaction is
+always possible; `require: shredded` then refuses it.
 
 ### The act may be read before it is made
 
@@ -98,7 +111,10 @@ report gives, in counts and the first keys:
 - the selection, and for a time the first position it does not reach;
 - the events selected, and for a delivery the source's events from
   before format 17, which carry no delivery and so are never selected;
-- per type, the records reached; per field, the values taken;
+- per type, the records reached; per field, the values taken, and of
+  them those shredded;
+- the versions of the source's key it destroys, and the values of
+  erasable fields it redacts only;
 - the records retired, and those kept;
 - what is computed again;
 - the constraints the records it keeps would be left breaking, and the
@@ -129,8 +145,12 @@ Under the writer's lock, in steps, each idempotent:
 
 The projection keeps, under a name of the store's own, which acts are
 owed. A rebuild reads that list before it clears the projection, so it
-knows each act from its first event. One it meets unknown, as after an
-import or a lost projection, it leaves owed, and the rebuild after it
+knows each act from its first event. A value sealed under a version an
+act destroyed, which the fold meets before it knows that act, as after
+an import or a crash midway through a rebuild, sends it ahead in the log
+for the act, as 058's fold looks ahead for a forgetting: such a value is
+erased, never a lost key. One it meets unknown it leaves owed, and the
+rebuild after it
 knows it. A crash between steps is finished by the next writer's open.
 A repeat of the act finishes it and appends nothing.
 
@@ -138,6 +158,15 @@ What an earlier act took is not taken again. The act asked again, once
 the earlier one is done, takes only what the source wrote since in the
 selection, a later delivery under the same id for one, and appends
 nothing where that is nothing.
+
+From its append on, a version the act names seals nothing, whether the
+key store has destroyed it yet or not: a value sealed under it would be
+erased with it, though the act never selected it. So while the act is
+owed, a source whose newest version it names is refused its next sealed
+value, `key_missing`, as a lost key is. A rebuild counts the act rebuilt
+only once the key store holds none of its versions, so one whose destroy
+failed stays owed. The writer's next open, a repeat or the rebuild's
+finish destroys them, and the source is then given a new version.
 
 ### It is the host's act
 

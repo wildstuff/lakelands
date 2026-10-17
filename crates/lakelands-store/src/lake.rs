@@ -100,6 +100,9 @@ pub struct Writer {
     /// whose selected values the fold erases: a fact of the log, so kept
     /// over a rebuild.
     pub(crate) removals: Vec<crate::remove::Removal>,
+    /// Those of them a fold learned by looking ahead, after it folded what
+    /// they select: it leaves them owed when it meets them.
+    pub(crate) ahead: BTreeSet<Position>,
     /// A rebuild is folding: an act it meets after its source's keys were
     /// destroyed has erased what they sealed.
     pub rebuilding: bool,
@@ -655,6 +658,7 @@ impl Lake {
                 lost: false,
                 forgotten: BTreeSet::new(),
                 removals: Vec::new(),
+                ahead: BTreeSet::new(),
                 rebuilding: false,
             }),
             keys: Arc::new(crate::sealing::Keys::new(location.lake.clone(), seams_keys)),
@@ -689,6 +693,7 @@ impl Lake {
             lost: false,
             forgotten: BTreeSet::new(),
             removals: Vec::new(),
+            ahead: BTreeSet::new(),
             rebuilding: false,
         })
     }
@@ -1741,7 +1746,14 @@ impl Lake {
                 };
                 match key {
                     Ok(key) => crate::sealing::open(&mut plain, &key)?,
-                    Err(_) if self.forgot(w, view, staged, source, e.position)? => {
+                    Err(_)
+                        if self.erased_key(
+                            w,
+                            (view, staged),
+                            source,
+                            (&sealed.key, e.position),
+                        )? =>
+                    {
                         dropped = matches!(plain.body, EventBody::OutputRecorded { .. });
                         erased = crate::sealing::erase(&mut plain);
                     }
@@ -1821,12 +1833,19 @@ impl Lake {
             // has folded the log, and the reclaim ran (065).
             EventBody::ValuesRemoved { .. } => {
                 let act = crate::remove::Removal::of(e).expect("the event is an act");
-                let known = w.removals.contains(&act);
-                if !known {
+                let known = w.removals.contains(&act) && !w.ahead.remove(&act.at);
+                // Its versions destroyed, as forgetting's keys must be: a
+                // rebuild before the destroy leaves it owed.
+                let ids = match act.keys.is_empty() {
+                    true => Vec::new(),
+                    false => self.keys.ids(&act.source)?,
+                };
+                let destroyed = !act.keys.iter().any(|k| ids.contains(k));
+                if !w.removals.contains(&act) {
                     w.removals.push(act);
                 }
                 let mut list = crate::remove::removed_list(view, staged)?;
-                let state = if known && w.rebuilding {
+                let state = if known && w.rebuilding && destroyed {
                     "rebuilt"
                 } else {
                     "owed"
@@ -2171,7 +2190,67 @@ impl Lake {
             return Ok(false);
         };
         Ok(self.keys.opened(source, &sealed.key)?.is_none()
-            && self.forgot(w, view, staged, source, at)?)
+            && self.erased_key(w, (view, staged), source, (&sealed.key, at))?)
+    }
+
+    /// Whether version `key` of `source`'s key, which the key store does
+    /// not give, was destroyed by an act in the log, a value it sealed at
+    /// `at` then being erased: what the fold knows first, an act of removal
+    /// that names it or the source forgotten (058, 065), and only then a
+    /// look ahead in the log. A look ahead that finds the act, or the
+    /// forgetting, makes it known, so each version is looked for once: the
+    /// next value it sealed is answered by what the fold knows, and one no
+    /// act names fails the fold closed.
+    fn erased_key(
+        &self,
+        w: &mut Writer,
+        (view, staged): (&dyn ProjectionView, &Staged),
+        source: &SourceId,
+        (key, at): (&lakelands_api::id::KeyId, Position),
+    ) -> Result<bool> {
+        if w.removals.iter().any(|r| r.destroyed(source, key))
+            || w.forgotten.contains(source)
+            || forgotten_list(view, staged)?.contains_key(source)
+        {
+            return Ok(true);
+        }
+        Ok(self.taken(w, view, source, (key, at))? || self.forgot(w, view, staged, source, at)?)
+    }
+
+    /// Whether an act of removal destroyed version `key` of `source`'s key
+    /// (065): the acts a fold met or a rebuild was told of, those the
+    /// projection lists, which a writer that opened since has not met, or
+    /// else one from `from` on, which a fold that knows no act meets after
+    /// the values it shreds, as an import's or one a crash stopped midway.
+    fn taken(
+        &self,
+        w: &mut Writer,
+        view: &dyn ProjectionView,
+        source: &SourceId,
+        (key, from): (&lakelands_api::id::KeyId, Position),
+    ) -> Result<bool> {
+        if w.removals.iter().any(|r| r.destroyed(source, key)) {
+            return Ok(true);
+        }
+        for act in crate::remove::acts(self, view)? {
+            if !w.removals.contains(&act) {
+                w.removals.push(act);
+            }
+        }
+        if w.removals.iter().any(|r| r.destroyed(source, key)) {
+            return Ok(true);
+        }
+        for page in self.pages(from) {
+            for e in page? {
+                let act = crate::remove::Removal::of(&e);
+                if let Some(act) = act.filter(|a| a.destroyed(source, key)) {
+                    w.ahead.insert(act.at);
+                    w.removals.push(act);
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// Keep the engine's vector index in step with a record's vector
@@ -2347,6 +2426,15 @@ impl Lake {
             for (source, _) in list.iter().filter(|(_, s)| *s == "owed") {
                 self.keys.destroy(source)?;
             }
+            let view = self.engine.view(None)?;
+            let owed = |r: &crate::remove::Removal| acts.get(&r.at).is_some_and(|s| s == "owed");
+            for act in crate::remove::acts(self, view.as_ref())?
+                .iter()
+                .filter(|r| owed(r))
+            {
+                self.keys.destroy_versions(&act.source, &act.keys)?;
+            }
+            drop(view);
             self.rebuild_held(w)?;
         }
         let (mut list, mut acts) = (listed(self)?, removed(self)?);

@@ -49,6 +49,8 @@ interface types {
     type idempotency-key = string;
     /// One delivery of a source: the caller's id, or the store's `d<position>`.
     type delivery-id = string;
+    /// A version of a source's key, as its key store names it.
+    type key-id = string;
     /// A page token of a list-shaped read, bound to its first page's
     /// position and the clock that page read.
     type cursor = string;
@@ -1531,15 +1533,18 @@ interface types {
         %type: type-name,
         field: field-name,
         redacted: u64,
+        shredded: u64,
     }
 
     /// What one removal took back, or its preflight says it would: the
     /// selection and the first position a time does not reach, the
     /// events selected and, for a delivery, the source's events from
     /// before format 17, which carry none and are never selected, the
-    /// records and values it takes, the records it retires and those it
-    /// keeps, what is computed again, the constraints and references it
-    /// leaves broken, the events its rebuild folds and the time it is
+    /// records and values it takes, redacted and shredded, the records it
+    /// retires and those it keeps, what is computed again, the constraints
+    /// and references it leaves broken, the versions of the source's key
+    /// it destroys and the values of erasable fields it redacts only, the
+    /// events its rebuild folds and the time it is
     /// expected to hold the writer's lock, the position, the act's
     /// reclaim, and a preflight's id.
     record remove-report {
@@ -1556,6 +1561,8 @@ interface types {
         views: list<type-name>,
         breaches: list<breach>,
         references: list<purge-reference>,
+        keys: list<key-id>,
+        unshredded: u64,
         log-events: u64,
         expected-ms: u64,
         position: position,

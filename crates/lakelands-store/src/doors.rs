@@ -908,12 +908,14 @@ impl LakeStore for Store {
         &self,
         source: &SourceId,
         selection: &Selection,
+        shredded: bool,
         id: Option<&str>,
     ) -> Result<RemoveReport> {
         writes::check_source(source)?;
         let (lake, source, id) = (self.lake.clone(), source.clone(), id.map(str::to_owned));
         let selection = selection.clone();
-        let remove = move || crate::remove::run(&lake, &source, &selection, id.as_deref());
+        let remove =
+            move || crate::remove::run(&lake, &source, &selection, (shredded, id.as_deref()));
         exec::run(remove).await
     }
 

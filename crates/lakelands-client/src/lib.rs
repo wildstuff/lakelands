@@ -285,6 +285,7 @@ impl LakeStore for RemoteLake {
         &self,
         _source: &SourceId,
         _selection: &Selection,
+        _shredded: bool,
         _id: Option<&str>,
     ) -> Result<RemoveReport> {
         Err(host_only("remove_values"))

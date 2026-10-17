@@ -522,13 +522,18 @@ pub trait LakeStore: Send + Sync {
     /// hand retired, rebuild the projection, in which each value a selected
     /// event of the source wrote reads as erased at every position, and
     /// reclaim the storage, all under the writer's lock. A key field and a
-    /// reference field are never taken. With a preflight's id, refused
-    /// unless that report is of this removal at this head. A step a crash
-    /// left owed is finished by the next writer's open.
+    /// reference field are never taken. The versions of the source's key
+    /// whose values it all selects, the longest prefix of them, are
+    /// destroyed, and what they sealed is shredded; with
+    /// `require_shredded`, refused while a value of an erasable field would
+    /// be redacted only. With a preflight's id, refused unless that report
+    /// is of this removal at this head. A step a crash left owed is
+    /// finished by the next writer's open.
     async fn remove_values(
         &self,
         source: &SourceId,
         selection: &crate::write::Selection,
+        require_shredded: bool,
         report_id: Option<&str>,
     ) -> Result<crate::write::RemoveReport>;
 
