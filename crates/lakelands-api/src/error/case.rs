@@ -1300,6 +1300,8 @@ catalog! {
         WeightRange { field: FieldName } => "the weight of `{field}` must be above 0 and at most 1000000",
 
         // ---- writes
+        /// A call a verb's executor declined by the host's policy.
+        CallDeclined { verb: VerbName } => "the host declined the call of `{verb}`: it did not run, and a retry under the same idempotency key answers the same",
         /// A host's cause past the head.
         CausePastHead { cause: Position, head: Option<Position> } => "the cause {cause} is past the lake's head [{head}|(none)]",
         /// A type declared again since its migration was proposed.
@@ -1904,8 +1906,8 @@ catalog! {
 }
 
 /// A case and the places it is said at, outermost first: "type `T`, field
-/// `x`: …". What a refusal of `invalid`, `constraint`, `precondition` or
-/// `unanswered` says.
+/// `x`: …". What a refusal of `invalid`, `constraint`, `precondition`,
+/// `declined` or `unanswered` says.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Said {
     /// The places, outermost first.

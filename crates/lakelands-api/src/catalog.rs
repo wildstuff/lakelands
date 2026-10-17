@@ -129,7 +129,7 @@ pub trait Catalog: Send + Sync {
     /// version with no key, is refused as invalid, naming the verb. It runs
     /// or is proposed by its declared risk. A verb whose effect reaches outside the lake answers,
     /// when it runs, `Applied` with its executor's recorded `output` —
-    /// `{"error": "<text>"}` when the executor failed, since the verb's
+    /// the error's wire form when the executor failed, since the verb's
     /// position is real either way. A retry under its idempotency key runs
     /// nothing: it answers that recorded `output`, or, where none is
     /// recorded, is refused as `unanswered`.

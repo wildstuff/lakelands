@@ -294,8 +294,11 @@ fn executions() -> &'static Mutex<BTreeMap<String, usize>> {
 
 /// The scripted executor: it answers `{"done": <verb>, "record": <key>}`,
 /// the key null for a verb called on its type, `null` when the payload's
-/// `null` is `true`, `{"paid": 1e16}` when its `vast` is `true`, or fails
-/// when its `fail` is `true`. It counts its
+/// `null` is `true`, `{"paid": 1e16}` when its `vast` is `true`, fails
+/// when its `fail` is `true`, declines the call when its `decline` is
+/// `true`, answers `not_granted` when its `ungrant` is `true`, or a refusal
+/// whose case holds an integer beyond ±(2^53 − 1) when its `vast_error` is
+/// `true`. It counts its
 /// runs per record key, and per verb for a verb called on its type, so a
 /// check uses keys and such verbs of its own. A call on a record whose key
 /// begins with `held-` is counted and held until [`release`] of that key,
@@ -348,6 +351,19 @@ impl lakelands_api::seam::VerbExecutor for Executor {
         }
         if invocation.payload.get("vast") == Some(&Value::Bool(true)) {
             return Ok(serde_json::json!({"paid": 1e16}));
+        }
+        if invocation.payload.get("decline") == Some(&Value::Bool(true)) {
+            return Err(Error::declined(&invocation.verb));
+        }
+        if invocation.payload.get("vast_error") == Some(&Value::Bool(true)) {
+            let n = serde_json::Number::from(i64::MAX);
+            return Err(Error::invalid(Case::IntegerTooLarge { n }));
+        }
+        if invocation.payload.get("ungrant") == Some(&Value::Bool(true)) {
+            return Err(Error::Refused {
+                field: None,
+                reason: lakelands_api::Refusal::NotGranted,
+            });
         }
         if invocation.payload.get("fail") == Some(&Value::Bool(true)) {
             let name = invocation.verb.to_string();

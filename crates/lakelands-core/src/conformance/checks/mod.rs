@@ -726,6 +726,7 @@ pub const ALL: &[Check] = &[
     embeddings::EMBED_RULES,
     embeddings::EMBED_BATCH,
     proposals::EXECUTOR_RECORDED,
+    proposals::EXECUTOR_DECLINES,
     proposals::RETRY_EXTERNAL_PAST_HOST,
     proposals::RETRY_WRITE_PAST_HOST,
     proposals::RETRY_PROPOSED_PAST_ACCEPT,

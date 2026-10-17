@@ -1314,7 +1314,7 @@ interface types {
     }
 
     /// Why a call was refused. A refusal of `invalid`, `constraint`,
-    /// `precondition` or `unanswered` says its case
+    /// `precondition`, `declined` or `unanswered` says its case
     /// (`lakelands_api::error::Case`) and where it is said.
     variant refusal {
         not-granted,
@@ -1329,6 +1329,7 @@ interface types {
         migration(migration-report),
         decided,
         unanswered(said),
+        declined(said),
         out-of-range(position),
     }
 

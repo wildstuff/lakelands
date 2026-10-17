@@ -1896,7 +1896,7 @@ async fn an_external_verb_answers_its_executors_output_or_its_failure() {
     };
     let error = output.expect("a failure is the recorded output");
     assert!(
-        error["error"]
+        error["message"]
             .as_str()
             .is_some_and(|e| e.contains("closed")),
         "{error}"

@@ -1634,6 +1634,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Refusal::TooLarge { .. }
             | Refusal::Migration { .. }
             | Refusal::Decided
+            | Refusal::Declined { .. }
             | Refusal::Unanswered { .. }
             | Refusal::OutOfRange { .. } => {}
             // A newer lake's refusal, which a component built against this
@@ -1659,6 +1660,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     report: Box::new(migration_report()),
                 },
                 Refusal::Decided,
+                Refusal::Declined(said()),
                 Refusal::Unanswered(said()),
                 Refusal::OutOfRange { head: Position(1) },
             ],

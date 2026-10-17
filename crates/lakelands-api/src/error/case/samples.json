@@ -1201,6 +1201,10 @@
    "field": "f"
   },
   {
+   "code": "call_declined",
+   "verb": "v"
+  },
+  {
    "cause": 1,
    "code": "cause_past_head",
    "head": 1

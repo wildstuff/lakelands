@@ -33,7 +33,7 @@ compiling until the WIT and the test follow.
 JSON text (`[]` for these two, which name none; a refusal's case names
 them), the case's `code`, its parameters as JSON text, and its `message`
 (015, extended). The refusals `invalid`, `constraint`,
-`precondition` and `unanswered` carry the same record, with their
+`precondition`, `declined` and `unanswered` carry the same record, with their
 places in `at`, and the drift test reads a case's parameters, which serde
 writes beside its code, into `params`. The crate's
 `Seam` and `Situation` are closed sets with parameters, and `Situation`

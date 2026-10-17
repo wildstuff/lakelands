@@ -62,7 +62,7 @@ pub enum Outcome {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         version: Option<Version>,
         /// For a verb whose effect reaches outside the lake: its executor's
-        /// recorded output, `{"error": "<text>"}` when the executor failed.
+        /// recorded output, the error's wire form when the executor failed.
         /// The position is real either way; the verb is not run again for
         /// it. `None` for every other write; an answer of `null` is
         /// `Some(Null)`, and read back so.
