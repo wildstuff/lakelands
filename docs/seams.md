@@ -1888,9 +1888,10 @@ nothing. A view declared again so that it can no longer be kept is not
 refused under a standing setting: the setting stays, and `describe_type`
 says why the view computes. It changes no answer, only where a read of
 the view gets it. While an object set holds the view, or a view that
-reads it, the setting written `false` or retired and a declaration
-under which the view cannot be kept are refused `view_kept_for_set`,
-naming the set (`docs/decisions/066-a-set-holds-a-kept-view.md`).
+reads it, or a trigger watches one, the setting written `false` or
+retired and a declaration under which the view cannot be kept are
+refused `view_kept_for_set`, naming the set or the trigger
+(`docs/decisions/066-a-set-holds-a-kept-view.md`).
 
 Another is **`search_weights.<type>`**: it holds an object of `fields`,
 vector fields of `<type>` with their weights, `text_fields`, searchable

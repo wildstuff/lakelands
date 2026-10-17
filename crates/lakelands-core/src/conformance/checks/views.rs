@@ -79,7 +79,7 @@ check!(
 
 check!(
     NO_TRIGGER_OR_SET_ON_A_VIEW = a_trigger_or_object_set_on_a_view_is_refused,
-    "018, extended: a view is never written, so `declare` and `apply` refuse a trigger on a view, which no write would fire, and an object set over one the lake does not keep, which no write would decide (066), naming both; nothing is appended"
+    "018, extended: a view is never written, so `declare` and `apply` refuse a trigger on a view the lake does not keep, which no write would fire, and an object set over one, which no write would decide (066), naming both; nothing is appended"
 );
 
 check!(

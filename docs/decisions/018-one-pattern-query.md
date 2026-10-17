@@ -395,12 +395,12 @@ field that is searchable, carries an embedding or is a vector is
 refused when the view is declared, and a search on a view is refused,
 naming it; neither is answered empty. For the same reason a declaration
 that could never act on a view is refused when declared, naming both.
-A trigger on a view would never fire, since no write has the view's
-type. An object set holds stored records, or the groups of a view the
-lake keeps, decided at every write that moves one
+An object set holds stored records, or the groups of a view the lake
+keeps, decided at every write that moves one, and a trigger on a view
+the lake keeps fires at every write that puts a group's row
 (`docs/decisions/066-a-set-holds-a-kept-view.md`); of a view the lake
-does not keep no write would decide it. A relation on a view is
-refused unless it is derived from matching values. A link names a live,
+does not keep no write would decide the one or fire the other. A
+relation on a view is refused unless it is derived from matching values. A link names a live,
 written record as its `from` (035), so a relation carried by link
 records could never hold an edge. A view has no stored field for `via`
 to read. The refusal names the view and the relation.
@@ -550,7 +550,8 @@ used.
   merge sources on its key (lakelands#278).
 - A view without `group_by` holds one record, keyed `all`
   (lakelands#346); a trigger, an object set and a relation that is not
-  derived are refused on a view; a step that arrives at a view with
+  derived are refused on a view (a set and a trigger on a kept view are
+  taken since lakelands#1185); a step that arrives at a view with
   parameters is refused before any record is read.
 - Every door that writes or holds a record refuses a view alike, and a
   verb on a record of a view is refused when declared. Until 0.8.0
