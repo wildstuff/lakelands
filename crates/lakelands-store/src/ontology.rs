@@ -8,8 +8,11 @@ use std::sync::Arc;
 use lakelands_api::engine::{Declared, ProjectionView};
 use lakelands_api::ontology::{FieldDecl, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl};
 use lakelands_api::tools::{self, MAX_TOOL_NAME, NameSource};
-use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl, SettingDecl};
+use lakelands_api::write::{
+    Declaration, DeclarationKind, FunctionDecl, ObjectSetDecl, SettingDecl,
+};
 use lakelands_api::{Error, FieldName, Missing, Position, TypeName, VerbName};
+use lakelands_core::engines::declaration_key;
 
 /// A type's fields and its relations' link fields: all that may be computed.
 fn computed(t: &mut TypeDecl) -> impl Iterator<Item = &mut FieldDecl> {
@@ -50,6 +53,10 @@ pub struct Ontology {
     pub functions: BTreeMap<String, Arc<Entry<FunctionDecl>>>,
     /// A host's own settings, by key (063, extended).
     pub settings: BTreeMap<String, Entry<SettingDecl>>,
+    /// Each declaration withdrawn and not declared again, by its identity
+    /// ([`declaration_key`]): the version and the position of its
+    /// withdrawal, which a later declaration of the name continues.
+    withdrawn: BTreeMap<String, (u32, Position)>,
     /// Each type's `depends_on` lists as they were declared, field by
     /// field: the completed lists are made again from them.
     listed: BTreeMap<TypeName, Vec<Vec<FieldName>>>,
@@ -241,6 +248,9 @@ impl Ontology {
             m.insert(name, entry.into());
         }
         let (v, h, s) = (version, schema_hash, since);
+        if !matches!(declaration, Declaration::Withdraw(_)) {
+            self.withdrawn.remove(&declaration_key(&declaration));
+        }
         match declaration {
             Declaration::Type(mut t) => {
                 let listed = computed(&mut t).map(|f| f.depends_on.clone()).collect();
@@ -284,6 +294,18 @@ impl Ontology {
                 }
             }
             Declaration::Setting(t) => put(&mut self.settings, t.key.clone(), t, v, h, s),
+            // A withdrawal takes the trigger or the function out of force.
+            // A field that names the function refuses it, so no type is
+            // completed again.
+            Declaration::Withdraw(t) => {
+                match t.kind {
+                    DeclarationKind::Trigger => drop(self.triggers.remove(&t.name)),
+                    DeclarationKind::Function => drop(self.functions.remove(&t.name)),
+                    _ => {}
+                }
+                let key = declaration_key(&Declaration::Withdraw(t));
+                self.withdrawn.insert(key, (v, s));
+            }
             _ => {}
         }
     }
@@ -393,11 +415,34 @@ impl Ontology {
             Declaration::ObjectSet(s) => of(self.object_sets.get(&s.name), Declaration::ObjectSet),
             Declaration::Function(f) => of(self.functions.get(&f.name), Declaration::Function),
             Declaration::Setting(s) => of(self.settings.get(&s.key), Declaration::Setting),
+            Declaration::Withdraw(w) => self.held_named(w.kind, &w.name),
             _ => None,
         }
     }
 
-    /// The version and since of the entry of `declaration`'s kind and name.
+    /// The declaration in force of `kind` and `name`, if any.
+    pub fn held_named(&self, kind: DeclarationKind, name: &str) -> Option<Declaration> {
+        fn of<T: Clone>(e: Option<&impl Borrow<Entry<T>>>) -> Option<T> {
+            e.map(|e| e.borrow().decl.clone())
+        }
+        match kind {
+            DeclarationKind::Type => of(self.types.get(name)).map(Declaration::Type),
+            DeclarationKind::ValueType => {
+                of(self.value_types.get(name)).map(Declaration::ValueType)
+            }
+            DeclarationKind::Verb => of(self.verbs.get(name)).map(Declaration::Verb),
+            DeclarationKind::Trigger => of(self.triggers.get(name)).map(Declaration::Trigger),
+            DeclarationKind::ObjectSet => {
+                of(self.object_sets.get(name)).map(Declaration::ObjectSet)
+            }
+            DeclarationKind::Function => of(self.functions.get(name)).map(Declaration::Function),
+            DeclarationKind::Setting => of(self.settings.get(name)).map(Declaration::Setting),
+            _ => None,
+        }
+    }
+
+    /// The version and since of the entry of `declaration`'s kind and name;
+    /// of a withdrawal, the entry it withdraws or, once withdrawn, its own.
     pub fn entry_of(&self, d: &Declaration) -> Option<(u32, Position)> {
         fn of<T>(e: Option<&impl Borrow<Entry<T>>>) -> Option<(u32, Position)> {
             e.map(|e| (e.borrow().version, e.borrow().since))
@@ -410,6 +455,11 @@ impl Ontology {
             Declaration::ObjectSet(s) => of(self.object_sets.get(&s.name)),
             Declaration::Function(f) => of(self.functions.get(&f.name)),
             Declaration::Setting(s) => of(self.settings.get(&s.key)),
+            Declaration::Withdraw(w) => {
+                let held = self.held_named(w.kind, &w.name);
+                let held = held.and_then(|h| self.entry_of(&h));
+                held.or_else(|| self.withdrawn.get(&declaration_key(d)).copied())
+            }
             _ => None,
         }
     }
@@ -446,7 +496,9 @@ impl Ontology {
 
     /// The version a declaration of this name and kind would take next.
     pub fn next_version(&self, declaration: &Declaration) -> u32 {
-        self.entry_of(declaration).map_or(1, |(v, _)| v + 1)
+        let withdrawn = || self.withdrawn.get(&declaration_key(declaration)).copied();
+        let held = self.entry_of(declaration).or_else(withdrawn);
+        held.map_or(1, |(v, _)| v + 1)
     }
 
     /// The object set `name`, if one is declared.

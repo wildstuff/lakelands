@@ -319,6 +319,9 @@ SHOWS = {
         and e["body"]["patch"].get("group") == "operator"),
     "delivery": shows("an ingest in the delivery its caller named, its id made without it")(
         lambda e: e["body"]["kind"] == "record_ingested" and e.get("delivery") == "batch-7" and ingest_id(e) == e["id"]),
+    "withdrawn": shows("a declared withdrawal of a trigger, at the version after the one it withdraws")(
+        lambda e: declaration(e) == {"declare": "withdraw", "kind": "trigger", "name": "shelved"}
+        and e["body"]["version"] == 2),
     "lake_upgraded": shows("a `lake_upgraded` from the format before to the one this lake is written in")(
         lambda e: e["body"]["kind"] == "lake_upgraded" and e["body"]["from"] == e["v"] - 1 and e["body"]["to"] == e["v"]),
     "function_risk": shows("a declared function whose backing reaches outside the lake, declared above `low` risk")(

@@ -42,7 +42,9 @@ use lakelands_api::ontology::{
     StorageKind, TypeDecl, ValueTypeDecl, VerbEffect, VerbScope, ViewDecl, lands_in_the_fold,
 };
 use lakelands_api::tools::{NameProblem, name_problems};
-use lakelands_api::write::{Carrier, Declaration, ObjectSetDecl, SettingDecl};
+use lakelands_api::write::{
+    Carrier, Declaration, DeclarationKind, ObjectSetDecl, SettingDecl, Withdrawal,
+};
 use lakelands_api::{Error, FieldName, Refusal, RelationName, Result, TypeName, VerbName};
 use lakelands_core::expr::{Place as Eval, check, parse};
 use lakelands_core::rights::is_system;
@@ -1835,10 +1837,76 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             }
         }
         Declaration::Setting(s) => setting_decl(o, s)?,
+        Declaration::Withdraw(w) => withdrawal(o, w)?,
         _ => {}
     }
     reads_its_type(o, d)?;
     tool_names(o, d)
+}
+
+/// A withdrawal: of a trigger or a function in force, which nothing in
+/// force reads. Nothing reads a trigger; a function is read by each field
+/// that names it, of a type or of a relation's links.
+fn withdrawal(o: &Ontology, w: &Withdrawal) -> Result<()> {
+    let (kind, name) = (w.kind.naming(), w.name.clone());
+    if !matches!(w.kind, DeclarationKind::Trigger | DeclarationKind::Function) {
+        return Err(invalid(Case::WithdrawnKind { kind }));
+    }
+    if o.held_named(w.kind, &w.name).is_none() {
+        return Err(invalid(Case::WithdrawnUndeclared { kind, name }));
+    }
+    match reader(o, w) {
+        Some(by) => Err(invalid(Case::WithdrawnInUse { kind, name, by })),
+        None => Ok(()),
+    }
+}
+
+/// The first reader in force of what `w` withdraws, as a refusal names
+/// it. Nothing reads a trigger; a function is read by each field it
+/// computes.
+pub(crate) fn reader(o: &Ontology, w: &Withdrawal) -> Option<String> {
+    match w.kind {
+        DeclarationKind::Function => function_reader(o, &w.name),
+        _ => None,
+    }
+}
+
+/// The first field in force that a function computes, as a refusal names
+/// it: the field `total` of `invoice`.
+fn function_reader(o: &Ontology, function: &str) -> Option<String> {
+    let calls = |f: &FieldDecl| f.function.as_deref() == Some(function);
+    // A link type's fields are its relation's, named at the relation; one
+    // no relation in force carries is named itself, as it stands alone.
+    let carried = |t: &TypeDecl| {
+        let (owner, relation) = links::link_type_parts(&t.name)?;
+        let owner = &o.types.get(&owner)?.decl;
+        let mut rs = owner.relations.iter();
+        rs.find(|r| r.name == relation && r.carried_by_links())
+    };
+    let alone = || {
+        let mut types = o.types.values().map(|e| &e.decl);
+        types.find_map(|t| {
+            let f = t.fields.iter().find(|f| calls(f))?;
+            let alone = links::is_link_type(&t.name) && carried(t).is_none();
+            alone.then(|| format!("the field `{}` of `{}`", f.name, t.name))
+        })
+    };
+    let mut types = o.types.values().filter(|t| !is_system(&t.decl.name));
+    let found = types.find_map(|t| {
+        let t = &t.decl;
+        let own = t.fields.iter().find(|f| calls(f));
+        let own = own.map(|f| format!("the field `{}` of `{}`", f.name, t.name));
+        own.or_else(|| {
+            t.relations.iter().find_map(|r| {
+                let f = r.fields.iter().find(|f| calls(f))?;
+                Some(format!(
+                    "the field `{}` of `{}`'s relation `{}`",
+                    f.name, t.name, r.name
+                ))
+            })
+        })
+    });
+    found.or_else(alone)
 }
 
 /// A host's setting: a key of its own, never one the store reads or one

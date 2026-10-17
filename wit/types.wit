@@ -372,6 +372,14 @@ interface types {
         object-set(object-set-decl),
         function(function-decl),
         setting(setting-decl),
+        withdraw(withdrawal),
+    }
+
+    /// A trigger or a function taken out of force from the withdrawal's
+    /// position on; a read as of before still sees it.
+    record withdrawal {
+        kind: declaration-kind,
+        name: string,
     }
 
     /// What `recompute` names.

@@ -2562,7 +2562,26 @@ impl<'a> Reader<'a> {
                     };
                     (p.write, p.more) = shown;
                 }
-                if core_engines::matches(&p, filter, stands) {
+                // A withdrawal names the type of what it withdrew as the
+                // lake held that when it was proposed, whatever stands
+                // under its name since.
+                let withdrawn: Vec<String> = match &p.write {
+                    Some(ProposedWrite::Declare { declarations, .. }) => (declarations.iter())
+                        .filter(|d| matches!(d, Declaration::Withdraw(_)))
+                        .map(core_engines::declaration_key)
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let was = OnceCell::new();
+                let then = |ident: &str| {
+                    let was = was.get_or_init(|| self.ontology_at(p.position));
+                    was.as_ref().and_then(|o| crate::reads::stands(o, ident))
+                };
+                let on = |ident: &str| match withdrawn.iter().any(|w| w == ident) {
+                    true => then(ident),
+                    false => stands(ident),
+                };
+                if core_engines::matches(&p, filter, on) {
                     mine.push(p);
                 }
             }
@@ -2664,6 +2683,30 @@ impl<'a> Reader<'a> {
                 if !tools_shown(declarations) || held.any(|d| !self.sight.lists(&d)) {
                     return Ok(None);
                 }
+                // A withdrawal is judged by what it withdrew, as the lake
+                // held it when proposed, as well as by what stands under its
+                // name now: listed to a reader shown both, and naming the
+                // type it withdrew from.
+                let withdraws = |d: &&Declaration| matches!(d, Declaration::Withdraw(_));
+                let was = match declarations.iter().any(|d| withdraws(&d)) {
+                    true => match self.ontology_at(at) {
+                        Some(was) => Some(was),
+                        None => return Ok(None),
+                    },
+                    false => None,
+                };
+                if let Some(was) = &was {
+                    let then = Sight::new(asked.clone(), &self.shape.renames, Some(at), was);
+                    for held in declarations
+                        .iter()
+                        .filter(withdraws)
+                        .filter_map(|d| was.held(d))
+                    {
+                        if !then.lists(&held) {
+                            return Ok(None);
+                        }
+                    }
+                }
                 let mut put = o.clone();
                 for d in declarations.iter() {
                     crate::writes::put_as_appended(&mut put, d, Some);
@@ -2674,6 +2717,10 @@ impl<'a> Reader<'a> {
                             put.complete(t);
                             named.extend(names(t))
                         }
+                        Declaration::Withdraw(_) => named
+                            .extend(core_engines::declared_on(d, &|i| {
+                                was.as_ref().and_then(|was| stands(was, i))
+                            })),
                         // As the listing's filter names it (lakelands#916).
                         d => named.extend(core_engines::declared_on(d, &|i| stands(o, i))),
                     }
@@ -5252,6 +5299,7 @@ fn in_force_under(o: &Ontology, d: &Declaration) -> Option<Declaration> {
         Declaration::Setting(s) => {
             (o.settings.get(&s.key)).map(|e| Declaration::Setting(e.decl.clone()))
         }
+        Declaration::Withdraw(_) => o.held(d),
         _ => None,
     }
 }
