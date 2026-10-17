@@ -146,7 +146,8 @@ const SEALED_FROM: u32 = 16;
 ///   the values it reads, where 16 took the source's first (lakelands#1153);
 ///   a type's `retired_by` and a verb's `effect: retire` (lakelands#1148);
 ///   a `trigger_dropped` (lakelands#1216); a trigger's `when_strict`
-///   (lakelands#1215).
+///   (lakelands#1215); a `trigger_fired`'s `change` and `created`, a
+///   trigger's `on_changes` and `created()` (lakelands#1217).
 #[doc(hidden)]
 pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
     debug_assert!(reads_format(v), "format {v} is not one this release reads");
@@ -263,7 +264,8 @@ pub fn created_in_another(event: &Event) -> Option<Flaw> {
 /// on an event of a format before 16
 /// (`docs/decisions/058-a-source-may-be-forgotten.md`); and `delivery` on
 /// any kind but `record_ingested`, or before format 17
-/// (`docs/log-format.md` §1.1); and a `trigger_dropped` before format 17.
+/// (`docs/log-format.md` §1.1); and a `trigger_dropped`, or a
+/// `trigger_fired`'s `change` or `created`, before format 17.
 /// No door
 /// puts any there; a reader holds the rule for a log written by something
 /// else.
@@ -297,6 +299,16 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
     if matches!(event.body, EventBody::SourceForgotten { .. }) && event.v < SEALED_FROM {
         let v = event.v;
         return Some(Flaw::ForgottenBefore { v });
+    }
+    let told = |c: &Option<_>, m: &Option<bool>| c.is_some() || m.is_some();
+    if let EventBody::TriggerFired {
+        change, created, ..
+    } = &event.body
+        && told(change, created)
+        && event.v < 17
+    {
+        let v = event.v;
+        return Some(Flaw::ChangeBefore { v });
     }
     if matches!(event.body, EventBody::TriggerDropped { .. }) && event.v < 17 {
         let v = event.v;

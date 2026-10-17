@@ -74,6 +74,7 @@ pub fn func_name(f: Func) -> &'static str {
         Func::Exists => "exists",
         Func::Changed => "changed",
         Func::Retired => "retired",
+        Func::Created => "created",
         Func::Coalesce => "coalesce",
         Func::If => "if",
         Func::Lower => "lower",
@@ -108,7 +109,7 @@ fn func_by_name(name: &str) -> Option<Func> {
 /// `None`.
 pub fn arity(f: Func) -> (usize, Option<usize>) {
     match f {
-        Func::Now | Func::Today | Func::Retired => (0, Some(0)),
+        Func::Now | Func::Today | Func::Retired | Func::Created => (0, Some(0)),
         Func::KnownAt
         | Func::SeenAt
         | Func::Previous

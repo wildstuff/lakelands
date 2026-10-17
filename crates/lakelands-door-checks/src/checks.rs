@@ -1070,6 +1070,7 @@ pub async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) {
     let trigger = |name: &str, when: &str| TriggerDecl {
         max_depth: None,
         when_strict: false,
+        on_changes: None,
         name: name.into(),
         on: INVOICE.into(),
         when: Some(Condition::from(when)),
@@ -2043,6 +2044,7 @@ pub async fn nothing_that_never_acts_is_declared_on_a_view(store: Arc<dyn LakeSt
     let trigger = Declaration::Trigger(TriggerDecl {
         max_depth: None,
         when_strict: false,
+        on_changes: None,
         name: "grew".into(),
         on: "partner_totals".into(),
         when: None,
@@ -11598,6 +11600,7 @@ pub async fn a_trigger_watches_a_link_type_and_not_a_reference_relations(
         Declaration::Trigger(TriggerDecl {
             max_depth: None,
             when_strict: false,
+            on_changes: None,
             name: name.into(),
             on: on.into(),
             when: None,

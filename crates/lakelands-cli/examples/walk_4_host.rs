@@ -159,7 +159,10 @@ async fn main() {
             .await
             .unwrap_or_else(|e| fail(format!("cannot read the feed: {e}")));
         for event in &batch.events {
-            let EventBody::TriggerFired { trigger, ty, key } = &event.body else {
+            let EventBody::TriggerFired {
+                trigger, ty, key, ..
+            } = &event.body
+            else {
                 continue;
             };
             if trigger.as_str() != TRIGGER {

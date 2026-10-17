@@ -312,6 +312,36 @@
       "about": "A `declared` verb `redeem` whose effect is `retire` (lakelands#1148): its call retires the record it is called on, under its `requires`. A form format 17 holds and 16 does not.",
       "line": "{\"body\":{\"declaration\":{\"declare\":\"verb\",\"effect\":\"retire\",\"name\":\"redeem\",\"on\":\"voucher\",\"requires\":\"state = 'issued'\",\"risk\":\"low\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"e9ab6dd0e08fa7aa4d6680e152b1c355efb7bb988f90e62fed735f0caa146221\",\"id\":\"0000000000000000000000000000003a\",\"known_at\":\"2026-10-05T09:00:29.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":59,\"prev\":\"d7c1e690b06d73a93b740429382f988ee762cf6518f03a217da7580fd39cb12e\",\"v\":17,\"writer\":\"agent:agent\"}",
       "hash": "e9ab6dd0e08fa7aa4d6680e152b1c355efb7bb988f90e62fed735f0caa146221"
+    },
+    {
+      "shows": "trigger_change_guard",
+      "about": "A `declared` trigger whose guard reads `created()`, strict, firing on authored writes and ingests alone and binding its reactions to depth 1: `when_strict` and `on_changes`, members format 17 holds and 16 does not (lakelands#1215, lakelands#1217).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"trigger\",\"max_depth\":1,\"name\":\"slip_made\",\"on\":\"slip\",\"on_changes\":[\"upserted\",\"ingested\"],\"when\":\"created()\",\"when_strict\":true},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"608856c080f5a7487199afeaabcbba3eb84f51fada65cb0a4d5a54068ce20772\",\"id\":\"0000000000000000000000000000003b\",\"known_at\":\"2026-10-05T09:00:30.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":60,\"prev\":\"e9ab6dd0e08fa7aa4d6680e152b1c355efb7bb988f90e62fed735f0caa146221\",\"v\":17,\"writer\":\"agent:agent\"}",
+      "hash": "608856c080f5a7487199afeaabcbba3eb84f51fada65cb0a4d5a54068ce20772"
+    },
+    {
+      "shows": "slip_write",
+      "about": "A write that makes the slip `S-1`, which fires `slip_made` (§2.5).",
+      "line": "{\"body\":{\"key\":\"S-1\",\"kind\":\"record_upserted\",\"made\":true,\"patch\":{\"number\":\"S-1\",\"shelf_code\":\"A\"},\"type\":\"slip\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"bfc47b68f57a0ae42c4472511dead42805c8d7942ddb5c4e3a2851cd5b1c604b\",\"id\":\"0000000000000000000000000000003c\",\"known_at\":\"2026-10-05T09:00:31.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":61,\"prev\":\"608856c080f5a7487199afeaabcbba3eb84f51fada65cb0a4d5a54068ce20772\",\"v\":17,\"writer\":\"agent:agent\"}",
+      "hash": "bfc47b68f57a0ae42c4472511dead42805c8d7942ddb5c4e3a2851cd5b1c604b"
+    },
+    {
+      "shows": "fired_change",
+      "about": "A `trigger_fired` of `slip_made`, whose guard `created()` held, saying the write at its cause was an authored write that made the record: `change` and `created`, members format 17 holds and 16 does not (lakelands#1217).",
+      "line": "{\"body\":{\"change\":\"upserted\",\"created\":true,\"key\":\"S-1\",\"kind\":\"trigger_fired\",\"trigger\":\"slip_made\",\"type\":\"slip\"},\"cause\":61,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"a66ebea435480ccb9fa0196b33a136e391ab24196a99892af5f61316fa735182\",\"id\":\"0000000000000000000000000000003d\",\"known_at\":\"2026-10-05T09:00:31.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":62,\"prev\":\"bfc47b68f57a0ae42c4472511dead42805c8d7942ddb5c4e3a2851cd5b1c604b\",\"v\":17,\"writer\":\"system:lakelands\"}",
+      "hash": "a66ebea435480ccb9fa0196b33a136e391ab24196a99892af5f61316fa735182"
+    },
+    {
+      "shows": "reaction_write",
+      "about": "A host's reaction to `slip_made`'s firing, one deeper: its context is reactive at depth 1 and its cause the firing. It makes the slip `S-2`.",
+      "line": "{\"body\":{\"key\":\"S-2\",\"kind\":\"record_upserted\",\"made\":true,\"patch\":{\"number\":\"S-2\",\"shelf_code\":\"B\"},\"type\":\"slip\",\"version\":1},\"cause\":62,\"context\":{\"depth\":1,\"origin\":\"reactive\"},\"fence\":1,\"hash\":\"bd0df32ea179547eb72b583734f07c2ff2a2cd9b18f4d444344b10766391c3d3\",\"id\":\"0000000000000000000000000000003e\",\"known_at\":\"2026-10-05T09:00:32.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":63,\"prev\":\"a66ebea435480ccb9fa0196b33a136e391ab24196a99892af5f61316fa735182\",\"v\":17,\"writer\":\"agent:agent\"}",
+      "hash": "bd0df32ea179547eb72b583734f07c2ff2a2cd9b18f4d444344b10766391c3d3"
+    },
+    {
+      "shows": "trigger_dropped",
+      "about": "A `trigger_dropped` in place of `slip_made`'s firing: the write at its cause is at depth 1, the trigger's `max_depth`, so a reaction to it could write nothing. A kind format 17 adds (lakelands#1216).",
+      "line": "{\"body\":{\"bound\":\"trigger\",\"depth\":1,\"key\":\"S-2\",\"kind\":\"trigger_dropped\",\"max_depth\":1,\"trigger\":\"slip_made\",\"type\":\"slip\"},\"cause\":63,\"context\":{\"depth\":1,\"origin\":\"reactive\"},\"fence\":1,\"hash\":\"2ac33bc99e52b05f6761920e45fbd48c1e18eb570670fd5855b7e5a4bbccd48e\",\"id\":\"0000000000000000000000000000003f\",\"known_at\":\"2026-10-05T09:00:32.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":64,\"prev\":\"bd0df32ea179547eb72b583734f07c2ff2a2cd9b18f4d444344b10766391c3d3\",\"v\":17,\"writer\":\"system:lakelands\"}",
+      "hash": "2ac33bc99e52b05f6761920e45fbd48c1e18eb570670fd5855b7e5a4bbccd48e"
     }
   ],
   "misplaced": [

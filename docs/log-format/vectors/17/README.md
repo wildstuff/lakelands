@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 59, each
+- `further.json`: the lake's next events, positions 8 to 64, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -106,7 +106,16 @@ The files:
     (lakelands#1219);
   - a type `voucher` whose records only its verbs retire, `retired_by:
     verbs` (58), and its verb `redeem` whose effect is `retire` (59):
-    two forms format 17 holds and 16 does not (lakelands#1148).
+    two forms format 17 holds and 16 does not (lakelands#1148);
+  - a `declared` trigger, `slip_made`, whose strict guard reads
+    `created()`, that names the kinds of change that fire it and binds
+    its reactions to depth 1 (60), a write that makes a slip (61), the
+    `trigger_fired` it sets off, naming the kind of change and that it
+    made the record (62), a reaction one deeper naming that firing,
+    which makes another slip (63), and the `trigger_dropped` of
+    `slip_made` it sets off at the trigger's own bound (64): a kind and
+    members format 17 holds and 16 does not (lakelands#1215,
+    lakelands#1216, lakelands#1217).
 
   Its `misplaced` holds five lines that are not of the lake. Each
   stands at its position after the event before it, in the release's

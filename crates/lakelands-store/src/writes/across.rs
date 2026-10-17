@@ -10,7 +10,7 @@
 
 use super::*;
 use lakelands_api::engine::Scan;
-use lakelands_api::event::DepthBound;
+use lakelands_api::event::{ChangeKind, DepthBound};
 use lakelands_api::expr::Expr;
 use lakelands_api::ontology::MatchPair;
 
@@ -178,12 +178,18 @@ impl Decide<'_> {
         Ok(self.holds_at_write((&e, t.when_strict), on, before, after))
     }
 
-    /// The event of `t` firing on the record of `ty` at `key`: a
+    /// The event of `t` firing on the record of `ty` at `key`, by a change
+    /// of the kind `change` that made it where `created`: a
     /// `trigger_fired`, or a `trigger_dropped` where the write's depth is
     /// at or above the trigger's `max_depth` or the lake's
     /// `max_reactive_depth`, the lower that applies, since a reaction to it
     /// could write nothing (lakelands#1216).
-    pub(super) fn firing(&self, t: &TriggerDecl, ty: &TypeName, key: &RecordKey) -> EventBody {
+    pub(super) fn firing(
+        &self,
+        t: &TriggerDecl,
+        (ty, key): (&TypeName, &RecordKey),
+        (change, created): (ChangeKind, bool),
+    ) -> EventBody {
         let depth = self.call.context.depth;
         let lake = (self.call.lake.limits.max_reactive_depth, DepthBound::Lake);
         let own = t.max_depth.map(|m| (m, DepthBound::Trigger));
@@ -198,7 +204,13 @@ impl Decide<'_> {
                 max_depth,
                 bound,
             },
-            None => EventBody::TriggerFired { trigger, ty, key },
+            None => EventBody::TriggerFired {
+                trigger,
+                ty,
+                key,
+                change: Some(change),
+                created: Some(created),
+            },
         }
     }
 
@@ -250,7 +262,7 @@ impl Decide<'_> {
     pub(super) fn across(
         &self,
         (before, after): (Option<&StoredRecord>, &StoredRecord),
-        own: &BTreeMap<(String, TypeName, RecordKey), bool>,
+        (change, own): (ChangeKind, &BTreeMap<(String, TypeName, RecordKey), bool>),
         out: &mut Vec<(Draft, Option<Change>)>,
     ) -> Result<()> {
         let (w, now) = (self.w, self.now);
@@ -259,7 +271,8 @@ impl Decide<'_> {
         // whether it is a set.
         let sets = (o.object_sets.values())
             .map(|e| (&*e.decl.name, &e.decl.of, Some(&e.decl.filter), true));
-        let triggers = (o.triggers.values()).map(|e| {
+        let triggers = (o.triggers.values()).filter(|e| fires_on(&e.decl, change));
+        let triggers = triggers.map(|e| {
             (
                 e.decl.name.as_str(),
                 &e.decl.on,
@@ -327,7 +340,8 @@ impl Decide<'_> {
                         if r.retired || !self.holds_at_write(strict, on, Some(&r), &r) {
                             continue;
                         }
-                        let body = self.firing(t, &r.ty, &r.key);
+                        // The write that set it off made another record.
+                        let body = self.firing(t, (&r.ty, &r.key), (change, false));
                         let fired = Draft {
                             cause: Some(self.next),
                             context: self.call.context,
@@ -485,4 +499,10 @@ pub(crate) fn reads_across(o: &Ontology, s: &ObjectSetDecl) -> bool {
         return false;
     };
     !reaches(o, on, &e).is_empty()
+}
+
+/// Whether `t` fires on a change of the kind `change`: every kind fires a
+/// trigger that names none.
+pub(super) fn fires_on(t: &TriggerDecl, change: ChangeKind) -> bool {
+    t.on_changes.as_ref().is_none_or(|on| on.contains(&change))
 }

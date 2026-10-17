@@ -153,7 +153,8 @@ pub fn of(e: &Expr, field: Reads<'_>) -> Result<Option<Kind>, Case> {
                 Func::Now | Func::Today | Func::KnownAt | Func::SeenAt | Func::DateBucket => {
                     Some(Instant)
                 }
-                Func::Changed | Func::Retired | Func::Contains | Func::StartsWith => Some(Boolean),
+                Func::Changed | Func::Retired | Func::Created => Some(Boolean),
+                Func::Contains | Func::StartsWith => Some(Boolean),
                 Func::InSet | Func::Exists => Some(Boolean),
                 Func::Matches => Some(Boolean),
                 Func::Lower | Func::Upper | Func::Trim | Func::Concat | Func::Substr => Some(Text),

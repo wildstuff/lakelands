@@ -42,7 +42,7 @@ use lakelands_api::engine::ProjectionView;
 use lakelands_api::error::{
     Case, Flaw, Named, Naming, Part, Place, RecordName, Retry, Said, Seam, Situation,
 };
-use lakelands_api::event::{Digest, Event, EventBody, EventId, Procedure};
+use lakelands_api::event::{ChangeKind, Digest, Event, EventBody, EventId, Procedure};
 use lakelands_api::ontology::{
     Assignment, Authority, ConstraintDecl, EmbedDecl, FieldDecl, RelationDecl, Risk, TriggerDecl,
     TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
@@ -80,8 +80,8 @@ mod across;
 mod plan;
 mod viewed;
 
-use across::Heads;
 pub(crate) use across::reads_across;
+use across::{Heads, fires_on};
 pub(crate) use plan::Against;
 pub(crate) use plan::When;
 pub(crate) use plan::shown_plan;
@@ -2388,6 +2388,10 @@ impl<S: Scope> Scope for VerbScope<'_, S> {
         self.record.retiring()
     }
 
+    fn creating(&self) -> bool {
+        self.record.creating()
+    }
+
     fn meta(&self, field: &FieldName) -> Option<lakelands_api::FieldMeta> {
         self.record.meta(field)
     }
@@ -2473,6 +2477,9 @@ pub(crate) struct Decide<'a> {
     /// Whether what its far writes set off is held to `max_set_changes`:
     /// a purge's preflight counts it instead.
     pub bound: bool,
+    /// What kind of change its retirements are to a trigger: a forget's
+    /// and a purge's say so; `retired` otherwise.
+    pub retiring_as: ChangeKind,
 }
 
 impl Decide<'_> {
@@ -2963,12 +2970,14 @@ impl Decide<'_> {
         Ok(after.expect("a record event makes a record"))
     }
 
-    /// The triggers and object-set changes a record change causes, the
-    /// event that makes it landing next: its own, then what it sets off
-    /// across an edge ([`Self::across`]). A refused write leaves the
-    /// append's drafts as they were.
+    /// The triggers and object-set changes a record change of the kind
+    /// `change` causes, the event that makes it landing next: its own,
+    /// then what it sets off across an edge ([`Self::across`]). A trigger
+    /// whose `on_changes` leaves `change` out fires nothing. A refused
+    /// write leaves the append's drafts as they were.
     pub(crate) fn reactions(
         &mut self,
+        change: ChangeKind,
         before: Option<&StoredRecord>,
         after: &StoredRecord,
     ) -> Result<Vec<Draft>> {
@@ -2986,10 +2995,12 @@ impl Decide<'_> {
         let mut own = BTreeMap::new();
         let mut far = Vec::new();
         let decided = (|| {
-            let on = |t: &&TriggerDecl| t.on == after.ty;
+            let on = |t: &&TriggerDecl| t.on == after.ty && fires_on(t, change);
+            let created = before.is_none_or(|b| b.retired);
             for t in w.ontology.triggers.values().map(|e| &e.decl).filter(on) {
                 if self.fires(t, before, after)? {
-                    out.push(system(self.firing(t, &after.ty, &after.key)));
+                    let at = (&after.ty, &after.key);
+                    out.push(system(self.firing(t, at, (change, created))));
                 }
             }
             let of = |s: &&ObjectSetDecl| s.of == after.ty;
@@ -3004,7 +3015,7 @@ impl Decide<'_> {
                     out.push(self.call.changed(change, cause, now));
                 }
             }
-            self.across((before, after), &own, &mut far)?;
+            self.across((before, after), (change, &own), &mut far)?;
             self.viewed((before, after), &mut far)
         })();
         if let Err(e) = decided {
@@ -3034,7 +3045,7 @@ impl Decide<'_> {
         let (at, now) = (self.next, self.now);
         let after = self.apply(Some(before), &d)?;
         let mut drafts = vec![d];
-        drafts.extend(self.reactions(Some(before), &after)?);
+        drafts.extend(self.reactions(self.retiring_as, Some(before), &after)?);
         let calls = match &mut self.pending.calls {
             Some(calls) => calls,
             none => none.insert(crate::backed::pending_calls(self.view)?),
@@ -3071,7 +3082,12 @@ impl Decide<'_> {
                 .or_default()
                 .push((self.next, list));
         }
-        let mut drafts = self.reactions(plan.before.as_ref(), &plan.after)?;
+        let change = match plan.draft.body {
+            EventBody::RecordIngested { .. } => ChangeKind::Ingested,
+            EventBody::RecordRetired { .. } => self.retiring_as,
+            _ => ChangeKind::Upserted,
+        };
+        let mut drafts = self.reactions(change, plan.before.as_ref(), &plan.after)?;
         drafts.insert(0, plan.draft);
         let after = Some(plan.after);
         Ok(Plan { drafts, after })
@@ -3187,6 +3203,7 @@ impl Call<'_> {
             door: Door::Authored,
             envelope: Envelope::of(Origin::Authored),
             bound: true,
+            retiring_as: ChangeKind::Retired,
         }
     }
 
@@ -3255,7 +3272,9 @@ impl Call<'_> {
         for e in events.iter().filter(|e| e.cause == Some(*position)) {
             let (name, ty, key) = match &e.body {
                 EventBody::ObjectSetChanged { set, ty, key, .. } => (set.as_str(), ty, key),
-                EventBody::TriggerFired { trigger, ty, key } => (trigger.as_str(), ty, key),
+                EventBody::TriggerFired {
+                    trigger, ty, key, ..
+                } => (trigger.as_str(), ty, key),
                 _ => continue,
             };
             match (ty, key) == own {

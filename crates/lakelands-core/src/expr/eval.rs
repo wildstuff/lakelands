@@ -117,6 +117,11 @@ pub trait Scope {
         false
     }
 
+    /// In a guard: whether the write found no live record under its key.
+    fn creating(&self) -> bool {
+        false
+    }
+
     /// The provenance of a field, when the scope carries it.
     fn meta(&self, _field: &FieldName) -> Option<FieldMeta> {
         None
@@ -222,6 +227,10 @@ impl Scope for WriteScope<'_> {
 
     fn retiring(&self) -> bool {
         self.retiring
+    }
+
+    fn creating(&self) -> bool {
+        self.before.is_none()
     }
 
     fn meta(&self, field: &FieldName) -> Option<FieldMeta> {
@@ -424,6 +433,7 @@ pub fn check(e: &Expr, place: Place) -> Result<()> {
                     return err(Case::OnlyInWrite { name });
                 }
                 Func::Retired if place != Place::Guard => return err(Case::RetiredOnlyInGuard),
+                Func::Created if place != Place::Guard => return err(Case::CreatedOnlyInGuard),
                 Func::Exists if !matches!(place, Place::Verb | Place::Guard) => {
                     return err(Case::ExistsHere);
                 }
@@ -540,6 +550,9 @@ impl Scope for Strict<'_> {
     }
     fn eager(&self) -> bool {
         true
+    }
+    fn creating(&self) -> bool {
+        self.inner.creating()
     }
     fn meta(&self, field: &FieldName) -> Option<FieldMeta> {
         self.inner.meta(field)
@@ -855,6 +868,12 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
             }
             return Ok(Val::Bool(scope.retiring()));
         }
+        Func::Created => {
+            if !scope.in_write() {
+                return err(Case::CreatedOnlyInGuard);
+            }
+            return Ok(Val::Bool(scope.creating()));
+        }
         Func::Exists => {
             let relation = field_arg(name, args)?;
             return scope
@@ -974,6 +993,7 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         | Func::Previous
         | Func::Changed
         | Func::Retired
+        | Func::Created
         | Func::Count
         | Func::Sum
         | Func::Min

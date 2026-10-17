@@ -309,6 +309,7 @@ fn retirements(
     };
     let mut d = call.decide(w, view, now, 0);
     d.bound = bound;
+    d.retiring_as = lakelands_api::event::ChangeKind::Purged;
     let mut drafts = Vec::new();
     for before in purged {
         let body = writes::retirement(&before.ty, &before.key, before.version);

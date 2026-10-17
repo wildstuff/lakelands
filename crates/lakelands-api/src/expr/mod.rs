@@ -265,6 +265,9 @@ pub enum Func {
     /// `retired()`: in a trigger's guard, whether the write retires the
     /// record (live before it, retired after it).
     Retired,
+    /// `created()`: in a trigger's guard, whether the write found no live
+    /// record under the key: a create or a revival.
+    Created,
     /// `coalesce(a, b, …)`: the first operand that is not null.
     Coalesce,
     /// `if(cond, then, else)`.

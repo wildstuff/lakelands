@@ -553,6 +553,7 @@ pub(super) fn trigger(l: &mut Lower<'_>, doc: TriggerDoc) -> TriggerDecl {
     let t = TriggerDecl {
         max_depth: doc.max_depth,
         when_strict: doc.when_strict,
+        on_changes: doc.on_changes,
         name: TriggerName::new(doc.name),
         on,
         when,
