@@ -482,7 +482,7 @@ What a refusal is about.
 | `model_without_vector` | — | `model` names the model of a query vector the search brings, and it brings no `vector`; where the field is an embedding, the lake makes that one itself, with that model | A `model` on a hybrid search that brings no query vector. |
 | `no_relation_anywhere` | `relation` (RelationName) | no type has a relation `{relation}` to walk | A step over a relation no type declares, where the start names no type. |
 | `no_relation_to_walk` | `type` (TypeName), `relation` (RelationName), `walk` (Walk) | `{type}` has no relation `{relation}` to walk {walk} | A step over a relation that its type does not walk that way. |
-| `not_searchable` | `field` (FieldName), `type` (TypeName) | `{field}` of `{type}` is not searchable | A field a search names that is not searchable. |
+| `not_searchable` | `field` (FieldName), `type` (TypeName) | `{field}` of `{type}` is not searchable | A field a search, or a `search_weights` setting's `text_fields`, names that is not searchable. |
 | `offset_beside` | `other` (String) | `offset` and `{other}` both say where the answer starts; give one | An `offset` beside another start of the answer. |
 | `only_unappliable` | `type` (TypeName) | the grant's `only` on `{type}` cannot be applied here; the host's grants need fixing | A grant's `only` that cannot be applied to the read. |
 | `order_at_read` | `field` (FieldName), `type` (TypeName) | `order_by` names `{field}` of `{type}`, which is computed at the read and moves with the clock; a page's order would not hold to the next | An order by a field computed at the read. |
@@ -597,7 +597,7 @@ What a refusal is about.
 | `setting_group_stamped` | — | the store writes a setting's group from its declaration; leave `group` out | A write of `sys.setting` naming a group other than the one the store stamps from the setting's declaration. |
 | `setting_store_group` | — | the group `store` holds the store's own settings; a host's setting is in a group of its own | A host's setting declared into the store's own group. |
 | `setting_reference` | — | a setting holds no reference; keep the record's key as `text` | A host's setting declared to hold a reference, whose record nothing would hold to it. |
-| `setting_weights_shape` | — | it holds an object of `fields` (vector fields and their weights) and `text_weight`, one at least, or null | A `search_weights` setting of the wrong shape. |
+| `setting_weights_shape` | — | it holds an object of `fields` (vector fields and their weights), `text_fields` (searchable text fields and their weights) and `text_weight`, one at least, or null | A `search_weights` setting of the wrong shape. |
 | `vector_index_at_read` | `field` (FieldName) | `{field}` is computed at the read; a vector index keeps stored values | A vector index of a field computed at the read. |
 | `vector_index_kind` | `field` (FieldName), `kind` (StorageKind) | `{field}` is of kind {kind}; a vector index keeps vector fields | A vector index of a field that is no vector. |
 | `view_not_keepable` | `type` (TypeName) | the view `{type}` cannot be kept | A view that cannot be kept, to one not shown why. |

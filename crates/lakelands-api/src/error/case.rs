@@ -1218,7 +1218,8 @@ catalog! {
         NoRelationAnywhere { relation: RelationName } => "no type has a relation `{relation}` to walk",
         /// A step over a relation that its type does not walk that way.
         NoRelationToWalk { #[serde(rename = "type")] ty: TypeName, relation: RelationName, walk: Walk } => "`{ty}` has no relation `{relation}` to walk {walk}",
-        /// A field a search names that is not searchable.
+        /// A field a search, or a `search_weights` setting's `text_fields`,
+        /// names that is not searchable.
         NotSearchable {
             field: FieldName,
             #[serde(rename = "type")]
@@ -1494,7 +1495,7 @@ catalog! {
         /// nothing would hold to it.
         SettingReference => "a setting holds no reference; keep the record's key as `text`",
         /// A `search_weights` setting of the wrong shape.
-        SettingWeightsShape => "it holds an object of `fields` (vector fields and their weights) and `text_weight`, one at least, or null",
+        SettingWeightsShape => "it holds an object of `fields` (vector fields and their weights), `text_fields` (searchable text fields and their weights) and `text_weight`, one at least, or null",
         /// A vector index of a field computed at the read.
         VectorIndexAtRead { field: FieldName } => "`{field}` is computed at the read; a vector index keeps stored values",
         /// A vector index of a field that is no vector.

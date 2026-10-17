@@ -96,6 +96,7 @@ mod sealed;
 mod search;
 mod search_axes;
 mod search_fields;
+mod search_text_weights;
 mod set_declared;
 mod set_migrated;
 mod set_names;
@@ -703,6 +704,11 @@ pub const ALL: &[Check] = &[
     search_axes::AXES_READER,
     search_axes::AXES_WINDOW,
     search_axes::WEIGHTS_SET,
+    search_text_weights::WEIGHTS_TEXT,
+    search_text_weights::WEIGHTS_TEXT_UNWEIGHTED,
+    search_text_weights::WEIGHTS_TEXT_FUSED,
+    search_text_weights::WEIGHTS_TEXT_HIDDEN,
+    search_text_weights::WEIGHTS_TEXT_REFUSED,
     upgrade::FORMAT_14_UPGRADED,
     upgrade::FORMAT_15_UPGRADED,
     upgrade::FORMAT_16_UPGRADED,

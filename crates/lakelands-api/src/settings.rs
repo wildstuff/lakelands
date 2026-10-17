@@ -117,8 +117,8 @@ pub const SETTINGS: &[Setting] = &[
         ..lake("lookup_index", PerType::Only, "null")
     },
     Setting {
-        range: "an object of `fields` (vector fields with their weights) and `text_weight`, one of them at least",
-        says: "Weighs the type's rankings in a search that gives a ranking no weight.",
+        range: "an object of `fields` (vector fields with their weights), `text_fields` (searchable text fields with their weights) and `text_weight`, one of them at least",
+        says: "Weighs the type's rankings in a search that gives a ranking no weight, and a match of its text by the field it is in.",
         ..lake("search_weights", PerType::Only, "null")
     },
     Setting {
@@ -533,10 +533,12 @@ pub fn narrowed(
             !names.is_empty()
         }
         Value::Object(o) => {
-            if let Some(Value::Object(fields)) = o.get_mut("fields") {
-                fields.retain(|n, _| read(n));
-                if fields.is_empty() {
-                    o.remove("fields");
+            for member in FIELD_MEMBERS {
+                if let Some(Value::Object(fields)) = o.get_mut(member) {
+                    fields.retain(|n, _| read(n));
+                    if fields.is_empty() {
+                        o.remove(member);
+                    }
                 }
             }
             !o.is_empty()
@@ -545,6 +547,10 @@ pub fn narrowed(
     };
     kept.then_some(value)
 }
+
+/// The members of a setting's object that name fields, each with its
+/// weight: `search_weights`' vector fields and its text fields.
+const FIELD_MEMBERS: [&str; 2] = ["fields", "text_fields"];
 
 /// What a write of `written` to the setting `key` leaves where `stored`
 /// stands, by a writer kept from the fields `hidden` answers: every field
@@ -578,23 +584,28 @@ pub fn kept(
             }
         }
         (Value::Object(was), written @ (Value::Object(_) | Value::Null)) => {
-            let fields = was.get("fields").and_then(Value::as_object);
-            let hidden = fields.into_iter().flatten().filter(|(n, _)| unread(n));
-            let hidden: serde_json::Map<String, Value> =
-                hidden.map(|(n, w)| (n.clone(), w.clone())).collect();
-            if hidden.is_empty() {
+            let hidden = |member: &str| -> serde_json::Map<String, Value> {
+                let fields = was.get(member).and_then(Value::as_object);
+                let hidden = fields.into_iter().flatten().filter(|(n, _)| unread(n));
+                hidden.map(|(n, w)| (n.clone(), w.clone())).collect()
+            };
+            if FIELD_MEMBERS.iter().all(|m| hidden(m).is_empty()) {
                 return written;
             }
             let mut o = match written {
                 Value::Object(o) => o,
                 _ => serde_json::Map::new(),
             };
-            let fields = o
-                .entry("fields")
-                .or_insert_with(|| Value::Object(Default::default()));
-            if let Value::Object(fields) = fields {
-                for (n, w) in hidden {
-                    fields.entry(n).or_insert(w);
+            for member in FIELD_MEMBERS {
+                let hidden = hidden(member);
+                if hidden.is_empty() {
+                    continue;
+                }
+                let fields = (o.entry(member)).or_insert_with(|| Value::Object(Default::default()));
+                if let Value::Object(fields) = fields {
+                    for (n, w) in hidden {
+                        fields.entry(n).or_insert(w);
+                    }
                 }
             }
             Value::Object(o)

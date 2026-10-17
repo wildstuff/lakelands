@@ -407,23 +407,38 @@ pub fn indexable(kind: &crate::ontology::StorageKind) -> bool {
 
 /// The key prefix of the setting that weighs a type's searches: the
 /// setting `search_weights.<type>`, whose value is an object of
-/// `fields`, vector fields of the type with their weights, and
-/// `text_weight`, each optional and one at least. A search that gives a
-/// ranking no weight takes the setting's (lakelands#561).
+/// `fields`, vector fields of the type with their weights, `text_fields`,
+/// searchable text fields with theirs, and `text_weight`, each optional
+/// and one at least. A search that gives a ranking no weight takes the
+/// setting's (lakelands#561); a text's ranking weighs a match by the
+/// field it is in (lakelands#1230).
 pub const SEARCH_WEIGHTS_SETTING: &str = "search_weights.";
 
 /// The weights a `search_weights.<type>` setting of this value gives: a
-/// vector field's, then the text's. A member that does not read gives
-/// none, since the setting is checked when it is written.
+/// vector field's, then the text's. A weight a search could not give gives
+/// none: the setting is checked when it is written, and a log that came
+/// another way (an import) holds no other weight for it.
 pub fn search_weights(value: Option<&Value>) -> (BTreeMap<String, f64>, Option<f64>) {
-    let member = |m: &str| value.and_then(|v| v.get(m));
-    let fields = member("fields").and_then(Value::as_object);
-    let weights =
-        (fields.into_iter().flatten()).filter_map(|(f, w)| Some((f.clone(), w.as_f64()?)));
-    (
-        weights.collect(),
-        member("text_weight").and_then(Value::as_f64),
-    )
+    let text = value.and_then(|v| v.get("text_weight")?.as_f64());
+    let text = text.filter(|w| crate::query::weight_fits(*w));
+    (weighed(value, "fields"), text)
+}
+
+/// The weight of a match of the text in each searchable field a
+/// `search_weights.<type>` setting of this value names in `text_fields`,
+/// as [`search_weights`] reads them (lakelands#1230).
+pub fn text_field_weights(value: Option<&Value>) -> BTreeMap<String, f64> {
+    weighed(value, "text_fields")
+}
+
+/// The fields `member` of a `search_weights` value names, each with a
+/// weight a search could give.
+fn weighed(value: Option<&Value>, member: &str) -> BTreeMap<String, f64> {
+    let fields = value.and_then(|v| v.get(member)?.as_object());
+    let weight = |w: &Value| w.as_f64().filter(|w| crate::query::weight_fits(*w));
+    (fields.into_iter().flatten())
+        .filter_map(|(f, w)| Some((f.clone(), weight(w)?)))
+        .collect()
 }
 
 /// The key of the setting that seals a source's values of each period
@@ -458,7 +473,8 @@ pub fn view_kept(value: Option<&Value>) -> bool {
 ///   asks for no index. `sort_index` may name a declared view too: the
 ///   index is kept of its kept records.
 /// - `search_weights.<type>` names a declared stored type and holds an
-///   object of `fields` (each a vector field it declares, with a weight)
+///   object of `fields` (each a vector field it declares, with a weight),
+///   `text_fields` (each a searchable field it declares, with a weight)
 ///   and `text_weight`, one at least, every weight one a search may give
 ///   ([`crate::query::weight_fits`]); `None` or `null` weighs nothing.
 /// - `view_kept.<type>` names a declared view and holds `true` or
@@ -541,7 +557,8 @@ pub fn check_setting<'a>(
         for (member, w) in members {
             match (member.as_str(), w.as_object()) {
                 ("text_weight", _) => weighs(member, w, Case::TextWeightRange)?,
-                ("fields", Some(fields)) if !fields.is_empty() => {
+                ("fields" | "text_fields", Some(fields)) if !fields.is_empty() => {
+                    let text = member == "text_fields";
                     for (name, w) in fields {
                         let field = crate::id::FieldName::from(name.as_str());
                         let fault = match seen.fields.iter().find(|f| f.name == field) {
@@ -549,7 +566,13 @@ pub fn check_setting<'a>(
                                 ty: ty.into(),
                                 field,
                             },
-                            Some(f) if !indexable(&f.ty.kind) => Case::NotVectorField { field },
+                            Some(f) if text && !f.searchable => Case::NotSearchable {
+                                ty: ty.into(),
+                                field,
+                            },
+                            Some(f) if !text && !indexable(&f.ty.kind) => {
+                                Case::NotVectorField { field }
+                            }
                             Some(_) => {
                                 weighs(name, w, Case::WeightRange { field })?;
                                 continue;

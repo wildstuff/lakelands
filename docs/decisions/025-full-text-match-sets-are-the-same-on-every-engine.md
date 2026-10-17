@@ -45,9 +45,14 @@ a workload ever asks for it.
 ### A lexical hit's set, order and score are the same on every engine
 
 One function ranks a lexical search on every engine
-(`lakelands_core::engines::lexical`): a hit scores the distinct query
-tokens its text holds, best first, ties by key. So the set, the order
-and the score are the same on every engine. The suite holds it: a
+(`lakelands_core::engines::lexical`): a hit scores each distinct query
+token its text holds, at the weight of the heaviest searched field
+holding it, summed in the tokens' order; best first, ties by key. A
+field the type's setting does not weigh weighs 1 (below), so a type
+that weighs none scores the count of the tokens held, as it always has.
+So the set, the order and the score are the same on every engine. A
+weight is above 0, so it never changes which records are hits, only
+their order and scores. The suite holds it: a
 search limited to named fields answers the same keys and scores through
 the doors and at the engine seam
 (`a_search_limited_to_named_fields_matches_and_ranks_in_those_only`,
@@ -62,6 +67,20 @@ What is not promised is the function across releases: a later release
 may score otherwise, on every engine at once and with the suite's rows
 changed with it. A caller compares scores within one answer, and not
 across releases.
+
+A token counts once, at its heaviest field, and not once a field it is
+in. Summed over the fields, a word in both a title and a body would
+score 2 where it scores 1 today, and every lake that weighs nothing
+would rank otherwise. BM25F, a sum over fields scaled by their lengths
+and the corpus's frequencies, was not taken: the one function holds no
+statistics of the lake, and keeping them would put a second structure,
+changed at every write, into every engine's projection. The engines'
+own rankers, `bm25()` in SQLite and `ts_rank` with its four `setweight`
+classes in PostgreSQL, score differently from each other and from the
+memory engine, and four classes cannot hold the weights a host writes.
+Neither engine's index knows which field a token came from; the
+function reads each candidate's fields from the record, so a weight
+changes no projection.
 
 ### A vector ranking is the cosine, best first, exact to the bit
 
@@ -197,15 +216,19 @@ that always wanted one field to count more said so in every request. The
 setting `search_weights.<type>` says it once:
 
 ```
-{"fields": {"va": 0.9, "vb": 0.1}, "text_weight": 0.5}
+{"fields": {"va": 0.9, "vb": 0.1}, "text_fields": {"title": 4, "body": 0.5}, "text_weight": 0.5}
 ```
+
+A host whose types give a title more weight than a body could say so
+nowhere, so a search for an invoice's number ranked a record naming it
+in its title no higher than one mentioning it in a note.
 
 - **It weighs what a search does not.** A fused search that gives a
   vector field no `weight` takes the setting's `fields` weight, and a
   hybrid search with no `text_weight` takes the setting's; a weight the
   search gives wins, and a ranking neither names weighs 1. Each fused
   axis names the weight it ranked by. A search of one axis is not fused,
-  and the setting changes nothing there. A restricted setting's value
+  and `fields` and `text_weight` change nothing there. A restricted setting's value
   shows only as the weight of an axis its reader is shown, as any
   computation uses a restricted setting's value (`docs/seams.md`).
 - **It is a setting, not a member of the field,** because a weight is how
@@ -213,10 +236,28 @@ setting `search_weights.<type>` says it once:
   changes without a migration, and a read as of a position before it
   ranks without it.
 - **It says nothing a search cannot say.** It names declared vector
-  fields the writer is shown, and every weight is one a search may give,
-  above 0 and at most 1 000 000. Anything else, an unknown member, an
-  empty object or empty `fields`, is refused when it is written, naming
-  the member.
+  fields the writer is shown in `fields`, declared searchable fields
+  the writer is shown in `text_fields`, and every weight is one a search
+  may give, above 0 and at most 1 000 000. Anything else, an unknown
+  member, an empty object or empty `fields` or `text_fields`, is
+  refused when it is written, naming the member; a field the writer is
+  not shown is refused as one the type does not declare, before its
+  weight is judged.
+- **`text_fields` weighs every ranking of text,** a lexical search's
+  and a hybrid search's lexical half alike, and its fallback to the
+  text: it weighs a match by the field it is in, inside the ranking,
+  and not a ranking against another, so it is read where nothing is
+  fused too. A hybrid search's lexical half is ranked by it before the
+  fusion, which reads that half's ranks. The axes do not name it: it
+  is the type's, not an axis's. A field is weighed only where the
+  search reads it, under its name at the head: a field it does not
+  name, or whose reader is not shown it, brings no weight, and no
+  weight is scaled by another's, so a field its reader is not shown
+  moves no score of the fields it is (lakelands#1230).
+- **A weight a search could not give weighs nothing.** The store reads
+  the setting through the same bound it is written under, so a log
+  that came another way, by an import, cannot make a search rank by a
+  weight no write could set.
 - **It is harmless when the type changes.** A field it names that a
   migration removed, or that is no longer a vector, is named by no
   search and weighs nothing; the setting is not rewritten, so a field
@@ -789,6 +830,10 @@ Of an index asked for:
   fused read by the read to its window (lakelands#560).
 - 046 added the setting `search_weights.<type>`, which replaced "an
   absent weight is 1" (lakelands#561).
+- Added: `search_weights.<type>` weighs a match of the text by the field
+  it is in, `text_fields`, each token at its heaviest field, in every
+  ranking of text; a lexical hit scored the count of its tokens before,
+  which is its score where nothing is weighed (lakelands#1230).
 - 046 added: a query vector has a direction (lakelands#696).
 - 046 added: a vector ranking reads a vector field, which replaced the
   fallback of a hybrid search over a field no model fills

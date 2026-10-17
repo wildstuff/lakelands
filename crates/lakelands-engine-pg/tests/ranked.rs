@@ -36,6 +36,7 @@ fn asked() -> Rankings {
     Rankings {
         text: Some(("quay".into(), None)),
         vectors: vec![("e".into(), vec![1.0, 0.0])],
+        ..Rankings::default()
     }
 }
 
