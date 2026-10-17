@@ -747,6 +747,8 @@ pub const ALL: &[Check] = &[
     aging::HELD_RULE_RUNS,
     aging::SETTING_IN_WHEN,
     aging::SKIPPED_EVERY_WAY,
+    aging::REFUSED_BY_CONSTRAINT,
+    aging::REFUSALS_BOUNDED,
     concurrency::AGE_UNDER_WRITES,
     purge::CO_OWNED_COUNTED,
     purge::BACKED_NO_OWNER,

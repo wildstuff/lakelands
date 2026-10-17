@@ -63,7 +63,7 @@ macro_rules! catalog {
         $(#[$meta])*
         // A parameter is documented by the template that names it.
         #[allow(missing_docs)]
-        #[derive(Clone, Debug, PartialEq, ::serde::Serialize, ::serde::Deserialize)]
+        #[derive(Clone, Debug, PartialEq, Eq, ::serde::Serialize, ::serde::Deserialize)]
         #[serde(tag = $tag, rename_all = "snake_case")]
         pub enum $set {
             $(
@@ -1908,7 +1908,7 @@ catalog! {
 /// A case and the places it is said at, outermost first: "type `T`, field
 /// `x`: …". What a refusal of `invalid`, `constraint`, `precondition`,
 /// `declined` or `unanswered` says.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Said {
     /// The places, outermost first.
     pub at: Vec<Place>,

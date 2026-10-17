@@ -2020,7 +2020,8 @@ the `aging` section of the root's `lakelands.json`:
 
 Without an `aging` section `serve` ages nothing: a host, or
 `lakelands age --today <YYYY-MM-DD>`, calls `age`; the command prints one
-line per rule (`<rule>: moved N, M guard(s) failed`, or `<rule>:
+line per rule (`<rule>: moved N, M guard(s) failed`, then `, K refused` where a
+constraint or the set ceiling refused K moves, or `<rule>:
 skipped, <why>`) and `aged <date> through position P`. No MCP tool calls `age`:
 like `rebuild` and `checkpoint`, it is the host's.
 

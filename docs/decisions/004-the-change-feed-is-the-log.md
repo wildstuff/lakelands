@@ -341,8 +341,8 @@ a write of one record can move many memberships. What far writes set
 off across an edge in one append counts against the same
 `max_set_changes`, at every door that writes a record; past it the write
 is refused `too_large` naming the set or the trigger, to a caller shown
-it and naming nothing to another, a purge whole, and an aging move is a
-failed guard. The ceiling counts the append, records held from the
+it and naming nothing to another, a purge whole, and an aging move is
+counted as refused (lakelands#1182). The ceiling counts the append, records held from the
 writer among them: a refusal for size tells that much and no more. A migration, a re-key, a value type's
 rename and a `declared` of a far type decide the referring sets in their
 own walk, under the same ceiling.

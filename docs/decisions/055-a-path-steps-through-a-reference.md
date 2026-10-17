@@ -231,7 +231,7 @@ the write is refused `too_large`, naming the set or the trigger and the
 ceiling to a caller shown it, and naming nothing to another; nothing is
 appended. A purge is refused whole, and its preflight, a read that takes
 no lease, reports how many it would set off beside the ceiling; an
-aging move past it is a failed guard. The write lands once fewer
+aging move past it is counted as refused (lakelands#1182). The write lands once fewer
 memberships move: narrow the set by the referring record's own fields,
 since only those that move count; or retire the set and declare it again
 after the write, its declaration bounded alike; or have the lake opened

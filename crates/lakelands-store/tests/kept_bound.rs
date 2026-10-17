@@ -809,8 +809,8 @@ async fn a_refused_write_costs_the_writes_before_it_nothing() {
     let aged = store.age(today).await.expect("aging");
     let run = aged.rules.iter().find(|r| r.rule == "close");
     assert!(
-        run.is_some_and(|r| r.moved == 4 && r.failed_guards == 8),
-        "four moves, eight failed guards: {aged:?}"
+        run.is_some_and(|r| r.moved == 4 && r.failed_guards == 0 && r.refused == 8),
+        "four moves, eight refused at the ceiling: {aged:?}"
     );
     let read = probe.gets.lock().unwrap().get(&kept).copied();
     assert_eq!(read, Some(12 + 4), "each group's kept row read once");

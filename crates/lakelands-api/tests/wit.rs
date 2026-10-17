@@ -1253,6 +1253,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 rules: vec![],
                 transitions: 1,
                 failed_guards: 2,
+                refused: 4,
                 position: Position(3),
             }),
         ),
@@ -1263,7 +1264,19 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 version: Version(1),
                 moved: 1,
                 failed_guards: 2,
+                refused: 1,
+                refusals: vec![lakelands_api::write::RefusedMove {
+                    key: "k".into(),
+                    why: Refusal::TooLarge { max: 1 },
+                }],
                 skipped: Some("s".into()),
+            }),
+        ),
+        (
+            "refused_move",
+            members(&lakelands_api::write::RefusedMove {
+                key: "k".into(),
+                why: Refusal::TooLarge { max: 1 },
             }),
         ),
         (

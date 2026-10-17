@@ -1555,6 +1555,10 @@ pub struct Committed {
     pub delivery: Option<DeliveryId>,
 }
 
+/// How many refused moves a rule's run lists (`RuleRun::refusals`); the
+/// count past it is kept in `refused`.
+pub const AGE_REFUSALS_SHOWN: usize = 16;
+
 /// What `LakeStore::age` did for one date
 /// (`docs/decisions/036-aging-runs-by-date-once.md`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1565,8 +1569,14 @@ pub struct AgeReport {
     pub rules: Vec<RuleRun>,
     /// The records moved, over all rules.
     pub transitions: u32,
-    /// The conditions that could not be evaluated, over all rules.
+    /// The conditions that could not be evaluated, and the moves the
+    /// store refused for another reason than `refused` counts, over all
+    /// rules.
     pub failed_guards: u32,
+    /// The moves refused by a constraint or by the lake's
+    /// `max_set_changes`, over all rules.
+    #[serde(default)]
+    pub refused: u32,
     /// The head after the run: the last append's position, or the head as
     /// it stood when nothing was appended.
     pub position: Position,
@@ -1581,14 +1591,37 @@ pub struct RuleRun {
     pub version: Version,
     /// The records it moved.
     pub moved: u32,
-    /// The records whose condition could not be evaluated, left as they
-    /// were.
+    /// The records whose condition could not be evaluated, or whose move
+    /// the store refused for another reason than `refused` counts (a
+    /// reference no longer live, say), left as they were.
     pub failed_guards: u32,
+    /// The records whose move a constraint or the lake's
+    /// `max_set_changes` refused, left as they were.
+    #[serde(default)]
+    pub refused: u32,
+    /// The first [`AGE_REFUSALS_SHOWN`] of them, in scan order, each with
+    /// its key and the refusal as the wire carries it (a constraint's
+    /// names the constraint, the type and the key, never a value);
+    /// `refused` counts them all.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refusals: Vec<RefusedMove>,
     /// Why the rule was not run, when it no longer fits the lake (its
     /// type or field gone or changed, its values or its condition no
     /// longer valid). A skipped rule moves nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skipped: Option<String>,
+}
+
+/// A move an aging run did not make because the lake refused it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefusedMove {
+    /// The record that stayed where it was.
+    pub key: RecordKey,
+    /// The refusal, `constraint` or `too_large`, in the form a refused
+    /// error's `reason` takes: a kind this build does not know is read as
+    /// `Refusal::Unknown`.
+    #[serde(with = "crate::error::closed")]
+    pub why: crate::error::Refusal,
 }
 
 /// What `LakeStore::purge_source` retired, or what

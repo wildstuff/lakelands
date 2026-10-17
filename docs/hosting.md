@@ -234,7 +234,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   record whose field is null holds no `from`, so no rule moves it and the
   report does not count it. A host that wants such records aged gives the
   field a value: a declared `initial` at the write, or a verb that sets
-  it.
+  it. A move a constraint or the lake's `max_set_changes` refuses is
+  counted in `refused`, apart from `failed_guards`, and a rule's run
+  lists the first 16 with the record's key and the refusal: the list is
+  the host's, restricted records included, never relayed to a principal.
   A source that should be taken back is purged with
   `LakeStore::purge_source(source, None, None)`
   (`lakelands purge --source <id>`):

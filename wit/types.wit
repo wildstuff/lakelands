@@ -1395,17 +1395,29 @@ interface types {
         rules: list<rule-run>,
         transitions: u32,
         failed-guards: u32,
+        refused: u32,
         position: position,
     }
 
     /// One aging rule's run: the rule's version, the records it moved,
-    /// the guards that failed, and why it was skipped if it was.
+    /// the guards that failed, the moves a constraint or the set ceiling
+    /// refused (counted, and the first 16 listed), and why it was skipped
+    /// if it was.
     record rule-run {
         rule: string,
         version: version,
         moved: u32,
         failed-guards: u32,
+        refused: u32,
+        refusals: list<refused-move>,
         skipped: option<string>,
+    }
+
+    /// A move of an aging run the lake refused: the record that stayed
+    /// where it was, and the refusal.
+    record refused-move {
+        key: record-key,
+        why: refusal,
     }
 
     /// What one purge retired, or its preflight says it would: the one

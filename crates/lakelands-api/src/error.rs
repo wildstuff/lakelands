@@ -31,7 +31,7 @@ pub use outage::{
 };
 
 /// What went wrong.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", tag = "error", rename_all = "snake_case")]
 pub enum Error {
     /// The store would not do it: a right is missing, a declaration
@@ -330,7 +330,7 @@ impl Error {
 }
 
 /// Why a call was refused.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "refusal", rename_all = "snake_case")]
 pub enum Refusal {
     /// The principal holds no grant for it.

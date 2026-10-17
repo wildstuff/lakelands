@@ -535,7 +535,6 @@ named! {
 }
 
 catalog! {
-    #[derive(Eq)]
     /// A remote end a call reaches: an embedding backend, a function's backing, a REST door.
     pub enum Remote {
         /// The embedding backend of a model.
