@@ -37,7 +37,7 @@ use lakelands_api::principal::Renamed;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{EmbedBackend, Seams};
 use lakelands_api::write::{
-    Declaration, Migration, Proposal, ProposalFilter, ProposalState, ProposedWrite,
+    Declaration, DeclarationKind, Migration, Proposal, ProposalFilter, ProposalState, ProposedWrite,
 };
 use lakelands_api::{
     Error, FieldName, LakeId, Position, Principal, ProposalId, RecordKey, Refusal, Result,
@@ -1788,6 +1788,26 @@ impl Lake {
                 with_the_set,
             } => {
                 let rederive = computes_again(&w.ontology, declaration);
+                // A set withdrawn holds no member from here on, with no
+                // event for each: a read as of before still holds them.
+                if let Declaration::Withdraw(s) = declaration
+                    && s.kind == DeclarationKind::ObjectSet
+                    && let Some(set) = w.ontology.set(&s.name)
+                {
+                    let (name, of) = (set.name.clone(), set.of.clone());
+                    let mut keys = view.members(&name, &of)?;
+                    let put = staged.members.iter();
+                    for ((_, _, key), member) in put.filter(|((n, t, _), _)| n == &name && t == &of)
+                    {
+                        match member {
+                            true => keys.insert(key.clone()),
+                            false => keys.remove(key),
+                        };
+                    }
+                    for key in keys {
+                        staged.member(projection, &name, &of, &key, false, e.position)?;
+                    }
+                }
                 w.ontology.put_at(
                     declaration.clone(),
                     *version,

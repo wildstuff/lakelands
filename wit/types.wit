@@ -375,8 +375,8 @@ interface types {
         withdraw(withdrawal),
     }
 
-    /// A trigger or a function taken out of force from the withdrawal's
-    /// position on; a read as of before still sees it.
+    /// A trigger, a verb, an object set or a function taken out of force
+    /// from the withdrawal's position on; a read as of before still sees it.
     record withdrawal {
         kind: declaration-kind,
         name: string,

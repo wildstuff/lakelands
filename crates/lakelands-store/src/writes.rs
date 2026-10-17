@@ -51,10 +51,9 @@ use lakelands_api::principal::WriteContext;
 use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::seam::VerbExecutor;
 use lakelands_api::write::{
-    Breach, Carried, Carrier, Declaration, DeclarationKind, FieldFill, InForce, Migration,
-    MigrationReport, Misfit, ObjectSetDecl, Outcome, ProposalState, ProposedWrite, Recompute,
-    RelationRename, SettingDecl, ValueRenamed, ValueTypeMigration, ValueTypeReport, ValueTypeUse,
-    WriteOpts,
+    Breach, Carried, Carrier, Declaration, FieldFill, InForce, Migration, MigrationReport, Misfit,
+    ObjectSetDecl, Outcome, ProposalState, ProposedWrite, Recompute, RelationRename, SettingDecl,
+    ValueRenamed, ValueTypeMigration, ValueTypeReport, ValueTypeUse, WriteOpts,
 };
 use lakelands_api::{
     Access, ConstraintName, Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal,
@@ -1703,10 +1702,9 @@ fn stamped(
     Ok(())
 }
 
-/// `o` without each trigger and function `sent` withdraws that `sees`
-/// does not list: its withdrawal is refused as one of a name not
-/// declared, where the rest of its set is judged, as a read of it
-/// answers (024).
+/// `o` without each declaration `sent` withdraws that `sees` does not
+/// list: its withdrawal is refused as one of a name not declared, where
+/// the rest of its set is judged, as a read of it answers (024).
 fn unlisted_withdrawn<'o>(
     o: &'o Ontology,
     sees: &Sight<'_>,
@@ -1720,11 +1718,7 @@ fn unlisted_withdrawn<'o>(
         if o.held(d).is_none_or(|held| sees.lists(&held)) {
             continue;
         }
-        match w.kind {
-            DeclarationKind::Trigger => drop(out.to_mut().triggers.remove(&w.name)),
-            DeclarationKind::Function => drop(out.to_mut().functions.remove(&w.name)),
-            _ => {}
-        }
+        out.to_mut().take_out(w.kind, &w.name);
     }
     out
 }
@@ -4455,13 +4449,26 @@ impl Call<'_> {
         // for whatever names it; to declare it is not granted, and names
         // nothing of it.
         let mut seen = types_shown(self.who, o);
-        // A function withdrawn that computes a field its author is not
-        // shown would be refused naming that field: it is not granted, as
-        // its declaration would not be (lakelands#917).
+        // A set its author is not shown is one that is not declared, as a
+        // read of it answers (024): a proposal that names it learns nothing
+        // of what its filter reads, and to declare it is not granted, as
+        // for a type (027). A holder of `schema` is shown each set of a
+        // type it is shown. So for a trigger, as what reads a set.
+        let declared = o.declared();
+        let sees = Sight::held(self.who, &declared);
+        let shown = |d| sees.lists(&Declaration::ObjectSet(d));
+        (seen.object_sets).retain(|_, e| shown(e.decl.clone()));
+        (seen.triggers).retain(|_, e| sees.lists(&Declaration::Trigger(e.decl.clone())));
+        // A withdrawal of what its author is shown, read by what it is not
+        // (a function computing a field of a type it is not shown, a set a
+        // trigger it is not shown watches), would be refused naming that
+        // reader: it is not granted, as declaring it again would not be
+        // (lakelands#917).
         let unseen_reader = |d: &Declaration| match d {
-            Declaration::Withdraw(w) if w.kind == DeclarationKind::Function => {
-                declare::function_reader(o, &w.name).is_some()
-                    && declare::function_reader(&seen, &w.name).is_none()
+            Declaration::Withdraw(w) => {
+                o.held(d).is_some_and(|held| sees.lists(&held))
+                    && declare::reader(o, w).is_some()
+                    && declare::reader(&seen, w).is_none()
             }
             _ => false,
         };
@@ -4471,15 +4478,6 @@ impl Call<'_> {
         }
         let hidden = |d: &Declaration| matches!(d, Declaration::Type(t) if o.types.contains_key(&t.name) && seen.ty(&t.name).is_err());
         granted(!sent.iter().any(hidden))?;
-        // A set its author is not shown is one that is not declared, as a
-        // read of it answers (024): a proposal that names it learns nothing
-        // of what its filter reads, and to declare it is not granted, as
-        // for a type (027). A holder of `schema` is shown each set of a
-        // type it is shown.
-        let declared = o.declared();
-        let sees = Sight::held(self.who, &declared);
-        let shown = |d| sees.lists(&Declaration::ObjectSet(d));
-        (seen.object_sets).retain(|_, e| shown(e.decl.clone()));
         // So for a trigger, a verb and a function that computes a field,
         // known by their name alone: the one in force would be gone with
         // the one declared (lakelands#893). A function stands on the types

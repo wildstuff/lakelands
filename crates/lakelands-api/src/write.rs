@@ -458,10 +458,10 @@ pub enum Declaration {
     Withdraw(Withdrawal),
 }
 
-/// A trigger or a function taken out of force from the withdrawal's
-/// position on: `describe` no longer shows it, and a read as of before
-/// still does. Declaring the same name again later is a new declaration,
-/// whose version continues the withdrawn one's.
+/// A trigger, a verb, an object set or a function taken out of force from
+/// the withdrawal's position on: `describe` no longer shows it, and a read
+/// as of before still does. Declaring the same name again later is a new
+/// declaration, whose version continues the withdrawn one's.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Withdrawal {
