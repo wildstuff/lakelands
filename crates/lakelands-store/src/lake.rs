@@ -157,6 +157,7 @@ pub(crate) fn ends_a_range(body: &EventBody) -> bool {
         | EventBody::WriteAccepted { .. }
         | EventBody::WriteRejected { .. }
         | EventBody::TriggerFired { .. }
+        | EventBody::TriggerDropped { .. }
         | EventBody::ObjectSetChanged { .. }
         | EventBody::SourceForgotten { .. }
         | EventBody::Checkpoint { .. } => false,
@@ -1239,7 +1240,8 @@ impl Lake {
     }
 
     /// Refuse a context deeper than the ceiling of the trigger whose firing
-    /// its cause names; any other cause binds nothing more.
+    /// its cause names, or whose firing was dropped there (lakelands#1216);
+    /// any other cause binds nothing more.
     fn check_trigger_ceiling(&self, w: &Writer, context: WriteContext) -> Result<()> {
         let Some(cause) = context.cause else {
             return Ok(());
@@ -1247,7 +1249,8 @@ impl Lake {
         let Some(stored) = self.engine.read(cause, 1)?.into_iter().next() else {
             return Ok(());
         };
-        if let EventBody::TriggerFired { trigger, .. } = log::open(&stored)?.body
+        if let EventBody::TriggerFired { trigger, .. } | EventBody::TriggerDropped { trigger, .. } =
+            log::open(&stored)?.body
             && let Some(m) = w
                 .ontology
                 .triggers
@@ -1806,7 +1809,8 @@ impl Lake {
             | EventBody::LeaseTaken { .. }
             | EventBody::Checkpoint { .. }
             | EventBody::VerbCalled { .. }
-            | EventBody::TriggerFired { .. } => {}
+            | EventBody::TriggerFired { .. }
+            | EventBody::TriggerDropped { .. } => {}
             // The act is owed until a rebuild after its keys were
             // destroyed has erased what they sealed, and the reclaim ran.
             EventBody::SourceForgotten { source, .. } => {
@@ -3060,6 +3064,7 @@ fn reads_a_record(body: &EventBody) -> bool {
         | EventBody::Checkpoint { .. }
         | EventBody::VerbCalled { .. }
         | EventBody::TriggerFired { .. }
+        | EventBody::TriggerDropped { .. }
         // The writer's ontology, and the declaration put; a recomputation
         // is left pending, and reads its records at the flush.
         | EventBody::Declared { .. }

@@ -174,12 +174,13 @@ const MIGRATE: &str = "migrate";
 
 /// The kinds of change a session may subscribe to: the log's event kinds
 /// that change a record, or say something happened to one.
-pub const CHANGE_KINDS: [&str; 6] = [
+pub const CHANGE_KINDS: [&str; 7] = [
     "record_upserted",
     "record_ingested",
     "record_retired",
     "output_recorded",
     "trigger_fired",
+    "trigger_dropped",
     "object_set_changed",
 ];
 

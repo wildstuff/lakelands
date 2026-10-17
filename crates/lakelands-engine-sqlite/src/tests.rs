@@ -77,8 +77,8 @@ fn a_fold_committed_inside_one_ranked_call_is_in_none_of_its_lists() {
     *AFTER_FOLDED.lock().unwrap() = Some(Box::new(move || fold(&writer, "b", 2)));
     super::lock(&lake.reader).trace_v2(TraceEventCodes::SQLITE_TRACE_PROFILE, Some(after_folded));
     let asked = Rankings {
-        text: None,
         vectors: vec![("e".into(), vec![1.0, 0.0])],
+        ..Rankings::default()
     };
     let read = || {
         let ranked = lake.ranked(&TypeName::from("t"), &asked, 10).unwrap();

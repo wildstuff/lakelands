@@ -435,6 +435,7 @@ What a refusal is about.
 | `relation_holds_many` | `relation` (RelationName), `cardinality` (Cardinality) | `{relation}` may hold several links from a record ({cardinality}): a path reads a relation that holds at most one, `many_to_one` or `one_to_one`; walk it in a pattern | A path through a relation that may hold several links from a record. |
 | `relation_via_field` | `relation` (RelationName), `field` (FieldName) | `{relation}` is carried by the field `{field}`: a path steps through `{field}` | A path through a relation carried by a reference field. |
 | `retired_only_in_guard` | — | retired() has meaning only in a trigger's guard | A `retired` outside a trigger's guard. |
+| `created_only_in_guard` | — | created() has meaning only in a trigger's guard | A `created` outside a trigger's guard. |
 | `set_cycle` | `set` (String), `through` (Names) | in_set('{set}') names a set that names it in turn, through {through} | A set that names itself through others. |
 | `set_of_other_type` | `set` (String), `of` (TypeName), `type` (TypeName) | in_set('{set}') names a set of `{of}`, not of `{type}` | A set of another type named in a filter. |
 | `set_undeclared` | `set` (String) | in_set('{set}') names an object set that is not declared | A set named in a filter that is not declared. |
@@ -487,7 +488,7 @@ What a refusal is about.
 | `rerank_without_search` | — | `rerank` is the second stage of a search, and the start has no `search` | A start's `rerank` beside no `search`. |
 | `no_relation_anywhere` | `relation` (RelationName) | no type has a relation `{relation}` to walk | A step over a relation no type declares, where the start names no type. |
 | `no_relation_to_walk` | `type` (TypeName), `relation` (RelationName), `walk` (Walk) | `{type}` has no relation `{relation}` to walk {walk} | A step over a relation that its type does not walk that way. |
-| `not_searchable` | `field` (FieldName), `type` (TypeName) | `{field}` of `{type}` is not searchable | A field a search names that is not searchable. |
+| `not_searchable` | `field` (FieldName), `type` (TypeName) | `{field}` of `{type}` is not searchable | A field a search, or a `search_weights` setting's `text_fields`, names that is not searchable. |
 | `offset_beside` | `other` (String) | `offset` and `{other}` both say where the answer starts; give one | An `offset` beside another start of the answer. |
 | `only_unappliable` | `type` (TypeName) | the grant's `only` on `{type}` cannot be applied here; the host's grants need fixing | A grant's `only` that cannot be applied to the read. |
 | `order_at_read` | `field` (FieldName), `type` (TypeName) | `order_by` names `{field}` of `{type}`, which is computed at the read and moves with the clock; a page's order would not hold to the next | An order by a field computed at the read. |
@@ -602,7 +603,7 @@ What a refusal is about.
 | `setting_group_stamped` | — | the store writes a setting's group from its declaration; leave `group` out | A write of `sys.setting` naming a group other than the one the store stamps from the setting's declaration. |
 | `setting_store_group` | — | the group `store` holds the store's own settings; a host's setting is in a group of its own | A host's setting declared into the store's own group. |
 | `setting_reference` | — | a setting holds no reference; keep the record's key as `text` | A host's setting declared to hold a reference, whose record nothing would hold to it. |
-| `setting_weights_shape` | — | it holds an object of `fields` (vector fields and their weights) and `text_weight`, one at least, or null | A `search_weights` setting of the wrong shape. |
+| `setting_weights_shape` | — | it holds an object of `fields` (vector fields and their weights), `text_fields` (searchable text fields and their weights) and `text_weight`, one at least, or null | A `search_weights` setting of the wrong shape. |
 | `vector_index_at_read` | `field` (FieldName) | `{field}` is computed at the read; a vector index keeps stored values | A vector index of a field computed at the read. |
 | `vector_index_kind` | `field` (FieldName), `kind` (StorageKind) | `{field}` is of kind {kind}; a vector index keeps vector fields | A vector index of a field that is no vector. |
 | `view_not_keepable` | `type` (TypeName) | the view `{type}` cannot be kept | A view that cannot be kept, to one not shown why. |
@@ -913,6 +914,8 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `sealed_on` | `kind` (String) | a `{kind}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries | An event other than `record_ingested` and `output_recorded` carries `sealed`. |
 | `sealed_before` | `v` (u32) | an event of format {v} carries `sealed`, which format 16 added | An event of a format before 16 carries `sealed`. |
 | `forgotten_before` | `v` (u32) | an event of format {v} is a `source_forgotten`, which format 16 added | A `source_forgotten` in a format before the one that added it. |
+| `change_before` | `v` (u32) | a `trigger_fired` of format {v} carries `change` or `created`, which format 17 added | A `trigger_fired` before format 17 carries `change` or `created`. |
+| `dropped_before` | `v` (u32) | an event of format {v} is a `trigger_dropped`, which format 17 added | A `trigger_dropped` in a format before the one that added it. |
 | `delivery_on` | `kind` (String), `v` (u32) | a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries | An event other than a `record_ingested` of format 17 on carries `delivery`. |
 | `upstream_on` | `kind` (String) | a `{kind}` event carries `upstream`, which only a `record_ingested` event carries | An event other than `record_ingested` carries `upstream`. |
 | `hash_mismatch` | — | the hash does not match the event | The hash does not match the event. |

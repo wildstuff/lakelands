@@ -48,7 +48,7 @@ check!(
 
 check!(
     PER_TRIGGER_DEPTH = a_reaction_past_its_triggers_max_depth_is_refused_naming_it,
-    "021, extended: a reactive write whose `cause` names a firing of a trigger with `max_depth` is refused too_deep naming the trigger when it is deeper than that ceiling, appending nothing, while the lake's own ceiling is higher; a reaction to another trigger, or naming no cause, at the same depth is taken"
+    "021, extended (lakelands#1216): a reactive write whose `cause` names a firing of a trigger with `max_depth` is refused too_deep naming the trigger when it is deeper than that ceiling, appending nothing, while the lake's own ceiling is higher; the store drops a firing at the ceiling, so such a write names a firing from further up; a reaction to another trigger, or naming no cause, at the same depth is taken"
 );
 
 check!(
@@ -69,6 +69,8 @@ fn trigger(name: &str, when: Option<&str>, max_depth: Option<u32>) -> Declaratio
         when: when.map(Condition::from),
         description: None,
         max_depth,
+        when_strict: false,
+        on_changes: None,
     })
 }
 
@@ -402,17 +404,16 @@ async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(store: Stor
     let head = store.head().await.must("reading the head")?;
     l.upsert("job", "j0", json!({"n": 0})).await?;
     let once_0 = firing(head, "once").await?;
-    // The reaction to it at depth 1 is within `once`'s ceiling, and fires
-    // `once` again at depth 1.
+    // The reaction to it at depth 1 is within `once`'s ceiling; at its
+    // ceiling `once` drops there, and `always` fires.
     let head = store.head().await.must("reading the head")?;
     write(reactive(1, Some(once_0)), "j1")
         .await
         .must("a depth-1 reaction naming `once`'s firing")?;
-    let once_1 = firing(head, "once").await?;
     let always_1 = firing(head, "always").await?;
-    // A reaction to that firing at depth 2 passes `once`'s ceiling.
+    // A reaction at depth 2 naming `once`'s firing passes its ceiling.
     let head = store.head().await.must("reading the head")?;
-    match write(reactive(2, Some(once_1)), "j2").await {
+    match write(reactive(2, Some(once_0)), "j2").await {
         Err(e) if matches!(reason(&e), Some(Refusal::TooDeep { max: 1 })) => {
             ensure!(
                 matches!(refused_on(&e), Some(("once", _))),

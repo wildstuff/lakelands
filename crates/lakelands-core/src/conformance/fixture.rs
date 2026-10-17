@@ -677,6 +677,8 @@ pub fn aggregate(measures: Vec<AggMeasure>) -> Find {
 pub fn trigger_on(name: &str, on: &str, when: Option<&str>) -> Declaration {
     Declaration::Trigger(lakelands_api::ontology::TriggerDecl {
         max_depth: None,
+        when_strict: false,
+        on_changes: None,
         name: name.into(),
         on: on.into(),
         when: when.map(Into::into),

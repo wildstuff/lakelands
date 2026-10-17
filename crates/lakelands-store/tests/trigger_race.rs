@@ -56,8 +56,10 @@ async fn a_reaction_naming_a_firing_appended_concurrently_never_passes_its_ceili
         name: "once".into(),
         on: "job".into(),
         when: None,
-        max_depth: Some(0),
+        max_depth: Some(1),
         description: None,
+        when_strict: false,
+        on_changes: None,
     };
     cat.declare(&own, Declaration::Trigger(once))
         .await
@@ -65,12 +67,13 @@ async fn a_reaction_naming_a_firing_appended_concurrently_never_passes_its_ceili
     let (mut past, mut too_deep, mut written) = (0, 0, Vec::new());
     for i in 0..RACES {
         // A write puts its record at head + 1 and `once`'s firing at
-        // head + 2; the reaction names head + 2 while that write races it.
+        // head + 2; the reaction names head + 2 while that write races it,
+        // two deeper, past the ceiling of a firing at depth 0.
         let head = store.head().await.expect("the head");
         let firing = head.next().next();
         let reaction = store.catalog(WriteContext {
             origin: WriteOrigin::Reactive,
-            depth: 1,
+            depth: 2,
             cause: Some(firing),
         });
         let (direct, react) = (cat.clone(), own.clone());
@@ -115,8 +118,8 @@ async fn a_reaction_naming_a_firing_appended_concurrently_never_passes_its_ceili
     }
     assert!(
         written.is_empty(),
-        "{} of {RACES} reactions naming a firing of `once` (max_depth 0) were written at depth \
-         1, first at {:?}; refused too_deep {too_deep}, past the head {past}",
+        "{} of {RACES} reactions naming a firing of `once` (max_depth 1) were written at depth \
+         2, first at {:?}; refused too_deep {too_deep}, past the head {past}",
         written.len(),
         written.first()
     );

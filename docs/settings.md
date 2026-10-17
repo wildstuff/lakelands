@@ -37,9 +37,9 @@ Keeps an exact-text index on these fields beyond those the declarations look up 
 
 ### `search_weights.<type>`
 
-Weighs the type's rankings in a search that gives a ranking no weight.
+Weighs the type's rankings in a search that gives a ranking no weight, and a match of its text by the field it is in.
 
-- **Takes:** an object of `fields` (vector fields with their weights) and `text_weight`, one of them at least.
+- **Takes:** an object of `fields` (vector fields with their weights), `text_fields` (searchable text fields with their weights) and `text_weight`, one of them at least.
 - **Default:** `null`.
 - **Per type:** one value per type, and none for the lake.
 

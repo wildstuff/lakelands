@@ -169,6 +169,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::LEXICAL_BEYOND_ASCII,
     reads::RANKED_ONE_STATE,
     reads::LEXICAL_NAMED_FIELDS,
+    reads::LEXICAL_WEIGHTED,
     reads::CHANGED_ROWS,
     reads::MANY_PUTS,
     reads::LEXICAL_REDECLARED_MID_FOLD,

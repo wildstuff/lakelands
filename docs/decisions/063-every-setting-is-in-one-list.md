@@ -99,7 +99,10 @@ names the type. So every door that reads that record tells it as
 `describe` tells the setting (lakelands#1198): to a reader kept from the
 type, the record is not there; to one kept from a field the value
 names, the value names only the fields it reads, and a record left
-naming none is not there. The records are told so as the engine hands
+naming none is not there. The fields a value names are the arrays of
+the index settings and the members of `search_weights` that name
+fields, `fields` and `text_fields` (lakelands#1230); a write keeps
+those its writer is not told, as it keeps an index's. The records are told so as the engine hands
 them to the read, before anything reads them, so it holds for `get`,
 `find` with its `where`, its order, its total and an aggregate, a
 query's pages, a read as of a position, and a proposal's write; and for

@@ -3553,17 +3553,28 @@ impl<'a> Reader<'a> {
         // head declares it searchable.
         let hidden = (decl.fields.iter())
             .any(|f| f.searchable && !rights::field_access(self.who, &decl, f).reads());
+        let named = text_fields.map(|n| n.iter().collect::<Vec<_>>());
+        let named = named.unwrap_or_else(|| rights::searched_fields(self.who, &decl).collect());
+        let searched = || {
+            let now = named.iter().map(|n| (*n, ranks.fields.get(*n)));
+            now.filter_map(|(n, f)| Some((n, f.filter(|f| f.searchable)?)))
+        };
         let known: Option<Vec<FieldName>> = (hidden || text_fields.is_some() || !self.at_head)
-            .then(|| {
-                let named = text_fields.map(|n| n.iter().collect::<Vec<_>>());
-                let named =
-                    named.unwrap_or_else(|| rights::searched_fields(self.who, &decl).collect());
-                let now = named.into_iter().filter_map(|n| ranks.fields.get(n));
-                now.filter(|f| f.searchable)
-                    .map(|f| f.name.clone())
-                    .collect()
-            });
+            .then(|| searched().map(|(_, f)| f.name.clone()).collect());
         let text_fields = known.as_deref();
+        // A ranking the search does not weigh takes its type's setting, as
+        // the read finds it at its position (lakelands#561); a field the
+        // type no longer holds is never named by a search, so weighs 1.
+        // A match of the text weighs what the setting gives the field it is
+        // in, a field searched under its name at the head; a field not
+        // searched brings no weight (lakelands#1230).
+        let key = format!("{}{}", lakelands_api::seam::SEARCH_WEIGHTS_SETTING, s.ty);
+        let set = self.shape.settings.get(&key);
+        let (field_weights, text_default) = lakelands_api::seam::search_weights(set);
+        let by_field = lakelands_api::seam::text_field_weights(set);
+        let text_weights = searched()
+            .filter_map(|(n, f)| Some((f.name.clone(), *by_field.get(n.as_str())?)))
+            .collect();
         let search_read = search_read(s);
         let offset = match &s.cursor {
             Some(c) => {
@@ -3625,12 +3636,6 @@ impl<'a> Reader<'a> {
             weight: None,
             model: field.and_then(named),
         };
-        // A ranking the search does not weigh takes its type's setting, as
-        // the read finds it at its position (lakelands#561); a field the
-        // type no longer holds is never named by a search, so weighs 1.
-        let key = format!("{}{}", lakelands_api::seam::SEARCH_WEIGHTS_SETTING, s.ty);
-        let (field_weights, text_default) =
-            lakelands_api::seam::search_weights(self.shape.settings.get(&key));
         if let SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. } = &s.mode {
             let weight = match &s.mode {
                 SearchMode::Hybrid { text_weight, .. } => text_weight.or(text_default),
@@ -3639,6 +3644,7 @@ impl<'a> Reader<'a> {
             let ranked = text_fields != Some(&[]);
             if ranked {
                 asked.text = Some((text.clone(), text_fields.map(<[FieldName]>::to_vec)));
+                asked.text_weights = text_weights;
             }
             lists.push((weight.unwrap_or(1.0), ranked));
             axes.push(axis(None));
