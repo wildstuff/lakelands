@@ -113,6 +113,20 @@ declared. A proposal's write is told as of where it was proposed: one
 that tells a reader nothing of a record it was not told then is not
 there to it, whatever became of the record since.
 
+A setting for a source names no type, and a source may feed any type:
+the lake keeps no list of what each one feeds. So `key_period.<source>`
+is told only to a reader from whom nothing is held, one that holds
+`restricted` and reads every field of every type (lakelands#1153). To
+any other reader the record is not there, at every door above and in
+`describe`, and it reads `sys.setting` as in a lake that never set a
+period for the source. The lake's own `key_period` names no source and
+is told as any setting for the lake. Each source's period is a record of
+its own, so no other source's entry shares it. A writer from whom
+something is held may not write it, retire it or propose either: each
+is refused as not granted before the record is read, alike in a lake
+that holds it and in one that does not, since the version a write
+answers would tell that it exists.
+
 A change notification of such a record compares what its reader is told
 of it before the change and after: a change to what it is not told
 alone is not told, a record that becomes one it is not told is told as
@@ -120,9 +134,9 @@ retired, and one that becomes one it is told is told as the write that
 made it, which names every field the record holds. Every reader is
 told a setting's change so: a notification of `sys.setting` names a
 field only where the value it is told changed. A set's change and a
-trigger's firing over `sys.setting` are told only to one who reads
-every field of every type, as a condition over a field a reader may not
-read is never told it. That departs from the twin, which would tell a
+trigger's firing over `sys.setting` are told only to one from whom
+nothing is held, as a condition over a field a reader may not read is
+never told it. That departs from the twin, which would tell a
 condition that reads no setting narrowed to its reader; it tells less,
 never more.
 

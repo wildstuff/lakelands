@@ -178,16 +178,28 @@ impl<'o> Sight<'o> {
 
     /// Whether its principal may be told some records of `ty` narrowed or
     /// not at all, as [`Self::setting`] tells them: `ty` is `sys.setting`
-    /// and the principal does not read every field of every type.
+    /// and something is held from the principal.
     pub fn narrows(&self, ty: &TypeName) -> bool {
-        ty.as_str() == lakelands_api::seam::SETTING_TYPE && !rights::reads_all(&self.who)
+        ty.as_str() == lakelands_api::seam::SETTING_TYPE && !self.holds_all()
+    }
+
+    /// Whether nothing is held from its principal: it holds `restricted`
+    /// and reads every field of every type.
+    fn holds_all(&self) -> bool {
+        self.who.grants.reads_everything()
     }
 
     /// The value of the setting `key` as its principal is told it: one of
     /// a type it is not shown is not told, and one that names fields only
     /// those it reads, none left being not told
-    /// (`docs/decisions/063-every-setting-is-in-one-list.md`).
+    /// (`docs/decisions/063-every-setting-is-in-one-list.md`). One for a
+    /// source is told only where nothing is held from it, since a source
+    /// may feed any type and the lake keeps no list of what it feeds
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
     pub fn setting(&self, key: &str, value: Value) -> Option<Value> {
+        if !self.setting_told(key) {
+            return None;
+        }
         let shown = |ty: &str| self.ty(&ty.into()).is_ok();
         let reads = |ty: &str, f: &str| self.reads(&ty.into(), &f.into());
         lakelands_api::settings::narrowed(key, value, &shown, &reads)
@@ -217,13 +229,24 @@ impl<'o> Sight<'o> {
         &self,
         all: &'s BTreeMap<String, Value>,
     ) -> Cow<'s, BTreeMap<String, Value>> {
-        if !self.narrows(&lakelands_api::seam::SETTING_TYPE.into()) {
+        let whole = rights::reads_all(&self.who) && all.keys().all(|k| self.setting_told(k));
+        if whole || !self.narrows(&lakelands_api::seam::SETTING_TYPE.into()) {
             return Cow::Borrowed(all);
         }
         let told = all
             .iter()
             .filter_map(|(k, v)| Some((k.clone(), self.setting(k, v.clone())?)));
         Cow::Owned(told.collect())
+    }
+
+    /// Whether its principal is told the setting `key` at all by its
+    /// layer: any but one for a source, and that one where nothing is held
+    /// from it ([`Self::setting`]).
+    pub fn setting_told(&self, key: &str) -> bool {
+        use lakelands_api::settings::{PerType, lake_setting};
+        let source =
+            lake_setting(key).is_some_and(|(s, on)| on.is_some() && s.per_type == PerType::Source);
+        !source || self.holds_all()
     }
 
     /// Whether a link of `decl` is judged by its ends for its principal:

@@ -283,6 +283,27 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     WAL archive or a copy outside the lake is out of the act's reach. An
     import finishes a forgetting its export holds, so a key store
     restored beside it has that source's keys destroyed again.
+  - **Backups under key periods:** back the key directory up at least
+    once a period. A backup older than the newest version the log used
+    leaves the lake refusing a source's writes, `key_missing`, since the
+    key store is behind the log. A backup taken before a version was
+    destroyed brings it back, so destroy the same prefix again after any
+    restore.
+  - **Key periods:** `lakelands settings set key_period week` (or
+    `key_period.<source>`, `day`, `week` or `month`, in UTC) seals each
+    period's values of a source under a version of its key of their
+    own, made at the period's first value: one key a period, made by the
+    key store. A version is destroyed only with every older one
+    (`KeyStore::destroy_version`), and a host's KMS that destroys only
+    whole sources leaves that call refused. Until the act that takes
+    part of a source back comes, a version is destroyed with the lake
+    closed, by calling `KeyStore::destroy_version`; one who edits the
+    file keyring by hand removes only a source's oldest entries, never one
+    with an older still there. An open lake keeps the keys it
+    holds in memory and goes on sealing with them. Such a version is a
+    lost key, since no act in the log names it: at the next open the
+    values and the outputs it sealed fail closed, `key_missing`, at a
+    rebuild or a re-plan.
   - **An export** holds sealed values as ciphertext, and no key. It
     imports with the key store bound, or with none where the export
     holds the source's forgetting, whose values then arrive erased; any

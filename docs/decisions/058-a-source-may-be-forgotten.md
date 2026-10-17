@@ -40,6 +40,7 @@ A forgotten source id is never given a key again, so an ingest from it is refuse
 - `create(source)`, which answers a key id;
 - `key(source, id)`, which answers the key or "destroyed";
 - `destroy(source)`;
+- `destroy_version(source, id)`, which destroys that version with every older one (lakelands#1153);
 - `ids(source)`, its versions, for rotation.
 
 **Where it sits:** it is an eighth seam beside the seven of `docs/seams.md`, configured through `Location` and the server's configuration like every other, never the environment (005). The CLI and `serve` bind the file keyring the root's `lakelands.json` names (`"keys": {"keyring": "<directory>"}`), and refuse one inside a lake's directory.
@@ -55,6 +56,8 @@ A forgotten source id is never given a key again, so an ingest from it is refuse
 - that its backups follow the store's destroys: a key restored from a backup restores what it encrypted, and only the operator can keep backups honest.
 
 **The writer** asks for a source's key at its first erasable value and holds it in memory for the open lake. `forget_source` drops it from memory before it destroys it.
+
+**Versions die oldest first.** A version of a source's key is destroyed only with every older one. An output is sealed under the oldest version among the values its call reads, so with versions destroyed in that order the output goes with the first of its values to lose its key, and never outlives one. A version destroyed with no act in the log is a lost key, as below: a value or a digest under it fails closed. The lake holds the keys it was given in memory while it is open, so a version is destroyed outside an act only with the lake closed. A key period (`key_period`, for the lake or for a source: `day`, `week` or `month`) makes the writer ask for a new version at a source's first value past each period's start, so each period's values are sealed apart. A source's own period is told only to a reader from whom nothing is held, since a source may feed any type (063).
 
 ### What is encrypted, and how a duplicate is still a duplicate
 

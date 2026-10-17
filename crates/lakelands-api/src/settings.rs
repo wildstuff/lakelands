@@ -40,7 +40,7 @@ pub enum Layer {
     Root,
 }
 
-/// Whether a lake setting is read for a type.
+/// Whether a lake setting is read for a type, or for a source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PerType {
     /// One value for the lake.
@@ -49,6 +49,9 @@ pub enum PerType {
     Only,
     /// One for the lake, `<key>`, which `<key>.<type>` overrides for a type.
     Override,
+    /// One for the lake, `<key>`, which `<key>.<source>` overrides for a
+    /// source.
+    Source,
 }
 
 /// One setting: its key, where it is kept, its default as JSON, what
@@ -122,6 +125,12 @@ pub const SETTINGS: &[Setting] = &[
         range: "`true` or `false`",
         says: "Keeps the view's records as its sources are written, so a read of the view reads them instead of computing it.",
         ..lake("view_kept", PerType::Only, "false")
+    },
+    Setting {
+        range: "`day`, `week` (from Monday) or `month`, in UTC, or null for none",
+        says: "Seals a source's values of each period under a version of its key of their own, made at the first value past the period's start, so a cut at a period's end can destroy the versions before it.",
+        cost: "one new version of the source's key per period, made by the key store, so `day` makes 365 a year for each source; the file keyring rewrites its whole file at each, measured at 4.5 ms with 1 000 keys and 8.9 ms with 10 000; and the list of a source's versions, an entry a period, read once a window, so ten years of `day` (3 650 entries) add about 20 µs a record to an ingest on the memory engine (lakelands#1153)",
+        ..lake("key_period", PerType::Source, "null")
     },
     Setting {
         range: "a count, at most `max_limit`",
@@ -418,9 +427,9 @@ impl Setting {
     }
 }
 
-/// The listed lake setting a `sys.setting` key names, and the type it
-/// is for: `<key>` for the lake, `<key>.<type>` for a type. `None` for a
-/// host's own key.
+/// The listed lake setting a `sys.setting` key names, and the type or
+/// the source it is for: `<key>` for the lake, `<key>.<type>` for a type,
+/// `<key>.<source>` for a source. `None` for a host's own key.
 pub fn lake_setting(key: &str) -> Option<(&'static Setting, Option<&str>)> {
     let lake = SETTINGS.iter().filter(|s| s.layer == Layer::Lake);
     lake.into_iter()
@@ -443,8 +452,9 @@ pub fn unlisted(key: &str) -> Option<&'static str> {
     lake_setting(key).is_none().then_some(prefix)
 }
 
-/// The value of the lake setting `s` for the type `ty`, or for the lake:
-/// `<key>.<type>` where it stands, else `<key>`, else its default.
+/// The value of the lake setting `s` for the type or the source `ty`, or
+/// for the lake: `<key>.<ty>` where it stands, else `<key>`, else its
+/// default.
 pub fn value_of(settings: &BTreeMap<String, Value>, s: &Setting, ty: Option<&str>) -> Value {
     let typed = ty.filter(|_| s.per_type != PerType::No);
     let own = typed.and_then(|t| settings.get(&format!("{}.{t}", s.key)));
@@ -453,8 +463,8 @@ pub fn value_of(settings: &BTreeMap<String, Value>, s: &Setting, ty: Option<&str
 }
 
 /// The lake settings as `describe` tells them: each listed one for the
-/// lake, held or not, and each one `settings` holds for a type, whose
-/// default is the lake's value.
+/// lake, held or not, and each one `settings` holds for a type or a
+/// source, whose default is the lake's value.
 pub fn told(settings: &BTreeMap<String, Value>) -> Vec<SettingValue> {
     let lake = SETTINGS.iter().filter(|s| s.layer == Layer::Lake);
     let wide = lake
@@ -499,17 +509,20 @@ pub fn seen(
 /// `shown` answers and reading the fields `reads` answers: a setting of a
 /// type it is not shown is not told, and one that names fields is told
 /// only those it reads, as were the others absent; one left naming none
-/// is not told. A host's own key and a setting for the lake are told
-/// whole.
+/// is not told. A host's own key, a setting for the lake and one for a
+/// source, which names no type, are told whole.
 pub fn narrowed(
     key: &str,
     mut value: Value,
     shown: &dyn Fn(&str) -> bool,
     reads: &dyn Fn(&str, &str) -> bool,
 ) -> Option<Value> {
-    let Some((_, Some(ty))) = lake_setting(key) else {
+    let Some((l, Some(ty))) = lake_setting(key) else {
         return Some(value);
     };
+    if l.per_type == PerType::Source {
+        return Some(value);
+    }
     if !shown(ty) {
         return None;
     }

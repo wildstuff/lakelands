@@ -352,6 +352,8 @@ catalog! {
         FunctionBacking { kind: String } => "the `{kind}` function backing (the host bound none of that kind)",
         /// A key store, which seals a source's values of an erasable field.
         KeyStore => "a key store, which seals a source's values of an erasable field (the host bound none)",
+        /// A key store that destroys a version of a source's key with those before it.
+        KeyVersions => "a key store that destroys a version of a source's key with every older one (the bound one destroys only a whole source's)",
         /// A vector index, which this engine keeps none of.
         VectorIndex => "a vector index (this engine keeps none)",
         /// An engine, whose opener was not passed in.

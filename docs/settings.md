@@ -51,6 +51,15 @@ Keeps the view's records as its sources are written, so a read of the view reads
 - **Default:** `false`.
 - **Per type:** one value per type, and none for the lake.
 
+### `key_period` and `key_period.<source>`
+
+Seals a source's values of each period under a version of its key of their own, made at the first value past the period's start, so a cut at a period's end can destroy the versions before it.
+
+- **Takes:** `day`, `week` (from Monday) or `month`, in UTC, or null for none.
+- **Default:** `null`.
+- **Per source:** `key_period.<source>` overrides `key_period` for that source; retired, the source has the lake's value again.
+- **Cost:** one new version of the source's key per period, made by the key store, so `day` makes 365 a year for each source; the file keyring rewrites its whole file at each, measured at 4.5 ms with 1 000 keys and 8.9 ms with 10 000; and the list of a source's versions, an entry a period, read once a window, so ten years of `day` (3 650 entries) add about 20 µs a record to an ingest on the memory engine (lakelands#1153).
+
 ## Kept in the lake's location
 
 A member of `lakes/<id>.json`, read when the lake is opened: a bound on what one host spends, which changes no answer. Edit the file and open the lake again.

@@ -2023,22 +2023,31 @@ host's, never in the lake: not in its log, its projection or its export.
 | `create(lake, source)` | Make a new version of the source's key and answer its id. A source whose keys were destroyed is never given one again (`key_destroyed`). |
 | `key(lake, source, id)` | The key of that version: 32 bytes, or none once destroyed. |
 | `destroy(lake, source)` | Destroy every version of the source's key. |
+| `destroy_version(lake, source, id)` | Destroy that version and every older one, never one alone; a version it does not hold is refused (`key_version_not_held`). The default refuses as `Unbound` (`key_versions`), for a store that destroys only whole sources. |
 | `ids(lake, source)` | The versions the store holds, oldest first; none once destroyed. |
 
 The calls are synchronous: the writer makes them on the store's blocking
 threads, at a source's first sealed value of an open lake, and at a read
 that computes a call through a kept step. The lake keeps each key in
 memory while it is open, wiped when dropped, and seals a source's new
-values with the newest version. A key the store does not give where the
-log holds a value it sealed fails the fold closed, `unavailable`
-(`key_missing`), naming the source and the version: a lost key is never
-read as an erasure. Nor is a new key made for a source whose sealed
-values the log holds while the store lacks the version it last sealed
-with: its next write is refused `key_missing`, so a wrong path, a fresh
-machine or an old backup fails at once. A version's id is the store's
-and is never given twice: `FileKeyring` makes it at random. Without a key store, a value that would be sealed is
-refused as `Unbound`, and a lake whose log holds one is folded only by a
-writer that holds the key.
+values with the newest version. Under a key period (`key_period`, by
+the lake or by the source: `day`, `week` or `month`, in UTC) a source's
+first value past the start of a later period than its newest version's
+first use asks the store for a new version, so each period's values are
+sealed apart and a cut at a period's end can destroy the versions
+before it. A version is destroyed only with every older one: an output
+is sealed under the oldest version its call reads, so it goes with the
+first of them to go, and never outlives a value it was computed from. A
+key the store does not give where the log holds a value it sealed fails
+the fold closed, `unavailable` (`key_missing`), naming the source and
+the version: a lost key is never read as an erasure. Nor is a new key
+made for a source whose sealed values the log holds while the store
+lacks the version it last sealed with: its next write is refused
+`key_missing`, so a wrong path, a fresh machine or an old backup fails
+at once. A version's id is the store's and is never given twice:
+`FileKeyring` makes it at random. Without a key store, a value that
+would be sealed is refused as `Unbound`, and a lake whose log holds one
+is folded only by a writer that holds the key.
 
 `lakelands_backings::FileKeyring::new(dir)` keeps one file per lake,
 `<lake>.keys.json`, in a directory the operator keeps outside every lake

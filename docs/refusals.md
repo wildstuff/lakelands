@@ -543,6 +543,7 @@ What a refusal is about.
 | `set_refused` | `count` (usize), `problems` (list of Error) | the set of `declarations` is refused whole, with {count} problems: {problems} | A set of declarations with several problems. |
 | `source_forgotten` | `source` (SourceId) | the source `{source}` was forgotten, and is never given a key again: it writes nothing more; a device that comes back is a new source | A write from a source that was forgotten. |
 | `key_destroyed` | `source` (SourceId) | the keys of the source `{source}` were destroyed, and a forgotten source is never given a key again | A source whose keys were destroyed, asked for a new one. |
+| `key_version_not_held` | `source` (SourceId), `key` (KeyId) | the key store holds no version `{key}` of the key of the source `{source}` to destroy | A version of a source's key the key store does not hold, asked to be destroyed. |
 | `source_id_form` | — | a source id is not empty and holds no NUL character | A source id that is empty or holds a NUL. |
 | `delivery_id_form` | — | a delivery id is not empty, holds no NUL character, and is not `d` followed by digits, the form of the store's own | A delivery id that is empty, holds a NUL, or takes the form of the store's own. |
 | `delivery_not_carried` | — | this catalog does not carry a delivery id to the store | A delivery id given to a catalog that does not carry it. |
@@ -578,6 +579,7 @@ What a refusal is about.
 | `setting_field_names` | `value` (Value) | it holds field names, and {value} is not one | An index setting holding something other than field names. |
 | `setting_index_shape` | `type` (TypeName) | it holds an array of field names of `{type}`, or null for no index | An index setting that is no list. |
 | `setting_kept_holds` | — | it holds `true` for a view that is kept, or `false` | A `view_kept` setting that holds no boolean. |
+| `setting_key_period` | — | it holds `day`, `week` or `month`, the period a source's key is used for, or null for no period | A key period that names none. |
 | `setting_unlisted` | `prefix` (String) | keys under `{prefix}.` are the store's own settings, and this is none of them | A key under the prefix of the store's own settings that names none of them. |
 | `setting_store_key` | `prefix` (String) | keys under `{prefix}` are the store's own settings; a host declares a key of its own | A host's setting declared under a key the store reads, or under the prefix of one. |
 | `setting_group_stamped` | — | the store writes a setting's group from its declaration; leave `group` out | A write of `sys.setting` naming a group other than the one the store stamps from the setting's declaration. |
@@ -807,6 +809,7 @@ A seam the call needs and the host has not bound.
 | `embedding` | `model` (String), `dimensions` (u32), `type` (TypeName), `field` (String), `bound` (Bound, optional) | the embedding model `{model}` with {dimensions} dimensions, for `{type}.{field}` [(the bound one is {bound})\|(none is bound)] | An embedding backend for a field's model: none is bound, or one of another model or length. |
 | `function_backing` | `kind` (String) | the `{kind}` function backing (the host bound none of that kind) | A function backing of a kind. |
 | `key_store` | — | a key store, which seals a source's values of an erasable field (the host bound none) | A key store, which seals a source's values of an erasable field. |
+| `key_versions` | — | a key store that destroys a version of a source's key with every older one (the bound one destroys only a whole source's) | A key store that destroys a version of a source's key with those before it. |
 | `vector_index` | — | a vector index (this engine keeps none) | A vector index, which this engine keeps none of. |
 | `engine` | `name` (String) | the engine `{name}` (no opener for it was passed in) | An engine, whose opener was not passed in. |
 | `operation` | `op` (String) | the host operation `{op}`, which this door does not offer | An operation of the host's that this door does not offer. |
