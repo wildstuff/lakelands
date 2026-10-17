@@ -145,7 +145,8 @@ const SEALED_FROM: u32 = 16;
 ///   and a recorded output digested under the oldest version that sealed
 ///   the values it reads, where 16 took the source's first (lakelands#1153);
 ///   a type's `retired_by` and a verb's `effect: retire` (lakelands#1148);
-///   a `trigger_dropped` (lakelands#1216).
+///   a `trigger_dropped` (lakelands#1216); a trigger's `when_strict`
+///   (lakelands#1215).
 #[doc(hidden)]
 pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
     debug_assert!(reads_format(v), "format {v} is not one this release reads");

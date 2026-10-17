@@ -131,6 +131,7 @@ async fn a_withdrawn_trigger_stops_firing_and_is_seen_as_of_before(
         when: None,
         description: None,
         max_depth: Some(1),
+        when_strict: false,
     });
     cat.declare(own, capped.clone())
         .await
@@ -407,6 +408,7 @@ async fn a_withdrawal_tells_a_reader_not_shown_its_type_nothing(store: Store) ->
         when: None,
         description: None,
         max_depth: Some(limits().max_reactive_depth + 1),
+        when_strict: false,
     });
     let set = |name: &str| vec![withdraw(DeclarationKind::Trigger, name), deep.clone()];
     let hidden = cat.apply(&blind, set("watch")).await;

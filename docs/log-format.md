@@ -923,8 +923,8 @@ the first release with real installations
   ingest of format 16 is in no delivery; a `trigger_dropped`
   (lakelands#1216), so a trigger a lake of 16 holds whose `max_depth`
   is at or under the depth of a write drops from the upgrade on where
-  it fired before, and one with `max_depth: 0` fires no more; and a
-  recorded output's
+  it fired before, and one with `max_depth: 0` fires no more; a
+  trigger's `when_strict` (lakelands#1215); and a recorded output's
   `input` digested under the oldest version that sealed the values it
   reads (§1.4), where 16 took the source's first version. Over values
   its first version sealed the two agree, and an output of 16 names
@@ -1040,7 +1040,7 @@ with that declaration's members beside it. Every member not marked
 | a `view` | `source` and `measures` (required; each measure `{ "name", "expr" }`), `where` (none), `group_by` (`[]`), `params` (`[]`: each `{ "name", "kind" }`, a kind of `text`, `number`, `decimal`, `boolean`, `date_time` or `date`), `merge` (`[]`: each `{ "source", "where", "group_by", "measures" }`; `source` and `measures` required, `where` none, `group_by` `[]`) |
 | `value_type` | `name` and `kind` (required), `constraint` (none), `one_of` (`[]`), `format`, `scale`, `description` (none), `annotations` (`{}`) |
 | `verb` | `name`, `on`, `risk` and `effect` (required), `payload` (`[]`), `requires` (none), `description` (none); `effect: write` carries `set`, a list of `{ "field", "value" }`; `effect: external` carries `executor`; `effect: retire` (from format 17) carries neither |
-| `trigger` | `name` and `on` (required), `when`, `description` (none), `max_depth` (none: an integer at most the lake's `max_reactive_depth`) |
+| `trigger` | `name` and `on` (required), `when`, `description` (none), `max_depth` (none: an integer at most the lake's `max_reactive_depth`), `when_strict` (`false`; from format 17: a field or `previous(f)` its `when` reads absent or null fails the guard as a whole) |
 | `object_set` | `name`, `of` and `where` (required), `description` (none) |
 | `function` | `name` and `backing` (required), `inputs` (`[]`), `expr` (none), `config` (`null`), `description` (none), `risk` (`low`) |
 | `setting` (from format 17) | `key` and `type` (required; a field's `type`), `unit`, `description`, `group` (none). A host's own key of `sys.setting`; its records of `sys.setting` carry `group` as the store stamps it from this declaration (lakelands#996) |

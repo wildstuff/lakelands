@@ -58,6 +58,7 @@ async fn a_reaction_naming_a_firing_appended_concurrently_never_passes_its_ceili
         when: None,
         max_depth: Some(1),
         description: None,
+        when_strict: false,
     };
     cat.declare(&own, Declaration::Trigger(once))
         .await

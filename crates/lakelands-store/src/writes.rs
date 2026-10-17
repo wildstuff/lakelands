@@ -854,7 +854,13 @@ fn member_of(
         now,
     };
     let on = o.ty(&set.of)?;
-    Ok(across::holds((heads, o, on), record, &e, scope, settings))
+    Ok(across::holds(
+        (heads, o, on),
+        record,
+        &e,
+        scope,
+        (settings, false),
+    ))
 }
 
 /// What a path reads across an edge at the head of `view`, to `max`

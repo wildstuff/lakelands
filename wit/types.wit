@@ -341,6 +341,9 @@ interface types {
         /// may be: a write at this depth or deeper drops the firing
         /// (the log's `trigger_dropped`) instead; at most the lake's ceiling.
         max-depth: option<u32>,
+        /// Whether a field or `previous(f)` its `when` reads absent or
+        /// null fails the guard as a whole.
+        when-strict: bool,
     }
 
     record object-set-decl {

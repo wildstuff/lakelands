@@ -111,6 +111,12 @@ pub trait Scope {
         false
     }
 
+    /// Whether every operand is read where the first that decides would
+    /// stop the evaluation: a strict guard's (lakelands#1215).
+    fn eager(&self) -> bool {
+        false
+    }
+
     /// The provenance of a field, when the scope carries it.
     fn meta(&self, _field: &FieldName) -> Option<FieldMeta> {
         None
@@ -286,22 +292,26 @@ pub fn eval(e: &Expr, scope: &dyn Scope) -> Result<Val> {
         // The first operand that decides stops the evaluation.
         Expr::And { args } | Expr::Or { args } => {
             let or = matches!(e, Expr::Or { .. });
+            let mut decided = false;
             for a in args {
-                if truthy(&eval(a, scope)?) == or {
-                    return Ok(Val::Bool(or));
+                decided |= truthy(&eval(a, scope)?) == or;
+                if decided && !scope.eager() {
+                    break;
                 }
             }
-            Ok(Val::Bool(!or))
+            Ok(Val::Bool(decided == or))
         }
         Expr::Not { arg } => Ok(Val::Bool(!truthy(&eval(arg, scope)?))),
         Expr::In { arg, list } => {
             let v = eval(arg, scope)?;
+            let mut found = false;
             for item in list {
-                if compare(CmpOp::Eq, &v, &eval(item, scope)?)? {
-                    return Ok(Val::Bool(true));
+                found |= compare(CmpOp::Eq, &v, &eval(item, scope)?)?;
+                if found && !scope.eager() {
+                    break;
                 }
             }
-            Ok(Val::Bool(false))
+            Ok(Val::Bool(found))
         }
         Expr::IsNull { arg } => Ok(Val::Bool(eval(arg, scope)? == Val::Null)),
         Expr::Call { func, args } => call(*func, args, scope),
@@ -485,6 +495,73 @@ fn quoted(e: Option<&Expr>) -> Option<&String> {
 /// null or a non-boolean does not hold.
 pub fn holds(e: &Expr, scope: &dyn Scope) -> Result<bool> {
     Ok(truthy(&eval(e, scope)?))
+}
+
+/// Whether a condition holds where every field it reads, and every
+/// `previous(f)`, has a value: a read of one absent or null fails it as a
+/// whole, whatever `not`, `and`, `or` or `changed` around it would make of
+/// a null. A trigger's `when_strict` (lakelands#1215).
+pub fn holds_strict(e: &Expr, scope: &dyn Scope) -> Result<bool> {
+    let strict = Strict {
+        inner: scope,
+        absent: std::cell::Cell::new(false),
+    };
+    let held = holds(e, &strict)?;
+    Ok(held && !strict.absent.get())
+}
+
+/// A scope that notes a read of a field, or of its value before the
+/// write, that has none.
+struct Strict<'a> {
+    inner: &'a dyn Scope,
+    absent: std::cell::Cell<bool>,
+}
+
+impl Strict<'_> {
+    fn noted(&self, v: Option<Value>) -> Option<Value> {
+        let v = v.filter(|v| !v.is_null());
+        self.absent.set(self.absent.get() || v.is_none());
+        v
+    }
+}
+
+impl Scope for Strict<'_> {
+    fn value(&self, path: &[FieldName]) -> Option<Value> {
+        self.noted(self.inner.value(path))
+    }
+    fn previous(&self, field: &FieldName) -> Option<Value> {
+        self.noted(self.inner.previous(field))
+    }
+    fn in_write(&self) -> bool {
+        self.inner.in_write()
+    }
+    fn retiring(&self) -> bool {
+        self.inner.retiring()
+    }
+    fn eager(&self) -> bool {
+        true
+    }
+    fn meta(&self, field: &FieldName) -> Option<FieldMeta> {
+        self.inner.meta(field)
+    }
+    fn setting(&self, key: &str) -> Option<Value> {
+        self.inner.setting(key)
+    }
+    fn param(&self, name: &str) -> Option<Value> {
+        self.inner.param(name)
+    }
+    fn now(&self) -> Timestamp {
+        self.inner.now()
+    }
+    fn exists(&self, relation: &FieldName) -> Option<bool> {
+        self.inner.exists(relation)
+    }
+    fn in_set(&self, set: &str) -> Option<bool> {
+        self.inner.in_set(set)
+    }
+    fn aggregate(&self, func: Func, args: &[Expr]) -> Option<Result<Val>> {
+        self.inner.aggregate(func, args)
+    }
 }
 
 fn truthy(v: &Val) -> bool {
@@ -721,20 +798,29 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
     // field's name rather than its value.
     match func {
         Func::If => {
+            let (then, other) = (&args[1], &args[2]);
+            if scope.eager() {
+                let (then, other) = (eval(then, scope)?, eval(other, scope)?);
+                return Ok(if holds(&args[0], scope)? { then } else { other });
+            }
             return if holds(&args[0], scope)? {
-                eval(&args[1], scope)
+                eval(then, scope)
             } else {
-                eval(&args[2], scope)
+                eval(other, scope)
             };
         }
         Func::Coalesce => {
+            let mut first = None;
             for a in args {
                 let v = eval(a, scope)?;
                 if v != Val::Null {
-                    return Ok(v);
+                    first.get_or_insert(v);
+                    if !scope.eager() {
+                        break;
+                    }
                 }
             }
-            return Ok(Val::Null);
+            return Ok(first.unwrap_or(Val::Null));
         }
         Func::KnownAt | Func::SeenAt => {
             let meta = scope.meta(field_arg(name, args)?);
