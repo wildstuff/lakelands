@@ -190,7 +190,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 433, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 440, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -392,7 +392,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 49] = [
+const SHOWN: [&str; 50] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -442,10 +442,11 @@ const SHOWN: [&str; 49] = [
     "computed_by_function",
     "computed_write",
     "proposed_compute",
+    "withdrawn",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 56;
+const LAST: u64 = 57;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
@@ -670,6 +671,8 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
             matches!(proposed, Some(ProposedWrite::Compute { inputs: None, input: i, .. }) if i.0 == input)
                 && event.cause == Some(lakelands_api::Position(55))
         }
+        "withdrawn" => matches!(declared, Some(D::Withdraw(w))
+            if w.kind == lakelands_api::write::DeclarationKind::Trigger && w.name == "shelved"),
         other => panic!("`further.json` shows `{other}`, which this test has no check for"),
     }
 }

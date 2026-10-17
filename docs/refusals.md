@@ -31,6 +31,7 @@ What a declared name names.
 | `object_set` | — | object set | An object set. |
 | `function` | — | function | A function. |
 | `setting` | — | setting | A host's setting. |
+| `withdrawal` | — | withdrawal | A declaration's withdrawal. |
 | `backing` | — | backing | A function's backing. |
 | `aging_rule` | — | aging rule | An aging rule. |
 | `group` | — | group | An aggregate's group key. |
@@ -308,6 +309,9 @@ What a refusal is about.
 | `function_input_kind` | `function` (String), `input` (FieldName), `kind` (StorageKind), `type` (TypeName), `held` (StorageKind) | the function `{function}` takes `{input}` as a {kind}, and `{type}` holds it as a {held} | A function's input the type holds as another kind. |
 | `function_not_derived` | — | a field computed by a function has the authority `derived` | A field computed by a function whose authority is not `derived`. |
 | `function_undeclared` | `name` (String) | it names the function `{name}`, which is not declared | A field naming a function that is not declared. |
+| `withdrawn_in_use` | `kind` (Naming), `name` (String), `by` (String) | the {kind} `{name}` is in use by {by}, so it is not withdrawn | A withdrawal of a declaration something in force reads. |
+| `withdrawn_undeclared` | `kind` (Naming), `name` (String) | the {kind} `{name}` is not declared, so it is not withdrawn | A withdrawal of a name not in force. |
+| `withdrawn_kind` | `kind` (Naming) | a {kind} is not withdrawn: a trigger or a function is; a type leaves by `migrate`, and a setting by its record | A withdrawal of a kind that leaves force another way. |
 | `group_unkeyable` | `field` (FieldName) | it groups by `{field}`, whose kind cannot be part of a key | A view grouped by a field no key may be. |
 | `initial_cleared` | — | its inputs would clear it at their next change | An `initial` value on a field its inputs clear. |
 | `initial_in_view` | — | a view's records are computed, and none is created | An `initial` value on a view's field. |

@@ -454,6 +454,21 @@ pub enum Declaration {
     Function(FunctionDecl),
     /// A host's own setting: its kind, its meaning and its group.
     Setting(SettingDecl),
+    /// A declaration in force taken out of it.
+    Withdraw(Withdrawal),
+}
+
+/// A trigger or a function taken out of force from the withdrawal's
+/// position on: `describe` no longer shows it, and a read as of before
+/// still does. Declaring the same name again later is a new declaration,
+/// whose version continues the withdrawn one's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Withdrawal {
+    /// The kind of the declaration withdrawn.
+    pub kind: DeclarationKind,
+    /// Its name.
+    pub name: String,
 }
 
 /// The kind of a declaration. A later kind is an addition.
@@ -488,6 +503,20 @@ impl DeclarationKind {
         DeclarationKind::Function,
         DeclarationKind::Setting,
     ];
+
+    /// What a refusal names a declaration of this kind.
+    pub fn naming(self) -> crate::error::Naming {
+        use crate::error::Naming;
+        match self {
+            DeclarationKind::Type => Naming::Type,
+            DeclarationKind::ValueType => Naming::ValueType,
+            DeclarationKind::Verb => Naming::Verb,
+            DeclarationKind::Trigger => Naming::Trigger,
+            DeclarationKind::ObjectSet => Naming::ObjectSet,
+            DeclarationKind::Function => Naming::Function,
+            DeclarationKind::Setting => Naming::Setting,
+        }
+    }
 
     /// Its name, as the declaration's `declare` member writes it.
     pub fn as_str(self) -> &'static str {
@@ -558,6 +587,7 @@ impl Declaration {
             Declaration::ObjectSet(o) => (DeclarationKind::ObjectSet, o.name.as_str()),
             Declaration::Function(f) => (DeclarationKind::Function, f.name.as_str()),
             Declaration::Setting(s) => (DeclarationKind::Setting, s.key.as_str()),
+            Declaration::Withdraw(w) => (w.kind, w.name.as_str()),
         }
     }
 
@@ -583,6 +613,18 @@ impl Declaration {
                 name: f.name.clone(),
             },
             Declaration::Setting(s) => Place::Setting { key: s.key.clone() },
+            Declaration::Withdraw(w) => {
+                let name = w.name.clone();
+                match w.kind {
+                    DeclarationKind::Type => Place::Type { name: name.into() },
+                    DeclarationKind::ValueType => Place::ValueType { name: name.into() },
+                    DeclarationKind::Verb => Place::Verb { name: name.into() },
+                    DeclarationKind::Trigger => Place::Trigger { name: name.into() },
+                    DeclarationKind::ObjectSet => Place::ObjectSet { name },
+                    DeclarationKind::Function => Place::Function { name },
+                    DeclarationKind::Setting => Place::Setting { key: name },
+                }
+            }
         }
     }
 
@@ -629,7 +671,10 @@ impl Declaration {
             Declaration::Verb(v) => fields("payload", &[], &v.payload, &mut out),
             Declaration::Function(f) => fields("inputs", &[], &f.inputs, &mut out),
             Declaration::ValueType(v) => out.push((String::new(), Vec::new(), &v.annotations)),
-            Declaration::Trigger(_) | Declaration::ObjectSet(_) | Declaration::Setting(_) => {}
+            Declaration::Trigger(_)
+            | Declaration::ObjectSet(_)
+            | Declaration::Setting(_)
+            | Declaration::Withdraw(_) => {}
         }
         out
     }
@@ -753,7 +798,7 @@ impl Declaration {
             Declaration::Trigger(t) => all.push(("when".into(), t.when.as_ref())),
             Declaration::ObjectSet(s) => all.push(("where".into(), Some(&s.filter))),
             Declaration::Function(f) => all.push(("expr".into(), f.expr.as_ref())),
-            Declaration::Setting(_) => {}
+            Declaration::Setting(_) | Declaration::Withdraw(_) => {}
         }
         let held = all.into_iter().filter_map(|(path, c)| Some((path, c?)));
         held.collect()
@@ -789,6 +834,7 @@ const DECLARATION_KINDS: &[&str] = &[
     "object_set",
     "function",
     "setting",
+    "withdraw",
 ];
 
 // Read by hand, not derived: a derived internally tagged enum buffers the
@@ -818,6 +864,7 @@ impl<'de> Deserialize<'de> for Declaration {
             "object_set" => serde_path_to_error::deserialize(members).map(Declaration::ObjectSet),
             "function" => serde_path_to_error::deserialize(members).map(Declaration::Function),
             "setting" => serde_path_to_error::deserialize(members).map(Declaration::Setting),
+            "withdraw" => serde_path_to_error::deserialize(members).map(Declaration::Withdraw),
             other => return Err(D::Error::unknown_variant(other, DECLARATION_KINDS)),
         };
         read.map_err(|e| D::Error::custom(refusal(&kind, name.as_deref(), &e)))

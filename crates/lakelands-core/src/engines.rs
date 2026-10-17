@@ -76,6 +76,8 @@ pub fn declaration_key(d: &Declaration) -> String {
         Declaration::ObjectSet(o) => format!("object_set {}", o.name),
         Declaration::Function(f) => format!("function {}", f.name),
         Declaration::Setting(s) => format!("setting {}", s.key),
+        // A withdrawal is the next state of the declaration it withdraws.
+        Declaration::Withdraw(w) => format!("{} {}", w.kind.as_str(), w.name),
         _ => unreachable!("a declaration of a kind this release does not know"),
     }
 }
@@ -1563,6 +1565,8 @@ pub fn declared_on(d: &Declaration, stands: &impl Fn(&str) -> Option<TypeName>) 
         Declaration::Verb(v) => v.on.clone(),
         Declaration::Trigger(t) => t.on.clone(),
         Declaration::ObjectSet(s) => s.of.clone(),
+        // A withdrawal names the type of what it withdraws.
+        Declaration::Withdraw(_) => return stands(&declaration_key(d)).into_iter().collect(),
         _ => return Vec::new(),
     };
     let mut out = vec![on];

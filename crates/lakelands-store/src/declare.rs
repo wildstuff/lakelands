@@ -42,7 +42,9 @@ use lakelands_api::ontology::{
     StorageKind, TypeDecl, ValueTypeDecl, VerbEffect, VerbScope, ViewDecl, lands_in_the_fold,
 };
 use lakelands_api::tools::{NameProblem, name_problems};
-use lakelands_api::write::{Carrier, Declaration, ObjectSetDecl, SettingDecl};
+use lakelands_api::write::{
+    Carrier, Declaration, DeclarationKind, ObjectSetDecl, SettingDecl, Withdrawal,
+};
 use lakelands_api::{Error, FieldName, Refusal, RelationName, Result, TypeName, VerbName};
 use lakelands_core::expr::{Place as Eval, check, parse};
 use lakelands_core::rights::is_system;
@@ -1837,10 +1839,52 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             }
         }
         Declaration::Setting(s) => setting_decl(o, s)?,
+        Declaration::Withdraw(w) => withdrawal(o, w)?,
         _ => {}
     }
     reads_its_type(o, d)?;
     tool_names(o, d)
+}
+
+/// A withdrawal: of a trigger or a function in force, which nothing in
+/// force reads. Nothing reads a trigger; a function is read by each field
+/// that names it, of a type or of a relation's links.
+fn withdrawal(o: &Ontology, w: &Withdrawal) -> Result<()> {
+    let (kind, name) = (w.kind.naming(), w.name.clone());
+    if !matches!(w.kind, DeclarationKind::Trigger | DeclarationKind::Function) {
+        return Err(invalid(Case::WithdrawnKind { kind }));
+    }
+    if o.held_named(w.kind, &w.name).is_none() {
+        return Err(invalid(Case::WithdrawnUndeclared { kind, name }));
+    }
+    if w.kind == DeclarationKind::Function
+        && let Some(by) = function_reader(o, &w.name)
+    {
+        return Err(invalid(Case::WithdrawnInUse { kind, name, by }));
+    }
+    Ok(())
+}
+
+/// The first field in force that a function computes, as a refusal names
+/// it: the field `total` of `invoice`.
+pub(crate) fn function_reader(o: &Ontology, function: &str) -> Option<String> {
+    let calls = |f: &FieldDecl| f.function.as_deref() == Some(function);
+    // A link type's fields are its relation's, named at the relation.
+    let mut types = o.types.values().filter(|t| !is_system(&t.decl.name));
+    types.find_map(|t| {
+        let t = &t.decl;
+        let own = t.fields.iter().find(|f| calls(f));
+        let own = own.map(|f| format!("the field `{}` of `{}`", f.name, t.name));
+        own.or_else(|| {
+            t.relations.iter().find_map(|r| {
+                let f = r.fields.iter().find(|f| calls(f))?;
+                Some(format!(
+                    "the field `{}` of `{}`'s relation `{}`",
+                    f.name, t.name, r.name
+                ))
+            })
+        })
+    })
 }
 
 /// A host's setting: a key of its own, never one the store reads or one

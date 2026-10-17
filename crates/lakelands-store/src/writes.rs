@@ -51,9 +51,10 @@ use lakelands_api::principal::WriteContext;
 use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::seam::VerbExecutor;
 use lakelands_api::write::{
-    Breach, Carried, Carrier, Declaration, FieldFill, InForce, Migration, MigrationReport, Misfit,
-    ObjectSetDecl, Outcome, ProposalState, ProposedWrite, Recompute, RelationRename, SettingDecl,
-    ValueRenamed, ValueTypeMigration, ValueTypeReport, ValueTypeUse, WriteOpts,
+    Breach, Carried, Carrier, Declaration, DeclarationKind, FieldFill, InForce, Migration,
+    MigrationReport, Misfit, ObjectSetDecl, Outcome, ProposalState, ProposedWrite, Recompute,
+    RelationRename, SettingDecl, ValueRenamed, ValueTypeMigration, ValueTypeReport, ValueTypeUse,
+    WriteOpts,
 };
 use lakelands_api::{
     Access, ConstraintName, Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal,
@@ -1702,6 +1703,32 @@ fn stamped(
     Ok(())
 }
 
+/// `o` without each trigger and function `sent` withdraws that `sees`
+/// does not list: its withdrawal is refused as one of a name not
+/// declared, where the rest of its set is judged, as a read of it
+/// answers (024).
+fn unlisted_withdrawn<'o>(
+    o: &'o Ontology,
+    sees: &Sight<'_>,
+    sent: &[Declaration],
+) -> std::borrow::Cow<'o, Ontology> {
+    let mut out = std::borrow::Cow::Borrowed(o);
+    for d in sent {
+        let Declaration::Withdraw(w) = d else {
+            continue;
+        };
+        if o.held(d).is_none_or(|held| sees.lists(&held)) {
+            continue;
+        }
+        match w.kind {
+            DeclarationKind::Trigger => drop(out.to_mut().triggers.remove(&w.name)),
+            DeclarationKind::Function => drop(out.to_mut().functions.remove(&w.name)),
+            _ => {}
+        }
+    }
+    out
+}
+
 /// What a declaration is and its name, as a refusal names them.
 fn naming(d: &Declaration) -> (Naming, String) {
     match d {
@@ -1712,6 +1739,7 @@ fn naming(d: &Declaration) -> (Naming, String) {
         Declaration::ObjectSet(o) => (Naming::ObjectSet, o.name.to_string()),
         Declaration::Function(f) => (Naming::Function, f.name.to_string()),
         Declaration::Setting(s) => (Naming::Setting, s.key.clone()),
+        Declaration::Withdraw(w) => (w.kind.naming(), w.name.clone()),
         _ => unreachable!("a declaration of a kind this release does not know"),
     }
 }
@@ -4365,10 +4393,10 @@ impl Call<'_> {
     /// a name, or with a tool's name, that what its author is not shown
     /// holds is not granted.
     fn reads_as_author(&self, o: &Ontology, sent: &[Declaration], reshapes: bool) -> Result<()> {
+        let sees = Sight::held(self.who, o);
         // A constraint under the name of one its author is not told, as
         // `describe_type` tells it, is not granted, naming nothing, before
         // anything judges the type as its author knows it (lakelands#1119).
-        let sees = Sight::held(self.who, o);
         for t in sent.iter().filter_map(|d| match d {
             Declaration::Type(t) => o.types.get(&t.name).map(|held| (t, &held.decl)),
             _ => None,
@@ -4415,18 +4443,32 @@ impl Call<'_> {
                 })
             };
             let unlisted = |d: &Declaration| match d {
-                Declaration::Type(_) => false,
+                Declaration::Type(_) | Declaration::Withdraw(_) => false,
                 Declaration::Function(f) if !computes(&f.name) => false,
                 d => o.held(d).is_some_and(|x| !sees.lists(&x)),
             };
             granted(!sent.iter().any(unlisted))?;
             tools_as_shown(self.who, o, o, sent)?;
-            return set(o, sent);
+            return set(&unlisted_withdrawn(o, &sees, sent), sent);
         }
         // A type its author is not shown is a type that is not declared,
         // for whatever names it; to declare it is not granted, and names
         // nothing of it.
         let mut seen = types_shown(self.who, o);
+        // A function withdrawn that computes a field its author is not
+        // shown would be refused naming that field: it is not granted, as
+        // its declaration would not be (lakelands#917).
+        let unseen_reader = |d: &Declaration| match d {
+            Declaration::Withdraw(w) if w.kind == DeclarationKind::Function => {
+                declare::function_reader(o, &w.name).is_some()
+                    && declare::function_reader(&seen, &w.name).is_none()
+            }
+            _ => false,
+        };
+        granted(!sent.iter().any(unseen_reader))?;
+        if let std::borrow::Cow::Owned(stripped) = unlisted_withdrawn(&seen, &sees, sent) {
+            seen = stripped;
+        }
         let hidden = |d: &Declaration| matches!(d, Declaration::Type(t) if o.types.contains_key(&t.name) && seen.ty(&t.name).is_err());
         granted(!sent.iter().any(hidden))?;
         // A set its author is not shown is one that is not declared, as a
@@ -4457,7 +4499,7 @@ impl Call<'_> {
                 Declaration::Function(f) => Some(f.name.as_str()),
                 _ => None,
             };
-            !matches!(d, Declaration::Type(_))
+            !matches!(d, Declaration::Type(_) | Declaration::Withdraw(_))
                 && f.is_none_or(|f| computes(f, false))
                 && (f.is_some_and(|f| computes(f, true))
                     || held.any(|x| x.what() == d.what() && !sees.lists(x)))

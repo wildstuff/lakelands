@@ -527,6 +527,8 @@ named! {
         Function = "function" => "function",
         /// A host's setting.
         Setting = "setting" => "setting",
+        /// A declaration's withdrawal.
+        Withdrawal = "withdrawal" => "withdrawal",
         /// A function's backing.
         Backing = "backing" => "backing",
         /// An aging rule.
@@ -858,6 +860,12 @@ catalog! {
         FunctionNotDerived => "a field computed by a function has the authority `derived`",
         /// A field naming a function that is not declared.
         FunctionUndeclared { name: String } => "it names the function `{name}`, which is not declared",
+        /// A withdrawal of a declaration something in force reads.
+        WithdrawnInUse { kind: Naming, name: String, by: String } => "the {kind} `{name}` is in use by {by}, so it is not withdrawn",
+        /// A withdrawal of a name not in force.
+        WithdrawnUndeclared { kind: Naming, name: String } => "the {kind} `{name}` is not declared, so it is not withdrawn",
+        /// A withdrawal of a kind that leaves force another way.
+        WithdrawnKind { kind: Naming } => "a {kind} is not withdrawn: a trigger or a function is; a type leaves by `migrate`, and a setting by its record",
         /// A view grouped by a field no key may be.
         GroupUnkeyable { field: FieldName } => "it groups by `{field}`, whose kind cannot be part of a key",
         /// An `initial` value on a field its inputs clear.

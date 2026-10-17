@@ -2559,7 +2559,20 @@ impl<'a> Reader<'a> {
                     };
                     (p.write, p.more) = shown;
                 }
-                if core_engines::matches(&p, filter, stands) {
+                // A withdrawal decided since names the type of what it
+                // withdrew as the lake held that when it was proposed.
+                let withdraws = matches!(&p.write, Some(ProposedWrite::Declare { declarations, .. })
+                    if declarations.iter().any(|d| matches!(d, Declaration::Withdraw(_))));
+                let was = OnceCell::new();
+                let on = |ident: &str| {
+                    stands(ident).or_else(|| {
+                        let was = was.get_or_init(|| {
+                            withdraws.then(|| self.ontology_at(p.position)).flatten()
+                        });
+                        was.as_ref().and_then(|o| crate::reads::stands(o, ident))
+                    })
+                };
+                if core_engines::matches(&p, filter, on) {
                     mine.push(p);
                 }
             }
@@ -2660,6 +2673,22 @@ impl<'a> Reader<'a> {
                 let mut held = declarations.iter().filter_map(|d| in_force_under(o, d));
                 if !tools_shown(declarations) || held.any(|d| !self.sight.lists(&d)) {
                     return Ok(None);
+                }
+                // A withdrawal of what the lake no longer holds is judged
+                // by what it withdrew, as the lake held it when proposed:
+                // listed to a reader shown that, and naming its type.
+                let gone =
+                    |d: &&Declaration| matches!(d, Declaration::Withdraw(_)) && o.held(d).is_none();
+                if declarations.iter().any(|d| gone(&d)) {
+                    let Some(was) = self.ontology_at(at) else {
+                        return Ok(None);
+                    };
+                    let then = Sight::new(asked.clone(), &self.shape.renames, Some(at), &was);
+                    for held in declarations.iter().filter(gone).filter_map(|d| was.held(d)) {
+                        if !then.lists(&held) {
+                            return Ok(None);
+                        }
+                    }
                 }
                 let mut put = o.clone();
                 for d in declarations.iter() {
@@ -5229,6 +5258,7 @@ fn in_force_under(o: &Ontology, d: &Declaration) -> Option<Declaration> {
         Declaration::Setting(s) => {
             (o.settings.get(&s.key)).map(|e| Declaration::Setting(e.decl.clone()))
         }
+        Declaration::Withdraw(_) => o.held(d),
         _ => None,
     }
 }
