@@ -81,6 +81,7 @@ mod rebuild;
 mod references;
 mod rekey;
 mod relation_renamed;
+mod removed;
 mod renamed_grants;
 mod report_names;
 mod restated;
@@ -568,6 +569,11 @@ pub const ALL: &[Check] = &[
     forgotten::FORGET_PLAINTEXT,
     forgotten::FORGET_IMPORT,
     forgotten::RECLAIM_OWED,
+    removed::REMOVED_BEFORE,
+    removed::REMOVED_DELIVERY,
+    removed::REMOVE_CRASH,
+    removed::REMOVED_TWINS,
+    removed::REMOVED_COMPUTED,
     embeddings::EMBED_WRITE,
     embeddings::VECTOR_COVERAGE,
     embeddings::EMBED_ONCE,

@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 57, each
+- `further.json`: the lake's next events, positions 8 to 59, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -103,7 +103,11 @@ The files:
     `docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`);
   - the trigger `shelved` withdrawn, a `declared` of `declare: withdraw`
     at version 2 (57): a declaration form format 17 holds and 16 does not
-    (lakelands#1219).
+    (lakelands#1219);
+  - a `values_removed` taking the delivery `batch-7` back (58), and the
+    `record_retired` of `INV-2`, which only it wrote, in the same append
+    (59): a kind format 17 holds and 16 does not
+    (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
 
   Its `misplaced` holds five lines that are not of the lake. Each
   stands at its position after the event before it, in the release's

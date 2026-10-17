@@ -300,6 +300,18 @@
       "about": "A `declared` withdrawal of the trigger `shelved` (lakelands#1219): from this position on it is not in force, and a read as of before still sees it; its version, 2, follows the declaration it withdraws, and a later declaration of the name takes 3. A form format 17 holds and 16 does not.",
       "line": "{\"body\":{\"declaration\":{\"declare\":\"withdraw\",\"kind\":\"trigger\",\"name\":\"shelved\"},\"kind\":\"declared\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"dc11623be62d9a0ac373461bd0470b12babc847939a36a4c2abb5e2ca4cbcd1f\",\"id\":\"20255277d343a5f6df3e3a890166e268\",\"known_at\":\"2026-10-05T09:00:27.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":57,\"prev\":\"3f8542ead941160ee9c6b7a5807bffaceba702e813519f1fdc5f1463a1537916\",\"v\":17,\"writer\":\"agent:agent\"}",
       "hash": "dc11623be62d9a0ac373461bd0470b12babc847939a36a4c2abb5e2ca4cbcd1f"
+    },
+    {
+      "shows": "values_removed",
+      "about": "A host took back `erp`'s delivery `batch-7`: each value its events wrote folds as erased, at every position (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"kind\":\"values_removed\",\"selection\":{\"delivery\":\"batch-7\"},\"source\":\"erp\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"34e94388a0dfe5fab9dfd588d289a3269779764db92c8bfe5774db1f9e14e6b8\",\"id\":\"00000000000000000000000000000039\",\"known_at\":\"2026-10-05T09:00:28.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":58,\"prev\":\"dc11623be62d9a0ac373461bd0470b12babc847939a36a4c2abb5e2ca4cbcd1f\",\"v\":17,\"writer\":\"system:lakelands\"}",
+      "hash": "34e94388a0dfe5fab9dfd588d289a3269779764db92c8bfe5774db1f9e14e6b8"
+    },
+    {
+      "shows": "removal_retires",
+      "about": "The `record_retired` of `INV-2`, which only that delivery wrote, in the same append as the act (065).",
+      "line": "{\"body\":{\"key\":\"INV-2\",\"kind\":\"record_retired\",\"type\":\"invoice\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"932aa4d1b90866973bff5d569da4a567456911cf26cc99438b4b48d36c05ce77\",\"id\":\"0000000000000000000000000000003a\",\"known_at\":\"2026-10-05T09:00:28.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":59,\"prev\":\"34e94388a0dfe5fab9dfd588d289a3269779764db92c8bfe5774db1f9e14e6b8\",\"v\":17,\"writer\":\"system:lakelands\"}",
+      "hash": "932aa4d1b90866973bff5d569da4a567456911cf26cc99438b4b48d36c05ce77"
     }
   ],
   "misplaced": [

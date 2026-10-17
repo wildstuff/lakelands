@@ -276,6 +276,7 @@ impl Walked {
                 constraint: name,
                 records,
                 sample_keys,
+                field: None,
             });
         }
         Ok((breaches, lossless))
@@ -5907,6 +5908,7 @@ impl Call<'_> {
                 constraint,
                 records,
                 sample_keys,
+                field: None,
             });
         }
         let mut others = Vec::new();

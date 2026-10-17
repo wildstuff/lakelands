@@ -327,6 +327,36 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     copies may hold that source's values under the mirror's own source.
     Copy the type again, or forget `mirror:<lake>:<type>` in the target,
     then restart.
+  **Taking part of a source back**
+  (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`):
+  `LakeStore::remove_values(source, selection, report_id)` takes what a
+  source wrote before a time (`Selection::WrittenBefore`, the log's
+  clock) or in one delivery (`Selection::Delivery`, the id `ingest`
+  answered), and nothing another hand wrote. It appends
+  `values_removed`, retires each record left holding nothing of another
+  hand, rebuilds and reclaims, all under the writer's lock, as
+  forgetting does; its preflight, `remove_values_preflight`, says what
+  it takes, keeps and retires, what is computed again, the constraints
+  and references it leaves broken, the required fields it leaves empty
+  (a breach of `required` naming the field), and how long it expects to
+  hold the lock. `RemoveReport::said` says it in sentences. What the
+  host is told:
+  - **a redacted value** is read by no door at any position, `as_of`
+    included, but it is still in the log, every export and every
+    backup: in plaintext for a field that is not erasable, sealed under
+    a live key otherwise;
+  - **a shredded value** is in them only as ciphertext whose key version
+    is gone, so far as the key store's backups follow its destroys, as
+    for forgetting;
+  - **key periods** are how a retention cut shreds: each period's values
+    seal under a version of their own, and a cut destroys the versions
+    of the periods wholly before it. One delivery taken back is
+    redacted, and shredded only once such a cut covers it;
+  - **the feed** still delivers each event as the log holds it, a
+    redacted value of a field that is not erasable in plaintext, as for
+    forgetting: a host that relays the feed relays it;
+  - **after a crash** between its steps, open a writer, or repeat the
+    act: either finishes it and appends nothing again.
   Source ids and record keys stay plaintext in the log, so a lake is
   ready to forget when:
   - **a source id names no person:** an opaque id for a device or a feed,

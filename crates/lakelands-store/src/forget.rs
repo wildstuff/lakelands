@@ -190,7 +190,7 @@ fn found(
 /// perhaps others, in log order: those the feed index decides, read at the
 /// positions it names, then every event from where it decides no more, as
 /// while the projection is rebuilt.
-fn each_of(
+pub(crate) fn each_of(
     lake: &Lake,
     view: &dyn ProjectionView,
     source: &SourceId,
@@ -225,7 +225,7 @@ const MATCHED: u32 = 1024;
 
 /// The names a type and a field bear now, from those an event at `at`
 /// wrote them under: each rename since, in the order of the log.
-fn named_now(
+pub(crate) fn named_now(
     renames: &[Renamed],
     at: Position,
     ty: &TypeName,

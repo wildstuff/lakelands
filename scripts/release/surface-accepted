@@ -13,3 +13,5 @@ lakelands-api	enum_variant_missing	variant Case::WindowLinksAlready
 lakelands-api	trait_method_added	trait method Catalog::accept_planned
 lakelands-api	trait_method_added	trait method Catalog::enact
 lakelands-api	trait_method_added	trait method Catalog::plan
+lakelands-api	trait_method_added	trait method LakeStore::remove_values
+lakelands-api	trait_method_added	trait method LakeStore::remove_values_preflight

@@ -516,6 +516,31 @@ pub trait LakeStore: Send + Sync {
     /// may repeat.
     async fn forget_preflight(&self, source: &SourceId) -> Result<crate::write::ForgetReport>;
 
+    /// Take back part of a source
+    /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`): append
+    /// `values_removed` with the records left holding nothing of another
+    /// hand retired, rebuild the projection, in which each value a selected
+    /// event of the source wrote reads as erased at every position, and
+    /// reclaim the storage, all under the writer's lock. A key field and a
+    /// reference field are never taken. With a preflight's id, refused
+    /// unless that report is of this removal at this head. A step a crash
+    /// left owed is finished by the next writer's open.
+    async fn remove_values(
+        &self,
+        source: &SourceId,
+        selection: &crate::write::Selection,
+        report_id: Option<&str>,
+    ) -> Result<crate::write::RemoveReport>;
+
+    /// What [`Self::remove_values`] would do, appending nothing, with the
+    /// time it is expected to hold the writer's lock, under an id the act
+    /// may repeat.
+    async fn remove_values_preflight(
+        &self,
+        source: &SourceId,
+        selection: &crate::write::Selection,
+    ) -> Result<crate::write::RemoveReport>;
+
     /// Give back the storage the projection no longer uses. It appends
     /// nothing and changes no answer, no event and no byte of an export;
     /// it prunes no history and does not seal. Only the writer's handle
