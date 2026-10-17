@@ -303,6 +303,7 @@ What a refusal is about.
 | `no_initial_breaks` | `constraint` (ConstraintName), `field` (FieldName) | `{field}`, which only the type's verbs write, has no `initial`, and a create leaves it null, which the constraint `{constraint}` refuses: no record of the type could be made | A field only verbs write with no `initial`, which a create leaves null, where a constraint reading only such fields refuses that. |
 | `verb_key` | — | a key's field is written by every create, and a verb writes only a record that stands | A key field only verbs write. |
 | `expr_no_expression` | — | it is backed by `expr` and has no expression | An `expr` function with no expression. |
+| `expr_risk` | — | it is backed by `expr`, which reaches nothing outside the lake, so its risk is `low` | An `expr` function declared above `low` risk. |
 | `expression_not_expr` | `backing` (String) | it has an expression but is backed by `{backing}` | An expression on a function another backing computes. |
 | `function_input_kind` | `function` (String), `input` (FieldName), `kind` (StorageKind), `type` (TypeName), `held` (StorageKind) | the function `{function}` takes `{input}` as a {kind}, and `{type}` holds it as a {held} | A function's input the type holds as another kind. |
 | `function_not_derived` | — | a field computed by a function has the authority `derived` | A field computed by a function whose authority is not `derived`. |

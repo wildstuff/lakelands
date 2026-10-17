@@ -321,6 +321,20 @@ SHOWS = {
         lambda e: e["body"]["kind"] == "record_ingested" and e.get("delivery") == "batch-7" and ingest_id(e) == e["id"]),
     "lake_upgraded": shows("a `lake_upgraded` from the format before to the one this lake is written in")(
         lambda e: e["body"]["kind"] == "lake_upgraded" and e["body"]["from"] == e["v"] - 1 and e["body"]["to"] == e["v"]),
+    "function_risk": shows("a declared function whose backing reaches outside the lake, declared above `low` risk")(
+        lambda e: declaration(e).get("declare") == "function" and declaration(e).get("backing") != "expr"
+        and declaration(e).get("risk") in ("medium", "high")),
+    "computed_by_function": shows("a declared type with a field computed by a function")(
+        lambda e: declaration(e).get("declare") == "type"
+        and any(f.get("function") for f in declaration(e).get("fields", []))),
+    "computed_write": shows("a write of a type that a function computes a field of, which makes its call due")(
+        lambda e: e["body"]["kind"] == "record_upserted" and e["body"]["type"] == "alert"),
+    "proposed_compute": shows("a proposed call of a function: the record, the field and the call's digest on that record as the write at its cause made it, with no inputs, and that write as its cause")(
+        lambda e: (proposed(e, "compute") or {}).get("input") == sha(canonical({
+            "call": sha(canonical({"function": "notify", "inputs": {"subject": "disk full"},
+                                   "config": {"url": "https://notify.example/send"}})),
+            "record": ["alert", "a1"], "made": 55}))
+        and "inputs" not in proposed(e, "compute") and e.get("cause") == 55),
 }
 # The one misplaced member each line of `misplaced` carries.
 MISPLACED = {

@@ -266,7 +266,11 @@ the first, and a record's entry follows its record.
 
 When no backing of the kind is bound when a call is to be made (a lake
 reopened without it), nothing is called or recorded, and the field stays
-cleared until it is due again.
+cleared until it is due again. A call of a function declared above `low`
+risk is proposed instead of made, and made once accepted; such a call is
+its record's, digested with the record, so its decision and its output
+reach no other record
+(`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`).
 
 ### A write waits for what it owes, not for what others owe
 
@@ -541,3 +545,6 @@ output that is not deterministic is recorded.
   lake's head at that moment", said after the batch of entries no write
   waits for. The head it answers is read before that batch, whose
   failure is not the write's.
+- A call of a function above `low` risk is proposed and made once
+  accepted, and every call names the write that set it off
+  (lakelands#997, record 064).

@@ -303,6 +303,7 @@ fn complete_declarations() -> Vec<Declaration> {
             expr: Some(text("net * 1.19")),
             config: serde_json::Value::Null,
             description: None,
+            risk: Risk::Low,
         }),
         Declaration::Verb(VerbDecl {
             name: VerbName::new("pay_invoice"),

@@ -463,6 +463,9 @@ pub struct Pending {
     /// The versions of a source's key the append's own events use first,
     /// as the fold will keep them ([`crate::sealing::first_use`]).
     sealed: crate::backed::Recorded,
+    /// The pending proposals of records' calls, read once at the first
+    /// retirement, which closes its record's (064).
+    calls: Option<BTreeMap<(TypeName, RecordKey), Vec<ProposalId>>>,
 }
 
 impl Pending {
@@ -2962,11 +2965,24 @@ impl Decide<'_> {
 
     /// The drafts of a retirement: `d`, which retires `before` and lands
     /// next, then the triggers and object-set changes it causes, judged
-    /// on the record its provisional event makes.
+    /// on the record its provisional event makes, then the closing of its
+    /// calls' pending proposals (064).
     pub(crate) fn retiring(&mut self, before: &StoredRecord, d: Draft) -> Result<Vec<Draft>> {
+        let (at, now) = (self.next, self.now);
         let after = self.apply(Some(before), &d)?;
         let mut drafts = vec![d];
         drafts.extend(self.reactions(Some(before), &after)?);
+        let calls = match &mut self.pending.calls {
+            Some(calls) => calls,
+            none => none.insert(crate::backed::pending_calls(self.view)?),
+        };
+        let mine = calls.remove(&(before.ty.clone(), before.key.clone()));
+        let why = "its record is retired";
+        let closed: Vec<Draft> = (mine.unwrap_or_default().into_iter())
+            .map(|id| crate::backed::closing(id, why, (now, at)))
+            .collect();
+        self.next = Position(self.next.0 + closed.len() as u64);
+        drafts.extend(closed);
         Ok(drafts)
     }
 
@@ -3528,6 +3544,9 @@ impl Call<'_> {
                 self.renames_shown(&w.ontology, &m, &found)?;
                 **report = fits(found, false)?;
             }
+            // A call of a function above `low` is the store's to propose,
+            // when a write makes it due (064).
+            ProposedWrite::Compute { .. } | ProposedWrite::ComputeSweep { .. } => granted(false)?,
         }
         // Its plan as its proposer is shown it, for the outcome (062).
         let mut shown = match &write {
@@ -3733,6 +3752,47 @@ impl Call<'_> {
             };
             self.planned(&mut w, change, When::Plan, against)?;
         }
+        // A proposed call is accepted while the record still makes it: the
+        // reviewer judged those inputs. The fold leaves the call owed, made
+        // after the append with the accept as its cause (064).
+        if let ProposedWrite::Compute {
+            ty,
+            key,
+            field,
+            input,
+            ..
+        } = write
+        {
+            let then = self.lake.engine.view(Some(p.position))?.get(ty, key)?;
+            let now = view.get(ty, key)?;
+            let made = crate::backed::call_now(self.lake, &w, view.as_ref(), ty, now.as_ref())?;
+            if !made.iter().any(|(f, i)| f == field && i == input) {
+                let version = |r: Option<&lakelands_api::record::StoredRecord>| {
+                    r.map_or(Version(0), |r| r.version)
+                };
+                let (expected, actual) = (version(then.as_ref()), version(now.as_ref()));
+                return Err(Error::Conflict { expected, actual });
+            }
+        }
+        if matches!(
+            write,
+            ProposedWrite::Compute { .. } | ProposedWrite::ComputeSweep { .. }
+        ) {
+            let now = self.lake.clock(&mut w);
+            let accepted = Draft {
+                id: Some(log::accepted_id(&self.lake.id, proposal)),
+                ..self.draft(
+                    now,
+                    Origin::Authored,
+                    EventBody::WriteAccepted {
+                        proposal: proposal.clone(),
+                    },
+                )
+            };
+            drop(view);
+            let events = self.lake.append(&mut w, vec![accepted])?;
+            return Ok((outcome_of(&events), None));
+        }
         self.unmoved(&w, view.as_ref(), p.position)?;
         let now = self.lake.clock(&mut w);
         // The write was checked under the proposer's grants when it was
@@ -3921,6 +3981,9 @@ impl Call<'_> {
                 let own = self.value_type_drafts(&w, m, plan, now, drafts.len())?;
                 drafts.extend(own.into_iter().map(&as_accepted));
             }
+            ProposedWrite::Compute { .. } | ProposedWrite::ComputeSweep { .. } => {
+                unreachable!("a proposed call is accepted above")
+            }
         }
         drop(view);
         let appended = self.lake.append(&mut w, drafts);
@@ -4040,6 +4103,41 @@ impl Call<'_> {
             return Err(refused(Refusal::Decided));
         }
         let now = self.lake.clock(&mut w);
+        // A rejected call that its own record no longer makes is recorded
+        // for that record all the same, under the digest it was proposed
+        // with: the rejection holds for the record should it make the call
+        // again, and none is left to carry it out (064).
+        let moved = match p.write.as_ref() {
+            Some(ProposedWrite::Compute {
+                ty,
+                key,
+                field,
+                function,
+                input,
+                ..
+            }) => {
+                let now_record = view.get(ty, key)?;
+                let made =
+                    crate::backed::call_now(self.lake, &w, view.as_ref(), ty, now_record.as_ref())?;
+                let still = made.iter().any(|(f, i)| f == field && i == input);
+                let f = w.ontology.functions.get(function).filter(|_| !still);
+                f.map(|f| {
+                    let procedure = lakelands_api::event::Procedure {
+                        name: function.clone(),
+                        version: f.version.to_string(),
+                    };
+                    let body = EventBody::OutputRecorded {
+                        seam: crate::backed::seam(&f.decl),
+                        input: input.clone(),
+                        output: Some(crate::backed::rejected(&why)),
+                        output_at: None,
+                        field: Some((ty.clone(), key.clone(), field.clone())),
+                    };
+                    (procedure, body)
+                })
+            }
+            _ => None,
+        };
         let d = self.draft(
             now,
             Origin::Authored,
@@ -4048,8 +4146,16 @@ impl Call<'_> {
                 reason: why,
             },
         );
+        let mut drafts = vec![d];
+        if let Some((procedure, body)) = moved {
+            drafts.push(Draft {
+                cause: Some(position_after(&w, 0)),
+                procedure: Some(procedure),
+                ..Draft::system(now, body)
+            });
+        }
         drop(view);
-        let events = self.lake.append(&mut w, vec![d])?;
+        let events = self.lake.append(&mut w, drafts)?;
         Ok(outcome_of(&events))
     }
 
@@ -5954,6 +6060,9 @@ impl Call<'_> {
             });
         }
         let report_id = report.report_id;
+        let moved: Vec<_> = (rekeyed.iter())
+            .map(|r| (r.ty.clone(), r.from.clone()))
+            .collect();
         let schema_hash = shape::schema_hash(&m.to).map_err(invalid)?;
         let version = w.ontology.next_version(&Declaration::Type(m.to.clone()));
         let migrated = position_after(w, first);
@@ -6001,6 +6110,17 @@ impl Call<'_> {
             },
         );
         drafts.insert(0, d);
+        // A moved record's pending calls are closed with the `migrated`:
+        // they are digested on the key it left (064).
+        if !moved.is_empty() {
+            let view = self.lake.engine.view(None)?;
+            let mut calls = crate::backed::pending_calls(view.as_ref())?;
+            let left = moved
+                .iter()
+                .flat_map(|k| calls.remove(k).unwrap_or_default());
+            let why = "its record moved to another key";
+            drafts.extend(left.map(|id| crate::backed::closing(id, why, (now, migrated))));
+        }
         // The live links of a relation the migration removes are retired
         // with it, each by its own event and with what a retirement sets
         // off, as a purge retires them (035): caused by the `migrated`.
@@ -6760,7 +6880,7 @@ pub(crate) struct Authored {
     known: TypeDecl,
 }
 
-fn risk_word(r: Risk) -> &'static str {
+pub(crate) fn risk_word(r: Risk) -> &'static str {
     match r {
         Risk::Low => "low",
         Risk::Medium => "medium",

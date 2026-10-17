@@ -308,7 +308,9 @@ pub fn run(lake: &Lake, source: &SourceId, report_id: Option<&str>) -> Result<Fo
         keys,
     };
     let mut drafts = vec![Draft::system(now, forgotten)];
-    let mut d = call.decide(&w, view.as_ref(), now, 0);
+    // The retirements land after the `source_forgotten`, and so does what
+    // they cause.
+    let mut d = call.decide(&w, view.as_ref(), now, drafts.len());
     for before in retire {
         let body = writes::retirement(&before.ty, &before.key, before.version);
         drafts.extend(d.retiring(&before, Draft::system(now, body))?);

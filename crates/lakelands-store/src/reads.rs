@@ -1901,6 +1901,7 @@ impl<'a> Reader<'a> {
                 fields,
                 meta: BTreeMap::new(),
                 position: self.position,
+                made: self.position,
                 retired: false,
                 restricted: false,
             });
@@ -2612,6 +2613,12 @@ impl<'a> Reader<'a> {
         (at, proposed_at): (Position, Timestamp),
         (lake, seen): (&OnceCell<LakeDescription>, &OnceCell<Ontology>),
     ) -> Result<Option<(Option<ProposedWrite>, bool)>> {
+        if matches!(
+            logged,
+            ProposedWrite::Compute { .. } | ProposedWrite::ComputeSweep { .. }
+        ) {
+            return self.computed_entry(logged, at);
+        }
         let (o, mut logged) = (&self.shape.ontology, logged.clone());
         // A shape that is not in force is completed as one in force is
         // before it is judged or compared.
@@ -2673,7 +2680,10 @@ impl<'a> Reader<'a> {
             ProposedWrite::MigrateValueType { .. } if rights::holds_only(self.who) => {
                 return Ok(None);
             }
-            ProposedWrite::Call { .. } | ProposedWrite::MigrateValueType { .. } => {}
+            ProposedWrite::Call { .. }
+            | ProposedWrite::MigrateValueType { .. }
+            | ProposedWrite::Compute { .. }
+            | ProposedWrite::ComputeSweep { .. } => {}
         }
         // The type an entry writes, reshapes or calls a verb on, and what
         // its sight rests on (lakelands#913).
@@ -3127,7 +3137,99 @@ impl<'a> Reader<'a> {
                 self.value_type_shown(asked, &read, write, at);
                 Ok(true)
             }
+            // Judged whole or not at all ([`Reader::computed_entry`]).
+            ProposedWrite::Compute { .. } | ProposedWrite::ComputeSweep { .. } => Ok(true),
         }
+    }
+
+    /// A proposed call as its reader is shown it (064). It is not there to
+    /// one not shown its type, nor, of one record's call, to one not
+    /// answered the record. A sweep is there to a reviewer who holds
+    /// `restricted` and no `only` alone, since that it is owed tells of a
+    /// record held. Of those it is whole to one who reads every input the
+    /// function takes and every field it computes on the type; to any other
+    /// it is there in part with nothing of it shown, so it may be rejected
+    /// and not accepted. A record's call proposed at `at` by a record other
+    /// than the one at its key now (retired there since, or moved away by a
+    /// re-key, its `made` another) is there to a reviewer who holds
+    /// `restricted` and no `only` alone, as a sweep is, with no inputs:
+    /// that it was proposed and decided tells of a record the key's
+    /// present reader may not have been answered.
+    fn computed_entry(
+        &self,
+        logged: &ProposedWrite,
+        at: Position,
+    ) -> Result<Option<(Option<ProposedWrite>, bool)>> {
+        let (ty, function, key) = match logged {
+            ProposedWrite::Compute {
+                ty, function, key, ..
+            } => (ty, function, Some(key)),
+            ProposedWrite::ComputeSweep { ty, function, .. } => (ty, function, None),
+            _ => return Ok(None),
+        };
+        let (o, view) = (&self.shape.ontology, self.view.as_ref());
+        let (Ok(decl), Ok(_)) = (o.ty(ty), self.sight.ty(ty)) else {
+            return Ok(None);
+        };
+        let whole_sight = self.who.grants.restricted && !rights::holds_only(self.who);
+        let mut earlier = false;
+        if let Some(key) = key {
+            if !answered(view, self.sight, ty, key)? {
+                return Ok(None);
+            }
+            // Only a re-key since the call was proposed, of its type or of
+            // one its key rests on, moves another record to its key: the
+            // key is read as it stood then after one.
+            let find = |n: &TypeName| o.ty(n).ok();
+            let mut moved = false;
+            for n in lakelands_core::describe::shown_by(decl, &find) {
+                if moved {
+                    break;
+                }
+                moved = self.rekeyed(n, at)?;
+            }
+            earlier = match view.get(ty, key)? {
+                Some(r) if r.made > at => true,
+                Some(r) if moved => {
+                    let then = self.lake.engine.view(Some(at))?.get(ty, key)?;
+                    then.is_none_or(|t| t.made != r.made)
+                }
+                _ => false,
+            };
+            if earlier && !whole_sight {
+                return Ok(None);
+            }
+        }
+        let computes = (decl.fields.iter())
+            .filter(|f| f.function.as_deref() == Some(function.as_str()))
+            .map(|f| f.name.clone());
+        let inputs = (o.functions.get(function).into_iter())
+            .flat_map(|f| f.decl.inputs.iter().map(|i| i.name.clone()));
+        let mut read: Vec<FieldName> = computes.chain(inputs).collect();
+        read.dedup();
+        // A sweep counts every record of the type, a held one among them:
+        // that it is owed at all tells a reader kept from the hold of one.
+        // So it is there to a reviewer who holds `restricted` and no
+        // `only`, and to no other.
+        if key.is_none() && !whole_sight {
+            return Ok(None);
+        }
+        let whole = read.iter().all(|f| self.sight.reads(ty, f));
+        if !whole {
+            return Ok(Some((None, true)));
+        }
+        let mut shown = logged.clone();
+        if let (ProposedWrite::Compute { inputs, .. }, Some(key), Some(f)) =
+            (&mut shown, key, o.functions.get(function))
+        {
+            // The inputs are the record's as its reader is answered them,
+            // never the log's: a source forgotten leaves none behind (058).
+            // A retired record's are none, whatever was made at its key since.
+            let rows = view.get_many(ty, std::slice::from_ref(key))?;
+            *inputs = (rows.first().filter(|_| !earlier))
+                .map(|r| crate::backed::call_of(&f.decl, &r.fields)["inputs"].clone());
+        }
+        Ok(Some((Some(shown), false)))
     }
 
     /// A value type's migration as `asked` may know it, where `read` says

@@ -18,7 +18,9 @@ called, the store looks at that declaration and nothing else:
   reject it (`WriteRejected`).
 
 Declared risk is the only thing that decides between running and
-proposing, whatever the effect.
+proposing, whatever the effect. A function's outside call is governed
+the same way, by the function's own declared risk
+(`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`).
 
 ### A verb that reaches outside the lake runs only through an executor the host has bound
 
@@ -562,3 +564,5 @@ listing and its accept need, moved to
   before, its ends judged only as not held from its caller, since they
   were judged live in the record's write, which such a verb does not
   make.
+- A function's outside call is governed by the function's declared risk
+  as a verb's call is by its own (lakelands#997, record 064).

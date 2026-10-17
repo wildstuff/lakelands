@@ -8,6 +8,7 @@ fn call(expr: Value, inputs: Value) -> FunctionCall {
         function: "gross".into(),
         inputs,
         config: json!({ "expr": expr }),
+        cause: None,
     }
 }
 

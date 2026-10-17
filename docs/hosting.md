@@ -81,7 +81,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   kind the host did not bind is refused as `Unbound`, naming the kind,
   when it is declared. The store calls a backing after the write that
   made a field due, and records each output in the log
-  (`output_recorded`). A replay reads it back and never calls again. See
+  (`output_recorded`). A replay reads it back and never calls again. A
+  function declared above `low` risk is called only once its proposed
+  call is accepted, and every call names the write that set it off
+  (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`). See
   `docs/decisions/022-functions-are-declarations.md` and
   `docs/seams.md` §`FunctionBacking`.
 - **`EmbedBackend`.** A host may pass vectors in with its writes or

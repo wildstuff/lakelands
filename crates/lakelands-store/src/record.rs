@@ -49,7 +49,7 @@ use lakelands_api::event::{Event, EventBody};
 use lakelands_api::expr::Expr;
 use lakelands_api::ontology::{OnInputChange, TypeDecl, ValueTypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
-use lakelands_api::{FieldName, Result, TypeName, Value};
+use lakelands_api::{FieldName, Position, Result, TypeName, Value};
 use lakelands_core::rights::Door;
 use lakelands_core::{damaged, derive, value};
 
@@ -313,10 +313,12 @@ pub fn apply(
         }
     }
 
+    // A record made again after a retirement is made at this write.
+    let made = live_before.map_or(event.position, |b| b.made);
     compute(
         ontology,
         raw,
-        key,
+        (key, made),
         live_before.map(|b| &b.fields),
         written,
         &mut fields,
@@ -333,6 +335,7 @@ pub fn apply(
         fields,
         meta,
         position: event.position,
+        made,
         retired: false,
         restricted: before.is_some_and(|b| b.restricted),
     }))
@@ -370,7 +373,7 @@ pub fn rederive(
     let changed = compute(
         ontology,
         raw,
-        &before.key,
+        (&before.key, before.made),
         Some(&before.fields),
         BTreeSet::new(),
         &mut fields,
@@ -421,7 +424,7 @@ pub fn fill(
     if !backed::put_output(
         ontology,
         raw,
-        field,
+        (&record.key, record.made, field),
         seam,
         input,
         output,
@@ -435,7 +438,7 @@ pub fn fill(
     compute(
         ontology,
         raw,
-        &record.key,
+        (&record.key, record.made),
         Some(&record.fields),
         [field.clone()].into(),
         &mut fields,
@@ -465,7 +468,7 @@ pub fn fill(
 fn compute(
     ontology: &Ontology,
     raw: &TypeDecl,
-    key: &lakelands_api::RecordKey,
+    record: (&lakelands_api::RecordKey, Position),
     before: Option<&BTreeMap<FieldName, Value>>,
     mut written: BTreeSet<FieldName>,
     fields: &mut BTreeMap<FieldName, Value>,
@@ -507,7 +510,7 @@ fn compute(
             ontology,
             &event.lake,
             raw,
-            key,
+            record,
             before.as_ref(),
             fields,
             meta,

@@ -21,9 +21,9 @@ use serde::{Deserialize, Serialize};
 use crate::engine::EngineOpener;
 use crate::error::{Case, Place, Refusal, Result, Said};
 use crate::event::Event;
-use crate::id::{KeyId, LakeId, Position, SourceId, TypeName, VerbName};
+use crate::id::{KeyId, LakeId, Position, RecordKey, SourceId, TypeName, VerbName};
 use crate::ontology::TypeDecl;
-use crate::principal::Principal;
+use crate::principal::{Principal, WriteContext};
 use crate::record::{Patch, Record, Value};
 
 /// What a caller presents to a door, before it is a principal.
@@ -60,6 +60,45 @@ pub struct FunctionCall {
     /// Its declared configuration for this backing.
     #[serde(default)]
     pub config: Value,
+    /// The write that set it off. It is no part of the call: the same
+    /// inputs are the same call, whoever caused them. Its recorded output
+    /// fills every record that makes it, but for a function above `low`,
+    /// whose call is its record's
+    /// (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<CallCause>,
+}
+
+/// The write that made a function's call due, as its event names itself.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CallCause {
+    /// The event's position: the write, the `declared` of a declaration's
+    /// sweep, or the `recompute`.
+    pub position: Position,
+    /// Its writer, `<kind>:<id>`.
+    pub writer: String,
+    /// The record the call is made for: its type.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// And its key.
+    pub key: RecordKey,
+    /// The source, where the write came from one (an ingest's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceId>,
+    /// The write's context.
+    pub context: WriteContext,
+    /// The accept that let the call be made, for a function above `low`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted: Option<Accepted>,
+}
+
+/// The accept of a proposed call.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Accepted {
+    /// The position of its `write_accepted`.
+    pub position: Position,
+    /// Who accepted it, `<kind>:<id>`.
+    pub reviewer: String,
 }
 
 /// Computes a declared function. The backing kind is an open token:

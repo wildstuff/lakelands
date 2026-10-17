@@ -922,6 +922,11 @@ resolver belongs to the doors (the CLI, the server), not to the store.
 
 `kind()` names the backing kind, an open token; `call(function call) ->
 value` computes one output from `{ lake, function, inputs, config }`.
+The call also carries `cause`, the write that made it due (its position,
+writer, record, source and context, and an accept where the call was
+proposed), which is no part of the call's digest; a function declared
+above `low` risk is called only once its proposed call is accepted
+(`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`).
 
 The default is `expr`, evaluated inside the store in the one expression
 grammar. Because it is deterministic, its results are recomputed on

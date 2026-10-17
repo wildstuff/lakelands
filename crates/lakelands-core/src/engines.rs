@@ -1584,6 +1584,9 @@ fn touched(write: &ProposedWrite, stands: &impl Fn(&str) -> Option<TypeName>) ->
         ProposedWrite::Migrate { migration, .. } => vec![migration.to.name.clone()],
         // A value type's tightening names no type, as its declaration names none.
         ProposedWrite::MigrateValueType { .. } => Vec::new(),
+        ProposedWrite::Compute { ty, .. } | ProposedWrite::ComputeSweep { ty, .. } => {
+            vec![ty.clone()]
+        }
     }
 }
 
@@ -1668,6 +1671,7 @@ struct State {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     bare: Vec<FieldName>,
     position: Position,
+    made: Position,
     // Written even when false: an engine's statements read them.
     #[serde(default)]
     retired: bool,
@@ -1702,6 +1706,7 @@ pub fn record_state(r: &StoredRecord) -> String {
         bare: bare.cloned().collect(),
         base,
         position: r.position,
+        made: r.made,
         retired: r.retired,
         restricted: r.restricted,
     };
@@ -1725,6 +1730,7 @@ pub fn decode_record(state: &str) -> Result<StoredRecord> {
         fields: s.fields,
         meta,
         position: s.position,
+        made: s.made,
         retired: s.retired,
         restricted: s.restricted,
     })

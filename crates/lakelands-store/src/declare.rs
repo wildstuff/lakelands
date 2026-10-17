@@ -1791,6 +1791,10 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 field_type(o, &input, i, &TypeName::from(""), None)?;
                 computed_here(&input, i)?;
             }
+            // A call made in process has nothing to gate (064).
+            if f.backing == "expr" && !f.risk.is_low() {
+                return Err(invalid(at(&on, Case::ExprRisk)));
+            }
             match (f.backing.as_str(), &f.expr) {
                 ("expr", Some(e)) => {
                     let e = record_stands(false, condition(e, Eval::Record, &on)?, &on)?;

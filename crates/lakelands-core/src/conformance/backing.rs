@@ -14,7 +14,8 @@
 //! - after [`unplug`] of `t`, every call fails, until [`plug`].
 //!
 //! It counts the calls made with each token, so a check can tell a value
-//! read back from a recorded output from one computed by calling again.
+//! read back from a recorded output from one computed by calling again,
+//! and keeps the cause each call named ([`causes`]).
 //! The token is the check's own, so checks never count each other's
 //! calls.
 //!
@@ -38,7 +39,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use async_trait::async_trait;
 use lakelands_api::error::{Case, Exchange, Remote, Situation};
-use lakelands_api::seam::{EmbedBackend, FunctionBacking, FunctionCall};
+use lakelands_api::seam::{CallCause, EmbedBackend, FunctionBacking, FunctionCall};
 use lakelands_api::{Error, Result, Value};
 
 /// The backing kind the suite's functions name.
@@ -48,6 +49,7 @@ pub const KIND: &str = "conformance";
 struct Calls {
     made: BTreeMap<String, usize>,
     unplugged: BTreeSet<String>,
+    causes: BTreeMap<String, Vec<Option<CallCause>>>,
 }
 
 /// The guard of `m`, also when a check that panicked poisoned it.
@@ -80,6 +82,8 @@ impl FunctionBacking for Scripted {
         {
             let mut c = lock(calls());
             *c.made.entry(token.clone()).or_default() += 1;
+            let cause = call.cause.clone();
+            c.causes.entry(token.clone()).or_default().push(cause);
             if c.unplugged.contains(&token) {
                 let function = call.function.clone();
                 return Err(fail(Remote::Function { function }));
@@ -106,6 +110,11 @@ pub fn backings() -> Vec<Arc<dyn FunctionBacking>> {
 /// How many calls were made with a token.
 pub fn made(token: &str) -> usize {
     lock(calls()).made.get(token).copied().unwrap_or(0)
+}
+
+/// The cause each call made with a token named, in the order made.
+pub fn causes(token: &str) -> Vec<Option<CallCause>> {
+    lock(calls()).causes.get(token).cloned().unwrap_or_default()
 }
 
 /// Make every later call with a token fail.

@@ -14,6 +14,7 @@ fn a_calls_digest_is_the_one_the_log_format_pins() {
         expr: None,
         config: json!({"url": "https://geo.example/lookup"}),
         description: None,
+        risk: Default::default(),
     };
     let fields: BTreeMap<FieldName, Value> = [
         ("address".into(), json!("Hauptstraße 1")),

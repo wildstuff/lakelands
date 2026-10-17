@@ -112,6 +112,7 @@ fn function(name: &str, input: &str, expr: &str) -> FunctionDecl {
         expr: Some(Condition::from(expr)),
         config: serde_json::Value::Null,
         description: Some(format!("{name} of {input}")),
+        risk: Default::default(),
     }
 }
 

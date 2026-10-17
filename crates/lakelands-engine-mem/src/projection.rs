@@ -660,6 +660,7 @@ mod tests {
             fields: [("n".into(), json!(n))].into_iter().collect(),
             meta: BTreeMap::new(),
             position: Position(position),
+            made: Position(position),
             retired: false,
             restricted: false,
         }
@@ -703,6 +704,7 @@ mod tests {
             .collect(),
             meta: BTreeMap::new(),
             position: Position(at),
+            made: Position(at),
             retired,
             restricted: false,
         };

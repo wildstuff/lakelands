@@ -1037,6 +1037,7 @@ pub async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) {
         expr: Some(Condition::from(expr)),
         config: Value::Null,
         description: Some(format!("{name} of {input}")),
+        risk: Default::default(),
     };
     let described = |name: &str| FieldDecl {
         label: Some(name.to_uppercase()),

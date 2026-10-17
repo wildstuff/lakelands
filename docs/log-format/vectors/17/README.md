@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 52, each
+- `further.json`: the lake's next events, positions 8 to 56, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -93,7 +93,14 @@ The files:
     (51) (`docs/decisions/062-a-change-plans-before-it-acts.md`);
   - an ingest of `erp` in the delivery `batch-7` its caller named (52),
     its id made without it: a form format 17 holds and 16 does not
-    (lakelands#1153).
+    (lakelands#1153);
+  - a `declared` function of the backing `http` at `risk: high`, a type
+    `alert` that it computes a field of, a write of an `alert`, and the
+    `write_proposed` of the call that write made due, as its writer and
+    caused by it: the record, the field and the call's digest on that
+    record as that write made it, with no inputs, which are the
+    record's and may be erased (53 to 56;
+    `docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`).
 
   Its `misplaced` holds five lines that are not of the lake. Each
   stands at its position after the event before it, in the release's

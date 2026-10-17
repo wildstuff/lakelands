@@ -597,6 +597,7 @@ fn a_writer_that_gives_its_lease_up_leaves_the_journal_empty() {
             fields: serde_json::from_value(json!({"text": "x".repeat(4000)})).unwrap(),
             meta: Default::default(),
             position: Position(at),
+            made: Position(at),
             retired: false,
             restricted: false,
         })

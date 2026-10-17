@@ -641,6 +641,7 @@ pub(super) fn function(l: &mut Lower<'_>, doc: FunctionDoc) -> FunctionDecl {
         expr,
         config: doc.config.unwrap_or(serde_json::Value::Null),
         description: doc.description,
+        risk: doc.risk,
     };
     l.annotated(&Declaration::Function(f.clone()));
     f

@@ -848,6 +848,8 @@ catalog! {
         VerbKey => "a key's field is written by every create, and a verb writes only a record that stands",
         /// An `expr` function with no expression.
         ExprNoExpression => "it is backed by `expr` and has no expression",
+        /// An `expr` function declared above `low` risk.
+        ExprRisk => "it is backed by `expr`, which reaches nothing outside the lake, so its risk is `low`",
         /// An expression on a function another backing computes.
         ExpressionNotExpr { backing: String } => "it has an expression but is backed by `{backing}`",
         /// A function's input the type holds as another kind.

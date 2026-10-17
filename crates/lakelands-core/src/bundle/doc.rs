@@ -250,6 +250,8 @@ pub(super) struct FunctionDoc {
     pub expr: Option<Cond>,
     pub config: Option<serde_json::Value>,
     pub description: Option<String>,
+    #[serde(default)]
+    pub risk: Risk,
 }
 
 /// A string, or a mapping read as `T`. Errors inside the mapping keep

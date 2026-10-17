@@ -349,6 +349,8 @@ interface types {
         expr: option<condition>,
         config: option<json>,
         description: option<string>,
+        /// Above `low`, a call is proposed and made only when accepted.
+        risk: option<risk>,
     }
 
     /// A host's own setting: every write of its key is judged as a write
@@ -783,6 +785,28 @@ interface types {
         report: value-type-report,
     }
 
+    /// One record's call of a function above `low` risk, as the store
+    /// proposes it.
+    record compute-write {
+        %type: type-name,
+        key: record-key,
+        field: field-name,
+        function: string,
+        inputs: option<json>,
+        /// The call's digest on its record, which keys its output: a
+        /// decision holds for its record alone.
+        input: digest,
+    }
+
+    /// The calls a declaration or `recompute` makes due over a type, of a
+    /// function above `low` risk, proposed as one.
+    record compute-sweep-write {
+        %type: type-name,
+        function: string,
+        count: u64,
+        first: list<record-key>,
+    }
+
     variant proposed-write {
         upsert(upsert-write),
         retire(retire-write),
@@ -790,9 +814,11 @@ interface types {
         declare(declare-write),
         migrate(migrate-write),
         migrate-value-type(migrate-value-type-write),
+        compute(compute-write),
+        compute-sweep(compute-sweep-write),
     }
 
-    enum proposal-kind { upsert, retire, call, declare, migrate, migrate-value-type }
+    enum proposal-kind { upsert, retire, call, declare, migrate, migrate-value-type, compute }
 
     enum proposal-state { pending, accepted, rejected }
 

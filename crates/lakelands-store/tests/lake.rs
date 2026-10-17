@@ -593,6 +593,7 @@ async fn the_door_refuses_what_this_release_does_not_hold() {
                 expr: None,
                 config: json!({"url": "x"}),
                 description: None,
+                risk: Default::default(),
             }),
         )
         .await;
@@ -1698,6 +1699,7 @@ async fn declare_refuses_unkeyable_keys_and_unchecked_functions() {
             expr: Some(Condition::from(expr)),
             config: serde_json::Value::Null,
             description: None,
+            risk: Default::default(),
         })
     };
     let r = cat
@@ -2348,6 +2350,7 @@ async fn a_redeclared_function_recomputes_its_fields_naming_its_version() {
             expr: Some(Condition::from(expr)),
             config: serde_json::Value::Null,
             description: None,
+            risk: Default::default(),
         })
     };
     cat.declare(&o, function("net * 2")).await.unwrap();

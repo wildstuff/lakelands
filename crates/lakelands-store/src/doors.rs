@@ -613,8 +613,10 @@ impl Catalog for Doors {
         proposal: &ProposalId,
         reason: String,
     ) -> Result<Outcome> {
+        // A rejected call is recorded as its output, after the append (064).
         let (p, asked) = (proposal.clone(), who.clone());
-        self.write(who, move |c| c.reject(&p, &asked, reason)).await
+        self.write_settled(who, move |c| c.reject(&p, &asked, reason))
+            .await
     }
 
     async fn proposals(
