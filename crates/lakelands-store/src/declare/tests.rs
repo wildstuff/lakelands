@@ -151,4 +151,22 @@ fn a_declarations_tool_names_are_judged_against_the_lakes_alone_as_the_whole_jud
         whole.tool_names(),
         "the names kept are the lake's"
     );
+    // A verb withdrawn gives way too (lakelands#1219).
+    let verb: Declaration = serde_json::from_value(serde_json::json!({"declare": "verb",
+        "name": "stamp", "on": "x", "risk": "low", "effect": "write", "set": [{"field": "a", "value": "'v'"}]}))
+    .expect("a verb");
+    let mut withdrawn = moved.clone();
+    crate::writes::put_as_appended(&mut withdrawn, &verb, Some);
+    assert_ne!(
+        withdrawn.tool_names(),
+        moved.tool_names(),
+        "the verb makes a name"
+    );
+    withdrawn.take_out(lakelands_api::write::DeclarationKind::Verb, "stamp");
+    let whole = Ontology::from_declared(&withdrawn.declared()).named();
+    assert_eq!(
+        withdrawn.tool_names(),
+        whole.tool_names(),
+        "the names kept are the lake's once a verb is withdrawn"
+    );
 }

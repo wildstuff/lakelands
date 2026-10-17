@@ -579,10 +579,11 @@ force, or `recompute` (022), as the fold decides it from the `declared`
 event. The rule changes nothing of the log format, and a log that holds
 identical declarations folds as it did.
 
-### A trigger or a function is withdrawn by a declaration
+### A trigger, a verb, an object set or a function is withdrawn by a declaration
 
-`{"declare": "withdraw", "kind": ..., "name": ...}` takes the trigger
-or the function of that name out of force from its position on. It is
+`{"declare": "withdraw", "kind": ..., "name": ...}` takes the
+trigger, the verb, the object set or the function of that name out of
+force from its position on. It is
 one `declared` event, through `declare`, `apply` and `propose` alike,
 and its version is the next one of the name it withdraws, so a later
 declaration of that name continues the count. `describe` no longer
@@ -592,22 +593,41 @@ a removal from the log. A withdrawn trigger fires no more, and a
 reaction naming one of its earlier firings is judged by the lake's own
 reactive ceiling, the trigger's being gone with it, and so it stays once
 the name is declared again: a trigger declared after a withdrawal binds
-only its own firings.
+only its own firings. A withdrawn verb takes no call: a call of it is refused
+as a call of a verb not declared. A call of it proposed before is judged
+at its accept by the lake as it stood where it was proposed, as a
+withdrawal is. First, before anything else is told, whether its
+reviewer is listed it there: one that is not is answered as for a
+proposal id that does not exist, as it was before the withdrawal, so it
+learns nothing. To one listed it whole, the owner too, its accept is
+refused as a call of a verb not declared. Such a proposal stays pending
+until it is rejected, and once the verb is declared again otherwise its
+accept is refused as for any verb declared again since the call. The
+tool name the verb made is free. A withdrawn set holds no member
+from its withdrawal on: its memberships end at that position with no
+event for each record, as a migration's moves carry them, and a read as
+of before still answers them. Declared again, the set decides its
+members as a new set does.
 
 A withdrawal is refused while something in force reads what it
 withdraws, naming the first reader (`withdrawn_in_use`): for a
 function, a field that it computes, of a type, of a relation's links
 named at the relation, or of a link type no relation carries any more,
-named at the link type. Nothing reads a trigger. A name not
+named at the link type; for a verb, a field only verbs write that no
+other verb of its type sets, which would be left with no writer but its
+`initial` and aging; for an object set, another set or a trigger's
+`when` that names it. Nothing reads a trigger. A set and the set over it
+go together in one set of declarations. A name not
 in force is refused `withdrawn_undeclared`, and so is one its author is
 not shown, so the refusal tells a hidden declaration from an absent one
 no more than a read does (024), alone or in a set. A function that
 computes only fields its author is not shown is not its to withdraw:
 the refusal would name such a field, so it is not granted, as declaring
-the function again would not be; one that computes a field it is shown
-too is refused naming that one. The accept judges it so too, as its
-reviewer is shown the lake. At the accept of a proposed withdrawal, a
-declaration of the name since the proposal refuses it
+the function again would not be, and so is a set that only a trigger
+its author is not shown watches; one that a field or a trigger it is
+shown reads too is refused naming that one. The accept judges it so too,
+as its reviewer is shown the lake. At the accept of a proposed
+withdrawal, a declaration of the name since the proposal refuses it
 `declared_since_proposed`, as it refuses any bundle. A withdrawal,
 pending or decided, is listed only to a reader shown both what it
 withdrew, as the lake held that when it was proposed, and what stands
@@ -616,8 +636,8 @@ withdrew from, whatever stands under the name since. The version a name
 declared again continues tells a reader that the name has a history,
 never what that history was: so does a trigger moved from a type the
 reader is not shown to one it is. A type leaves by `migrate` and a
-setting by its record; these, a value type, a verb and an object set
-are refused `withdrawn_kind`.
+setting by its record; these and a value type are refused
+`withdrawn_kind`.
 
 Without it, the only way to end a rule was to declare it again with a
 guard that never holds: a dead declaration in every description and
@@ -929,5 +949,5 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
 - Added: a declaring append leaves the shape after it, built at the
   first read of its position (lakelands#1056).
 - Marking a field `authority: verb` is a change of meaning, taken by `declare` (lakelands#1130).
-- A trigger or a function is withdrawn by a declaration (lakelands#1219).
+- A trigger, a verb, an object set or a function is withdrawn by a declaration (lakelands#1219).
 - Marking a type `retired_by: verbs` is a change of meaning, taken by `declare` (lakelands#1148).

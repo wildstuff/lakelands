@@ -1856,12 +1856,12 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
     tool_names(o, d)
 }
 
-/// A withdrawal: of a trigger or a function in force, which nothing in
-/// force reads. Nothing reads a trigger; a function is read by each field
-/// that names it, of a type or of a relation's links.
+/// A withdrawal: of a trigger, a verb, an object set or a function in
+/// force, which nothing in force reads ([`reader`]).
 fn withdrawal(o: &Ontology, w: &Withdrawal) -> Result<()> {
+    use DeclarationKind::{Function, ObjectSet, Trigger, Verb};
     let (kind, name) = (w.kind.naming(), w.name.clone());
-    if !matches!(w.kind, DeclarationKind::Trigger | DeclarationKind::Function) {
+    if !matches!(w.kind, Trigger | Verb | ObjectSet | Function) {
         return Err(invalid(Case::WithdrawnKind { kind }));
     }
     if o.held_named(w.kind, &w.name).is_none() {
@@ -1874,13 +1874,55 @@ fn withdrawal(o: &Ontology, w: &Withdrawal) -> Result<()> {
 }
 
 /// The first reader in force of what `w` withdraws, as a refusal names
-/// it. Nothing reads a trigger; a function is read by each field it
-/// computes.
+/// it. Nothing reads a trigger. A function is read by each field it
+/// computes; a verb by each field of its type only verbs write that no
+/// other verb of the type sets (lakelands#1130); an object set by each set
+/// and each trigger whose condition names it, itself or through the sets
+/// it names.
 pub(crate) fn reader(o: &Ontology, w: &Withdrawal) -> Option<String> {
     match w.kind {
         DeclarationKind::Function => function_reader(o, &w.name),
+        DeclarationKind::Verb => verb_reader(o, &VerbName::from(w.name.as_str())),
+        DeclarationKind::ObjectSet => set_reader(o, &w.name),
         _ => None,
     }
+}
+
+/// The first field only verbs write that `verb` alone of its type's verbs
+/// sets: the field `status` of `order`.
+fn verb_reader(o: &Ontology, verb: &VerbName) -> Option<String> {
+    let v = &o.verbs.get(verb)?.decl;
+    let t = &o.types.get(&v.on)?.decl;
+    let sets = |v: &lakelands_api::ontology::VerbDecl, f: &FieldName| matches!(&v.effect, VerbEffect::Write { set } if set.iter().any(|a| &a.field == f));
+    let others = o.verbs.values().map(|e| &e.decl);
+    let others = |f: &FieldName| {
+        others
+            .clone()
+            .any(|x| x.name != v.name && x.on == t.name && sets(x, f))
+    };
+    let only =
+        |f: &&FieldDecl| f.authority == Authority::Verb && sets(v, &f.name) && !others(&f.name);
+    let f = t.fields.iter().find(only)?;
+    Some(format!("the field `{}` of `{}`", f.name, t.name))
+}
+
+/// The first set, then trigger, in force whose condition names the set
+/// `set`: the object set `big`, the trigger `watch`.
+fn set_reader(o: &Ontology, set: &str) -> Option<String> {
+    let names = |c: &Condition| {
+        let mut named = Vec::new();
+        lakelands_core::describe::in_sets(&c.typed().ok()?, &mut named);
+        let through = |n: &String| o.set(n).is_some_and(|s| names_set(o, s, set));
+        Some(named.iter().any(|n| n == set || through(n)))
+    };
+    let sets = o.object_sets.values().map(|e| &e.decl);
+    let mut over = sets.filter(|s| s.name != set && names_set(o, s, set));
+    if let Some(s) = over.next() {
+        return Some(format!("the object set `{}`", s.name));
+    }
+    let mut triggers = o.triggers.values().map(|e| &e.decl);
+    let watching = triggers.find(|t| t.when.as_ref().and_then(names) == Some(true));
+    watching.map(|t| format!("the trigger `{}`", t.name))
 }
 
 /// The first field in force that a function computes, as a refusal names
