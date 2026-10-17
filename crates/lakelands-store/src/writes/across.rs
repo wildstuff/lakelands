@@ -10,6 +10,7 @@
 
 use super::*;
 use lakelands_api::engine::Scan;
+use lakelands_api::event::DepthBound;
 use lakelands_api::expr::Expr;
 use lakelands_api::ontology::MatchPair;
 
@@ -172,6 +173,30 @@ impl Decide<'_> {
         Ok(self.holds_at_write(&e, w.ontology.ty(&t.on)?, before, after))
     }
 
+    /// The event of `t` firing on the record of `ty` at `key`: a
+    /// `trigger_fired`, or a `trigger_dropped` where the write's depth is
+    /// at or above the trigger's `max_depth` or the lake's
+    /// `max_reactive_depth`, the lower that applies, since a reaction to it
+    /// could write nothing (lakelands#1216).
+    pub(super) fn firing(&self, t: &TriggerDecl, ty: &TypeName, key: &RecordKey) -> EventBody {
+        let depth = self.call.context.depth;
+        let lake = (self.call.lake.limits.max_reactive_depth, DepthBound::Lake);
+        let own = t.max_depth.map(|m| (m, DepthBound::Trigger));
+        let bound = own.into_iter().chain([lake]).filter(|(m, _)| depth >= *m);
+        let (trigger, ty, key) = (t.name.clone(), ty.clone(), key.clone());
+        match bound.min_by_key(|(m, _)| *m) {
+            Some((max_depth, bound)) => EventBody::TriggerDropped {
+                trigger,
+                ty,
+                key,
+                depth,
+                max_depth,
+                bound,
+            },
+            None => EventBody::TriggerFired { trigger, ty, key },
+        }
+    }
+
     /// Whether a trigger's `when`, `e` over `on`, holds at a write that
     /// leaves `after` (it was `before`).
     fn holds_at_write(
@@ -286,11 +311,8 @@ impl Decide<'_> {
                         if r.retired || !self.holds_at_write(&e, on, Some(&r), &r) {
                             continue;
                         }
-                        let body = EventBody::TriggerFired {
-                            trigger: name.into(),
-                            ty: r.ty.clone(),
-                            key: r.key.clone(),
-                        };
+                        let t = &o.triggers[name].decl;
+                        let body = self.firing(t, &r.ty, &r.key);
                         let fired = Draft {
                             cause: Some(self.next),
                             context: self.call.context,

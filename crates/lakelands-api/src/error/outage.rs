@@ -677,6 +677,8 @@ catalog! {
         SealedBefore { v: u32 } => "an event of format {v} carries `sealed`, which format 16 added",
         /// A `source_forgotten` in a format before the one that added it.
         ForgottenBefore { v: u32 } => "an event of format {v} is a `source_forgotten`, which format 16 added",
+        /// A `trigger_dropped` in a format before the one that added it.
+        DroppedBefore { v: u32 } => "an event of format {v} is a `trigger_dropped`, which format 17 added",
         /// An event other than a `record_ingested` of format 17 on carries `delivery`.
         DeliveryOn { kind: String, v: u32 } => "a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries",
         /// An event other than `record_ingested` carries `upstream`.

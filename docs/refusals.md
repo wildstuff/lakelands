@@ -890,6 +890,7 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `sealed_on` | `kind` (String) | a `{kind}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries | An event other than `record_ingested` and `output_recorded` carries `sealed`. |
 | `sealed_before` | `v` (u32) | an event of format {v} carries `sealed`, which format 16 added | An event of a format before 16 carries `sealed`. |
 | `forgotten_before` | `v` (u32) | an event of format {v} is a `source_forgotten`, which format 16 added | A `source_forgotten` in a format before the one that added it. |
+| `dropped_before` | `v` (u32) | an event of format {v} is a `trigger_dropped`, which format 17 added | A `trigger_dropped` in a format before the one that added it. |
 | `delivery_on` | `kind` (String), `v` (u32) | a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries | An event other than a `record_ingested` of format 17 on carries `delivery`. |
 | `upstream_on` | `kind` (String) | a `{kind}` event carries `upstream`, which only a `record_ingested` event carries | An event other than `record_ingested` carries `upstream`. |
 | `hash_mismatch` | — | the hash does not match the event | The hash does not match the event. |

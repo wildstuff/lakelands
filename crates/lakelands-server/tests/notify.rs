@@ -944,7 +944,8 @@ async fn declare(store: &dyn LakeStore, d: Value) {
 
 /// A trigger or an object set says a condition held, and a condition may
 /// read any field of its type: a principal who does not read every field
-/// in full is never told of one (024). The owner, who does, is.
+/// in full is never told of one (024), nor of a firing dropped past its
+/// depth (lakelands#1216). The owner, who does, is.
 #[tokio::test]
 async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_whole_type() {
     for backend in [Backend::Memory, Backend::Sqlite] {
@@ -953,6 +954,12 @@ async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_who
             store.as_ref(),
             json!({"declare": "trigger", "name": "big_secret", "on": "invoice",
                    "when": "secret = 's3'"}),
+        )
+        .await;
+        declare(
+            store.as_ref(),
+            json!({"declare": "trigger", "name": "no_reaction", "on": "invoice",
+                   "when": "secret = 's3'", "max_depth": 0}),
         )
         .await;
         declare(
@@ -966,7 +973,8 @@ async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_who
         for s in [&mut owner, &mut watcher] {
             s.call(
                 "subscribe",
-                json!({"kinds": ["trigger_fired", "object_set_changed", "record_upserted"]}),
+                json!({"kinds": ["trigger_fired", "trigger_dropped", "object_set_changed",
+                    "record_upserted"]}),
             )
             .await;
         }
@@ -977,16 +985,22 @@ async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_who
             json!({"status": "paid", "secret": "s3"}),
         )
         .await;
-        // The owner is told of the write, the firing and the set change.
+        // The owner is told of the write, the firing, the firing dropped
+        // and the set change.
         let mut told = Vec::new();
-        while told.len() < 3 {
+        while told.len() < 4 {
             let m = owner.change().await;
             told.push(m["params"]["kind"].as_str().unwrap().to_owned());
         }
         told.sort();
         assert_eq!(
             told,
-            ["object_set_changed", "record_upserted", "trigger_fired"],
+            [
+                "object_set_changed",
+                "record_upserted",
+                "trigger_dropped",
+                "trigger_fired"
+            ],
             "{backend:?}"
         );
         // The watcher, who may not read `secret`, is told of the write's

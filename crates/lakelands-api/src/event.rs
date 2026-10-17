@@ -335,6 +335,26 @@ pub enum EventBody {
         /// The record's key.
         key: RecordKey,
     },
+    /// A write would have made a trigger's condition hold, at a depth where
+    /// a reaction to it could write nothing: the write's own depth is at
+    /// or above the bound that applies, so no `trigger_fired` is appended
+    /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`).
+    /// Added in format 17.
+    TriggerDropped {
+        /// The trigger.
+        trigger: TriggerName,
+        /// The record's type.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// The record's key.
+        key: RecordKey,
+        /// The depth of the write that would have fired it.
+        depth: u32,
+        /// The bound that applied.
+        max_depth: u32,
+        /// Whose bound it is.
+        bound: DepthBound,
+    },
     /// A write moved a record into or out of an object set.
     ObjectSetChanged {
         /// The set.
@@ -425,9 +445,21 @@ kinds! {
     WriteAccepted => "write_accepted",
     WriteRejected => "write_rejected",
     TriggerFired => "trigger_fired",
+    TriggerDropped => "trigger_dropped",
     ObjectSetChanged => "object_set_changed",
     OutputRecorded => "output_recorded",
     Checkpoint => "checkpoint",
+}
+
+/// Whose depth bound dropped a trigger's firing: the trigger's own
+/// `max_depth`, or the lake's `max_reactive_depth`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DepthBound {
+    /// The trigger's `max_depth`.
+    Trigger,
+    /// The lake's `max_reactive_depth`.
+    Lake,
 }
 
 /// A sealed segment, as a checkpoint lists it.

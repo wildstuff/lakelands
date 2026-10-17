@@ -544,6 +544,7 @@ same fields itself
 | Kind | Payload | Fold |
 |---|---|---|
 | `trigger_fired` | `trigger`, `type`, `key` | A write made a trigger's condition hold. Appended in the same append as that write, with `cause` naming it. The durable fact that something is due; acting on it is the host's (`docs/decisions/004-the-change-feed-is-the-log.md`). |
+| `trigger_dropped` | `trigger`, `type`, `key`, `depth`, `max_depth`, `bound` (`trigger` or `lake`) | A write made a trigger's condition hold at a `depth` at or above the trigger's `max_depth` or the lake's `max_reactive_depth`, so a reaction to it could write nothing: appended in place of `trigger_fired`, in the same append and with the same `cause`. `max_depth` is the bound that applied, the lower of the two, and `bound` says whose it is (`docs/decisions/021-the-write-context-belongs-to-the-host.md`). Format 17 adds it. |
 | `object_set_changed` | `set`, `type`, `key`, `joined` (boolean) | A write moved a record into (`true`) or out of (`false`) an object set, in the write's append and caused by it; or a set's declaration did, in the declaration's append and caused by its `declared` (lakelands#453); or a migration did, in its append and caused by its `migrated` (lakelands#457), for a record of the migrated type, as converted and, from format 15 on, computed again (lakelands#1070), of one of its link types, or of another type whose reference to a moved key it rewrites (lakelands#465, lakelands#466); or a value type's migration did, in its append and caused by its `value_type_migrated`, for a record whose renamed values, and what is computed from them, move it (lakelands#553). |
 | `output_recorded` | `seam`, `input` (digest), `output` or `output_at` (a position), `field` (optional `[type, key, field]`) | The output of a seam the store called: a function backing, an embedding backend, a verb executor. A replay reads this output instead of calling the seam (`docs/decisions/002-determinism-is-the-boundary.md`). With `output_at` it names an output the log already holds and fills `field` from it (below). |
 
@@ -911,7 +912,8 @@ the first release with real installations
   it again, one version on, after `lake_upgraded`, and in the same
   append stamps each setting the lake holds with its group, `store` on
   the store's own; a `record_ingested`'s `delivery` (§1.1), so an
-  ingest of format 16 is in no delivery; and a recorded output's
+  ingest of format 16 is in no delivery; a `trigger_dropped`
+  (lakelands#1216); and a recorded output's
   `input` digested under the oldest version that sealed the values it
   reads (§1.4), where 16 took the source's first version. Over values
   its first version sealed the two agree, and an output of 16 names
