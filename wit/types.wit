@@ -1090,6 +1090,12 @@ interface types {
         find: bool,
         get: bool,
         upsert: bool,
+        /// Whether a create the principal can send may be taken: false
+        /// where the declaration shows every one needs a value it may not
+        /// send or a field it may not read.
+        create: bool,
+        /// Why `create` is false, naming nothing hidden.
+        create-why: option<string>,
         retire: bool,
         /// The relations whose links the principal may write.
         link: list<relation-name>,

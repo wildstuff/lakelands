@@ -631,6 +631,7 @@ fn type_description() -> TypeDescription {
             field_meta: true,
         },
         may: TypeRights {
+            create_why: Some("w".into()),
             link: vec!["r".into()],
             ..TypeRights::default()
         },
@@ -1185,6 +1186,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         (
             "type_rights",
             members(&TypeRights {
+                create_why: Some("w".into()),
                 link: vec!["r".into()],
                 only: [("o".into(), json!("a"))].into(),
                 ..TypeRights::default()

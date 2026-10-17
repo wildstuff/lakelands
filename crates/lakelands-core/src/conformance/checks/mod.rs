@@ -269,6 +269,7 @@ pub const ALL: &[Check] = &[
     required_at_create::REQUIRED_AT_CREATE,
     required_at_create::REQUIRED_TWIN,
     required_at_create::REQUIRED_OUTSIDE,
+    required_at_create::MAY_CREATE,
     computed_at::AT_THE_READ,
     computed_at::SAID_WHEN,
     computed_at::MOVED,

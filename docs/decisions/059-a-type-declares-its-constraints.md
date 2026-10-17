@@ -115,12 +115,28 @@ Where the constraint reads a field a create can send, the declaration is
 taken as it was: `positive: size > 0` over a `size` whose `initial` is 0
 says that a create must send `size`. `describe_type` tells it: each
 field that feeds a constraint the create's record breaks, followed
-through the derived fields to those a create sends, is
+through the derived fields to the fields they are computed from, is
 `required_at_create`, to a reader shown the field and the constraint, and
-the generated `upsert` tool says a create sends it. A derived field is
-not told, the fields it is computed from are; nor is a field only verbs
-write whose `initial` is set, a choice no create changes, so the field
+the generated `upsert` tool says a create sends the authored ones. A
+derived field is not told, the fields it is computed from are. A field
+only verbs write is told where it has no `initial`, as one no create can
+give, and not where it has one, a choice no create changes, so the field
 asked for is another. A create without it is refused `constraint_broken`.
+
+`describe_type` tells too whether a create can be made, beside `upsert`,
+which keeps its meaning, updates included: `may.create` is false where the
+declaration shows that no create the principal can send is taken
+(lakelands#1188). That is so where a constraint the create's record
+breaks is fed by none of the fields the principal may send, those it is
+granted of the authored ones, or joins by `and` a condition so fed and
+broken; where a required field with no `initial`, or a field of the key,
+which a create fills from its key, is one it may not send;
+and where a constraint reads a field it may not read, which the write
+refuses whatever the create holds. It says why in one sentence that
+names no field and no constraint, so a reader learns no more than the
+write's own refusal tells. A create the declaration cannot rule out
+leaves `create` true, and the write is the judge: `describe` is never
+stricter than the door.
 
 ### A constraint is added or changed by a migration
 

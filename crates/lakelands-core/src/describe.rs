@@ -818,6 +818,9 @@ pub(crate) fn relation_shown<'a>(
         && to.iter().all(|n| known(target, n))
 }
 
+/// Why a principal who may write a type is told it may make no record of it.
+const CREATE_CLOSED: &str = "a create needs a value you may not send";
+
 /// `t` with each `expr` function's expression in place of its name, and the
 /// value types its fields name: what the record a create leaves is
 /// computed from.
@@ -842,6 +845,45 @@ fn bare_inputs(t: &TypeDecl, declared: &[Declared]) -> (TypeDecl, Vec<ValueTypeD
         _ => None,
     });
     (out, types.filter(named).cloned().collect())
+}
+
+/// Whether no create `who` can send is taken (lakelands#1188), as far as
+/// the declaration shows it: a constraint the record a create leaves
+/// breaks is one no fields it may send can make hold ([`derive::stuck`]),
+/// those it is granted of the authored ones; a field the create needs,
+/// required with no `initial`, or a field of the key, which a create fills
+/// from its key, is not one it may send; or a constraint
+/// reads a field it may not read, which the write refuses whatever the
+/// create holds. A create it cannot rule out leaves it open: the write is
+/// the judge. `t` and `broken` are as [`derive::breaks`] takes and answers
+/// them.
+fn create_closed(
+    who: &Principal,
+    t: &TypeDecl,
+    value_types: &[ValueTypeDecl],
+    broken: &[(&ConstraintDecl, BTreeSet<FieldName>)],
+) -> bool {
+    let field = |n: &FieldName| t.fields.iter().find(|f| &f.name == n);
+    let sends = |f: &FieldDecl| {
+        matches!(f.authority, Authority::Authored | Authority::Shared)
+            && field_access(who, t, f).writes()
+    };
+    let sendable = |n: &FieldName| field(n).is_some_and(sends);
+    let unreadable = |n: &FieldName| field(n).is_some_and(|f| !field_access(who, t, f).reads());
+    let hidden = t.constraints.iter().any(|c| {
+        let e = c.holds.typed().ok();
+        e.is_some_and(|e| derive::reads(&e).iter().any(unreadable))
+    });
+    let computed = |f: &FieldDecl| f.derived.is_some() || f.function.is_some();
+    let needed = |f: &&FieldDecl| f.required && f.initial.is_none() && !computed(f);
+    let unsent = t.fields.iter().filter(needed).any(|f| !sends(f));
+    // A create fills the key's fields from its key, as a write of them.
+    let unkeyed = t.key.iter().any(|k| !sendable(k));
+    let stuck = |(c, _): &&(&ConstraintDecl, BTreeSet<FieldName>)| {
+        let e = c.holds.typed().ok();
+        e.is_some_and(|e| derive::stuck(t, value_types, &e, &sendable))
+    };
+    hidden || unsent || unkeyed || broken.iter().any(|b| stuck(&b))
 }
 
 impl Sight<'_> {
@@ -896,13 +938,17 @@ impl Sight<'_> {
         // A holder of `only` writes its own records, and makes one only where
         // it writes every field its `only` names (051).
         let held = only_holder(who, t, self.force);
+        let upsert = crate::rights::creates(who, t)
+            && !is_view
+            && !is_link
+            && fields.iter().any(FieldDescription::authored_writable);
+        let closed = create_closed(who, &resolved, &value_types, &broken);
         let may = TypeRights {
             find: true,
             get: true,
-            upsert: crate::rights::creates(who, t)
-                && !is_view
-                && !is_link
-                && fields.iter().any(FieldDescription::authored_writable),
+            upsert,
+            create: upsert && !closed,
+            create_why: (upsert && closed).then(|| CREATE_CLOSED.to_owned()),
             // A type only its verbs retire is retired by calling one.
             retire: !is_link && t.retired_by.is_authors() && crate::rights::may_retire(who, t),
             link: t

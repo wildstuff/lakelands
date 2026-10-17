@@ -232,6 +232,39 @@ pub fn leaves(ty: &TypeDecl, read: &BTreeSet<FieldName>) -> BTreeSet<FieldName> 
     leaves
 }
 
+/// Whether no create that sends only fields `sendable` names can make `e`
+/// hold, as far as its form shows it: no field it reads is fed by one of
+/// them, or one of the conditions it joins by `and` is, read only from
+/// fields none of them feeds, broken by the record a create leaves
+/// ([`bare`]) and decided by the record alone. Anything else is a create it
+/// cannot rule out. `ty` is as for [`fixed`].
+#[doc(hidden)]
+pub fn stuck(
+    ty: &TypeDecl,
+    value_types: &[ValueTypeDecl],
+    e: &Expr,
+    sendable: &dyn Fn(&FieldName) -> bool,
+) -> bool {
+    let fed = |e: &Expr| leaves(ty, &reads(e)).iter().any(sendable);
+    if !fed(e) {
+        return true;
+    }
+    let Expr::And { args } = e else {
+        return false;
+    };
+    let fields = bare(ty, value_types);
+    let scope = WriteScope {
+        after: &fields,
+        before: None,
+        retiring: false,
+        meta: None,
+        settings: None,
+        now: Timestamp(0),
+    };
+    let broken = |a: &Expr| decided(ty, a) && !crate::expr::holds(a, &scope).unwrap_or(false);
+    args.iter().any(|a| !fed(a) && broken(a))
+}
+
 /// The constraints of `ty` that the record [`bare`] breaks, with the
 /// fields of the part that breaks. A create fills the key's fields from
 /// its key, a value of its own: so a constraint counts only where it breaks

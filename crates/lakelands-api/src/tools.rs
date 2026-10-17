@@ -791,14 +791,16 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
                 (f.name.to_string(), json!({"anyOf": [s, {"type": "null"}]}))
             })
             .collect();
-        // A create must send what a constraint needs of it (lakelands#1169).
+        // A create must send what a constraint needs of it (lakelands#1169);
+        // where none it can send is taken, the tool changes records only
+        // (lakelands#1188).
         let needed: Vec<&str> = (ty.fields.iter())
             .filter(|f| f.required_at_create && f.authored_writable())
             .map(|f| f.name.as_str())
             .collect();
         let mut fields_note =
             "Only the fields to change: an absent field is unchanged, null clears it.".to_owned();
-        if !needed.is_empty() {
+        if ty.may.create && !needed.is_empty() {
             fields_note.push_str(&format!(
                 " To create the record, send also: {}.",
                 needed.join(", ")
@@ -813,11 +815,19 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
             ),
         ]);
         write_opts(&mut p);
+        let what = match &ty.may.create_why {
+            Some(why) if !ty.may.create => {
+                format!(
+                    "Change a record of {}; it cannot create one: {why}.",
+                    label(ty)
+                )
+            }
+            _ => format!("Create or change a record of {}.", label(ty)),
+        };
         out.push(ToolSpec {
             name: format!("{base}_upsert"),
             description: format!(
-                "Create or change a record of {}. Answers `applied` with the new position, or `proposed` if the write waits for review.",
-                label(ty)
+                "{what} Answers `applied` with the new position, or `proposed` if the write waits for review."
             ),
             input_schema: obj(p, &["key", "fields"]),
             output_schema: outcome_schema(),

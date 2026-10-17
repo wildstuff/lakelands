@@ -276,6 +276,17 @@ pub struct TypeRights {
     pub get: bool,
     /// `upsert`: at least one authored field is writable.
     pub upsert: bool,
+    /// `upsert` of a record that does not exist yet: false where the
+    /// declaration shows that no create the principal can send is taken,
+    /// for a value it may not send or a field it may not read
+    /// (lakelands#1188). `upsert` keeps its meaning, updates included.
+    /// Absent from an older server's answer, it reads as true: what that
+    /// server said of a create, it said by `upsert`.
+    #[serde(default = "crate::describe::yes")]
+    pub create: bool,
+    /// Why `create` is false, naming nothing hidden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_why: Option<String>,
     /// `retire`: every field of the type is writable, whatever its
     /// authority, as the principal's grants resolve it. A principal who
     /// may write only some fields of a record may not remove all of them.
@@ -487,4 +498,9 @@ pub struct ExecutorDescription {
     /// (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended).
     /// Without one, calling or proposing the verb is refused as `unbound`.
     pub bound: bool,
+}
+
+/// `true`, a member's default where an older answer leaves it out.
+fn yes() -> bool {
+    true
 }
