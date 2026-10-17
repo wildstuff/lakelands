@@ -109,7 +109,11 @@ async fn a_count_answers_as_many_records_as_a_full_find_walk(store: Store) -> He
     l.upsert("item", "i30", later).await?;
     let reader = reads_all(store.as_ref(), "reader");
     let mid = Timestamp::parse("2026-01-15T00:00:00Z").expect("an instant");
-    let at = |as_of, valid_at| ReadAt { as_of, valid_at };
+    let at = |as_of, valid_at| ReadAt {
+        as_of,
+        valid_at,
+        clock: None,
+    };
     let earlier = at(Some(before), None);
     let cases = [
         ("everything", "item", None, at(None, None)),

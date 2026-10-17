@@ -114,6 +114,7 @@ fn overdue_by_partner(as_of: Option<Position>) -> Find {
         at: ReadAt {
             as_of,
             valid_at: None,
+            clock: None,
         },
         ..Find::default()
     }
@@ -162,6 +163,7 @@ async fn answer(
                     at: ReadAt {
                         as_of,
                         valid_at: None,
+                        clock: None,
                     },
                     params: Default::default(),
                 },

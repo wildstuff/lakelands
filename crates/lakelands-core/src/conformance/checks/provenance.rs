@@ -62,6 +62,7 @@ async fn valid_at_and_as_of_combine_and_neither_stands_in_for_the_other(store: S
     let at = |as_of: Option<Position>, valid: String| ReadAt {
         as_of,
         valid_at: Timestamp::parse(&valid).ok(),
+        clock: None,
     };
     let found = |as_of, valid: String| {
         let cat = cat.clone();

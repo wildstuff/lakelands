@@ -107,6 +107,11 @@ pub struct Reader<'a> {
     pub valid_at: Option<Timestamp>,
     /// The clock `now()` and `today()` read.
     pub now: Timestamp,
+    /// The clock a listing judges what a proposed write reaches under:
+    /// the position's, or the host's, never `valid_at`, which would let
+    /// a reviewer move it until a hidden record's turn shows. A cursor's
+    /// clock is taken too, but no listing is paged by a cursor.
+    judged: Timestamp,
     /// The records of each view this read has computed, so that a walk
     /// meeting a view many times computes it once.
     computed: RefCell<BTreeMap<TypeName, Rc<Vec<StoredRecord>>>>,
@@ -302,6 +307,11 @@ struct CursorState {
     /// The digest of the read it was handed out for ([`read_of`]).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     of: String,
+    /// The clock its first page read, which every page reads
+    /// (lakelands#571); a cursor handed out without one reads as
+    /// [`Reader::open`] decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    now: Option<Timestamp>,
 }
 
 fn encode(c: &CursorState) -> Cursor {
@@ -539,15 +549,41 @@ impl expr::Scope for Members<'_> {
 type KeptRead = (kept::State, u64);
 
 impl<'a> Reader<'a> {
-    /// Open a read at `at`, of `view` and its `shape`.
+    /// Open a read at `at`, of `view` and its `shape`, under its clock:
+    /// the one a cursor carries from its first page; else the instant
+    /// `valid_at` names; else the host's (`ReadAt::clock`); else, as of a
+    /// position, the `known_at` of the event there, the clock the fold
+    /// read it under (017); else the wall clock. A listing's judgments
+    /// read all but `valid_at`. It is decided here once, and no other
+    /// read path in the store reads the wall clock (lakelands#571).
     pub fn open(
         lake: &'a Lake,
         sight: &'a Sight<'a>,
-        at: ReadAt,
+        (at, clock): (ReadAt, Option<Timestamp>),
         view: Box<dyn ProjectionView + 'a>,
         shape: Arc<Shape>,
     ) -> Result<Reader<'a>> {
-        let position = view.position().unwrap_or(Position::GENESIS);
+        let then = view.position();
+        let position = then.unwrap_or(Position::GENESIS);
+        // A folded position the log holds no event at is a damaged log,
+        // not a read under the wall clock.
+        let known = |p: Position| match lake.read_these(&[p])?.first() {
+            Some(e) => Ok(e.known_at),
+            None => {
+                let flaw = lakelands_api::error::Flaw::NoEvent { position: p };
+                let part = lakelands_api::error::Part::Log;
+                Err(lakelands_core::damaged(part, Some(p), flaw))
+            }
+        };
+        // A page a cursor continues lists no proposal, and reads no log
+        // for a clock it does not read; nor does a read the host clocks.
+        let host = clock.or(at.clock);
+        let judged = match (host, at.as_of.and(then)) {
+            (Some(clock), _) => clock,
+            (None, Some(p)) => known(p)?,
+            (None, None) => crate::lake::wall_clock(),
+        };
+        let now = clock.or(at.valid_at).or(at.clock).unwrap_or(judged);
         Ok(Reader {
             lake,
             who: sight.who(),
@@ -557,7 +593,8 @@ impl<'a> Reader<'a> {
             at_head: at.as_of.is_none(),
             position,
             valid_at: at.valid_at,
-            now: crate::lake::wall_clock(),
+            now,
+            judged,
             computed: RefCell::default(),
             bound: RefCell::default(),
             computing: RefCell::default(),
@@ -2209,6 +2246,7 @@ impl<'a> Reader<'a> {
                 door: "find".into(),
                 ty: Some(ty.clone()),
                 of: find_read.clone(),
+                now: Some(self.now),
             })
         });
         let rows = keyed
@@ -2686,7 +2724,7 @@ impl<'a> Reader<'a> {
                 free = self.sight.ty(t).is_ok() && view.count(t, &open)? == all;
             }
             if !free {
-                let now = (view, self.settings()?, crate::lake::wall_clock());
+                let now = (view, self.settings()?, self.judged);
                 let mut named = crate::writes::reached(self.lake, o, now, &logged, true)?;
                 let since = self.shape.declared.iter().any(|d| d.since > at);
                 if since || crate::writes::reaches_by_state(o, &logged) {
@@ -2809,12 +2847,7 @@ impl<'a> Reader<'a> {
             o.ty(ty)
                 .is_ok_and(|t| lakelands_core::rights::only_holder(self.who, t, o))
         };
-        let now = || {
-            Ok::<_, Error>((
-                crate::lake::settings_in(view, o)?,
-                crate::lake::wall_clock(),
-            ))
-        };
+        let now = || Ok::<_, Error>((crate::lake::settings_in(view, o)?, self.judged));
         // A plan that fails on the engine is its outage (lakelands#927);
         // one the write itself fails leaves the record not admitted.
         let outage = |e: Error| match e {
@@ -3322,6 +3355,7 @@ impl<'a> Reader<'a> {
                 door: "search".into(),
                 ty: Some(s.ty.clone()),
                 of: search_read,
+                now: Some(self.now),
             })
         });
         Ok(Ok(Hits {

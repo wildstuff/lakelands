@@ -89,10 +89,10 @@ the condition holds over the two of them:
   read's `where` matches nothing there. A condition need not be boolean
   to be declared: one that answers no boolean (`where: "from.status"`)
   is accepted and connects nothing.
-- **The read's clock.** A walk evaluates the condition with the clock of
-  the read, also in a read as of a position: the values are those the
-  position holds, the clock is the one every other `now()` of that read
-  reads (052).
+- **The read's clock.** A walk evaluates the condition with the read's
+  clock, the one every other `now()` of that read reads (052): the
+  instant `valid_at` names, else as of a position the `known_at` of its
+  event, so the values and the clock are both the position's.
 - **Where a walk reads the edge.** In every walk above, and in `degree`
   and `components`, the candidates are found by the match as before and
   the condition is evaluated on each pair, both records already loaded.

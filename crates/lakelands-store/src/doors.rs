@@ -39,6 +39,10 @@ use crate::lake::{Lake, owing};
 use crate::reads::{Judged, Pulled, Reader};
 use crate::writes::{self, Call, External, MadeDue};
 
+/// When a read reads: its axes, and the clock a cursor carries from its
+/// first page where it continues one.
+type Clocked = (ReadAt, Option<Timestamp>);
+
 /// Open a lake at a location. The host passes the engines it compiled in
 /// (and any seams it binds) in `seams`; the store depends on no engine.
 pub async fn open(location: Location, seams: Seams, mode: OpenMode) -> Result<Arc<dyn LakeStore>> {
@@ -96,13 +100,13 @@ pub struct Doors {
     context: WriteContext,
 }
 
-/// One read of `lake` by `who` at `at`, answered by `f`. One that ranks is
-/// given the head (025): as it stands, or at exactly the position `ranks`
-/// names.
+/// One read of `lake` by `who` at `at`, under the clock a cursor carries
+/// where it continues one, answered by `f`. One that ranks is given the
+/// head (025): as it stands, or at exactly the position `ranks` names.
 fn reading<T>(
     lake: &Lake,
     who: Principal,
-    at: ReadAt,
+    (at, clock): Clocked,
     ranks: Option<Option<Position>>,
     f: impl FnOnce(&Reader<'_>) -> Result<T>,
 ) -> Result<Reply<T>> {
@@ -130,7 +134,7 @@ fn reading<T>(
     // A reference to a type it is not shown is a field it may not know of,
     // by the types the read reads (024, extended).
     let (sight, _) = lake.sight(who, at.as_of, renames, shape.as_ref())?;
-    let mut r = Reader::open(lake, &sight, at, view, shape.clone())?;
+    let mut r = Reader::open(lake, &sight, (at, clock), view, shape.clone())?;
     (r.head, r.held_now) = (at_head, held_now);
     let data = f(&r)?;
     Ok(Reply {
@@ -140,7 +144,7 @@ fn reading<T>(
 }
 
 impl Doors {
-    async fn read<T, F>(&self, who: &Principal, at: ReadAt, f: F) -> Result<Reply<T>>
+    async fn read<T, F>(&self, who: &Principal, at: Clocked, f: F) -> Result<Reply<T>>
     where
         T: Send + 'static,
         F: FnOnce(&Reader<'_>) -> Result<T> + Send + 'static,
@@ -161,7 +165,7 @@ impl Doors {
     async fn read_to<T, F>(
         &self,
         who: &Principal,
-        at: ReadAt,
+        at: Clocked,
         ranks: bool,
         f: F,
     ) -> Result<Reply<T>>
@@ -316,6 +320,7 @@ impl Doors {
                     at: ReadAt {
                         as_of: Some(ext.position),
                         valid_at: None,
+                        clock: None,
                     },
                     params: Default::default(),
                 };
@@ -388,7 +393,7 @@ impl Catalog for Doors {
     }
 
     async fn describe(&self, who: &Principal, at: ReadAt) -> Result<Reply<LakeDescription>> {
-        self.read(who, at, |r| Ok(r.describe())).await
+        self.read(who, (at, None), |r| Ok(r.describe())).await
     }
 
     async fn describe_type(
@@ -398,7 +403,8 @@ impl Catalog for Doors {
         at: ReadAt,
     ) -> Result<Reply<TypeDescription>> {
         let ty = ty.clone();
-        self.read(who, at, move |r| r.describe_type(&ty)).await
+        self.read(who, (at, None), move |r| r.describe_type(&ty))
+            .await
     }
 
     async fn find(&self, who: &Principal, ty: &TypeName, find: Find) -> Result<Reply<Found>> {
@@ -409,7 +415,8 @@ impl Catalog for Doors {
 
     async fn get(&self, who: &Principal, ty: &TypeName, get: Get) -> Result<Reply<Record>> {
         let ty = ty.clone();
-        self.read(who, get.at, move |r| r.get(&ty, &get)).await
+        self.read(who, (get.at, None), move |r| r.get(&ty, &get))
+            .await
     }
 
     async fn upsert(
@@ -618,8 +625,10 @@ impl Catalog for Doors {
         // A proposed migration is judged with the grants as they stood
         // where it was proposed: the listing follows them there.
         let asked = who.clone();
-        self.read(who, filter.at, move |r| r.proposals(&filter, &asked))
-            .await
+        self.read(who, (filter.at, None), move |r| {
+            r.proposals(&filter, &asked)
+        })
+        .await
     }
 
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome> {
@@ -730,14 +739,17 @@ impl Catalog for Doors {
     }
 }
 
-/// `at`, moved to the position a cursor names when there is one.
-fn cursor_at(mut at: ReadAt, cursor: Option<&lakelands_api::Cursor>) -> Result<ReadAt> {
+/// `at`, moved to the position a cursor names when there is one, with the
+/// clock it carries.
+fn cursor_at(mut at: ReadAt, cursor: Option<&lakelands_api::Cursor>) -> Result<Clocked> {
     let Some(c) = cursor else {
-        return Ok(at);
+        return Ok((at, None));
     };
     #[derive(serde::Deserialize)]
     struct At {
         at: Position,
+        #[serde(default)]
+        now: Option<Timestamp>,
     }
     let bytes: Option<Vec<u8>> = (0..c.0.len())
         .step_by(2)
@@ -747,11 +759,9 @@ fn cursor_at(mut at: ReadAt, cursor: Option<&lakelands_api::Cursor>) -> Result<R
         })
         .collect();
     let a = bytes.and_then(|b| serde_json::from_slice::<At>(&b).ok());
-    at.as_of = Some(
-        a.ok_or_else(|| invalid(lakelands_api::error::Case::CursorForeign))?
-            .at,
-    );
-    Ok(at)
+    let a = a.ok_or_else(|| invalid(lakelands_api::error::Case::CursorForeign))?;
+    at.as_of = Some(a.at);
+    Ok((at, a.now))
 }
 
 #[async_trait]

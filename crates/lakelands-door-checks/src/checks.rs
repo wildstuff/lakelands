@@ -613,6 +613,7 @@ fn at(p: Position) -> ReadAt {
     ReadAt {
         as_of: Some(p),
         valid_at: None,
+        clock: None,
     }
 }
 
@@ -1455,6 +1456,7 @@ pub async fn a_grant_holds_a_field_through_its_rename(store: Arc<dyn LakeStore>)
             at: ReadAt {
                 as_of,
                 valid_at: None,
+                clock: None,
             },
             ..get("1")
         };
@@ -11156,6 +11158,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
                         at: ReadAt {
                             as_of,
                             valid_at: None,
+                            clock: None,
                         },
                     },
                 )

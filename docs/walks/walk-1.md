@@ -53,10 +53,13 @@ pins the position of the **August invoice ingest**: that is "the lake as
 it stood last month", and the September ingest is what moves the head
 past it.
 
-**When the walk can run.** The question uses `now()`, which in a read is
-the time of the read, pinned or not. The overdue invoices fell due in
-2025 and the ones not yet due fall due in 2030, so the answers below hold
-for a walk on any day from 1 November 2025 to 28 February 2030.
+**When the walk can run.** The question uses `now()`: in a read at the
+head the time of the read, in a read pinned to the head the time the
+pin was set, and in a read pinned to a named position the time the
+event there was written, all on the day the walk runs. The overdue
+invoices fell due in 2025 and the ones not yet due fall due in 2030, so
+the answers below hold for a walk on any day from 1 November 2025 to 28
+February 2030.
 
 ## Found before the walk
 

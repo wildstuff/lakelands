@@ -828,6 +828,7 @@ async fn a_listing_of_proposals_judges_its_page_and_no_more() {
         at: lakelands_api::read::ReadAt {
             as_of: Some(head),
             valid_at: None,
+            clock: None,
         },
         ..Default::default()
     };

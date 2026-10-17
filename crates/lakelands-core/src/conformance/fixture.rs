@@ -1000,6 +1000,7 @@ pub fn read_at(as_of: Option<Position>) -> ReadAt {
     ReadAt {
         as_of,
         valid_at: None,
+        clock: None,
     }
 }
 

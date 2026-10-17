@@ -27,6 +27,7 @@ fn on(day: Option<&str>, as_of: Option<Position>) -> ReadAt {
     ReadAt {
         valid_at: day.map(at),
         as_of,
+        clock: None,
     }
 }
 

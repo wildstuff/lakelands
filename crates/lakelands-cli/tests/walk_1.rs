@@ -257,6 +257,7 @@ async fn over(
     let at = ReadAt {
         as_of,
         valid_at: None,
+        clock: None,
     };
     let find = Find {
         filter: Some("status = 'open' and due_on < now() - 30d".into()),

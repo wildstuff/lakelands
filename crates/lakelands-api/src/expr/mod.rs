@@ -83,7 +83,9 @@
 //! must reproduce on replay (`docs/decisions/002-determinism-is-the-boundary.md`).
 //! In them, `now()` and `today()` mean the `known_at` of the event being
 //! folded, never the clock of the process replaying it. In a read, they
-//! mean the time of the read.
+//! mean the read's clock: the instant `valid_at` names, else as of a
+//! position the `known_at` of its event, else the time of the read
+//! (`docs/decisions/052-a-field-may-be-computed-at-the-read.md`).
 
 use serde::{Deserialize, Serialize};
 

@@ -3452,7 +3452,7 @@ impl Call<'_> {
         let view = self.lake.engine.view(None)?;
         let shape = self.lake.shape(view.as_ref())?;
         let (sight, at) = (Sight::held(self.who, shape.as_ref()), Default::default());
-        let read = crate::reads::Reader::open(self.lake, &sight, at, view, shape.clone())?;
+        let read = crate::reads::Reader::open(self.lake, &sight, (at, None), view, shape.clone())?;
         let missing = Missing::Proposal { id: p.id.clone() };
         let once = (&Default::default(), &Default::default());
         let listed = read.entry(asked, write, (p.position, p.proposed_at), once)?;

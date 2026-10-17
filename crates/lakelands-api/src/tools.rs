@@ -418,12 +418,12 @@ fn time_axes(p: &mut Map<String, Value>) {
     p.insert(
         "as_of".into(),
         json!({"type": "integer", "minimum": 0,
-               "description": "Read the lake as it was at this position."}),
+               "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one."}),
     );
     p.insert(
         "valid_at".into(),
         json!({"type": "string", "format": "date-time",
-               "description": "Read what was true in the world at this instant."}),
+               "description": "Read what was true in the world at this instant; now() and today() are this instant."}),
     );
 }
 
@@ -1010,7 +1010,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
 
     out.push(ToolSpec {
         name: PIN.into(),
-        description: "Pin this session's reads to one position until cleared, so every read in a turn sees the same state: `as_of` pins that position, no argument pins the current head, `clear` removes the pin. A read's own `as_of` still wins; writes are never pinned.".into(),
+        description: "Pin this session's reads to one position until cleared, so every read in a turn sees the same state: `as_of` pins that position, no argument pins the current head, `clear` removes the pin. A read's own `as_of` still wins; writes are never pinned. A read pinned to the head reads `now()` at the instant the pin was set; one pinned to a named position, at the time its event was written; `valid_at` comes first.".into(),
         input_schema: obj(
             props([
                 (

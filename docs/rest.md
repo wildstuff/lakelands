@@ -23,7 +23,7 @@ this page says only how a request reaches it.
   once a key is presented, a lake segment holding a `/` answers `404`
   before that key is resolved. There is no session and no pin: a read that must see one state
   names `as_of` itself, and a page's `cursor` already carries the position
-  its first page was read at. Over REST the principal is what the server
+  its first page was read at and the clock that page read. Over REST the principal is what the server
   resolves from the key: nothing a client says about who it is or what
   it may do is taken.
 - **The position.** Every reply to a caller whose key resolved carries

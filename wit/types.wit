@@ -48,13 +48,15 @@ interface types {
     type proposal-id = string;
     type idempotency-key = string;
     /// A page token of a list-shaped read, bound to its first page's
-    /// position.
+    /// position and the clock that page read.
     type cursor = string;
     /// A SHA-256 digest, as 64 lower-case hex digits.
     type digest = string;
 
     /// The two time axes of a read: the position it is pinned at
-    /// (`as-of`), and business time (`valid-at`).
+    /// (`as-of`), and business time (`valid-at`). The read's `now()` is
+    /// `valid-at`, else as of a position the time its event was written,
+    /// else the time of the read.
     record read-at {
         as-of: option<position>,
         valid-at: option<timestamp>,

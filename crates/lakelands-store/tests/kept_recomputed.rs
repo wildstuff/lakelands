@@ -243,6 +243,7 @@ fn of(p: Position) -> ReadAt {
     ReadAt {
         as_of: Some(p),
         valid_at: None,
+        clock: None,
     }
 }
 

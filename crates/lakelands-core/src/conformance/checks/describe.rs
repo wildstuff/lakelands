@@ -285,6 +285,7 @@ async fn describe_answers_the_declaration_whole(store: Store) -> Held {
         ReadAt {
             as_of: Some(earlier),
             valid_at: None,
+            clock: None,
         },
         "describing as the owner as_of an earlier position",
     )

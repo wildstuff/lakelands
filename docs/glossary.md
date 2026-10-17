@@ -27,7 +27,9 @@ knew, `valid_at` asks what was true.
 
 A **cursor** continues a list-shaped read where its previous page
 ended. It is bound to the position its first page was read at, so a page
-set stays stable while the lake is written. `find`, pattern rows and
+set stays stable while the lake is written; the cursor of `find`,
+pattern rows and `search` also carries the clock that page read `now()`
+under, so it stays stable while time passes. `find`, pattern rows and
 `proposals` take `limit`, `order_by` and `cursor`; `search` takes `k`
 and `cursor` and no `order_by`, because relevance is its order by
 definition. `find` also takes `after` instead of a cursor: a row's sort
