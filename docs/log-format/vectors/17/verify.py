@@ -317,6 +317,8 @@ SHOWS = {
     "setting_group": shows("a `sys.setting` record carrying the `group` stamped from its declaration")(
         lambda e: e["body"]["kind"] == "record_upserted" and e["body"]["type"] == "sys.setting"
         and e["body"]["patch"].get("group") == "operator"),
+    "delivery": shows("an ingest in the delivery its caller named, its id made without it")(
+        lambda e: e["body"]["kind"] == "record_ingested" and e.get("delivery") == "batch-7" and ingest_id(e) == e["id"]),
     "lake_upgraded": shows("a `lake_upgraded` from the format before to the one this lake is written in")(
         lambda e: e["body"]["kind"] == "lake_upgraded" and e["body"]["from"] == e["v"] - 1 and e["body"]["to"] == e["v"]),
 }
@@ -328,6 +330,8 @@ MISPLACED = {
         lambda e: "cause" in e["context"]),
     "sealed_on_another_kind": shows("`sealed` on an event that is neither a `record_ingested` nor an `output_recorded`, which a reader refuses")(
         lambda e: "sealed" in e and e["body"]["kind"] not in SEALS),
+    "delivery_on_another_kind": shows("`delivery` on an event that is not a `record_ingested`, which a reader refuses")(
+        lambda e: "delivery" in e and e["body"]["kind"] != "record_ingested"),
     "output_twice": shows("both `output` and `output_at`, which a reader refuses")(
         lambda e: e["body"]["kind"] == "output_recorded" and "output" in e["body"] and "output_at" in e["body"]),
 }
@@ -394,6 +398,8 @@ def verify_dir(root):
             need("sealed" not in event or event["body"].get("kind") in SEALS,
                  f"a `{event['body'].get('kind')}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries")
             need("sealed" not in event or v >= 16, f"an event of format {v} carries `sealed`, which format 16 added")
+            need("delivery" not in event or (event["body"].get("kind") == "record_ingested" and v >= 17),
+                 f"a `{event['body'].get('kind')}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries")
             need(event["body"].get("kind") != "source_forgotten" or v >= 16,
                  f"an event of format {v} is a `source_forgotten`, which format 16 added")
             # known_at in its one form (§1.3), whose text orders as its

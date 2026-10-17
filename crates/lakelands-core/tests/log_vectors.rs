@@ -190,7 +190,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 393, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 405, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -392,7 +392,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 44] = [
+const SHOWN: [&str; 45] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -437,18 +437,20 @@ const SHOWN: [&str; 44] = [
     "setting_declared",
     "setting_group",
     "proposed_plan",
+    "delivery",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 51;
+const LAST: u64 = 52;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
-const MISPLACED: [&str; 4] = [
+const MISPLACED: [&str; 5] = [
     "upstream_on_another_kind",
     "cause_in_context",
     "output_twice",
     "sealed_on_another_kind",
+    "delivery_on_another_kind",
 ];
 
 /// Whether the event is what its entry of `further.json` says it shows,
@@ -642,6 +644,10 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
         "setting_group" => matches!(&event.body, B::RecordUpserted { ty, patch, .. }
             if ty.as_str() == lakelands_api::seam::SETTING_TYPE
                 && patch.get("group").and_then(|g| g.as_str()) == Some("operator")),
+        "delivery" => {
+            matches!(&event.body, B::RecordIngested { .. })
+                && event.delivery.as_ref().is_some_and(|d| d == "batch-7")
+        }
         other => panic!("`further.json` shows `{other}`, which this test has no check for"),
     }
 }
@@ -728,9 +734,24 @@ fn every_misplaced_line_is_refused_for_the_member_it_misplaces() {
             "cause_in_context" => assert!(why.contains("`context` carries `cause`"), "{why}"),
             "output_twice" => assert_eq!(flaw, Flaw::OutputOnce),
             "sealed_on_another_kind" => assert!(why.contains("carries `sealed`"), "{why}"),
+            "delivery_on_another_kind" => assert!(why.contains("carries `delivery`"), "{why}"),
             other => panic!("`further.json` misplaces `{other}`, which this test has no check for"),
         }
     }
+}
+
+/// `delivery` on a `record_ingested` of a format before 17, which has no
+/// such member: the vectors' delivery line, its format set back, is
+/// refused naming its format.
+#[test]
+fn a_delivery_before_format_17_is_misplaced() {
+    let line = further("events")
+        .into_iter()
+        .find(|e| e.shows == "delivery");
+    let mut event: Event = serde_json::from_str(&line.expect("a delivery line").line).unwrap();
+    event.v = 16;
+    let flaw = log::misplaced(&event).expect("refused");
+    assert!(matches!(flaw, Flaw::DeliveryOn { v: 16, .. }), "{flaw}");
 }
 
 /// The negative vector `negative/known-at-goes-back`: the first segment

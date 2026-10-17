@@ -48,9 +48,9 @@ use lakelands_api::write::{
     ValueTypeMigration, ValueTypeReport, ValueTypeUse,
 };
 use lakelands_api::{
-    Access, After, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, Missing, Origin,
-    Outcome, Position, Principal, PrincipalKind, ReadAt, Record, Refusal, SourceRecord, Timestamp,
-    Verification, Version, WriteContext, WriteOpts, WriteOrigin,
+    Access, After, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, IngestOpts,
+    Missing, Origin, Outcome, Position, Principal, PrincipalKind, ReadAt, Record, Refusal,
+    SourceRecord, Timestamp, Verification, Version, WriteContext, WriteOpts, WriteOrigin,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -956,6 +956,12 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             ),
         ),
         ("write_opts", members(&write_opts())),
+        (
+            "ingest_opts",
+            members(&IngestOpts {
+                delivery: Some("batch-7".into()),
+            }),
+        ),
         // The `applied` record is the variant's members beside its tag.
         ("applied", {
             let mut m = members(&Outcome::Applied {
@@ -1037,6 +1043,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 position: Position(1),
                 records: 1,
                 duplicates: 0,
+                delivery: Some("d1".into()),
             }),
         ),
         ("depth", members(&Depth { min: 1, max: 2 })),

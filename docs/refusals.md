@@ -544,6 +544,8 @@ What a refusal is about.
 | `source_forgotten` | `source` (SourceId) | the source `{source}` was forgotten, and is never given a key again: it writes nothing more; a device that comes back is a new source | A write from a source that was forgotten. |
 | `key_destroyed` | `source` (SourceId) | the keys of the source `{source}` were destroyed, and a forgotten source is never given a key again | A source whose keys were destroyed, asked for a new one. |
 | `source_id_form` | — | a source id is not empty and holds no NUL character | A source id that is empty or holds a NUL. |
+| `delivery_id_form` | — | a delivery id is not empty, holds no NUL character, and is not `d` followed by digits, the form of the store's own | A delivery id that is empty, holds a NUL, or takes the form of the store's own. |
+| `delivery_not_carried` | — | this catalog does not carry a delivery id to the store | A delivery id given to a catalog that does not carry it. |
 | `trigger_too_deep` | `depth` (u32), `max` (u32) | its `max_depth` {depth} is above the lake's `max_reactive_depth` {max} | A trigger's ceiling above the lake's. |
 | `unanswered` | `position` (Position), `accepted` (bool) | [{?accepted}the acceptance\|the call] is in the log at position {position}, and no answer of the verb's executor is recorded for it, so this retry runs nothing; if the call is still running, or its answer is held, its answer will be recorded and a retry then answers it, unless the handle that ran it is dropped or loses its lease first; if its first answer said that the verb's executor was not handed the call, [{?accepted}propose the call again\|call the verb again under another key or with none] | A retry that finds no answer of the verb's executor recorded. |
 | `unclaimed_link_type` | `type` (TypeName) | `{type}` is the link type of no relation: its relation was renamed or removed | A link type no relation carries. |
@@ -887,6 +889,7 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `sealed_on` | `kind` (String) | a `{kind}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries | An event other than `record_ingested` and `output_recorded` carries `sealed`. |
 | `sealed_before` | `v` (u32) | an event of format {v} carries `sealed`, which format 16 added | An event of a format before 16 carries `sealed`. |
 | `forgotten_before` | `v` (u32) | an event of format {v} is a `source_forgotten`, which format 16 added | A `source_forgotten` in a format before the one that added it. |
+| `delivery_on` | `kind` (String), `v` (u32) | a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries | An event other than a `record_ingested` of format 17 on carries `delivery`. |
 | `upstream_on` | `kind` (String) | a `{kind}` event carries `upstream`, which only a `record_ingested` event carries | An event other than `record_ingested` carries `upstream`. |
 | `hash_mismatch` | — | the hash does not match the event | The hash does not match the event. |
 | `disagrees` | — | the engine's record of the event disagrees with its bytes | The engine's record of the event disagrees with its bytes. |

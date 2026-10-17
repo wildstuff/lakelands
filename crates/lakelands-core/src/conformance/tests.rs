@@ -395,3 +395,35 @@ fn next_drains_a_stream_in_order_and_then_ends() {
     });
     assert_eq!(keys, ["a", "b"]);
 }
+
+/// A catalog that carries no delivery id to the store refuses one, rather
+/// than drop it; with none, its `ingest_with` is its `ingest`.
+#[test]
+fn a_catalog_that_carries_no_delivery_refuses_one() {
+    use lakelands_api::error::Case;
+    use lakelands_api::write::IngestOpts;
+    let cat = DownCatalog(LakeId::from("l"));
+    let who = Principal {
+        kind: lakelands_api::PrincipalKind::Human,
+        id: "owner".into(),
+        lake: LakeId::from("l"),
+        grants: lakelands_api::Grants::owner(),
+    };
+    let src = SourceId::from("crm");
+    let with = |delivery: Option<&str>| IngestOpts {
+        delivery: delivery.map(Into::into),
+    };
+    let named = block_on(cat.ingest_with(
+        &who,
+        &src,
+        with(Some("batch-7")),
+        super::fixture::stream(vec![]),
+    ));
+    let case = named.err().and_then(|e| e.case().map(|s| s.case.clone()));
+    assert_eq!(case, Some(Case::DeliveryNotCarried));
+    let none = block_on(cat.ingest_with(&who, &src, with(None), super::fixture::stream(vec![])));
+    assert!(
+        matches!(&none, Err(e) if e.situation() == down().situation()),
+        "with no delivery it ingests, and this catalog's ingest is down"
+    );
+}

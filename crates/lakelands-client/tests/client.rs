@@ -1015,3 +1015,46 @@ async fn an_answer_of_null_comes_back_and_a_call_still_running_is_409() {
     assert_eq!(call().await.unwrap(), first, "the retry answers the first");
     assert_eq!(null.ran.load(Ordering::SeqCst), 1, "run once");
 }
+
+/// An ingest's delivery id goes over the wire and comes back in each
+/// window's answer; an empty one is refused as the store refuses it
+/// (lakelands#1153).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ingests_delivery_id_goes_over_the_wire() {
+    use lakelands_api::write::IngestOpts;
+    let store = common::memory_lake("finance", Limits::default()).await;
+    let (addr, keys) = common::serve(store.clone()).await;
+    let remote: Arc<dyn LakeStore> = Arc::new(common::remote(addr, store.lake(), keys));
+    let f = setup(store.clone()).await;
+    let record = |key: &str| SourceRecord {
+        source: None,
+        upstream: None,
+        ty: "invoice".into(),
+        key: RecordKey::from(key),
+        fields: patch(&[("amount", json!("1.00"))]),
+        seen_at: None,
+    };
+    let (bank, who) = (SourceId::from("bank"), &f.cast.importer);
+    let remote = remote.catalog(WriteContext::default());
+    let opts = |d: &str| IngestOpts {
+        delivery: Some(d.into()),
+    };
+    let said = lakelands_api::ingest_all_with(
+        remote.as_ref(),
+        who,
+        &bank,
+        opts("batch-7"),
+        vec![record("D-1")],
+    );
+    let windows = said.await.unwrap();
+    assert!(
+        windows
+            .iter()
+            .all(|w| w.delivery.as_ref().map(|d| d.as_str()) == Some("batch-7")),
+        "{windows:?}"
+    );
+    let said =
+        lakelands_api::ingest_all_with(remote.as_ref(), who, &bank, opts(""), vec![record("D-2")]);
+    let refused = said.await.unwrap_err();
+    assert!(refused.to_string().contains("delivery id"), "{refused}");
+}

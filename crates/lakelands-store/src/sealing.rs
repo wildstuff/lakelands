@@ -23,7 +23,7 @@ use lakelands_api::error::{Seam, Situation};
 use lakelands_api::event::{Digest, Event, EventBody, Sealed};
 use lakelands_api::id::KeyId;
 use lakelands_api::seam::{DataKey, KeyStore};
-use lakelands_api::{Error, LakeId, Result, SourceId, Value};
+use lakelands_api::{Error, LakeId, Position, Result, SourceId, Value};
 use lakelands_core::canonical;
 use lakelands_core::lock;
 use sha2::{Digest as _, Sha256};
@@ -42,8 +42,9 @@ pub struct Keys {
 struct Held {
     /// Each key, by source and version.
     by: BTreeMap<(SourceId, KeyId), DataKey>,
-    /// The version of each source's key its new values are sealed with.
-    sealing: BTreeMap<SourceId, KeyId>,
+    /// The version of each source's key its new values are sealed with,
+    /// and the newest the log had used when it was chosen.
+    sealing: BTreeMap<SourceId, (KeyId, Option<KeyId>)>,
 }
 
 impl Keys {
@@ -67,7 +68,15 @@ impl Keys {
     /// new key the old values would read as erased. Without a key store,
     /// refused as `Unbound`.
     pub fn sealing(&self, source: &SourceId, used: &[KeyId]) -> Result<(KeyId, DataKey)> {
-        let id = lock(&self.held).sealing.get(source).cloned();
+        // A choice stands while the log's newest version is the one it was
+        // made over, or the one chosen: where another writer sealed with a
+        // newer one while this one held no lease, it is made again, so the
+        // versions a source seals with only rise.
+        let held = lock(&self.held).sealing.get(source).cloned();
+        let last = used.last();
+        let stands =
+            |(id, over): &(KeyId, Option<KeyId>)| last == Some(id) || last == over.as_ref();
+        let id = held.filter(stands).map(|(id, _)| id);
         let id = match id {
             Some(id) => id,
             None => {
@@ -81,7 +90,8 @@ impl Keys {
                     Some(id) => id.clone(),
                     None => store.create(&self.lake, source)?,
                 };
-                lock(&self.held).sealing.insert(source.clone(), id.clone());
+                let chosen = (id.clone(), last.cloned());
+                lock(&self.held).sealing.insert(source.clone(), chosen);
                 id
             }
         };
@@ -184,9 +194,14 @@ pub fn erase(event: &mut Event) -> Vec<lakelands_api::FieldName> {
 }
 
 /// The store's own seam under which the fold keeps, for each source, the
-/// versions of its key the log sealed with, in the order first used: a
-/// recorded output is digested under the first, whatever the key store
-/// holds now, so a rebuild finds it again (058).
+/// versions of its key the log sealed with, each with the position of its
+/// first use, in that order. A source seals with the newest version its
+/// key store holds when it is first needed and keeps it, and a key store
+/// without the newest the log used is refused ([`Keys::sealing`]), so the
+/// version of a value is the last one first used at or before its
+/// position: a recorded output is digested under the oldest of its
+/// inputs', whatever the key store holds now, so a rebuild finds it again
+/// (058).
 pub const USED: &str = "sys:sealed";
 
 /// The input [`USED`] keeps `source`'s versions under.
@@ -196,8 +211,49 @@ pub fn used_by(source: &SourceId) -> Digest {
 
 /// The versions of a source's key the list [`USED`] keeps holds.
 pub fn versions(list: Option<&Value>) -> Vec<KeyId> {
+    firsts(list).into_iter().map(|(k, _)| k).collect()
+}
+
+/// The versions the list [`USED`] keeps, each with the position of its
+/// first use. A projection kept before these positions is rebuilt at the
+/// writer's open, so no list without them is read.
+pub fn firsts(list: Option<&Value>) -> Vec<(KeyId, Position)> {
     let ids = list.and_then(Value::as_array).into_iter().flatten();
-    ids.filter_map(|v| v.as_str().map(KeyId::from)).collect()
+    let first = |v: &Value| {
+        Some((
+            KeyId::from(v.get(0)?.as_str()?),
+            Position(v.get(1)?.as_u64()?),
+        ))
+    };
+    ids.filter_map(first).collect()
+}
+
+/// The list [`USED`] keeps for `source` once `key` seals a value at `at`,
+/// with the place it is kept under: none where the list, as `staged` holds
+/// it or else `view`, names `key` already. The fold and a write's plan
+/// both keep it so, and read the same versions.
+pub fn first_use(
+    staged: &crate::backed::Recorded,
+    view: &dyn lakelands_api::engine::ProjectionView,
+    (source, key, at): (&SourceId, &KeyId, Position),
+) -> Result<Option<((String, Digest), Value)>> {
+    let place = (USED.to_owned(), used_by(source));
+    let list = match staged.get(&place).and_then(|l| l.last()) {
+        Some((_, v)) => Some(v.clone()),
+        None => view.output(&place.0, &place.1)?.map(|(_, v)| v),
+    };
+    let mut used = firsts(list.as_ref());
+    if used.iter().any(|(k, _)| k == key) {
+        return Ok(None);
+    }
+    used.push((key.clone(), at));
+    let list = serde_json::to_value(&used).expect("key ids serialise");
+    Ok(Some((place, list)))
+}
+
+/// The version that sealed a value written at `at`, by `firsts`.
+pub fn sealed_at(firsts: &[(KeyId, Position)], at: Position) -> Option<&KeyId> {
+    firsts.iter().rev().find(|(_, p)| *p <= at).map(|(k, _)| k)
 }
 
 /// The nonce of a value: the first 12 bytes of SHA-256 over its place.

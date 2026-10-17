@@ -1362,6 +1362,11 @@ catalog! {
         KeyDestroyed { source: SourceId } => "the keys of the source `{source}` were destroyed, and a forgotten source is never given a key again",
         /// A source id that is empty or holds a NUL.
         SourceIdForm => "a source id is not empty and holds no NUL character",
+        /// A delivery id that is empty, holds a NUL, or takes the form
+        /// of the store's own.
+        DeliveryIdForm => "a delivery id is not empty, holds no NUL character, and is not `d` followed by digits, the form of the store's own",
+        /// A delivery id given to a catalog that does not carry it.
+        DeliveryNotCarried => "this catalog does not carry a delivery id to the store",
         /// A trigger's ceiling above the lake's.
         TriggerTooDeep { depth: u32, max: u32 } => "its `max_depth` {depth} is above the lake's `max_reactive_depth` {max}",
         /// A retry that finds no answer of the verb's executor recorded.

@@ -16,7 +16,7 @@ interface store {
         principal, write-context, limits, verification, error, timestamp, age-report, purge-report,
         compact-report, vector-coverage, forget-report,
         find, found-reply, get, record-reply, patch, write-opts, outcome,
-        proposed-write, proposal-filter, proposals-reply, source-record, committed, ingest-error,
+        proposed-write, proposal-filter, proposals-reply, source-record, committed, ingest-error, ingest-opts,
         feed-filter, feed-batch,
     };
 
@@ -112,6 +112,8 @@ interface store {
         /// crate takes a stream; here the delivery is a list, and the
         /// answer lists every commit window it was written in.
         ingest: func(who: principal, source: source-id, records: list<source-record>) -> result<list<committed>, ingest-error>;
+        /// `ingest` in the delivery `opts` names.
+        ingest-with: func(who: principal, source: source-id, opts: ingest-opts, records: list<source-record>) -> result<list<committed>, ingest-error>;
     }
 
     /// The change feed (`ChangeFeed`): the consumer keeps its own

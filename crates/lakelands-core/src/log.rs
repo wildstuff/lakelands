@@ -141,7 +141,9 @@ const SEALED_FROM: u32 = 16;
 /// - **16 → 17:** none. Format 17 is 0.16.0's one step, taken before any
 ///   form it adds (lakelands#1164): a log of format 16 holds none of them,
 ///   each named here by the change that adds it: a field's
-///   `authority: verb` (lakelands#1130).
+///   `authority: verb` (lakelands#1130); a `record_ingested`'s `delivery`,
+///   and a recorded output digested under the oldest version that sealed
+///   the values it reads, where 16 took the source's first (lakelands#1153).
 #[doc(hidden)]
 pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
     debug_assert!(reads_format(v), "format {v} is not one this release reads");
@@ -256,7 +258,9 @@ pub fn created_in_another(event: &Event) -> Option<Flaw> {
 /// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`); and
 /// `sealed` on any kind but `record_ingested` and `output_recorded`, or
 /// on an event of a format before 16
-/// (`docs/decisions/058-a-source-may-be-forgotten.md`). No door
+/// (`docs/decisions/058-a-source-may-be-forgotten.md`); and `delivery` on
+/// any kind but `record_ingested`, or before format 17
+/// (`docs/log-format.md` §1.1). No door
 /// puts any there; a reader holds the rule for a log written by something
 /// else.
 #[doc(hidden)]
@@ -290,8 +294,12 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
         let v = event.v;
         return Some(Flaw::ForgottenBefore { v });
     }
-    (event.upstream.is_some() && !matches!(event.body, EventBody::RecordIngested { .. }))
-        .then_some(Flaw::UpstreamOn { kind })
+    let ingested = matches!(event.body, EventBody::RecordIngested { .. });
+    if event.delivery.is_some() && (!ingested || event.v < 17) {
+        let v = event.v;
+        return Some(Flaw::DeliveryOn { kind, v });
+    }
+    (event.upstream.is_some() && !ingested).then_some(Flaw::UpstreamOn { kind })
 }
 
 /// An event body's kind, as the log writes it.

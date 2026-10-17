@@ -1039,7 +1039,15 @@ async fn ingest(
     source: SourceId,
     req: Request<Incoming>,
 ) -> Result<Answer, Stop> {
-    query_args(req.uri().query(), &[], "POST …/ingest/<source>")?;
+    let args = query_args(
+        req.uri().query(),
+        &[("delivery", Kind::Text)],
+        "POST …/ingest/<source>",
+    )?;
+    let delivery = args.get("delivery").and_then(Value::as_str);
+    let opts = lakelands_api::IngestOpts {
+        delivery: delivery.map(Into::into),
+    };
     if let Some(ct) = header(req.headers(), CONTENT_TYPE.as_str())
         && ![
             "application/x-ndjson",
@@ -1066,7 +1074,7 @@ async fn ingest(
     };
     let catalog: Arc<dyn Catalog> = store.catalog(WriteContext::default());
     let mut commits = catalog
-        .ingest(who, &source, Box::pin(lines))
+        .ingest_with(who, &source, opts, Box::pin(lines))
         .await
         .map_err(contract)?;
     let (tx, rx) = mpsc::channel(16);

@@ -28,8 +28,9 @@ use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
 use lakelands_api::read::{Find, Found, Get, ReadAt, Reply};
 use lakelands_api::record::{Patch, Record};
 use lakelands_api::write::{
-    Change, Committed, Declaration, Migration, MigrationReport, Outcome, Plan, Proposal,
-    ProposalFilter, ProposedWrite, Recompute, ValueTypeMigration, ValueTypeReport, WriteOpts,
+    Change, Committed, Declaration, IngestOpts, Migration, MigrationReport, Outcome, Plan,
+    Proposal, ProposalFilter, ProposedWrite, Recompute, ValueTypeMigration, ValueTypeReport,
+    WriteOpts,
 };
 use serde_json::{Value, json};
 use tokio::time::Instant;
@@ -360,6 +361,17 @@ impl Catalog for RemoteCatalog {
         self.go(who, call).await
     }
 
+    /// [`Catalog::ingest_with`] under no options.
+    async fn ingest(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        records: SourceStream,
+    ) -> Result<CommitStream> {
+        self.ingest_with(who, source, IngestOpts::default(), records)
+            .await
+    }
+
     /// The records go as an NDJSON body as the source yields them; the
     /// answer's lines come back as they are written, one per window. A
     /// line that carries an error ends the stream with it, and what came
@@ -400,10 +412,11 @@ impl Catalog for RemoteCatalog {
     /// quarter after the bound. So a client stopped for up to just under
     /// two quarters of the bound (15 s of 30 s) may still call a working
     /// server silent; a longer stop, or one that began earlier, never.
-    async fn ingest(
+    async fn ingest_with(
         &self,
         who: &Principal,
         source: &SourceId,
+        opts: IngestOpts,
         records: SourceStream,
     ) -> Result<CommitStream> {
         let key = self.wire.key_of(who)?;
@@ -416,7 +429,9 @@ impl Catalog for RemoteCatalog {
             drained: false,
         }
         .boxed_unsync();
-        let call = Call::new(Method::POST, path.clone()).stream("application/x-ndjson", body);
+        let call = Call::new(Method::POST, path.clone())
+            .query(crate::wire::query_of(&serde_json::json!(opts)))
+            .stream("application/x-ndjson", body);
         let r = self.wire.send(key, call).await?;
         if !r.status().is_success() {
             // An ingest refused outright has no stream to end: its

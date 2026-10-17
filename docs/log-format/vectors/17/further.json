@@ -264,6 +264,12 @@
       "about": "A `write_proposed` whose `declare` carries its plan: per type it would compute again, the records computed again and those it would leave naming no live record (062).",
       "line": "{\"body\":{\"kind\":\"write_proposed\",\"proposal\":\"p-plan\",\"why\":\"the tickets computed again\",\"write\":{\"declarations\":[{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"title\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"name\":\"ticket\"}],\"plan\":{\"at\":50,\"lossless\":true,\"report_id\":\"20ddb6f243b689c1f8427b062337230725c2d91399cc0cea669b554b413bcd22\",\"types\":[{\"fields\":[],\"from_schema_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lossless\":true,\"recomputed\":3,\"records_scanned\":3,\"report_id\":\"\",\"to_schema_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"ticket\",\"unlive\":[{\"field\":\"owner\",\"records\":1,\"sample_keys\":[\"t2\"]}]}]},\"write\":\"declare\"}},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"f0486d4e0d1be2ddb6b1335729bc56a58e828883ea76222babd75f9b5a807972\",\"id\":\"00000000000000000000000000000033\",\"known_at\":\"2026-10-05T09:00:21.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":51,\"prev\":\"fb6bee21cc01fdc64947a174dad634770cb36ec7c293deafe3d2ed72f652da21\",\"v\":17,\"writer\":\"agent:agent\"}",
       "hash": "f0486d4e0d1be2ddb6b1335729bc56a58e828883ea76222babd75f9b5a807972"
+    },
+    {
+      "shows": "delivery",
+      "about": "A `record_ingested` of `erp` in the delivery `batch-7`, the id its caller gave the `ingest` (§1.1): every record of that call carries it, and its id is made without it (§3), so the same record delivered again under another delivery is a duplicate. A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"key\":\"INV-2\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"80.00\",\"number\":\"INV-2\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"batch-7\",\"fence\":1,\"hash\":\"2546cafe93a3fc182366a1eb5b83fef20902adf45dea06dc6dc88a84a6145917\",\"id\":\"d9f9f007b9f1a374094d9a22e559af9a\",\"known_at\":\"2026-10-05T09:00:22.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":52,\"prev\":\"f0486d4e0d1be2ddb6b1335729bc56a58e828883ea76222babd75f9b5a807972\",\"source\":\"erp\",\"v\":17,\"writer\":\"service:importer\"}",
+      "hash": "2546cafe93a3fc182366a1eb5b83fef20902adf45dea06dc6dc88a84a6145917"
     }
   ],
   "misplaced": [
@@ -286,6 +292,11 @@
       "shows": "sealed_on_another_kind",
       "about": "`sealed` on an event that is neither a `record_ingested` nor an `output_recorded`, which a reader refuses.",
       "line": "{\"body\":{\"key\":\"r1\",\"kind\":\"record_retired\",\"type\":\"reading\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"688abe603ffce9f3eec0d5871fd832572eef9389adc0d218ebb3593240f27de3\",\"id\":\"710183001aa81e61bd20094ab98d5da5\",\"known_at\":\"2026-09-25T08:00:03.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":11,\"prev\":\"cedd1593795b9234db42500b5fdc0d00ea9152dfa233bcaa376320e3d75f0c90\",\"sealed\":{\"fields\":[\"email\"],\"key\":\"1\"},\"v\":17,\"writer\":\"human:owner\"}"
+    },
+    {
+      "shows": "delivery_on_another_kind",
+      "about": "`delivery` on an event that is not a `record_ingested`, which a reader refuses.",
+      "line": "{\"body\":{\"key\":\"r1\",\"kind\":\"record_retired\",\"type\":\"reading\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"batch-7\",\"fence\":1,\"hash\":\"7bcce16907d3c7923fb0f7a4edf6a3c591cf4fd3754b368dc4a52307c2f6dff3\",\"id\":\"710183001aa81e61bd20094ab98d5da5\",\"known_at\":\"2026-09-25T08:00:03.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":11,\"prev\":\"cedd1593795b9234db42500b5fdc0d00ea9152dfa233bcaa376320e3d75f0c90\",\"v\":17,\"writer\":\"human:owner\"}"
     }
   ]
 }

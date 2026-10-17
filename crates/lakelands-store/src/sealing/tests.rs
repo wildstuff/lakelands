@@ -65,3 +65,58 @@ fn a_sealed_value_moved_to_another_record_does_not_open() {
     }
     assert!(open(&mut e, &key()).is_err());
 }
+
+/// A version the log has moved past since a writer chose its own, as
+/// another writer sealed with a newer one, is chosen again.
+#[test]
+fn a_version_the_log_moved_past_is_chosen_again() {
+    use super::Keys;
+    use lakelands_api::id::KeyId;
+    use lakelands_api::seam::KeyStore;
+    use lakelands_api::{LakeId, Result, SourceId};
+    #[derive(Default)]
+    struct Two(std::sync::Mutex<Vec<KeyId>>);
+    impl KeyStore for Two {
+        fn create(&self, _: &LakeId, _: &SourceId) -> Result<KeyId> {
+            let mut held = self.0.lock().unwrap();
+            let id = KeyId::from(format!("k{}", held.len() + 1));
+            held.push(id.clone());
+            Ok(id)
+        }
+        fn key(&self, _: &LakeId, _: &SourceId, _: &KeyId) -> Result<Option<DataKey>> {
+            Ok(Some(key()))
+        }
+        fn destroy(&self, _: &LakeId, _: &SourceId) -> Result<()> {
+            Ok(())
+        }
+        fn ids(&self, _: &LakeId, _: &SourceId) -> Result<Vec<KeyId>> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+    }
+    let store = std::sync::Arc::new(Two::default());
+    let (lake, crm) = (LakeId::from("l"), SourceId::from("crm"));
+    let keys = Keys::new(lake.clone(), Some(store.clone()));
+    let (first, _) = keys.sealing(&crm, &[]).unwrap();
+    let second = store.create(&lake, &crm).unwrap();
+    let (kept, _) = keys.sealing(&crm, std::slice::from_ref(&first)).unwrap();
+    assert_eq!(
+        kept, first,
+        "a writer keeps its version while the log used no newer"
+    );
+    let (now, _) = keys.sealing(&crm, &[first, second.clone()]).unwrap();
+    assert_eq!(
+        now, second,
+        "once the log used a newer version, the writer seals with it"
+    );
+    // A choice that never reached the log gives way to a newer version
+    // another writer used meanwhile.
+    let web = SourceId::from("web");
+    let (unused, _) = keys.sealing(&web, &[]).unwrap();
+    let newest = store.create(&lake, &web).unwrap();
+    let (now, _) = keys.sealing(&web, std::slice::from_ref(&newest)).unwrap();
+    assert_ne!(unused, newest);
+    assert_eq!(
+        now, newest,
+        "a choice the log never used gives way to the newer one it did"
+    );
+}

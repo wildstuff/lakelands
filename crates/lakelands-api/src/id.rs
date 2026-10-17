@@ -100,6 +100,9 @@ name! {
     /// A version of a source's data key, as the host's key store names it
     /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
     KeyId,
+    /// One delivery of a source: the caller's id for an `ingest`, or the
+    /// store's own, `d<first position>` (`docs/log-format.md` §1.1).
+    DeliveryId,
 }
 
 /// The log coordinate: the exact place in a lake's history an answer

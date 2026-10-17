@@ -408,6 +408,18 @@ impl Catalog for Doors {
             .migrate_value_type_apply(who, to, report_id)
             .await
     }
+    async fn ingest_with(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        opts: lakelands_api::IngestOpts,
+        records: SourceStream,
+    ) -> Result<CommitStream> {
+        match opts.delivery {
+            None => self.ingest(who, source, records).await,
+            Some(_) => self.inner.ingest_with(who, source, opts, records).await,
+        }
+    }
     async fn ingest(
         &self,
         who: &Principal,

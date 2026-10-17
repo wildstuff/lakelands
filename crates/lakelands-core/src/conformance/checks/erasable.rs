@@ -18,7 +18,7 @@ use lakelands_api::{Error, LakeId, LakeStore, Position, SourceId};
 use serde_json::{Value, json};
 
 use crate::conformance::fixture::{
-    Lake, Must, events_after, field, refused_like, source_record, sourced, type_decl,
+    Lake, Must, events_after, field, head_unmoved, refused_like, source_record, sourced, type_decl,
 };
 use crate::conformance::{Failure, Held, Reopen, Store};
 
@@ -42,7 +42,7 @@ check!(
 
 check!(
     SEALED_OUTPUT = an_output_computed_from_a_sources_erasable_values_is_sealed_under_its_key,
-    "058: a function computed outside the lake that reads a source's erasable value records its output sealed under that source's key, `sealed` naming the key and the source, with an input digest that is not the SHA-256 of the call, and the field reads the plaintext answer; a call that reads erasable values of two sources is not made, and its field holds no value and says why; a write that moves a call back to an input already recorded plans the field, and the sets that read it, as the fold computes them; and after a newer version of the key is made, a rebuild answers the same and calls nothing again: an output is digested under the version of the key the log first sealed with",
+    "058: a function computed outside the lake that reads a source's erasable value records its output sealed under that source's key, `sealed` naming the key and the source, with an input digest that is not the SHA-256 of the call, and the field reads the plaintext answer; a call that reads erasable values of two sources is not made, and its field holds no value and says why; a write that moves a call back to an input already recorded plans the field, and the sets that read it, as the fold computes them; and after a newer version of the key is made, a rebuild answers the same and calls nothing again; a source's write after it seals its values and its output under the newer version, digested under it, and a rebuild answers that output too and calls nothing; a declaration that re-plans the first record after it finds that record's output again; a call over values two versions sealed is sealed under the older; one ingest whose second record re-plans a value its first sealed under a version first used there plans it as the fold computes it: an output is digested and sealed under the oldest version that sealed the values it reads; and a key store behind the lake, without the newest version the log sealed with, is refused at the source's next write, of a type with no computed field too, naming that version, and appends nothing",
     reopens
 );
 
@@ -474,7 +474,7 @@ async fn an_output_computed_from_a_sources_erasable_values_is_sealed_under_its_k
         "pair",
         &["name", "nick"],
     ));
-    l.declare(t).await?;
+    l.declare(t.clone()).await?;
     let set = crate::conformance::fixture::object_set_on("tagged_x", "person", "tagged = 'x'");
     l.declare_as(set, "declaring the set `tagged_x`").await?;
     let before = store.head().await.must("reading the head")?;
@@ -590,6 +590,140 @@ async fn an_output_computed_from_a_sources_erasable_values_is_sealed_under_its_k
         again_calls == calls,
         "the rebuild called `shout` again: {calls} calls before, {again_calls} after"
     );
+    // A write after the newer version seals under it, its output too, so
+    // destroying the older version would leave this output found.
+    let newer = keys
+        .ids(store.lake(), &"crm".into())
+        .must("listing crm's keys")?;
+    let newer = newer.last().cloned();
+    let at = store.head().await.must("reading the head")?;
+    let bea = source_record("person", "p2", json!({"id": "p2", "name": "Bea"}));
+    l.ingest("crm", vec![bea]).await.must("ingesting p2")?;
+    let events = events_after(store.as_ref(), at).await?;
+    let keys_of = |shout: bool| {
+        let of = |e: &&Event| match &e.body {
+            EventBody::OutputRecorded { seam, .. } => shout && seam.ends_with(":shout"),
+            EventBody::RecordIngested { .. } => !shout,
+            _ => false,
+        };
+        let sealed = events
+            .iter()
+            .filter(of)
+            .map(|e| e.sealed.as_ref().map(|s| s.key.clone()));
+        sealed.collect::<Vec<_>>()
+    };
+    let (ingested, shouted) = (keys_of(false), keys_of(true));
+    ensure!(
+        newer.as_ref() != Some(&k) && ingested == [newer.clone()] && shouted == [newer.clone()],
+        "p2's value and its output are sealed under the newer version {newer:?}, not {k}; the ingest names {ingested:?}, the output {shouted:?}"
+    );
+    let calls = crate::conformance::backing::made("sealed_output");
+    store.rebuild().await.must("rebuilding the lake")?;
+    let r = l.read("person", "p2").await?;
+    let again_calls = crate::conformance::backing::made("sealed_output");
+    ensure!(
+        r.fields.get("loud") == Some(&json!("Bea")) && again_calls == calls,
+        "after a rebuild `loud` of p2 reads Bea and `shout` is not called again; it reads {:?}, {calls} calls before, {again_calls} after",
+        r.fields.get("loud")
+    );
+    // A declaration re-plans p1, whose name the older version sealed: its
+    // output is digested under that version still, and found.
+    let calls = crate::conformance::backing::made("sealed_output");
+    t.fields.push(field("extra", StorageKind::Text));
+    l.declare(t).await?;
+    let r = l.read("person", "p1").await?;
+    let again_calls = crate::conformance::backing::made("sealed_output");
+    ensure!(
+        r.fields.get("loud") == Some(&json!("Ada")) && again_calls == calls,
+        "a declaration after the newer version re-plans `loud` under the version that sealed Ada, and finds its output; it reads {:?}, {calls} calls before, {again_calls} after",
+        r.fields.get("loud")
+    );
+    // A call over values two versions sealed is sealed under the older:
+    // p1's `name` under the first, its `nick` now crm's under the newer.
+    let at = store.head().await.must("reading the head")?;
+    let nick = source_record("person", "p1", json!({"nick": "A1"}));
+    l.ingest("crm", vec![nick])
+        .await
+        .must("ingesting p1's nick from crm")?;
+    let events = events_after(store.as_ref(), at).await?;
+    let paired: Vec<_> = (events.iter())
+        .filter(|e| matches!(&e.body, EventBody::OutputRecorded { seam, .. } if seam.ends_with(":pair")))
+        .map(|e| e.sealed.as_ref().map(|s| s.key.clone()))
+        .collect();
+    ensure!(
+        paired == [Some(k.clone())],
+        "`both` reads p1's name, sealed under {k}, and its nick, sealed under {newer:?}: its output is sealed under {k}; the log holds {paired:?}"
+    );
+    // One call whose second record re-plans a value its first sealed under
+    // a version first used there: the plan reads the version the fold
+    // keeps, so it finds no output another version recorded, and a set
+    // over the field moves only once the output is recorded.
+    let set = crate::conformance::fixture::object_set_on("both_cy", "person", "both = 'Cy'");
+    l.declare_as(set, "declaring the set `both_cy`").await?;
+    let cy = |key: &str, fields: Value| source_record("person", key, fields);
+    let p7 = cy("p7", json!({"id": "p7", "name": "Cy", "nick": "C"}));
+    l.ingest("crm", vec![p7]).await.must("ingesting p7")?;
+    keys.create(store.lake(), &"crm".into())
+        .must("making a third version")?;
+    let store = again(&reopen, store, with(&keys), "with a third version").await?;
+    let l = Lake::of(store.as_ref());
+    let at = store.head().await.must("reading the head")?;
+    let p8 = [
+        cy("p8", json!({"id": "p8", "name": "Cy"})),
+        cy("p8", json!({"nick": "C"})),
+    ];
+    l.ingest("crm", p8.into())
+        .await
+        .must("ingesting p8 in one call")?;
+    let (mut output, mut joined) = (None, None);
+    for e in events_after(store.as_ref(), at).await? {
+        match &e.body {
+            EventBody::OutputRecorded { seam, .. } if seam.ends_with(":pair") => {
+                output = output.or(Some(e.position));
+            }
+            EventBody::ObjectSetChanged { set, key, .. } if set == "both_cy" && key == "p8" => {
+                joined = joined.or(Some(e.position));
+            }
+            _ => {}
+        }
+    }
+    ensure!(
+        output.is_some() && joined > output,
+        "p8's `both` is called under the third version and its set moves after the output is recorded; the output is at {output:?}, the join at {joined:?}"
+    );
+    let newer = keys
+        .ids(store.lake(), &"crm".into())
+        .must("listing crm's keys")?;
+    let newer = newer.last().cloned();
+    // A key store behind the lake, as one restored from before the newest
+    // version, is refused at the source's next write, naming that version:
+    // a write with no computed field too, which would seal under the
+    // older version and leave its values taken as the newer's.
+    l.declare(lakelands_api::ontology::TypeDecl {
+        name: "card".into(),
+        ..person()
+    })
+    .await?;
+    let behind = {
+        let mut held = crate::lock(&keys.0).clone();
+        held.values_mut().for_each(|v| v.truncate(1));
+        Arc::new(Keys(Mutex::new(held)))
+    };
+    let store = again(&reopen, store, with(&behind), "with a key store behind it").await?;
+    let before = store.head().await.must("reading the head")?;
+    let cy = source_record("card", "c1", json!({"id": "c1", "name": "Cy"}));
+    let refused = Lake::of(store.as_ref()).ingest("crm", vec![cy]).await;
+    let named = |s: &Situation| matches!(s, Situation::KeyMissing { source, key } if source == "crm" && Some(key) == newer.as_ref());
+    ensure!(
+        matches!(&refused, Err(Error::Unavailable { situation }) if named(situation)),
+        "a key store without the newest version the log sealed with is refused, naming {newer:?}; it answered {refused:?}"
+    );
+    head_unmoved(
+        store.as_ref(),
+        before,
+        "the write a key store behind the lake refused",
+    )
+    .await?;
     Ok(())
 }
 

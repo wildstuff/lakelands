@@ -20,9 +20,9 @@ use lakelands_api::seam::{
     ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter, Seams, VerbInvocation,
 };
 use lakelands_api::write::{
-    AgeReport, Change, CompactReport, Declaration, ForgetReport, Migration, MigrationReport,
-    Outcome, Plan, Proposal, ProposalFilter, ProposedWrite, PurgeReport, Recompute,
-    ValueTypeMigration, ValueTypeReport, WriteOpts,
+    AgeReport, Change, CompactReport, Declaration, ForgetReport, IngestOpts, Migration,
+    MigrationReport, Outcome, Plan, Proposal, ProposalFilter, ProposedWrite, PurgeReport,
+    Recompute, ValueTypeMigration, ValueTypeReport, WriteOpts,
 };
 use lakelands_api::{
     Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
@@ -723,17 +723,32 @@ impl Catalog for Doors {
         source: &SourceId,
         records: SourceStream,
     ) -> Result<CommitStream> {
+        self.ingest_with(who, source, IngestOpts::default(), records)
+            .await
+    }
+
+    async fn ingest_with(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        opts: IngestOpts,
+        records: SourceStream,
+    ) -> Result<CommitStream> {
         same_lake(&self.lake, who)?;
         // The context first, as on every write door, and before the stream
         // is taken.
         writes::check_context(&self.lake, &self.context)?;
         writes::granted(who.grants.ingest)?;
         writes::check_source(source)?;
+        if let Some(d) = &opts.delivery {
+            writes::check_delivery(d)?;
+        }
         Ok(ingest::run(
             self.lake.clone(),
             who.clone(),
             self.context,
             source.clone(),
+            opts.delivery,
             records,
         ))
     }

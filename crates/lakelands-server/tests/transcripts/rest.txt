@@ -465,11 +465,11 @@
 < 200
 < content-type: application/x-ndjson
 < lakelands-position: 23
-< {"duplicates":0,"position":24,"records":1}
-< {"duplicates":0,"position":25,"records":1}
-< {"duplicates":0,"position":26,"records":1}
-< {"duplicates":0,"position":27,"records":1}
-< {"duplicates":0,"position":28,"records":1}
+< {"delivery":"d24","duplicates":0,"position":24,"records":1}
+< {"delivery":"d24","duplicates":0,"position":25,"records":1}
+< {"delivery":"d24","duplicates":0,"position":26,"records":1}
+< {"delivery":"d24","duplicates":0,"position":27,"records":1}
+< {"delivery":"d24","duplicates":0,"position":28,"records":1}
 
 # A record the store refuses ends the ingest with its refusal, its own
 # code kept, naming the record and the first record of its window: every
@@ -495,7 +495,7 @@
 < content-type: application/x-ndjson
 < lakelands-position: 28
 < {"duplicates":1,"position":28,"records":0}
-< {"duplicates":0,"position":29,"records":1}
+< {"delivery":"d29","duplicates":0,"position":29,"records":1}
 < {"error":"refused","message":"refused: line 3 is not a record `ingest` takes: not JSON, at column 2","reason":{"code":"line_not_record","column":2,"fault":"syntax","line":3,"message":"line 3 is not a record `ingest` takes: not JSON, at column 2","refusal":"invalid"},"todo":"correct that line and send the body again; what came before it is committed, and sending it again appends nothing","what":"line 3 is not a record `ingest` takes: not JSON, at column 2"}
 
 # The feed is the unmasked log: the clerk may not open it. A position
@@ -724,7 +724,7 @@
 < 200
 < content-type: application/x-ndjson
 < lakelands-position: 39
-< {"duplicates":0,"position":40,"records":1}
+< {"delivery":"d40","duplicates":0,"position":40,"records":1}
 
 > POST /lakes/finance/ingest/bank
 > authorization: Bearer k-owner
@@ -733,7 +733,7 @@
 < 200
 < content-type: application/x-ndjson
 < lakelands-position: 40
-< {"duplicates":0,"position":41,"records":1}
+< {"delivery":"d41","duplicates":0,"position":41,"records":1}
 
 > POST /lakes/finance/ingest/bank
 > authorization: Bearer k-owner
@@ -742,7 +742,7 @@
 < 200
 < content-type: application/x-ndjson
 < lakelands-position: 41
-< {"duplicates":0,"position":42,"records":1}
+< {"delivery":"d42","duplicates":0,"position":42,"records":1}
 
 # A link its relation's cardinality does not allow is a constraint on
 # `to`.
