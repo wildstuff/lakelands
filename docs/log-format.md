@@ -364,7 +364,7 @@ this object:
 |---|---|---|
 | `record_upserted` | `type`, `key`, `version`, `patch`, `made` | An authored write. From format 17 its `patch` may carry a field of `authority: verb` too, written by a verb's call or by an aging rule (lakelands#1130). `patch` is sparse: each member sets a field, `null` clears it, an absent field is unchanged (`docs/decisions/012-writes-touch-only-their-fields.md`). `made` is described below the table. |
 | `record_ingested` | `type`, `key`, `version`, `patch`, `made` | A write from a source; `source` is set in the envelope. Only `source` and `shared` fields may appear in the patch. `made` as on `record_upserted`. |
-| `record_retired` | `type`, `key`, `version` | The record is retired: invisible to reads at or after this position, its history kept. |
+| `record_retired` | `type`, `key`, `version` | The record is retired: invisible to reads at or after this position, its history kept. The same append closes its pending `compute`s (see `write_proposed`). |
 | `source_forgotten` | `source`, `keys` (the versions of its key, a list) | From format 16. The host forgot the source (`docs/decisions/058-a-source-may-be-forgotten.md`): its keys are destroyed, and every value it sealed, before this position and after, folds as erased: the field holds no value, and its provenance is kept with `erased: true`; an `output_recorded` it sealed records nothing, and one that names it by `output_at` fills nothing. A sealed value whose key the key store does not give, where no `source_forgotten` of its source is in the log, is not erased: the fold fails closed. The `record_retired` of each record the source alone brought follows in the same append. A reader refuses one of a format before 16. |
 | `record_restricted` | `type`, `key`, `version`, `reason` | The record is withheld from principals without the `restricted` grant (a retention hold); `reason` is the host's. Written by the host through the store facade, never by a caller's door. |
 | `record_unrestricted` | `type`, `key`, `version` | The hold is lifted. |
@@ -535,9 +535,9 @@ same fields itself
 | Kind | Payload | Fold |
 |---|---|---|
 | `verb_called` | `verb`, `key`, `payload` | A verb ran. Its writes follow as `record_upserted` events with `cause` set to this position and `procedure` naming the verb. A verb declared on its type (`scope: type`) is called with no record, and `key` is left out. |
-| `write_proposed` | `proposal`, `write`, `why`, `pinned` | A write was recorded as a proposal instead of being applied (`docs/decisions/013-verbs-run-by-declared-risk.md`). `write.write` is `upsert`, `retire` or `call`, with that write's arguments; or `declare`, a set of declarations, or `migrate`, a migration with its preflight's report, or `migrate_value_type`, a value type's new declaration with its preflight's report (Appendix A) and the values it renames. `pinned: true` where the proposer's grant admits only some records of the type the write reaches: its accept is refused once the record at the key has an event after this position or the type was declared or migrated since (`docs/decisions/051-a-grant-may-admit-only-some-records.md`); absent when false. |
+| `write_proposed` | `proposal`, `write`, `why`, `pinned` | A write was recorded as a proposal instead of being applied (`docs/decisions/013-verbs-run-by-declared-risk.md`). `write.write` is `upsert`, `retire` or `call`, with that write's arguments; or `declare`, a set of declarations, or `migrate`, a migration with its preflight's report, or `migrate_value_type`, a value type's new declaration with its preflight's report (Appendix A) and the values it renames; or `compute`, one record's call of a function above `low` risk (its record, field, function and the call's digest on its record; the inputs are the record's, and a listing shows them to a reader who is answered them, since the log holds none a forgotten source could leave readable), or `compute_sweep`, the calls a declaration or `recompute` made due over a type, which the store proposes as the writer of the event that made them due, caused by it, and no caller proposes; a pending `compute` is closed by a `write_rejected` of the system, caused by the `output_recorded` of its call's digest, by its record's `record_retired`, or by the `migrated` that moved its record to another key, with nothing owed (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`). `pinned: true` where the proposer's grant admits only some records of the type the write reaches: its accept is refused once the record at the key has an event after this position or the type was declared or migrated since (`docs/decisions/051-a-grant-may-admit-only-some-records.md`); absent when false. |
 | `write_accepted` | `proposal` | The proposal was accepted. Its write follows in the same append, with `cause` set to this position and the proposer as `writer`: for `declare` the `declared` events, for `migrate` the `migrated` event, for `migrate_value_type` the `declared` of the value type, or, when it renames values, the `value_type_migrated` event and what follows it (the link types the store derives, and the types it declares again for their `initial`, keep `system:lakelands` as writer). |
-| `write_rejected` | `proposal`, `reason` | The proposal was rejected; nothing else is written. |
+| `write_rejected` | `proposal`, `reason` | The proposal was rejected; nothing else is written, but for a `compute` whose call its record no longer makes, which the same append records as rejected under its digest, and for a `compute` the system closes (§2.5). |
 
 ### 2.5 Reactions and recorded outputs
 
@@ -556,7 +556,15 @@ for a verb, `{ "verb", "record", "payload", "position" }`, `record`
 null for a verb called on its type. A call that reads a source's
 erasable values, directly or through the fields they are derived into,
 is digested by HMAC under that source's key instead, and its output is
-sealed (§1.4). Two calls with
+sealed (§1.4). A call of a function above `low` risk is its record's:
+its `input` is the SHA-256 of the canonical bytes of `{ "call",
+"record": [type, key], "made" }`, where `call` is the digest above and
+`made` the position of the `record_upserted` or `record_ingested` that
+made the record, the last at its key with `made: true`, which a record
+a migration moves to another key, or a link to another link type, keeps
+(`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`); a
+replay of such a call reads its record's output, and, for a record whose
+value stands on it, one recorded under `call` alone. Two calls with
 the same `seam` and `input` are the same call, and a replay reads the
 recorded output for it.
 
@@ -998,12 +1006,12 @@ below; no other spelling is read.
 | a field's `on_input_change` | `keep`, `clear` |
 | a field's `computed_at` | `write`, `read` |
 | a relation's `cardinality` | `one_to_one`, `one_to_many`, `many_to_one`, `many_to_many` |
-| a verb's `risk` | `low`, `medium`, `high` |
+| a verb's `risk`, a function's `risk` | `low`, `medium`, `high` |
 | a constraint's `at_ingest` (default `refuse`, which is never written) | `refuse`, `admit` |
 | a verb's `effect` | `write` (with `set`), `external` (with `executor`) |
 | a verb's `scope` (default `record`, which is never written) | `record`, `type` |
 | `declaration.declare` | `type`, `value_type`, `verb`, `trigger`, `object_set`, `function`, `setting` (from format 17) |
-| a proposal's `write.write` | `upsert`, `retire`, `call` |
+| a proposal's `write.write` | `upsert`, `retire`, `call`, `compute`, `compute_sweep` |
 
 A **declaration** is an object whose `declare` names what it declares,
 with that declaration's members beside it. Every member not marked
@@ -1020,7 +1028,7 @@ with that declaration's members beside it. Every member not marked
 | `verb` | `name`, `on`, `risk` and `effect` (required), `payload` (`[]`), `requires` (none), `description` (none); `effect: write` carries `set`, a list of `{ "field", "value" }`; `effect: external` carries `executor` |
 | `trigger` | `name` and `on` (required), `when`, `description` (none), `max_depth` (none: an integer at most the lake's `max_reactive_depth`) |
 | `object_set` | `name`, `of` and `where` (required), `description` (none) |
-| `function` | `name` and `backing` (required), `inputs` (`[]`), `expr` (none), `config` (`null`), `description` (none) |
+| `function` | `name` and `backing` (required), `inputs` (`[]`), `expr` (none), `config` (`null`), `description` (none), `risk` (`low`) |
 | `setting` (from format 17) | `key` and `type` (required; a field's `type`), `unit`, `description`, `group` (none). A host's own key of `sys.setting`; its records of `sys.setting` carry `group` as the store stamps it from this declaration (lakelands#996) |
 
 An **annotation map** (`annotations`) is an object from a key
@@ -1071,6 +1079,31 @@ its report the members `conditions` (a list of strings) and
 `conditions_unshown` (`true`, or absent), and, in each of `fields`,
 `renamed`, a list of `{ "from", "to", "records" }`; each is left out
 when empty, so a migration that renames nothing reads as before.
+`compute` carries `type`, `key`, `field`, the field its output fills,
+`function` and `input`, the call's digest on its record (§2.5). It carries no inputs:
+a value sealed under a source's key would stay readable there once the
+source is forgotten (058); the record holds them, and a listing shows
+them to a reviewer who is answered the record.
+`compute_sweep` carries `type`, `function`, `count`, how many calls it
+owed when proposed, and `first`, the first of their records' keys in
+key order, ten at most. The `write_accepted` of either is followed,
+after its append, by the calls it lets be made, each `output_recorded`
+caused by the accept; its `write_rejected`, by an `output_recorded` of
+`{"error": "rejected: <reason>"}` under each call's digest, caused by
+the rejection. A rejection of a `compute` whose call its record no
+longer makes appends that `output_recorded` in the same append, its
+`field` the proposal's, which it does not fill.
+An `output_recorded` for a call also closes every pending `compute` of
+its digest: the system appends a `write_rejected` for each, with the
+reason "its call's output is recorded", caused by the output, in the
+same append; nothing is owed for it. An output recorded under the call
+alone, its function `low` again, closes the record's `compute` of the
+call on the record's digest the same way. A `record_retired` closes
+every pending `compute` of its record, with the reason "its record is
+retired", caused by the retirement, in the same append; a `migrated`
+that re-keys a record closes every pending `compute` of it the same way,
+with the reason "its record moved to another key", caused by the
+`migrated`, in the same append.
 
 ## Appendix B. Expressions in typed form
 

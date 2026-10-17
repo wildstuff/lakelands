@@ -11,7 +11,7 @@ use crate::id::{
 };
 use crate::ontology::{
     ANNOTATION_KEY_MAX_BYTES, ANNOTATIONS_MAX_BYTES, Annotations, FieldDecl, FieldType,
-    RESERVED_ANNOTATION_NAMESPACES, RelationDecl, StorageKind, TriggerDecl, TypeDecl,
+    RESERVED_ANNOTATION_NAMESPACES, RelationDecl, Risk, StorageKind, TriggerDecl, TypeDecl,
     ValueTypeDecl, VerbDecl,
 };
 
@@ -236,6 +236,44 @@ pub enum ProposedWrite {
         #[serde(default)]
         report: Box<ValueTypeReport>,
     },
+    /// One record's call of a function above `low` risk, which the store
+    /// proposes when a write makes it due and no caller may propose
+    /// (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`).
+    Compute {
+        /// The record's type.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// The record.
+        key: RecordKey,
+        /// The field its output fills.
+        field: FieldName,
+        /// The function.
+        function: String,
+        /// The inputs as the record holds them, by name, as a listing
+        /// shows them to its reader. The log never holds them: a value
+        /// sealed under a source's key would stay readable in the proposal
+        /// once the source is forgotten (058).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inputs: Option<serde_json::Value>,
+        /// The call's digest on its record, which keys its output: a
+        /// decision holds for its record alone (064).
+        input: crate::event::Digest,
+    },
+    /// The calls of a function above `low` risk that a declaration or
+    /// `recompute` makes due over a type, proposed as one: its accept makes
+    /// the calls the sweep owes then, and its reject records the rejection
+    /// under each of them.
+    ComputeSweep {
+        /// The records' type.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// The function.
+        function: String,
+        /// How many calls it owed when proposed.
+        count: u64,
+        /// The first records it called for, in key order.
+        first: Vec<RecordKey>,
+    },
 }
 
 impl ProposedWrite {
@@ -268,6 +306,9 @@ impl ProposedWrite {
             ProposedWrite::Declare { .. } => ProposalKind::Declare,
             ProposedWrite::Migrate { .. } => ProposalKind::Migrate,
             ProposedWrite::MigrateValueType { .. } => ProposalKind::MigrateValueType,
+            ProposedWrite::Compute { .. } | ProposedWrite::ComputeSweep { .. } => {
+                ProposalKind::Compute
+            }
         }
     }
 
@@ -299,6 +340,8 @@ pub enum ProposalKind {
     Migrate,
     /// A value type's tightening.
     MigrateValueType,
+    /// A function's outside calls.
+    Compute,
 }
 
 /// Where a proposal stands.
@@ -835,6 +878,11 @@ pub struct FunctionDecl {
     /// What the function computes, for people and agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// How dangerous its backing's call is: above `low`, a call is
+    /// proposed and made only when accepted, as a verb's is
+    /// (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`).
+    #[serde(default, skip_serializing_if = "Risk::is_low")]
+    pub risk: Risk,
 }
 
 /// A setting a host declares (`docs/decisions/063-every-setting-is-in-one-list.md`,

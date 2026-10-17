@@ -84,6 +84,7 @@ mod restated;
 mod restriction;
 mod retarget;
 mod retire;
+mod risky_calls;
 mod row_pages;
 mod schema;
 mod schema_proposals;
@@ -173,6 +174,20 @@ pub const ALL: &[Check] = &[
     backings::COMPUTED_CYCLE_REFUSED,
     backings::RECORDED_FILL_REACTS,
     backings::CHAIN_WAITS,
+    risky_calls::CALL_RUNS_BY_RISK,
+    risky_calls::CALL_DECIDED_ONCE,
+    risky_calls::CALL_PROPOSAL_HOLDS_NO_INPUTS,
+    risky_calls::SWEEP_PROPOSED,
+    risky_calls::SWEEP_LISTED_WHOLE,
+    risky_calls::SWEEP_EXISTENCE_HIDES_NO_HOLD,
+    risky_calls::DECISION_PER_RECORD,
+    risky_calls::MADE_AGAIN_DECIDES_ANEW,
+    risky_calls::HELD_CALL_NOT_THERE,
+    risky_calls::MOVED_CALL_CLOSED,
+    risky_calls::MOVED_CALL_NOT_LISTED,
+    risky_calls::REJECT_KEEPS_GOOD_OUTPUTS,
+    risky_calls::CALL_NAMES_ITS_CAUSE,
+    risky_calls::EXPR_HAS_NO_RISK,
     views::GROUPS_AND_SUMS,
     view_stack::VIEW_STACK,
     views::FAILING_MEASURE_REFUSES,

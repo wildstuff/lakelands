@@ -71,6 +71,7 @@ fn stored() -> StoredRecord {
         .unwrap(),
         meta: [("amount".into(), meta.clone()), ("iban".into(), meta)].into(),
         position: Position(1),
+        made: Position(1),
         retired: false,
         restricted: false,
     }

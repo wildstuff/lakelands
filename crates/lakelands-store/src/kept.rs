@@ -575,6 +575,7 @@ impl Work {
             fields,
             meta: BTreeMap::new(),
             position: at,
+            made: at,
             retired: false,
             restricted,
         })

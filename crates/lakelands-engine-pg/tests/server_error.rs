@@ -42,6 +42,7 @@ fn a_refused_statement_answers_no_detail_of_the_failing_row() {
             fields: serde_json::from_value(json!({"v": "marker-value"})).unwrap(),
             meta: Default::default(),
             position: Position(1),
+            made: Position(1),
             retired: false,
             restricted: false,
         })

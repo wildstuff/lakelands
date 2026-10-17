@@ -192,7 +192,8 @@
 //!
 //! A function, `functions/gross.yaml`. The backing is `expr` unless
 //! named; an `expr` function carries `expr`, any other backing carries
-//! `config` (any YAML) and no `expr`:
+//! `config` (any YAML) and no `expr`, and may declare a `risk` above
+//! `low`, the default:
 //!
 //! ```yaml
 //! name: gross

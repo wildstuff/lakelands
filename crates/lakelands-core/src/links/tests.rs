@@ -41,6 +41,7 @@ fn a_link_record_is_an_edge_out_of_its_from_and_into_its_to() {
         .into(),
         meta: Default::default(),
         position: lakelands_api::Position(3),
+        made: lakelands_api::Position(3),
         retired,
         restricted: false,
     };

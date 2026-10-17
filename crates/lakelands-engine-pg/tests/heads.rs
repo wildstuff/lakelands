@@ -25,6 +25,7 @@ fn state(key: u64, at: u64) -> StoredRecord {
         fields: serde_json::from_value(json!({"n": at, "pad": "x".repeat(400)})).unwrap(),
         meta: Default::default(),
         position: Position(at),
+        made: Position(at),
         retired: false,
         restricted: false,
     }

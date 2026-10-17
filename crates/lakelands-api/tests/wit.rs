@@ -572,6 +572,7 @@ fn function_decl() -> FunctionDecl {
         expr: Some(cond()),
         config: json!({"a": 1}),
         description: Some("d".into()),
+        risk: Risk::High,
     }
 }
 
@@ -1690,7 +1691,9 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | ProposedWrite::Call { .. }
             | ProposedWrite::Declare { .. }
             | ProposedWrite::Migrate { .. }
-            | ProposedWrite::MigrateValueType { .. } => {}
+            | ProposedWrite::MigrateValueType { .. }
+            | ProposedWrite::Compute { .. }
+            | ProposedWrite::ComputeSweep { .. } => {}
         }
     }
     let _ = writes;
@@ -1729,6 +1732,20 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     to: serde_json::from_value(json!({"name": "v", "kind": "text"})).unwrap(),
                     renames: Vec::new(),
                     report: Default::default(),
+                },
+                ProposedWrite::Compute {
+                    ty: "t".into(),
+                    key: "k".into(),
+                    field: "f".into(),
+                    function: "g".into(),
+                    inputs: Some(json!({"a": 1})),
+                    input: lakelands_api::event::Digest::zero(),
+                },
+                ProposedWrite::ComputeSweep {
+                    ty: "t".into(),
+                    function: "g".into(),
+                    count: 1,
+                    first: vec!["k".into()],
                 },
             ],
             Some("write"),
@@ -1908,6 +1925,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     expr: None,
                     config: Value::Null,
                     description: None,
+                    risk: Default::default(),
                 }),
                 Declaration::Setting(setting_decl()),
             ],

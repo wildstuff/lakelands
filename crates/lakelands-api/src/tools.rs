@@ -1251,7 +1251,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             ("type", names(|_| true)),
             (
                 "kind",
-                json!({"enum": ["upsert", "retire", "call", "declare", "migrate", "migrate_value_type"]}),
+                json!({"enum": ["upsert", "retire", "call", "declare", "migrate", "migrate_value_type", "compute"]}),
             ),
             (
                 "order_by",

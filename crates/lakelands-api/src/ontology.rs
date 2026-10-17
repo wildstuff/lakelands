@@ -1082,15 +1082,25 @@ fn yes() -> bool {
 
 /// How dangerous a verb is, as its author declares it
 /// (`docs/decisions/013-verbs-run-by-declared-risk.md`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Risk {
     /// Runs at once when its effect is writing authored fields.
+    #[default]
     Low,
     /// Lands as a proposal.
     Medium,
     /// Lands as a proposal.
     High,
+}
+
+impl Risk {
+    /// Whether it is `low`, the default a function's risk is left out at.
+    pub fn is_low(&self) -> bool {
+        *self == Risk::Low
+    }
 }
 
 /// What a verb does when it runs.

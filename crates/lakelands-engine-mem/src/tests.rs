@@ -72,6 +72,7 @@ fn record(ty: &str, key: &str, fields: Value, position: u64) -> StoredRecord {
         fields: serde_json::from_value(fields).unwrap(),
         meta: BTreeMap::new(),
         position: Position(position),
+        made: Position(position),
         retired: false,
         restricted: false,
     }

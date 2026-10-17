@@ -39,6 +39,7 @@ fn record(ty: &str, key: &str, fields: Value, at: u64) -> StoredRecord {
         fields: serde_json::from_value(fields).unwrap(),
         meta: Default::default(),
         position: Position(at),
+        made: Position(at),
         retired: false,
         restricted: false,
     }

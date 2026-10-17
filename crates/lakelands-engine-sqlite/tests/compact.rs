@@ -35,6 +35,7 @@ fn fold(engine: &dyn LakeEngine, n: u64, at: u64) {
             fields: serde_json::from_value(fields).unwrap(),
             meta: Default::default(),
             position: Position(at),
+            made: Position(at),
             retired: false,
             restricted: false,
         })

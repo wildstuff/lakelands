@@ -110,6 +110,7 @@ fn a_scan_sorted_by_keys_answers_what_cmp_places_orders() {
             fields: [(FieldName::from("v"), v)].into_iter().collect(),
             meta: BTreeMap::new(),
             position: lakelands_api::Position(1),
+            made: lakelands_api::Position(1),
             retired: false,
             restricted: false,
         })
@@ -246,6 +247,7 @@ fn a_walk_in_index_order_answers_what_a_whole_sort_answers() {
                 fields,
                 meta: BTreeMap::new(),
                 position: lakelands_api::Position(1),
+                made: lakelands_api::Position(1),
                 retired: i % 11 == 0,
                 restricted: false,
             }
@@ -309,6 +311,7 @@ fn a_walk_at_an_earlier_position_answers_what_a_whole_sort_there_answers() {
             fields,
             meta: BTreeMap::new(),
             position: lakelands_api::Position(1),
+            made: lakelands_api::Position(1),
             retired,
             restricted: false,
         }
@@ -448,7 +451,7 @@ fn top_k_answers_what_rank_answers() {
 #[test]
 fn a_state_keeps_shared_provenance_once_and_reads_every_fields_back() {
     let record = |fields: serde_json::Value, meta: serde_json::Value| -> StoredRecord {
-        let r = json!({"type": "t", "key": "k", "version": 1, "fields": fields, "meta": meta, "position": 9});
+        let r = json!({"type": "t", "key": "k", "version": 1, "fields": fields, "meta": meta, "position": 9, "made": 3});
         serde_json::from_value(r).unwrap()
     };
     let block = |at: u64, origin: &str| json!({"origin": origin, "known_at": format!("2026-01-01T00:00:0{at}Z"), "position": at, "writer": "w"});
@@ -503,6 +506,7 @@ fn a_commit_decides_again_only_the_types_its_puts_move_and_as_the_whole_decides(
         fields: serde_json::from_value(json!({"key": "lookup_index.w", "value": ["f"]})).unwrap(),
         meta: Default::default(),
         position: Position(1),
+        made: Position(1),
         retired: false,
         restricted: false,
     };

@@ -106,6 +106,11 @@ pub struct StoredRecord {
     pub meta: BTreeMap<FieldName, FieldMeta>,
     /// The position of the last event that changed the record.
     pub position: Position,
+    /// The position of the write that made the record: its first, or its
+    /// first after a retirement. A call that waits for a decision is
+    /// digested on it, so a record made again at a key reads none of the
+    /// decisions of the one retired there.
+    pub made: Position,
     /// Retired: invisible to reads at or after `position`.
     #[serde(default)]
     pub retired: bool,
@@ -127,6 +132,7 @@ impl StoredRecord {
             fields: BTreeMap::new(),
             meta: BTreeMap::new(),
             position,
+            made: position,
             retired: true,
             restricted: false,
         }

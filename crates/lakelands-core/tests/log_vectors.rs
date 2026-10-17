@@ -190,7 +190,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 405, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 433, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -392,7 +392,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 45] = [
+const SHOWN: [&str; 49] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -438,10 +438,14 @@ const SHOWN: [&str; 45] = [
     "setting_group",
     "proposed_plan",
     "delivery",
+    "function_risk",
+    "computed_by_function",
+    "computed_write",
+    "proposed_compute",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 52;
+const LAST: u64 = 56;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
@@ -647,6 +651,24 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
         "delivery" => {
             matches!(&event.body, B::RecordIngested { .. })
                 && event.delivery.as_ref().is_some_and(|d| d == "batch-7")
+        }
+        "function_risk" => matches!(declared, Some(D::Function(f))
+            if f.backing != "expr" && f.risk != lakelands_api::ontology::Risk::Low),
+        "computed_by_function" => matches!(declared, Some(D::Type(t))
+            if t.fields.iter().any(|f| f.function.is_some())),
+        "computed_write" => {
+            matches!(&event.body, B::RecordUpserted { ty, .. } if ty.as_str() == "alert")
+        }
+        // The call's digest on its record, as the write at 55 made it.
+        "proposed_compute" => {
+            let sha = |v: &Value| lakelands_core::canonical::sha256_hex(v);
+            let call = sha(&serde_json::json!({ "function": "notify",
+                "inputs": { "subject": "disk full" },
+                "config": { "url": "https://notify.example/send" } }));
+            let input =
+                sha(&serde_json::json!({ "call": call, "record": ["alert", "a1"], "made": 55 }));
+            matches!(proposed, Some(ProposedWrite::Compute { inputs: None, input: i, .. }) if i.0 == input)
+                && event.cause == Some(lakelands_api::Position(55))
         }
         other => panic!("`further.json` shows `{other}`, which this test has no check for"),
     }

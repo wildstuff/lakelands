@@ -28,6 +28,7 @@ fn record(key: &str, at: u64) -> StoredRecord {
         fields: serde_json::from_value(json!({"v": key.replace('\0', "")})).unwrap(),
         meta: Default::default(),
         position: Position(at),
+        made: Position(at),
         retired: false,
         restricted: false,
     }

@@ -36,7 +36,9 @@ use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
 use lakelands_api::principal::Renamed;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{EmbedBackend, Seams};
-use lakelands_api::write::{Declaration, Migration, Proposal, ProposalFilter, ProposalState};
+use lakelands_api::write::{
+    Declaration, Migration, Proposal, ProposalFilter, ProposalState, ProposedWrite,
+};
 use lakelands_api::{
     Error, FieldName, LakeId, Position, Principal, ProposalId, RecordKey, Refusal, Result,
     SourceId, Timestamp, TypeName, Value, ValueTypeName, Version, WriteContext,
@@ -1965,6 +1967,27 @@ impl Lake {
                         p.reason = Some(reason.clone());
                     }
                     _ => p.state = ProposalState::Accepted,
+                }
+                // A decision on a proposed call is carried out after the
+                // append, as the event that set it off made it due (064).
+                // A closure by the system, caused by the output that decided
+                // the call or by its record's retirement, leaves nothing owed.
+                if owes
+                    && e.origin != lakelands_api::record::Origin::System
+                    && let Some(
+                        write
+                        @ (ProposedWrite::Compute { .. } | ProposedWrite::ComputeSweep { .. }),
+                    ) = &p.write
+                {
+                    let proposed = self.read_events(p.position, 1)?;
+                    let proposed = proposed.first().filter(|x| x.position == p.position);
+                    let by = match proposed.and_then(|x| x.cause) {
+                        Some(at) => self.read_events(at, 1)?.into_iter().next(),
+                        None => proposed.cloned(),
+                    };
+                    if let Some(by) = by {
+                        w.owed.extend(Owed::decided(e, write, &by));
+                    }
                 }
                 projection.put_proposal(&p, e.position)?;
                 staged.proposals.insert(proposal.clone(), p);
