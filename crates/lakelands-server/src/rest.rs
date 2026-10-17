@@ -91,7 +91,8 @@ fn status_of(e: &Error) -> StatusCode {
             Refusal::NotGranted
             | Refusal::WrongDoor
             | Refusal::VerbsOnly { .. }
-            | Refusal::Reserved => StatusCode::FORBIDDEN,
+            | Refusal::Reserved
+            | Refusal::Declined(_) => StatusCode::FORBIDDEN,
             Refusal::Decided | Refusal::Unanswered(_) => StatusCode::CONFLICT,
             Refusal::Invalid(_)
             | Refusal::Constraint(_)

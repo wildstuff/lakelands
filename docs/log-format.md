@@ -609,7 +609,13 @@ and `input` is
 `6ff3bba9eed9f7899ca52fb42794fb32c315850b3bc9470dab44481773826ed0`.
 
 A seam that failed is recorded with the output `{"error": "<why>"}`,
-an object whose one member is `error`, a string. A replay reads it like
+an object whose one member is `error`, a string; a verb's executor that
+failed is recorded as its error's wire form, `error`, `reason` where it
+is a refusal, and `message` (lakelands#812). It is recorded in the
+one-member form, its sentence, where that wire form holds an integer
+beyond ±(2^53 − 1) (§1.2) or cannot be written, so an error is always
+recorded; a kept lake also holds the one-member form for the failures
+recorded before. A replay reads it like
 any other output: the call is not made again. A request that carried
 several texts and failed records a failure for each of them. An output
 that holds an integer beyond ±(2^53 − 1) is recorded as such a failure,

@@ -41,7 +41,7 @@ check!(
 
 check!(
     SET_ACROSS_BOUND = what_a_far_write_sets_off_is_held_to_the_ceiling,
-    "004, 036 and 039, extended (lakelands#567): past the lake's `max_set_changes`, counted over the memberships and firings a far write sets off across an edge in its append, the write is refused `too_large` naming the set and the ceiling and appends nothing, at `upsert` and at the accept of its proposal, and naming nothing to a writer not shown the set; a purge's preflight reports how many it would set off beside the ceiling, on a read-only handle too, appending nothing, and the purge is refused whole; an aging move past it is a failed guard, the record left as it was",
+    "004, 036 and 039, extended (lakelands#567): past the lake's `max_set_changes`, counted over the memberships and firings a far write sets off across an edge in its append, the write is refused `too_large` naming the set and the ceiling and appends nothing, at `upsert` and at the accept of its proposal, and naming nothing to a writer not shown the set; a purge's preflight reports how many it would set off beside the ceiling, on a read-only handle too, appending nothing, and the purge is refused whole; an aging move past it is counted as refused, `too_large` listed with its key, and no failed guard, the record left as it was (lakelands#1182)",
     given
 );
 
@@ -570,8 +570,13 @@ async fn what_a_far_write_sets_off_is_held_to_the_ceiling(store: Store, given: G
     let aged = s.age(today).await.must("aging")?;
     let retier = aged.rules.iter().find(|r| r.rule == "retier");
     ensure!(
-        retier.is_some_and(|r| r.moved == 0 && r.failed_guards == 1),
-        "the aging move of `c2`, past the ceiling, is a failed guard; it reported {aged:?}"
+        retier.is_some_and(|r| r.moved == 0
+            && r.failed_guards == 0
+            && r.refused == 1
+            && matches!(r.refusals.as_slice(),
+                [m] if m.key.as_str() == "c2" && matches!(m.why, Refusal::TooLarge { max: 1 }))),
+        "the aging move of `c2`, past the ceiling, is refused `too_large`, listed with its key, \
+         and no failed guard; it reported {aged:?}"
     );
     head_unmoved(s, before, "the aging run that moved nothing").await?;
     // A preflight reads: on a handle that holds no lease it answers the

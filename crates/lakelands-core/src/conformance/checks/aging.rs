@@ -73,7 +73,7 @@ check!(
 
 check!(
     REFUSED_MOVE_LEAVES = a_move_the_store_would_refuse_leaves_the_record,
-    "036: a move the store would refuse for a record (its `to` a reference no longer live) leaves the record, is counted as a failed guard, and the other rules run"
+    "036: a move the store would refuse for a record (its `to` a reference no longer live) leaves the record, is counted as a failed guard (a move a constraint or the set ceiling refuses is counted as refused, lakelands#1182), and the other rules run"
 );
 
 fn date(y: i64, m: u32, d: u32) -> Timestamp {
@@ -816,6 +816,101 @@ async fn a_rule_is_skipped_when_its_field_is_dropped_or_its_value_no_longer_admi
         c1.fields.get("phase") == Some(&json!("open")),
         "a skipped rule moves nothing: `c1` holds {:?}",
         c1.fields.get("phase")
+    );
+    Ok(())
+}
+
+check!(
+    REFUSED_BY_CONSTRAINT =
+        an_aging_move_a_constraint_refuses_is_reported_refused_not_a_failed_guard,
+    "036, extended (lakelands#1182): a move that would leave a record breaking its type's constraint leaves the record where it was and is counted as refused, not as a failed guard, in its rule's run and in the report; the rule's run lists it with the record's key and the refusal, `constraint_broken` naming the constraint, the type and the key; a record the move does not break moves"
+);
+
+async fn an_aging_move_a_constraint_refuses_is_reported_refused_not_a_failed_guard(
+    store: Store,
+) -> Held {
+    use lakelands_api::error::Case;
+    let l = Lake::of(store.as_ref());
+    l.declare_json(json!({"declare": "type", "name": "invoice",
+        "fields": [{"name": "status", "type": {"kind": "text"}},
+                   {"name": "amount", "type": {"kind": "number"}}],
+        "constraints": [{"name": "overdue_is_small",
+                         "holds": "not (status = 'overdue') or amount <= 100"}]}))
+        .await?;
+    for (key, amount) in [("big", 200), ("small", 50)] {
+        l.upsert("invoice", key, json!({"status": "open", "amount": amount}))
+            .await?;
+    }
+    overdue(&l, "overdue", "true").await?;
+    let report = age(store.as_ref(), date(2026, 3, 1)).await?;
+    let run = &report.rules[0];
+    let named = run.refusals.first().is_some_and(|m| {
+        m.key.as_str() == "big"
+            && matches!(&m.why, Refusal::Constraint(said)
+                if matches!(&said.case, Case::ConstraintBroken { constraint, ty, key }
+                    if constraint.as_str() == "overdue_is_small"
+                        && ty.as_str() == "invoice"
+                        && key.as_str() == "big"))
+    });
+    ensure!(
+        (
+            run.moved,
+            run.failed_guards,
+            run.refused,
+            run.refusals.len()
+        ) == (1, 0, 1, 1)
+            && named
+            && (report.transitions, report.failed_guards, report.refused) == (1, 0, 1),
+        "the move of `big` breaks `overdue_is_small`: one record moves, one is refused with \
+         the constraint's name and `big`'s key, and no guard failed; the report says {report:?}"
+    );
+    ensure!(
+        status(&l, "big").await? == json!("open") && status(&l, "small").await? == json!("overdue"),
+        "`big` stays open and `small` becomes overdue"
+    );
+    Ok(())
+}
+
+check!(
+    REFUSALS_BOUNDED = a_run_lists_at_most_the_stated_number_of_refused_moves_and_counts_them_all,
+    "036, extended (lakelands#1182): a rule's run lists the first `AGE_REFUSALS_SHOWN` refused moves in scan order, and `refused` counts every one"
+);
+
+async fn a_run_lists_at_most_the_stated_number_of_refused_moves_and_counts_them_all(
+    store: Store,
+) -> Held {
+    use lakelands_api::write::AGE_REFUSALS_SHOWN;
+    let l = Lake::of(store.as_ref());
+    l.declare_json(json!({"declare": "type", "name": "invoice",
+        "fields": [{"name": "status", "type": {"kind": "text"}},
+                   {"name": "amount", "type": {"kind": "number"}}],
+        "constraints": [{"name": "overdue_is_small",
+                         "holds": "not (status = 'overdue') or amount <= 100"}]}))
+        .await?;
+    let total = AGE_REFUSALS_SHOWN + 4;
+    for i in 0..total {
+        l.upsert(
+            "invoice",
+            &format!("i{i:02}"),
+            json!({"status": "open", "amount": 200}),
+        )
+        .await?;
+    }
+    overdue(&l, "overdue", "true").await?;
+    let report = age(store.as_ref(), date(2026, 3, 1)).await?;
+    let run = &report.rules[0];
+    let keys: Vec<&str> = run.refusals.iter().map(|m| m.key.as_str()).collect();
+    let first: Vec<String> = (0..AGE_REFUSALS_SHOWN)
+        .map(|i| format!("i{i:02}"))
+        .collect();
+    ensure!(
+        run.refused as usize == total
+            && report.refused as usize == total
+            && keys == first
+            && run.moved == 0
+            && run.failed_guards == 0,
+        "{total} moves are refused: all are counted, and the run lists the first \
+         {AGE_REFUSALS_SHOWN} in key order; the report says {report:?}"
     );
     Ok(())
 }

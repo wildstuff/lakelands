@@ -31,7 +31,7 @@ pub use outage::{
 };
 
 /// What went wrong.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", tag = "error", rename_all = "snake_case")]
 pub enum Error {
     /// The store would not do it: a right is missing, a declaration
@@ -226,8 +226,8 @@ impl Error {
         }
     }
 
-    /// What a refusal of `invalid`, `constraint`, `precondition` or
-    /// `unanswered` says, if this is one.
+    /// What a refusal of `invalid`, `constraint`, `precondition`,
+    /// `declined` or `unanswered` says, if this is one.
     pub fn case(&self) -> Option<&Said> {
         match self.unwrapped() {
             Error::Refused { reason, .. } => reason.said(),
@@ -245,6 +245,19 @@ impl Error {
             said.at.insert(0, place);
         }
         self
+    }
+
+    /// A verb's executor declines the call by the host's policy: it did
+    /// not run, and a retry under the same idempotency key answers the same. The host's reason is not
+    /// carried; it belongs in the host's own trail, under the invocation's
+    /// dedup key.
+    pub fn declined(verb: &VerbName) -> Error {
+        let case = Case::CallDeclined { verb: verb.clone() };
+        let said = Said::from(case).within(Place::Verb { name: verb.clone() });
+        Error::Refused {
+            field: None,
+            reason: Refusal::Declined(Box::new(said)),
+        }
     }
 
     /// The lake cannot answer now, for this reason.
@@ -317,7 +330,7 @@ impl Error {
 }
 
 /// Why a call was refused.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "refusal", rename_all = "snake_case")]
 pub enum Refusal {
     /// The principal holds no grant for it.
@@ -372,6 +385,10 @@ pub enum Refusal {
     /// is in the log, and a retry runs nothing. The case names its
     /// position.
     Unanswered(Box<Said>),
+    /// The host declined the call by its own policy: its verb's executor
+    /// did not run it, and a retry under the same idempotency key answers the same. The host keeps its
+    /// reason in its own trail, under the call's dedup key.
+    Declined(Box<Said>),
     /// The position asked for is not in the lake's log.
     OutOfRange {
         /// The head of the log.
@@ -389,6 +406,7 @@ impl Refusal {
             Refusal::Invalid(said)
             | Refusal::Constraint(said)
             | Refusal::Precondition(said)
+            | Refusal::Declined(said)
             | Refusal::Unanswered(said) => Some(said),
             _ => None,
         }
@@ -399,6 +417,7 @@ impl Refusal {
             Refusal::Invalid(said)
             | Refusal::Constraint(said)
             | Refusal::Precondition(said)
+            | Refusal::Declined(said)
             | Refusal::Unanswered(said) => Some(said),
             _ => None,
         }
@@ -440,6 +459,7 @@ impl fmt::Display for Refusal {
             Refusal::Invalid(said)
             | Refusal::Constraint(said)
             | Refusal::Precondition(said)
+            | Refusal::Declined(said)
             | Refusal::Unanswered(said) => write!(f, "{said}"),
             Refusal::TooDeep { max } => write!(f, "reactions may go {max} levels deep, no deeper"),
             Refusal::TooLarge { max } => {

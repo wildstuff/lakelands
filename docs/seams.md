@@ -1264,7 +1264,10 @@ by the store's own test, on the memory engine.
 
 An executor that fails does not undo the verb: the event that made it
 due is in the log, and its position is real. The failure is the recorded
-output — `{"error": "<the executor's error text>"}`. The caller's outcome
+output — the error as the wire carries it (`{"error": "refused",
+"reason": {…}, "message": "…"}` for a refusal; lakelands#812; before, `{"error": "<its text>"}`). A
+call the host declines by policy is answered `Error::declined(verb)`
+(`docs/hosting.md`). The caller's outcome
 is `applied` at the position that made the verb due, and carries the
 recorded output in its `output` member, the error form included, so an
 agent that called an external verb has the answer in the reply. Its
@@ -2017,7 +2020,8 @@ the `aging` section of the root's `lakelands.json`:
 
 Without an `aging` section `serve` ages nothing: a host, or
 `lakelands age --today <YYYY-MM-DD>`, calls `age`; the command prints one
-line per rule (`<rule>: moved N, M guard(s) failed`, or `<rule>:
+line per rule (`<rule>: moved N, M guard(s) failed`, then `, K refused` where a
+constraint or the set ceiling refused K moves, or `<rule>:
 skipped, <why>`) and `aged <date> through position P`. No MCP tool calls `age`:
 like `rebuild` and `checkpoint`, it is the host's.
 

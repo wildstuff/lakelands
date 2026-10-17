@@ -214,7 +214,6 @@ const DOOR_SUFFIXES: [&str; 4] = ["find", "get", "upsert", "retire"];
 
 catalog! {
     join = " and ";
-    #[derive(Eq)]
     /// A declaration a tool name comes from.
     pub enum NameSource {
         /// A generic tool, by its name.
@@ -237,7 +236,6 @@ catalog! {
 
 catalog! {
     tag = "problem";
-    #[derive(Eq)]
     /// Why a lake's declarations cannot all become tools. The store refuses a declaration that would introduce one of these, so [`tools`] never meets them in a lake the store wrote.
     pub enum NameProblem {
         /// Two declarations produce the same tool name.

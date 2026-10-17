@@ -113,9 +113,16 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   bound for it, with the lake and the position that made it due as the
   dedup key. The executor gets the record unmasked, as it stood at that
   position, where the call was judged; a host that wants it
-  to see only what the caller may see applies the caller's grants there. The executor's answer is recorded in the log; a failure is
-  recorded as `{"error": …}`, the write that made the verb due stands,
-  and the caller gets the recorded answer either way. Without a bound
+  to see only what the caller may see applies the caller's grants there. The executor's answer is recorded in the log; an error is
+  recorded as the wire carries it (`{"error": "refused", "reason": {…},
+  "message": "…"}` for a refusal, the same for every other kind, where
+  it was `{"error": "<sentence>"}` before, and is still where the wire
+  form holds an integer beyond ±(2^53 − 1) or cannot be written), the write that made the verb
+  due stands, and the caller gets the recorded answer either way. To
+  decline a call by the host's policy, answer `Error::declined(verb)`,
+  never `not_granted` nor `unavailable`: the record then says `declined`,
+  the call did not run, and a retry under the same idempotency key answers the same. The host's reason
+  goes in its own trail, under the dedup key; the case carries none. Without a bound
   executor such a verb is refused as `Unbound`, not faked. See
   `docs/decisions/013-verbs-run-by-declared-risk.md`.
 - **`ChangeFeed`.** The host reads the store's feed: the log, filtered
@@ -227,7 +234,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   record whose field is null holds no `from`, so no rule moves it and the
   report does not count it. A host that wants such records aged gives the
   field a value: a declared `initial` at the write, or a verb that sets
-  it.
+  it. A move a constraint or the lake's `max_set_changes` refuses is
+  counted in `refused`, apart from `failed_guards`, and a rule's run
+  lists the first 16 with the record's key and the refusal: the list is
+  the host's, restricted records included, never relayed to a principal.
   A source that should be taken back is purged with
   `LakeStore::purge_source(source, None, None)`
   (`lakelands purge --source <id>`):
@@ -1074,7 +1084,7 @@ A host that already has a store of its own moves in four steps.
   `docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
   extended.
 - **A refusal is a case too (lakelands#650).** A refusal of `invalid`,
-  `constraint`, `precondition` or `unanswered` carries its case as data:
+  `constraint`, `precondition`, `declined` or `unanswered` carries its case as data:
   `code`, its parameters, `at` (the places it is said at, outermost
   first: a type, a field, a verb, …) and `message`. The catalog of every
   code, its parameters and its English sentence is

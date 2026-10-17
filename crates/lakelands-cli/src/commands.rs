@@ -42,6 +42,15 @@ fn read(file: &Path) -> Result<String, Failure> {
     })
 }
 
+/// The words a run line adds for moves a constraint or the set ceiling
+/// refused: none where none were.
+pub(crate) fn refused_words(count: u32) -> String {
+    match count {
+        0 => String::new(),
+        n => format!(", {n} refused"),
+    }
+}
+
 pub(crate) fn put(out: Out<'_>, line: impl std::fmt::Display) -> Result<(), Failure> {
     writeln!(out, "{line}").map_err(|e| {
         Failure::new(
@@ -462,8 +471,11 @@ pub async fn age(out: Out<'_>, store: &Arc<dyn LakeStore>, today: &str) -> Resul
             None => put(
                 out,
                 format!(
-                    "{}: moved {}, {} guard(s) failed",
-                    r.rule, r.moved, r.failed_guards
+                    "{}: moved {}, {} guard(s) failed{}",
+                    r.rule,
+                    r.moved,
+                    r.failed_guards,
+                    refused_words(r.refused)
                 ),
             )?,
         }

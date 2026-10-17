@@ -169,6 +169,12 @@ impl From<Error> for Failure {
                     "fix the records the report names, then run the migration again".to_owned()
                 }
                 Refusal::Decided => "list the proposals to see how it was decided".to_owned(),
+                // A retry answers the same: the reason is the host's.
+                Refusal::Declined(_) => {
+                    "the host declined this call and a retry under the same idempotency key answers the same; ask the host's \
+                     operator for its reason, or change the call"
+                        .to_owned()
+                }
                 // Waiting helps only a call whose executor still runs.
                 Refusal::Unanswered(_) => {
                     "a retry under this key runs nothing: if the call's executor is still \

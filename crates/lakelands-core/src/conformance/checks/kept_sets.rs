@@ -42,7 +42,7 @@ check!(
 
 check!(
     KEPT_SET_BOUND = what_a_set_of_a_kept_view_moves_is_held_to_the_ceiling,
-    "004 and 055, extended (lakelands#1185): past the lake's `max_set_changes`, counted over the memberships a write moves in the sets of kept views with what it moves across an edge, the write is refused `too_large` naming the set to a writer shown it and nothing to another, a setting its measure names past it too, and a set's declaration over more groups than that, each appending nothing; and an aging move past it is a failed guard, the next move of the same group decided as if it stood, the holder of an extreme that leaves after a refused move read from the order that move left as it was",
+    "004 and 055, extended (lakelands#1185): past the lake's `max_set_changes`, counted over the memberships a write moves in the sets of kept views with what it moves across an edge, the write is refused `too_large` naming the set to a writer shown it and nothing to another, a setting its measure names past it too, and a set's declaration over more groups than that, each appending nothing; and an aging move past it is counted as refused, `too_large` listed with its key, and no failed guard (lakelands#1182), the next move of the same group decided as if it stood, the holder of an extreme that leaves after a refused move read from the order that move left as it was",
     given
 );
 
@@ -956,7 +956,7 @@ async fn what_a_set_of_a_kept_view_moves_is_held_to_the_ceiling(
     );
     head_unmoved(s, before, "the refused writes").await?;
     // An aging run: closing `a1` would take `c5` out of `owing` and
-    // `topped` and is a failed guard; closing `a2` after it, decided as
+    // `topped` and is refused `too_large`; closing `a2` after it, decided as
     // if `a1` stood, takes `c5` out of `owing` alone.
     let at = next(s).await?;
     let today = Timestamp::from_date(2026, 3, 1).expect("a date");
@@ -964,9 +964,13 @@ async fn what_a_set_of_a_kept_view_moves_is_held_to_the_ceiling(
     let run = aged.rules.iter().find(|r| r.rule == "close_small");
     let (got, _) = moved(s, at).await?;
     ensure!(
-        run.is_some_and(|r| r.moved == 1 && r.failed_guards == 1)
+        run.is_some_and(|r| r.moved == 1
+            && r.failed_guards == 0
+            && r.refused == 1
+            && matches!(r.refusals.as_slice(),
+                [m] if m.key.as_str() == "a1" && matches!(m.why, Refusal::TooLarge { max: 1 })))
             && got == rows(&[("owing", "c5", false)]),
-        "the run moves `a2` alone, taking `c5` out of `owing`, `a1` a failed guard; it reported {aged:?} and moved {got:?}"
+        "the run moves `a2` alone, taking `c5` out of `owing`, `a1` refused `too_large` and no failed guard; it reported {aged:?} and moved {got:?}"
     );
     let two = Limits {
         max_set_changes: 2,
@@ -1030,8 +1034,13 @@ async fn holder_leaves_after_a_refusal(s: &dyn LakeStore) -> Held {
     let aged = s.age(today).await.must("aging")?;
     let run = aged.rules.iter().find(|r| r.rule == "rh_close");
     ensure!(
-        run.is_some_and(|r| r.moved == 2 && r.failed_guards == 1),
-        "a ceiling of two refuses one move of the run and accepts the others; it reported {aged:?}"
+        run.is_some_and(|r| r.moved == 2
+            && r.failed_guards == 0
+            && r.refused == 1
+            && matches!(r.refusals.as_slice(),
+                [m] if m.key.as_str() == "a2" && matches!(m.why, Refusal::TooLarge { max: 2 }))),
+        "a ceiling of two refuses one move of the run, `a2`, counted as refused, and accepts the \
+         others; it reported {aged:?}"
     );
     oracle(&l, s, &sets, "the holder left after a refused move").await
 }

@@ -82,8 +82,8 @@ by ingest, since no verb moves an end.
 
 An external verb is due at the position of the event that made it due,
 and it stays due: an executor's failure does not take that event back.
-The failure is recorded as the executor's output — `{"error": "<its
-error text>"}` in the `output_recorded` event that position causes — and
+The failure is recorded as the executor's output — the error's wire
+form (below), in the `output_recorded` event that position causes — and
 the caller's outcome is applied at that position with the recorded
 output in it, the error form included: an error reply would say nothing
 was written when the position is real, and a caller should not have to
@@ -184,6 +184,37 @@ which declaration, by whose grant, on which handle and while which other
 hand-out still runs it would happen are each a rule a host would have to
 read. A host that needs it carries its effect under a key of its own and
 calls the verb again.
+
+### An executor's error is recorded as the wire carries it, and a call may be declined
+
+An executor that fails answers an `Error`, and the log records that error
+as the wire carries it: `error`, its `reason` where it is a refusal, and
+`message`. It no longer records the sentence alone, which told a reader
+neither the kind nor the case. A host's surface decodes the recorded
+answer as an `Error` and renders its case in its own language; the log
+reads a deliberate denial as one. An error whose wire form holds an
+integer beyond ±(2^53 − 1), which the log does not write (a case that
+repeats a large number or the caller's value), or that cannot be written,
+is recorded in the one-member form, its sentence: that loses nothing, where
+the wire form would lose the answer and turn a refusal into an outage. The
+caller's outcome is unchanged: the
+call is applied, and its output is the recorded answer. Answers recorded
+before stay as their logs hold them: the store never decodes an
+output, so nothing reads them otherwise.
+
+An executor that declines a call by the host's policy answers
+`Error::declined(verb)`: the refusal `declined`, with the case
+`call_declined` naming the verb, said at the verb. The call did not
+run, and a retry under the same idempotency key answers the same. Neither `not_granted`, which speaks
+of the lake's own grants, nor `unavailable`, which is an outage of a lake
+that cannot answer a correct request (015), says that. The case carries
+no text of the host's: its reason, a rule or a ruling, belongs in the
+host's own trail, under the invocation's dedup key (the lake and the
+position), which joins that trail to the lake's record exactly. This keeps
+what a model reads back inside the closed catalog.
+
+A host code inside `Refusal::Unknown` was weighed and not built: it could
+not be told from a newer lake's code, and it would open the closed set.
 
 ### A declaration is proposed like a write
 
@@ -566,3 +597,6 @@ listing and its accept need, moved to
   make.
 - A function's outside call is governed by the function's declared risk
   as a verb's call is by its own (lakelands#997, record 064).
+- A failed executor's recorded output is the error's wire form, and an
+  executor declines a call by `Error::declined` (lakelands#812): the
+  refusal `declined`, the case `call_declined`.

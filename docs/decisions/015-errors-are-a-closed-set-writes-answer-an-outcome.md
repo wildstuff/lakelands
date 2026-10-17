@@ -140,7 +140,7 @@ which remote end failed and in what exchange, which seam and which name.
 ### A refusal says a case
 
 As `unavailable` and `unbound` do, every refusal of `invalid`,
-`constraint`, `precondition` and `unanswered` says a case: it carries a
+`constraint`, `precondition`, `declined` and `unanswered` says a case: it carries a
 `Said`, a case and the places it is said at, instead of a sentence. On
 the wire a refusal's `reason` carries `code`, `at` when it has places,
 its parameters and `message`.
@@ -265,3 +265,4 @@ engine will never produce.
   contract's `Refusal` and `Missing` hold both, and the lists left them
   out.
 - A refusal's reason gained `verbs_only`, naming the verbs that alone write a field (lakelands#1130).
+- A refusal's reason gained `declined`, with the case `call_declined`, for a call a host's executor declines by policy (lakelands#812).

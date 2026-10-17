@@ -167,7 +167,13 @@ pub trait VerbExecutor: Send + Sync {
     /// The executor name verbs declare (`effect: external, executor: …`).
     fn name(&self) -> &str;
 
-    /// Carry out one invocation. Called at most once per position.
+    /// Carry out one invocation. Called at most once per position. An
+    /// error is recorded as the call's output in its wire form; a call the
+    /// host declines by its own policy is answered [`Error::declined`],
+    /// never `not_granted` nor `unavailable`, and the host keeps its reason
+    /// under the invocation's dedup key.
+    ///
+    /// [`Error::declined`]: crate::Error::declined
     async fn execute(&self, invocation: &VerbInvocation) -> Result<Value>;
 }
 

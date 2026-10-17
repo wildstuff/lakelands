@@ -171,12 +171,13 @@ impl Ticker {
         loop {
             match self.tick().await {
                 Some(Ok(r)) => eprintln!(
-                    "lakelands: aged lake `{}` for {}: {} rule(s), {} moved, {} guard(s) failed",
+                    "lakelands: aged lake `{}` for {}: {} rule(s), {} moved, {} guard(s) failed{}",
                     self.store.lake(),
                     date(r.date),
                     r.rules.len(),
                     r.transitions,
-                    r.failed_guards
+                    r.failed_guards,
+                    crate::commands::refused_words(r.refused)
                 ),
                 Some(Err(e)) => eprintln!(
                     "lakelands: aging lake `{}` for {} failed, trying again at the next check: {e}",

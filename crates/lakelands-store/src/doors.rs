@@ -300,7 +300,7 @@ impl Doors {
     }
 
     /// Hand an external verb to its executor and record the answer; the
-    /// recorded output is returned, `{"error": …}` when the executor failed.
+    /// recorded output is returned, the error's wire form when the executor failed.
     /// A failure before the hand-out is [`writes::not_handed`]'s.
     async fn execute(&self, ext: External, by: MadeDue) -> Result<(Position, serde_json::Value)> {
         let not_handed = |e| writes::not_handed(e, true, by);
@@ -347,7 +347,15 @@ impl Doors {
         });
         let output = match executor.execute(&invocation).await {
             Ok(v) => v,
-            Err(e) => serde_json::json!({ "error": e.to_string() }),
+            // The error as the wire carries it: a refusal keeps its case. One
+            // whose wire form cannot be written, or holds an integer beyond
+            // ±(2^53 − 1) the log does not write, is recorded as its sentence,
+            // the one-member form, which loses nothing: an error is always
+            // recorded, and a retry answers it.
+            Err(e) => serde_json::to_value(&e)
+                .ok()
+                .filter(|wire| lakelands_core::canonical::integer_too_large(wire).is_none())
+                .unwrap_or_else(|| serde_json::json!({ "error": e.to_string() })),
         };
         // An answer is recorded as the executor gave it, and the log writes
         // no integer beyond ±(2^53 − 1) (the log format §1.2): one that
