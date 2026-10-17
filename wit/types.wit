@@ -336,6 +336,18 @@ interface types {
         /// Whether a field or `previous(f)` its `when` reads absent or
         /// null fails the guard as a whole.
         when-strict: bool,
+        /// The kinds of change that fire it; every kind when none.
+        on-changes: option<list<change-kind>>,
+    }
+
+    /// What kind of change fired a trigger.
+    enum change-kind {
+        upserted,
+        ingested,
+        retired,
+        forgotten,
+        purged,
+        recomputed,
     }
 
     record object-set-decl {

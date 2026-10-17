@@ -294,6 +294,42 @@
       "about": "A `write_proposed` the store appended for the call of `notify` that the write at position 55 made due, as its writer: the record, the field its output fills and the call's digest on that record as that write made it (§2.5, 064). It holds no inputs: they are the record's, which a source's forgetting may have erased (058).",
       "line": "{\"body\":{\"kind\":\"write_proposed\",\"proposal\":\"00000000000000000000000000000038\",\"why\":\"`notify` is declared high risk; its call is made when accepted\",\"write\":{\"field\":\"notice\",\"function\":\"notify\",\"input\":\"8ff7e3a8569bdcce801457c2714e79a50f278951d066a1f022928062c260d1d6\",\"key\":\"a1\",\"type\":\"alert\",\"write\":\"compute\"}},\"cause\":55,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"3f8542ead941160ee9c6b7a5807bffaceba702e813519f1fdc5f1463a1537916\",\"id\":\"00000000000000000000000000000038\",\"known_at\":\"2026-10-05T09:00:26.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":56,\"prev\":\"95121296031567cb6611022f73e2cf63860aa5eb6bb985b8ad99ae1de562f615\",\"v\":17,\"writer\":\"human:owner\"}",
       "hash": "3f8542ead941160ee9c6b7a5807bffaceba702e813519f1fdc5f1463a1537916"
+    },
+    {
+      "shows": "trigger_change_guard",
+      "about": "A `declared` trigger whose guard reads `created()`, strict, firing on authored writes and ingests alone: `when_strict` and `on_changes`, members format 17 holds and 16 does not (lakelands#1215, lakelands#1217).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"trigger\",\"name\":\"slip_made\",\"on\":\"slip\",\"on_changes\":[\"upserted\",\"ingested\"],\"when\":\"created()\",\"when_strict\":true},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"f646f74cf262c0329131194890ed8f23fd49feb5a5f37a1cd2d439d5b14a095d\",\"id\":\"00000000000000000000000000000039\",\"known_at\":\"2026-10-05T09:00:27.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":57,\"prev\":\"3f8542ead941160ee9c6b7a5807bffaceba702e813519f1fdc5f1463a1537916\",\"v\":17,\"writer\":\"agent:agent\"}",
+      "hash": "f646f74cf262c0329131194890ed8f23fd49feb5a5f37a1cd2d439d5b14a095d"
+    },
+    {
+      "shows": "slip_write",
+      "about": "A write that makes the slip `S-1`, which fires `shelved` and `slip_made` (§2.5).",
+      "line": "{\"body\":{\"key\":\"S-1\",\"kind\":\"record_upserted\",\"made\":true,\"patch\":{\"number\":\"S-1\",\"shelf_code\":\"A\"},\"type\":\"slip\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"0292067d5d7cf9f67aa3afcbf3ca110b9c7c74570d1edc4b61aa1126d63144da\",\"id\":\"0000000000000000000000000000003a\",\"known_at\":\"2026-10-05T09:00:28.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":58,\"prev\":\"f646f74cf262c0329131194890ed8f23fd49feb5a5f37a1cd2d439d5b14a095d\",\"v\":17,\"writer\":\"agent:agent\"}",
+      "hash": "0292067d5d7cf9f67aa3afcbf3ca110b9c7c74570d1edc4b61aa1126d63144da"
+    },
+    {
+      "shows": "fired_change",
+      "about": "A `trigger_fired` of `shelved` saying the write at its cause was an authored write that made the record: `change` and `created`, members format 17 holds and 16 does not (lakelands#1217).",
+      "line": "{\"body\":{\"change\":\"upserted\",\"created\":true,\"key\":\"S-1\",\"kind\":\"trigger_fired\",\"trigger\":\"shelved\",\"type\":\"slip\"},\"cause\":58,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"bae917fe5ab33ae93b16d508aa3b3fd9c144c35a73b2223421c92ffa7239de0a\",\"id\":\"0000000000000000000000000000003b\",\"known_at\":\"2026-10-05T09:00:28.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":59,\"prev\":\"0292067d5d7cf9f67aa3afcbf3ca110b9c7c74570d1edc4b61aa1126d63144da\",\"v\":17,\"writer\":\"system:lakelands\"}",
+      "hash": "bae917fe5ab33ae93b16d508aa3b3fd9c144c35a73b2223421c92ffa7239de0a"
+    },
+    {
+      "shows": "fired_created",
+      "about": "A `trigger_fired` of `slip_made`, whose guard `created()` held at the same write.",
+      "line": "{\"body\":{\"change\":\"upserted\",\"created\":true,\"key\":\"S-1\",\"kind\":\"trigger_fired\",\"trigger\":\"slip_made\",\"type\":\"slip\"},\"cause\":58,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"685873d7667c6723a8a3faae0d07c79a5e64086639b17b0440b89019b2be8d63\",\"id\":\"0000000000000000000000000000003c\",\"known_at\":\"2026-10-05T09:00:28.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":60,\"prev\":\"bae917fe5ab33ae93b16d508aa3b3fd9c144c35a73b2223421c92ffa7239de0a\",\"v\":17,\"writer\":\"system:lakelands\"}",
+      "hash": "685873d7667c6723a8a3faae0d07c79a5e64086639b17b0440b89019b2be8d63"
+    },
+    {
+      "shows": "reaction_write",
+      "about": "A host's reaction to `shelved`'s firing, one deeper: its context is reactive at depth 1 and its cause the firing.",
+      "line": "{\"body\":{\"key\":\"S-1\",\"kind\":\"record_upserted\",\"patch\":{\"shelf_code\":\"B\"},\"type\":\"slip\",\"version\":2},\"cause\":59,\"context\":{\"depth\":1,\"origin\":\"reactive\"},\"fence\":1,\"hash\":\"815e37fb1e1a56868b19481cde3767996155e2d77411f9f7998d036fbadd1d77\",\"id\":\"0000000000000000000000000000003d\",\"known_at\":\"2026-10-05T09:00:29.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":61,\"prev\":\"685873d7667c6723a8a3faae0d07c79a5e64086639b17b0440b89019b2be8d63\",\"v\":17,\"writer\":\"agent:agent\"}",
+      "hash": "815e37fb1e1a56868b19481cde3767996155e2d77411f9f7998d036fbadd1d77"
+    },
+    {
+      "shows": "trigger_dropped",
+      "about": "A `trigger_dropped` in place of `shelved`'s firing: the write at its cause is at depth 1, the trigger's `max_depth`, so a reaction to it could write nothing. A kind format 17 adds (lakelands#1216).",
+      "line": "{\"body\":{\"bound\":\"trigger\",\"depth\":1,\"key\":\"S-1\",\"kind\":\"trigger_dropped\",\"max_depth\":1,\"trigger\":\"shelved\",\"type\":\"slip\"},\"cause\":61,\"context\":{\"depth\":1,\"origin\":\"reactive\"},\"fence\":1,\"hash\":\"04550e25b2ce48f7568f3f6a78191f607e1897888a1c51f6ab545d454acdea6b\",\"id\":\"0000000000000000000000000000003e\",\"known_at\":\"2026-10-05T09:00:29.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":62,\"prev\":\"815e37fb1e1a56868b19481cde3767996155e2d77411f9f7998d036fbadd1d77\",\"v\":17,\"writer\":\"system:lakelands\"}",
+      "hash": "04550e25b2ce48f7568f3f6a78191f607e1897888a1c51f6ab545d454acdea6b"
     }
   ],
   "misplaced": [

@@ -334,6 +334,14 @@ pub enum EventBody {
         ty: TypeName,
         /// The record's key.
         key: RecordKey,
+        /// What kind of change fired it: the write at its `cause`. Every
+        /// firing of format 17 on carries it, and none before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        change: Option<ChangeKind>,
+        /// Whether that write made the record: it found no live record
+        /// under the key. Carried with `change`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        created: Option<bool>,
     },
     /// A write would have made a trigger's condition hold, at a depth where
     /// a reaction to it could write nothing: the write's own depth is at
@@ -449,6 +457,26 @@ kinds! {
     ObjectSetChanged => "object_set_changed",
     OutputRecorded => "output_recorded",
     Checkpoint => "checkpoint",
+}
+
+/// What kind of change fired a trigger (lakelands#1217): the write at the
+/// firing's `cause`, by the door it came through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeKind {
+    /// An authored write: an upsert, a verb's write, an accepted one, an
+    /// aging move.
+    Upserted,
+    /// A source's record, ingested.
+    Ingested,
+    /// A retirement, asked for or accepted.
+    Retired,
+    /// A retirement of a record a forgotten source alone brought in.
+    Forgotten,
+    /// A retirement of a record a purged source brought in.
+    Purged,
+    /// A field filled from a recorded output, computed outside the lake.
+    Recomputed,
 }
 
 /// Whose depth bound dropped a trigger's firing: the trigger's own

@@ -199,6 +199,26 @@ format (`docs/log-format.md` §6), so a release that does not know it
 refuses the lake instead of keeping a trigger it cannot evaluate, which
 would never fire.
 
+### A firing says what kind of change fired it
+
+A `trigger_fired` carries `change`, the kind of the write that fired it:
+`upserted` (an authored write, a verb's, an accepted one, an aging
+move), `ingested`, `retired`, `forgotten` and `purged` (a record a
+forgotten or a purged source brought in, retired), and `recomputed` (a
+field filled from a recorded output). It carries `created` too: whether
+that write found no live record under the key, which a revival does
+not. A host that reacts to authored and ingested writes and not to a
+source's purge reads it on the firing, not at its `cause`. A firing of
+a record across an edge carries the kind of the far write, and is never
+`created`: that write made another record.
+
+A guard reads `created()` beside `retired()`, in a trigger's guard
+alone. A trigger may name the kinds that fire it, `on_changes`; with
+none, every kind fires, as before. `on_changes: [upserted, ingested]`
+stays silent when a source is forgotten or purged and when a field is
+filled. Firing on every kind by default keeps the firings this record
+promises to triggers whose declarations did not change.
+
 ### A strict guard fails where a field it reads has no value
 
 A guard reads an absent field as null, and a comparison with null is
@@ -449,6 +469,9 @@ own pace, and adding one changes nothing in the lake.
   as `trigger_dropped` (lakelands#1216).
 - A guard may be strict: a field it reads without a value fails it
   (lakelands#1215).
+- A firing says what kind of change fired it and whether the write made
+  the record, a guard reads `created()`, and a trigger may name the
+  kinds that fire it (lakelands#1217).
 - A set's declaration decides the records already there, where a set's
   membership was decided only when a record was written; the log format
   did not change. A set declared again over another type let go of the

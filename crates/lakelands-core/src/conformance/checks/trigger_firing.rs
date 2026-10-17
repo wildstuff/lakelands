@@ -2,14 +2,15 @@
 //! reaction could write at it drops instead
 //! (`docs/decisions/021-the-write-context-belongs-to-the-host.md`).
 
-use lakelands_api::event::{DepthBound, EventBody};
+use lakelands_api::event::{ChangeKind, DepthBound, EventBody};
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::seam::FeedFilter;
-use lakelands_api::{Position, TypeName};
+use lakelands_api::{Position, SourceId, TypeName};
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, events_from, field, followed, limits, reactive, trigger_on, try_upsert, type_decl,
+    Lake, Must, events_from, field, followed, limits, reactive, source_record, trigger_on,
+    try_upsert, type_decl,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -21,6 +22,11 @@ check!(
 check!(
     TRIGGER_STRICT = a_strict_guard_fails_where_a_field_it_reads_has_no_value,
     "004, extended (lakelands#1215): a trigger declared `when_strict` fires only where every field its `when` reads, and every `previous(f)`, has a value: `not (status = 'paid')` fires on a record without `status` by default and not when strict, and a guard reading `previous(status)` fires on a create by default and not when strict; once the fields have values the two fire alike"
+);
+
+check!(
+    TRIGGER_CHANGE = a_firing_says_what_kind_of_change_fired_it,
+    "004, extended (lakelands#1217): a `trigger_fired` says the kind of the write that fired it, `upserted`, `ingested`, `retired`, `purged`, `forgotten` or `recomputed`, and whether it made the record: a create and a revival did, an update, a retirement and a fill did not; `created()` holds in a guard on a create and a revival alone; a trigger with `on_changes: [upserted, ingested]` fires on those and stays silent on a retirement, a purge, a forgetting and a fill"
 );
 
 /// What the write at `at` set off, each firing as `(trigger, dropped by)`:
@@ -169,4 +175,123 @@ async fn a_strict_guard_fails_where_a_field_it_reads_has_no_value(store: Store) 
         );
     }
     Ok(())
+}
+
+/// Every firing appended from `from` on, each `(trigger, change, created)`,
+/// in the log's order.
+async fn fired(
+    s: &dyn lakelands_api::LakeStore,
+    from: Position,
+) -> Result<Vec<(String, Option<ChangeKind>, Option<bool>)>, Failure> {
+    let events = events_from(s, from).await?.into_iter();
+    let fired = events.filter_map(|e| match e.body {
+        EventBody::TriggerFired {
+            trigger,
+            change,
+            created,
+            ..
+        } => Some((trigger.to_string(), change, created)),
+        _ => None,
+    });
+    Ok(fired.collect())
+}
+
+async fn a_firing_says_what_kind_of_change_fired_it(store: Store) -> Held {
+    use ChangeKind::{Forgotten, Ingested, Purged, Recomputed, Retired, Upserted};
+    let s = store.as_ref();
+    let config = json!({"token": "trigger_change", "echo": "code"});
+    let l = super::backings::places(s, config).await?;
+    let sourced = |n: &str| {
+        let mut f = field(n, StorageKind::Text);
+        f.authority = lakelands_api::ontology::Authority::Source;
+        f
+    };
+    l.declare(type_decl("reading", vec![sourced("site")]))
+        .await?;
+    for ty in ["place", "reading"] {
+        for (name, when, quiet) in [("any", None, false), ("made", Some("created()"), false)]
+            .into_iter()
+            .chain([("quiet", None, true)])
+        {
+            let lakelands_api::write::Declaration::Trigger(mut t) =
+                trigger_on(&format!("{name}_{ty}"), ty, when)
+            else {
+                unreachable!("trigger_on declares a trigger")
+            };
+            t.on_changes = quiet.then(|| vec![Upserted, Ingested]);
+            let fut = l
+                .cat
+                .declare(&l.own, lakelands_api::write::Declaration::Trigger(t));
+            fut.await.must(&format!("declaring `{name}_{ty}`"))?;
+        }
+    }
+    let row = |t: &str, change, created| (t.to_owned(), Some(change), Some(created));
+    let step = async |what: &str,
+                      want: Vec<(String, Option<ChangeKind>, Option<bool>)>,
+                      from: Position|
+           -> Held {
+        let got = fired(s, from).await?;
+        ensure!(got == want, "{what} fires {want:?}; it fired {got:?}");
+        Ok(())
+    };
+    // A create, then the fill its call makes.
+    let at = s.head().await.must("the head")?.next();
+    l.upsert("place", "p1", json!({"code": "AT"})).await?;
+    let want = vec![
+        row("any_place", Upserted, true),
+        row("made_place", Upserted, true),
+        row("quiet_place", Upserted, true),
+        row("any_place", Recomputed, false),
+    ];
+    step("`p1` written and filled", want, at).await?;
+    let at = s.head().await.must("the head")?.next();
+    l.retire("place", "p1").await?;
+    step("`p1` retired", vec![row("any_place", Retired, false)], at).await?;
+    // A revival is a creation to a guard; its fill reads the output the
+    // lake holds already.
+    let at = s.head().await.must("the head")?.next();
+    l.upsert("place", "p1", json!({"code": "AT"})).await?;
+    let fired_again = fired(s, at).await?;
+    let revived = [
+        row("any_place", Upserted, true),
+        row("made_place", Upserted, true),
+        row("quiet_place", Upserted, true),
+    ];
+    ensure!(
+        fired_again.starts_with(&revived),
+        "`p1` revived fires {revived:?} first; it fired {fired_again:?}"
+    );
+    // A source's records: ingested, then purged; ingested from another,
+    // then forgotten.
+    for (source, key) in [("meter", "r1"), ("panel", "r2")] {
+        let at = s.head().await.must("the head")?.next();
+        let record = source_record("reading", key, json!({"site": "north"}));
+        l.ingest(source, vec![record])
+            .await
+            .must(&format!("ingesting `{key}`"))?;
+        let want = vec![
+            row("any_reading", Ingested, true),
+            row("made_reading", Ingested, true),
+            row("quiet_reading", Ingested, true),
+        ];
+        step(&format!("`{key}` ingested"), want, at).await?;
+    }
+    let at = s.head().await.must("the head")?.next();
+    let purged = s.purge_source(&SourceId::from("meter"), None, None).await;
+    purged.must("purging `meter`")?;
+    step(
+        "`meter` purged",
+        vec![row("any_reading", Purged, false)],
+        at,
+    )
+    .await?;
+    let at = s.head().await.must("the head")?.next();
+    let forgot = s.forget_source(&SourceId::from("panel"), None).await;
+    forgot.must("forgetting `panel`")?;
+    step(
+        "`panel` forgotten",
+        vec![row("any_reading", Forgotten, false)],
+        at,
+    )
+    .await
 }

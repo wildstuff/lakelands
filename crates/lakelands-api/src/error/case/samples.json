@@ -796,6 +796,9 @@
    "code": "retired_only_in_guard"
   },
   {
+   "code": "created_only_in_guard"
+  },
+  {
    "code": "set_cycle",
    "set": "s",
    "through": [

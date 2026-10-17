@@ -23,7 +23,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use lakelands_api::error::{Flaw, Situation};
-use lakelands_api::event::{Event, EventBody, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT};
+use lakelands_api::event::{
+    ChangeKind, DepthBound, Event, EventBody, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT,
+};
 use lakelands_api::ontology::{AtIngest, TypeDecl, VerbScope};
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, ProposedWrite};
@@ -190,7 +192,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 433, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 475, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -392,7 +394,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 49] = [
+const SHOWN: [&str; 55] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -442,10 +444,16 @@ const SHOWN: [&str; 49] = [
     "computed_by_function",
     "computed_write",
     "proposed_compute",
+    "trigger_change_guard",
+    "slip_write",
+    "fired_change",
+    "fired_created",
+    "reaction_write",
+    "trigger_dropped",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 56;
+const LAST: u64 = 62;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
@@ -669,6 +677,38 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
                 sha(&serde_json::json!({ "call": call, "record": ["alert", "a1"], "made": 55 }));
             matches!(proposed, Some(ProposedWrite::Compute { inputs: None, input: i, .. }) if i.0 == input)
                 && event.cause == Some(lakelands_api::Position(55))
+        }
+        "trigger_change_guard" => matches!(declared, Some(D::Trigger(t))
+            if t.when_strict && t.on_changes == Some(vec![ChangeKind::Upserted, ChangeKind::Ingested])
+                && t.when.as_ref().is_some_and(|w| matches!(w, lakelands_api::expr::Condition::Text(c) if c == "created()"))),
+        "slip_write" => {
+            matches!(&event.body, B::RecordUpserted { ty, made: true, .. } if ty.as_str() == "slip")
+        }
+        "fired_change" => {
+            matches!(&event.body, B::TriggerFired { trigger, change: Some(ChangeKind::Upserted), created: Some(true), .. }
+                if trigger.as_str() == "shelved")
+                && event.cause == Some(lakelands_api::Position(58))
+        }
+        "fired_created" => {
+            matches!(&event.body, B::TriggerFired { trigger, created: Some(true), .. }
+                if trigger.as_str() == "slip_made")
+                && event.cause == Some(lakelands_api::Position(58))
+        }
+        "reaction_write" => {
+            matches!(&event.body, B::RecordUpserted { .. })
+                && event.context.depth == 1
+                && event.cause == Some(lakelands_api::Position(59))
+        }
+        "trigger_dropped" => {
+            matches!(
+                &event.body,
+                B::TriggerDropped {
+                    depth: 1,
+                    max_depth: 1,
+                    bound: DepthBound::Trigger,
+                    ..
+                }
+            ) && event.cause == Some(lakelands_api::Position(61))
         }
         other => panic!("`further.json` shows `{other}`, which this test has no check for"),
     }

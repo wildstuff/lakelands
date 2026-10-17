@@ -1101,6 +1101,8 @@ catalog! {
         RelationViaField { relation: RelationName, field: FieldName } => "`{relation}` is carried by the field `{field}`: a path steps through `{field}`",
         /// A `retired` outside a trigger's guard.
         RetiredOnlyInGuard => "retired() has meaning only in a trigger's guard",
+        /// A `created` outside a trigger's guard.
+        CreatedOnlyInGuard => "created() has meaning only in a trigger's guard",
         /// A set that names itself through others.
         SetCycle { set: String, through: Names } => "in_set('{set}') names a set that names it in turn, through {through}",
         /// A set of another type named in a filter.
