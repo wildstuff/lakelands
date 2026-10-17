@@ -609,7 +609,7 @@ check!(
 
 /// How many of the next reclaims, and of the next clears a rebuild
 /// begins with, fail.
-type Fails = Arc<[AtomicU32; 2]>;
+pub(super) type Fails = Arc<[AtomicU32; 2]>;
 
 /// The harness's engine with a projection whose next reclaims and
 /// clears fail as [`Fails`] says (lakelands#1161).
@@ -622,6 +622,16 @@ struct Reclaims {
 struct ReclaimsOpener {
     inner: Arc<dyn EngineOpener>,
     fails: Fails,
+}
+
+/// What makes of the harness's engine one whose reclaims and clears fail
+/// as `fails` says, for a [`crate::conformance::Given::fault`].
+pub(super) fn failing(fails: &Fails) -> crate::conformance::Wrap {
+    let fails = fails.clone();
+    Arc::new(move |inner| {
+        let fails = fails.clone();
+        Arc::new(ReclaimsOpener { inner, fails }) as Arc<dyn EngineOpener>
+    })
 }
 
 /// Whether the next call `i` of [`Fails`] counts fails, counting it.
@@ -784,15 +794,7 @@ async fn a_reclaim_that_fails_keeps_no_writer_out(
     let keys = Arc::new(Keys::default());
     let seams = || with(&keys);
     let fails: Fails = Arc::new([AtomicU32::new(0), AtomicU32::new(0)]);
-    let wrap: crate::conformance::Wrap = {
-        let fails = fails.clone();
-        Arc::new(move |inner| {
-            Arc::new(ReclaimsOpener {
-                inner,
-                fails: fails.clone(),
-            }) as Arc<dyn EngineOpener>
-        })
-    };
+    let wrap = failing(&fails);
     let fault = |store: Store, what: &str| {
         let (open, what) = ((given.fault)(store, seams(), wrap.clone()), what.to_owned());
         async move {

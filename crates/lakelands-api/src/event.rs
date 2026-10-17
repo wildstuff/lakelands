@@ -254,6 +254,19 @@ pub enum EventBody {
         /// The versions of its key the act destroys.
         keys: Vec<crate::id::KeyId>,
     },
+    /// A host took back part of a source's values: each one a selected
+    /// `record_ingested` of the source before this event carries reads as
+    /// erased, at every position
+    /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+    ValuesRemoved {
+        /// The source.
+        source: SourceId,
+        /// The selection, as asked.
+        selection: crate::write::Selection,
+        /// For a time, the first position it does not reach.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<Position>,
+    },
     /// A record was retired.
     RecordRetired {
         /// The record's type.
@@ -417,6 +430,7 @@ kinds! {
     RecordUpserted => "record_upserted",
     RecordIngested => "record_ingested",
     SourceForgotten => "source_forgotten",
+    ValuesRemoved => "values_removed",
     RecordRetired => "record_retired",
     RecordRestricted => "record_restricted",
     RecordUnrestricted => "record_unrestricted",

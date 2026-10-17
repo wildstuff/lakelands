@@ -294,6 +294,10 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
         let v = event.v;
         return Some(Flaw::ForgottenBefore { v });
     }
+    if matches!(event.body, EventBody::ValuesRemoved { .. }) && event.v < 17 {
+        let v = event.v;
+        return Some(Flaw::RemovedBefore { v });
+    }
     let ingested = matches!(event.body, EventBody::RecordIngested { .. });
     if event.delivery.is_some() && (!ingested || event.v < 17) {
         let v = event.v;

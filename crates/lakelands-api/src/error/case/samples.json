@@ -1299,6 +1299,9 @@
    "type": "t"
   },
   {
+   "code": "remove_report_stale"
+  },
+  {
    "code": "required",
    "field": "f",
    "type": "t"

@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 52, each
+- `further.json`: the lake's next events, positions 8 to 54, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -93,7 +93,11 @@ The files:
     (51) (`docs/decisions/062-a-change-plans-before-it-acts.md`);
   - an ingest of `erp` in the delivery `batch-7` its caller named (52),
     its id made without it: a form format 17 holds and 16 does not
-    (lakelands#1153).
+    (lakelands#1153);
+  - a `values_removed` taking that delivery back (53), and the
+    `record_retired` of `INV-2`, which only it wrote, in the same append
+    (54): a kind format 17 holds and 16 does not
+    (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
 
   Its `misplaced` holds five lines that are not of the lake. Each
   stands at its position after the event before it, in the release's

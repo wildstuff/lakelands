@@ -1462,6 +1462,49 @@ interface types {
         values: u64,
     }
 
+    /// Which of a source's values a removal takes back: what it wrote
+    /// before a time of the log's clock, or in one delivery.
+    variant selection {
+        written-before(timestamp),
+        delivery(delivery-id),
+    }
+
+    /// The values one field of one type loses to a removal.
+    record removed-field {
+        %type: type-name,
+        field: field-name,
+        redacted: u64,
+    }
+
+    /// What one removal took back, or its preflight says it would: the
+    /// selection and the first position a time does not reach, the
+    /// events selected and, for a delivery, those that keep none, the
+    /// records and values it takes, the records it retires and those it
+    /// keeps, what is computed again, the constraints and references it
+    /// leaves broken, the events its rebuild folds and the time it is
+    /// expected to hold the writer's lock, the position, the act's
+    /// reclaim, and a preflight's id.
+    record remove-report {
+        source: source-id,
+        selection: selection,
+        before: option<position>,
+        events: u64,
+        undelivered: u64,
+        types: list<forget-records>,
+        fields: list<removed-field>,
+        retired: list<type-retired>,
+        kept: list<forget-records>,
+        recomputed: list<record-field>,
+        views: list<type-name>,
+        breaches: list<breach>,
+        references: list<purge-reference>,
+        log-events: u64,
+        expected-ms: u64,
+        position: position,
+        reclaimed: option<compact-report>,
+        report-id: string,
+    }
+
     /// A field of a type.
     record record-field {
         %type: type-name,

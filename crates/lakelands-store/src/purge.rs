@@ -149,7 +149,7 @@ fn selection(
 /// and per relation the live records it does not take that refer into it,
 /// by a `via` field or as a link record with an end inside. Each type
 /// that can refer is read once, a page at a time.
-fn report<'a>(
+pub(crate) fn report<'a>(
     view: &dyn ProjectionView,
     ontology: &'a Ontology,
     (source, ty): (&SourceId, Option<&TypeName>),

@@ -22,7 +22,7 @@ use lakelands_api::seam::{
 use lakelands_api::write::{
     AgeReport, Change, CompactReport, Declaration, ForgetReport, IngestOpts, Migration,
     MigrationReport, Outcome, Plan, Proposal, ProposalFilter, ProposedWrite, PurgeReport,
-    Recompute, ValueTypeMigration, ValueTypeReport, WriteOpts,
+    Recompute, RemoveReport, Selection, ValueTypeMigration, ValueTypeReport, WriteOpts,
 };
 use lakelands_api::{
     Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
@@ -892,6 +892,29 @@ impl LakeStore for Store {
         writes::check_source(source)?;
         let (lake, source) = (self.lake.clone(), source.clone());
         exec::run(move || crate::forget::preflight(&lake, &source)).await
+    }
+
+    async fn remove_values(
+        &self,
+        source: &SourceId,
+        selection: &Selection,
+        id: Option<&str>,
+    ) -> Result<RemoveReport> {
+        writes::check_source(source)?;
+        let (lake, source, id) = (self.lake.clone(), source.clone(), id.map(str::to_owned));
+        let selection = selection.clone();
+        let remove = move || crate::remove::run(&lake, &source, &selection, id.as_deref());
+        exec::run(remove).await
+    }
+
+    async fn remove_values_preflight(
+        &self,
+        source: &SourceId,
+        selection: &Selection,
+    ) -> Result<RemoveReport> {
+        writes::check_source(source)?;
+        let (lake, source, selection) = (self.lake.clone(), source.clone(), selection.clone());
+        exec::run(move || crate::remove::preflight(&lake, &source, &selection)).await
     }
 
     async fn position_at(&self, known_at: Timestamp) -> Result<Option<Position>> {

@@ -1669,6 +1669,134 @@ pub struct RecordField {
     pub field: FieldName,
 }
 
+/// Which of a source's values `LakeStore::remove_values` takes back
+/// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Selection {
+    /// What it wrote before a time of the log's own clock.
+    WrittenBefore(Timestamp),
+    /// What it wrote in one delivery.
+    Delivery(DeliveryId),
+}
+
+/// The values one field of one type loses to a removal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovedField {
+    /// The type.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// The field.
+    pub field: FieldName,
+    /// How many of its values read as erased at every position, their
+    /// bytes still in the log.
+    pub redacted: u64,
+}
+
+/// What `LakeStore::remove_values` took back, or what
+/// `LakeStore::remove_values_preflight` says it would
+/// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveReport {
+    /// The source.
+    pub source: SourceId,
+    /// The selection, as asked.
+    pub selection: Selection,
+    /// For a time, the first position it does not reach: every event of
+    /// the source below it is selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Position>,
+    /// The source's `record_ingested` events selected.
+    pub events: u64,
+    /// For a delivery, the source's events written before the log kept
+    /// deliveries, which it cannot select.
+    pub undelivered: u64,
+    /// Per type, in name order, the records holding a value it removes.
+    pub types: Vec<ForgetRecords>,
+    /// Per type and field, in that order, the values it removes.
+    pub fields: Vec<RemovedField>,
+    /// Per type, in name order, the records left holding nothing of
+    /// another hand: retired, as a purge retires them.
+    pub retired: Vec<TypeRetired>,
+    /// Per type, in name order, the records reached that stay, with what
+    /// another hand or the source outside the selection wrote.
+    pub kept: Vec<ForgetRecords>,
+    /// The computed fields that read a field it removes values of, each
+    /// computed again, in type then field order.
+    pub recomputed: Vec<RecordField>,
+    /// The views over a type it removes values from, computed again.
+    pub views: Vec<TypeName>,
+    /// The constraints the records it keeps would be left breaking. The
+    /// act is not refused for them.
+    pub breaches: Vec<Breach>,
+    /// Per relation, the live records left naming a record it retires.
+    pub references: Vec<PurgeReference>,
+    /// The events the act's rebuild folds again: the log's length.
+    pub log_events: u64,
+    /// How long the act is expected to hold the writer's lock, in
+    /// milliseconds: `log_events` at the engine's measured rebuild rate.
+    pub expected_ms: u64,
+    /// The head after the act, or the head the preflight read.
+    pub position: Position,
+    /// The projection's storage in bytes before and after the act's
+    /// reclaim, where the engine measures it; absent on a preflight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaimed: Option<CompactReport>,
+    /// Names a preflight's report; `remove_values` may repeat it. Empty
+    /// on the act's own report.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub report_id: String,
+}
+
+impl RemoveReport {
+    /// The report in sentences, for a host to tell its operator.
+    pub fn said(&self) -> Vec<String> {
+        let what = match (&self.selection, self.before) {
+            (Selection::WrittenBefore(t), Some(p)) => {
+                format!("written before {t} (below position {})", p.0)
+            }
+            (Selection::WrittenBefore(t), None) => format!("written before {t}"),
+            (Selection::Delivery(d), _) => format!("of delivery `{d}`"),
+        };
+        let mut said = vec![format!(
+            "{} events of `{}` {what} are selected.",
+            self.events, self.source
+        )];
+        if self.undelivered > 0 {
+            let n = self.undelivered;
+            said.push(format!("{n} older events keep no delivery and stay."));
+        }
+        for f in &self.fields {
+            let (ty, field, n) = (&f.ty, &f.field, f.redacted);
+            said.push(format!("{n} values of `{ty}.{field}` read as erased at every position; the log keeps their bytes."));
+        }
+        for t in &self.retired {
+            said.push(format!("{} records of `{}` are retired.", t.retired, t.ty));
+        }
+        for k in &self.kept {
+            let (n, ty) = (k.records, &k.ty);
+            said.push(format!(
+                "{n} records of `{ty}` stay, with what others wrote."
+            ));
+        }
+        for b in &self.breaches {
+            let (n, ty, c) = (b.records, &b.ty, &b.constraint);
+            said.push(format!("{n} records of `{ty}` are left breaking `{c}`."));
+        }
+        for r in &self.references {
+            let (n, ty, rel) = (r.records, &r.ty, &r.relation);
+            said.push(format!(
+                "{n} records of `{ty}` are left naming a retired one by `{rel}`."
+            ));
+        }
+        let (n, ms) = (self.log_events, self.expected_ms);
+        said.push(format!(
+            "The act refolds {n} events, about {ms} ms under the writer's lock."
+        ));
+        said
+    }
+}
+
 /// The preflight of a value type's migration: what its new declaration
 /// would refuse among the values stored under it, computed before
 /// anything changes (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).

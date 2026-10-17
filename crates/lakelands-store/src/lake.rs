@@ -94,6 +94,10 @@ pub struct Writer {
     /// The sources the log forgot that a fold has met (058): a fact of
     /// the log, so kept over a rebuild.
     pub forgotten: BTreeSet<SourceId>,
+    /// The acts of removal a fold met or a rebuild was told of (065),
+    /// whose selected values the fold erases: a fact of the log, so kept
+    /// over a rebuild.
+    pub(crate) removals: Vec<crate::remove::Removal>,
     /// A rebuild is folding: an act it meets after its source's keys were
     /// destroyed has erased what they sealed.
     pub rebuilding: bool,
@@ -157,6 +161,7 @@ pub(crate) fn ends_a_range(body: &EventBody) -> bool {
         | EventBody::TriggerFired { .. }
         | EventBody::ObjectSetChanged { .. }
         | EventBody::SourceForgotten { .. }
+        | EventBody::ValuesRemoved { .. }
         | EventBody::Checkpoint { .. } => false,
     }
 }
@@ -647,6 +652,7 @@ impl Lake {
                 plans: record::Plans::default(),
                 lost: false,
                 forgotten: BTreeSet::new(),
+                removals: Vec::new(),
                 rebuilding: false,
             }),
             keys: Arc::new(crate::sealing::Keys::new(location.lake.clone(), seams_keys)),
@@ -680,6 +686,7 @@ impl Lake {
             plans: record::Plans::default(),
             lost: false,
             forgotten: BTreeSet::new(),
+            removals: Vec::new(),
             rebuilding: false,
         })
     }
@@ -1725,6 +1732,16 @@ impl Lake {
             }
             _ => e,
         };
+        // What an act of removal selects is erased too, sealed or not (065).
+        let taken;
+        let e = match crate::remove::redacted(&w.removals, &w.ontology, e) {
+            Some((plain, cleared)) => {
+                erased.extend(cleared);
+                taken = plain;
+                &taken
+            }
+            None => e,
+        };
         let projection = self.engine.projection();
         // The versions of each source's key the log sealed with, each with
         // the position of its first use ([`crate::sealing::USED`]).
@@ -1773,6 +1790,30 @@ impl Lake {
                 list.insert(source.clone(), state.to_owned());
                 let (seam, at) = (crate::sealing::FORGOTTEN, crate::sealing::forgotten_at());
                 let list = serde_json::to_value(&list).expect("a list serialises");
+                projection.put_output(seam, &at, &list, e.position)?;
+                staged
+                    .outputs
+                    .entry((seam.to_owned(), at))
+                    .or_default()
+                    .push((e.position, list));
+            }
+            // The act is owed until a rebuild that knew it before it began
+            // has folded the log, and the reclaim ran (065).
+            EventBody::ValuesRemoved { .. } => {
+                let act = crate::remove::Removal::of(e).expect("the event is an act");
+                let known = w.removals.contains(&act);
+                if !known {
+                    w.removals.push(act);
+                }
+                let mut list = crate::remove::removed_list(view, staged)?;
+                let state = if known && w.rebuilding {
+                    "rebuilt"
+                } else {
+                    "owed"
+                };
+                list.insert(e.position, state.to_owned());
+                let (seam, at) = (crate::remove::REMOVED, crate::remove::removed_at());
+                let list = crate::remove::list_value(&list);
                 projection.put_output(seam, &at, &list, e.position)?;
                 staged
                     .outputs
@@ -2202,6 +2243,17 @@ impl Lake {
     fn rebuild_held(&self, w: &mut Writer) -> Result<()> {
         // No shape is kept from here until the fold is whole again, and no
         // list of a source's versions.
+        // The acts of removal the projection lists are told to the fold
+        // before it meets the values they select (065). A list it cannot
+        // read tells none: the fold meets each act unknown, and leaves it
+        // owed for the rebuild after, which knows it.
+        let view = self.engine.view(None);
+        let listed = view.and_then(|v| crate::remove::acts(self, v.as_ref()));
+        for act in listed.unwrap_or_default() {
+            if !w.removals.contains(&act) {
+                w.removals.push(act);
+            }
+        }
         self.rebuilds.fetch_add(1, Ordering::SeqCst);
         lakelands_core::lock(&self.shapes).clear();
         self.keys.unlist();
@@ -2228,11 +2280,12 @@ impl Lake {
         Ok(())
     }
 
-    /// Finish what a forgetting left owed (058), as the act itself does
-    /// and the writer's open after a crash between its steps: each source
-    /// whose act the projection may still hold the values of has its keys
-    /// destroyed, the projection is rebuilt, and the storage reclaimed.
-    /// Each step is idempotent. `None` where nothing was owed.
+    /// Finish what a forgetting (058) or a removal (065) left owed, as the
+    /// act itself does and the writer's open after a crash between its
+    /// steps: each source whose act the projection may still hold the
+    /// values of has its keys destroyed, the projection is rebuilt, and the
+    /// storage reclaimed. Each step is idempotent. `None` where nothing was
+    /// owed.
     pub(crate) fn finish_forgetting(
         &self,
         w: &mut Writer,
@@ -2241,21 +2294,26 @@ impl Lake {
             let view = lake.engine.view(None)?;
             forgotten_list(view.as_ref(), &Staged::default())
         };
-        let list = listed(self)?;
-        if list.values().all(|s| s == "done") {
+        let removed = |lake: &Lake| {
+            let view = lake.engine.view(None)?;
+            crate::remove::removed_list(view.as_ref(), &Staged::default())
+        };
+        let (list, acts) = (listed(self)?, removed(self)?);
+        if list.values().chain(acts.values()).all(|s| s == "done") {
             return Ok(None);
         }
-        if list.values().any(|s| s == "owed") {
+        if list.values().chain(acts.values()).any(|s| s == "owed") {
             for (source, _) in list.iter().filter(|(_, s)| *s == "owed") {
                 self.keys.destroy(source)?;
             }
             self.rebuild_held(w)?;
         }
-        let mut list = listed(self)?;
+        let (mut list, mut acts) = (listed(self)?, removed(self)?);
         let reclaimed = self.engine.projection().compact();
         *lakelands_core::lock(&self.reclaim_owed) = reclaimed.as_ref().err().map(Error::to_string);
         let reclaimed = reclaimed?;
-        for state in list.values_mut().filter(|s| *s == "rebuilt") {
+        let states = list.values_mut().chain(acts.values_mut());
+        for state in states.filter(|s| *s == "rebuilt") {
             *state = "done".to_owned();
         }
         let head = self.head();
@@ -2263,7 +2321,16 @@ impl Lake {
         let list = serde_json::to_value(&list).expect("a list serialises");
         let at = crate::sealing::forgotten_at();
         projection.begin()?;
-        projection.put_output(crate::sealing::FORGOTTEN, &at, &list, head)?;
+        if !list.as_object().is_some_and(serde_json::Map::is_empty) {
+            projection.put_output(crate::sealing::FORGOTTEN, &at, &list, head)?;
+        }
+        if !acts.is_empty() {
+            let (at, acts) = (
+                crate::remove::removed_at(),
+                crate::remove::list_value(&acts),
+            );
+            projection.put_output(crate::remove::REMOVED, &at, &acts, head)?;
+        }
         projection.commit(head)?;
         Ok(Some(lakelands_api::write::CompactReport {
             before: reclaimed.before,
@@ -2973,8 +3040,9 @@ fn reads_a_record(body: &EventBody) -> bool {
         // that key is not read.
         | EventBody::ObjectSetChanged { .. }
         // The list of forgotten sources is put; the records it erases are
-        // erased by the rebuild after it.
-        | EventBody::SourceForgotten { .. } => false,
+        // erased by the rebuild after it. So for an act of removal.
+        | EventBody::SourceForgotten { .. }
+        | EventBody::ValuesRemoved { .. } => false,
     }
 }
 

@@ -270,6 +270,18 @@
       "about": "A `record_ingested` of `erp` in the delivery `batch-7`, the id its caller gave the `ingest` (§1.1): every record of that call carries it, and its id is made without it (§3), so the same record delivered again under another delivery is a duplicate. A form format 17 holds and 16 does not.",
       "line": "{\"body\":{\"key\":\"INV-2\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"80.00\",\"number\":\"INV-2\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"batch-7\",\"fence\":1,\"hash\":\"2546cafe93a3fc182366a1eb5b83fef20902adf45dea06dc6dc88a84a6145917\",\"id\":\"d9f9f007b9f1a374094d9a22e559af9a\",\"known_at\":\"2026-10-05T09:00:22.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":52,\"prev\":\"f0486d4e0d1be2ddb6b1335729bc56a58e828883ea76222babd75f9b5a807972\",\"source\":\"erp\",\"v\":17,\"writer\":\"service:importer\"}",
       "hash": "2546cafe93a3fc182366a1eb5b83fef20902adf45dea06dc6dc88a84a6145917"
+    },
+    {
+      "shows": "values_removed",
+      "about": "A host took back `erp`'s delivery `batch-7`: each value its events wrote folds as erased, at every position (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"kind\":\"values_removed\",\"selection\":{\"delivery\":\"batch-7\"},\"source\":\"erp\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"1a0c162ae9f05ee68cc4a76c616d155681c6f3f4751f19e02f5e2fb6e8fe10a6\",\"id\":\"00000000000000000000000000000035\",\"known_at\":\"2026-10-05T09:00:23.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":53,\"prev\":\"2546cafe93a3fc182366a1eb5b83fef20902adf45dea06dc6dc88a84a6145917\",\"v\":17,\"writer\":\"system:lakelands\"}",
+      "hash": "1a0c162ae9f05ee68cc4a76c616d155681c6f3f4751f19e02f5e2fb6e8fe10a6"
+    },
+    {
+      "shows": "removal_retires",
+      "about": "The `record_retired` of `INV-2`, which only that delivery wrote, in the same append as the act (065).",
+      "line": "{\"body\":{\"key\":\"INV-2\",\"kind\":\"record_retired\",\"type\":\"invoice\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"77b38df0c4f38a9713e68fab5ef3e0b166e8ce57d736e38bdc87e5afbade531e\",\"id\":\"00000000000000000000000000000036\",\"known_at\":\"2026-10-05T09:00:23.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":54,\"prev\":\"1a0c162ae9f05ee68cc4a76c616d155681c6f3f4751f19e02f5e2fb6e8fe10a6\",\"v\":17,\"writer\":\"system:lakelands\"}",
+      "hash": "77b38df0c4f38a9713e68fab5ef3e0b166e8ce57d736e38bdc87e5afbade531e"
     }
   ],
   "misplaced": [

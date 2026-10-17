@@ -681,6 +681,8 @@ catalog! {
         ForgottenBefore { v: u32 } => "an event of format {v} is a `source_forgotten`, which format 16 added",
         /// An event other than a `record_ingested` of format 17 on carries `delivery`.
         DeliveryOn { kind: String, v: u32 } => "a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries",
+        /// A `values_removed` event in a format before the one that added it.
+        RemovedBefore { v: u32 } => "an event of format {v} is a `values_removed`, which format 17 added",
         /// An event other than `record_ingested` carries `upstream`.
         UpstreamOn { kind: String } => "a `{kind}` event carries `upstream`, which only a `record_ingested` event carries",
         /// The hash does not match the event.
