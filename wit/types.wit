@@ -340,8 +340,24 @@ interface types {
         when: option<condition>,
         description: option<string>,
         /// How deep a reaction naming this trigger's firing as its cause
-        /// may be; at most the lake's ceiling.
+        /// may be: a write at this depth or deeper drops the firing
+        /// (the log's `trigger_dropped`) instead; at most the lake's ceiling.
         max-depth: option<u32>,
+        /// Whether a field or `previous(f)` its `when` reads absent or
+        /// null fails the guard as a whole.
+        when-strict: bool,
+        /// The kinds of change that fire it; every kind when none.
+        on-changes: option<list<change-kind>>,
+    }
+
+    /// What kind of change fired a trigger.
+    enum change-kind {
+        upserted,
+        ingested,
+        retired,
+        forgotten,
+        purged,
+        recomputed,
     }
 
     record object-set-decl {
@@ -932,6 +948,8 @@ interface types {
         key: option<record-key>,
         where: option<condition>,
         search: option<search-mode>,
+        /// A second stage for `search`.
+        rerank: option<rerank>,
         params: list<tuple<param-name, json>>,
         /// The name a row binds the start's record under; its type's name
         /// when none.
@@ -1008,8 +1026,16 @@ interface types {
         k: u32,
         cursor: option<cursor>,
         where: option<condition>,
+        rerank: option<rerank>,
         with-meta: bool,
         at: read-at,
+    }
+
+    /// The second stage of a search: the first `top` hits ranked again by
+    /// the lake's reranker against `text`, or the search's own text.
+    record rerank {
+        top: u32,
+        text: option<string>,
     }
 
     record hit {
@@ -1021,10 +1047,13 @@ interface types {
         hits: list<hit>,
         next-cursor: option<cursor>,
         ranked-by: string,
+        /// Whether the first stage holds more hits than the second stage's
+        /// window took.
+        truncated: bool,
         axes: list<axis>,
     }
 
-    /// One axis a search ranked by: `lexical` or `vector`, a vector
+    /// One axis a search ranked by: `lexical`, `vector` or `rerank`, a vector
     /// axis's field, and, where the search fuses, the candidates it handed
     /// the fusion for this reader, up to the lake's `max_limit`, with the
     /// weight it ranked by and the model the caller named for its vector.
@@ -1596,6 +1625,7 @@ interface types {
         max-graph-nodes: u32,
         max-offset: u32,
         max-set-changes: u32,
+        max-rerank-top: u32,
     }
 
     record feed-filter {

@@ -1418,6 +1418,7 @@ impl Size<'_> {
                     filter: None,
                     with_meta: false,
                     at: ReadAt::default(),
+                    rerank: None,
                 },
             )
             .await

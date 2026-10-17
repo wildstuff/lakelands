@@ -315,7 +315,8 @@ pub fn caught_up(batch: &FeedBatch, from: Position) -> bool {
 }
 
 /// Whether an event passes a filter's keys, with its types: an event of a
-/// record (`record_*`, `trigger_fired`, `object_set_changed`) of one of
+/// record (`record_*`, `trigger_fired`, `trigger_dropped`,
+/// `object_set_changed`) of one of
 /// `types` (or any type when none) with one of `keys`, or a `verb_called`
 /// on one of `keys` when no type is named, as the feed's own filter has it
 /// (`lakelands_core::feed::admits`). No keys pass every event.
@@ -330,6 +331,7 @@ fn keyed(types: &[TypeName], keys: &[RecordKey], body: &EventBody) -> bool {
         | EventBody::RecordRestricted { ty, key, .. }
         | EventBody::RecordUnrestricted { ty, key, .. }
         | EventBody::TriggerFired { ty, key, .. }
+        | EventBody::TriggerDropped { ty, key, .. }
         | EventBody::ObjectSetChanged { ty, key, .. } => (Some(ty), Some(key)),
         EventBody::VerbCalled { key, .. } => (None, key.as_ref()),
         _ => (None, None),

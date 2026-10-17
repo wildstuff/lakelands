@@ -1804,7 +1804,8 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
                 shown: None,
             };
             let mut d = call.decide(&w, view.as_ref(), now, 0);
-            drafts = d.reactions(Some(&before), &after)?;
+            let filled = lakelands_api::event::ChangeKind::Recomputed;
+            drafts = d.reactions(filled, Some(&before), &after)?;
         }
     }
     if known && !fills {

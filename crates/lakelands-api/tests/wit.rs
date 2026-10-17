@@ -26,6 +26,7 @@ use lakelands_api::describe::{
     SettingValue, SortedWhole, TypeAccess, TypeDescription, TypeLifecycle, TypeLineage, TypeRights,
     VerbDescription,
 };
+use lakelands_api::event::ChangeKind;
 use lakelands_api::expr::Condition;
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
@@ -202,7 +203,7 @@ fn every_door_of_the_crate_is_a_function_of_the_wit_and_no_other() {
     // A door that binds a seam is the host's: the host binds the seams,
     // as at `open`, and nothing a guest holds can be one.
     let mut store = trait_methods(catalog_rs, "LakeStore");
-    store.retain(|door| !["bind_embed"].contains(&door.as_str()));
+    store.retain(|door| !["bind_embed", "bind_rerank"].contains(&door.as_str()));
     assert_eq!(
         fns("lake_store"),
         store,
@@ -550,6 +551,8 @@ fn migration_report() -> MigrationReport {
 fn trigger_decl() -> TriggerDecl {
     TriggerDecl {
         max_depth: Some(2),
+        when_strict: true,
+        on_changes: Some(vec![ChangeKind::Upserted]),
         name: "t".into(),
         on: "invoice".into(),
         when: Some(cond()),
@@ -748,6 +751,14 @@ fn setting_value() -> SettingValue {
         value: Some(serde_json::json!(["due"])),
         default: Value::Null,
         declared: Some(setting_decl()),
+    }
+}
+
+/// A search's second stage, every member given.
+fn rerank() -> lakelands_api::query::Rerank {
+    lakelands_api::query::Rerank {
+        top: 3,
+        text: Some("t".into()),
     }
 }
 
@@ -1076,6 +1087,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 key: Some("k".into()),
                 filter: Some(cond()),
                 search: Some(search_mode()),
+                rerank: Some(rerank()),
                 params: params(),
                 named: Some("start".into()),
             }),
@@ -1102,6 +1114,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                         search: None,
                         params: Default::default(),
                         named: None,
+                        rerank: None,
                     },
                     steps: vec![],
                     to: Some(("partner".into(), "k".into())),
@@ -1133,6 +1146,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     k: 5,
                     cursor: Some(Cursor("c".into())),
                     filter: Some(cond()),
+                    rerank: Some(rerank()),
                     with_meta: true,
                     at: read_at(),
                 }),
@@ -1153,9 +1167,11 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 hits: vec![],
                 next_cursor: Some(Cursor("c".into())),
                 ranked_by: "lexical".into(),
+                truncated: true,
                 axes: vec![],
             }),
         ),
+        ("rerank", members(&rerank())),
         (
             "axis",
             members(&Axis {
@@ -1425,6 +1441,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 max_graph_nodes: 6,
                 max_offset: 7,
                 max_set_changes: 8,
+                max_rerank_top: 9,
             }),
         ),
         (
@@ -1503,6 +1520,11 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
         [OneToOne, OneToMany, ManyToOne, ManyToMany]
     );
     units!("risk", Risk, [Low, Medium, High]);
+    units!(
+        "change_kind",
+        ChangeKind,
+        [Upserted, Ingested, Retired, Forgotten, Purged, Recomputed]
+    );
     units!("at_ingest", AtIngest, [Refuse, Admit]);
     // Marked `non_exhaustive`: listed by hand, a new kind added here too.
     checks.push((
@@ -1943,6 +1965,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 }),
                 Declaration::Trigger(TriggerDecl {
                     max_depth: Some(2),
+                    when_strict: false,
+                    on_changes: None,
                     name: "t".into(),
                     on: "t".into(),
                     when: None,

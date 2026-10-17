@@ -827,6 +827,9 @@
    "code": "retired_only_in_guard"
   },
   {
+   "code": "created_only_in_guard"
+  },
+  {
    "code": "set_cycle",
    "set": "s",
    "through": [
@@ -1036,6 +1039,22 @@
   },
   {
    "code": "model_without_vector"
+  },
+  {
+   "code": "rerank_top_zero"
+  },
+  {
+   "code": "rerank_no_window"
+  },
+  {
+   "code": "rerank_top_above",
+   "max": 1
+  },
+  {
+   "code": "rerank_needs_text"
+  },
+  {
+   "code": "rerank_without_search"
   },
   {
    "code": "no_relation_anywhere",

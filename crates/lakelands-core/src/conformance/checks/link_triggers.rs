@@ -129,7 +129,9 @@ async fn a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest(store:
     let fired = |name: &str| -> Vec<(String, String, &'static str)> {
         feed.iter()
             .filter_map(|e: &Event| match &e.body {
-                EventBody::TriggerFired { trigger, ty, key } if trigger.as_str() == name => {
+                EventBody::TriggerFired {
+                    trigger, ty, key, ..
+                } if trigger.as_str() == name => {
                     let cause = e
                         .cause
                         .and_then(by_position)

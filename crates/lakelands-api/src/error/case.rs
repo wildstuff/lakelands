@@ -1119,6 +1119,8 @@ catalog! {
         RelationViaField { relation: RelationName, field: FieldName } => "`{relation}` is carried by the field `{field}`: a path steps through `{field}`",
         /// A `retired` outside a trigger's guard.
         RetiredOnlyInGuard => "retired() has meaning only in a trigger's guard",
+        /// A `created` outside a trigger's guard.
+        CreatedOnlyInGuard => "created() has meaning only in a trigger's guard",
         /// A set that names itself through others.
         SetCycle { set: String, through: Names } => "in_set('{set}') names a set that names it in turn, through {through}",
         /// A set of another type named in a filter.
@@ -1213,12 +1215,24 @@ catalog! {
         MeasureNoWhere { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `where`",
         /// A `model` on a hybrid search that brings no query vector.
         ModelWithoutVector => "`model` names the model of a query vector the search brings, and it brings no `vector`; where the field is an embedding, the lake makes that one itself, with that model",
+        /// A `rerank` whose `top` is 0.
+        RerankTopZero => "`rerank.top` is how many of the search's first hits the second stage ranks, and it is 1 at least",
+        /// A location whose `limits.max_rerank_top` is 0.
+        RerankNoWindow => "the location's `limits.max_rerank_top` is 0, which lets no search take a second stage; set it to 1 at least, or leave it out for 100",
+        /// A `rerank` whose `top` is above the lake's bound.
+        RerankTopAbove { max: u32 } => "`rerank.top` is above the lake's `limits.max_rerank_top`, {max}; ask for a window of at most {max}, or raise the setting in the lake's location",
+        /// A `rerank` with no text to rank against, or a blank one: its own
+        /// `text`, else the search's, which a vector search has none of.
+        RerankNeedsText => "the second stage has no text to rank against: give `rerank.text`, which a vector search needs, and give it, or the search's own text, not blank",
+        /// A start's `rerank` beside no `search`.
+        RerankWithoutSearch => "`rerank` is the second stage of a search, and the start has no `search`",
         /// A step over a relation no type declares, where the start names
         /// no type.
         NoRelationAnywhere { relation: RelationName } => "no type has a relation `{relation}` to walk",
         /// A step over a relation that its type does not walk that way.
         NoRelationToWalk { #[serde(rename = "type")] ty: TypeName, relation: RelationName, walk: Walk } => "`{ty}` has no relation `{relation}` to walk {walk}",
-        /// A field a search names that is not searchable.
+        /// A field a search, or a `search_weights` setting's `text_fields`,
+        /// names that is not searchable.
         NotSearchable {
             field: FieldName,
             #[serde(rename = "type")]
@@ -1498,7 +1512,7 @@ catalog! {
         /// nothing would hold to it.
         SettingReference => "a setting holds no reference; keep the record's key as `text`",
         /// A `search_weights` setting of the wrong shape.
-        SettingWeightsShape => "it holds an object of `fields` (vector fields and their weights) and `text_weight`, one at least, or null",
+        SettingWeightsShape => "it holds an object of `fields` (vector fields and their weights), `text_fields` (searchable text fields and their weights) and `text_weight`, one at least, or null",
         /// A vector index of a field computed at the read.
         VectorIndexAtRead { field: FieldName } => "`{field}` is computed at the read; a vector index keeps stored values",
         /// A vector index of a field that is no vector.

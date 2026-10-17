@@ -435,6 +435,7 @@ What a refusal is about.
 | `relation_holds_many` | `relation` (RelationName), `cardinality` (Cardinality) | `{relation}` may hold several links from a record ({cardinality}): a path reads a relation that holds at most one, `many_to_one` or `one_to_one`; walk it in a pattern | A path through a relation that may hold several links from a record. |
 | `relation_via_field` | `relation` (RelationName), `field` (FieldName) | `{relation}` is carried by the field `{field}`: a path steps through `{field}` | A path through a relation carried by a reference field. |
 | `retired_only_in_guard` | — | retired() has meaning only in a trigger's guard | A `retired` outside a trigger's guard. |
+| `created_only_in_guard` | — | created() has meaning only in a trigger's guard | A `created` outside a trigger's guard. |
 | `set_cycle` | `set` (String), `through` (Names) | in_set('{set}') names a set that names it in turn, through {through} | A set that names itself through others. |
 | `set_of_other_type` | `set` (String), `of` (TypeName), `type` (TypeName) | in_set('{set}') names a set of `{of}`, not of `{type}` | A set of another type named in a filter. |
 | `set_undeclared` | `set` (String) | in_set('{set}') names an object set that is not declared | A set named in a filter that is not declared. |
@@ -480,9 +481,14 @@ What a refusal is about.
 | `measure_no_type` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `type`: it reads every link of a relation, whatever it reaches | A measure's step with a `type`. |
 | `measure_no_where` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `where` | A measure's step with a `where`. |
 | `model_without_vector` | — | `model` names the model of a query vector the search brings, and it brings no `vector`; where the field is an embedding, the lake makes that one itself, with that model | A `model` on a hybrid search that brings no query vector. |
+| `rerank_top_zero` | — | `rerank.top` is how many of the search's first hits the second stage ranks, and it is 1 at least | A `rerank` whose `top` is 0. |
+| `rerank_no_window` | — | the location's `limits.max_rerank_top` is 0, which lets no search take a second stage; set it to 1 at least, or leave it out for 100 | A location whose `limits.max_rerank_top` is 0. |
+| `rerank_top_above` | `max` (u32) | `rerank.top` is above the lake's `limits.max_rerank_top`, {max}; ask for a window of at most {max}, or raise the setting in the lake's location | A `rerank` whose `top` is above the lake's bound. |
+| `rerank_needs_text` | — | the second stage has no text to rank against: give `rerank.text`, which a vector search needs, and give it, or the search's own text, not blank | A `rerank` with no text to rank against, or a blank one: its own `text`, else the search's, which a vector search has none of. |
+| `rerank_without_search` | — | `rerank` is the second stage of a search, and the start has no `search` | A start's `rerank` beside no `search`. |
 | `no_relation_anywhere` | `relation` (RelationName) | no type has a relation `{relation}` to walk | A step over a relation no type declares, where the start names no type. |
 | `no_relation_to_walk` | `type` (TypeName), `relation` (RelationName), `walk` (Walk) | `{type}` has no relation `{relation}` to walk {walk} | A step over a relation that its type does not walk that way. |
-| `not_searchable` | `field` (FieldName), `type` (TypeName) | `{field}` of `{type}` is not searchable | A field a search names that is not searchable. |
+| `not_searchable` | `field` (FieldName), `type` (TypeName) | `{field}` of `{type}` is not searchable | A field a search, or a `search_weights` setting's `text_fields`, names that is not searchable. |
 | `offset_beside` | `other` (String) | `offset` and `{other}` both say where the answer starts; give one | An `offset` beside another start of the answer. |
 | `only_unappliable` | `type` (TypeName) | the grant's `only` on `{type}` cannot be applied here; the host's grants need fixing | A grant's `only` that cannot be applied to the read. |
 | `order_at_read` | `field` (FieldName), `type` (TypeName) | `order_by` names `{field}` of `{type}`, which is computed at the read and moves with the clock; a page's order would not hold to the next | An order by a field computed at the read. |
@@ -599,7 +605,7 @@ What a refusal is about.
 | `setting_group_stamped` | — | the store writes a setting's group from its declaration; leave `group` out | A write of `sys.setting` naming a group other than the one the store stamps from the setting's declaration. |
 | `setting_store_group` | — | the group `store` holds the store's own settings; a host's setting is in a group of its own | A host's setting declared into the store's own group. |
 | `setting_reference` | — | a setting holds no reference; keep the record's key as `text` | A host's setting declared to hold a reference, whose record nothing would hold to it. |
-| `setting_weights_shape` | — | it holds an object of `fields` (vector fields and their weights) and `text_weight`, one at least, or null | A `search_weights` setting of the wrong shape. |
+| `setting_weights_shape` | — | it holds an object of `fields` (vector fields and their weights), `text_fields` (searchable text fields and their weights) and `text_weight`, one at least, or null | A `search_weights` setting of the wrong shape. |
 | `vector_index_at_read` | `field` (FieldName) | `{field}` is computed at the read; a vector index keeps stored values | A vector index of a field computed at the read. |
 | `vector_index_kind` | `field` (FieldName), `kind` (StorageKind) | `{field}` is of kind {kind}; a vector index keeps vector fields | A vector index of a field that is no vector. |
 | `view_not_keepable` | `type` (TypeName) | the view `{type}` cannot be kept | A view that cannot be kept, to one not shown why. |
@@ -824,6 +830,7 @@ A seam the call needs and the host has not bound.
 | `function_backing` | `kind` (String) | the `{kind}` function backing (the host bound none of that kind) | A function backing of a kind. |
 | `key_store` | — | a key store, which seals a source's values of an erasable field (the host bound none) | A key store, which seals a source's values of an erasable field. |
 | `key_versions` | — | a key store that destroys a version of a source's key with every older one (the bound one destroys only a whole source's) | A key store that destroys a version of a source's key with those before it. |
+| `rerank` | — | a reranker, the second stage of a search (the host bound none) | A reranker, the second stage of a search. |
 | `vector_index` | — | a vector index (this engine keeps none) | A vector index, which this engine keeps none of. |
 | `engine` | `name` (String) | the engine `{name}` (no opener for it was passed in) | An engine, whose opener was not passed in. |
 | `operation` | `op` (String) | the host operation `{op}`, which this door does not offer | An operation of the host's that this door does not offer. |
@@ -835,6 +842,7 @@ A remote end a call reaches: an embedding backend, a function's backing, a REST 
 | code | parameters | sentence | about |
 |---|---|---|---|
 | `embedding` | `model` (String) | the embedding backend `{model}` | The embedding backend of a model. |
+| `reranker` | `model` (String) | the reranker `{model}` | The reranker of a lake. |
 | `executor` | `name` (String) | the verb executor `{name}` | A verb's executor. |
 | `function` | `function` (String) | function `{function}` | A function's backing. |
 | `door` | `lake` (String) | the REST door of lake `{lake}` | A lake's REST door. |
@@ -866,6 +874,8 @@ What went wrong in an exchange with a remote end.
 | `key_not_sent` | — | cannot be sent its key | The request cannot be sent its key. |
 | `not_sent` | — | cannot be sent this request | The request cannot be built. |
 | `vectors` | `answered` (u64), `asked` (u64) | answered {answered} vectors for {asked} texts | It answered other vectors than texts asked. |
+| `scores` | `answered` (u64), `asked` (u64) | answered {answered} scores for {asked} candidates | It answered other scores than candidates asked. |
+| `score_not_finite` | — | answered a score that is not a finite number | It answered a score that is not a number. |
 | `no_direction` | `why` (Aimless) | answered a vector that {why} | It answered a vector with no direction to rank along. |
 | `not_json` | `detail` (Detail) | answered what is not JSON: {detail} | It answered what is not JSON. |
 | `connection_refused` | — | refused the connection | It refused the connection. |
@@ -906,6 +916,8 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `sealed_on` | `kind` (String) | a `{kind}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries | An event other than `record_ingested` and `output_recorded` carries `sealed`. |
 | `sealed_before` | `v` (u32) | an event of format {v} carries `sealed`, which format 16 added | An event of a format before 16 carries `sealed`. |
 | `forgotten_before` | `v` (u32) | an event of format {v} is a `source_forgotten`, which format 16 added | A `source_forgotten` in a format before the one that added it. |
+| `change_before` | `v` (u32) | a `trigger_fired` of format {v} carries `change` or `created`, which format 17 added | A `trigger_fired` before format 17 carries `change` or `created`. |
+| `dropped_before` | `v` (u32) | an event of format {v} is a `trigger_dropped`, which format 17 added | A `trigger_dropped` in a format before the one that added it. |
 | `delivery_on` | `kind` (String), `v` (u32) | a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries | An event other than a `record_ingested` of format 17 on carries `delivery`. |
 | `removed_before` | `v` (u32) | an event of format {v} is a `values_removed`, which format 17 added | A `values_removed` event in a format before the one that added it. |
 | `upstream_on` | `kind` (String) | a `{kind}` event carries `upstream`, which only a `record_ingested` event carries | An event other than `record_ingested` carries `upstream`. |

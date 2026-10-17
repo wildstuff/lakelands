@@ -351,6 +351,35 @@ pub enum EventBody {
         ty: TypeName,
         /// The record's key.
         key: RecordKey,
+        /// What kind of change fired it: the write at its `cause`. The
+        /// store writes it on every firing from format 17 on; a firing of
+        /// a format before carries none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        change: Option<ChangeKind>,
+        /// Whether that write made the record: it found no live record
+        /// under the key. Carried with `change`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        created: Option<bool>,
+    },
+    /// A write would have made a trigger's condition hold, at a depth where
+    /// a reaction to it could write nothing: the write's own depth is at
+    /// or above the bound that applies, so no `trigger_fired` is appended
+    /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`).
+    /// Added in format 17.
+    TriggerDropped {
+        /// The trigger.
+        trigger: TriggerName,
+        /// The record's type.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// The record's key.
+        key: RecordKey,
+        /// The depth of the write that would have fired it.
+        depth: u32,
+        /// The bound that applied.
+        max_depth: u32,
+        /// Whose bound it is.
+        bound: DepthBound,
     },
     /// A write moved a record into or out of an object set.
     ObjectSetChanged {
@@ -443,9 +472,41 @@ kinds! {
     WriteAccepted => "write_accepted",
     WriteRejected => "write_rejected",
     TriggerFired => "trigger_fired",
+    TriggerDropped => "trigger_dropped",
     ObjectSetChanged => "object_set_changed",
     OutputRecorded => "output_recorded",
     Checkpoint => "checkpoint",
+}
+
+/// What kind of change fired a trigger (lakelands#1217): the write at the
+/// firing's `cause`, by the door it came through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeKind {
+    /// An authored write: an upsert, a verb's write, an accepted one, an
+    /// aging move.
+    Upserted,
+    /// A source's record, ingested.
+    Ingested,
+    /// A retirement, asked for or accepted, or a migration's of a link.
+    Retired,
+    /// A retirement of a record a forgotten source alone brought in.
+    Forgotten,
+    /// A retirement of a record a purged source brought in.
+    Purged,
+    /// A field filled from a recorded output, computed outside the lake.
+    Recomputed,
+}
+
+/// Whose depth bound dropped a trigger's firing: the trigger's own
+/// `max_depth`, or the lake's `max_reactive_depth`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DepthBound {
+    /// The trigger's `max_depth`.
+    Trigger,
+    /// The lake's `max_reactive_depth`.
+    Lake,
 }
 
 /// A sealed segment, as a checkpoint lists it.

@@ -31,9 +31,10 @@
 //!   field only where the value it is told changed; a record it is no
 //!   longer told as retired, to a subscription that asks for
 //!   retirements; one it is told first as made.
-//! - **`trigger_fired` and `object_set_changed`** say that a condition
-//!   held for the record, and a trigger's guard or a set's filter may read
-//!   any field of its type. So they are told only to a principal who reads
+//! - **`trigger_fired`, `trigger_dropped` and `object_set_changed`** say
+//!   that a condition held for the record, and a trigger's guard or a
+//!   set's filter may read any field of its type. So they are told only
+//!   to a principal who reads
 //!   every field of the type in full at that position: a condition over a
 //!   field it may not read, or reads masked, is never probed this way
 //!   (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
@@ -555,7 +556,12 @@ impl<'a> View<'a> {
                 field: Some((ty, key, field)),
                 ..
             } => (ty, key, Some(vec![field.to_string()]), at),
-            EventBody::TriggerFired { trigger, ty, key } => {
+            EventBody::TriggerFired {
+                trigger, ty, key, ..
+            }
+            | EventBody::TriggerDropped {
+                trigger, ty, key, ..
+            } => {
                 extra.insert("trigger".into(), json!(trigger));
                 condition = true;
                 named = Some(format!("trigger {trigger}"));

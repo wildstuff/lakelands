@@ -1296,23 +1296,23 @@ pub fn tokens(text: &str, tag: &str) -> BTreeSet<String> {
 /// type's declaration.
 pub fn record_tokens(decl: &TypeDecl, record: &StoredRecord) -> BTreeSet<String> {
     field_tokens(decl, record, None)
+        .flat_map(|(_, t)| t)
+        .collect()
 }
 
-/// The distinct tokens a record's searchable text fields hold, only those
-/// `fields` names when it names any: the text a search limited to named
-/// fields matches in.
-fn field_tokens(
-    decl: &TypeDecl,
-    record: &StoredRecord,
-    fields: Option<&[FieldName]>,
-) -> BTreeSet<String> {
+/// The distinct tokens each of a record's searchable text fields holds,
+/// only those `fields` names when it names any: the text a search limited
+/// to named fields matches in.
+fn field_tokens<'r>(
+    decl: &'r TypeDecl,
+    record: &'r StoredRecord,
+    fields: Option<&'r [FieldName]>,
+) -> impl Iterator<Item = (&'r FieldName, BTreeSet<String>)> {
     let tag = decl.language.as_deref().unwrap_or("");
     decl.fields
         .iter()
-        .filter(|f| f.searchable && fields.is_none_or(|named| named.contains(&f.name)))
-        .filter_map(|f| record.fields.get(&f.name)?.as_str())
-        .flat_map(|s| tokens(s, tag))
-        .collect()
+        .filter(move |f| f.searchable && fields.is_none_or(|named| named.contains(&f.name)))
+        .filter_map(move |f| Some((&f.name, tokens(record.fields.get(&f.name)?.as_str()?, tag))))
 }
 
 /// Full-text hits, as `docs/seams.md` §`ranked` defines them: the
@@ -1321,8 +1321,11 @@ fn field_tokens(
 /// text holds a query token — the text of the searchable fields `fields`
 /// names, when it names any. A restricted record is a candidate like any
 /// other; whether a principal may see it is the store's, as for `find`
-/// and `get`. A hit scores the distinct query tokens its text holds;
-/// best first, ties by key, at most `k`.
+/// and `get`. A hit scores each distinct query token its text holds at
+/// the weight of the heaviest field holding it, `weights` giving each
+/// field's and 1 for one it does not name, summed in the tokens' order;
+/// best first, ties by key, at most `k`. With every weight 1 that is the
+/// count of the tokens it holds.
 ///
 /// An engine may hand in any superset of the hits as `head`: a record
 /// whose named fields hold no query token scores nothing and is dropped
@@ -1332,14 +1335,29 @@ pub fn lexical<'a>(
     head: impl IntoIterator<Item = &'a StoredRecord>,
     text: &str,
     fields: Option<&[FieldName]>,
+    weights: &BTreeMap<FieldName, f64>,
     k: u32,
 ) -> Vec<(RecordKey, f64)> {
     let query = tokens(text, decl.language.as_deref().unwrap_or(""));
     let mut hits: Vec<(RecordKey, f64)> = head
         .into_iter()
+        .filter(|r| !r.retired)
         .filter_map(|r| {
-            let score = query.intersection(&field_tokens(decl, r, fields)).count();
-            (score > 0 && !r.retired).then(|| (r.key.clone(), score as f64))
+            let held: Vec<(f64, BTreeSet<String>)> = field_tokens(decl, r, fields)
+                .map(|(f, t)| (weights.get(f).copied().unwrap_or(1.0), t))
+                .collect();
+            let heaviest = |t: &String| {
+                let w = held
+                    .iter()
+                    .filter(|(_, ts)| ts.contains(t))
+                    .map(|(w, _)| *w);
+                w.reduce(f64::max)
+            };
+            let (mut score, mut any) = (0.0, false);
+            for w in query.iter().filter_map(heaviest) {
+                (score, any) = (score + w, true);
+            }
+            any.then(|| (r.key.clone(), score))
         })
         .collect();
     rank(&mut hits, k);

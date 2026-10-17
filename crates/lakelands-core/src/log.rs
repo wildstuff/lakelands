@@ -144,7 +144,10 @@ const SEALED_FROM: u32 = 16;
 ///   `authority: verb` (lakelands#1130); a `record_ingested`'s `delivery`,
 ///   and a recorded output digested under the oldest version that sealed
 ///   the values it reads, where 16 took the source's first (lakelands#1153);
-///   a type's `retired_by` and a verb's `effect: retire` (lakelands#1148).
+///   a type's `retired_by` and a verb's `effect: retire` (lakelands#1148);
+///   a `trigger_dropped` (lakelands#1216); a trigger's `when_strict`
+///   (lakelands#1215); a `trigger_fired`'s `change` and `created`, a
+///   trigger's `on_changes` and `created()` (lakelands#1217).
 #[doc(hidden)]
 pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
     debug_assert!(reads_format(v), "format {v} is not one this release reads");
@@ -261,7 +264,9 @@ pub fn created_in_another(event: &Event) -> Option<Flaw> {
 /// on an event of a format before 16
 /// (`docs/decisions/058-a-source-may-be-forgotten.md`); and `delivery` on
 /// any kind but `record_ingested`, or before format 17
-/// (`docs/log-format.md` §1.1). No door
+/// (`docs/log-format.md` §1.1); and a `trigger_dropped`, or a
+/// `trigger_fired`'s `change` or `created`, before format 17.
+/// No door
 /// puts any there; a reader holds the rule for a log written by something
 /// else.
 #[doc(hidden)]
@@ -298,6 +303,20 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
     if matches!(event.body, EventBody::ValuesRemoved { .. }) && event.v < 17 {
         let v = event.v;
         return Some(Flaw::RemovedBefore { v });
+    }
+    let told = |c: &Option<_>, m: &Option<bool>| c.is_some() || m.is_some();
+    if let EventBody::TriggerFired {
+        change, created, ..
+    } = &event.body
+        && told(change, created)
+        && event.v < 17
+    {
+        let v = event.v;
+        return Some(Flaw::ChangeBefore { v });
+    }
+    if matches!(event.body, EventBody::TriggerDropped { .. }) && event.v < 17 {
+        let v = event.v;
+        return Some(Flaw::DroppedBefore { v });
     }
     let ingested = matches!(event.body, EventBody::RecordIngested { .. });
     if event.delivery.is_some() && (!ingested || event.v < 17) {

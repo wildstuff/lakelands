@@ -432,7 +432,8 @@ impl LakeEngine for SqliteLake {
         let ranked = projection::folded(&conn).and_then(|position| {
             let mut lists = Vec::new();
             if let Some((text, fields)) = &asked.text {
-                lists.push(crate::view::lexical(&conn, ty, text, fields.as_deref(), k)?);
+                let (fields, weights) = (fields.as_deref(), &asked.text_weights);
+                lists.push(crate::view::lexical(&conn, ty, text, fields, weights, k)?);
             }
             for (field, query) in &asked.vectors {
                 lists.push(nearest(&conn, ty, field, query, k)?);

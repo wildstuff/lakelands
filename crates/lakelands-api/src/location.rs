@@ -250,6 +250,10 @@ pub struct Limits {
     /// `too_large`, naming the set, and nothing is appended
     /// (`docs/seams.md`, "Declaring a set over a large type").
     pub max_set_changes: u32,
+    /// The largest `top` a search's `rerank` may ask for: the window the
+    /// second stage ranks, which a cursor carries
+    /// (`docs/decisions/067-a-search-may-take-a-second-stage.md`).
+    pub max_rerank_top: u32,
 }
 
 impl Default for Limits {
@@ -263,6 +267,7 @@ impl Default for Limits {
             max_graph_nodes: 100_000,
             max_offset: 100_000,
             max_set_changes: 20_000,
+            max_rerank_top: 100,
         }
     }
 }

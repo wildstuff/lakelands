@@ -1,10 +1,10 @@
 //! The seams beside the engine: how Lakelands reaches anything outside
 //! its deterministic core.
 //!
-//! Seven seams, this roster and no other: the engine seam
+//! Nine seams, this roster and no other: the engine seam
 //! ([`crate::engine`]), [`PrincipalResolver`], [`FunctionBacking`],
-//! [`EmbedBackend`], [`VerbExecutor`], [`ChangeFeed`] and
-//! [`SystemVocabulary`]. Every seam has a default, so a host that plugs
+//! [`EmbedBackend`], [`Reranker`], [`VerbExecutor`], [`ChangeFeed`],
+//! [`SystemVocabulary`] and [`KeyStore`]. Every seam has a default, so a host that plugs
 //! in nothing still has a working store. Whatever must reproduce from the
 //! log stays inside; whatever needs the outside world is here, and its
 //! output is recorded in the log and read back on replay
@@ -137,6 +137,47 @@ pub trait EmbedBackend: Send + Sync {
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
 }
 
+/// One candidate of a rerank call.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RerankCandidate {
+    /// The record's key: the host's own, and the reader is answered it anyway.
+    pub key: RecordKey,
+    /// Its searchable fields the reader reads, in declared order, joined
+    /// by a blank line. Nothing the reader may not read is in it.
+    pub text: String,
+}
+
+/// One call of the second stage, as a reranker receives it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RerankCall {
+    /// The lake.
+    pub lake: LakeId,
+    /// The searched type.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// What the candidates are ranked against: the search's text, or the
+    /// `text` its `rerank` gave.
+    pub query: String,
+    /// The first-stage window, in first-stage order.
+    pub candidates: Vec<RerankCandidate>,
+}
+
+/// Scores a window of a search's candidates against its query, the second
+/// stage of a search (`docs/decisions/067-a-search-may-take-a-second-stage.md`).
+/// Without one, a search that asks for the stage is refused as `Unbound`.
+#[async_trait]
+pub trait Reranker: Send + Sync {
+    /// The model's name, told in the `rerank` axis of the answer.
+    fn model(&self) -> &str;
+
+    /// One score per candidate, in the call's order; higher ranks first.
+    /// A call is a read: nothing it answers is recorded. A failure, or a
+    /// count of scores other than the candidates', reaches the caller of
+    /// the search as `Unavailable`, whatever error the reranker answered:
+    /// the store never falls back to the first stage's order.
+    async fn rerank(&self, call: &RerankCall) -> Result<Vec<f64>>;
+}
+
 /// One verb that reaches outside the lake, as its executor receives it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VerbInvocation {
@@ -190,8 +231,9 @@ pub struct FeedFilter {
     pub types: Vec<TypeName>,
     /// Only events about records with these keys (of the named types, or
     /// of any type when `types` is empty); all when empty. An event about
-    /// a record is a `record_*` event, `trigger_fired`, `object_set_changed`
-    /// or `verb_called`; no other event passes a key filter.
+    /// a record is a `record_*` event, `trigger_fired`, `trigger_dropped`,
+    /// `object_set_changed` or `verb_called`; no other event passes a key
+    /// filter.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keys: Vec<crate::id::RecordKey>,
 }
@@ -418,23 +460,38 @@ pub fn indexable(kind: &crate::ontology::StorageKind) -> bool {
 
 /// The key prefix of the setting that weighs a type's searches: the
 /// setting `search_weights.<type>`, whose value is an object of
-/// `fields`, vector fields of the type with their weights, and
-/// `text_weight`, each optional and one at least. A search that gives a
-/// ranking no weight takes the setting's (lakelands#561).
+/// `fields`, vector fields of the type with their weights, `text_fields`,
+/// searchable text fields with theirs, and `text_weight`, each optional
+/// and one at least. A search that gives a ranking no weight takes the
+/// setting's (lakelands#561); a text's ranking weighs a match by the
+/// field it is in (lakelands#1230).
 pub const SEARCH_WEIGHTS_SETTING: &str = "search_weights.";
 
 /// The weights a `search_weights.<type>` setting of this value gives: a
-/// vector field's, then the text's. A member that does not read gives
-/// none, since the setting is checked when it is written.
+/// vector field's, then the text's. A weight a search could not give gives
+/// none: the setting is checked when it is written, and a log that came
+/// another way (an import) holds no other weight for it.
 pub fn search_weights(value: Option<&Value>) -> (BTreeMap<String, f64>, Option<f64>) {
-    let member = |m: &str| value.and_then(|v| v.get(m));
-    let fields = member("fields").and_then(Value::as_object);
-    let weights =
-        (fields.into_iter().flatten()).filter_map(|(f, w)| Some((f.clone(), w.as_f64()?)));
-    (
-        weights.collect(),
-        member("text_weight").and_then(Value::as_f64),
-    )
+    let text = value.and_then(|v| v.get("text_weight")?.as_f64());
+    let text = text.filter(|w| crate::query::weight_fits(*w));
+    (weighed(value, "fields"), text)
+}
+
+/// The weight of a match of the text in each searchable field a
+/// `search_weights.<type>` setting of this value names in `text_fields`,
+/// as [`search_weights`] reads them (lakelands#1230).
+pub fn text_field_weights(value: Option<&Value>) -> BTreeMap<String, f64> {
+    weighed(value, "text_fields")
+}
+
+/// The fields `member` of a `search_weights` value names, each with a
+/// weight a search could give.
+fn weighed(value: Option<&Value>, member: &str) -> BTreeMap<String, f64> {
+    let fields = value.and_then(|v| v.get(member)?.as_object());
+    let weight = |w: &Value| w.as_f64().filter(|w| crate::query::weight_fits(*w));
+    (fields.into_iter().flatten())
+        .filter_map(|(f, w)| Some((f.clone(), weight(w)?)))
+        .collect()
 }
 
 /// The key of the setting that seals a source's values of each period
@@ -469,7 +526,8 @@ pub fn view_kept(value: Option<&Value>) -> bool {
 ///   asks for no index. `sort_index` may name a declared view too: the
 ///   index is kept of its kept records.
 /// - `search_weights.<type>` names a declared stored type and holds an
-///   object of `fields` (each a vector field it declares, with a weight)
+///   object of `fields` (each a vector field it declares, with a weight),
+///   `text_fields` (each a searchable field it declares, with a weight)
 ///   and `text_weight`, one at least, every weight one a search may give
 ///   ([`crate::query::weight_fits`]); `None` or `null` weighs nothing.
 /// - `view_kept.<type>` names a declared view and holds `true` or
@@ -552,7 +610,8 @@ pub fn check_setting<'a>(
         for (member, w) in members {
             match (member.as_str(), w.as_object()) {
                 ("text_weight", _) => weighs(member, w, Case::TextWeightRange)?,
-                ("fields", Some(fields)) if !fields.is_empty() => {
+                ("fields" | "text_fields", Some(fields)) if !fields.is_empty() => {
+                    let text = member == "text_fields";
                     for (name, w) in fields {
                         let field = crate::id::FieldName::from(name.as_str());
                         let fault = match seen.fields.iter().find(|f| f.name == field) {
@@ -560,7 +619,13 @@ pub fn check_setting<'a>(
                                 ty: ty.into(),
                                 field,
                             },
-                            Some(f) if !indexable(&f.ty.kind) => Case::NotVectorField { field },
+                            Some(f) if text && !f.searchable => Case::NotSearchable {
+                                ty: ty.into(),
+                                field,
+                            },
+                            Some(f) if !text && !indexable(&f.ty.kind) => {
+                                Case::NotVectorField { field }
+                            }
                             Some(_) => {
                                 weighs(name, w, Case::WeightRange { field })?;
                                 continue;
@@ -692,6 +757,8 @@ pub struct Seams {
     pub backings: Vec<Arc<dyn FunctionBacking>>,
     /// The embedding backend, if any.
     pub embed: Option<Arc<dyn EmbedBackend>>,
+    /// The reranker, if any.
+    pub rerank: Option<Arc<dyn Reranker>>,
     /// Executors for external verbs, by name.
     pub executors: Vec<Arc<dyn VerbExecutor>>,
     /// The host's system vocabulary, if it adds one.
@@ -714,6 +781,10 @@ impl std::fmt::Debug for Seams {
             )
             .field("embed", &self.embed.as_ref().map(|e| e.model().to_owned()))
             .field(
+                "rerank",
+                &self.rerank.as_ref().map(|r| r.model().to_owned()),
+            )
+            .field(
                 "executors",
                 &self.executors.iter().map(|e| e.name()).collect::<Vec<_>>(),
             )
@@ -723,12 +794,14 @@ impl std::fmt::Debug for Seams {
     }
 }
 
-/// Compile-time proof that every seam is `dyn`-compatible.
-#[allow(dead_code)]
+/// Compile-time proof that every seam is `dyn`-compatible: one argument a
+/// seam.
+#[allow(dead_code, clippy::too_many_arguments)]
 fn seams_are_dyn_compatible(
     _: &dyn PrincipalResolver,
     _: &dyn FunctionBacking,
     _: &dyn EmbedBackend,
+    _: &dyn Reranker,
     _: &dyn VerbExecutor,
     _: &dyn ChangeFeed,
     _: &dyn SystemVocabulary,

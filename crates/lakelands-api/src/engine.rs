@@ -25,7 +25,7 @@
 //!   supersedes. A view at an earlier position is a filter over kept
 //!   states, not a replay, so "what did the agent see" is a cheap read.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -390,6 +390,9 @@ pub struct Rankings {
     pub text: Option<(String, Option<Vec<FieldName>>)>,
     /// Each vector field asked, with its query vector.
     pub vectors: Vec<(String, Vec<f32>)>,
+    /// The weight of a match of the text in each of these fields, under
+    /// their names at the head; a field not named weighs 1.
+    pub text_weights: BTreeMap<FieldName, f64>,
 }
 
 /// What [`LakeEngine::ranked`] answers.

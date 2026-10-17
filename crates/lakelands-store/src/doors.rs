@@ -144,6 +144,60 @@ fn reading<T>(
 }
 
 impl Doors {
+    /// What the bound reranker scores a window at, by key. A read: nothing
+    /// is recorded, and a window with no candidate asks nothing. A failure,
+    /// or other scores than candidates, is `Unavailable`; the stage is
+    /// never skipped for the first stage's order (067). With the order the
+    /// scores give, the read that answers it: at the window's position and
+    /// on its clock, where the scored keys are the window's records.
+    async fn rerank(
+        &self,
+        at: Clocked,
+        window: Reply<crate::reads::Window>,
+    ) -> Result<(crate::reads::Staged, Clocked)> {
+        let Some(stage) = self.lake.rerank() else {
+            return Err(Error::unbound(Seam::Rerank));
+        };
+        let (position, window) = (window.position, window.data);
+        let pinned = (
+            ReadAt {
+                as_of: Some(position),
+                ..at.0
+            },
+            Some(window.now),
+        );
+        let scored = |scores: &[f64]| crate::reads::Staged::scored(&window, scores, stage.model());
+        if window.candidates.is_empty() {
+            return Ok((scored(&[]), pinned));
+        }
+        let call = lakelands_api::seam::RerankCall {
+            lake: self.lake.id.clone(),
+            ty: window.ty.clone(),
+            query: window.query.clone(),
+            candidates: window.candidates.clone(),
+        };
+        let failed = |exchange| {
+            let remote = Remote::Reranker {
+                model: stage.model().to_owned(),
+            };
+            Error::unavailable(Situation::Remote { remote, exchange })
+        };
+        let scores = (stage.rerank(&call).await).map_err(|e| match e {
+            e @ Error::Unavailable { .. } => e,
+            other => failed(Exchange::Failed {
+                cause: Box::new(other),
+            }),
+        })?;
+        if scores.len() != call.candidates.len() {
+            let (answered, asked) = (scores.len() as u64, call.candidates.len() as u64);
+            return Err(failed(Exchange::Scores { answered, asked }));
+        }
+        if scores.iter().any(|s| !s.is_finite()) {
+            return Err(failed(Exchange::ScoreNotFinite));
+        }
+        Ok((scored(&scores), pinned))
+    }
+
     async fn read<T, F>(&self, who: &Principal, at: Clocked, f: F) -> Result<Reply<T>>
     where
         T: Send + 'static,
@@ -502,9 +556,26 @@ impl Catalog for Doors {
     async fn query(&self, who: &Principal, pattern: Pattern) -> Result<Reply<QueryResult>> {
         let at = cursor_at(pattern.at, pattern.cursor.as_ref())?;
         // A start by search ranks as `search` does (025).
-        let ranks = pattern.start.search.is_some();
-        self.read_to(who, at, ranks, move |r, pulled| r.query(&pattern, pulled))
-            .await
+        // A start with a second stage ranks nothing once its window is
+        // read: its keys are read where the window was, and judged there
+        // (067), not at the head.
+        let ranks = pattern.start.search.is_some() && pattern.start.rerank.is_none();
+        // A start with a second stage ranks its window through the bound
+        // reranker on a first page, as `search` does (067).
+        let (mut at, mut scores) = (at, None);
+        if pattern.start.rerank.is_some() && pattern.cursor.is_none() {
+            let p = pattern.clone();
+            let window = self.read_to(who, at, true, move |r, pulled| r.query_window(&p, pulled));
+            let (scored, pinned) = self.rerank(at, window.await?).await?;
+            (scores, at) = (Some(scored), pinned);
+        }
+        self.read_to(who, at, ranks, move |r, pulled| {
+            if let Some(staged) = &scores {
+                r.stage(staged.clone());
+            }
+            r.query(&pattern, pulled)
+        })
+        .await
     }
 
     async fn search(&self, who: &Principal, mut search: Search) -> Result<Reply<Hits>> {
@@ -513,9 +584,12 @@ impl Catalog for Doors {
         // the bound embedding backend, if the host bound one. This is a
         // read: nothing is recorded. It is judged for its caller first, by
         // the read's shape, as the read below judges it again: one refused
-        // calls nothing and names no model.
+        // calls nothing and names no model. A later page of a second stage
+        // answers the keys its cursor carries and embeds nothing (067).
+        let staged = search.rerank.is_some() && search.cursor.is_some();
         let unvectored = matches!(search.mode, SearchMode::Hybrid { vector: None, .. });
-        let (embed, mut judged) = (self.lake.embed().filter(|_| unvectored), None);
+        let (embed, mut judged) = (self.lake.embed().filter(|_| unvectored && !staged), None);
+        let sent = search.rerank.is_some().then(|| search.mode.clone());
         if embed.is_some() {
             let s = search.clone();
             // The engines index the head's vectors only, so a search at any
@@ -590,8 +664,30 @@ impl Catalog for Doors {
             }
             *vector = vectors.pop();
         }
-        self.read_to(who, at, true, move |r, pulled| r.search(&search, pulled))
-            .await
+        // The second stage ranks a window of the first on a first page, and
+        // a cursor carries its order after (067).
+        let (mut at, mut scores) = (at, None);
+        if search.rerank.is_some() && search.cursor.is_none() {
+            let s = search.clone();
+            let window = self.read_to(who, at, true, move |r, pulled| r.rerank_window(&s, pulled));
+            let (scored, pinned) = self.rerank(at, window.await?).await?;
+            (scores, at) = (Some(scored), pinned);
+        }
+        // The read that answers a second stage's keys ranks nothing: they
+        // are read and judged at the window's or the cursor's position, not
+        // at the head (067). Its cursor digests the mode as its caller sent
+        // it, which a later page, embedding nothing, sends again.
+        if let Some(sent) = sent {
+            search.mode = sent;
+        }
+        let ranks = search.rerank.is_none();
+        self.read_to(who, at, ranks, move |r, pulled| {
+            if let Some(staged) = &scores {
+                r.stage(staged.clone());
+            }
+            r.search(&search, pulled)
+        })
+        .await
     }
 
     async fn propose(&self, who: &Principal, write: ProposedWrite, why: String) -> Result<Outcome> {
@@ -949,6 +1045,11 @@ impl LakeStore for Store {
 
     fn bind_embed(&self, backend: Arc<dyn lakelands_api::seam::EmbedBackend>) -> Result<()> {
         self.lake.bind_embed(backend);
+        Ok(())
+    }
+
+    fn bind_rerank(&self, backend: Arc<dyn lakelands_api::seam::Reranker>) -> Result<()> {
+        self.lake.bind_rerank(backend);
         Ok(())
     }
 

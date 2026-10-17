@@ -84,6 +84,7 @@ mod relation_renamed;
 mod removed;
 mod renamed_grants;
 mod report_names;
+mod rerank;
 mod restated;
 mod restriction;
 mod retarget;
@@ -97,6 +98,7 @@ mod sealed;
 mod search;
 mod search_axes;
 mod search_fields;
+mod search_text_weights;
 mod set_declared;
 mod set_migrated;
 mod set_names;
@@ -106,6 +108,7 @@ mod settings;
 mod shown_hash;
 mod sorted_whole;
 mod streaming;
+mod trigger_firing;
 mod triggers;
 mod upgrade;
 mod valid_cells;
@@ -710,10 +713,23 @@ pub const ALL: &[Check] = &[
     fusion::SAME_LIST_UNREAD,
     fusion::FUSED_BY_WEIGHT,
     fusion::WEIGHTS_REFUSED,
+    rerank::RERANK_REORDERS_THE_WINDOW,
+    rerank::RERANK_ONE_WINDOW,
+    rerank::RERANK_ONE_WINDOW_ONLY,
+    rerank::RERANK_RANKS_AGAINST,
+    rerank::RERANK_PAGES_WITHOUT_EMBEDDING,
+    rerank::RERANK_SEES_ONLY_WHAT_ITS_READER_READS,
+    rerank::RERANK_STARTS_A_PATTERN,
+    rerank::RERANK_UNBOUND_OR_FAILING,
     search_axes::AXES_SAID,
     search_axes::AXES_READER,
     search_axes::AXES_WINDOW,
     search_axes::WEIGHTS_SET,
+    search_text_weights::WEIGHTS_TEXT,
+    search_text_weights::WEIGHTS_TEXT_UNWEIGHTED,
+    search_text_weights::WEIGHTS_TEXT_FUSED,
+    search_text_weights::WEIGHTS_TEXT_HIDDEN,
+    search_text_weights::WEIGHTS_TEXT_REFUSED,
     upgrade::FORMAT_14_UPGRADED,
     upgrade::FORMAT_15_UPGRADED,
     upgrade::FORMAT_16_UPGRADED,
@@ -781,6 +797,10 @@ pub const ALL: &[Check] = &[
     value_types::CONDITION_NEVER_HOLDS,
     streaming::STREAMS,
     reactive_depth::TOO_DEEP,
+    trigger_firing::TRIGGER_DROPPED,
+    trigger_firing::TRIGGER_STRICT,
+    trigger_firing::TRIGGER_CHANGE,
+    trigger_firing::TRIGGER_ACROSS,
     host_cause::CAUSE_ON_OWN_EVENTS,
     host_cause::CAUSE_PAST_HEAD,
     host_cause::DEPTH_ON_EVERY_DOOR,

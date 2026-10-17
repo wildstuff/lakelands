@@ -37,9 +37,9 @@ Keeps an exact-text index on these fields beyond those the declarations look up 
 
 ### `search_weights.<type>`
 
-Weighs the type's rankings in a search that gives a ranking no weight.
+Weighs the type's rankings in a search that gives a ranking no weight, and a match of its text by the field it is in.
 
-- **Takes:** an object of `fields` (vector fields with their weights) and `text_weight`, one of them at least.
+- **Takes:** an object of `fields` (vector fields with their weights), `text_fields` (searchable text fields with their weights) and `text_weight`, one of them at least.
 - **Default:** `null`.
 - **Per type:** one value per type, and none for the lake.
 
@@ -119,6 +119,13 @@ The most memberships one declaration of an object set may change over the record
 
 - **Takes:** a count.
 - **Default:** `20000`.
+
+### `limits.max_rerank_top`
+
+The largest `top` a search's `rerank` may ask for; a larger one is refused, naming this setting. A lake whose location sets 0 is not opened.
+
+- **Takes:** a count, 1 at least.
+- **Default:** `100`.
 
 ### `engine.tuning.writer_cache_kb`
 

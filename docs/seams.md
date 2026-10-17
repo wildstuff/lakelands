@@ -21,7 +21,7 @@ enforce them.
 
 ## The roster
 
-Eight seams, this roster and no other. Adding one is a change to the
+Nine seams, this roster and no other. Adding one is a change to the
 contract and to this page.
 
 | Seam | Trait(s) | Default in Lakelands | A host plugs in |
@@ -30,6 +30,7 @@ contract and to this page.
 | Principal resolution | `PrincipalResolver` | API key or static entry → one principal | Its identities, roles and policies, compiled to grants |
 | Function backings | `FunctionBacking` | `expr`, evaluated in the store | Its own backing kinds; `http` and `exec` ship in `lakelands-backings` |
 | Embeddings | `EmbedBackend` | None: lexical search and caller vectors | An embedding client; `lakelands-backings` ships one for `/v1/embeddings` endpoints |
+| Reranking | `Reranker` | None: a search that asks for the second stage is refused as `Unbound` | A cross-encoder or any scorer of (query, text) pairs |
 | Verb execution | `VerbExecutor` | None: external verbs are refused as `Unbound` | What its external verbs do |
 | Change feed | `ChangeFeed` | The log, read by kind from a position | A relay of the feed onto its own bus, as its own code |
 | System vocabulary | `SystemVocabulary` | Lakelands' four `sys.` types, allowed in every lake | Its own `sys.` types and which lakes may hold them |
@@ -714,8 +715,9 @@ The full-text and vector indexes describe the head only, so they are not
 read through a view. `LakeEngine::ranked(type, asked, k)` reads them:
 
 - `asked` is every ranking of one pull of a search: a text, with the
-  searchable fields it is matched in if it names any, and each vector
-  field with its query vector. The answer holds one list for each, the
+  searchable fields it is matched in if it names any and the weight of
+  a match in each field the store weighs, and each vector field with
+  its query vector. The answer holds one list for each, the
   text's first, each cut at `k`.
 - **One state.** The engine reads the lists and the position the
   projection is folded through in one transaction (one lock on the
@@ -751,8 +753,12 @@ for it), applied the same way to the query and to the
 fields (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
 The set of hits, their order and their scores are the same on every
 engine: one function ranks (`lakelands_core::engines::lexical`). A hit
-scores the number of distinct query tokens it holds; hits come best
-first, equal scores ordered by key ascending; at most `k`. A later
+scores each distinct query token it holds at the weight of the heaviest
+field holding it, summed in the tokens' order: `asked`'s `text_weights`
+give a field's weight under its name at the head, and a field they do
+not name weighs 1, so with none the score is the number of distinct
+query tokens the hit holds. Hits come best first, equal scores ordered
+by key ascending; at most `k`, cut by that score. A later
 release may score otherwise, on every engine at once, so a caller
 compares scores within one answer.
 With fields named, a record's text is only that of the named fields that are
@@ -1239,6 +1245,26 @@ bound.
   `Unavailable` and fails the texts beside it. Halving sends again the
   client's requests of a batch that had already succeeded.
 - Embedding no text makes no request.
+
+## `Reranker`
+
+`model()`, `rerank(call) -> scores`. A call holds the lake, the searched
+type, the query text and the candidates in the first stage's order, each
+a key and a text: its searchable fields the reader reads, in declared
+order, joined by a blank line. A reranker answers one score per
+candidate, in order, and higher ranks first. A failure, a count of scores
+other than the candidates' and a score that is no number are all
+`Unavailable` to the caller of the search, whatever error the reranker
+answered, and the store never falls back to the first stage's order
+(`docs/decisions/067-a-search-may-take-a-second-stage.md`).
+
+A lake reads the reranker `Seams::rerank` brings at open, or the one a
+host binds later on the open lake with `LakeStore::bind_rerank`, which
+replaces it. `bind_rerank` is the host's alone: a remote handle answers
+it `Unbound` as a host operation, no tool names it, and the WIT does not
+carry it. A call is a read, as the query embedding of a hybrid search
+is: nothing is recorded, and a replay of the log never makes one. A
+window with no candidate asks nothing.
 
 ## `VerbExecutor`
 
@@ -1852,18 +1878,28 @@ under which the view cannot be kept are refused `view_kept_for_set`,
 naming the set (`docs/decisions/066-a-set-holds-a-kept-view.md`).
 
 Another is **`search_weights.<type>`**: it holds an object of `fields`,
-vector fields of `<type>` with their weights, and `text_weight`, each
-optional and one at least, and weighs each ranking a fused search of
-`<type>` gives no weight, as the read finds it at its position. A write
-of it is refused as invalid when `<type>` is no declared stored type
-(`key`), when it names a field the type does not declare or declares
-with a kind other than vector, or a weight a search could not give
-(above 0, at most 1 000 000; the member named), and when its value is no
-such object or names nothing (`value`). A field a migration removed
-stays named and weighs nothing; declared again, it takes its weight
-again. The judge of all four settings is the contract's
+vector fields of `<type>` with their weights, `text_fields`, searchable
+fields of `<type>` with theirs, and `text_weight`, each optional and one
+at least. `fields` and `text_weight` weigh each ranking a fused search
+of `<type>` gives no weight; `text_fields` weighs a match of the text by
+the field it is in, in every ranking of text: a lexical search's, a
+hybrid search's lexical half before the fusion, and its fallback to the
+text (§`ranked`, lakelands#1230). Each is read as the read finds it at
+its position. A write of it is refused as invalid when `<type>` is no
+declared stored type (`key`), when it names a field the type does not
+declare, in `fields` one it declares with a kind other than vector, in
+`text_fields` one it does not declare searchable, or a weight a search
+could not give (above 0, at most 1 000 000; the member named), and when
+its value is no such object or names nothing (`value`). A weight it
+holds that a search could not give, as a log the store did not write
+may hold, weighs nothing. A field a migration removed stays named and
+weighs nothing; declared again, it takes its weight again. A rename is
+not followed: the field is weighed by its old name at a position before
+it, and at the head by its new one, which the setting does not name
+until a host writes it again. The judge of
+all four settings is the contract's
 (`lakelands_api::seam::check_setting`). It changes no answer's members,
-only the order a fused search ranks them in.
+only the order a search ranks them in.
 
 **A setting the store reads is judged by what its writer is shown,**
 after the writer's grant on `sys.setting`
@@ -1932,7 +1968,7 @@ grants, and checked when it is written: `on` names a type that is
 neither a `sys.` type nor a view, `field` one of its fields of the
 authority above and not part of its key, `from` and `to` are values of
 that field's type and differ, and `when` parses and uses none of `changed`,
-`previous` and `retired`. A rule that fails a check is refused as invalid, naming the
+`previous`, `retired` and `created`. A rule that fails a check is refused as invalid, naming the
 rule field at fault. A rule's authority is checked when it is written,
 and the run carries it: its author must hold write on `field` of `on`
 and read on every field `when` reads

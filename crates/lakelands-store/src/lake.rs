@@ -35,7 +35,7 @@ use lakelands_api::location::{EngineConfig, Limits, Location};
 use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
 use lakelands_api::principal::Renamed;
 use lakelands_api::record::StoredRecord;
-use lakelands_api::seam::{EmbedBackend, Seams};
+use lakelands_api::seam::{EmbedBackend, Reranker, Seams};
 use lakelands_api::write::{
     Declaration, Migration, Proposal, ProposalFilter, ProposalState, ProposedWrite,
 };
@@ -164,6 +164,7 @@ pub(crate) fn ends_a_range(body: &EventBody) -> bool {
         | EventBody::WriteAccepted { .. }
         | EventBody::WriteRejected { .. }
         | EventBody::TriggerFired { .. }
+        | EventBody::TriggerDropped { .. }
         | EventBody::ObjectSetChanged { .. }
         | EventBody::SourceForgotten { .. }
         | EventBody::ValuesRemoved { .. }
@@ -207,6 +208,8 @@ pub struct Lake {
     /// last `bind_embed`. A reader clones it and holds no lock across a
     /// call.
     embed: Mutex<Option<Arc<dyn EmbedBackend>>>,
+    /// The reranker bound now, as `embed` holds the embedding backend.
+    rerank: Mutex<Option<Arc<dyn Reranker>>>,
     /// Bounds on one call's work.
     pub limits: Limits,
     /// Held while a batch of the lake's owed calls is made: one batch at a
@@ -261,11 +264,22 @@ fn older_layout(e: &Error) -> Option<String> {
     }
 }
 
-/// The opener `seams` passes for the engine `location` names.
+/// The opener `seams` passes for the engine `location` names, for a
+/// location whose bounds a lake may be opened under.
 pub(crate) fn opener(
     location: &Location,
     seams: &Seams,
 ) -> Result<Arc<dyn lakelands_api::engine::EngineOpener>> {
+    // A bound of no window would refuse every second stage for a cause no
+    // caller can mend: an open or an import at such a location is refused
+    // before anything is made (067).
+    if location.limits.max_rerank_top == 0 {
+        let case = lakelands_api::error::Case::RerankNoWindow;
+        return Err(Error::Refused {
+            field: Some("limits.max_rerank_top".into()),
+            reason: Refusal::Invalid(Box::new(case.into())),
+        });
+    }
     let name: String = match &location.engine {
         EngineConfig::Sqlite { .. } => "sqlite".into(),
         EngineConfig::Memory => "memory".into(),
@@ -638,6 +652,7 @@ impl Lake {
             id: location.lake.clone(),
             engine,
             embed: Mutex::new(seams.embed.take()),
+            rerank: Mutex::new(seams.rerank.take()),
             seams,
             limits: location.limits,
             calls: tokio::sync::Mutex::new(()),
@@ -725,6 +740,16 @@ impl Lake {
     /// backend it read when it asked, so this reaches the next batch.
     pub fn bind_embed(&self, backend: Arc<dyn EmbedBackend>) {
         *lakelands_core::lock(&self.embed) = Some(backend);
+    }
+
+    /// The reranker bound now, if any.
+    pub fn rerank(&self) -> Option<Arc<dyn Reranker>> {
+        lakelands_core::lock(&self.rerank).clone()
+    }
+
+    /// Bind `backend` in place of the reranker bound now.
+    pub fn bind_rerank(&self, backend: Arc<dyn Reranker>) {
+        *lakelands_core::lock(&self.rerank) = Some(backend);
     }
 
     /// The writer state, locked.
@@ -1227,7 +1252,8 @@ impl Lake {
     }
 
     /// Refuse a context deeper than the ceiling of the trigger whose firing
-    /// its cause names; any other cause binds nothing more.
+    /// its cause names, or whose firing was dropped there (lakelands#1216);
+    /// any other cause binds nothing more.
     fn check_trigger_ceiling(&self, w: &Writer, context: WriteContext) -> Result<()> {
         let Some(cause) = context.cause else {
             return Ok(());
@@ -1235,7 +1261,8 @@ impl Lake {
         let Some(stored) = self.engine.read(cause, 1)?.into_iter().next() else {
             return Ok(());
         };
-        if let EventBody::TriggerFired { trigger, .. } = log::open(&stored)?.body
+        if let EventBody::TriggerFired { trigger, .. } | EventBody::TriggerDropped { trigger, .. } =
+            log::open(&stored)?.body
             && let Some(m) = w
                 .ontology
                 .triggers
@@ -1811,7 +1838,8 @@ impl Lake {
             | EventBody::LeaseTaken { .. }
             | EventBody::Checkpoint { .. }
             | EventBody::VerbCalled { .. }
-            | EventBody::TriggerFired { .. } => {}
+            | EventBody::TriggerFired { .. }
+            | EventBody::TriggerDropped { .. } => {}
             // The act is owed until a rebuild after its keys were
             // destroyed has erased what they sealed, and the reclaim ran.
             EventBody::SourceForgotten { source, .. } => {
@@ -3191,6 +3219,7 @@ fn reads_a_record(body: &EventBody) -> bool {
         | EventBody::Checkpoint { .. }
         | EventBody::VerbCalled { .. }
         | EventBody::TriggerFired { .. }
+        | EventBody::TriggerDropped { .. }
         // The writer's ontology, and the declaration put; a recomputation
         // is left pending, and reads its records at the flush.
         | EventBody::Declared { .. }

@@ -70,6 +70,7 @@ pub(super) async fn told(
         filter: filtered,
         with_meta: false,
         at,
+        rerank: None,
     };
     let mut told = Vec::new();
     let mut answer = |door, text: lakelands_api::Result<String>| {

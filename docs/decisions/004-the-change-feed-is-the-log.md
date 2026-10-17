@@ -146,8 +146,9 @@ the write creates (or revives from retirement). A transition is a guard,
 transition only. A guard reads no other record. A trigger may also cap
 the depth of the reactions that name its firing as their cause
 (`docs/decisions/021-the-write-context-belongs-to-the-host.md`, extended).
-The firing is appended whatever the depth, since it is the durable fact a
-host reacts to.
+Past that depth, or the lake's, the write appends `trigger_dropped` in
+place of the firing: what would have fired stays a durable fact, and no
+host reacts to a firing whose reaction could write nothing.
 
 ### A guard reads the provenance its write leaves
 
@@ -197,6 +198,50 @@ and `retired()` is false. The function came with a step of the log
 format (`docs/log-format.md` §6), so a release that does not know it
 refuses the lake instead of keeping a trigger it cannot evaluate, which
 would never fire.
+
+### A firing says what kind of change fired it
+
+A `trigger_fired` carries `change`, the kind of the write that fired it:
+`upserted` (an authored write, a verb's, an accepted one, an aging
+move), `ingested`, `retired`, `forgotten` and `purged` (a record a
+forgotten or a purged source brought in, retired), and `recomputed` (a
+field filled from a recorded output). It carries `created` too: whether
+that write found no live record under the key. A create and a revival
+of a retired record are `created: true`; an update, a retirement and a
+fill are not. A host that reacts to authored and ingested writes and not to a
+source's purge reads it on the firing, not at its `cause`. A firing of
+a record across an edge carries the kind of the far write, and is never
+`created`: that write made another record.
+
+A guard reads `created()` beside `retired()`, in a trigger's guard
+alone. A trigger may name the kinds that fire it, `on_changes`; with
+none, every kind fires, as before. `on_changes: [upserted, ingested]`
+stays silent when a source is forgotten or purged and when a field is
+filled. Firing on every kind by default keeps the firings this record
+promises to triggers whose declarations did not change.
+
+### A strict guard fails where a field it reads has no value
+
+A guard reads an absent field as null, and a comparison with null is
+false: a record without `status` makes `status = 'paid'` false, so
+`not (status = 'paid')` holds and the trigger fires. A trigger that
+declares `when_strict: true` fires only where every field its `when`
+reads, and every `previous(f)`, has a value: a read of one absent or
+null fails the guard as a whole, through `not`, `and`, `or` and
+`changed`, as a guard that cannot be evaluated does. So
+`not (status = 'paid')` does not fire on a record without `status`, and
+a guard that reads `previous(f)` does not fire on a create. A strict
+guard `f is null` fails where `f` is absent too: it reads `f`, which has
+no value. A strict
+guard reads every operand of an `and`, an `or`, an `in`, an `if` and a
+`coalesce`, where a guard otherwise stops at the first that decides, so
+what fails it does not hang on the order its operands are written in:
+`amount > 100 or status = 'x'` and `status = 'x' or amount > 100` both
+fail on a record without `status`. Without it, a guard reads as before.
+
+A host whose own guards fail closed moves them onto the lake with the
+flag, without changing what fires. Making strict the default would
+change what fires for triggers whose declarations did not change.
 
 ### A set's declaration decides the records already there
 
@@ -426,6 +471,13 @@ own pace, and adding one changes nothing in the lake.
   depth of the reactions to it (lakelands#244).
 - A guard tells a retirement from an update through `retired()`
   (lakelands#271).
+- A trigger fired whatever the write's depth; past its ceiling it drops,
+  as `trigger_dropped` (lakelands#1216).
+- A guard may be strict: a field it reads without a value fails it
+  (lakelands#1215).
+- A firing says what kind of change fired it and whether the write made
+  the record, a guard reads `created()`, and a trigger may name the
+  kinds that fire it (lakelands#1217).
 - A set's declaration decides the records already there, where a set's
   membership was decided only when a record was written; the log format
   did not change. A set declared again over another type let go of the
