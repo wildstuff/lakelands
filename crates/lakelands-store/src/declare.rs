@@ -38,12 +38,13 @@ use lakelands_api::error::{Beyond, Case, Names, Naming, Place, Said};
 use lakelands_api::expr::kind::{self, Kind};
 use lakelands_api::expr::{Condition, Expr, Func};
 use lakelands_api::ontology::{
-    Authority, Cardinality, ConstraintDecl, Derived, FieldDecl, OnInputChange, RelationDecl,
-    StorageKind, TypeDecl, ValueTypeDecl, VerbEffect, VerbScope, ViewDecl, lands_in_the_fold,
+    Authority, Cardinality, ConstraintDecl, Derived, FieldDecl, FunctionInput, OnInputChange,
+    RelationDecl, StorageKind, TypeDecl, ValueTypeDecl, VerbEffect, VerbScope, ViewDecl,
+    lands_in_the_fold,
 };
 use lakelands_api::tools::{NameProblem, name_problems};
 use lakelands_api::write::{
-    Carrier, Declaration, DeclarationKind, ObjectSetDecl, SettingDecl, Withdrawal,
+    Carrier, Declaration, DeclarationKind, FunctionDecl, ObjectSetDecl, SettingDecl, Withdrawal,
 };
 use lakelands_api::{Error, FieldName, Refusal, RelationName, Result, TypeName, VerbName};
 use lakelands_core::expr::{Place as Eval, check, parse};
@@ -656,13 +657,15 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             .and_then(|n| o.functions.get(n.as_str()))
         {
             // A function computes a field from inputs the type holds, each
-            // of the kind the function declares for it.
+            // of the kind the function declares for it, or of any kind for
+            // an input that declares none.
             for input in &func.decl.inputs {
                 let (function, ty) = (func.decl.name.clone(), t.name.clone());
-                let why = match t.fields.iter().find(|d| d.name == input.name) {
-                    Some(d) if d.ty.kind == input.ty.kind => continue,
+                let why = match t.fields.iter().find(|d| d.name == *input.name()) {
+                    Some(_) if input_kind_held(t, input).is_none() => continue,
                     Some(d) => {
-                        let (input, kind, held) = (input.name.clone(), input.ty.kind, d.ty.kind);
+                        let (input, kind, held) =
+                            (input.name().clone(), input.field.ty.kind, d.ty.kind);
                         at(
                             &on,
                             Case::FunctionInputKind {
@@ -675,7 +678,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
                         )
                     }
                     None => {
-                        let field = input.name.clone();
+                        let field = input.name().clone();
                         let on = [&on[..], &[Place::Function { name: function }]].concat();
                         at(&on, Case::UnknownField { ty, field })
                     }
@@ -1453,46 +1456,52 @@ fn constraints(o: &Ontology, t: &TypeDecl) -> Result<()> {
             let (ty, field) = (t.name.clone(), n.clone());
             return wrong(Case::UnknownField { ty, field });
         }
-        initial_holds(t, c, &e)?;
+        initial_holds(o, t, c, &e)?;
     }
     Ok(())
 }
 
-/// A constraint reading only fields verbs alone write is judged over their
-/// `initial`s, which no create can replace (lakelands#1130); a field with
-/// none is null. One an ingest admits a breach of is not: an ingest makes
-/// records of the type whatever it holds.
-fn initial_holds(t: &TypeDecl, c: &ConstraintDecl, e: &lakelands_api::expr::Expr) -> Result<()> {
+/// A constraint reading only fields no create can send, those verbs alone
+/// write and those computed from them, is judged over what a create leaves
+/// of them (lakelands#1130, lakelands#1169): their `initial`s, which no
+/// create can replace, and a field with none is null. One an ingest admits
+/// a breach of is not: an ingest makes records of the type whatever it
+/// holds. Where it reads a field a create can send it is taken: the create
+/// must send a value, and `describe` tells it.
+fn initial_holds(
+    o: &Ontology,
+    t: &TypeDecl,
+    c: &ConstraintDecl,
+    e: &lakelands_api::expr::Expr,
+) -> Result<()> {
+    let resolved = crate::record::resolve_functions(t, o);
+    let fixed = derive::fixed(&resolved);
     let read = e.fields_read();
-    let by_verbs =
-        |n: &&FieldName| (t.fields.iter()).any(|f| &f.name == *n && f.authority == Authority::Verb);
-    if read.is_empty() || !read.iter().all(by_verbs) || !c.at_ingest.refuses() {
+    if read.is_empty() || !read.iter().all(|n| fixed.contains(*n)) || !c.at_ingest.refuses() {
         return Ok(());
     }
-    let after: std::collections::BTreeMap<FieldName, lakelands_api::Value> = (t.fields.iter())
-        .filter(|f| f.authority == Authority::Verb)
-        .filter_map(|f| Some((f.name.clone(), f.initial.clone()?)))
-        .collect();
-    let scope = lakelands_core::expr::WriteScope {
-        after: &after,
-        before: None,
-        retiring: false,
-        meta: None,
-        settings: None,
-        now: lakelands_api::Timestamp(0),
+    let value_types: Vec<_> = o.value_types.values().map(|v| v.decl.clone()).collect();
+    let broken = derive::breaks(&resolved, &value_types);
+    let Some((_, part)) = broken.iter().find(|(b, _)| b.name == c.name) else {
+        return Ok(());
     };
-    if lakelands_core::expr::holds(e, &scope).unwrap_or(false) {
-        return Ok(());
-    }
-    let unset = |n: &&&FieldName| !after.contains_key(**n);
+    // The fields verbs write that the part that breaks reads, through the
+    // computed ones.
+    let leaves = derive::leaves(&resolved, part);
+    let leaves: Vec<&FieldDecl> = (t.fields.iter())
+        .filter(|f| leaves.contains(&f.name))
+        .collect();
     let constraint = c.name.clone();
-    let (field, case) = match read.iter().find(unset) {
-        Some(n) => {
-            let field = (**n).clone();
+    let (field, case) = match leaves.iter().find(|f| f.initial.is_none()) {
+        Some(f) => {
+            let field = f.name.clone();
             (field.clone(), Case::NoInitialBreaks { constraint, field })
         }
         None => {
-            let field = (*read.first().expect("a field read")).clone();
+            let field = leaves.first().map_or_else(
+                || (**read.first().expect("a field read")).clone(),
+                |f| f.name.clone(),
+            );
             (field.clone(), Case::InitialBreaks { constraint, field })
         }
     };
@@ -1800,8 +1809,16 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             }
             let input = [on[0].clone(), Place::Input];
             for i in &f.inputs {
-                field_type(o, &input, i, &TypeName::from(""), None)?;
-                computed_here(&input, i)?;
+                if !i.any_kind {
+                    field_type(o, &input, &i.field, &TypeName::from(""), None)?;
+                }
+                computed_here(&input, &i.field)?;
+            }
+            // Declared again, a typed input must still be held in its kind by
+            // each type that binds it; one that drops its type is always
+            // taken.
+            if let Some(case) = input_kind_broken(o, f) {
+                return Err(invalid(at(&on, case)));
             }
             // A call made in process has nothing to gate (064).
             if f.backing == "expr" && !f.risk.is_low() {
@@ -1813,7 +1830,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     // The expression reads only the inputs it declares, so
                     // the inputs a field is checked against are all it reads.
                     for field in derive::reads(&e) {
-                        if !f.inputs.iter().any(|i| i.name == field) {
+                        if !f.inputs.iter().any(|i| *i.name() == field) {
                             return Err(invalid(at(&on, Case::ReadsNoInput { field })));
                         }
                     }
@@ -1856,12 +1873,50 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
     tool_names(o, d)
 }
 
-/// A withdrawal: of a trigger or a function in force, which nothing in
-/// force reads. Nothing reads a trigger; a function is read by each field
-/// that names it, of a type or of a relation's links.
+/// The kind `t` holds the field `input` names in, when `input` states
+/// another: an input of no kind is bound by a field of any.
+fn input_kind_held(t: &TypeDecl, input: &FunctionInput) -> Option<StorageKind> {
+    let kind = input.kind()?;
+    let held = t.fields.iter().find(|d| d.name == *input.name())?.ty.kind;
+    (held != kind).then_some(held)
+}
+
+/// The first input of `f` declared in a kind that a type in `o` computing
+/// a field by it holds in another, as that type's own declare would refuse
+/// it (`function_input_kind`, naming the type).
+pub(crate) fn input_kind_broken(o: &Ontology, f: &FunctionDecl) -> Option<Case> {
+    let calls = |t: &TypeDecl| {
+        t.fields
+            .iter()
+            .any(|x| x.function.as_deref() == Some(&*f.name))
+    };
+    let types = o.types.values().map(|e| &e.decl).filter(|t| calls(t));
+    types
+        .flat_map(|t| f.inputs.iter().map(move |i| (t, i)))
+        .find_map(|(t, i)| {
+            let held = input_kind_held(t, i)?;
+            let (function, input, kind, ty) = (
+                f.name.clone(),
+                i.name().clone(),
+                i.field.ty.kind,
+                t.name.clone(),
+            );
+            Some(Case::FunctionInputKind {
+                function,
+                input,
+                kind,
+                ty,
+                held,
+            })
+        })
+}
+
+/// A withdrawal: of a trigger, a verb, an object set or a function in
+/// force, which nothing in force reads ([`reader`]).
 fn withdrawal(o: &Ontology, w: &Withdrawal) -> Result<()> {
+    use DeclarationKind::{Function, ObjectSet, Trigger, Verb};
     let (kind, name) = (w.kind.naming(), w.name.clone());
-    if !matches!(w.kind, DeclarationKind::Trigger | DeclarationKind::Function) {
+    if !matches!(w.kind, Trigger | Verb | ObjectSet | Function) {
         return Err(invalid(Case::WithdrawnKind { kind }));
     }
     if o.held_named(w.kind, &w.name).is_none() {
@@ -1874,13 +1929,60 @@ fn withdrawal(o: &Ontology, w: &Withdrawal) -> Result<()> {
 }
 
 /// The first reader in force of what `w` withdraws, as a refusal names
-/// it. Nothing reads a trigger; a function is read by each field it
-/// computes.
+/// it. Nothing reads a trigger. A function is read by each field it
+/// computes; a verb by each field of its type only verbs write that no
+/// other verb of the type sets (lakelands#1130), and the last that retires
+/// a type only its verbs retire by that type (lakelands#1239); an object
+/// set by each set and each trigger whose condition names it, itself or
+/// through the sets it names.
 pub(crate) fn reader(o: &Ontology, w: &Withdrawal) -> Option<String> {
     match w.kind {
         DeclarationKind::Function => function_reader(o, &w.name),
+        DeclarationKind::Verb => verb_reader(o, &VerbName::from(w.name.as_str())),
+        DeclarationKind::ObjectSet => set_reader(o, &w.name),
         _ => None,
     }
+}
+
+/// The first field only verbs write that `verb` alone of its type's verbs
+/// sets: the field `status` of `order`; else its type, where it is the last
+/// verb that retires a type only its verbs retire (lakelands#1239).
+fn verb_reader(o: &Ontology, verb: &VerbName) -> Option<String> {
+    let v = &o.verbs.get(verb)?.decl;
+    let t = &o.types.get(&v.on)?.decl;
+    let sets = |v: &lakelands_api::ontology::VerbDecl, f: &FieldName| matches!(&v.effect, VerbEffect::Write { set } if set.iter().any(|a| &a.field == f));
+    let others = o.verbs.values().map(|e| &e.decl);
+    let others = others.filter(|x| x.name != v.name && x.on == t.name);
+    let only = |f: &&FieldDecl| {
+        f.authority == Authority::Verb
+            && sets(v, &f.name)
+            && !others.clone().any(|x| sets(x, &f.name))
+    };
+    if let Some(f) = t.fields.iter().find(only) {
+        return Some(format!("the field `{}` of `{}`", f.name, t.name));
+    }
+    let retires = |v: &lakelands_api::ontology::VerbDecl| matches!(v.effect, VerbEffect::Retire);
+    let last = !t.retired_by.is_authors() && retires(v) && !others.clone().any(retires);
+    last.then(|| format!("the type `{}`", t.name))
+}
+
+/// The first set, then trigger, in force whose condition names the set
+/// `set`: the object set `big`, the trigger `watch`.
+fn set_reader(o: &Ontology, set: &str) -> Option<String> {
+    let names = |c: &Condition| {
+        let mut named = Vec::new();
+        lakelands_core::describe::in_sets(&c.typed().ok()?, &mut named);
+        let through = |n: &String| o.set(n).is_some_and(|s| names_set(o, s, set));
+        Some(named.iter().any(|n| n == set || through(n)))
+    };
+    let sets = o.object_sets.values().map(|e| &e.decl);
+    let mut over = sets.filter(|s| s.name != set && names_set(o, s, set));
+    if let Some(s) = over.next() {
+        return Some(format!("the object set `{}`", s.name));
+    }
+    let mut triggers = o.triggers.values().map(|e| &e.decl);
+    let watching = triggers.find(|t| t.when.as_ref().and_then(names) == Some(true));
+    watching.map(|t| format!("the trigger `{}`", t.name))
 }
 
 /// The first field in force that a function computes, as a refusal names

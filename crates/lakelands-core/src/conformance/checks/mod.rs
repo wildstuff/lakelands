@@ -39,6 +39,7 @@ mod feed;
 mod fields;
 mod filters;
 mod forgotten;
+mod function_input;
 mod fusion;
 mod graph_measures;
 mod graph_steps;
@@ -84,6 +85,7 @@ mod relation_renamed;
 mod removed;
 mod renamed_grants;
 mod report_names;
+mod required_at_create;
 mod rerank;
 mod restated;
 mod restriction;
@@ -264,6 +266,12 @@ pub const ALL: &[Check] = &[
     masking::MASKED_AND_ABSENT,
     masking::BUILT_FROM_HIDDEN,
     computed_inputs::COMPUTED_AS_ITS_INPUTS,
+    function_input::ANY_KIND_INPUT,
+    function_input::INPUT_KIND_REDECLARED,
+    required_at_create::REQUIRED_AT_CREATE,
+    required_at_create::REQUIRED_TWIN,
+    required_at_create::REQUIRED_OUTSIDE,
+    required_at_create::MAY_CREATE,
     computed_at::AT_THE_READ,
     computed_at::SAID_WHEN,
     computed_at::MOVED,
@@ -815,7 +823,11 @@ pub const ALL: &[Check] = &[
     triggers::TRIGGER_CEILING,
     withdraw::WITHDRAWN_TRIGGER,
     withdraw::WITHDRAWN_FUNCTION,
+    withdraw::WITHDRAWN_VERB,
+    withdraw::WITHDRAWN_SET,
     withdraw::WITHDRAWAL_TWIN,
+    withdraw::WITHDRAWN_UNSEEN,
+    withdraw::WITHDRAWN_RETIRE,
     after::AFTER_RESUMES,
     describe::DESCRIBE_IS_THE_DECLARATION,
     describe::DESCRIBED_AS_SHOWN,

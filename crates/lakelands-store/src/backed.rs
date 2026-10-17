@@ -229,8 +229,8 @@ pub fn call_of(f: &FunctionDecl, fields: &BTreeMap<FieldName, Value>) -> Value {
         .iter()
         .map(|i| {
             (
-                i.name.to_string(),
-                fields.get(&i.name).cloned().unwrap_or(Value::Null),
+                i.name().to_string(),
+                fields.get(i.name()).cloned().unwrap_or(Value::Null),
             )
         })
         .collect();
@@ -432,7 +432,7 @@ fn input_of(
     call: &Value,
 ) -> Result<Input> {
     let mut todo: Vec<&FieldName> = match computer {
-        Computer::Function(f) => f.decl.inputs.iter().map(|i| &i.name).collect(),
+        Computer::Function(f) => f.decl.inputs.iter().map(|i| i.name()).collect(),
         Computer::Embed(e, _) => e.from.iter().collect(),
     };
     let (mut seen, mut sources, mut read) = (BTreeSet::new(), BTreeSet::new(), Vec::new());
@@ -545,7 +545,7 @@ pub(crate) fn computed_reads(o: &Ontology, f: &FieldDecl) -> Option<BTreeSet<Fie
         return Some(e.from.iter().cloned().collect());
     }
     if let Some(func) = f.function.as_deref().and_then(|n| o.functions.get(n)) {
-        return Some(func.decl.inputs.iter().map(|i| i.name.clone()).collect());
+        return Some(func.decl.inputs.iter().map(|i| i.name().clone()).collect());
     }
     let e = f.derived.as_ref()?;
     let e = crate::declare::condition(e, lakelands_core::expr::Place::Write, &[]).ok()?;

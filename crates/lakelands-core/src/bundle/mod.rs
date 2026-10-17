@@ -204,6 +204,9 @@
 //! expr: "net * (1 + rate)"
 //! ```
 //!
+//! An input written with no value (`net:`) states no type: a type binds it
+//! as a field of any kind.
+//!
 //! A verb, `verbs/pay_invoice.yaml`. `risk` is `low`, `medium` or
 //! `high`. A verb has either `set`, the fields of its record it writes,
 //! each from an expression over the record and `payload.<name>`, or

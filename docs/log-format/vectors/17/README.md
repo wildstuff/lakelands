@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 66, each
+- `further.json`: the lake's next events, positions 8 to 67, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -116,9 +116,12 @@ The files:
     `slip_made` it sets off at the trigger's own bound (64): a kind and
     members format 17 holds and 16 does not (lakelands#1215,
     lakelands#1216, lakelands#1217);
-  - a `values_removed` taking the delivery `batch-7` back (65), and the
+  - the function `tally` declared with an input that states no `type`,
+    which a type binds as a field of any kind (65): a form format 17
+    holds and 16 does not (lakelands#933);
+  - a `values_removed` taking the delivery `batch-7` back (66), and the
     `record_retired` of `INV-2`, which only it wrote, in the same append
-    (66): a kind format 17 holds and 16 does not
+    (67): a kind format 17 holds and 16 does not
     (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
 
   Its `misplaced` holds five lines that are not of the lake. Each

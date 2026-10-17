@@ -326,6 +326,9 @@ SHOWS = {
         lambda e: declaration(e).get("retired_by") == "verbs"),
     "retire_effect": shows("a declared verb whose effect is `retire`")(
         lambda e: declaration(e).get("declare") == "verb" and declaration(e).get("effect") == "retire"),
+    "untyped_input": shows("a declared function whose input states no `type`, which a type binds as a field of any kind")(
+        lambda e: declaration(e).get("declare") == "function" and declaration(e).get("inputs")
+        and all("type" not in i for i in declaration(e)["inputs"])),
     "values_removed": shows("a `values_removed` taking back one delivery of a source")(
         lambda e: e["body"]["kind"] == "values_removed" and e["body"].get("source") == "erp"
         and e["body"].get("selection") == {"delivery": "batch-7"} and "before" not in e["body"]),

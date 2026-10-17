@@ -551,3 +551,12 @@ fn an_annotation_is_refused_naming_the_declaration_the_key_and_where_it_sits() {
         "type `t`, annotation `lakelands.x`: the namespace `lakelands.` is reserved"
     );
 }
+
+/// A type's rights from an older server, which says nothing of `create`,
+/// read as a create its `upsert` speaks for (lakelands#1188).
+#[test]
+fn rights_without_create_read_as_open() {
+    let old = json!({"find": true, "get": true, "upsert": true, "retire": false});
+    let may: lakelands_api::describe::TypeRights = serde_json::from_value(old).unwrap();
+    assert!(may.create && may.create_why.is_none(), "{may:?}");
+}

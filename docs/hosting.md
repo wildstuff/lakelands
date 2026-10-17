@@ -84,7 +84,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   (`output_recorded`). A replay reads it back and never calls again. A
   function declared above `low` risk is called only once its proposed
   call is accepted, and every call names the write that set it off
-  (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`). See
+  (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`). A
+  host whose functions carry input names but no kinds declares an input
+  with no `type`: a type binds it as a field of any kind, where a typed
+  input is bound by its kind alone. See
   `docs/decisions/022-functions-are-declarations.md` and
   `docs/seams.md` §`FunctionBacking`.
 - **`EmbedBackend`.** A host may pass vectors in with its writes or

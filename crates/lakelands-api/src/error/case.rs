@@ -865,7 +865,7 @@ catalog! {
         /// A withdrawal of a name not in force.
         WithdrawnUndeclared { kind: Naming, name: String } => "the {kind} `{name}` is not declared, so it is not withdrawn",
         /// A withdrawal of a kind that leaves force another way.
-        WithdrawnKind { kind: Naming } => "a {kind} is not withdrawn: a trigger or a function is; a type leaves by `migrate`, and a setting by its record",
+        WithdrawnKind { kind: Naming } => "a {kind} is not withdrawn: a trigger, a verb, an object set or a function is; a type leaves by `migrate`, and a setting by its record",
         /// A view grouped by a field no key may be.
         GroupUnkeyable { field: FieldName } => "it groups by `{field}`, whose kind cannot be part of a key",
         /// An `initial` value on a field its inputs clear.

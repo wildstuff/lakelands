@@ -11,6 +11,7 @@ lakelands-api	enum_marked_non_exhaustive	enum Authority
 lakelands-api	enum_marked_non_exhaustive	enum Declaration
 lakelands-api	enum_marked_non_exhaustive	enum VerbEffect
 lakelands-api	enum_variant_missing	variant Case::WindowLinksAlready
+lakelands-api	struct_field_type_changed	field FunctionDecl.inputs
 lakelands-api	trait_method_added	trait method Catalog::accept_planned
 lakelands-api	trait_method_added	trait method Catalog::enact
 lakelands-api	trait_method_added	trait method Catalog::plan

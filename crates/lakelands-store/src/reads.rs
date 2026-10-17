@@ -2791,8 +2791,11 @@ impl<'a> Reader<'a> {
             }
             moved = self.rekeyed(n, at)?;
         }
+        // A call of a verb withdrawn since is judged by the lake at its
+        // proposal, as a withdrawal is: the head names no type it calls on.
+        let gone = matches!(&logged, ProposedWrite::Call { verb, .. } if o.verb(verb).is_err());
         // A lake that cannot be read there shows its entry to no one.
-        let was = match moved && kept {
+        let was = match moved && kept || gone {
             true => match self.ontology_at(at) {
                 Some(was) => Some(was),
                 None => return Ok(None),
@@ -3275,7 +3278,7 @@ impl<'a> Reader<'a> {
             .filter(|f| f.function.as_deref() == Some(function.as_str()))
             .map(|f| f.name.clone());
         let inputs = (o.functions.get(function).into_iter())
-            .flat_map(|f| f.decl.inputs.iter().map(|i| i.name.clone()));
+            .flat_map(|f| f.decl.inputs.iter().map(|i| i.name().clone()));
         let mut read: Vec<FieldName> = computes.chain(inputs).collect();
         read.dedup();
         // A sweep counts every record of the type, a held one among them:

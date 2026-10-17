@@ -26,8 +26,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::error::{Case, Place, Said};
-use lakelands_api::expr::Expr;
-use lakelands_api::ontology::{FieldDecl, OnInputChange, TypeDecl, ValueTypeDecl};
+use lakelands_api::expr::{Expr, Func};
+use lakelands_api::ontology::{Authority, FieldDecl, OnInputChange, TypeDecl, ValueTypeDecl};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::{FieldMeta, FieldName, Timestamp, Value};
 
@@ -117,6 +117,194 @@ pub fn order(ty: &TypeDecl) -> Result<Vec<(FieldName, Expr)>, Said> {
         out.push((n, e));
     }
     Ok(out)
+}
+
+/// What the record does not decide: the lake's settings, the clock, and
+/// when a value was learned or seen. [`bare`] evaluates without them.
+const OUTSIDE: &[Func] = &[
+    Func::Now,
+    Func::Today,
+    Func::KnownAt,
+    Func::SeenAt,
+    Func::Setting,
+    Func::Param,
+];
+
+/// Whether the record alone decides `e`: neither it nor a derived field it
+/// reads, followed through the derived ones, reads what [`OUTSIDE`] names,
+/// or a field computed outside the lake, an embedding or a backed
+/// function's, which a write may fill from an output recorded before.
+fn decided(ty: &TypeDecl, e: &Expr) -> bool {
+    let computed = order(ty).unwrap_or_default();
+    let outside = |n: &FieldName| {
+        let f = ty.fields.iter().find(|f| &f.name == n);
+        f.is_some_and(|f| f.embed.is_some() || (f.function.is_some() && f.derived.is_none()))
+    };
+    let mut seen = BTreeSet::new();
+    let mut pending = vec![e];
+    while let Some(e) = pending.pop() {
+        if e.calls(OUTSIDE) || reads(e).iter().any(outside) {
+            return false;
+        }
+        let more = computed.iter().filter(|(n, _)| reads(e).contains(n));
+        pending.extend(more.filter(|(n, _)| seen.insert(n.clone())).map(|(_, e)| e));
+    }
+    true
+}
+
+/// The fields of `ty` that no create can send: those only verbs write, and
+/// those computed from nothing but such fields, followed through the
+/// derived ones. `ty` has each `expr` function's expression in place of its
+/// name.
+#[doc(hidden)]
+pub fn fixed(ty: &TypeDecl) -> BTreeSet<FieldName> {
+    let mut fixed: BTreeSet<FieldName> = (ty.fields.iter())
+        .filter(|f| f.authority == Authority::Verb)
+        .map(|f| f.name.clone())
+        .collect();
+    let derived: Vec<(FieldName, Expr)> = order(ty).unwrap_or_default();
+    loop {
+        let more = derived.iter().find(|(n, e)| {
+            let computed = ty.fields.iter().any(|f| &f.name == n && !f.at_read());
+            computed && !fixed.contains(n) && reads(e).is_subset(&fixed)
+        });
+        match more {
+            Some((n, _)) => fixed.insert(n.clone()),
+            None => return fixed,
+        };
+    }
+}
+
+/// The record a create that sends nothing but its key leaves: each
+/// field's `initial`, and each derived field computed from them. `ty` is
+/// as for [`fixed`].
+#[doc(hidden)]
+pub fn bare(ty: &TypeDecl, value_types: &[ValueTypeDecl]) -> BTreeMap<FieldName, Value> {
+    sent(ty, value_types, &BTreeMap::new())
+}
+
+/// The record a create that sends `sent` leaves: [`bare`] with those
+/// values in place of the `initial`s.
+fn sent(
+    ty: &TypeDecl,
+    value_types: &[ValueTypeDecl],
+    sent: &BTreeMap<FieldName, Value>,
+) -> BTreeMap<FieldName, Value> {
+    let mut fields: BTreeMap<FieldName, Value> = (ty.fields.iter())
+        .filter_map(|f| Some((f.name.clone(), f.initial.clone()?)))
+        .collect();
+    fields.extend(sent.iter().map(|(n, v)| (n.clone(), v.clone())));
+    for (name, expr) in order(ty).unwrap_or_default() {
+        let Some(decl) = ty.fields.iter().find(|f| f.name == name && !f.at_read()) else {
+            continue;
+        };
+        let scope = WriteScope {
+            after: &fields,
+            before: None,
+            retiring: false,
+            meta: None,
+            settings: None,
+            now: Timestamp(0),
+        };
+        match computed(decl, &expr, value_types, &scope) {
+            Value::Null => fields.remove(&name),
+            v => fields.insert(name, v),
+        };
+    }
+    fields
+}
+
+/// The fields that feed `read`, followed through the derived fields of
+/// `ty` to those no expression of it computes. `ty` is as for [`fixed`].
+#[doc(hidden)]
+pub fn leaves(ty: &TypeDecl, read: &BTreeSet<FieldName>) -> BTreeSet<FieldName> {
+    let computed = order(ty).unwrap_or_default();
+    let mut leaves = BTreeSet::new();
+    let mut pending: Vec<FieldName> = read.iter().cloned().collect();
+    while let Some(n) = pending.pop() {
+        match computed.iter().find(|(c, _)| *c == n) {
+            Some((_, e)) => pending.extend(reads(e)),
+            None => {
+                leaves.insert(n);
+            }
+        }
+    }
+    leaves
+}
+
+/// Whether no create that sends only fields `sendable` names can make `e`
+/// hold, as far as its form shows it: no field it reads is fed by one of
+/// them, or one of the conditions it joins by `and` is, read only from
+/// fields none of them feeds, broken by the record a create leaves
+/// ([`bare`]) and decided by the record alone. Anything else is a create it
+/// cannot rule out. `ty` is as for [`fixed`].
+#[doc(hidden)]
+pub fn stuck(
+    ty: &TypeDecl,
+    value_types: &[ValueTypeDecl],
+    e: &Expr,
+    sendable: &dyn Fn(&FieldName) -> bool,
+) -> bool {
+    let fed = |e: &Expr| leaves(ty, &reads(e)).iter().any(sendable);
+    if !fed(e) {
+        return true;
+    }
+    let Expr::And { args } = e else {
+        return false;
+    };
+    let fields = bare(ty, value_types);
+    let scope = WriteScope {
+        after: &fields,
+        before: None,
+        retiring: false,
+        meta: None,
+        settings: None,
+        now: Timestamp(0),
+    };
+    let broken = |a: &Expr| decided(ty, a) && !crate::expr::holds(a, &scope).unwrap_or(false);
+    args.iter().any(|a| !fed(a) && broken(a))
+}
+
+/// The constraints of `ty` that the record [`bare`] breaks, with the
+/// fields of the part that breaks. A create fills the key's fields from
+/// its key, a value of its own: so a constraint counts only where it breaks
+/// whatever the key holds, as one that reads no key field, through the
+/// derived ones, or one that joins by `and` a part that reads none and
+/// breaks, whose fields are then that part's. A part a setting or the clock
+/// decides is not judged here: the create's own write judges it. `ty` is
+/// as for [`fixed`].
+#[doc(hidden)]
+pub fn breaks<'t>(
+    ty: &'t TypeDecl,
+    value_types: &[ValueTypeDecl],
+) -> Vec<(
+    &'t lakelands_api::ontology::ConstraintDecl,
+    BTreeSet<FieldName>,
+)> {
+    let fields = bare(ty, value_types);
+    let scope = WriteScope {
+        after: &fields,
+        before: None,
+        retiring: false,
+        meta: None,
+        settings: None,
+        now: Timestamp(0),
+    };
+    let key: BTreeSet<FieldName> = ty.key.iter().cloned().collect();
+    let keyless = |e: &Expr| leaves(ty, &reads(e)).is_disjoint(&key);
+    let breaks = |e: &Expr| decided(ty, e) && !crate::expr::holds(e, &scope).unwrap_or(false);
+    let broken = ty.constraints.iter().filter_map(|c| {
+        let e = c.holds.typed().ok()?;
+        if keyless(&e) && decided(ty, &e) {
+            return breaks(&e).then(|| (c, reads(&e)));
+        }
+        let Expr::And { args } = &e else {
+            return None;
+        };
+        let part: Vec<&Expr> = args.iter().filter(|a| keyless(a) && breaks(a)).collect();
+        (!part.is_empty()).then(|| (c, part.into_iter().flat_map(reads).collect()))
+    });
+    broken.collect()
 }
 
 /// The context of one write, for the fold.

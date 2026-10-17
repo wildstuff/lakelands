@@ -892,7 +892,7 @@ async fn a_trigger_or_a_verb_under_a_name_its_author_is_not_shown_is_not_granted
     // computes would tell that the field reads itself.
     let mut own = half("half", "h / 3");
     if let Declaration::Function(f) = &mut own {
-        f.inputs[0].name = "h".into();
+        f.inputs[0].field.name = "h".into();
     }
     for d in [half("half", "n * 3"), own] {
         told.push(l.cat.declare(&author, d.clone()).await.err());

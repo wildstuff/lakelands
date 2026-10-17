@@ -167,6 +167,14 @@ pub struct FieldDescription {
     /// The value it takes when its record comes to exist without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial: Option<serde_json::Value>,
+    /// Whether a create needs a value of it: it feeds, itself or through
+    /// derived fields, a constraint the record a create leaves without it
+    /// (`initial` or null) breaks (lakelands#1169). An authored field is
+    /// one a create must send; one only verbs write, with no `initial`, is
+    /// one no create can give, and a create is then closed. Told only to a
+    /// reader shown the constraint.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required_at_create: bool,
     /// Whether `where` and `order_by` may use it.
     pub filterable: bool,
     /// Whether full-text search covers it.
@@ -206,6 +214,7 @@ impl FieldDescription {
             decl.shape_alone();
         }
         FieldDescription {
+            required_at_create: false,
             filterable: access.reads() && !matches!(decl.ty.kind, Bytes | Json | Vector),
             name: decl.name,
             ty: decl.ty,
@@ -267,6 +276,17 @@ pub struct TypeRights {
     pub get: bool,
     /// `upsert`: at least one authored field is writable.
     pub upsert: bool,
+    /// `upsert` of a record that does not exist yet: false where the
+    /// declaration shows that no create the principal can send is taken,
+    /// for a value it may not send or a field it may not read
+    /// (lakelands#1188). `upsert` keeps its meaning, updates included.
+    /// Absent from an older server's answer, it reads as true: what that
+    /// server said of a create, it said by `upsert`.
+    #[serde(default = "crate::describe::yes")]
+    pub create: bool,
+    /// Why `create` is false, naming nothing hidden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_why: Option<String>,
     /// `retire`: every field of the type is writable, whatever its
     /// authority, as the principal's grants resolve it. A principal who
     /// may write only some fields of a record may not remove all of them.
@@ -478,4 +498,9 @@ pub struct ExecutorDescription {
     /// (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended).
     /// Without one, calling or proposing the verb is refused as `unbound`.
     pub bound: bool,
+}
+
+/// `true`, a member's default where an older answer leaves it out.
+fn yes() -> bool {
+    true
 }
