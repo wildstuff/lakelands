@@ -1125,6 +1125,7 @@ belongs in the suite, not beside one engine:
 **trigger firing**
 
 - `a_trigger_past_its_depth_drops_instead_of_firing` — 021, extended (lakelands#1216): a write whose depth is at or above a trigger's `max_depth`, or the lake's `max_reactive_depth`, appends `trigger_dropped` naming the trigger, the record, the write's depth, the bound that applied, the lower of the two, and whose it is, in place of `trigger_fired`; below both the trigger fires, and a reaction one deeper naming that firing is written; the feed tells `trigger_dropped` to a consumer that asks for it
+- `a_strict_guard_fails_where_a_field_it_reads_has_no_value` — 004, extended (lakelands#1215): a trigger declared `when_strict` fires only where every field its `when` reads, and every `previous(f)`, has a value: `not (status = 'paid')` fires on a record without `status` by default and not when strict, and a guard reading `previous(status)` fires on a create by default and not when strict; a field written null fails it as one absent; a strict guard reads every operand of an `or`, so `amount > 100 or status = 'paid'` fails on a record without `status` in either order; once the fields have values the two fire alike
 
 **host cause**
 

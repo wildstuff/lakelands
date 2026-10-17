@@ -199,6 +199,27 @@ format (`docs/log-format.md` §6), so a release that does not know it
 refuses the lake instead of keeping a trigger it cannot evaluate, which
 would never fire.
 
+### A strict guard fails where a field it reads has no value
+
+A guard reads an absent field as null, and a comparison with null is
+false: a record without `status` makes `status = 'paid'` false, so
+`not (status = 'paid')` holds and the trigger fires. A trigger that
+declares `when_strict: true` fires only where every field its `when`
+reads, and every `previous(f)`, has a value: a read of one absent or
+null fails the guard as a whole, through `not`, `and`, `or` and
+`changed`, as a guard that cannot be evaluated does. So
+`not (status = 'paid')` does not fire on a record without `status`, and
+a guard that reads `previous(f)` does not fire on a create. A strict
+guard reads every operand of an `and`, an `or`, an `in`, an `if` and a
+`coalesce`, where a guard otherwise stops at the first that decides, so
+what fails it does not hang on the order its operands are written in:
+`amount > 100 or status = 'x'` and `status = 'x' or amount > 100` both
+fail on a record without `status`. Without it, a guard reads as before.
+
+A host whose own guards fail closed moves them onto the lake with the
+flag, without changing what fires. Making strict the default would
+change what fires for triggers whose declarations did not change.
+
 ### A set's declaration decides the records already there
 
 A set's declaration decides the records already there. In the
@@ -429,6 +450,8 @@ own pace, and adding one changes nothing in the lake.
   (lakelands#271).
 - A trigger fired whatever the write's depth; past its ceiling it drops,
   as `trigger_dropped` (lakelands#1216).
+- A guard may be strict: a field it reads without a value fails it
+  (lakelands#1215).
 - A set's declaration decides the records already there, where a set's
   membership was decided only when a record was written; the log format
   did not change. A set declared again over another type let go of the

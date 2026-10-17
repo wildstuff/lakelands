@@ -333,6 +333,9 @@ interface types {
         /// How deep a reaction naming this trigger's firing as its cause
         /// may be; at most the lake's ceiling.
         max-depth: option<u32>,
+        /// Whether a field or `previous(f)` its `when` reads absent or
+        /// null fails the guard as a whole.
+        when-strict: bool,
     }
 
     record object-set-decl {

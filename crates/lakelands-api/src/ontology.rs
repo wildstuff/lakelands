@@ -1341,6 +1341,13 @@ pub struct TriggerDecl {
     /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_depth: Option<u32>,
+    /// Whether the trigger fires only where its `when` reads every field,
+    /// and every `previous(f)`, it asks for: one absent or null fails the
+    /// guard as a whole, through `not`, `and`, `or` and `changed`. `false`
+    /// by default: an absent field is null, and a comparison with it is
+    /// false (lakelands#1215).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub when_strict: bool,
 }
 
 #[cfg(test)]

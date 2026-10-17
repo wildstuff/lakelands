@@ -16,7 +16,9 @@ pub mod walk;
 
 pub use eval::{Place, check};
 #[doc(hidden)]
-pub use eval::{RecordScope, Scope, Val, WriteScope, bind_params, eval, holds, params_read};
+pub use eval::{
+    RecordScope, Scope, Val, WriteScope, bind_params, eval, holds, holds_strict, params_read,
+};
 pub use lakelands_api::expr::parse;
 #[doc(hidden)]
 pub use lakelands_api::expr::{ParseError, arity, children, func_name, print};
