@@ -1355,6 +1355,46 @@ async fn an_import_judges_the_lake_it_finds_before_its_engine_is_opened() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A location whose `limits.max_rerank_top` is 0 lets no search take a
+/// second stage: an import there is refused as an open is, before the
+/// target's engine is opened, so no lake is left that no open would take
+/// (067).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_import_at_a_location_of_no_rerank_window_is_refused_before_its_engine_is_opened() {
+    let lake = name();
+    let source = Seams {
+        engines: vec![Arc::new(MemoryOpener::new())],
+        ..Seams::default()
+    };
+    let made = lakelands_store::open(Location::memory(lake.as_str()), source, OpenMode::Create);
+    let store = made.await.unwrap();
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("import-no-window-{lake}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    lakelands_core::export::write(store.as_ref(), &dir)
+        .await
+        .unwrap();
+    let opened = Arc::new(AtomicU64::new(0));
+    let watched = Seams {
+        engines: vec![Arc::new(Watched {
+            inner: opener(),
+            opened: opened.clone(),
+        })],
+        ..Seams::default()
+    };
+    let mut onto = Location::memory(lake.as_str());
+    onto.limits.max_rerank_top = 0;
+    let e = lakelands_store::import(onto, watched, dir.clone()).await;
+    let e = e.expect_err("an import at a location of no rerank window was taken");
+    assert!(
+        matches!(&e, Error::Refused { field: Some(f), .. } if f == "limits.max_rerank_top")
+            && invalid_case(&e) == Some(&Case::RerankNoWindow),
+        "{e:?}"
+    );
+    assert_eq!(opened.load(Ordering::Relaxed), 0, "the engine was opened");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A format-14 event between two of a later format is a fall: a lake's
 /// format never falls, so it is refused at its position as `format_step`
 /// where the events are read in order, by `verify`, by a writer's fold and
@@ -1574,6 +1614,7 @@ async fn a_filtered_search_pulls_until_its_page_is_full() {
         filter: Some(Condition::from("n >= 295")),
         with_meta: false,
         at: ReadAt::default(),
+        rerank: None,
     };
     let first = cat.search(&o, search(None)).await.unwrap().data;
     assert_eq!(
@@ -1664,6 +1705,7 @@ async fn a_hybrid_search_embeds_its_text_through_the_bound_backend() {
                 filter: None,
                 with_meta: false,
                 at: ReadAt::default(),
+                rerank: None,
             },
         )
         .await
@@ -2554,6 +2596,7 @@ async fn search_finds_a_restricted_record_only_with_the_grant() {
         filter: None,
         with_meta: false,
         at: ReadAt::default(),
+        rerank: None,
     };
     let with = cat.search(&o, search()).await.unwrap().data;
     assert_eq!(with.hits.len(), 1, "the restricted grant finds it");
@@ -2814,6 +2857,7 @@ async fn another_model_bound_later_is_unbound_for_search_and_makes_no_embedding(
                 filter: None,
                 with_meta: false,
                 at: ReadAt::default(),
+                rerank: None,
             },
         )
         .await;
@@ -2854,6 +2898,7 @@ async fn another_model_bound_later_is_unbound_for_search_and_makes_no_embedding(
                 filter: None,
                 with_meta: false,
                 at: ReadAt::default(),
+                rerank: None,
             },
         )
         .await;

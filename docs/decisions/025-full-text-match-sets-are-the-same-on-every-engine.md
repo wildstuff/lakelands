@@ -858,3 +858,7 @@ Of an index asked for:
   aggregate's in none (lakelands#839).
 - Added: a query vector may name its model, and over an embedding a
   vector of another model is refused (lakelands#994).
+- Added: a search may take a second stage, which ranks the first `top`
+  hits of its ranking and ends the answer at them
+  (`docs/decisions/067-a-search-may-take-a-second-stage.md`,
+  lakelands#993).
