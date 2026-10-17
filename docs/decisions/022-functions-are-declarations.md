@@ -33,6 +33,25 @@ function, but a `reference`: its output lands in the fold, where nothing
 judges the record it names for a writer, so it is refused as
 `reference_unjudged` (032).
 
+### An input states a kind or none, and a type binds it by that
+
+An input states a `type` or does not. A typed input is bound by a field
+of that name held in exactly that kind: a type that holds it in another
+is refused `function_input_kind`, naming the function, the input, both
+kinds and the type. An input with no `type` is bound by a field of that
+name in any kind, and the function reads the value in the kind the
+binding type holds it. It is a form of its own, not `json`, which keeps
+its meaning, a JSON value: a declaration that says `json` means a JSON
+value, and one that says nothing means anything. A host whose functions
+carry input names but no kinds states none.
+
+A function declared again is held to every type that binds it: an input
+whose declared kind a type holds otherwise is refused `function_input_kind`
+naming that type. To an author or a reviewer not shown a type that
+binds it, or the field the type binds, it is not granted, naming
+nothing (024), at `declare` and at the accept alike. Dropping an
+input's `type` is always taken.
+
 ### A type's computed fields read one another without a cycle
 
 A type's computed fields, derived expressions and fields computed by a

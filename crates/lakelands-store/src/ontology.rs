@@ -95,6 +95,18 @@ impl ToolNames {
         };
     }
 
+    /// The verb `verb` out of force: the name it made gives way.
+    fn take_verb(&mut self, verb: &VerbName) {
+        let name = tools::tool_base(verb.as_str());
+        if let Some(held) = self.names.get_mut(&name) {
+            held.retain(|s| !matches!(s, NameSource::Verb { verb: v } if v == verb));
+            if held.is_empty() {
+                self.names.remove(&name);
+            }
+        }
+        self.judge(&name);
+    }
+
     /// `t` in force: the names it made give way to those it makes.
     fn put_type(&mut self, t: &TypeDecl) {
         let of = |s: &NameSource| match s {
@@ -294,15 +306,8 @@ impl Ontology {
                 }
             }
             Declaration::Setting(t) => put(&mut self.settings, t.key.clone(), t, v, h, s),
-            // A withdrawal takes the trigger or the function out of force.
-            // A field that names the function refuses it, so no type is
-            // completed again.
             Declaration::Withdraw(t) => {
-                match t.kind {
-                    DeclarationKind::Trigger => drop(self.triggers.remove(&t.name)),
-                    DeclarationKind::Function => drop(self.functions.remove(&t.name)),
-                    _ => {}
-                }
+                self.take_out(t.kind, &t.name);
                 let key = declaration_key(&Declaration::Withdraw(t));
                 self.withdrawn.insert(key, (v, s));
             }
@@ -417,6 +422,26 @@ impl Ontology {
             Declaration::Setting(s) => of(self.settings.get(&s.key), Declaration::Setting),
             Declaration::Withdraw(w) => self.held_named(w.kind, &w.name),
             _ => None,
+        }
+    }
+
+    /// The trigger, verb, object set or function `name` out of force, a
+    /// verb with the tool name it made. What reads it refuses its
+    /// withdrawal, so no type is completed again.
+    pub fn take_out(&mut self, kind: DeclarationKind, name: &str) {
+        match kind {
+            DeclarationKind::Trigger => drop(self.triggers.remove(name)),
+            DeclarationKind::Verb => {
+                let verb = VerbName::from(name);
+                if self.verbs.remove(&verb).is_some()
+                    && let Some(names) = &mut self.names
+                {
+                    Arc::make_mut(names).take_verb(&verb);
+                }
+            }
+            DeclarationKind::ObjectSet => drop(self.object_sets.remove(name)),
+            DeclarationKind::Function => drop(self.functions.remove(name)),
+            _ => {}
         }
     }
 

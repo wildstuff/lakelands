@@ -459,10 +459,10 @@ pub enum Declaration {
     Withdraw(Withdrawal),
 }
 
-/// A trigger or a function taken out of force from the withdrawal's
-/// position on: `describe` no longer shows it, and a read as of before
-/// still does. Declaring the same name again later is a new declaration,
-/// whose version continues the withdrawn one's.
+/// A trigger, a verb, an object set or a function taken out of force from
+/// the withdrawal's position on: `describe` no longer shows it, and a read
+/// as of before still does. Declaring the same name again later is a new
+/// declaration, whose version continues the withdrawn one's.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Withdrawal {
@@ -642,8 +642,13 @@ impl Declaration {
     /// places inside the declaration.
     fn annotated(&self) -> Vec<(String, Vec<Place>, &Annotations)> {
         type Out<'a> = Vec<(String, Vec<Place>, &'a Annotations)>;
-        fn fields<'a>(at: &str, within: &[Place], fs: &'a [FieldDecl], out: &mut Out<'a>) {
-            for (i, f) in fs.iter().enumerate() {
+        fn fields<'a>(
+            at: &str,
+            within: &[Place],
+            fs: impl IntoIterator<Item = &'a FieldDecl>,
+            out: &mut Out<'a>,
+        ) {
+            for (i, f) in fs.into_iter().enumerate() {
                 let field = Place::Field {
                     name: f.name.clone(),
                 };
@@ -670,7 +675,9 @@ impl Declaration {
                 }
             }
             Declaration::Verb(v) => fields("payload", &[], &v.payload, &mut out),
-            Declaration::Function(f) => fields("inputs", &[], &f.inputs, &mut out),
+            Declaration::Function(f) => {
+                fields("inputs", &[], f.inputs.iter().map(|i| &i.field), &mut out)
+            }
             Declaration::ValueType(v) => out.push((String::new(), Vec::new(), &v.annotations)),
             Declaration::Trigger(_)
             | Declaration::ObjectSet(_)
@@ -914,9 +921,10 @@ pub struct FunctionDecl {
     /// The backing kind that computes it (`expr`, `http`, `exec`, or a
     /// host's own).
     pub backing: String,
-    /// Its inputs, typed.
+    /// Its inputs: each of the kind it states, or of any kind if it
+    /// states none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub inputs: Vec<crate::ontology::FieldDecl>,
+    pub inputs: Vec<crate::ontology::FunctionInput>,
     /// For the `expr` backing: the expression, over the inputs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expr: Option<Condition>,

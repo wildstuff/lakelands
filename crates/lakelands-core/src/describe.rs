@@ -27,11 +27,15 @@ use lakelands_api::describe::{
 use lakelands_api::engine::Declared;
 use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::{
-    Authority, Derived, RelationDecl, Risk, TypeDecl, VerbDecl, VerbEffect, ViewDecl,
+    Authority, ConstraintDecl, Derived, FieldDecl, RelationDecl, Risk, TypeDecl, ValueTypeDecl,
+    VerbDecl, VerbEffect, ViewDecl,
 };
 use lakelands_api::write::{Declaration, FunctionDecl, SettingDecl};
 use lakelands_api::{Access, FieldName, LakeId, Principal, TypeName, ValueTypeName};
 
+use std::collections::BTreeSet;
+
+use crate::derive;
 use crate::rights::{field_access, granted_access, only_holder, pinnable, type_access};
 use crate::sight::Sight;
 
@@ -369,7 +373,7 @@ impl Sight<'_> {
                     used.extend(of(&mut v.payload.iter()))
                 }
                 Declaration::Function(f) if self.function_visible(f) => {
-                    used.extend(of(&mut f.inputs.iter()))
+                    used.extend(of(&mut f.inputs.iter().map(|i| &i.field)))
                 }
                 _ => {}
             }
@@ -689,7 +693,7 @@ impl Sight<'_> {
             .peekable();
         uses.peek().is_some()
             && uses.all(|(t, x)| {
-                let read = std::iter::once(&x.name).chain(f.inputs.iter().map(|i| &i.name));
+                let read = std::iter::once(&x.name).chain(f.inputs.iter().map(|i| i.name()));
                 self.ty(&t.name).is_ok() && self.reads_all(read, &t.name)
             })
     }
@@ -814,6 +818,74 @@ pub(crate) fn relation_shown<'a>(
         && to.iter().all(|n| known(target, n))
 }
 
+/// Why a principal who may write a type is told it may make no record of it.
+const CREATE_CLOSED: &str = "a create needs a value you may not send";
+
+/// `t` with each `expr` function's expression in place of its name, and the
+/// value types its fields name: what the record a create leaves is
+/// computed from.
+fn bare_inputs(t: &TypeDecl, declared: &[Declared]) -> (TypeDecl, Vec<ValueTypeDecl>) {
+    let mut out = t.clone();
+    for f in &mut out.fields {
+        let function = declared.iter().find_map(|d| match &d.declaration {
+            Declaration::Function(g) if Some(&g.name) == f.function.as_ref() => Some(g),
+            _ => None,
+        });
+        if let Some(g) = function {
+            f.derived = g.expr.clone();
+        }
+    }
+    let named = |v: &&ValueTypeDecl| {
+        t.fields
+            .iter()
+            .any(|f| f.ty.value_type.as_ref() == Some(&v.name))
+    };
+    let types = declared.iter().filter_map(|d| match &d.declaration {
+        Declaration::ValueType(v) => Some(v),
+        _ => None,
+    });
+    (out, types.filter(named).cloned().collect())
+}
+
+/// Whether no create `who` can send is taken (lakelands#1188), as far as
+/// the declaration shows it: a constraint the record a create leaves
+/// breaks is one no fields it may send can make hold ([`derive::stuck`]),
+/// those it is granted of the authored ones; a field the create needs,
+/// required with no `initial`, or a field of the key, which a create fills
+/// from its key, is not one it may send; or a constraint
+/// reads a field it may not read, which the write refuses whatever the
+/// create holds. A create it cannot rule out leaves it open: the write is
+/// the judge. `t` and `broken` are as [`derive::breaks`] takes and answers
+/// them.
+fn create_closed(
+    who: &Principal,
+    t: &TypeDecl,
+    value_types: &[ValueTypeDecl],
+    broken: &[(&ConstraintDecl, BTreeSet<FieldName>)],
+) -> bool {
+    let field = |n: &FieldName| t.fields.iter().find(|f| &f.name == n);
+    let sends = |f: &FieldDecl| {
+        matches!(f.authority, Authority::Authored | Authority::Shared)
+            && field_access(who, t, f).writes()
+    };
+    let sendable = |n: &FieldName| field(n).is_some_and(sends);
+    let unreadable = |n: &FieldName| field(n).is_some_and(|f| !field_access(who, t, f).reads());
+    let hidden = t.constraints.iter().any(|c| {
+        let e = c.holds.typed().ok();
+        e.is_some_and(|e| derive::reads(&e).iter().any(unreadable))
+    });
+    let computed = |f: &FieldDecl| f.derived.is_some() || f.function.is_some();
+    let needed = |f: &&FieldDecl| f.required && f.initial.is_none() && !computed(f);
+    let unsent = t.fields.iter().filter(needed).any(|f| !sends(f));
+    // A create fills the key's fields from its key, as a write of them.
+    let unkeyed = t.key.iter().any(|k| !sendable(k));
+    let stuck = |(c, _): &&(&ConstraintDecl, BTreeSet<FieldName>)| {
+        let e = c.holds.typed().ok();
+        e.is_some_and(|e| derive::stuck(t, value_types, &e, &sendable))
+    };
+    hidden || unsent || unkeyed || broken.iter().any(|b| stuck(&b))
+}
+
 impl Sight<'_> {
     fn type_description(
         &self,
@@ -823,12 +895,41 @@ impl Sight<'_> {
     ) -> Option<TypeDescription> {
         let (who, find) = (self.who(), &|n: &TypeName| self.force.ty(n));
         self.ty(&t.name).ok()?;
+        // What a create that sends nothing but the key breaks (lakelands#1169):
+        // told of a field to a reader shown the constraint too.
+        let (resolved, value_types) = bare_inputs(t, declared);
+        let broken = match t.view {
+            None => derive::breaks(&resolved, &value_types),
+            Some(_) => Vec::new(),
+        };
+        let told = |(c, _): &&(&ConstraintDecl, BTreeSet<FieldName>)| {
+            let e = c.holds.typed().ok();
+            e.is_some_and(|e| self.reads_all(e.fields_read(), &t.name))
+        };
+        // Told of the fields that feed a broken constraint through the
+        // derived ones, those a create may send, and one only verbs write
+        // with no `initial`: one with an `initial` is a choice no create
+        // changes, and the field asked for is another.
+        let fed: BTreeSet<FieldName> = (broken.iter().filter(told))
+            .flat_map(|(_, reads)| derive::leaves(&resolved, reads))
+            .collect();
+        let required = |f: &FieldDecl| {
+            let asked = match f.authority {
+                Authority::Authored | Authority::Shared => true,
+                Authority::Verb => f.initial.is_none(),
+                _ => false,
+            };
+            asked && fed.contains(&f.name)
+        };
         let fields: Vec<FieldDescription> = t
             .fields
             .iter()
             .map(|f| (f, field_access(who, t, f)))
             .filter(|(_, a)| *a != Access::None)
-            .map(|(f, a)| FieldDescription::of(f, a))
+            .map(|(f, a)| FieldDescription {
+                required_at_create: a.reads() && required(f),
+                ..FieldDescription::of(f, a)
+            })
             .collect();
         let is_view = t.view.is_some();
         // A link type's records are written through its relation's link
@@ -837,13 +938,17 @@ impl Sight<'_> {
         // A holder of `only` writes its own records, and makes one only where
         // it writes every field its `only` names (051).
         let held = only_holder(who, t, self.force);
+        let upsert = crate::rights::creates(who, t)
+            && !is_view
+            && !is_link
+            && fields.iter().any(FieldDescription::authored_writable);
+        let closed = create_closed(who, &resolved, &value_types, &broken);
         let may = TypeRights {
             find: true,
             get: true,
-            upsert: crate::rights::creates(who, t)
-                && !is_view
-                && !is_link
-                && fields.iter().any(FieldDescription::authored_writable),
+            upsert,
+            create: upsert && !closed,
+            create_why: (upsert && closed).then(|| CREATE_CLOSED.to_owned()),
             // A type only its verbs retire is retired by calling one.
             retire: !is_link && t.retired_by.is_authors() && crate::rights::may_retire(who, t),
             link: t

@@ -183,6 +183,35 @@ interface types {
         annotations: list<tuple<string, json>>,
     }
 
+    /// An input of a function: a field's declaration, with `type` left out
+    /// of an input a type binds as a field of any kind.
+    record function-input {
+        name: field-name,
+        /// Left out of an input of any kind.
+        %type: option<field-type>,
+        required: bool,
+        authority: authority,
+        derived: option<condition>,
+        function: option<string>,
+        computed-at: option<computed-at>,
+        depends-on: list<field-name>,
+        on-input-change: on-input-change,
+        /// The value the field takes when its record comes to exist and
+        /// the creating write gives it none; on an authored field of a
+        /// type's own alone.
+        initial: option<json>,
+        sensitive: bool,
+        searchable: bool,
+        /// Whether a source's values are sealed under its key.
+        erasable: bool,
+        description: option<string>,
+        label: option<string>,
+        embed: option<embed-decl>,
+        /// The host's own marks, by namespaced key (`acme.icon`), each a
+        /// JSON value; Lakelands never reads them.
+        annotations: list<tuple<string, json>>,
+    }
+
     /// What a vector field is the embedding of: text fields of the same
     /// record, joined in order with one blank line, and the model.
     record embed-decl {
@@ -368,7 +397,7 @@ interface types {
     record function-decl {
         name: string,
         backing: string,
-        inputs: list<field-decl>,
+        inputs: list<function-input>,
         expr: option<condition>,
         config: option<json>,
         description: option<string>,
@@ -398,8 +427,8 @@ interface types {
         withdraw(withdrawal),
     }
 
-    /// A trigger or a function taken out of force from the withdrawal's
-    /// position on; a read as of before still sees it.
+    /// A trigger, a verb, an object set or a function taken out of force
+    /// from the withdrawal's position on; a read as of before still sees it.
     record withdrawal {
         kind: declaration-kind,
         name: string,
@@ -1074,6 +1103,12 @@ interface types {
         find: bool,
         get: bool,
         upsert: bool,
+        /// Whether a create the principal can send may be taken: false
+        /// where the declaration shows every one needs a value it may not
+        /// send or a field it may not read.
+        create: bool,
+        /// Why `create` is false, naming nothing hidden.
+        create-why: option<string>,
         retire: bool,
         /// The relations whose links the principal may write.
         link: list<relation-name>,
@@ -1163,6 +1198,9 @@ interface types {
         on-input-change: on-input-change,
         /// The value it takes when its record comes to exist without one.
         initial: option<json>,
+        /// Whether a create must send it: a constraint it reads is broken
+        /// by the record a create leaves without it.
+        required-at-create: bool,
         filterable: bool,
         searchable: bool,
         sensitive: bool,

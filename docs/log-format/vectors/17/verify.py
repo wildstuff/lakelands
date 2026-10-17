@@ -326,6 +326,9 @@ SHOWS = {
         lambda e: declaration(e).get("retired_by") == "verbs"),
     "retire_effect": shows("a declared verb whose effect is `retire`")(
         lambda e: declaration(e).get("declare") == "verb" and declaration(e).get("effect") == "retire"),
+    "untyped_input": shows("a declared function whose input states no `type`, which a type binds as a field of any kind")(
+        lambda e: declaration(e).get("declare") == "function" and declaration(e).get("inputs")
+        and all("type" not in i for i in declaration(e)["inputs"])),
     "lake_upgraded": shows("a `lake_upgraded` from the format before to the one this lake is written in")(
         lambda e: e["body"]["kind"] == "lake_upgraded" and e["body"]["from"] == e["v"] - 1 and e["body"]["to"] == e["v"]),
     "function_risk": shows("a declared function whose backing reaches outside the lake, declared above `low` risk")(

@@ -1,8 +1,8 @@
 use lakelands_api::expr::{Condition, Expr, Literal};
 use lakelands_api::ontology::{
-    Assignment, Authority, Cardinality, FieldDecl, FieldType, Measure, OnInputChange, RelationDecl,
-    RetiredBy, Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
-    VerbScope, ViewDecl, ViewSource,
+    Assignment, Authority, Cardinality, FieldDecl, FieldType, FunctionInput, Measure,
+    OnInputChange, RelationDecl, RetiredBy, Risk, StorageKind, TriggerDecl, TypeDecl,
+    ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewSource,
 };
 use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl};
 use lakelands_api::{FieldName, RelationName, TypeName, ValueTypeName, VerbName};
@@ -299,7 +299,10 @@ fn complete_declarations() -> Vec<Declaration> {
         Declaration::Function(FunctionDecl {
             name: "gross".to_owned(),
             backing: "expr".to_owned(),
-            inputs: vec![field("net", kind(StorageKind::Decimal))],
+            inputs: vec![FunctionInput::typed(field(
+                "net",
+                kind(StorageKind::Decimal),
+            ))],
             expr: Some(text("net * 1.19")),
             config: serde_json::Value::Null,
             description: None,

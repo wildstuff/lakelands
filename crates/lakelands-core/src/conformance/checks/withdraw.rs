@@ -1,25 +1,27 @@
-//! A trigger or a function withdrawn: out of force from the withdrawal on,
-//! still there to a read as of before it
+//! A trigger, a verb, an object set or a function withdrawn: out of force
+//! from the withdrawal on, still there to a read as of before it
 //! (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 //! extended). A withdrawal is one `declared` event; what something in
 //! force reads is not withdrawn, and a name not in force is not either.
 
 use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{RelationDecl, StorageKind, TriggerDecl};
+use lakelands_api::ontology::{FunctionInput, RelationDecl, StorageKind, TriggerDecl};
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::seam::Seams;
 use lakelands_api::write::{
-    Declaration, DeclarationKind, FunctionDecl, InForce, ProposalFilter, ProposedWrite, Withdrawal,
+    Declaration, DeclarationKind, FunctionDecl, InForce, ProposalFilter, ProposalState,
+    ProposedWrite, Withdrawal, WriteOpts,
 };
 use lakelands_api::{
-    Access, Catalog, Grants, LakeStore, Outcome, Position, PrincipalKind, ProposalId, Refusal,
-    TypeName,
+    Access, Catalog, Error, Grants, LakeStore, Missing, Outcome, Position, PrincipalKind,
+    ProposalId, Refusal, TypeName,
 };
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, computed_by, events_after, field, invalid_like, limits, principal, reactive,
-    read_at, reason, refused_alike, refused_unmoved, reviewer, trigger_on, try_upsert, type_decl,
+    Lake, Must, computed_by, events_after, field, find_at, invalid_like, limits, object_set_on,
+    patch, principal, reactive, read_at, reason, reference, refused_alike, refused_unmoved,
+    reviewer, trigger_on, try_upsert, type_decl, write_verb,
 };
 use crate::conformance::{Failure, Given, Held, Store};
 
@@ -39,6 +41,26 @@ check!(
     "027 and 024, extended (lakelands#1219): to a holder of `schema` not shown a trigger's type, withdrawing the trigger is refused as withdrawing a name never declared, word for word, appending nothing, alone and by `apply` beside a declaration refused of its own; withdrawing a function that computes a field of that type is not granted by `declare`, `apply` and `propose`, naming neither; the owner's proposal to withdraw the trigger is not listed to that reader, pending or accepted, and is to the owner, under a filter by the trigger's type too, and so once a trigger of that name stands on a type the reader is shown, pending or accepted; that reader's accept of a function's withdrawal is not granted, naming nothing, where only that type reads the function, and refused naming the field it is shown, of a type sorting after the hidden one, where another reads it too; a trigger whose `when` reads a field a reviewer is kept from is not shown to it, and neither is its withdrawal, pending or accepted, under a filter by its type too"
 );
 
+check!(
+    WITHDRAWN_VERB = a_withdrawn_verb_takes_no_call_and_frees_its_tool_name,
+    "027, extended (lakelands#1219): a verb that alone of its type's verbs sets a field only verbs write is refused `withdrawn_in_use`, naming that field, appending nothing; one beside another that sets it is withdrawn by `declare`, one `declared` at the next version, gone from `describe` and there as of before; a direct call of it and the accept of a call of it proposed before, by the owner and by a reviewer shown it then, are refused as a verb not declared, judged by the verb as it stood at the proposal, while a reviewer not shown its type is answered as for a proposal id that does not exist, as it was before the withdrawal, and is listed none of its calls, as before it, whole and by its type; the call stays pending until it is rejected, and an earlier call of it, once it is declared again otherwise, is refused `verb_redeclared`; from there the other verb is the field's last and is refused; a verb's tool name is free once it is withdrawn, a type making that name taken; declared again its version continues"
+);
+
+check!(
+    WITHDRAWN_SET = a_withdrawn_set_holds_no_member_from_there_on,
+    "027 and 004, extended (lakelands#1219): an object set another set names, or a trigger's `when` names, is refused `withdrawn_in_use`, naming that set or trigger, appending nothing; the two sets withdrawn by one `apply` are taken; a set withdrawn by `apply` appends one `declared` and no `object_set_changed`, is gone from `describe` and there as of before, a read naming it refused `set_undeclared` at the head and answering its members as of before; declared again with another filter its version continues, it joins only the records that filter holds for, and a later write that takes in a record it held before joins it again"
+);
+
+check!(
+    WITHDRAWN_UNSEEN = a_verb_or_set_withdrawal_tells_a_reader_not_shown_it_nothing,
+    "027 and 024, extended (lakelands#1219): to a holder of `schema` not shown a type, withdrawing a verb or an object set of it is refused as withdrawing one never declared, word for word, appending nothing; withdrawing a set it is shown that a trigger it is not shown watches, one reading across an edge a field it is kept from, is not granted, by `declare` and by the accept of a proposal made before the trigger, naming neither the trigger nor that field, where the owner is told the trigger"
+);
+
+check!(
+    WITHDRAWN_RETIRE = the_last_verb_that_retires_a_type_is_not_withdrawn,
+    "027 and 016, extended (lakelands#1239): of a type only its verbs retire, a retire verb beside another is withdrawn; the last is refused `withdrawn_in_use`, naming the type, appending nothing; the type marked `retired_by: authors` again, it is withdrawn"
+);
+
 fn withdraw(kind: DeclarationKind, name: &str) -> Declaration {
     Declaration::Withdraw(Withdrawal {
         kind,
@@ -50,7 +72,7 @@ fn function(name: &str) -> FunctionDecl {
     FunctionDecl {
         name: name.into(),
         backing: "expr".into(),
-        inputs: vec![field("n", StorageKind::Number)],
+        inputs: vec![FunctionInput::typed(field("n", StorageKind::Number))],
         expr: Some("n * 2".into()),
         config: serde_json::Value::Null,
         description: None,
@@ -87,22 +109,39 @@ async fn withdrawn(
     Ok((events[0].position, d.clone(), still))
 }
 
-/// The names `who` is described of `kind` (triggers or functions), as of `at`.
+/// The names `who` is described of `kind`, as of `at`.
 async fn described(
     cat: &dyn Catalog,
     who: &lakelands_api::Principal,
     at: Option<Position>,
-    triggers: bool,
+    kind: DeclarationKind,
 ) -> Result<Vec<String>, Failure> {
     let d = cat
         .describe(who, read_at(at))
         .await
         .must("describing")?
         .data;
-    Ok(match triggers {
-        true => d.triggers.iter().map(|t| t.name.to_string()).collect(),
-        false => d.functions.iter().map(|f| f.name.clone()).collect(),
+    Ok(match kind {
+        DeclarationKind::Trigger => d.triggers.iter().map(|t| t.name.to_string()).collect(),
+        DeclarationKind::Verb => d.verbs.iter().map(|v| v.name.to_string()).collect(),
+        DeclarationKind::ObjectSet => d.object_sets.iter().map(|s| s.name.clone()).collect(),
+        _ => d.functions.iter().map(|f| f.name.clone()).collect(),
     })
+}
+
+/// Fails unless `name` of `kind` is described at the head and not as of
+/// the position before `at`, its withdrawal's.
+async fn gone_since(l: &Lake, kind: DeclarationKind, name: &str, at: Position) -> Held {
+    let (cat, own) = (l.cat.as_ref(), &l.own);
+    let (now, then) = (
+        described(cat, own, None, kind).await?,
+        described(cat, own, Some(Position(at.0 - 1)), kind).await?,
+    );
+    ensure!(
+        !now.iter().any(|n| n == name) && then.iter().any(|n| n == name),
+        "`describe` must not list `{name}` at the head and must as of before it: {now:?}, {then:?}"
+    );
+    Ok(())
 }
 
 async fn fired(
@@ -162,14 +201,7 @@ async fn a_withdrawn_trigger_stops_firing_and_is_seen_as_of_before(
     let store = store.map_err(|e| Failure::new(format!("opening the lake again failed: {e}")))?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
-    let (now, then) = (
-        described(cat.as_ref(), own, None, true).await?,
-        described(cat.as_ref(), own, Some(Position(at.0 - 1)), true).await?,
-    );
-    ensure!(
-        !now.iter().any(|n| n == "capped") && then.iter().any(|n| n == "capped"),
-        "`describe` must not list `capped` at the head and must as of before it: {now:?}, {then:?}"
-    );
+    gone_since(&l, DeclarationKind::Trigger, "capped", at).await?;
     let head = store.head().await.must("reading the head")?;
     l.upsert("job", "j1", json!({"n": 1})).await?;
     ensure!(
@@ -305,14 +337,7 @@ async fn a_function_is_withdrawn_once_no_field_names_it(store: Store) -> Held {
         d.version == 2 && still,
         "{what} must take version 2 and plan to move no record: {d:?}, plan moves none: {still}"
     );
-    let (now, then) = (
-        described(cat.as_ref(), own, None, false).await?,
-        described(cat.as_ref(), own, Some(Position(at.0 - 1)), false).await?,
-    );
-    ensure!(
-        !now.iter().any(|n| n == "spare") && then.iter().any(|n| n == "spare"),
-        "`describe` must not list `spare` at the head and must as of before it: {now:?}, {then:?}"
-    );
+    gone_since(&l, DeclarationKind::Function, "spare", at).await?;
     let again = cat
         .declare(own, Declaration::Function(function("spare")))
         .await;
@@ -333,12 +358,427 @@ async fn a_function_is_withdrawn_once_no_field_names_it(store: Store) -> Held {
     };
     let accepted = cat.accept(&reviewer(store.as_ref(), true), &proposal).await;
     accepted.must("accepting the withdrawal of `third`")?;
-    let now = described(cat.as_ref(), own, None, false).await?;
+    let now = described(cat.as_ref(), own, None, DeclarationKind::Function).await?;
     ensure!(
         now == ["double", "fare", "spare"],
         "after the accept `third` must not be described: {now:?}"
     );
     Ok(())
+}
+
+/// One `declared` withdrawal by `declare` as the owner after the head,
+/// answered at `version`: the position it lands at.
+async fn withdrawn_at(
+    l: &Lake,
+    store: &dyn LakeStore,
+    kind: DeclarationKind,
+    name: &str,
+    version: u32,
+) -> Result<Position, Failure> {
+    let before = store.head().await.must("reading the head")?;
+    let gone = l.cat.declare(&l.own, withdraw(kind, name)).await;
+    let what = format!("withdrawing `{name}`");
+    let (at, d, _) = withdrawn(store, before, gone, &what).await?;
+    ensure!(
+        d.version == version,
+        "{what} must take version {version}: {d:?}"
+    );
+    Ok(at)
+}
+
+async fn a_withdrawn_verb_takes_no_call_and_frees_its_tool_name(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    l.declare_json(json!({"declare": "type", "name": "order", "fields": [
+        {"name": "status", "type": {"kind": "text"}, "authority": "verb", "initial": "open"},
+        {"name": "rank", "type": {"kind": "number"}, "authority": "verb", "initial": 1},
+        {"name": "memo", "type": {"kind": "text"}}]}))
+        .await?;
+    // The name the generator gives the `find` door of a type `note`, read
+    // off the lake's own tools as if `note` stood in it.
+    let mut lake = l.describe().await?;
+    let mut note = (lake
+        .types
+        .iter()
+        .find(|t| t.name.as_str() == "order")
+        .cloned())
+    .ok_or_else(|| Failure::new("`order` must be described"))?;
+    note.name = "note".into();
+    lake.types.push(note);
+    let made = lakelands_api::tools::tools(&lake).unwrap_or_default();
+    let find = |t: &&lakelands_api::tools::ToolSpec| matches!(&t.door, lakelands_api::tools::Door::Find { ty } if ty.as_str() == "note");
+    let clash = made.iter().find(find).map(|t| t.name.clone());
+    let clash = clash.ok_or_else(|| Failure::new("a type `note` must have a `find` tool"))?;
+    for (name, risk, field, value) in [
+        ("ship", "low", "status", "'shipped'"),
+        ("hold", "medium", "status", "'held'"),
+        ("bump", "low", "rank", "rank + 1"),
+        (clash.as_str(), "low", "memo", "'noted'"),
+    ] {
+        l.declare_json(
+            json!({"declare": "verb", "name": name, "on": "order", "risk": risk,
+            "effect": "write", "set": [{"field": field, "value": value}]}),
+        )
+        .await?;
+    }
+    l.upsert("order", "o1", json!({"memo": "a"})).await?;
+    let (name, key, opts) = ("hold".into(), "o1".into(), WriteOpts::default());
+    let called = l
+        .cat
+        .call(&l.own, &name, Some(&key), patch(json!({})), opts)
+        .await;
+    let Outcome::Proposed { proposal, .. } = called.must("calling `hold`")? else {
+        return Err(Failure::new("a call of the medium `hold` must be proposed"));
+    };
+    let again = l.cat.call(
+        &l.own,
+        &name,
+        Some(&key),
+        patch(json!({})),
+        WriteOpts::default(),
+    );
+    let Outcome::Proposed {
+        proposal: later, ..
+    } = again.await.must("calling `hold` again")?
+    else {
+        return Err(Failure::new("a second call of `hold` must be proposed"));
+    };
+    // A reviewer not shown `order` is answered for the call as for an id
+    // that does not exist, before the withdrawal and after it.
+    let mut grants = Grants {
+        default: Access::Write,
+        review: true,
+        ..Grants::default()
+    };
+    let hidden = TypeGrants {
+        default: Some(Access::None),
+        ..TypeGrants::default()
+    };
+    grants.types.insert(TypeName::from("order"), hidden);
+    let blind = principal(s, PrincipalKind::Human, "blind", grants);
+    let ghost = ProposalId::from("nope");
+    let names = (ghost.as_str(), proposal.as_str());
+    let what = "accepting the call of `hold`, `order` not shown";
+    let before = l.cat.accept(&blind, &proposal).await;
+    refused_alike(what, &before, l.cat.accept(&blind, &ghost).await, names)?;
+    // Its listings, whole and by the type `order`.
+    let listing = async || {
+        let mut pages = Vec::new();
+        for ty in [None, Some(TypeName::from("order"))] {
+            let filter = ProposalFilter {
+                ty,
+                ..ProposalFilter::default()
+            };
+            let listed = l.cat.proposals(&blind, filter).await;
+            pages.push(
+                listed
+                    .must("listing the proposals, `order` not shown")?
+                    .data,
+            );
+        }
+        Ok::<_, Failure>(format!("{pages:?}"))
+    };
+    let unlisted = listing().await?;
+    let in_use = |verb: &str, field: &str| {
+        let by = format!("the field `{field}` of `order`");
+        (
+            withdraw(DeclarationKind::Verb, verb),
+            json!({"code": "withdrawn_in_use", "kind": "verb", "name": verb, "by": by}),
+        )
+    };
+    refused_each(&l, s, vec![in_use("bump", "rank")]).await?;
+    let at = withdrawn_at(&l, s, DeclarationKind::Verb, "hold", 2).await?;
+    gone_since(&l, DeclarationKind::Verb, "hold", at).await?;
+    // A direct call of it is a call of a verb not declared; so is the accept
+    // of its call proposed before, to the owner and to a reviewer shown it
+    // then, judged by the verb as it stood at the proposal.
+    let not_declared = |answer: &lakelands_api::Result<Outcome>| matches!(answer, Err(Error::NotFound { missing: Missing::Verb { name } }) if name.as_str() == "hold");
+    let called = (l.cat)
+        .call(
+            &l.own,
+            &name,
+            Some(&key),
+            patch(json!({})),
+            WriteOpts::default(),
+        )
+        .await;
+    ensure!(
+        not_declared(&called),
+        "a call of the withdrawn `hold` must be refused as a verb not declared: {called:?}"
+    );
+    let keeper = Grants {
+        default: Access::Write,
+        review: true,
+        schema: true,
+        ..Grants::default()
+    };
+    let keeper = principal(s, PrincipalKind::Human, "keeper", keeper);
+    for who in [&l.own, &keeper] {
+        let accepted = l.cat.accept(who, &proposal).await;
+        ensure!(
+            not_declared(&accepted),
+            "the accept by `{}` of a call of the withdrawn `hold` must be refused as a verb not \
+             declared: {accepted:?}",
+            who.id
+        );
+    }
+    let after = l.cat.accept(&blind, &proposal).await;
+    let what = "accepting the call of the withdrawn `hold`, `order` not shown";
+    refused_alike(what, &after, l.cat.accept(&blind, &ghost).await, names)?;
+    let wire = |e: &lakelands_api::Result<Outcome>| format!("{:?}", e.as_ref().err());
+    ensure!(
+        wire(&after) == wire(&before),
+        "{what} must be answered as before the withdrawal: {after:?}, {before:?}"
+    );
+    let listed = listing().await?;
+    ensure!(
+        listed == unlisted,
+        "the calls of the withdrawn `hold` must be listed to a reviewer not shown `order` as \
+         before the withdrawal: {listed}, before {unlisted}"
+    );
+    // The call stays pending until it is rejected.
+    let state = async |id: &ProposalId| {
+        let listed = l.cat.proposals(&l.own, ProposalFilter::default()).await;
+        let listed = listed.must("listing the proposals")?.data;
+        Ok::<_, Failure>(listed.into_iter().find(|p| &p.id == id).map(|p| p.state))
+    };
+    let pending = state(&proposal).await?;
+    let rejected = l.cat.reject(&l.own, &proposal, "gone".into()).await;
+    let now = state(&proposal).await?;
+    ensure!(
+        pending == Some(ProposalState::Pending)
+            && rejected.is_ok()
+            && now == Some(ProposalState::Rejected),
+        "the call of the withdrawn `hold` stays pending ({pending:?}) until it is rejected \
+         ({rejected:?}, then {now:?})"
+    );
+    refused_each(&l, s, vec![in_use("ship", "status")]).await?;
+    // That verb makes the tool name a type `note` makes too.
+    withdrawn_at(&l, s, DeclarationKind::Verb, &clash, 2).await?;
+    l.declare(type_decl("note", vec![field("n", StorageKind::Number)]))
+        .await?;
+    let again = l.declare_json(json!({"declare": "verb", "name": "hold", "on": "order",
+        "risk": "low", "effect": "write", "set": [{"field": "status", "value": "'held'"}]}));
+    let again = again.await?;
+    ensure!(
+        matches!(&again, Outcome::Applied { declared, .. } if declared.first().is_some_and(|d| d.version == 3)),
+        "`hold` declared again must take version 3: {again:?}"
+    );
+    // A call proposed before is judged by the verb as it stood then: `hold`
+    // declared again otherwise refuses it.
+    let accepted = l.cat.accept(&l.own, &later).await;
+    let e = accepted.must_fail("accepting the earlier call of `hold`, declared again")?;
+    let case = json!({"code": "verb_redeclared", "verb": "hold"});
+    ensure!(
+        invalid_like(&e, &case),
+        "the accept of the earlier call of `hold`, declared again, must be refused as {case}: {e:?}"
+    );
+    Ok(())
+}
+
+async fn a_withdrawn_set_holds_no_member_from_there_on(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    l.declare(type_decl("job", vec![field("n", StorageKind::Number)]))
+        .await?;
+    for (k, n) in [("j1", 10), ("j2", 60), ("j3", 1)] {
+        l.upsert("job", k, json!({"n": n})).await?;
+    }
+    for (name, filter) in [
+        ("big", "n > 5"),
+        ("huge", "in_set('big') and n > 50"),
+        ("small", "n < 5"),
+        ("wide", "n > 5"),
+    ] {
+        l.cat
+            .declare(&l.own, object_set_on(name, "job", filter))
+            .await
+            .must("declaring the sets")?;
+    }
+    l.cat
+        .declare(&l.own, trigger_on("watch", "job", Some("in_set('small')")))
+        .await
+        .must("declaring `watch`")?;
+    let in_use = |set: &str, by: &str| {
+        (
+            withdraw(DeclarationKind::ObjectSet, set),
+            json!({"code": "withdrawn_in_use", "kind": "object_set", "name": set, "by": by}),
+        )
+    };
+    refused_each(
+        &l,
+        s,
+        vec![
+            in_use("big", "the object set `huge`"),
+            in_use("small", "the trigger `watch`"),
+        ],
+    )
+    .await?;
+    let both = vec![
+        withdraw(DeclarationKind::ObjectSet, "big"),
+        withdraw(DeclarationKind::ObjectSet, "huge"),
+    ];
+    l.cat
+        .apply(&l.own, both)
+        .await
+        .must("withdrawing `big` and `huge` together")?;
+    let before = s.head().await.must("reading the head")?;
+    let gone = l
+        .cat
+        .apply(&l.own, vec![withdraw(DeclarationKind::ObjectSet, "wide")])
+        .await;
+    let (at, d, _) = withdrawn(s, before, gone, "applying the withdrawal of `wide`").await?;
+    ensure!(
+        d.version == 2,
+        "the withdrawal of `wide` must take version 2: {d:?}"
+    );
+    gone_since(&l, DeclarationKind::ObjectSet, "wide", at).await?;
+    let job = TypeName::from("job");
+    let read = |at: Option<Position>| {
+        let mut find = find_at(at);
+        find.filter = Some("in_set('wide')".into());
+        l.cat.find(&l.own, &job, find)
+    };
+    let now = read(None).await;
+    let case = json!({"code": "set_undeclared", "set": "wide"});
+    ensure!(
+        now.as_ref().is_err_and(|e| invalid_like(e, &case)),
+        "a read naming the withdrawn `wide` must be refused as {case}: {now:?}"
+    );
+    let then = read(Some(Position(at.0 - 1)))
+        .await
+        .must("reading `wide` as of before")?;
+    let lakelands_api::Found::Records { rows, .. } = then.data else {
+        return Err(Failure::new(
+            "a read of `wide` as of before must answer records",
+        ));
+    };
+    let mut keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
+    keys.sort_unstable();
+    ensure!(
+        keys == ["j1", "j2"],
+        "`wide` as of before must hold `j1` and `j2`: {keys:?}"
+    );
+    // Declared again over fewer records, it joins only those; `j1`, a
+    // member before, joins it again at the write that takes it in.
+    let before = s.head().await.must("reading the head")?;
+    let again = l
+        .cat
+        .declare(&l.own, object_set_on("wide", "job", "n > 50"))
+        .await;
+    let again = again.must("declaring `wide` again")?;
+    let joined: Vec<String> = events_after(s, before)
+        .await?
+        .into_iter()
+        .filter_map(|e| match e.body {
+            EventBody::ObjectSetChanged { key, joined, .. } => Some(format!("{joined} {key}")),
+            _ => None,
+        })
+        .collect();
+    ensure!(
+        matches!(&again, Outcome::Applied { declared, .. } if declared.first().is_some_and(|d| d.version == 3))
+            && joined == ["true j2"],
+        "`wide` declared again must take version 3 and join `j2` alone: {again:?}, {joined:?}"
+    );
+    let up = l.upsert("job", "j1", json!({"n": 100})).await?;
+    ensure!(
+        matches!(&up, Outcome::Applied { set_off, .. } if set_off.joined.iter().any(|n| n == "wide")),
+        "`j1` taken into `wide` again must join it: {up:?}"
+    );
+    Ok(())
+}
+
+async fn a_verb_or_set_withdrawal_tells_a_reader_not_shown_it_nothing(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    l.declare(type_decl("secret", vec![field("n", StorageKind::Number)]))
+        .await?;
+    l.declare(type_decl("person", vec![field("grade", StorageKind::Text)]))
+        .await?;
+    let open = vec![
+        field("n", StorageKind::Number),
+        reference("owner", "person"),
+    ];
+    l.declare(type_decl("open", open)).await?;
+    for d in [
+        write_verb("peek", "secret", "n", "1"),
+        object_set_on("hid", "secret", "n > 0"),
+        object_set_on("opened", "open", "n > 0"),
+    ] {
+        l.cat.declare(&l.own, d).await.must("declaring the lake")?;
+    }
+    // Proposed before the trigger that reads the set is declared.
+    let write = ProposedWrite::Declare {
+        declarations: vec![withdraw(DeclarationKind::ObjectSet, "opened")],
+        plan: None,
+    };
+    let proposed = l.cat.propose(&l.own, write, "gone".into()).await;
+    let Outcome::Proposed { proposal, .. } =
+        proposed.must("proposing the withdrawal of `opened`")?
+    else {
+        return Err(Failure::new("the withdrawal of `opened` must be proposed"));
+    };
+    // `peeper` reads across `owner` a field of `person`: to one kept from
+    // that field it is not there, holder of `schema` or not (055).
+    let watch = trigger_on(
+        "peeper",
+        "open",
+        Some("in_set('opened') and owner.grade = 'x'"),
+    );
+    (l.cat.declare(&l.own, watch).await).must("declaring `peeper`")?;
+    let mut grants = Grants {
+        default: Access::Read,
+        schema: true,
+        review: true,
+        ..Grants::default()
+    };
+    let hidden = TypeGrants {
+        default: Some(Access::None),
+        ..TypeGrants::default()
+    };
+    grants.types.insert(TypeName::from("secret"), hidden);
+    let mut far = TypeGrants::default();
+    far.fields.insert("grade".into(), Access::None);
+    grants.types.insert(TypeName::from("person"), far);
+    let blind = principal(s, PrincipalKind::Human, "blind", grants);
+    let before = s.head().await.must("reading the head")?;
+    for (kind, name) in [
+        (DeclarationKind::Verb, "peek"),
+        (DeclarationKind::ObjectSet, "hid"),
+    ] {
+        let hidden = l.cat.declare(&blind, withdraw(kind, name)).await;
+        let absent = l.cat.declare(&blind, withdraw(kind, "ghost")).await;
+        let what = format!("withdrawing `{name}`, of a type not shown");
+        refused_alike(&what, &hidden, absent, ("ghost", name))?;
+    }
+    // The owner is told the trigger; the reader not shown it is told
+    // nothing, by `declare` and by the accept of the proposal alike.
+    let by = "the trigger `peeper`";
+    let in_use =
+        json!({"code": "withdrawn_in_use", "kind": "object_set", "name": "opened", "by": by});
+    refused_each(
+        &l,
+        s,
+        vec![(withdraw(DeclarationKind::ObjectSet, "opened"), in_use)],
+    )
+    .await?;
+    for (door, answer) in [
+        (
+            "declare",
+            (l.cat)
+                .declare(&blind, withdraw(DeclarationKind::ObjectSet, "opened"))
+                .await,
+        ),
+        ("accept", l.cat.accept(&blind, &proposal).await),
+    ] {
+        let what = format!("withdrawing `opened` by `{door}`, which a trigger not shown watches");
+        let e = answer.must_fail(&what)?;
+        let wire = serde_json::to_string(&e).map_err(|e| Failure::new(e.to_string()))?;
+        ensure!(
+            reason(&e) == Some(&Refusal::NotGranted)
+                && !wire.contains("peeper")
+                && !wire.contains("grade"),
+            "{what} must be not granted, naming nothing: {wire}"
+        );
+    }
+    crate::conformance::fixture::head_unmoved(s, before, "the withdrawals not shown").await
 }
 
 /// Whether `who` is listed proposal `id`, under a filter by `ty` if any.
@@ -534,7 +974,7 @@ async fn a_withdrawal_tells_a_reader_not_shown_its_type_nothing(store: Store) ->
         .await
         .must("declaring `peek`")?;
     ensure!(
-        !described(cat.as_ref(), &kept, None, true)
+        !described(cat.as_ref(), &kept, None, DeclarationKind::Trigger)
             .await?
             .contains(&"peek".to_string()),
         "`peek`, which reads `half.hush`, must not be described to a reader kept from it"
@@ -567,7 +1007,7 @@ async fn a_withdrawal_tells_a_reader_not_shown_its_type_nothing(store: Store) ->
         );
     }
     ensure!(
-        !described(cat.as_ref(), own, None, true)
+        !described(cat.as_ref(), own, None, DeclarationKind::Trigger)
             .await?
             .contains(&"peek".to_string()),
         "`peek` must be withdrawn"
@@ -636,5 +1076,31 @@ async fn a_withdrawal_tells_a_reader_not_shown_its_type_nothing(store: Store) ->
         invalid_like(&e, &case),
         "accepting the withdrawal of `spare`, which `vista` reads too, must be refused as {case}: {e:?}"
     );
+    Ok(())
+}
+
+async fn the_last_verb_that_retires_a_type_is_not_withdrawn(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let order = |by: &str| {
+        json!({"declare": "type", "name": "order", "retired_by": by, "fields": [
+            {"name": "memo", "type": {"kind": "text"}}]})
+    };
+    l.declare_json(order("verbs")).await?;
+    for name in ["cancel", "void"] {
+        l.declare_json(
+            json!({"declare": "verb", "name": name, "on": "order", "risk": "low",
+            "effect": "retire"}),
+        )
+        .await?;
+    }
+    withdrawn_at(&l, s, DeclarationKind::Verb, "cancel", 2).await?;
+    let last = (
+        withdraw(DeclarationKind::Verb, "void"),
+        json!({"code": "withdrawn_in_use", "kind": "verb", "name": "void",
+               "by": "the type `order`"}),
+    );
+    refused_each(&l, s, vec![last]).await?;
+    l.declare_json(order("authors")).await?;
+    withdrawn_at(&l, s, DeclarationKind::Verb, "void", 2).await?;
     Ok(())
 }

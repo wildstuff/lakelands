@@ -15,8 +15,8 @@ use lakelands_api::describe::{FieldDescription, LakeDescription, TypeDescription
 use lakelands_api::error::Case;
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
-    Authority, Derived, EmbedDecl, FieldDecl, FieldType, MatchPair, RelationDecl, StorageKind,
-    TriggerDecl, TypeDecl,
+    Authority, Derived, EmbedDecl, FieldDecl, FieldType, FunctionInput, MatchPair, RelationDecl,
+    StorageKind, TriggerDecl, TypeDecl,
 };
 use lakelands_api::write::{
     Declaration, FunctionDecl, Migration, ObjectSetDecl, ProposalFilter, ProposedWrite,
@@ -108,7 +108,7 @@ fn function(name: &str, input: &str, expr: &str) -> FunctionDecl {
     FunctionDecl {
         name: name.into(),
         backing: "expr".into(),
-        inputs: vec![field(input, StorageKind::Number)],
+        inputs: vec![FunctionInput::typed(field(input, StorageKind::Number))],
         expr: Some(Condition::from(expr)),
         config: serde_json::Value::Null,
         description: Some(format!("{name} of {input}")),

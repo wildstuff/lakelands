@@ -253,8 +253,9 @@ pub(super) struct SettingDoc {
 pub(super) struct FunctionDoc {
     pub name: String,
     pub backing: Option<String>,
+    /// An input written with no value (`qty:`) is of any kind.
     #[serde(default)]
-    pub inputs: Named<FieldDoc>,
+    pub inputs: Named<Option<FieldDoc>>,
     pub expr: Option<Cond>,
     pub config: Option<serde_json::Value>,
     pub description: Option<String>,
