@@ -338,6 +338,7 @@ fn complete_declarations() -> Vec<Declaration> {
         Declaration::Trigger(TriggerDecl {
             max_depth: None,
             when_strict: false,
+            on_changes: None,
             name: "invoice_paid".into(),
             on: TypeName::new("invoice"),
             when: Some(text("changed(status) and status = 'paid'")),

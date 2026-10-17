@@ -335,6 +335,23 @@ SHOWS = {
                                    "config": {"url": "https://notify.example/send"}})),
             "record": ["alert", "a1"], "made": 55}))
         and "inputs" not in proposed(e, "compute") and e.get("cause") == 55),
+    "trigger_change_guard": shows("a declared trigger whose guard reads `created()`, strict, naming the kinds of change that fire it")(
+        lambda e: declaration(e).get("declare") == "trigger" and declaration(e).get("when") == "created()"
+        and declaration(e).get("when_strict") is True and declaration(e).get("on_changes") == ["upserted", "ingested"]),
+    "slip_write": shows("an authored write that makes a slip")(
+        lambda e: e["body"]["kind"] == "record_upserted" and e["body"]["type"] == "slip" and e["body"]["made"] is True),
+    "fired_change": shows("a `trigger_fired` naming the kind of change at its cause, and that the change made the record")(
+        lambda e: e["body"]["kind"] == "trigger_fired" and e["body"].get("change") == "upserted"
+        and e["body"].get("created") is True and e["body"]["trigger"] == "shelved" and e.get("cause") == 58),
+    "fired_created": shows("a `trigger_fired` of a trigger whose guard reads `created()`, at the same write")(
+        lambda e: e["body"]["kind"] == "trigger_fired" and e["body"]["trigger"] == "slip_made"
+        and e["body"].get("created") is True and e.get("cause") == 58),
+    "reaction_write": shows("a reaction one deeper than the write it reacts to, naming the firing as its cause")(
+        lambda e: e["body"]["kind"] == "record_upserted" and e["context"] == {"depth": 1, "origin": "reactive"}
+        and e.get("cause") == 59),
+    "trigger_dropped": shows("a `trigger_dropped` at the trigger's own bound, in place of a firing")(
+        lambda e: e["body"]["kind"] == "trigger_dropped" and e["body"]["depth"] == 1
+        and e["body"]["max_depth"] == 1 and e["body"]["bound"] == "trigger" and e.get("cause") == 61),
 }
 # The one misplaced member each line of `misplaced` carries.
 MISPLACED = {

@@ -70,6 +70,7 @@ fn trigger(name: &str, when: Option<&str>, max_depth: Option<u32>) -> Declaratio
         description: None,
         max_depth,
         when_strict: false,
+        on_changes: None,
     })
 }
 

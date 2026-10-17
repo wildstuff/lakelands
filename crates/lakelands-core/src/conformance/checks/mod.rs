@@ -766,6 +766,8 @@ pub const ALL: &[Check] = &[
     reactive_depth::TOO_DEEP,
     trigger_firing::TRIGGER_DROPPED,
     trigger_firing::TRIGGER_STRICT,
+    trigger_firing::TRIGGER_CHANGE,
+    trigger_firing::TRIGGER_ACROSS,
     host_cause::CAUSE_ON_OWN_EVENTS,
     host_cause::CAUSE_PAST_HEAD,
     host_cause::DEPTH_ON_EVERY_DOOR,

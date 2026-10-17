@@ -1348,6 +1348,12 @@ pub struct TriggerDecl {
     /// false (lakelands#1215).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub when_strict: bool,
+    /// The kinds of change that fire it; every kind where absent. A
+    /// trigger that names `[upserted, ingested]` stays silent when a
+    /// source is forgotten or purged, or a field is filled
+    /// (lakelands#1217).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_changes: Option<Vec<crate::event::ChangeKind>>,
 }
 
 #[cfg(test)]

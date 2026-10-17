@@ -545,7 +545,7 @@ same fields itself
 
 | Kind | Payload | Fold |
 |---|---|---|
-| `trigger_fired` | `trigger`, `type`, `key` | A write made a trigger's condition hold. Appended in the same append as that write, with `cause` naming it. The durable fact that something is due; acting on it is the host's (`docs/decisions/004-the-change-feed-is-the-log.md`). |
+| `trigger_fired` | `trigger`, `type`, `key`; from format 17 `change` (`upserted`, `ingested`, `retired`, `forgotten`, `purged` or `recomputed`) and `created` (boolean) | A write made a trigger's condition hold. Appended in the same append as that write, with `cause` naming it. `change` is the kind of that write: an authored write, an ingest, a retirement, the retirement of a record a forgotten or a purged source brought in, or a field filled from a recorded output; `created` whether it found no live record under the fired record's key, false for a record across an edge (lakelands#1217). The durable fact that something is due; acting on it is the host's (`docs/decisions/004-the-change-feed-is-the-log.md`). |
 | `trigger_dropped` | `trigger`, `type`, `key`, `depth`, `max_depth`, `bound` (`trigger` or `lake`) | A write made a trigger's condition hold at a `depth` at or above the trigger's `max_depth` or the lake's `max_reactive_depth`, so a reaction to it could write nothing: appended in place of `trigger_fired`, in the same append and with the same `cause`. `max_depth` is the bound that applied, the lower of the two, and `bound` says whose it is (`docs/decisions/021-the-write-context-belongs-to-the-host.md`). Format 17 adds it. |
 | `object_set_changed` | `set`, `type`, `key`, `joined` (boolean) | A write moved a record into (`true`) or out of (`false`) an object set, in the write's append and caused by it; or a set's declaration did, in the declaration's append and caused by its `declared` (lakelands#453); or a migration did, in its append and caused by its `migrated` (lakelands#457), for a record of the migrated type, as converted and, from format 15 on, computed again (lakelands#1070), of one of its link types, or of another type whose reference to a moved key it rewrites (lakelands#465, lakelands#466); or a value type's migration did, in its append and caused by its `value_type_migrated`, for a record whose renamed values, and what is computed from them, move it (lakelands#553). |
 | `output_recorded` | `seam`, `input` (digest), `output` or `output_at` (a position), `field` (optional `[type, key, field]`) | The output of a seam the store called: a function backing, an embedding backend, a verb executor. A replay reads this output instead of calling the seam (`docs/decisions/002-determinism-is-the-boundary.md`). With `output_at` it names an output the log already holds and fills `field` from it (below). |
@@ -918,7 +918,9 @@ the first release with real installations
   (lakelands#1216), so a trigger a lake of 16 holds whose `max_depth`
   is at or under the depth of a write drops from the upgrade on where
   it fired before, and one with `max_depth: 0` fires no more; a
-  trigger's `when_strict` (lakelands#1215); and a recorded output's
+  trigger's `when_strict` (lakelands#1215); a `trigger_fired`'s
+  `change` and `created`, a trigger's `on_changes` and the guard's
+  `created()` (lakelands#1217); and a recorded output's
   `input` digested under the oldest version that sealed the values it
   reads (§1.4), where 16 took the source's first version. Over values
   its first version sealed the two agree, and an output of 16 names
@@ -1033,7 +1035,7 @@ with that declaration's members beside it. Every member not marked
 | a `view` | `source` and `measures` (required; each measure `{ "name", "expr" }`), `where` (none), `group_by` (`[]`), `params` (`[]`: each `{ "name", "kind" }`, a kind of `text`, `number`, `decimal`, `boolean`, `date_time` or `date`), `merge` (`[]`: each `{ "source", "where", "group_by", "measures" }`; `source` and `measures` required, `where` none, `group_by` `[]`) |
 | `value_type` | `name` and `kind` (required), `constraint` (none), `one_of` (`[]`), `format`, `scale`, `description` (none), `annotations` (`{}`) |
 | `verb` | `name`, `on`, `risk` and `effect` (required), `payload` (`[]`), `requires` (none), `description` (none); `effect: write` carries `set`, a list of `{ "field", "value" }`; `effect: external` carries `executor` |
-| `trigger` | `name` and `on` (required), `when`, `description` (none), `max_depth` (none: an integer at most the lake's `max_reactive_depth`), `when_strict` (`false`; from format 17: a field or `previous(f)` its `when` reads absent or null fails the guard as a whole) |
+| `trigger` | `name` and `on` (required), `when`, `description` (none), `max_depth` (none: an integer at most the lake's `max_reactive_depth`), `when_strict` (`false`; from format 17: a field or `previous(f)` its `when` reads absent or null fails the guard as a whole), `on_changes` (none: every kind; from format 17, a list of the kinds of change that fire it, as `trigger_fired`'s `change`) |
 | `object_set` | `name`, `of` and `where` (required), `description` (none) |
 | `function` | `name` and `backing` (required), `inputs` (`[]`), `expr` (none), `config` (`null`), `description` (none), `risk` (`low`) |
 | `setting` (from format 17) | `key` and `type` (required; a field's `type`), `unit`, `description`, `group` (none). A host's own key of `sys.setting`; its records of `sys.setting` carry `group` as the store stamps it from this declaration (lakelands#996) |
@@ -1197,7 +1199,9 @@ arguments are the value and its unit as a string literal (`day`, `week`,
 `month`, `quarter` or `year`), answering the instant at which the UTC
 bucket holding the value starts (the week from Monday, as ISO counts
 weeks). `retired`, with no arguments: true
-when the write retires the record, in a trigger's guard only. `param`, with one argument, a parameter's name as a string
+when the write retires the record, in a trigger's guard only. `created`,
+with no arguments (from format 17): true when the write found no live
+record under its key, a create or a revival, in a trigger's guard only. `param`, with one argument, a parameter's name as a string
 literal: the value the read binds to that parameter of the view, in a
 view's `where` and measures only. `floor`, with
 one argument: the greatest whole number not above it; and `date_bucket`

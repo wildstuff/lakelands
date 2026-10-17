@@ -244,3 +244,36 @@ fn trigger_dropped_belongs_to_format_17_on() {
     let why = misplaced(&line(16)).expect("refused");
     assert_eq!(why, lakelands_api::error::Flaw::DroppedBefore { v: 16 });
 }
+
+#[test]
+fn a_firings_change_belongs_to_format_17_on() {
+    let line = |v: u32, change: serde_json::Value| -> Event {
+        let mut body = json!({"kind": "trigger_fired", "trigger": "t", "type": "job", "key": "k"});
+        body.as_object_mut()
+            .unwrap()
+            .extend(change.as_object().unwrap().clone());
+        serde_json::from_value(json!({
+            "v": v, "lake": "l", "position": 2, "id": "0".repeat(32),
+            "prev": "0".repeat(64), "known_at": "2026-01-01T00:00:00.000000Z",
+            "writer": "system:lakelands", "origin": "system", "cause": 1,
+            "context": {"origin": "direct", "depth": 0}, "fence": 1,
+            "body": body, "hash": "0".repeat(64)
+        }))
+        .unwrap()
+    };
+    let told = json!({"change": "upserted", "created": true});
+    assert_eq!(misplaced(&line(17, told.clone())), None);
+    assert_eq!(misplaced(&line(16, json!({}))), None);
+    for member in [
+        json!({"change": "upserted"}),
+        json!({"created": false}),
+        told,
+    ] {
+        let why = misplaced(&line(16, member.clone())).expect("refused");
+        assert_eq!(
+            why,
+            lakelands_api::error::Flaw::ChangeBefore { v: 16 },
+            "{member}"
+        );
+    }
+}

@@ -1929,7 +1929,7 @@ grants, and checked when it is written: `on` names a type that is
 neither a `sys.` type nor a view, `field` one of its fields of the
 authority above and not part of its key, `from` and `to` are values of
 that field's type and differ, and `when` parses and uses none of `changed`,
-`previous` and `retired`. A rule that fails a check is refused as invalid, naming the
+`previous`, `retired` and `created`. A rule that fails a check is refused as invalid, naming the
 rule field at fault. A rule's authority is checked when it is written,
 and the run carries it: its author must hold write on `field` of `on`
 and read on every field `when` reads

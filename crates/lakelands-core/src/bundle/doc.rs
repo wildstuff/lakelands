@@ -201,6 +201,7 @@ pub(super) struct TriggerDoc {
     pub max_depth: Option<u32>,
     #[serde(default)]
     pub when_strict: bool,
+    pub on_changes: Option<Vec<lakelands_api::event::ChangeKind>>,
 }
 
 /// `object_sets/<name>.yaml`.
