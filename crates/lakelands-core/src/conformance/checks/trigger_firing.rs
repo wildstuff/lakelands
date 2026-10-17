@@ -18,6 +18,11 @@ check!(
     "021, extended (lakelands#1216): a write whose depth is at or above a trigger's `max_depth`, or the lake's `max_reactive_depth`, appends `trigger_dropped` naming the trigger, the record, the write's depth, the bound that applied, the lower of the two, and whose it is, in place of `trigger_fired`; below both the trigger fires, and a reaction one deeper naming that firing is written; the feed tells `trigger_dropped` to a consumer that asks for it"
 );
 
+check!(
+    TRIGGER_STRICT = a_strict_guard_fails_where_a_field_it_reads_has_no_value,
+    "004, extended (lakelands#1215): a trigger declared `when_strict` fires only where every field its `when` reads, and every `previous(f)`, has a value: `not (status = 'paid')` fires on a record without `status` by default and not when strict, and a guard reading `previous(status)` fires on a create by default and not when strict; once the fields have values the two fire alike"
+);
+
 /// What the write at `at` set off, each firing as `(trigger, dropped by)`:
 /// `None` for one that fired, the depth, the bound and whose it is for one
 /// dropped.
@@ -111,5 +116,57 @@ async fn a_trigger_past_its_depth_drops_instead_of_firing(store: Store) -> Held 
         told.count() == 5,
         "the feed tells the five drops to a consumer of `trigger_dropped`"
     );
+    Ok(())
+}
+
+async fn a_strict_guard_fails_where_a_field_it_reads_has_no_value(store: Store) -> Held {
+    let s = store.as_ref();
+    let l = Lake::of(s);
+    let fields = vec![
+        field("status", StorageKind::Text),
+        field("amount", StorageKind::Number),
+    ];
+    l.declare(type_decl("bill", fields)).await?;
+    for (name, when, strict) in [
+        ("unpaid", "not (status = 'paid')", false),
+        ("unpaid_strict", "not (status = 'paid')", true),
+        (
+            "moved",
+            "previous(status) is null or status = 'paid'",
+            false,
+        ),
+        (
+            "moved_strict",
+            "previous(status) is null or status = 'paid'",
+            true,
+        ),
+    ] {
+        let lakelands_api::write::Declaration::Trigger(mut t) =
+            trigger_on(name, "bill", Some(when))
+        else {
+            unreachable!("trigger_on declares a trigger")
+        };
+        t.when_strict = strict;
+        let fut = l
+            .cat
+            .declare(&l.own, lakelands_api::write::Declaration::Trigger(t));
+        fut.await.must(&format!("declaring `{name}`"))?;
+    }
+    for (fields, want) in [
+        (json!({"amount": 5}), vec!["moved", "unpaid"]),
+        (
+            json!({"status": "open"}),
+            vec!["moved", "unpaid", "unpaid_strict"],
+        ),
+        (json!({"status": "paid"}), vec!["moved", "moved_strict"]),
+    ] {
+        let at = l.upsert("bill", "b1", fields.clone()).await?.position();
+        let got = set_off(s, at).await?;
+        let got: Vec<&str> = got.iter().map(|(t, _)| t.as_str()).collect();
+        ensure!(
+            got == want,
+            "`b1` written {fields} fires {want:?}; it fired {got:?}"
+        );
+    }
     Ok(())
 }

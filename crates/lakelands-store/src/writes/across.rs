@@ -36,7 +36,7 @@ pub(super) fn holds<S: Scope>(
     record: &StoredRecord,
     e: &Expr,
     inner: S,
-    settings: &BTreeMap<String, Value>,
+    (settings, strict): (&BTreeMap<String, Value>, bool),
 ) -> bool {
     let live = |t: &TypeName, k: &RecordKey| Ok((heads.far)(t, k)?.filter(|r| !r.retired));
     let link = |r: &RelationName| (heads.link)(&on.name, r, &record.key);
@@ -48,7 +48,11 @@ pub(super) fn holds<S: Scope>(
         payload: None,
         across: &across,
     };
-    expr::holds(e, &scope).unwrap_or(false)
+    match strict {
+        true => expr::holds_strict(e, &scope),
+        false => expr::holds(e, &scope),
+    }
+    .unwrap_or(false)
 }
 
 /// One step back along a path, from the record it reached to those that
@@ -170,7 +174,8 @@ impl Decide<'_> {
             name: t.name.clone(),
         }];
         let e = declare::filter(&sets, &t.on, c, Eval::Guard, &at)?;
-        Ok(self.holds_at_write(&e, w.ontology.ty(&t.on)?, before, after))
+        let on = w.ontology.ty(&t.on)?;
+        Ok(self.holds_at_write((&e, t.when_strict), on, before, after))
     }
 
     /// The event of `t` firing on the record of `ty` at `key`: a
@@ -198,10 +203,11 @@ impl Decide<'_> {
     }
 
     /// Whether a trigger's `when`, `e` over `on`, holds at a write that
-    /// leaves `after` (it was `before`).
+    /// leaves `after` (it was `before`), strictly where `strict`
+    /// ([`expr::holds_strict`]).
     fn holds_at_write(
         &self,
-        e: &Expr,
+        (e, strict): (&Expr, bool),
         on: &TypeDecl,
         before: Option<&StoredRecord>,
         after: &StoredRecord,
@@ -216,7 +222,8 @@ impl Decide<'_> {
             settings: Some(&w.settings),
             now,
         };
-        self.with_heads(|h| holds((h, &w.ontology, on), after, e, scope, &w.settings))
+        let settings = (&w.settings, strict);
+        self.with_heads(|h| holds((h, &w.ontology, on), after, e, scope, settings))
     }
 
     /// Whether `record` is a member of `s` as the append leaves what its
@@ -300,7 +307,9 @@ impl Decide<'_> {
                             now,
                         };
                         let is = !r.retired
-                            && self.with_heads(|h| holds((h, o, on), &r, &e, scope, &w.settings));
+                            && self.with_heads(|h| {
+                                holds((h, o, on), &r, &e, scope, (&w.settings, false))
+                            });
                         if was == is {
                             continue;
                         }
@@ -308,10 +317,11 @@ impl Decide<'_> {
                         Some((self.call.changed(change.clone(), self.next, now), change))
                     }
                     false => {
-                        if r.retired || !self.holds_at_write(&e, on, Some(&r), &r) {
+                        let t = &o.triggers[name].decl;
+                        let strict = (&e, t.when_strict);
+                        if r.retired || !self.holds_at_write(strict, on, Some(&r), &r) {
                             continue;
                         }
-                        let t = &o.triggers[name].decl;
                         let body = self.firing(t, &r.ty, &r.key);
                         let fired = Draft {
                             cause: Some(self.next),

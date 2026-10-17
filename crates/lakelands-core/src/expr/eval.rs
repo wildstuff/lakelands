@@ -487,6 +487,70 @@ pub fn holds(e: &Expr, scope: &dyn Scope) -> Result<bool> {
     Ok(truthy(&eval(e, scope)?))
 }
 
+/// Whether a condition holds where every field it reads, and every
+/// `previous(f)`, has a value: a read of one absent or null fails it as a
+/// whole, whatever `not`, `and`, `or` or `changed` around it would make of
+/// a null. A trigger's `when_strict` (lakelands#1215).
+pub fn holds_strict(e: &Expr, scope: &dyn Scope) -> Result<bool> {
+    let strict = Strict {
+        inner: scope,
+        absent: std::cell::Cell::new(false),
+    };
+    let held = holds(e, &strict)?;
+    Ok(held && !strict.absent.get())
+}
+
+/// A scope that notes a read of a field, or of its value before the
+/// write, that has none.
+struct Strict<'a> {
+    inner: &'a dyn Scope,
+    absent: std::cell::Cell<bool>,
+}
+
+impl Strict<'_> {
+    fn noted(&self, v: Option<Value>) -> Option<Value> {
+        let v = v.filter(|v| !v.is_null());
+        self.absent.set(self.absent.get() || v.is_none());
+        v
+    }
+}
+
+impl Scope for Strict<'_> {
+    fn value(&self, path: &[FieldName]) -> Option<Value> {
+        self.noted(self.inner.value(path))
+    }
+    fn previous(&self, field: &FieldName) -> Option<Value> {
+        self.noted(self.inner.previous(field))
+    }
+    fn in_write(&self) -> bool {
+        self.inner.in_write()
+    }
+    fn retiring(&self) -> bool {
+        self.inner.retiring()
+    }
+    fn meta(&self, field: &FieldName) -> Option<FieldMeta> {
+        self.inner.meta(field)
+    }
+    fn setting(&self, key: &str) -> Option<Value> {
+        self.inner.setting(key)
+    }
+    fn param(&self, name: &str) -> Option<Value> {
+        self.inner.param(name)
+    }
+    fn now(&self) -> Timestamp {
+        self.inner.now()
+    }
+    fn exists(&self, relation: &FieldName) -> Option<bool> {
+        self.inner.exists(relation)
+    }
+    fn in_set(&self, set: &str) -> Option<bool> {
+        self.inner.in_set(set)
+    }
+    fn aggregate(&self, func: Func, args: &[Expr]) -> Option<Result<Val>> {
+        self.inner.aggregate(func, args)
+    }
+}
+
 fn truthy(v: &Val) -> bool {
     *v == Val::Bool(true)
 }

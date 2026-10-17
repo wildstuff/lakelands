@@ -844,7 +844,7 @@ fn member_of(
         record,
         &e,
         scope,
-        &w.settings,
+        (&w.settings, false),
     ))
 }
 
