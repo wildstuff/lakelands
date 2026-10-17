@@ -912,14 +912,18 @@ shown:
   says no more: the reason names a measure, a call and a field of the
   source, and is said to one shown the view as declared, as `kept` says
   it.
-- The judge reads the value the write leaves, with no exception for a
-  name that stood before. A principal extends or patches a setting only
-  while it is shown everything the setting names; otherwise the setting
-  is left to one who sees more. Retiring a setting is not judged.
+- The judge reads the value as its writer writes it. A setting for a
+  type is told to its writer as were what it is not shown absent, and
+  its write keeps the names it is not told after its own
+  (`docs/decisions/063-every-setting-is-in-one-list.md`), so a standing
+  name the writer is not shown is neither judged nor dropped. Its retire
+  is judged as the write it is: it clears only what its writer is told.
 
-The rule was weighed against letting a standing name pass unjudged: that
-keeps one write, and costs a second path through the judge and an answer
-that depends on who wrote the setting first.
+The judge once read the value the write leaves, standing names too: a
+principal extended or patched a setting only while shown everything it
+named. That left the setting to one who sees more, and the refusal told
+the principal that the setting names something it is not shown; judged
+as written, the setting is the one its twin without those names holds.
 
 #### Every door that writes a record asks first whether its writer is shown the type
 

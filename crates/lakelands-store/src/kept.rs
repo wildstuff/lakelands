@@ -204,6 +204,12 @@ impl Kept {
     }
 }
 
+/// Whether the computation of the view `decl` names a setting, kept as
+/// the fold would keep it.
+pub(crate) fn names_settings(o: &Ontology, decl: &TypeDecl) -> bool {
+    Kept::of(o, decl).is_some_and(|k| !k.settings.is_empty())
+}
+
 /// The settings `e` names.
 fn settings_named(e: &Expr, named: &mut BTreeSet<String>) {
     if let Expr::Call {

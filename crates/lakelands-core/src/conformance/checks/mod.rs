@@ -654,6 +654,8 @@ pub const ALL: &[Check] = &[
     settings::SETTINGS_TOLD,
     host_settings::HOST_SETTING_KIND,
     host_settings::HOST_SETTING_GROUP,
+    settings::SETTING_RECORDS_TOLD,
+    settings::SETTING_RECORDS_PAGED,
     feed::LIMIT_ZERO_IS_ONE,
     feed::MADE,
     feed::BY_KEY,

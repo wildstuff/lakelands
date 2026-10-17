@@ -176,6 +176,56 @@ impl<'o> Sight<'o> {
         !self.withheld(r) && self.admit(ty).holds(&r.fields)
     }
 
+    /// Whether its principal may be told some records of `ty` narrowed or
+    /// not at all, as [`Self::setting`] tells them: `ty` is `sys.setting`
+    /// and the principal does not read every field of every type.
+    pub fn narrows(&self, ty: &TypeName) -> bool {
+        ty.as_str() == lakelands_api::seam::SETTING_TYPE && !rights::reads_all(&self.who)
+    }
+
+    /// The value of the setting `key` as its principal is told it: one of
+    /// a type it is not shown is not told, and one that names fields only
+    /// those it reads, none left being not told
+    /// (`docs/decisions/063-every-setting-is-in-one-list.md`).
+    pub fn setting(&self, key: &str, value: Value) -> Option<Value> {
+        let shown = |ty: &str| self.ty(&ty.into()).is_ok();
+        let reads = |ty: &str, f: &str| self.reads(&ty.into(), &f.into());
+        lakelands_api::settings::narrowed(key, value, &shown, &reads)
+    }
+
+    /// `r` as its principal is told it: a record of `sys.setting` with its
+    /// value as [`Self::setting`] tells it, none where it is not told;
+    /// any other record as it is.
+    pub fn told<'r>(&self, r: &'r StoredRecord) -> Option<Cow<'r, StoredRecord>> {
+        if !self.narrows(&r.ty) {
+            return Some(Cow::Borrowed(r));
+        }
+        let value = r.fields.get("value").cloned().unwrap_or(Value::Null);
+        let told = self.setting(r.key.as_str(), value.clone())?;
+        if told == value {
+            return Some(Cow::Borrowed(r));
+        }
+        let mut r = r.clone();
+        r.fields.insert("value".into(), told);
+        Some(Cow::Owned(r))
+    }
+
+    /// The settings `all` as its principal is told them, each as
+    /// [`Self::setting`] tells it: what an expression evaluated at a read
+    /// for it reads by `setting('…')`.
+    pub fn settings<'s>(
+        &self,
+        all: &'s BTreeMap<String, Value>,
+    ) -> Cow<'s, BTreeMap<String, Value>> {
+        if !self.narrows(&lakelands_api::seam::SETTING_TYPE.into()) {
+            return Cow::Borrowed(all);
+        }
+        let told = all
+            .iter()
+            .filter_map(|(k, v)| Some((k.clone(), self.setting(k, v.clone())?)));
+        Cow::Owned(told.collect())
+    }
+
     /// Whether a link of `decl` is judged by its ends for its principal:
     /// one that holds `only` on an end's type, or on an end's of an end
     /// that is a link (051), or is without `restricted` (006).
