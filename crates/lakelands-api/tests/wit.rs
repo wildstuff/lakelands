@@ -202,7 +202,7 @@ fn every_door_of_the_crate_is_a_function_of_the_wit_and_no_other() {
     // A door that binds a seam is the host's: the host binds the seams,
     // as at `open`, and nothing a guest holds can be one.
     let mut store = trait_methods(catalog_rs, "LakeStore");
-    store.retain(|door| !["bind_embed"].contains(&door.as_str()));
+    store.retain(|door| !["bind_embed", "bind_rerank"].contains(&door.as_str()));
     assert_eq!(
         fns("lake_store"),
         store,
@@ -638,6 +638,7 @@ fn type_description() -> TypeDescription {
             version: 1,
             schema_hash: "h".into(),
             sorted: vec!["amount".into()],
+            chosen: vec!["due".into()],
             sorted_whole: vec![sorted_whole()],
             indexed: vec!["embedding".into()],
             kept: Some(Kept::Kept),
@@ -1413,6 +1414,13 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 max_offset: 7,
                 max_set_changes: 8,
                 max_rerank_top: 9,
+                choose_order_index: true,
+                order_after_pages: 10,
+                order_window_secs: 11,
+                order_min_records: 12,
+                order_max_fields: 13,
+                order_unused_secs: 14,
+                order_chunk: 15,
             }),
         ),
         (

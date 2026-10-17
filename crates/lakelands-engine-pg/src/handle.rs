@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use lakelands_api::engine::{
-    Applied, CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
+    Applied, CanonicalEvent, Choose, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
     ProjectionView, Ranked, Rankings, Reclaimed, VectorIndex,
 };
 use lakelands_api::error::{Act, Case, Error, Part, Result, Situation};
@@ -729,7 +729,7 @@ impl ProjectionStore for PgLake {
         };
         db.batch(&format!(
             "BEGIN; {dropped} {schema} {vectors}; \
-             DELETE FROM {m} WHERE k = 'folded' OR k LIKE 'vindex.%'; \
+             DELETE FROM {m} WHERE k = 'folded' OR k LIKE 'vindex.%' OR k LIKE 'chosen.%'; \
              INSERT INTO {m} (k, n) VALUES ('layout', {layout}) \
              ON CONFLICT (k) DO UPDATE SET n = EXCLUDED.n; COMMIT;",
             schema = self.names.schema_sql(),
@@ -769,6 +769,26 @@ impl ProjectionStore for PgLake {
             before: Some(before),
             after: Some(after),
         })
+    }
+
+    /// One step of a chosen order index, in a transaction of its own
+    /// (`projection::choose_order`), outside the fold's.
+    fn choose_order(&self, ty: &TypeName, step: &Choose) -> Result<Option<RecordKey>> {
+        let writing = self.writing()?;
+        let transaction = lock(&self.transaction);
+        if transaction.is_some() {
+            return Err(invalid(Case::CompactInTransaction));
+        }
+        let mut db = self.projecting(writing)?;
+        let _ = db.batch("ROLLBACK");
+        let next = projection::choose_order(&mut db, &self.names, ty, step)?;
+        // A kept field's rows were written beside the fold's count of what
+        // the planner has not seen: it is told of them now, of the order
+        // index alone (module doc).
+        if matches!(step, Choose::Keep(_)) {
+            let _ = db.batch(&format!("ANALYZE {}", self.names.t("sort_index")));
+        }
+        Ok(next)
     }
 }
 

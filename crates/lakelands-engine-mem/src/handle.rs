@@ -10,7 +10,7 @@
 use std::sync::{Arc, Mutex};
 
 use lakelands_api::engine::{
-    Applied, CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
+    Applied, CanonicalEvent, Choose, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
     ProjectionView, Ranked, Rankings, Reclaimed, VectorIndex,
 };
 use lakelands_api::error::{Act, Case, Error, Result, Situation};
@@ -309,6 +309,11 @@ impl ProjectionStore for MemoryLake {
         lake.projection = Default::default();
         lake.vectors.clear();
         Ok(())
+    }
+
+    fn choose_order(&self, ty: &TypeName, step: &Choose) -> Result<Option<RecordKey>> {
+        self.writable()?;
+        Ok(lock(&self.shared).projection.choose(ty, step))
     }
 
     /// The memory engine keeps no storage to give back: it measures and

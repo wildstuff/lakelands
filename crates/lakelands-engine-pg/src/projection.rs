@@ -47,7 +47,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use lakelands_api::engine::{Applied, Declared};
+use lakelands_api::engine::{Applied, Choose, Chosen, Declared};
 use lakelands_api::error::Result;
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::ontology::TypeDecl;
@@ -469,16 +469,19 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
         &format!(
             "SELECT (SELECT r.state FROM {d} WHERE h.ident = $1), \
              (SELECT r.state FROM {r} WHERE h.ty = $2 AND h.key = $3), \
-             (SELECT array_agg(field) FROM {l} WHERE ty = $4)",
+             (SELECT array_agg(field) FROM {l} WHERE ty = $4), \
+             (SELECT t FROM {m} WHERE k = $5)",
             d = DECLARATIONS.at_head(names),
             r = RECORDS.at_head(names),
             l = names.t("lookup_fields"),
+            m = names.t("meta"),
         ),
         &[
             &format!("type {}", view.as_ref().unwrap_or(ty)),
             &SETTING_TYPE,
             &engines::sort_index_key(ty),
             &ty.as_str(),
+            &engines::chosen_mark(ty),
         ],
     )?;
     let looked: Option<Vec<String>> = row.get(2);
@@ -487,8 +490,15 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
         .get::<_, Option<String>>(1)
         .map(|state| decode_record(&state))
         .transpose()?;
+    let chosen = chosen_decoded(row.get(3));
     let sorted = match &declared {
-        Some(d) => engines::sorted_fields(ty, d, setting.as_ref().and_then(engines::setting_value)),
+        Some(d) => engines::order_fields(
+            ty,
+            d,
+            setting.as_ref().and_then(engines::setting_value),
+            &chosen,
+            true,
+        ),
         None => Vec::new(),
     };
     let decl = declared.filter(|_| view.is_none());
@@ -500,6 +510,148 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
         sorted,
         looked,
     })
+}
+
+/// The fields of an order index the lake chose, as the meta row holds
+/// them: none where it holds none.
+pub(crate) fn chosen_decoded(text: Option<String>) -> Chosen {
+    text.map_or_else(Chosen::default, |t| {
+        serde_json::from_str(&t).unwrap_or_default()
+    })
+}
+
+/// Keep `ty`'s chosen fields as `chosen`: no row where it holds none.
+fn set_chosen(db: &mut Db, names: &Names, ty: &TypeName, chosen: &Chosen) -> Result<()> {
+    let (meta, mark) = (names.t("meta"), engines::chosen_mark(ty));
+    if *chosen == Chosen::default() {
+        return db.execute(&format!("DELETE FROM {meta} WHERE k = $1"), &[&mark]);
+    }
+    let text = serde_json::to_string(chosen).expect("the chosen fields serialise");
+    db.execute(
+        &format!("INSERT INTO {meta} (k, t) VALUES ($1, $2) ON CONFLICT (k) DO UPDATE SET t = $2"),
+        &[&mark, &text],
+    )
+}
+
+/// The fields of `ty`'s order index the lake chose, as its meta row holds
+/// them.
+pub(crate) fn chosen_of(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Chosen> {
+    let row = db.query_opt(
+        &format!("SELECT t FROM {} WHERE k = $1", names.t("meta")),
+        &[&engines::chosen_mark(ty)],
+    )?;
+    Ok(chosen_decoded(row.and_then(|row| row.get(0))))
+}
+
+/// One step of choosing an order index for `ty` (`ProjectionStore::
+/// choose_order`), in a transaction of its own that moves no position.
+pub(crate) fn choose_order(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    step: &Choose,
+) -> Result<Option<RecordKey>> {
+    let setting = head_record(
+        db,
+        names,
+        &TypeName::from(SETTING_TYPE),
+        &RecordKey::from(engines::sort_index_key(ty)),
+    )?;
+    let head = head_type(db, names, ty)?;
+    let Some(decl) = head.decl.as_ref().filter(|d| d.view.is_none()) else {
+        return Ok(None);
+    };
+    let named = engines::sorted_fields(ty, decl, setting.as_ref().and_then(engines::setting_value));
+    let sortable = |f: &FieldName| {
+        (decl.fields.iter()).any(|d| d.name == *f && lakelands_api::seam::sortable(&d.ty.kind))
+    };
+    if !named.is_empty() || matches!(step, Choose::Start(f) if !sortable(f)) {
+        return Ok(None);
+    }
+    let mut chosen = chosen_of(db, names, ty)?;
+    if !engines::chosen_after(&mut chosen, step) {
+        return Ok(None);
+    }
+    db.batch("BEGIN ISOLATION LEVEL READ COMMITTED; SET LOCAL synchronous_commit = off")?;
+    let done = match step {
+        Choose::Fill {
+            field,
+            after,
+            limit,
+        } => fill_chosen(db, names, ty, field, after.as_ref(), *limit),
+        _ => set_chosen(db, names, ty, &chosen).and_then(|()| {
+            match step {
+                Choose::Start(_) => {
+                    let marked = db.query_opt(
+                        &format!("SELECT 1 FROM {} WHERE k = $1", names.t("meta")),
+                        &[&engines::sorted_mark(ty)],
+                    )?;
+                    if marked.is_none()
+                        && let Some(at) = folded(db, names)?
+                    {
+                        set_sorted(db, names, ty, Some(at))?;
+                    }
+                }
+                Choose::Drop(f) => {
+                    db.execute(
+                        &format!(
+                            "DELETE FROM {} WHERE ty = $1 AND field = $2",
+                            names.t("sort_index")
+                        ),
+                        &[&ty.as_str(), &f.as_str()],
+                    )?;
+                    if chosen == Chosen::default() {
+                        set_sorted(db, names, ty, None)?;
+                    }
+                }
+                _ => {}
+            }
+            Ok(None)
+        }),
+    };
+    db.end(done)
+}
+
+/// Write the rows of `field` for up to `limit` head records of `ty` after
+/// `after`; the key the chunk ended at, none once the type is filled.
+fn fill_chosen(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    field: &FieldName,
+    after: Option<&RecordKey>,
+    limit: u32,
+) -> Result<Option<RecordKey>> {
+    let after = after.map_or("", RecordKey::as_str);
+    let page = head_records_after(db, names, ty, after, i64::from(limit))?;
+    let (mut fields, mut keys, mut sort_keys) = (Vec::new(), Vec::new(), Vec::new());
+    for r in &page {
+        for (field, sort_key) in engines::order_rows(std::slice::from_ref(field), r) {
+            fields.push(field.as_str().to_owned());
+            keys.push(r.key.as_str().to_owned());
+            sort_keys.push(sort_key);
+        }
+    }
+    let all: Vec<&str> = page.iter().map(|r| r.key.as_str()).collect();
+    db.execute(
+        &format!(
+            "DELETE FROM {} WHERE ty = $1 AND field = $2 AND key = ANY($3)",
+            names.t("sort_index")
+        ),
+        &[&ty.as_str(), &field.as_str(), &all],
+    )?;
+    db.execute(
+        &format!(
+            "INSERT INTO {} (ty, field, key, sort_key) \
+             SELECT $1, * FROM unnest($2::text[], $3::text[], $4::bytea[])",
+            names.t("sort_index"),
+        ),
+        &[&ty.as_str(), &fields, &keys, &sort_keys],
+    )?;
+    Ok(page
+        .last()
+        .map(|r| r.key.clone())
+        .filter(|_| page.len() == limit as usize))
 }
 
 /// The declarations at the head.
@@ -649,7 +801,25 @@ pub(crate) fn rebuild_sorted(
         &format!("DELETE FROM {} WHERE ty = $1", names.t("sort_index")),
         &[&ty.as_str()],
     )?;
+    // A host's setting that names a field wins: the lake's choice goes.
+    let setting = head_record(
+        db,
+        names,
+        &TypeName::from(SETTING_TYPE),
+        &RecordKey::from(engines::sort_index_key(ty)),
+    )?;
     let head = head_type(db, names, ty)?;
+    let named = head
+        .decl
+        .as_ref()
+        .map(|d| engines::sorted_fields(ty, d, setting.as_ref().and_then(engines::setting_value)));
+    let head = match named.is_some_and(|n| !n.is_empty()) {
+        true => {
+            set_chosen(db, names, ty, &Chosen::default())?;
+            head_type(db, names, ty)?
+        }
+        false => head,
+    };
     if head.sorted.is_empty() {
         return set_sorted(db, names, ty, None).map(|()| 0);
     }

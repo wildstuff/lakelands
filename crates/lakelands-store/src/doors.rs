@@ -465,7 +465,17 @@ impl Catalog for Doors {
     async fn find(&self, who: &Principal, ty: &TypeName, find: Find) -> Result<Reply<Found>> {
         let at = cursor_at(find.at, find.cursor.as_ref())?;
         let ty = ty.clone();
-        self.read(who, at, move |r| r.find(&ty, &find)).await
+        let found = self.read(who, at, move |r| r.find(&ty, &find)).await;
+        // A page sorted whole may have made the lake choose an index; it
+        // builds it beside the writer, in chunks (041).
+        if self.lake.choosing_due() {
+            let lake = self.lake.clone();
+            tokio::spawn(exec::run(move || {
+                lake.choose_orders();
+                Ok(())
+            }));
+        }
+        found
     }
 
     async fn get(&self, who: &Principal, ty: &TypeName, get: Get) -> Result<Reply<Record>> {

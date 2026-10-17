@@ -67,6 +67,11 @@ engine_check!(
 );
 
 engine_check!(
+    CHOSEN_ORDER = a_chosen_order_index_is_built_beside_the_fold_and_read_only_once_it_is_kept,
+    "041 and lakelands#1131: a field the lake chose an order index for beside the log is started, filled in chunks of the head's records while puts land between the chunks, and kept; a page ordered by it sorts the type until it is kept, answers what one scan over every state answers all the while, and reads its page and at most three rows more once kept, the records put during the build among those it holds; `chosen` names the kept and the building fields; a `sort_index.<type>` setting naming a field takes the choice away and a step on such a type does nothing, and retiring the setting leaves the type with no index; a field dropped is sorted whole again; a `Start` of a field the type does not declare does nothing"
+);
+
+engine_check!(
     EQUAL_IS_IDENTITY = a_scan_with_equal_answers_exactly_the_identical_values,
     "044 and seams §scan: a scan's `equal` selects the records whose field holds exactly the JSON value, never the expression's `=` (`'010'` is not `'10'`, text is not a number, an instant in another written form is not the same), never a null, at the head and at an earlier position alike"
 );
@@ -2949,4 +2954,173 @@ fn a_kept_name_answers_as_a_stored_type_holding_the_same_states(engine: &dyn Lak
         );
     }
     Ok(())
+}
+
+fn a_chosen_order_index_is_built_beside_the_fold_and_read_only_once_it_is_kept(
+    engine: &dyn LakeEngine,
+) -> Held {
+    use lakelands_api::engine::Choose;
+    const N: u64 = 600;
+    const LIMIT: u32 = 10;
+    const CHUNK: u32 = 100;
+    let decl = declare(json!({
+        "declare": "type", "name": "t",
+        "fields": [{"name": "v", "type": {"kind": "text"}}]
+    }));
+    let Declaration::Type(t) = &decl else {
+        unreachable!("the check declares a type")
+    };
+    let v = |n: u64| json!({"v": format!("v{n:04}")});
+    let mut states: Vec<StoredRecord> = (0..N)
+        .map(|i| record("t", &format!("k{i:04}"), v((i * 7919) % N), 1))
+        .collect();
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    let ty = TypeName::from("t");
+    let field = FieldName::from("v");
+    let step = |s: Choose| {
+        engine
+            .projection()
+            .choose_order(&ty, &s)
+            .must("a step of choosing")
+    };
+    let chosen = || -> Result<Option<lakelands_api::engine::Chosen>, Failure> {
+        let held = view(engine, None)?
+            .chosen(&ty)
+            .must("reading the chosen fields")?;
+        Ok(Some(held).filter(|h| *h != lakelands_api::engine::Chosen::default()))
+    };
+    // A page ordered by `v`: whether it answers what one scan over every
+    // state answers, and how many rows it read.
+    let page = |states: &[StoredRecord]| -> Result<(u64, bool), Failure> {
+        let scan = Scan {
+            order_by: vec![order("v", OrderBy::Value, Direction::Asc)],
+            limit: LIMIT,
+            ..Scan::default()
+        };
+        let at = view(engine, None)?;
+        let before = crate::engines::rows_read();
+        let rows = at.scan(&ty, &scan).must("scanning a page ordered by `v`")?;
+        let read = crate::engines::rows_read() - before;
+        Ok((
+            read,
+            keys(&rows) == keys(&crate::engines::scan(Some(t), states, &scan)),
+        ))
+    };
+    let sorts = |what: &str, states: &[StoredRecord]| -> Held {
+        let (read, right) = page(states)?;
+        ensure!(
+            right,
+            "{what}, a page of {LIMIT} ordered by `v` is not what one scan over every state answers"
+        );
+        ensure!(
+            read >= N,
+            "{what}, a page of {LIMIT} ordered by `v` read {read} rows; no index is kept for `v` yet, so it sorts all {N}"
+        );
+        Ok(())
+    };
+    let reads_its_page = |what: &str, states: &[StoredRecord]| -> Held {
+        let (read, right) = page(states)?;
+        ensure!(
+            right,
+            "{what}, a page of {LIMIT} ordered by `v` is not what one scan over every state answers"
+        );
+        ensure!(
+            read <= u64::from(LIMIT) + 3,
+            "{what}, a page of {LIMIT} ordered by `v` read {read} of the {N} records; an index reads its page and at most three more"
+        );
+        Ok(())
+    };
+    ensure!(
+        chosen()?.is_none(),
+        "a lake that chose nothing must name no chosen field"
+    );
+    sorts("before anything is chosen", &states)?;
+    // A field the type does not hold is no step's, on every engine.
+    step(Choose::Start(FieldName::from("absent")))?;
+    ensure!(
+        chosen()?.is_none(),
+        "`Start` of a field the type does not declare must do nothing"
+    );
+    step(Choose::Start(field.clone()))?;
+    ensure!(
+        chosen()?.is_some_and(|c| c.building == [field.clone()] && c.kept.is_empty()),
+        "after `Start`, `v` must be building and none kept"
+    );
+    sorts("while `v` is being built", &states)?;
+    // Chunks, with a put between each: a record changed, and a new one.
+    let (mut after, mut at) = (None, 1);
+    for round in 0.. {
+        let next = step(Choose::Fill {
+            field: field.clone(),
+            after: after.clone(),
+            limit: CHUNK,
+        })?;
+        if round > 20 {
+            return Err(Failure::new(
+                "a fill of 600 records in chunks of 100 never ended",
+            ));
+        }
+        at += 1;
+        let mut moved = record("t", &format!("k{:04}", round * 7), v(1000 + round), at);
+        moved.version = lakelands_api::Version(at);
+        let new = record("t", &format!("n{round:04}"), v(2000 + round), at);
+        fold(engine, at, |p| {
+            p.put_record(&moved)?;
+            p.put_record(&new)
+        })?;
+        states.retain(|r| r.key != moved.key);
+        states.extend([moved, new]);
+        sorts(&format!("after chunk {round} of the build"), &states)?;
+        match next {
+            Some(last) => after = Some(last),
+            None => break,
+        }
+    }
+    step(Choose::Keep(field.clone()))?;
+    ensure!(
+        chosen()?.is_some_and(|c| c.kept == [field.clone()] && c.building.is_empty()),
+        "after `Keep`, `v` must be kept and none building"
+    );
+    reads_its_page(
+        "once `v` is kept, with the records put during its build",
+        &states,
+    )?;
+    // A host's setting wins: the choice goes, the setting's index stays.
+    at += 1;
+    fold_one(engine, at, sort_setting(json!(["v"]), at))?;
+    ensure!(
+        chosen()?.is_none(),
+        "a `sort_index.t` setting naming `v` must take the lake's choice away"
+    );
+    reads_its_page("with the setting", &states)?;
+    ensure!(
+        step(Choose::Start(field.clone()))?.is_none() && chosen()?.is_none(),
+        "a step on a type whose setting names a field must do nothing"
+    );
+    at += 1;
+    let mut gone = sort_setting(json!(["v"]), at);
+    gone.retired = true;
+    fold_one(engine, at, gone)?;
+    sorts("with the setting retired", &states)?;
+    // Built again, then dropped.
+    step(Choose::Start(field.clone()))?;
+    let mut after = None;
+    while let Some(last) = step(Choose::Fill {
+        field: field.clone(),
+        after,
+        limit: CHUNK,
+    })? {
+        after = Some(last);
+    }
+    step(Choose::Keep(field.clone()))?;
+    reads_its_page("once `v` is chosen again", &states)?;
+    step(Choose::Drop(field.clone()))?;
+    ensure!(
+        chosen()?.is_none(),
+        "a dropped field must no longer be chosen"
+    );
+    sorts("once `v` is dropped", &states)
 }

@@ -1141,29 +1141,43 @@ A host that already has a store of its own moves in four steps.
   embedding or a field of a function computed outside the lake is never
   such a type: the store walks its records at every declaration of it,
   whatever changed.
-- **An order index is the host's to ask for, from what was ordered
-  (lakelands#1029).** A page ordered by a field `sort_index.<type>` does
-  not name sorts the type, on every page: 0.6 s on SQLite and 1.0 s on
-  PostgreSQL at 100 000 records, and far more for a deep page by offset.
-  Naming a field costs every write about 4 % and one rebuild, about a
-  second at that size. The lake does not choose: `describe_type` tells a
-  holder of `schema`, in `sorted_whole`, each field it reads that was
-  ordered by a whole sort since the lake was opened, with its pages and
-  their time, and `lakelands serve`
-  prints a line when one grows. A host's rule, run as often as it likes,
-  names a field when it was ordered by on a few pages of a large type,
-  and keeps a type's list short:
-
-  ```text
-  for each type with at least 2 000 records:
-    for each field in sorted_whole with pages >= 3 and millis >= 100,
-      while sort_index.<type> names fewer than 4 fields:
-        add it to sort_index.<type>
-  ```
-
-  Write the setting in a quiet moment: its fold rebuilds the type's
-  rows under the writer. See
-  `docs/decisions/041-a-sorted-page-reads-its-page.md`.
+- **The lake chooses an order index from what is ordered by; a host's
+  setting wins (lakelands#1029, lakelands#1131).** A page ordered by a
+  field `sort_index.<type>` does not name sorts the type, on every page:
+  0.6 s on SQLite and 1.0 s on PostgreSQL at 100 000 records, and far
+  more for a deep page by offset. So the lake chooses: once a field was
+  ordered by on `limits.order_after_pages` (3) whole-sorted pages within
+  `limits.order_window_secs` (10 minutes), on a type of at least
+  `limits.order_min_records` (2 000) live records with fewer than
+  `limits.order_max_fields` (4) chosen fields, the writer's process builds
+  its order index beside the log, in chunks of `limits.order_chunk`
+  (10 000) records between writes, and pages ordered by it read their
+  page from then on. Nothing is logged: a feed, a mirror and an export
+  carry nothing of it, and a projection rebuilt from the log learns it
+  again from use. A field unused for `limits.order_unused_secs` (7 days)
+  is dropped. All of these are members of the lake's `limits` in its
+  location.
+  - **The switch** is `limits.choose_order_index`, on by default. Off,
+    only what the host sets is indexed, as before 0.16.0.
+  - **What it costs:** each chosen field adds an index entry to every write: a single
+    upsert about 0–2 % on SQLite and about 20 % on PostgreSQL in this
+    release's runs, a bulk ingest within the runs' spread on SQLite and
+    up to about 40 % on PostgreSQL. `limits.order_max_fields` bounds it.
+    A build writes in chunks, and a write sent meanwhile waited at most
+    160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records, where
+    a host's own setting holds every write for its whole rebuild (0.85 s
+    and 2.4 s).
+  - **A host's own `sort_index.<type>` always wins.** Written, it takes
+    the lake's choice for the type away and the lake chooses nothing
+    there; retired, it hands the type back. A host that knows its orders
+    names them, and writes the setting in a quiet moment: its fold
+    rebuilds the type's rows inside one append, under the writer.
+  - **Told:** `describe_type` tells a holder of `schema` who reads the
+    field what the lake chose, in `chosen`, and what it still sorts
+    whole, in `sorted_whole`, with its pages and their time; `lakelands
+    serve` prints a line when one grows. A reader-only process counts
+    its pages for `sorted_whole` but builds nothing.
+  See `docs/decisions/041-a-sorted-page-reads-its-page.md`.
 - **A view that is read often may be kept.** A view's read walks its
   source: seconds at a hundred thousand records. The setting
   `view_kept.<type>` asks the fold to keep the view's records in the

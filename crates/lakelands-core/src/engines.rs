@@ -35,7 +35,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
-use lakelands_api::engine::{After, CanonicalEvent, Scan};
+use lakelands_api::engine::{After, CanonicalEvent, Choose, Chosen, Scan};
 use lakelands_api::error::{Case, Detail, Error, Flaw, Part, Place as At, Refusal, Result, Said};
 use lakelands_api::event::SegmentDigest;
 use lakelands_api::expr::{Condition, Expr};
@@ -655,6 +655,68 @@ fn setting_for(r: &StoredRecord, prefix: &str) -> Option<TypeName> {
 pub fn sort_index_key(ty: &TypeName) -> String {
     let ty = kept_view(ty).unwrap_or_else(|| ty.clone());
     format!("{}{ty}", lakelands_api::seam::SORT_INDEX_SETTING)
+}
+
+/// The meta row by which an engine keeps the fields of `ty`'s order index
+/// the lake chose, as JSON (`Chosen`): in the projection and never in the
+/// log.
+pub fn chosen_mark(ty: &TypeName) -> String {
+    format!("chosen.{ty}")
+}
+
+/// The fields a type's order index keeps for the fold: those its setting
+/// names, else those the lake chose, `building` ones too for the fold and
+/// not for a read. A host's setting wins: where it names any field the
+/// lake's choice is not read, and an engine drops it at the setting's
+/// rebuild. A chosen field the declaration no longer holds with a kind the
+/// index keeps is left out, and a view keeps none of its own.
+pub fn order_fields(
+    ty: &TypeName,
+    decl: &TypeDecl,
+    setting: Option<&Value>,
+    chosen: &Chosen,
+    building: bool,
+) -> Vec<FieldName> {
+    let named = sorted_fields(ty, decl, setting);
+    if !named.is_empty() || decl.view.is_some() || kept_view(ty).is_some() {
+        return named;
+    }
+    let held = |f: &&FieldName| {
+        (decl.fields.iter()).any(|d| d.name == **f && lakelands_api::seam::sortable(&d.ty.kind))
+    };
+    let building = chosen.building.iter().filter(|_| building);
+    chosen
+        .kept
+        .iter()
+        .chain(building)
+        .filter(held)
+        .cloned()
+        .collect()
+}
+
+/// A step of choosing as the chosen fields of a type take it: the fields
+/// after it, and whether it asks the engine to fill, or to delete the rows
+/// of, a field. A step that does nothing leaves them as they are.
+pub fn chosen_after(chosen: &mut Chosen, step: &Choose) -> bool {
+    let (kept, building) = (&mut chosen.kept, &mut chosen.building);
+    match step {
+        Choose::Start(f) if !kept.contains(f) && !building.contains(f) => {
+            building.push(f.clone());
+            true
+        }
+        Choose::Keep(f) if building.contains(f) => {
+            building.retain(|b| b != f);
+            kept.push(f.clone());
+            true
+        }
+        Choose::Drop(f) if kept.contains(f) || building.contains(f) => {
+            kept.retain(|k| k != f);
+            building.retain(|b| b != f);
+            true
+        }
+        Choose::Fill { field, .. } => building.contains(field),
+        _ => false,
+    }
 }
 
 /// The meta row by which an engine that keeps `ty`'s order index in

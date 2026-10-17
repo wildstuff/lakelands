@@ -21,7 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::engine::{Declared, Matched, ProjectionView, Scan};
+use lakelands_api::engine::{Chosen, Declared, Matched, ProjectionView, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, TypeName};
@@ -611,7 +611,8 @@ impl Read<'_> {
             &format!(
                 "SELECT (SELECT n FROM {m} WHERE k = $1), \
                  (SELECT r.state FROM {r} WHERE h.ty = $2 AND h.key = $3), \
-                 (SELECT r.state FROM {d} WHERE h.ident = $4)",
+                 (SELECT r.state FROM {d} WHERE h.ident = $4), \
+                 (SELECT t FROM {m} WHERE k = $5)",
                 m = self.names.t("meta"),
                 r = projection::RECORDS.at_head(self.names),
                 d = projection::DECLARATIONS.at_head(self.names),
@@ -621,6 +622,7 @@ impl Read<'_> {
                 &lakelands_api::seam::SETTING_TYPE,
                 &engines::sort_index_key(ty),
                 &view,
+                &engines::chosen_mark(ty),
             ],
         )?;
         let view = projection::declared_type(row.get(2))?;
@@ -634,10 +636,13 @@ impl Read<'_> {
             .get::<_, Option<String>>(1)
             .map(|state| decode_record(&state))
             .transpose()?;
-        Ok(engines::sorted_fields(
+        let chosen = projection::chosen_decoded(row.get(3));
+        Ok(engines::order_fields(
             ty,
             decl,
             setting.as_ref().and_then(engines::setting_value),
+            &chosen,
+            false,
         ))
     }
 
@@ -882,6 +887,12 @@ impl Read<'_> {
 impl ProjectionView for PgView<'_> {
     fn position(&self) -> Option<Position> {
         self.at
+    }
+
+    fn chosen(&self, ty: &TypeName) -> Result<Chosen> {
+        self.read(Chosen::default(), |r| {
+            projection::chosen_of(r.db, r.names, ty)
+        })
     }
 
     fn declarations(&self) -> Result<Vec<Declared>> {

@@ -1073,6 +1073,10 @@ interface types {
         /// `sort_index.<type>` setting): a `find` ordered first by one of
         /// them reads its page, not the type.
         sorted: list<field-name>,
+        /// The fields the lake chose an order index for itself, from the
+        /// pages it had to sort whole; told to a holder of `schema` who
+        /// reads the field, and only at the head.
+        chosen: list<field-name>,
         /// The fields a `find` ordered first by and the lake answered by
         /// sorting the type, since it was opened where it answers.
         sorted-whole: list<sorted-whole>,
@@ -1524,6 +1528,13 @@ interface types {
         max-offset: u32,
         max-set-changes: u32,
         max-rerank-top: u32,
+        choose-order-index: bool,
+        order-after-pages: u32,
+        order-window-secs: u32,
+        order-min-records: u32,
+        order-max-fields: u32,
+        order-unused-secs: u32,
+        order-chunk: u32,
     }
 
     record feed-filter {
