@@ -157,6 +157,7 @@ pub(crate) fn ends_a_range(body: &EventBody) -> bool {
         | EventBody::WriteAccepted { .. }
         | EventBody::WriteRejected { .. }
         | EventBody::TriggerFired { .. }
+        | EventBody::TriggerDropped { .. }
         | EventBody::ObjectSetChanged { .. }
         | EventBody::SourceForgotten { .. }
         | EventBody::Checkpoint { .. } => false,
@@ -1764,7 +1765,8 @@ impl Lake {
             | EventBody::LeaseTaken { .. }
             | EventBody::Checkpoint { .. }
             | EventBody::VerbCalled { .. }
-            | EventBody::TriggerFired { .. } => {}
+            | EventBody::TriggerFired { .. }
+            | EventBody::TriggerDropped { .. } => {}
             // The act is owed until a rebuild after its keys were
             // destroyed has erased what they sealed, and the reclaim ran.
             EventBody::SourceForgotten { source, .. } => {
@@ -3018,6 +3020,7 @@ fn reads_a_record(body: &EventBody) -> bool {
         | EventBody::Checkpoint { .. }
         | EventBody::VerbCalled { .. }
         | EventBody::TriggerFired { .. }
+        | EventBody::TriggerDropped { .. }
         // The writer's ontology, and the declaration put; a recomputation
         // is left pending, and reads its records at the flush.
         | EventBody::Declared { .. }

@@ -74,10 +74,31 @@ however high the lake's own ceiling is.
 The per-trigger ceiling binds the reactions that name the firing. A
 reaction that names no cause is bound by the lake's ceiling alone: what a
 write follows from is the host's to say, and a host that wants the
-trigger's ceiling names the firing. Suppressing the firing itself past
-the ceiling would need no cause, but it would drop the durable fact the
-feed promises (004). So the firing is always appended, and the reaction
-is what is refused.
+trigger's ceiling names the firing.
+
+### A trigger past its ceiling drops instead of firing
+
+A reaction runs before its write is judged: it calls a model, a tool, a
+service outside the lake. So a firing whose reaction could write
+nothing is not appended. Where the write that would fire a trigger is
+at a depth at or above the trigger's `max_depth`, or at or above the
+lake's `max_reactive_depth`, the store appends `trigger_dropped` in
+place of `trigger_fired`: the trigger, the record, the write's depth,
+the bound that applied, the lower of the two, and whose bound it is.
+The durable fact the feed promises (004) stays: what would have fired
+is in the log, and told to whoever a firing of the trigger is told to.
+A host acts on `trigger_fired` alone and checks no depth itself.
+A trigger with `max_depth: 0` thus never fires: every write is at depth
+0 or deeper, so each of its firings drops. It stays declarable, as a
+trigger kept in the log for what it would fire. A lake kept from before
+holds its triggers as declared, and from its upgrade on a firing past
+the ceiling drops where it fired before.
+
+A reaction to a firing the store appends is one deeper than the write
+that fired it, so it is within the trigger's ceiling. The refusal at the
+append stays as the second line: it binds a reaction whose trigger's
+ceiling was lowered after the firing, and one whose host names a
+firing at another depth than it was told.
 
 ### Every write door checks the lake's ceiling before anything but the lake
 
@@ -162,6 +183,9 @@ must learn. A caller holds a principal, not a context.
   (lakelands#257).
 - A trigger may declare `max_depth`, which binds the reactions that
   name its firing (lakelands#244).
+- A firing past the ceiling was appended, and only its reaction's write
+  refused, so the reaction ran first. It drops at the write since
+  lakelands#1216, as `trigger_dropped`.
 - A verb called on its type anchors its effect by its `verb_called`
   (lakelands#277).
 - Every write door checks the context first (lakelands#344).

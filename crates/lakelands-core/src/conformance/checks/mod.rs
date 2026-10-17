@@ -104,6 +104,7 @@ mod settings;
 mod shown_hash;
 mod sorted_whole;
 mod streaming;
+mod trigger_firing;
 mod triggers;
 mod upgrade;
 mod valid_cells;
@@ -763,6 +764,7 @@ pub const ALL: &[Check] = &[
     value_types::CONDITION_NEVER_HOLDS,
     streaming::STREAMS,
     reactive_depth::TOO_DEEP,
+    trigger_firing::TRIGGER_DROPPED,
     host_cause::CAUSE_ON_OWN_EVENTS,
     host_cause::CAUSE_PAST_HEAD,
     host_cause::DEPTH_ON_EVERY_DOOR,
