@@ -8,7 +8,7 @@
 //! directly. Either way `lakelands_core::engines` decides what matches,
 //! where it sorts and what it scores, exactly as on every other engine.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::{Declared, Matched, ProjectionView, Scan};
 use lakelands_api::error::Result;
@@ -352,12 +352,14 @@ pub fn read_statements(ty: &TypeName, head: bool) -> [String; 4] {
 }
 
 /// The full-text hits of `text` over `ty` as the index holds them, at the
-/// head (`docs/seams.md` §`ranked`), read through `conn`.
+/// head (`docs/seams.md` §`ranked`), each field weighed by `weights`,
+/// read through `conn`.
 pub(crate) fn lexical(
     conn: &Connection,
     ty: &TypeName,
     text: &str,
     fields: Option<&[FieldName]>,
+    weights: &BTreeMap<FieldName, f64>,
     k: u32,
 ) -> Result<Vec<(RecordKey, f64)>> {
     let Some(decl) = projection::type_at(conn, ty, None)? else {
@@ -388,7 +390,7 @@ pub(crate) fn lexical(
     for key in keys {
         head.extend(projection::head_record(conn, ty, &RecordKey::from(key))?);
     }
-    Ok(engines::lexical(&decl, &head, text, fields, k))
+    Ok(engines::lexical(&decl, &head, text, fields, weights, k))
 }
 
 impl SqliteView<'_> {

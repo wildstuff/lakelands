@@ -165,6 +165,39 @@ fn a_write_keeps_what_its_writer_is_not_told() {
     );
 }
 
+/// A `search_weights` setting gives only the weights a search could give,
+/// whatever a log that came another way holds (lakelands#1230).
+#[test]
+fn a_search_weight_out_of_range_weighs_nothing() {
+    let value = json!({
+        "fields": {"v": 0.5, "w": -1},
+        "text_fields": {"title": 4, "body": 0, "note": 2e6},
+        "text_weight": "high"
+    });
+    let fields = BTreeMap::from([("v".to_owned(), 0.5)]);
+    assert_eq!(crate::seam::search_weights(Some(&value)), (fields, None));
+    let text = BTreeMap::from([("title".to_owned(), 4.0)]);
+    assert_eq!(crate::seam::text_field_weights(Some(&value)), text);
+    let narrowed = json!({"fields": {"m": 1.0}, "text_fields": {"m": 2.0}, "text_weight": 0.5});
+    let told = |_: &str| true;
+    let reads = |_: &str, f: &str| f != "m";
+    assert_eq!(
+        super::narrowed("search_weights.row", narrowed, &told, &reads),
+        Some(json!({"text_weight": 0.5}))
+    );
+    let hidden = |_: &str, f: &str| f == "m";
+    let stored = json!({"text_fields": {"m": 2.0, "n": 1.0}});
+    assert_eq!(
+        kept(
+            "search_weights.row",
+            &stored,
+            json!({"fields": {"v": 1.0}}),
+            &hidden
+        ),
+        json!({"fields": {"v": 1.0}, "text_fields": {"m": 2.0}})
+    );
+}
+
 /// What a location holds beside its settings is the list's location
 /// bindings, both ways: the engines' members and the key's handle.
 #[test]

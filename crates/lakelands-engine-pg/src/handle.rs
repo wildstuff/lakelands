@@ -533,8 +533,11 @@ impl PgLake {
             let position = folded.and_then(|f| f.parse().ok()).map(Position);
             let mut lists = Vec::new();
             if let Some((text, fields)) = &asked.text {
-                let fields = fields.as_deref();
-                lists.push(crate::view::lexical(db, &self.names, ty, text, fields, k)?);
+                let (fields, weights) = (fields.as_deref(), &asked.text_weights);
+                let names = &self.names;
+                lists.push(crate::view::lexical(
+                    db, names, ty, text, fields, weights, k,
+                )?);
             }
             for (field, query) in &asked.vectors {
                 lists.push(self.nearest(db, ty, field, query, k)?);

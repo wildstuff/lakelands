@@ -179,7 +179,8 @@ impl LakeEngine for MemoryLake {
         if let Some((text, fields)) = &asked.text {
             let head = p.records_at(ty, p.folded);
             lists.push(p.type_at(ty, p.folded).map_or_else(Vec::new, |decl| {
-                lakelands_core::engines::lexical(decl, head, text, fields.as_deref(), k)
+                let weights = &asked.text_weights;
+                lakelands_core::engines::lexical(decl, head, text, fields.as_deref(), weights, k)
             }));
         }
         for (field, query) in &asked.vectors {

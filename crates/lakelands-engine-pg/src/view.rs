@@ -342,13 +342,15 @@ pub fn read_statements(schema: &str, head: bool) -> [String; 5] {
 }
 
 /// The full-text hits of `text` over `ty` as the rows hold them, at the
-/// head (`docs/seams.md` §`ranked`), read through `db`.
+/// head (`docs/seams.md` §`ranked`), each field weighed by `weights`,
+/// read through `db`.
 pub(crate) fn lexical(
     db: &mut Db,
     names: &Names,
     ty: &TypeName,
     text: &str,
     fields: Option<&[FieldName]>,
+    weights: &BTreeMap<FieldName, f64>,
     k: u32,
 ) -> Result<Vec<(RecordKey, f64)>> {
     let Some(decl) = projection::type_at(db, names, ty, None)? else {
@@ -379,7 +381,7 @@ pub(crate) fn lexical(
             &RecordKey::from(key),
         )?);
     }
-    Ok(engines::lexical(&decl, &head, text, fields, k))
+    Ok(engines::lexical(&decl, &head, text, fields, weights, k))
 }
 
 impl PgView<'_> {

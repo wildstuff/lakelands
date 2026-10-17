@@ -11,6 +11,8 @@
 //! state, with its position. A vector's list is exact: the true top `k`
 //! by cosine, ties by key.
 
+use std::collections::BTreeMap;
+
 use lakelands_api::engine::{
     After, Declared, LakeEngine, ProjectionStore, ProjectionView, Rankings, Scan,
 };
@@ -104,6 +106,11 @@ engine_check!(
 engine_check!(
     LEXICAL_NAMED_FIELDS = lexical_over_named_fields_is_the_pipelines_over_those_fields,
     "025 and seams §ranked: a search limited to named fields matches, scores and ties over the head text of the named searchable fields only, and no engine cuts its candidates at k before it narrows them: a record matching in a named field is a hit however many others match only in fields not named"
+);
+
+engine_check!(
+    LEXICAL_WEIGHTED = a_weighed_text_scores_each_token_at_its_heaviest_field_before_the_cut,
+    "025 and seams §ranked, extended (lakelands#1230): a text's list weighs each distinct query token at the heaviest searched field holding it, a field not weighed at 1, and sums them in the tokens' order, so a token in two fields counts once and an unweighed list scores the tokens' count; the list is cut at k by that score, so a candidate holding fewer tokens in a heavier field outranks one holding more in a lighter one; a weight for a field the search does not name weighs nothing"
 );
 
 engine_check!(
@@ -754,9 +761,25 @@ pub fn lexical(
     fields: Option<&[FieldName]>,
     k: u32,
 ) -> lakelands_api::Result<Vec<(RecordKey, f64)>> {
+    lexical_weighed(engine, ty, text, fields, BTreeMap::new(), k)
+}
+
+/// [`lexical`], a match in each field weighed by `text_weights`.
+pub fn lexical_weighed(
+    engine: &dyn LakeEngine,
+    ty: &TypeName,
+    text: &str,
+    fields: Option<&[FieldName]>,
+    text_weights: BTreeMap<FieldName, f64>,
+    k: u32,
+) -> lakelands_api::Result<Vec<(RecordKey, f64)>> {
     let text = Some((text.to_owned(), fields.map(<[FieldName]>::to_vec)));
-    let vectors = Vec::new();
-    one_list(engine, ty, Rankings { text, vectors }, k)
+    let asked = Rankings {
+        text,
+        text_weights,
+        ..Rankings::default()
+    };
+    one_list(engine, ty, asked, k)
 }
 
 /// The head's nearest vectors of `ty.field` to `query`.
@@ -772,8 +795,8 @@ pub fn nearest(
         engine,
         ty,
         Rankings {
-            text: None,
             vectors,
+            ..Rankings::default()
         },
         k,
     )
@@ -834,6 +857,7 @@ fn ranked_answers_every_list_from_one_state_and_says_its_position(engine: &dyn L
     let asked = Rankings {
         text: Some(("river ocean".into(), None)),
         vectors: vec![("emb".into(), vec![0.0, 1.0]), ("none".into(), vec![1.0])],
+        ..Rankings::default()
     };
     let read = || -> Result<(Option<Position>, Vec<Vec<String>>), Failure> {
         let ranked = engine.ranked(&ty, &asked, 10).must("ranking")?;
@@ -943,6 +967,68 @@ fn lexical_over_named_fields_is_the_pipelines_over_those_fields(engine: &dyn Lak
         noted.is_empty(),
         "searching `river` in `note`, which is not searchable, answered {:?}",
         hit_keys(&noted)
+    );
+    Ok(())
+}
+
+fn a_weighed_text_scores_each_token_at_its_heaviest_field_before_the_cut(
+    engine: &dyn LakeEngine,
+) -> Held {
+    fold(engine, 1, |p| {
+        p.put_declaration(&documents(), 1, None, Position(0))?;
+        let rows = [
+            ("both", json!({"title": "river", "body": "river"})),
+            ("heavy", json!({"title": "river"})),
+            ("light-a", json!({"body": "river run"})),
+            ("light-b", json!({"body": "rivers running"})),
+            ("noted", json!({"note": "river run"})),
+        ];
+        for (key, fields) in rows {
+            p.put_record(&record("doc", key, fields, 1))?;
+        }
+        Ok(())
+    })?;
+    let ty = TypeName::from("doc");
+    let weighed = |text: &str, fields: Option<&[FieldName]>, weights: &[(&str, f64)], k| {
+        let weights = weights.iter().map(|(f, w)| (FieldName::from(*f), *w));
+        lexical_weighed(engine, &ty, text, fields, weights.collect(), k)
+    };
+    let keyed = |hits: &[(&str, f64)]| -> Vec<(RecordKey, f64)> {
+        hits.iter()
+            .map(|(k, s)| (RecordKey::from(*k), *s))
+            .collect()
+    };
+    let none = weighed("river run", None, &[], 3).must("ranking unweighed")?;
+    ensure!(
+        none == keyed(&[("light-a", 2.0), ("light-b", 2.0), ("both", 1.0)]),
+        "unweighed, `river run` answered {none:?}: the count of the distinct tokens held, \
+         `both` holding `river` in two fields counted once"
+    );
+    let title = weighed("river run", None, &[("title", 4.0)], 3).must("ranking by title")?;
+    ensure!(
+        title == keyed(&[("both", 4.0), ("heavy", 4.0), ("light-a", 2.0)]),
+        "with `title` at 4, `river run` with k = 3 answered {title:?}: `both` and `heavy` hold \
+         `river` in the title (4, not 4 + 1 for `both`), `light-a` and `light-b` hold both \
+         tokens in `body`, which weighs 1; a list cut at k before it was weighed loses `heavy`"
+    );
+    let both = [("title", 4.0), ("body", 0.25)];
+    let halved = weighed("river run", None, &both, 10).must("ranking by both fields")?;
+    let light = 0.25 + 0.25;
+    ensure!(
+        halved
+            == keyed(&[
+                ("both", 4.0),
+                ("heavy", 4.0),
+                ("light-a", light),
+                ("light-b", light)
+            ]),
+        "with `title` at 4 and `body` at 0.25, `river run` answered {halved:?}"
+    );
+    let bodied = [FieldName::from("body")];
+    let named = weighed("river", Some(&bodied), &[("title", 4.0)], 10).must("ranking `body`")?;
+    ensure!(
+        named == keyed(&[("both", 1.0), ("light-a", 1.0), ("light-b", 1.0)]),
+        "`river` in `body`, `title` at 4, answered {named:?}: a field not searched weighs nothing"
     );
     Ok(())
 }
