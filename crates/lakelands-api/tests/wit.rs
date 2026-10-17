@@ -31,8 +31,9 @@ use lakelands_api::expr::Condition;
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
     Assignment, AtIngest, Authority, Cardinality, ComputedAt, ConstraintDecl, EmbedDecl, FieldDecl,
-    FieldType, Measure, OnInputChange, RelationDecl, RetiredBy, Risk, StorageKind, TriggerDecl,
-    TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewParam, ViewSource,
+    FieldType, FunctionInput, Measure, OnInputChange, RelationDecl, RetiredBy, Risk, StorageKind,
+    TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewParam,
+    ViewSource,
 };
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{
@@ -572,7 +573,7 @@ fn function_decl() -> FunctionDecl {
     FunctionDecl {
         name: "g".into(),
         backing: "expr".into(),
-        inputs: vec![field_decl()],
+        inputs: vec![FunctionInput::typed(field_decl())],
         expr: Some(cond()),
         config: json!({"a": 1}),
         description: Some("d".into()),
@@ -831,6 +832,10 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         ),
         ("field_type", members(&field_type())),
         ("field_decl", members(&field_decl())),
+        (
+            "function_input",
+            members(&FunctionInput::typed(field_decl())),
+        ),
         ("embed_decl", members(&embed_decl())),
         ("relation_decl", members(&relation_decl())),
         ("measure", members(&measure())),

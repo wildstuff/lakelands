@@ -3257,7 +3257,7 @@ impl<'a> Reader<'a> {
             .filter(|f| f.function.as_deref() == Some(function.as_str()))
             .map(|f| f.name.clone());
         let inputs = (o.functions.get(function).into_iter())
-            .flat_map(|f| f.decl.inputs.iter().map(|i| i.name.clone()));
+            .flat_map(|f| f.decl.inputs.iter().map(|i| i.name().clone()));
         let mut read: Vec<FieldName> = computes.chain(inputs).collect();
         read.dedup();
         // A sweep counts every record of the type, a held one among them:

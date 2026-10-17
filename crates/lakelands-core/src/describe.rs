@@ -369,7 +369,7 @@ impl Sight<'_> {
                     used.extend(of(&mut v.payload.iter()))
                 }
                 Declaration::Function(f) if self.function_visible(f) => {
-                    used.extend(of(&mut f.inputs.iter()))
+                    used.extend(of(&mut f.inputs.iter().map(|i| &i.field)))
                 }
                 _ => {}
             }
@@ -689,7 +689,7 @@ impl Sight<'_> {
             .peekable();
         uses.peek().is_some()
             && uses.all(|(t, x)| {
-                let read = std::iter::once(&x.name).chain(f.inputs.iter().map(|i| &i.name));
+                let read = std::iter::once(&x.name).chain(f.inputs.iter().map(|i| i.name()));
                 self.ty(&t.name).is_ok() && self.reads_all(read, &t.name)
             })
     }

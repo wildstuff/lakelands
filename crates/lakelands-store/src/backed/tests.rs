@@ -1,4 +1,5 @@
 use super::*;
+use lakelands_api::ontology::FunctionInput;
 
 fn text(name: &str) -> FieldDecl {
     serde_json::from_value(json!({"name": name, "type": {"kind": "text"}})).unwrap()
@@ -10,7 +11,10 @@ fn a_calls_digest_is_the_one_the_log_format_pins() {
     let geocode = FunctionDecl {
         name: "geocode".into(),
         backing: "http".into(),
-        inputs: vec![text("address"), text("country")],
+        inputs: vec![
+            FunctionInput::typed(text("address")),
+            FunctionInput::typed(text("country")),
+        ],
         expr: None,
         config: json!({"url": "https://geo.example/lookup"}),
         description: None,

@@ -38,12 +38,13 @@ use lakelands_api::error::{Beyond, Case, Names, Naming, Place, Said};
 use lakelands_api::expr::kind::{self, Kind};
 use lakelands_api::expr::{Condition, Expr, Func};
 use lakelands_api::ontology::{
-    Authority, Cardinality, ConstraintDecl, Derived, FieldDecl, OnInputChange, RelationDecl,
-    StorageKind, TypeDecl, ValueTypeDecl, VerbEffect, VerbScope, ViewDecl, lands_in_the_fold,
+    Authority, Cardinality, ConstraintDecl, Derived, FieldDecl, FunctionInput, OnInputChange,
+    RelationDecl, StorageKind, TypeDecl, ValueTypeDecl, VerbEffect, VerbScope, ViewDecl,
+    lands_in_the_fold,
 };
 use lakelands_api::tools::{NameProblem, name_problems};
 use lakelands_api::write::{
-    Carrier, Declaration, DeclarationKind, ObjectSetDecl, SettingDecl, Withdrawal,
+    Carrier, Declaration, DeclarationKind, FunctionDecl, ObjectSetDecl, SettingDecl, Withdrawal,
 };
 use lakelands_api::{Error, FieldName, Refusal, RelationName, Result, TypeName, VerbName};
 use lakelands_core::expr::{Place as Eval, check, parse};
@@ -656,13 +657,15 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             .and_then(|n| o.functions.get(n.as_str()))
         {
             // A function computes a field from inputs the type holds, each
-            // of the kind the function declares for it.
+            // of the kind the function declares for it, or of any kind for
+            // an input that declares none.
             for input in &func.decl.inputs {
                 let (function, ty) = (func.decl.name.clone(), t.name.clone());
-                let why = match t.fields.iter().find(|d| d.name == input.name) {
-                    Some(d) if d.ty.kind == input.ty.kind => continue,
+                let why = match t.fields.iter().find(|d| d.name == *input.name()) {
+                    Some(_) if input_kind_held(t, input).is_none() => continue,
                     Some(d) => {
-                        let (input, kind, held) = (input.name.clone(), input.ty.kind, d.ty.kind);
+                        let (input, kind, held) =
+                            (input.name().clone(), input.field.ty.kind, d.ty.kind);
                         at(
                             &on,
                             Case::FunctionInputKind {
@@ -675,7 +678,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
                         )
                     }
                     None => {
-                        let field = input.name.clone();
+                        let field = input.name().clone();
                         let on = [&on[..], &[Place::Function { name: function }]].concat();
                         at(&on, Case::UnknownField { ty, field })
                     }
@@ -1800,8 +1803,16 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             }
             let input = [on[0].clone(), Place::Input];
             for i in &f.inputs {
-                field_type(o, &input, i, &TypeName::from(""), None)?;
-                computed_here(&input, i)?;
+                if !i.any_kind {
+                    field_type(o, &input, &i.field, &TypeName::from(""), None)?;
+                }
+                computed_here(&input, &i.field)?;
+            }
+            // Declared again, a typed input must still be held in its kind by
+            // each type that binds it; one that drops its type is always
+            // taken.
+            if let Some(case) = input_kind_broken(o, f) {
+                return Err(invalid(at(&on, case)));
             }
             // A call made in process has nothing to gate (064).
             if f.backing == "expr" && !f.risk.is_low() {
@@ -1813,7 +1824,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     // The expression reads only the inputs it declares, so
                     // the inputs a field is checked against are all it reads.
                     for field in derive::reads(&e) {
-                        if !f.inputs.iter().any(|i| i.name == field) {
+                        if !f.inputs.iter().any(|i| *i.name() == field) {
                             return Err(invalid(at(&on, Case::ReadsNoInput { field })));
                         }
                     }
@@ -1854,6 +1865,44 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
     }
     reads_its_type(o, d)?;
     tool_names(o, d)
+}
+
+/// The kind `t` holds the field `input` names in, when `input` states
+/// another: an input of no kind is bound by a field of any.
+fn input_kind_held(t: &TypeDecl, input: &FunctionInput) -> Option<StorageKind> {
+    let kind = input.kind()?;
+    let held = t.fields.iter().find(|d| d.name == *input.name())?.ty.kind;
+    (held != kind).then_some(held)
+}
+
+/// The first input of `f` declared in a kind that a type in `o` computing
+/// a field by it holds in another, as that type's own declare would refuse
+/// it (`function_input_kind`, naming the type).
+pub(crate) fn input_kind_broken(o: &Ontology, f: &FunctionDecl) -> Option<Case> {
+    let calls = |t: &TypeDecl| {
+        t.fields
+            .iter()
+            .any(|x| x.function.as_deref() == Some(&*f.name))
+    };
+    let types = o.types.values().map(|e| &e.decl).filter(|t| calls(t));
+    types
+        .flat_map(|t| f.inputs.iter().map(move |i| (t, i)))
+        .find_map(|(t, i)| {
+            let held = input_kind_held(t, i)?;
+            let (function, input, kind, ty) = (
+                f.name.clone(),
+                i.name().clone(),
+                i.field.ty.kind,
+                t.name.clone(),
+            );
+            Some(Case::FunctionInputKind {
+                function,
+                input,
+                kind,
+                ty,
+                held,
+            })
+        })
 }
 
 /// A withdrawal: of a trigger, a verb, an object set or a function in

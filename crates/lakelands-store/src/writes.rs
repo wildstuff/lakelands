@@ -1591,6 +1591,16 @@ fn held_then(
     Ok(false)
 }
 
+/// Whether `d` is a function declared again whose input a type in `o` holds
+/// in another kind, that `seen`, the lake as its judge is shown it, does not
+/// show: the refusal would name that type or field.
+fn unseen_binding(o: &Ontology, seen: &Ontology, d: &Declaration) -> bool {
+    let Declaration::Function(f) = d else {
+        return false;
+    };
+    declare::input_kind_broken(o, f).is_some() && declare::input_kind_broken(seen, f).is_none()
+}
+
 /// `seen` without the object sets and triggers `sees` is not shown: what a
 /// withdrawal is judged against is what its author or reviewer is shown.
 fn retain_listed(seen: &mut Ontology, sees: &Sight) {
@@ -4035,12 +4045,20 @@ impl Call<'_> {
                 // granted where only what it is not shown reads it (024).
                 let read = |d: &&Declaration| matches!(d, Declaration::Withdraw(x) if declare::reader(&w.ontology, x).is_some());
                 let read: Vec<Declaration> = declarations.iter().filter(read).cloned().collect();
-                if !read.is_empty() {
+                // So a function whose input's kind a binding it is not shown
+                // holds otherwise: the refusal would name it. The lake as its
+                // reviewer is shown it is made only where one of them asks.
+                let binds = |d: &Declaration| matches!(d, Declaration::Function(f) if declare::input_kind_broken(&w.ontology, f).is_some());
+                if !read.is_empty() || declarations.iter().any(binds) {
                     let mut seen = types_shown(self.who, &w.ontology);
                     retain_listed(&mut seen, &Sight::held(self.who, &w.ontology.declared()));
-                    let shown = |d: &Declaration| matches!(d, Declaration::Withdraw(x) if declare::reader(&seen, x).is_some());
-                    granted(read.iter().all(shown))?;
-                    self.check_set((&seen, &w.ontology), &read, false)?;
+                    if !read.is_empty() {
+                        let shown = |d: &Declaration| matches!(d, Declaration::Withdraw(x) if declare::reader(&seen, x).is_some());
+                        granted(read.iter().all(shown))?;
+                        self.check_set((&seen, &w.ontology), &read, false)?;
+                    }
+                    let unseen = |d: &Declaration| unseen_binding(&w.ontology, &seen, d);
+                    granted(!declarations.iter().any(unseen))?;
                 }
                 self.check_bundle(&w.ontology, declarations)?;
                 let mut changed = declarations.clone();
@@ -4601,6 +4619,9 @@ impl Call<'_> {
             _ => false,
         };
         granted(!sent.iter().any(unseen_reader))?;
+        // So a function whose input's kind a type it is not shown holds
+        // otherwise: refused for that type, it would name it.
+        granted(!sent.iter().any(|d| unseen_binding(o, &seen, d)))?;
         if let std::borrow::Cow::Owned(stripped) = unlisted_withdrawn(&seen, &sees, sent) {
             seen = stripped;
         }

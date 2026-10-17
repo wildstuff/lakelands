@@ -333,6 +333,173 @@ pub struct FieldDecl {
     pub annotations: Annotations,
 }
 
+/// One input of a function: a field of the type that binds it, of the
+/// kind its `type` states, or of any kind when it states none
+/// (`docs/decisions/022-functions-are-declarations.md`,
+/// extended). On the wire it is a field's declaration, with `type` left out
+/// of an input of any kind.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FunctionInput {
+    /// The input as a field is declared. Of an input of any kind, its
+    /// `ty` is a placeholder nothing reads.
+    pub field: FieldDecl,
+    /// Whether it states no `type`.
+    pub any_kind: bool,
+}
+
+impl FunctionInput {
+    /// An input of the kind `field` declares.
+    pub fn typed(field: FieldDecl) -> FunctionInput {
+        FunctionInput {
+            field,
+            any_kind: false,
+        }
+    }
+
+    /// An input of any kind.
+    pub fn any(name: impl Into<FieldName>) -> FunctionInput {
+        FunctionInput {
+            field: FieldDecl::of(name, StorageKind::Text),
+            any_kind: true,
+        }
+    }
+
+    /// The input's name.
+    pub fn name(&self) -> &FieldName {
+        &self.field.name
+    }
+
+    /// The kind a type must hold the input in; none for an input of any.
+    pub fn kind(&self) -> Option<StorageKind> {
+        (!self.any_kind).then_some(self.field.ty.kind)
+    }
+}
+
+/// A function's input as it is written: a field's declaration whose `type`
+/// may be left out. Every member is a field's, each in the form
+/// [`FieldDecl`] gives it, and the conversions name every one, so a member
+/// added to a field stops this compiling until it is mirrored.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InputWire {
+    name: FieldName,
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    ty: Option<FieldType>,
+    #[serde(default)]
+    required: bool,
+    #[serde(default)]
+    authority: Authority,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    derived: Option<Condition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    function: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    computed_at: Option<ComputedAt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    depends_on: Vec<FieldName>,
+    #[serde(default)]
+    on_input_change: OnInputChange,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    initial: Option<serde_json::Value>,
+    #[serde(default)]
+    sensitive: bool,
+    #[serde(default)]
+    searchable: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    erasable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    embed: Option<EmbedDecl>,
+    #[serde(default, skip_serializing_if = "Annotations::is_empty")]
+    annotations: Annotations,
+}
+
+impl From<&FunctionInput> for InputWire {
+    fn from(i: &FunctionInput) -> InputWire {
+        let FieldDecl {
+            name,
+            ty,
+            required,
+            authority,
+            derived,
+            function,
+            computed_at,
+            depends_on,
+            on_input_change,
+            initial,
+            sensitive,
+            searchable,
+            erasable,
+            description,
+            label,
+            embed,
+            annotations,
+        } = i.field.clone();
+        InputWire {
+            ty: (!i.any_kind).then_some(ty),
+            name,
+            required,
+            authority,
+            derived,
+            function,
+            computed_at,
+            depends_on,
+            on_input_change,
+            initial,
+            sensitive,
+            searchable,
+            erasable,
+            description,
+            label,
+            embed,
+            annotations,
+        }
+    }
+}
+
+impl From<InputWire> for FunctionInput {
+    fn from(w: InputWire) -> FunctionInput {
+        let any_kind = w.ty.is_none();
+        FunctionInput {
+            any_kind,
+            field: FieldDecl {
+                ty: w.ty.unwrap_or_default(),
+                name: w.name,
+                required: w.required,
+                authority: w.authority,
+                derived: w.derived,
+                function: w.function,
+                computed_at: w.computed_at,
+                depends_on: w.depends_on,
+                on_input_change: w.on_input_change,
+                initial: w.initial,
+                sensitive: w.sensitive,
+                searchable: w.searchable,
+                erasable: w.erasable,
+                description: w.description,
+                label: w.label,
+                embed: w.embed,
+                annotations: w.annotations,
+            },
+        }
+    }
+}
+
+impl Serialize for FunctionInput {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        InputWire::from(self).serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for FunctionInput {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<FunctionInput, D::Error> {
+        InputWire::deserialize(d).map(FunctionInput::from)
+    }
+}
+
 impl FieldDecl {
     /// A field of one storage kind, every other member at its default:
     /// build one as `FieldDecl { searchable: true, ..FieldDecl::of(name, kind) }`,
@@ -671,7 +838,7 @@ fn computed_at_problem<'f>(
     };
     let reads: Vec<&FieldName> = match (&expr, called, &f.embed) {
         (Some(e), _, _) => e.fields_read().into_iter().collect(),
-        (None, Some(func), _) => func.inputs.iter().map(|i| &i.name).collect(),
+        (None, Some(func), _) => func.inputs.iter().map(|i| i.name()).collect(),
         (_, _, Some(embed)) => embed.from.iter().collect(),
         _ => Vec::new(),
     };

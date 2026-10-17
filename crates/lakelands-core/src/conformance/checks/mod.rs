@@ -39,6 +39,7 @@ mod feed;
 mod fields;
 mod filters;
 mod forgotten;
+mod function_input;
 mod fusion;
 mod graph_measures;
 mod graph_steps;
@@ -262,6 +263,8 @@ pub const ALL: &[Check] = &[
     masking::MASKED_AND_ABSENT,
     masking::BUILT_FROM_HIDDEN,
     computed_inputs::COMPUTED_AS_ITS_INPUTS,
+    function_input::ANY_KIND_INPUT,
+    function_input::INPUT_KIND_REDECLARED,
     computed_at::AT_THE_READ,
     computed_at::SAID_WHEN,
     computed_at::MOVED,

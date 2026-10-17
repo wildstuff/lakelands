@@ -1697,7 +1697,7 @@ async fn declare_refuses_unkeyable_keys_and_unchecked_functions() {
         Declaration::Function(FunctionDecl {
             name: name.into(),
             backing: "expr".into(),
-            inputs: vec![input],
+            inputs: vec![lakelands_api::ontology::FunctionInput::typed(input)],
             expr: Some(Condition::from(expr)),
             config: serde_json::Value::Null,
             description: None,
@@ -2348,7 +2348,10 @@ async fn a_redeclared_function_recomputes_its_fields_naming_its_version() {
         Declaration::Function(FunctionDecl {
             name: "scaled".into(),
             backing: "expr".into(),
-            inputs: vec![field("net", StorageKind::Decimal)],
+            inputs: vec![lakelands_api::ontology::FunctionInput::typed(field(
+                "net",
+                StorageKind::Decimal,
+            ))],
             expr: Some(Condition::from(expr)),
             config: serde_json::Value::Null,
             description: None,

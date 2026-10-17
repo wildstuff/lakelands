@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use lakelands_api::error::Naming;
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
-    Assignment, EmbedDecl, FieldDecl, FieldType, Measure, RelationDecl, StorageKind, TriggerDecl,
-    TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl, ViewParam, ViewSource,
+    Assignment, EmbedDecl, FieldDecl, FieldType, FunctionInput, Measure, RelationDecl, StorageKind,
+    TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl, ViewParam, ViewSource,
 };
 use lakelands_api::write::{
     AnnotationFault, Declaration, FunctionDecl, ObjectSetDecl, SettingDecl,
@@ -624,7 +624,15 @@ pub(super) fn setting(l: &mut Lower<'_>, doc: SettingDoc) -> (SettingDecl, Optio
 pub(super) fn function(l: &mut Lower<'_>, doc: FunctionDoc) -> FunctionDecl {
     let backing = doc.backing.unwrap_or_else(|| EXPR_BACKING.to_owned());
     l.name(Naming::Backing, &backing);
-    let inputs = l.fields("input", doc.inputs);
+    let inputs = (doc.inputs.0.into_iter())
+        .map(|(name, doc)| match doc {
+            Some(doc) => FunctionInput::typed(l.field("input", name, doc)),
+            None => {
+                l.name(Naming::Field, &name);
+                FunctionInput::any(name)
+            }
+        })
+        .collect();
     let expr = l.opt_cond("`expr`", doc.expr);
     match (backing == EXPR_BACKING, expr.is_some()) {
         (true, false) => l.fail(

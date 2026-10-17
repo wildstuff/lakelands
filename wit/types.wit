@@ -183,6 +183,35 @@ interface types {
         annotations: list<tuple<string, json>>,
     }
 
+    /// An input of a function: a field's declaration, with `type` left out
+    /// of an input a type binds as a field of any kind.
+    record function-input {
+        name: field-name,
+        /// Left out of an input of any kind.
+        %type: option<field-type>,
+        required: bool,
+        authority: authority,
+        derived: option<condition>,
+        function: option<string>,
+        computed-at: option<computed-at>,
+        depends-on: list<field-name>,
+        on-input-change: on-input-change,
+        /// The value the field takes when its record comes to exist and
+        /// the creating write gives it none; on an authored field of a
+        /// type's own alone.
+        initial: option<json>,
+        sensitive: bool,
+        searchable: bool,
+        /// Whether a source's values are sealed under its key.
+        erasable: bool,
+        description: option<string>,
+        label: option<string>,
+        embed: option<embed-decl>,
+        /// The host's own marks, by namespaced key (`acme.icon`), each a
+        /// JSON value; Lakelands never reads them.
+        annotations: list<tuple<string, json>>,
+    }
+
     /// What a vector field is the embedding of: text fields of the same
     /// record, joined in order with one blank line, and the model.
     record embed-decl {
@@ -368,7 +397,7 @@ interface types {
     record function-decl {
         name: string,
         backing: string,
-        inputs: list<field-decl>,
+        inputs: list<function-input>,
         expr: option<condition>,
         config: option<json>,
         description: option<string>,

@@ -32,8 +32,9 @@ use lakelands_api::id::{
 };
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
-    Assignment, Authority, ComputedAt, FieldDecl, FieldType, Measure, OnInputChange, RelationDecl,
-    Risk, StorageKind, TriggerDecl, TypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewParam,
+    Assignment, Authority, ComputedAt, FieldDecl, FieldType, FunctionInput, Measure, OnInputChange,
+    RelationDecl, Risk, StorageKind, TriggerDecl, TypeDecl, VerbDecl, VerbEffect, VerbScope,
+    ViewDecl, ViewParam,
 };
 use lakelands_api::principal::{Access, Grants, Principal, PrincipalKind, TypeGrants};
 use lakelands_api::query::{Pattern, Search, SearchMode, Step, VectorTerm, Walk};
@@ -1034,7 +1035,7 @@ pub async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) {
     let function = |name: &str, input: &str, expr: &str| FunctionDecl {
         name: name.into(),
         backing: "expr".into(),
-        inputs: vec![text(input)],
+        inputs: vec![FunctionInput::typed(text(input))],
         expr: Some(Condition::from(expr)),
         config: Value::Null,
         description: Some(format!("{name} of {input}")),

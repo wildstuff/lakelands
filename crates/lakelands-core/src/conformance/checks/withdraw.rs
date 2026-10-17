@@ -5,7 +5,7 @@
 //! force reads is not withdrawn, and a name not in force is not either.
 
 use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{RelationDecl, StorageKind, TriggerDecl};
+use lakelands_api::ontology::{FunctionInput, RelationDecl, StorageKind, TriggerDecl};
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::seam::Seams;
 use lakelands_api::write::{
@@ -67,7 +67,7 @@ fn function(name: &str) -> FunctionDecl {
     FunctionDecl {
         name: name.into(),
         backing: "expr".into(),
-        inputs: vec![field("n", StorageKind::Number)],
+        inputs: vec![FunctionInput::typed(field("n", StorageKind::Number))],
         expr: Some("n * 2".into()),
         config: serde_json::Value::Null,
         description: None,
