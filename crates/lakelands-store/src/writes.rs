@@ -853,7 +853,13 @@ fn member_of(
         now,
     };
     let on = o.ty(&set.of)?;
-    Ok(across::holds((heads, o, on), record, &e, scope, (settings, false)))
+    Ok(across::holds(
+        (heads, o, on),
+        record,
+        &e,
+        scope,
+        (settings, false),
+    ))
 }
 
 /// What a path reads across an edge at the head of `view`, to `max`
@@ -2966,7 +2972,7 @@ impl Decide<'_> {
                 }
             }
             self.across((before, after), (change, &own), &mut far)?;
-            self.viewed((before, after), &mut far)
+            self.viewed(change, (before, after), &mut far)
         })();
         if let Err(e) = decided {
             match prior {
@@ -4758,14 +4764,19 @@ impl Call<'_> {
             whole
         });
         // The types it declares, and the lake it leaves where a set holds a
-        // view, whose sets it decides (lakelands#1185).
+        // view or a trigger watches one, whose sets it decides and whose
+        // views it judges (lakelands#1185).
         let declared: BTreeSet<TypeName> = (declarations.iter())
             .filter_map(|d| match d {
                 Declaration::Type(t) => Some(t.name.clone()),
                 _ => None,
             })
             .collect();
-        let of_view = |s: &ObjectSetDecl, o: &Ontology| o.ty(&s.of).is_ok_and(|t| t.view.is_some());
+        let of_view = |ty: &TypeName, o: &Ontology| o.ty(ty).is_ok_and(|t| t.view.is_some());
+        let reads_view = |o: &Ontology| {
+            (o.object_sets.values()).any(|e| of_view(&e.decl.of, o))
+                || (o.triggers.values()).any(|e| of_view(&e.decl.on, o))
+        };
         // Of those, only a type, a set, a function or a setting moves one.
         let moves = |d: &Declaration| {
             !matches!(
@@ -4773,10 +4784,21 @@ impl Call<'_> {
                 Declaration::Verb(_) | Declaration::Trigger(_) | Declaration::ValueType(_)
             )
         };
-        let viewing = declarations.iter().any(moves)
-            && (w.ontology.object_sets.values()).any(|e| of_view(&e.decl, &w.ontology))
-            || (declarations.iter())
-                .any(|d| matches!(d, Declaration::ObjectSet(s) if after.as_ref().is_some_and(|a| of_view(s, a))));
+        // A set or a trigger it declares that reads a view.
+        let reads = |d: &Declaration| {
+            let ty = match d {
+                Declaration::ObjectSet(s) => &s.of,
+                Declaration::Trigger(t) => &t.on,
+                _ => return false,
+            };
+            let declared = |d: &Declaration| matches!(d, Declaration::Type(t) if &t.name == ty);
+            match declarations.iter().find(|d| declared(d)) {
+                Some(Declaration::Type(t)) => t.view.is_some(),
+                _ => of_view(ty, &w.ontology),
+            }
+        };
+        let viewing = declarations.iter().any(moves) && reads_view(&w.ontology)
+            || declarations.iter().any(reads);
         let left = (viewing && !telling).then(|| {
             let mut left = w.ontology.clone();
             (declarations.iter()).for_each(|d| left.put(d.clone(), 0, None));
@@ -4804,7 +4826,9 @@ impl Call<'_> {
                 Declaration::ObjectSet(set) if again.contains(&set.of) => (None, Vec::new()),
                 Declaration::ObjectSet(_) if telling => (None, Vec::new()),
                 // A set of a view is decided over its kept records, below.
-                Declaration::ObjectSet(set) if after.as_ref().is_some_and(|a| of_view(set, a)) => {
+                Declaration::ObjectSet(set)
+                    if after.as_ref().is_some_and(|a| of_view(&set.of, a)) =>
+                {
                     (None, Vec::new())
                 }
                 Declaration::ObjectSet(set) => {

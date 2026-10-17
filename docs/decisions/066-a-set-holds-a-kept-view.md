@@ -103,13 +103,48 @@ author not shown the set the refusal names no set: one that moves a
 source is refused `no_longer_declarable`, naming the source the author
 is changing, and any other `not_granted`.
 
+### A trigger on a kept view fires where a group's row is put
+
+A trigger's `on` may name a view the lake keeps (lakelands#1185), as a
+set's `of` may; on a view the lake does not keep it is refused
+`watches_view`, naming the trigger and saying to set `view_kept.<view>`
+first, judged where a set of declarations is decided, as a set's is.
+
+It fires from the run of the fold's hooks that decides the sets: at a
+write, for each group the hooks put, where the group arrived or a field
+of its row on the whole face moved, and its `when` holds over the row
+after. `previous` and `changed` read the row before; `created()` holds,
+and the firing says `created`, where the group had no row on the whole
+face before, again after it ended. A group that ends fires nothing:
+there is no row after. Where the fold had flagged the group as not
+exact, or a view it reads through holds such a group, the row before
+is none, since a read computes that face from members the write has
+moved since: a trigger there fires as on a group that arrived, except
+that the firing does not say `created`. The guard reads the settings as
+they stand before the write, as at a record, while the row after is
+computed under the settings the write leaves. The firing names the view
+and the group's key, is caused by the write's event, lands after the
+sets' memberships, as across an edge, and says the write's kind of
+change; `on_changes`, `when_strict` and the depth bound (021) apply as
+at a record. A write of a setting a view's
+measure names puts every group's row again, and fires where a row
+moved. A set of declarations that makes the view again fires nothing:
+a trigger fires at a write, as at a record.
+
+What would leave the view without its rows is refused while a trigger
+watches it as while a set holds it, naming the trigger
+(`view_kept_for_set`, `view_source_stepped`; their to-do says to
+withdraw it first). Its firings count toward the bound, and the trigger
+is a reader's only where nothing of a source is held from it, by the
+same rule as a set: its `trigger_fired` is told to no other reader.
+
 ### The bound counts them
 
-Every membership these decisions move counts toward the lake's
-`max_set_changes` (055), with what the same append moves across an edge,
-and so does every group a remake moves. Past it the write is refused
-`too_large`, naming the set to a caller shown it and nothing to another,
-and nothing is appended.
+Every membership these decisions move, and every firing on a view,
+counts toward the lake's `max_set_changes` (055), with what the same
+append moves across an edge, and so does every group a remake moves.
+Past it the write is refused `too_large`, naming the set or the trigger
+to a caller shown it and nothing to another, and nothing is appended.
 
 ### A set of a view is a reader's only where nothing of a source is held from it
 
@@ -156,8 +191,6 @@ them would mean running a migration twice.
 
 ## What it is not
 
-- **Not a trigger on a view.** A trigger on a kept view is the next
-  step, on the same decision (lakelands#1185).
 - **Not free.** A write of a record a set's view reads pays the view's
   kept share in the write path too: about what the fold pays for the
   same write, since the hooks read the group's kept row and an
@@ -173,6 +206,7 @@ them would mean running a migration twice.
   it while the view holds such a group. A write that decides every group
   of a view (a setting a set's `where` names, or a write that turns a
   group the view reads flagged before or after it) pays that for each
-  group while the view reads such a group.
+  group while the view reads such a group. A trigger on a view makes
+  the writes of its sources pay the same as a set of it would.
 - **Not per face.** A reader who is not shown the set reads the view,
   and filters it by its own `where`, as before.

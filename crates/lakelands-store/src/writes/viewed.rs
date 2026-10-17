@@ -1,24 +1,57 @@
-//! An object set of a view the lake keeps
+//! An object set of a view the lake keeps, and a trigger on one
 //! (`docs/decisions/066-a-set-holds-a-kept-view.md`).
 //!
-//! A membership lands in the append of the write that moves it, and the
-//! fold never appends (049), so the write path computes the view's rows
-//! itself: it runs the fold's own hooks over a [`Staged`] of its own and no
-//! projection, from the same records the fold will read, and decides each
-//! group they put or end. A set of declarations, or a setting a view's
-//! expressions name, makes the view again the same way; a setting a set's
-//! `where` names decides every group of the set's view.
+//! A membership or a firing lands in the append of the write that moves
+//! it, and the fold never appends (049), so the write path computes the
+//! view's rows itself: it runs the fold's own hooks over a [`Staged`] of
+//! its own and no projection, from the same records the fold will read,
+//! and decides each group they put or end. A set of declarations, or a
+//! setting a view's expressions name, makes the view again the same way; a
+//! setting a set's `where` names decides every group of the set's view.
 
 use super::*;
 use crate::kept::{self, At};
 use crate::lake::Staged;
+
+/// A set of a view, or a trigger on one: what reads the view's rows.
+#[derive(Clone, Copy)]
+enum Reader<'o> {
+    Set(&'o ObjectSetDecl),
+    Trigger(&'o TriggerDecl),
+}
+
+impl Reader<'_> {
+    /// The view it reads.
+    fn view(&self) -> &TypeName {
+        match self {
+            Reader::Set(s) => &s.of,
+            Reader::Trigger(t) => &t.on,
+        }
+    }
+
+    fn declaration(&self) -> Declaration {
+        match self {
+            Reader::Set(s) => Declaration::ObjectSet((*s).clone()),
+            Reader::Trigger(t) => Declaration::Trigger((*t).clone()),
+        }
+    }
+}
+
+/// The sets and the triggers of `o` that read a view.
+fn readers(o: &Ontology) -> impl Iterator<Item = Reader<'_>> {
+    let sets = o.object_sets.values().map(|e| Reader::Set(&e.decl));
+    let triggers = o.triggers.values().map(|e| Reader::Trigger(&e.decl));
+    sets.chain(triggers)
+        .filter(|r| viewed(o, r.view()).is_some())
+}
 
 /// What one append holds of the views its sets of views read: the fold's
 /// hooks run over its own [`Staged`], with the settings as its writes
 /// leave them. A write refused is undone in it ([`kept::undo`]).
 #[derive(Default)]
 pub(crate) struct Viewed {
-    /// The views a set holds, and every view they read through.
+    /// The views a set holds or a trigger watches, and every view they
+    /// read through.
     views: BTreeSet<TypeName>,
     /// The types whose records those views read.
     reads: BTreeSet<TypeName>,
@@ -34,13 +67,13 @@ pub(crate) struct Viewed {
 }
 
 impl Viewed {
-    /// What the sets of views of `o` read.
+    /// What the sets of views of `o`, and its triggers on views, read.
     fn of(o: &Ontology) -> Viewed {
         let mut v = Viewed::default();
-        let sets = o.object_sets.values().map(|e| &e.decl);
         let mut next = Vec::new();
-        for s in sets.filter(|s| viewed(o, &s.of).is_some()) {
-            next.push(s.of.clone());
+        for r in readers(o) {
+            next.push(r.view().clone());
+            let Reader::Set(s) = r else { continue };
             let at = [Place::ObjectSet {
                 name: s.name.clone(),
             }];
@@ -100,15 +133,17 @@ fn viewed<'o>(o: &'o Ontology, ty: &TypeName) -> Option<&'o TypeDecl> {
 }
 
 impl Decide<'_> {
-    /// The memberships a write that leaves `after` (it was `before`) moves
-    /// in the sets of the views that read it, after what it sets off
-    /// across an edge: each group the fold's hooks put or end at its event
-    /// is decided on its whole face, and counted with `out` toward
-    /// `max_set_changes`; at a write of a setting a set's `where` names,
-    /// every group of its view. A write that ends the keeping of such a
-    /// view is refused. A write of a type no such view reads pays nothing.
+    /// The memberships a write of the kind `change` that leaves `after`
+    /// (it was `before`) moves in the sets of the views that read it, and
+    /// the triggers it fires on them, after what it sets off across an
+    /// edge: each group the fold's hooks put or end at its event is decided
+    /// on its whole face, and counted with `out` toward `max_set_changes`;
+    /// at a write of a setting a set's `where` names, every group of its
+    /// view. A write that ends the keeping of such a view is refused. A
+    /// write of a type no such view reads pays nothing.
     pub(super) fn viewed(
         &mut self,
+        change: ChangeKind,
         (before, after): (Option<&StoredRecord>, &StoredRecord),
         out: &mut Vec<(Draft, Option<Change>)>,
     ) -> Result<()> {
@@ -120,7 +155,7 @@ impl Decide<'_> {
         let setting = after.ty.as_str() == SETTING_TYPE;
         let moves = v.reads.contains(&after.ty) || setting && v.named.contains(after.key.as_str());
         let decided = match moves {
-            true => self.viewed_by(&mut v, (before, after), out),
+            true => self.viewed_by(&mut v, change, (before, after), out),
             false => Ok(()),
         };
         self.pending.viewed = Some(v);
@@ -132,6 +167,7 @@ impl Decide<'_> {
     fn viewed_by(
         &self,
         v: &mut Viewed,
+        change: ChangeKind,
         (before, after): (Option<&StoredRecord>, &StoredRecord),
         out: &mut Vec<(Draft, Option<Change>)>,
     ) -> Result<()> {
@@ -147,7 +183,7 @@ impl Decide<'_> {
             };
         }
         v.staged.undo = Some(kept::Undo::default());
-        let decided = self.viewed_run(v, (before, after), out);
+        let decided = self.viewed_run(v, change, (before, after), out);
         match decided {
             Ok(()) => v.staged.undo = None,
             Err(_) => {
@@ -161,10 +197,11 @@ impl Decide<'_> {
     }
 
     /// The hooks run over `v` for the write, and the memberships of every
-    /// group they moved decided into `out`.
+    /// group they moved decided into `out`, and the triggers they fire.
     fn viewed_run(
         &self,
         v: &mut Viewed,
+        change: ChangeKind,
         (before, after): (Option<&StoredRecord>, &StoredRecord),
         out: &mut Vec<(Draft, Option<Change>)>,
     ) -> Result<()> {
@@ -185,15 +222,15 @@ impl Decide<'_> {
         let setting = (after.ty.as_str() == SETTING_TYPE).then(|| after.key.as_str());
         for view in v.views.iter().filter(|_| setting.is_some()) {
             if !kept::whole(&at, staged, view)? {
-                let reads = |s: &&ObjectSetDecl| {
-                    &s.of == view
-                        || sources_read(&w.ontology, &s.of)
+                let reads = |r: &Reader| {
+                    r.view() == view
+                        || sources_read(&w.ontology, r.view())
                             .iter()
                             .any(|(t, _)| t == view)
                 };
-                let held = w.ontology.object_sets.values().map(|e| &e.decl);
-                return Err(match held.filter(reads).find(|s| named(s)) {
-                    Some(s) => refused_for(s, Case::ViewKeptForSet { ty: view.clone() }),
+                let shown = |r: &Reader| sees.shows(&r.declaration());
+                return Err(match readers(&w.ontology).filter(reads).find(shown) {
+                    Some(r) => refused_for(r, Case::ViewKeptForSet { ty: view.clone() }),
                     None => refused(Refusal::NotGranted),
                 });
             }
@@ -226,13 +263,29 @@ impl Decide<'_> {
             })?;
         }
         let mut mine = BTreeMap::new();
+        let mut fired = Vec::new();
         for (view, key) in &moved {
             let sets = (w.ontology.object_sets.values()).map(|e| &e.decl);
             let sets: Vec<&ObjectSetDecl> = sets.filter(|s| &s.of == view).collect();
-            if sets.is_empty() {
+            let triggers = w.ontology.triggers.values().map(|e| &e.decl);
+            let on = |t: &&TriggerDecl| &t.on == view && fires_on(t, change);
+            let triggers: Vec<&TriggerDecl> = triggers.filter(on).collect();
+            if sets.is_empty() && triggers.is_empty() {
                 continue;
             }
             let row = kept::face(&at, staged, view, key)?;
+            // A trigger fires where the group's row is put, it arrived or
+            // its fields moved, and its `when` holds over the row after,
+            // reading the row before; an ended group fires nothing.
+            for t in triggers.into_iter().filter(|_| row.is_some()) {
+                let row = row.as_ref().expect("a row");
+                let (had, was) = kept::before(&at, staged, (view, key))?;
+                let put = was.as_ref().is_none_or(|was| was.fields != row.fields);
+                if put && self.fires(t, was.as_ref(), row)? {
+                    let body = self.firing(t, (view, key), (change, !had));
+                    fired.push((t, body));
+                }
+            }
             for s in sets {
                 let of = (s.name.clone(), view.clone(), key.clone());
                 let was = match mine.get(&of) {
@@ -259,6 +312,21 @@ impl Decide<'_> {
                 }
             }
         }
+        // The firings land after the memberships, as across an edge.
+        for (t, body) in fired {
+            let draft = Draft {
+                cause: Some(self.next),
+                context: self.call.context,
+                ..Draft::system(self.now, body)
+            };
+            out.push((draft, None));
+            if self.bound && self.pending.across + out.len() > max {
+                let shown = sees.shows(&Declaration::Trigger(t.clone()));
+                let field = shown.then(|| t.name.as_str().into());
+                let reason = Refusal::TooLarge { max: max as u32 };
+                return Err(Error::Refused { field, reason });
+            }
+        }
         Ok(())
     }
 }
@@ -279,39 +347,47 @@ impl Call<'_> {
     /// a view it makes again or whose `where` names a setting it stamps
     /// again, `declared` being the types it declares. Each is decided over
     /// every group of its view, as the fold's hooks leave it. A set of a
-    /// view the lake would not keep is refused, and so is a change of a
-    /// field such a view reads that the lake computes again.
+    /// view the lake would not keep is refused, and so is a trigger on one,
+    /// and a change of a field such a view reads that the lake computes
+    /// again. A trigger decides nothing at its declaration.
     pub(super) fn viewed_sets(
         &self,
         (w, after): (&Writer, &Ontology),
         (declared, again, settings): Moves<'_>,
         (cause, now): (Position, Timestamp),
     ) -> Result<Vec<Draft>> {
-        let sets = after.object_sets.values().map(|e| &e.decl);
-        let sets: Vec<&ObjectSetDecl> = sets.filter(|s| viewed(after, &s.of).is_some()).collect();
-        if sets.is_empty() {
+        let all: Vec<Reader> = readers(after).collect();
+        if all.is_empty() {
             return Ok(Vec::new());
         }
+        let sets: Vec<&ObjectSetDecl> = all
+            .iter()
+            .filter_map(|r| match r {
+                Reader::Set(s) => Some(*s),
+                Reader::Trigger(_) => None,
+            })
+            .collect();
         let sees = Sight::held(self.who, after);
         let shown = |s: &ObjectSetDecl| sees.shows(&Declaration::ObjectSet(s.clone()));
         // A field such a view reads that the set of declarations computes
-        // again changes records the write path does not hold.
-        for s in &sets {
-            for (source, fields) in sources_read(after, &s.of) {
-                if again.get(&source).is_some_and(|f| !f.is_disjoint(&fields)) {
-                    let case = Case::ViewSourceStepped {
-                        ty: s.of.clone(),
-                        source: source.clone(),
-                    };
-                    return Err(match shown(s) {
-                        true => refused_for(s, case),
-                        false if declared.contains(&source) => {
-                            invalid(Case::NoLongerDeclarable { ty: source })
-                        }
-                        false => refused(Refusal::NotGranted),
-                    });
-                }
-            }
+        // again changes records the write path does not hold: refused
+        // naming the first reader of it the author is shown.
+        let stepped = all.iter().filter_map(|r| {
+            let reads = sources_read(after, r.view()).into_iter();
+            let mut moved = reads.filter(|(s, f)| again.get(s).is_some_and(|a| !a.is_disjoint(f)));
+            moved.next().map(|(source, _)| (*r, source))
+        });
+        let stepped: Vec<(Reader, TypeName)> = stepped.collect();
+        if let Some((r, source)) = stepped.iter().find(|(r, _)| sees.shows(&r.declaration())) {
+            let ty = r.view().clone();
+            let source = source.clone();
+            return Err(refused_for(*r, Case::ViewSourceStepped { ty, source }));
+        }
+        if let Some((_, source)) = stepped.into_iter().next() {
+            return Err(match declared.contains(&source) {
+                true => invalid(Case::NoLongerDeclarable { ty: source }),
+                false => refused(Refusal::NotGranted),
+            });
         }
         // A view whose setting, or a setting its expressions name, the set
         // stamps again is made again like one it declares.
@@ -345,6 +421,21 @@ impl Call<'_> {
             false => kept::step(&at, &mut staged, None, declared, cause)?,
         };
         let changed = |s: &ObjectSetDecl| w.ontology.set(&s.name) != Some(s);
+        // A trigger on a view the lake would not keep could never fire.
+        for r in &all {
+            let Reader::Trigger(t) = r else { continue };
+            if !kept::whole(&at, &staged, &t.on)? {
+                let ty = t.on.clone();
+                // One that watched it before is told the keep stays.
+                let was = w.ontology.triggers.get(t.name.as_str());
+                let was = was.is_some_and(|e| e.decl.on == t.on);
+                return Err(match (sees.shows(&r.declaration()), was) {
+                    (false, _) => refused(Refusal::NotGranted),
+                    (true, true) => refused_for(*r, Case::ViewKeptForSet { ty }),
+                    (true, false) => refused_for(*r, Case::WatchesView { ty }),
+                });
+            }
+        }
         let max = self.lake.limits.max_set_changes as usize;
         let mut out = Vec::new();
         // A set whose `where` names a setting the set stamps again.
@@ -353,10 +444,11 @@ impl Call<'_> {
         for s in &sets {
             if !kept::whole(&at, &staged, &s.of)? {
                 let ty = s.of.clone();
+                let r = Reader::Set(s);
                 return Err(match (shown(s), w.ontology.set(&s.name)) {
                     (false, _) => refused(Refusal::NotGranted),
-                    (true, Some(_)) => refused_for(s, Case::ViewKeptForSet { ty }),
-                    (true, None) => refused_for(s, Case::SetOfView { ty }),
+                    (true, Some(_)) => refused_for(r, Case::ViewKeptForSet { ty }),
+                    (true, None) => refused_for(r, Case::SetOfView { ty }),
                 });
             }
             let names = |m: &&ObjectSetDecl| changed(m) && declare::names_set(after, s, &m.name);
@@ -399,17 +491,29 @@ impl Call<'_> {
     }
 }
 
-/// The refusal, by `case`, of a change that would leave the set `s`
-/// without its rows, to an author shown the set: said of the set where it
-/// moves a source, and of its `of` where the view would not be kept.
-fn refused_for(s: &ObjectSetDecl, case: Case) -> Error {
-    let place = Place::ObjectSet {
-        name: s.name.clone(),
+/// The refusal, by `case`, of a change that would leave `r`, a set or a
+/// trigger, without its rows, to an author shown it: said of it where the
+/// change moves a source, and of its `of` or `on` where the view would not
+/// be kept.
+fn refused_for(r: Reader, case: Case) -> Error {
+    let (place, member) = match r {
+        Reader::Set(s) => (
+            Place::ObjectSet {
+                name: s.name.clone(),
+            },
+            "of",
+        ),
+        Reader::Trigger(t) => (
+            Place::Trigger {
+                name: t.name.clone(),
+            },
+            "on",
+        ),
     };
     let said = Said::from(case).within(place);
     match said.case {
         Case::ViewSourceStepped { .. } => invalid(said),
-        _ => declare::invalid_field(&"of".into(), said),
+        _ => declare::invalid_field(&member.into(), said),
     }
 }
 
@@ -439,12 +543,12 @@ pub(crate) fn sources_read(o: &Ontology, ty: &TypeName) -> Vec<(TypeName, BTreeS
 pub(crate) type Stepped = BTreeMap<TypeName, Option<BTreeSet<FieldName>>>;
 
 /// Refuses a migration or a value type's that moves, by `stepped`, a value
-/// a set's view reads: a field its sources read there, or any field where
-/// one they read is computed. Its step changes records the write path does
-/// not hold, so it is refused naming the first such set where its author
-/// is shown it; to another, as no longer declarable where it migrates the
-/// type `changed`, and as not granted where it renames a value type's
-/// values. One that moves nothing a view reads makes the view again with
+/// the view of a set or a trigger reads: a field its sources read there,
+/// or any field where one they read is computed. Its step changes records
+/// the write path does not hold, so it is refused naming the first such
+/// set or trigger its author is shown; where it is shown none, as no
+/// longer declarable where it migrates the type `changed`, and as not
+/// granted where it renames a value type's values. One that moves nothing a view reads makes the view again with
 /// the same records, and moves no membership.
 pub(crate) fn stepped_under(
     o: &Ontology,
@@ -465,18 +569,21 @@ pub(crate) fn stepped_under(
         }
         None => false,
     };
-    let sets = o.object_sets.values().map(|e| &e.decl);
-    for s in sets.filter(|s| viewed(o, &s.of).is_some()) {
-        let reads = sources_read(o, &s.of).into_iter();
-        if let Some((source, _)) = reads.into_iter().find(|(t, f)| moves(t, f)) {
-            let shown = Sight::held(who, o).shows(&Declaration::ObjectSet(s.clone()));
-            let ty = s.of.clone();
-            return Err(match (shown, changed) {
-                (true, _) => refused_for(s, Case::ViewSourceStepped { ty, source }),
-                (false, Some(ty)) => invalid(Case::NoLongerDeclarable { ty: ty.clone() }),
-                (false, None) => refused(Refusal::NotGranted),
-            });
-        }
+    let stepped = readers(o).filter_map(|r| {
+        let mut reads = sources_read(o, r.view()).into_iter();
+        reads
+            .find(|(t, f)| moves(t, f))
+            .map(|(source, _)| (r, source))
+    });
+    let stepped: Vec<(Reader, TypeName)> = stepped.collect();
+    let sees = Sight::held(who, o);
+    if let Some((r, source)) = stepped.iter().find(|(r, _)| sees.shows(&r.declaration())) {
+        let (ty, source) = (r.view().clone(), source.clone());
+        return Err(refused_for(*r, Case::ViewSourceStepped { ty, source }));
     }
-    Ok(())
+    match (stepped.is_empty(), changed) {
+        (true, _) => Ok(()),
+        (false, Some(ty)) => Err(invalid(Case::NoLongerDeclarable { ty: ty.clone() })),
+        (false, None) => Err(refused(Refusal::NotGranted)),
+    }
 }

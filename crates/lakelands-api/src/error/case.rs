@@ -979,11 +979,11 @@ catalog! {
         ViewCycle { chain: Names } => "its view closes a cycle, reading {chain} in turn; a view may not read itself, through other views or directly",
         /// A view's field nothing fills.
         ViewFieldUnfilled { field: FieldName } => "its field `{field}` is neither a `group_by` field nor a measure of its view, so nothing would fill it",
-        /// A view a set holds no longer kept.
-        ViewKeptForSet { #[serde(rename = "type")] ty: TypeName } => "it holds `{ty}`, a view the lake keeps, and the view stays kept while the set holds it: withdraw the set first",
+        /// A view a set holds, or a trigger watches, no longer kept.
+        ViewKeptForSet { #[serde(rename = "type")] ty: TypeName } => "it reads `{ty}`, a view the lake keeps, and the view stays kept while a set holds it or a trigger watches it: withdraw it first",
         /// A change of a view's source that no write decides a set over the
-        /// view again for.
-        ViewSourceStepped { #[serde(rename = "type")] ty: TypeName, source: TypeName } => "it holds `{ty}`, a view over `{source}`, and the change moves records of `{source}` where no write decides the set again: withdraw the set, make the change, then declare the set again",
+        /// view, or a trigger on it, again for.
+        ViewSourceStepped { #[serde(rename = "type")] ty: TypeName, source: TypeName } => "it reads `{ty}`, a view over `{source}`, and the change moves records of `{source}` where no write decides it again: withdraw it, make the change, then declare it again",
         /// A view's `key` that names other fields than its `group_by`.
         ViewKey { group_by: Option<Names> } => "a view's records are keyed by its `group_by`[ ({group_by})|, and it has none]; its `key` names the same fields in that order, or is left out",
         /// A stored relation on a view.
@@ -996,8 +996,8 @@ catalog! {
         VocabularyReserved { #[serde(rename = "type")] ty: TypeName, link: bool } => "the host vocabulary's type `{ty}` is reserved: [{?link}the store derives the link types under `sys.link.` from relations itself|the store keeps it for its own reader]; nothing was appended, and the lake is not opened for writing until the vocabulary names it otherwise",
         /// A trigger on a link type of a relation carried by a reference.
         WatchesViaLinks { #[serde(rename = "type")] ty: TypeName, relation: RelationName, via: FieldName, owner: Box<TypeName> } => "it watches `{ty}`, but `{relation}` is carried by a reference field, not by link records; watch `{owner}` with `changed({via})`",
-        /// A trigger on a view.
-        WatchesView { #[serde(rename = "type")] ty: TypeName } => "it watches `{ty}`, a view; a view is never written, so no write of it fires a trigger",
+        /// A trigger on a view the lake does not keep.
+        WatchesView { #[serde(rename = "type")] ty: TypeName } => "it watches `{ty}`, a view the lake does not keep, and a trigger fires on rows the lake keeps: set `view_kept.{ty}` to keep it first",
         /// A write effect that sets nothing.
         WritesNothing => "it writes nothing",
 

@@ -50,6 +50,7 @@ mod ingest;
 mod initial;
 mod judged;
 mod kept_sets;
+mod kept_triggers;
 mod key_versions;
 mod keys;
 mod landing;
@@ -453,6 +454,10 @@ pub const ALL: &[Check] = &[
     kept_sets::KEPT_SET_REMADE,
     kept_sets::KEPT_SET_BOUND,
     kept_sets::KEPT_SET_HELD,
+    kept_triggers::KEPT_TRIGGER,
+    kept_triggers::KEPT_TRIGGER_DEEP,
+    kept_triggers::KEPT_TRIGGER_REFUSED,
+    kept_triggers::KEPT_TRIGGER_BOUND,
     link_triggers::LINK_TRIGGER_FIRES,
     link_triggers::VIA_LINK_TYPE_REFUSED,
     bundles::BUNDLE_WHOLE,
