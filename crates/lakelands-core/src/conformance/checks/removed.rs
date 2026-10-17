@@ -16,7 +16,7 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     REMOVED_BEFORE = a_sources_values_before_a_time_read_as_erased_at_every_position,
-    "065: `remove_values_preflight` of what `tracker` wrote before the first event of the second day names the events selected and the first position it does not reach, the records holding a value it takes, the values per field, the two records `tracker` alone wrote as retired, the one with an author's `note` as kept, and not one an author retired and another source made again with nothing but its key, the derived field and the kept view computed again, and the record left breaking an admitting constraint over the taken field and one over the field derived from it; `remove_values` with that report appends one `values_removed` and the two retirements; after it the record made again stays, a record `web` also wrote a value on before the cut is kept, not retired, and keeps `web`'s value, which is not `tracker`'s and so not taken, a reference `tracker` wrote stays, as a field that identifies a record, the kept view counts what is left, and the report says what is computed again; the kept record holds its `note` and no `duration` nor what is derived from it, its provenance saying `erased` and naming `tracker`, at the head and `as_of` before the act, the second day's records keep theirs, and a rebuild answers the same; a field that is not erasable is taken all the same; a stale report is refused, and so is a time past the year 9999; a repeat appends nothing, and a selection of nothing appends nothing; a field declared `required` that the act leaves empty is listed among the breaches, naming the field, and said, and the act is not refused for it, though the author's next write of that record is"
+    "065: `remove_values_preflight` of what `tracker` wrote before the first event of the second day names the events selected and the first position it does not reach, the records holding a value it takes, the values per field, the two records `tracker` alone wrote as retired, the one with an author's `note` as kept, and not one an author retired and another source made again with nothing but its key, the derived field and the kept view computed again, the record left breaking an admitting constraint over the taken field and one over the field derived from it, and the `tour` whose reference names a record it retires, said as left naming a retired one; `remove_values` with that report appends one `values_removed` and the two retirements, and names that `tour` as its preflight did; after it the record made again stays, a record `web` also wrote a value on before the cut is kept, not retired, and keeps `web`'s value, which is not `tracker`'s and so not taken, a reference `tracker` wrote stays, as a field that identifies a record, the kept view counts what is left, and the report says what is computed again; the kept record holds its `note` and no `duration` nor what is derived from it, its provenance saying `erased` and naming `tracker`, at the head and `as_of` before the act, the second day's records keep theirs, and a rebuild answers the same; a field that is not erasable is taken all the same; a stale report is refused, and so is a time past the year 9999; a repeat appends nothing, and a selection of nothing appends nothing; a field declared `required` that the act leaves empty is listed among the breaches, naming the field, and said, and the act is not refused for it, though the author's next write of that record is"
 );
 
 check!(
@@ -128,6 +128,17 @@ fn shape(r: &RemoveReport) -> Value {
     })
 }
 
+/// What a report leaves naming a retired record: the type, the relation,
+/// how many records, and the first of them as `<type> <key>`.
+fn stranded(r: &RemoveReport) -> Vec<(&str, &str, u64, Vec<String>)> {
+    let of = |r: &lakelands_api::write::PurgeReference| {
+        (r.first.iter().map(|f| format!("{} {}", f.ty, f.key))).collect()
+    };
+    let all = r.references.iter();
+    all.map(|r| (r.ty.as_str(), r.relation.as_str(), r.records, of(r)))
+        .collect()
+}
+
 /// `key`'s fields of `ty` as of `at` (the head when `None`), with
 /// provenance; `None` where it is not found.
 async fn at(
@@ -186,6 +197,13 @@ async fn a_sources_values_before_a_time_read_as_erased_at_every_position(store: 
         .await
         .must("ingesting the first day")?;
     l.upsert("visit", "v3", json!({"note": "late"})).await?;
+    // A `tour` names `v1`, which the act retires: the reference is left
+    // naming a retired record, and the report says so.
+    l.declare_json(json!({"declare": "type", "name": "tour",
+        "fields": [{"name": "stop", "type": {"kind": "reference", "target": "visit"}}],
+        "relations": [{"name": "stops", "target": "visit", "via": "stop"}]}))
+        .await?;
+    l.upsert("tour", "t1", json!({"stop": "v1"})).await?;
     // `web` writes a value of its own on `v7`, before the cut: it is not
     // tracker's, so it is not taken, and it keeps the record.
     let v7 = source_record("visit", "v7", json!({"id": "v7", "place": "Oslo"}));
@@ -229,9 +247,16 @@ async fn a_sources_values_before_a_time_read_as_erased_at_every_position(store: 
             && says("2 records of `visit` are retired")
             && says("2 records of `visit` stay")
             && says("`visit.twice` is computed again.")
-            && says("The view `by_duration` is computed again."),
-        "the report says in sentences what it takes, retires, keeps and computes again: \
-         {said:?}"
+            && says("The view `by_duration` is computed again.")
+            && says("1 record of `tour` is left naming a retired one by `stops`."),
+        "the report says in sentences what it takes, retires, keeps and computes again, and \
+         what it leaves naming a retired record: {said:?}"
+    );
+    ensure!(
+        stranded(&report) == [("tour", "stops", 1, vec!["tour t1".to_string()])],
+        "the preflight names `t1`, whose `stops` names `v1`, as left naming a retired record: \
+         {:?}",
+        report.references
     );
     ensure!(
         report.log_events > 0 && !report.report_id.is_empty() && report.reclaimed.is_none(),
@@ -258,6 +283,7 @@ async fn a_sources_values_before_a_time_read_as_erased_at_every_position(store: 
     ensure!(
         kinds == ["values_removed", "record_retired", "record_retired"]
             && shape(&done) == shape(&report)
+            && stranded(&done) == stranded(&report)
             && done.reclaimed.is_some(),
         "the act appends `values_removed` and two retirements, answers its preflight's report \
          and reclaims; it appended {kinds:?} and answered {done:?}"

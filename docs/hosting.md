@@ -378,7 +378,16 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     redacted value of a field that is not erasable in plaintext, as for
     forgetting: a host that relays the feed relays it;
   - **after a crash** between its steps, open a writer, or repeat the
-    act: either finishes it and appends nothing again.
+    act: either finishes it and appends nothing again;
+  - **its cost** grows with the log, not with the selection: the act
+    is a rebuild. Taking back half of a lake of one event a record, in
+    a release build, held the writer 9.3 s at 100 000 records and
+    149 s at 1 000 000 on SQLite, and 77 s and 891 s (14.8 min) on
+    PostgreSQL, about 1.4 times a plain rebuild after it (644 s); that
+    PostgreSQL database was 3.1 GB. The preflight's `expected_ms`
+    under-reads the act on both: 59 s at 1 000 000 on SQLite and 402 s
+    on PostgreSQL, 2.5 and 2.2 times too low. Plan the act's window by
+    the measured times.
   Source ids and record keys stay plaintext in the log, so a lake is
   ready to forget when:
   - **a source id names no person:** an opaque id for a device or a feed,
