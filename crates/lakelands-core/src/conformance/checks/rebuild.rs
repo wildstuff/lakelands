@@ -400,6 +400,7 @@ async fn after_a_rebuild_every_index_answers_as_before(store: Store) -> Held {
             filter: None,
             with_meta: false,
             at: ReadAt::default(),
+            rerank: None,
         };
         let lexical = cat.search(&own, search(SearchMode::lexical("harbour")));
         let lexical = lexical.await.must("searching \"harbour\"")?.data;

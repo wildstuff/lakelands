@@ -106,6 +106,7 @@ async fn search_of(
         filter: filter.map(Into::into),
         with_meta: false,
         at: read_at(at),
+        rerank: None,
     };
     let got = doors(store).search(who, s).await?;
     let scored = |h: &lakelands_api::query::Hit| {
@@ -551,4 +552,85 @@ async fn a_link_type_renamed_between_the_head_and_the_rankings_is_asked_again() 
             );
         }
     }
+}
+
+/// A reranked search (067): a write that lands inside the read of its
+/// window, just before the engine answers the rankings, and edits a record
+/// outside the window so that it ranks into it. The window is read again
+/// at that write's position, the reranker is asked about that window, and
+/// the answer is every hit it scored, in its order, read where the window
+/// was: none is lost to the ranking moving after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_inside_a_reranked_searchs_window_read_loses_no_scored_hit() {
+    let (store, probe) = lake("rerank-mid-window").await;
+    store
+        .bind_rerank(lakelands_core::conformance::backing::reranker())
+        .unwrap();
+    for (code, body) in [
+        ("a1", "invoice overdue"),
+        ("a2", "invoice overdue"),
+        ("a3", "invoice"),
+        ("a4", "invoice"),
+        ("z9", "invoice"),
+    ] {
+        put(store.as_ref(), code, code, body, [1.0, 0.0], 0).await;
+    }
+    let before = lakelands_core::conformance::backing::rerank_calls().len();
+    pause(&probe, 1, &store, |s| async move {
+        put(
+            s.as_ref(),
+            "z9",
+            "z9",
+            "invoice overdue reminder",
+            [1.0, 0.0],
+            0,
+        )
+        .await;
+    });
+    let search = |cursor| Search {
+        ty: "keyed".into(),
+        mode: SearchMode::lexical("invoice overdue"),
+        k: 1,
+        cursor,
+        filter: None,
+        with_meta: false,
+        at: read_at(None),
+        rerank: Some(lakelands_api::query::Rerank { top: 3, text: None }),
+    };
+    let own = owner(store.as_ref());
+    let (mut got, mut cursor) = (Vec::new(), None);
+    for _ in 0..5 {
+        let page = doors(store.as_ref())
+            .search(&own, search(cursor))
+            .await
+            .unwrap();
+        got.extend(page.data.hits.iter().map(|h| h.record.key.0.clone()));
+        // A write between pages that would rank `a4` into the window.
+        put(
+            store.as_ref(),
+            "a4",
+            "a4",
+            "invoice overdue overdue",
+            [1.0, 0.0],
+            0,
+        )
+        .await;
+        cursor = page.data.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    let calls = lakelands_core::conformance::backing::rerank_calls().split_off(before);
+    assert_eq!(calls.len(), 1, "one call for the search");
+    let window: Vec<&str> = calls[0].candidates.iter().map(|c| c.key.as_str()).collect();
+    assert_eq!(
+        window,
+        ["a1", "a2", "z9"],
+        "the window is read again at the write that landed in its read"
+    );
+    assert_eq!(
+        got,
+        ["z9", "a1", "a2"],
+        "every scored hit, in the reranker's order, none lost to the writes after the window"
+    );
 }

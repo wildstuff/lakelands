@@ -149,6 +149,9 @@ pub struct Reader<'a> {
     members: RefCell<BTreeMap<String, BTreeSet<RecordKey>>>,
     /// The declarations' past this read has needed ([`Self::ontology_at`]).
     past: RefCell<Past>,
+    /// The second stage of a search or of a pattern's start, as the door
+    /// handed it and as this read decided it.
+    second: RefCell<stage::Second>,
     /// The settings at the read's position, read once.
     settings: OnceCell<BTreeMap<String, Value>>,
     /// The settings as its reader is told them, where that is not whole
@@ -175,8 +178,11 @@ struct Past {
 
 mod held;
 mod measures;
+mod stage;
 
 pub(crate) use held::HeldNow;
+use stage::First;
+pub use stage::{Staged, Window};
 
 /// The head as a search as of a position reads it, from one view: its
 /// shape, the reader with its grants followed there, and where each record
@@ -316,6 +322,19 @@ struct CursorState {
     /// [`Reader::open`] decides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     now: Option<Timestamp>,
+    /// For a read with a second stage: the stage's order of its window and
+    /// what its first page said of the first stage (067).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stage: Option<stage::Staged>,
+}
+
+/// The digest of what decides a search's hits and their order: its mode,
+/// its `where`, `valid_at` and its second stage.
+fn search_read(s: &Search) -> String {
+    match &s.rerank {
+        None => read_of((&s.mode, &s.filter, s.at.valid_at)),
+        Some(r) => read_of((&s.mode, &s.filter, s.at.valid_at, r)),
+    }
 }
 
 fn encode(c: &CursorState) -> Cursor {
@@ -611,6 +630,7 @@ impl<'a> Reader<'a> {
             keys: RefCell::default(),
             members: RefCell::default(),
             past: RefCell::default(),
+            second: RefCell::default(),
             settings: OnceCell::new(),
             told: OnceCell::new(),
         })
@@ -2300,6 +2320,7 @@ impl<'a> Reader<'a> {
                 ty: Some(ty.clone()),
                 of: find_read.clone(),
                 now: Some(self.now),
+                stage: None,
             })
         });
         let rows = keyed
@@ -3370,7 +3391,10 @@ impl<'a> Reader<'a> {
         // is refused here, before any embedding is asked for (lakelands#743).
         // A field the head does not show its reader holds no vectors there,
         // and no model fills it.
+        // A read that ranks nothing, the answer of a second stage, judges no
+        // ranking: the read of its window did (067).
         let declared = |n: &FieldName| ranks.fields.get(n);
+        let ranked = self.at_head || self.head.is_some();
         for field in &vector_fields {
             if let Some(f) = declared(field).filter(|f| f.ty.kind != StorageKind::Vector) {
                 let kind = f.ty.kind;
@@ -3386,6 +3410,7 @@ impl<'a> Reader<'a> {
             vector: None,
             ..
         } = &s.mode
+            && ranked
             && declared(field).is_none_or(|f| f.embed.is_none())
         {
             let case = Case::SearchNeedsVector {
@@ -3470,8 +3495,58 @@ impl<'a> Reader<'a> {
     }
 
     /// `search`, `carried` the pull the door made this read for, if it did:
-    /// it is judged here, at the position it was read at.
-    pub fn search(&self, s: &Search, mut carried: Option<Pulled>) -> Result<Judged<Hits>> {
+    /// it is judged here, at the position it was read at. A search with a
+    /// second stage answers the stage's order, which the door handed it
+    /// ([`Self::stage`]) or its cursor carries (067).
+    pub fn search(&self, s: &Search, carried: Option<Pulled>) -> Result<Judged<Hits>> {
+        if let Some(top) = self.rerank_top(s)? {
+            return self.reranked(s, top).map(Ok);
+        }
+        let first = match self.first_stage(s, None, carried)? {
+            Ok(first) => first,
+            Err(moved) => return Ok(Err(moved)),
+        };
+        let k = s.k.max(1) as usize;
+        let First {
+            hits,
+            ranked_by,
+            axes,
+            offset,
+            read,
+        } = first;
+        let more = hits.len() > offset + k;
+        let page: Vec<Hit> = hits.into_iter().skip(offset).take(k).collect();
+        let next_cursor = more.then(|| {
+            encode(&CursorState {
+                at: self.position,
+                after: None,
+                offset: (offset + k) as u64,
+                params: Params::new(),
+                door: "search".into(),
+                ty: Some(s.ty.clone()),
+                of: read,
+                now: Some(self.now),
+                stage: None,
+            })
+        });
+        Ok(Ok(Hits {
+            hits: page,
+            ranked_by,
+            truncated: false,
+            next_cursor,
+            axes,
+        }))
+    }
+
+    /// The first stage of a search: the hits it ranks this read may see,
+    /// best first, `top` and one more of them for a search with a second
+    /// stage, else the page and one more.
+    fn first_stage(
+        &self,
+        s: &Search,
+        top: Option<usize>,
+        mut carried: Option<Pulled>,
+    ) -> Result<Judged<First>> {
         let (decl, text_fields, filter, ranks) = self.searched(s)?;
         let vectors = s.mode.vectors();
         let vector_fields: Vec<&FieldName> = vectors.iter().map(|v| v.0).collect();
@@ -3503,7 +3578,7 @@ impl<'a> Reader<'a> {
         let text_weights = searched()
             .filter_map(|(n, f)| Some((f.name.clone(), *by_field.get(n.as_str())?)))
             .collect();
-        let search_read = read_of((&s.mode, &s.filter, s.at.valid_at));
+        let search_read = search_read(s);
         let offset = match &s.cursor {
             Some(c) => {
                 let state = resume(c, "search", Some(&s.ty), &Params::new())?;
@@ -3513,8 +3588,10 @@ impl<'a> Reader<'a> {
             None => 0,
         };
         let k = s.k.max(1) as usize;
-        // One more than the page, to know whether a next page exists.
-        let want = offset + k + 1;
+        // One more than the page, to know whether a next page exists; for
+        // a second stage, one more than its window, to know whether the
+        // first stage holds more.
+        let want = top.map_or(offset + k + 1, |t| t + 1);
         // A search without a query vector ranks its text alone; one over
         // several vector fields answers an index's set when any of them is
         // asked for an index.
@@ -3630,25 +3707,12 @@ impl<'a> Reader<'a> {
         for ((a, n), (w, _)) in axes.iter_mut().zip(counts).zip(&lists) {
             (a.candidates, a.weight) = (Some(n), Some(*w));
         }
-        let more = hits.len() > offset + k;
-        let page: Vec<Hit> = hits.into_iter().skip(offset).take(k).collect();
-        let next_cursor = more.then(|| {
-            encode(&CursorState {
-                at: self.position,
-                after: None,
-                offset: (offset + k) as u64,
-                params: Params::new(),
-                door: "search".into(),
-                ty: Some(s.ty.clone()),
-                of: search_read,
-                now: Some(self.now),
-            })
-        });
-        Ok(Ok(Hits {
-            hits: page,
+        Ok(Ok(First {
+            hits,
             ranked_by,
-            next_cursor,
             axes,
+            offset,
+            read: search_read,
         }))
     }
 
@@ -3924,6 +3988,13 @@ impl<'a> Reader<'a> {
             return self.untyped(p);
         };
         let start_decl = self.named_type(&start_ty)?.clone();
+        if p.start.rerank.is_some() && p.start.search.is_none() {
+            let reason = Refusal::Invalid(Box::new(Case::RerankWithoutSearch.into()));
+            return Err(Error::Refused {
+                field: Some("rerank".into()),
+                reason,
+            });
+        }
         let params = self.bind_params(&start_decl, &p.start.params)?;
         let limit = self.limit(p.limit, measures::is_measure(&p.project))?;
         let max_depth = self.lake.limits.max_depth;
@@ -4113,6 +4184,16 @@ impl<'a> Reader<'a> {
         for s in &p.steps {
             graph::check_depth(s.depth, max_depth)?;
         }
+        // A pattern judged before its start's reranker is asked reads nothing.
+        // Code above this return runs in that judging read too, before the
+        // reranker is asked: a judgement belongs above it, a read below.
+        if self.second.borrow().judging {
+            let rows = Vec::new();
+            return Ok(Ok(QueryResult::Rows {
+                rows,
+                next_cursor: None,
+            }));
+        }
         let (reader, reach) = (self, &reach[..]);
         // Rows, a reach and every walk a step's `where` reads hold what the
         // walk reads, so that `where` reads each record its visibility read
@@ -4135,6 +4216,16 @@ impl<'a> Reader<'a> {
         // A cursor is checked before any arm answers: a path and an
         // aggregate hand out none, so every cursor is another read's there.
         let (offset, after) = offset(p.cursor.as_ref(), p, &params)?;
+        if let (Some(_), Some(c)) = (&p.start.rerank, &p.cursor) {
+            let state = decode(c)?;
+            // A cursor this lake handed out holds at most the window.
+            let top = p.start.rerank.as_ref().map_or(0, |r| r.top as usize);
+            match state.stage {
+                Some(st) if st.order.len() <= top => self.second.borrow_mut().resumed = Some(st),
+                Some(_) => return Err(invalid(Case::CursorForeign)),
+                None => {}
+            }
+        }
         // Whether a record reached over step `i` is kept and walked from:
         // it is of the step's `type`, and its `where`, read against the type
         // the step reaches, holds of it.
@@ -4661,15 +4752,7 @@ impl<'a> Reader<'a> {
         mode: &SearchMode,
         carried: Option<Pulled>,
     ) -> Result<Judged<Vec<RecordKey>>> {
-        let s = Search {
-            ty: start_type(p)?.clone(),
-            mode: mode.clone(),
-            k: self.lake.limits.max_limit,
-            cursor: None,
-            filter: p.start.filter.clone(),
-            with_meta: false,
-            at: ReadAt::default(),
-        };
+        let s = self.start_search(p, mode)?;
         let found = self.search(&s, carried)?;
         Ok(found.map(|f| f.hits.into_iter().map(|h| h.record.key).collect()))
     }

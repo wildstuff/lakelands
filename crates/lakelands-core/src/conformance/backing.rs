@@ -39,7 +39,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use async_trait::async_trait;
 use lakelands_api::error::{Case, Exchange, Remote, Situation};
-use lakelands_api::seam::{CallCause, EmbedBackend, FunctionBacking, FunctionCall};
+use lakelands_api::seam::{
+    CallCause, EmbedBackend, FunctionBacking, FunctionCall, RerankCall, Reranker,
+};
 use lakelands_api::{Error, Result, Value};
 
 /// The backing kind the suite's functions name.
@@ -253,6 +255,85 @@ pub fn unplug_text(text: &str) {
 /// Undo [`unplug_text`].
 pub fn plug_text(text: &str) {
     lock(embeds()).unplugged.remove(text);
+}
+
+/// The model the suite's reranker names.
+pub const RERANK_MODEL: &str = "conformance-rerank";
+
+/// A query the suite's reranker fails on, as weather.
+pub const RERANK_BROKEN: &str = "broken";
+
+/// A query it refuses with an error that is not `Unavailable`, as a
+/// reranker that turns a request down does.
+pub const RERANK_REFUSED: &str = "refused";
+
+/// A query it answers one score too few for.
+pub const RERANK_SHORT: &str = "short";
+
+/// A query it answers a score that is not a number for.
+pub const RERANK_NAN: &str = "nan";
+
+fn reranks() -> &'static Mutex<Vec<RerankCall>> {
+    static RERANKS: OnceLock<Mutex<Vec<RerankCall>>> = OnceLock::new();
+    RERANKS.get_or_init(Mutex::default)
+}
+
+/// The scripted reranker: a text scores twice its count of `overdue`
+/// words and once its count of `reminder` words. It records every call.
+struct Scorer;
+
+#[async_trait]
+impl Reranker for Scorer {
+    fn model(&self) -> &str {
+        RERANK_MODEL
+    }
+
+    async fn rerank(&self, call: &RerankCall) -> Result<Vec<f64>> {
+        lock(reranks()).push(call.clone());
+        let model = RERANK_MODEL.to_owned();
+        if call.query.starts_with(RERANK_BROKEN) {
+            return Err(fail(Remote::Reranker { model }));
+        }
+        if call.query.starts_with(RERANK_REFUSED) {
+            let reason = lakelands_api::Refusal::NotGranted;
+            return Err(Error::Refused {
+                field: None,
+                reason,
+            });
+        }
+        let mut scores: Vec<f64> = call
+            .candidates
+            .iter()
+            .map(|c| rerank_score(&c.text))
+            .collect();
+        if call.query.starts_with(RERANK_SHORT) {
+            scores.pop();
+        }
+        if call.query.starts_with(RERANK_NAN) {
+            scores.iter_mut().for_each(|s| *s = f64::NAN);
+        }
+        Ok(scores)
+    }
+}
+
+/// What the suite's reranker scores a text: twice its count of the word
+/// `overdue` and once its count of `reminder`.
+pub fn rerank_score(text: &str) -> f64 {
+    let words = || text.split(|c: char| !c.is_alphanumeric());
+    let count = |word: &str| words().filter(|w| *w == word).count();
+    (2 * count("overdue") + count("reminder")) as f64
+}
+
+/// The reranker the checks that ask for one bind.
+pub fn reranker() -> Arc<dyn Reranker> {
+    Arc::new(Scorer)
+}
+
+/// Every call the suite's reranker has received, in this process, oldest
+/// first. The suite runs its checks one at a time, so a check reads its
+/// own calls as those past the count it started with.
+pub fn rerank_calls() -> Vec<RerankCall> {
+    lock(reranks()).clone()
 }
 
 /// A host's system vocabulary, as a check scripts it: it adds `types` and

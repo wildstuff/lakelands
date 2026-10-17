@@ -532,6 +532,19 @@ pub trait LakeStore: Send + Sync {
     /// (`docs/decisions/022-functions-are-declarations.md`, extended).
     fn bind_embed(&self, backend: Arc<dyn crate::seam::EmbedBackend>) -> Result<()>;
 
+    /// Bind the reranker a search's second stage reads from now on, in
+    /// place of the one bound at open or by an earlier bind. Nothing is
+    /// recorded: the binding is the host's configuration, not a fact of
+    /// the log. Like `bind_embed`, it is the host's alone; a remote
+    /// handle answers it `Unbound` as a host operation
+    /// (`docs/decisions/067-a-search-may-take-a-second-stage.md`).
+    fn bind_rerank(&self, backend: Arc<dyn crate::seam::Reranker>) -> Result<()> {
+        let _ = backend;
+        Err(crate::Error::unbound(crate::error::Seam::Operation {
+            op: "bind_rerank".to_owned(),
+        }))
+    }
+
     /// Release the lease and flush. The lake is closed when the last
     /// handle is dropped; this makes it explicit.
     async fn close(&self) -> Result<()>;

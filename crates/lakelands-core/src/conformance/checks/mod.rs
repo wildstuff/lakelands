@@ -85,6 +85,7 @@ mod relation_renamed;
 mod renamed_grants;
 mod report_names;
 mod required_at_create;
+mod rerank;
 mod restated;
 mod restriction;
 mod retarget;
@@ -709,6 +710,14 @@ pub const ALL: &[Check] = &[
     fusion::SAME_LIST_UNREAD,
     fusion::FUSED_BY_WEIGHT,
     fusion::WEIGHTS_REFUSED,
+    rerank::RERANK_REORDERS_THE_WINDOW,
+    rerank::RERANK_ONE_WINDOW,
+    rerank::RERANK_ONE_WINDOW_ONLY,
+    rerank::RERANK_RANKS_AGAINST,
+    rerank::RERANK_PAGES_WITHOUT_EMBEDDING,
+    rerank::RERANK_SEES_ONLY_WHAT_ITS_READER_READS,
+    rerank::RERANK_STARTS_A_PATTERN,
+    rerank::RERANK_UNBOUND_OR_FAILING,
     search_axes::AXES_SAID,
     search_axes::AXES_READER,
     search_axes::AXES_WINDOW,

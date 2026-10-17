@@ -1317,6 +1317,7 @@ async fn a_derived_relation_of_a_mirrored_type_is_the_targets_own_reading() {
                 search: None,
                 params: Default::default(),
                 named: None,
+                rerank: None,
             },
             steps: vec![step],
             to: None,

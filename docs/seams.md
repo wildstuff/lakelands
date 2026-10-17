@@ -21,7 +21,7 @@ enforce them.
 
 ## The roster
 
-Eight seams, this roster and no other. Adding one is a change to the
+Nine seams, this roster and no other. Adding one is a change to the
 contract and to this page.
 
 | Seam | Trait(s) | Default in Lakelands | A host plugs in |
@@ -30,6 +30,7 @@ contract and to this page.
 | Principal resolution | `PrincipalResolver` | API key or static entry → one principal | Its identities, roles and policies, compiled to grants |
 | Function backings | `FunctionBacking` | `expr`, evaluated in the store | Its own backing kinds; `http` and `exec` ship in `lakelands-backings` |
 | Embeddings | `EmbedBackend` | None: lexical search and caller vectors | An embedding client; `lakelands-backings` ships one for `/v1/embeddings` endpoints |
+| Reranking | `Reranker` | None: a search that asks for the second stage is refused as `Unbound` | A cross-encoder or any scorer of (query, text) pairs |
 | Verb execution | `VerbExecutor` | None: external verbs are refused as `Unbound` | What its external verbs do |
 | Change feed | `ChangeFeed` | The log, read by kind from a position | A relay of the feed onto its own bus, as its own code |
 | System vocabulary | `SystemVocabulary` | Lakelands' four `sys.` types, allowed in every lake | Its own `sys.` types and which lakes may hold them |
@@ -1244,6 +1245,26 @@ bound.
   `Unavailable` and fails the texts beside it. Halving sends again the
   client's requests of a batch that had already succeeded.
 - Embedding no text makes no request.
+
+## `Reranker`
+
+`model()`, `rerank(call) -> scores`. A call holds the lake, the searched
+type, the query text and the candidates in the first stage's order, each
+a key and a text: its searchable fields the reader reads, in declared
+order, joined by a blank line. A reranker answers one score per
+candidate, in order, and higher ranks first. A failure, a count of scores
+other than the candidates' and a score that is no number are all
+`Unavailable` to the caller of the search, whatever error the reranker
+answered, and the store never falls back to the first stage's order
+(`docs/decisions/067-a-search-may-take-a-second-stage.md`).
+
+A lake reads the reranker `Seams::rerank` brings at open, or the one a
+host binds later on the open lake with `LakeStore::bind_rerank`, which
+replaces it. `bind_rerank` is the host's alone: a remote handle answers
+it `Unbound` as a host operation, no tool names it, and the WIT does not
+carry it. A call is a read, as the query embedding of a hybrid search
+is: nothing is recorded, and a replay of the log never makes one. A
+window with no candidate asks nothing.
 
 ## `VerbExecutor`
 

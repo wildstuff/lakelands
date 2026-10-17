@@ -10364,6 +10364,7 @@ async fn read_doors(c: &Arc<dyn Catalog>, who: &Principal, t: &str) -> Vec<(&'st
         filter: None,
         with_meta: false,
         at: at(),
+        rerank: None,
     };
     let from = Pattern::traverse(t.clone(), key("v1"), Vec::new());
     let total = Find {
@@ -11193,6 +11194,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
                             valid_at: None,
                             clock: None,
                         },
+                        rerank: None,
                     },
                 )
                 .await
@@ -11230,6 +11232,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
                 at: ReadAt::default(),
                 ty,
                 mode,
+                rerank: None,
             };
             let hits = catalog.search(owner, s).await.expect("the search answers");
             let said = hits.data.axes.into_iter();
@@ -11277,6 +11280,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
         at: ReadAt::default(),
         ty: ty("doc"),
         mode: hybrid(),
+        rerank: None,
     };
     let hits = f
         .catalog
@@ -11822,6 +11826,7 @@ pub async fn a_vector_ranking_reads_a_vector_field(store: Arc<dyn LakeStore>) {
         filter: None,
         with_meta: false,
         at: ReadAt::default(),
+        rerank: None,
     };
     let hybrid = |field: &str, vector: Option<Vec<f32>>| SearchMode::Hybrid {
         text: "harbour".into(),
@@ -12082,6 +12087,7 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
         filter: None,
         with_meta: false,
         at: ReadAt::default(),
+        rerank: None,
     };
     let modes = |fields: Option<Vec<FieldName>>| {
         [
@@ -12254,6 +12260,7 @@ pub async fn a_search_limited_to_named_fields_matches_and_probes_only_those(
         filter: None,
         with_meta: false,
         at: ReadAt::default(),
+        rerank: None,
     };
     let found = |hits: &lakelands_api::query::Hits| {
         hits.hits
@@ -12408,6 +12415,7 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
         filter: None,
         with_meta: false,
         at: ReadAt::default(),
+        rerank: None,
     };
     let hybrid = |text_weight, weight| SearchMode::Hybrid {
         text: "harbour".into(),
