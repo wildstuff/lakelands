@@ -1,10 +1,10 @@
 //! The seams beside the engine: how Lakelands reaches anything outside
 //! its deterministic core.
 //!
-//! Seven seams, this roster and no other: the engine seam
+//! Nine seams, this roster and no other: the engine seam
 //! ([`crate::engine`]), [`PrincipalResolver`], [`FunctionBacking`],
-//! [`EmbedBackend`], [`VerbExecutor`], [`ChangeFeed`] and
-//! [`SystemVocabulary`]. Every seam has a default, so a host that plugs
+//! [`EmbedBackend`], [`Reranker`], [`VerbExecutor`], [`ChangeFeed`],
+//! [`SystemVocabulary`] and [`KeyStore`]. Every seam has a default, so a host that plugs
 //! in nothing still has a working store. Whatever must reproduce from the
 //! log stays inside; whatever needs the outside world is here, and its
 //! output is recorded in the log and read back on replay
@@ -135,6 +135,47 @@ pub trait EmbedBackend: Send + Sync {
     /// store never falls back to lexical ranking for a backend that is
     /// bound.
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
+}
+
+/// One candidate of a rerank call.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RerankCandidate {
+    /// The record's key: the host's own, and the reader is answered it anyway.
+    pub key: RecordKey,
+    /// Its searchable fields the reader reads, in declared order, joined
+    /// by a blank line. Nothing the reader may not read is in it.
+    pub text: String,
+}
+
+/// One call of the second stage, as a reranker receives it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RerankCall {
+    /// The lake.
+    pub lake: LakeId,
+    /// The searched type.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// What the candidates are ranked against: the search's text, or the
+    /// `text` its `rerank` gave.
+    pub query: String,
+    /// The first-stage window, in first-stage order.
+    pub candidates: Vec<RerankCandidate>,
+}
+
+/// Scores a window of a search's candidates against its query, the second
+/// stage of a search (`docs/decisions/067-a-search-may-take-a-second-stage.md`).
+/// Without one, a search that asks for the stage is refused as `Unbound`.
+#[async_trait]
+pub trait Reranker: Send + Sync {
+    /// The model's name, told in the `rerank` axis of the answer.
+    fn model(&self) -> &str;
+
+    /// One score per candidate, in the call's order; higher ranks first.
+    /// A call is a read: nothing it answers is recorded. A failure, or a
+    /// count of scores other than the candidates', reaches the caller of
+    /// the search as `Unavailable`, whatever error the reranker answered:
+    /// the store never falls back to the first stage's order.
+    async fn rerank(&self, call: &RerankCall) -> Result<Vec<f64>>;
 }
 
 /// One verb that reaches outside the lake, as its executor receives it.
@@ -705,6 +746,8 @@ pub struct Seams {
     pub backings: Vec<Arc<dyn FunctionBacking>>,
     /// The embedding backend, if any.
     pub embed: Option<Arc<dyn EmbedBackend>>,
+    /// The reranker, if any.
+    pub rerank: Option<Arc<dyn Reranker>>,
     /// Executors for external verbs, by name.
     pub executors: Vec<Arc<dyn VerbExecutor>>,
     /// The host's system vocabulary, if it adds one.
@@ -727,6 +770,10 @@ impl std::fmt::Debug for Seams {
             )
             .field("embed", &self.embed.as_ref().map(|e| e.model().to_owned()))
             .field(
+                "rerank",
+                &self.rerank.as_ref().map(|r| r.model().to_owned()),
+            )
+            .field(
                 "executors",
                 &self.executors.iter().map(|e| e.name()).collect::<Vec<_>>(),
             )
@@ -736,12 +783,14 @@ impl std::fmt::Debug for Seams {
     }
 }
 
-/// Compile-time proof that every seam is `dyn`-compatible.
-#[allow(dead_code)]
+/// Compile-time proof that every seam is `dyn`-compatible: one argument a
+/// seam.
+#[allow(dead_code, clippy::too_many_arguments)]
 fn seams_are_dyn_compatible(
     _: &dyn PrincipalResolver,
     _: &dyn FunctionBacking,
     _: &dyn EmbedBackend,
+    _: &dyn Reranker,
     _: &dyn VerbExecutor,
     _: &dyn ChangeFeed,
     _: &dyn SystemVocabulary,
