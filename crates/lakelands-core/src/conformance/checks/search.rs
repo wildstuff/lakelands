@@ -368,6 +368,7 @@ async fn a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused(sto
             fields: None,
             weight: None,
             text_weight: None,
+            model: None,
         }),
         "body",
         "a hybrid search over `vec`, embedded from `title` and `body`, by a reader who \
@@ -831,6 +832,7 @@ fn over_e(text: &str) -> SearchMode {
         fields: None,
         weight: None,
         text_weight: None,
+        model: None,
     }
 }
 
@@ -854,6 +856,7 @@ fn hybrid(text: &str, vector: Option<Vec<f32>>) -> SearchMode {
         fields: None,
         weight: None,
         text_weight: None,
+        model: None,
     }
 }
 
@@ -984,6 +987,7 @@ async fn a_vector_ranking_reads_a_vector_field_and_makes_no_call_it_cannot_use(
         fields: None,
         weight: None,
         text_weight: None,
+        model: None,
     };
     let along = |field: &str, also: &[&str]| SearchMode::Vector {
         field: field.into(),
@@ -994,8 +998,10 @@ async fn a_vector_ranking_reads_a_vector_field_and_makes_no_call_it_cannot_use(
                 field: (*f).into(),
                 vector: vec![1.0, 0.0],
                 weight: None,
+                model: None,
             })
             .collect(),
+        model: None,
     };
     // Each row: what, the search, its text if it has one, and the
     // refusal's case as said on the wire.
@@ -1237,6 +1243,7 @@ fn hybrid_over(field: &str, text: &str, vector: Option<Vec<f32>>) -> SearchMode 
         fields: None,
         weight: None,
         text_weight: None,
+        model: None,
     }
 }
 

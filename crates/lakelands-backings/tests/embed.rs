@@ -499,6 +499,7 @@ fn hybrid(text: &str) -> lakelands_api::query::SearchMode {
         fields: None,
         weight: None,
         text_weight: None,
+        model: None,
     }
 }
 
@@ -545,6 +546,7 @@ async fn a_store_ranks_a_hybrid_search_through_the_client() {
             vector: vec![1.0, 0.0],
             weight: None,
             also: Vec::new(),
+            model: None,
         }),
     )
     .await

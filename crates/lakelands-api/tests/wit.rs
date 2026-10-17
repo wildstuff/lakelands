@@ -703,6 +703,7 @@ fn search_mode() -> SearchMode {
         fields: Some(vec!["f".into()]),
         weight: None,
         text_weight: None,
+        model: None,
     }
 }
 
@@ -1054,6 +1055,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 field: "f".into(),
                 vector: vec![1.0],
                 weight: Some(2.0),
+                model: Some("m".into()),
             }),
         ),
         (
@@ -1150,6 +1152,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 field: Some("v".into()),
                 candidates: Some(5),
                 weight: Some(0.5),
+                model: Some("m".into()),
             }),
         ),
         (
@@ -1846,6 +1849,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     vector: vec![],
                     weight: None,
                     also: Vec::new(),
+                    model: None,
                 },
                 search_mode(),
             ],

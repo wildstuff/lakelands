@@ -69,6 +69,7 @@ mod proposal_names;
 mod proposals;
 mod provenance;
 mod purge;
+mod query_model;
 mod reactions;
 mod reactive_depth;
 mod read_clock;
@@ -188,6 +189,8 @@ pub const ALL: &[Check] = &[
     risky_calls::REJECT_KEEPS_GOOD_OUTPUTS,
     risky_calls::CALL_NAMES_ITS_CAUSE,
     risky_calls::EXPR_HAS_NO_RISK,
+    query_model::QUERY_MODEL_CHECKED,
+    query_model::QUERY_MODEL_AFTER_RIGHTS,
     views::GROUPS_AND_SUMS,
     view_stack::VIEW_STACK,
     views::FAILING_MEASURE_REFUSES,

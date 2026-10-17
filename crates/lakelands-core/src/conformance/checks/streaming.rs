@@ -1411,6 +1411,7 @@ impl Size<'_> {
                         fields: None,
                         weight: None,
                         text_weight: None,
+                        model: None,
                     },
                     k: K,
                     cursor: None,

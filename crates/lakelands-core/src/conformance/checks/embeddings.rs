@@ -882,6 +882,7 @@ async fn judged(
         fields: None,
         weight: None,
         text_weight: None,
+        model: None,
     };
     let search = Search {
         ty: ty.into(),
@@ -1079,6 +1080,7 @@ async fn quay(
         fields: None,
         weight: None,
         text_weight: None,
+        model: None,
     };
     let search = Search {
         ty: "note".into(),

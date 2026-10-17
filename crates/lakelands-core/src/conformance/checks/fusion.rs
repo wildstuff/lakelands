@@ -236,7 +236,9 @@ pub(super) fn along(weight: Option<f64>, field: &str, also: Option<f64>) -> Sear
             field,
             vector,
             weight: also,
+            model: None,
         }],
+        model: None,
     }
 }
 
@@ -249,6 +251,7 @@ fn weighed(text_weight: Option<f64>, weight: Option<f64>) -> SearchMode {
         fields: None,
         weight,
         text_weight,
+        model: None,
     }
 }
 
@@ -317,6 +320,7 @@ async fn a_weight_that_cannot_weigh_or_a_field_named_twice_is_refused_naming_it(
         vector: vec![1.0, 0.0],
         weight: Some(2.0),
         also: Vec::new(),
+        model: None,
     };
     let range = |f: &str| json!({"code": "weight_range", "field": f});
     let (twice, text) = (

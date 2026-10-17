@@ -471,6 +471,7 @@ What a refusal is about.
 | `measure_no_to` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no `to` | A measure with a `to`. |
 | `measure_no_type` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `type`: it reads every link of a relation, whatever it reaches | A measure's step with a `type`. |
 | `measure_no_where` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `where` | A measure's step with a `where`. |
+| `model_without_vector` | — | `model` names the model of a query vector the search brings, and it brings no `vector`; where the field is an embedding, the lake makes that one itself, with that model | A `model` on a hybrid search that brings no query vector. |
 | `no_relation_anywhere` | `relation` (RelationName) | no type has a relation `{relation}` to walk | A step over a relation no type declares, where the start names no type. |
 | `no_relation_to_walk` | `type` (TypeName), `relation` (RelationName), `walk` (Walk) | `{type}` has no relation `{relation}` to walk {walk} | A step over a relation that its type does not walk that way. |
 | `not_searchable` | `field` (FieldName), `type` (TypeName) | `{field}` of `{type}` is not searchable | A field a search names that is not searchable. |
@@ -491,6 +492,7 @@ What a refusal is about.
 | `position_not_integer` | — | a position is a non-negative integer | A position of an `after` that is no whole number. |
 | `proposal_order` | `members` (Names), `field` (FieldName), `by` (OrderBy) | `order_by` orders proposals by their members ({members}) and their values, and `{field}` by `{by}` is not one | An order of proposals by what is not one of their members. |
 | `query_dimensions` | `query` (usize), `held` (usize) | the query vector has {query} dimensions, and the field holds vectors of {held} | A query vector of another length than the field declares. |
+| `query_model` | `query` (String), `held` (String) | the query vector is of the model `{query}`, and the field holds vectors of `{held}` | A query vector the caller names another model for than the one the field is the embedding of. |
 | `retired_with_aggregate` | — | `retired` counts the retired records a page's `where` matches; an `aggregate` answers groups, so give one | A `retired` count beside an aggregate. |
 | `search_fields_empty` | — | `fields` names no field; leave it out to search every searchable field | A search's `fields` that names none. |
 | `search_needs_vector` | `field` (FieldName) | `{field}` holds vectors its writers make, in a space the lake does not know; a hybrid search over it brings its own query vector | A hybrid search without a vector over a vector field no model fills: its writers chose the space, so no bound model may stand in for one. |

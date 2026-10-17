@@ -374,6 +374,11 @@ pub enum SearchMode {
         /// and fused with `field`'s ranking by weighted rank.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         also: Vec<VectorTerm>,
+        /// The model that made the query vector, if the caller names it:
+        /// over a field declared as an embedding, it must be the field's
+        /// own model.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     /// Both, fused by rank. Without a vector, the store asks the lake's
     /// embedding backend for one, or falls back to lexical and says so.
@@ -395,6 +400,12 @@ pub enum SearchMode {
         /// The weight of the lexical half; absent, 1.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text_weight: Option<f64>,
+        /// The model that made the query vector, if the caller names it:
+        /// over a field declared as an embedding, it must be the field's
+        /// own model. It names the caller's `vector`, so without one it is
+        /// refused.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
 }
 
@@ -409,6 +420,9 @@ pub struct VectorTerm {
     /// The weight of its ranking; absent, 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight: Option<f64>,
+    /// The model that made its query vector, if the caller names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl SearchMode {
@@ -429,6 +443,7 @@ impl SearchMode {
             vector,
             weight: None,
             also: Vec::new(),
+            model: None,
         }
     }
 
@@ -442,6 +457,29 @@ impl SearchMode {
             fields: None,
             weight: None,
             text_weight: None,
+            model: None,
+        }
+    }
+
+    /// The model each query vector the caller brings names, by its field,
+    /// in the order [`SearchMode::vectors`] names them: none where the
+    /// caller names none, and none for a hybrid search's vector the lake
+    /// makes.
+    pub fn models(&self) -> Vec<(&FieldName, Option<&str>)> {
+        match self {
+            SearchMode::Lexical { .. } => Vec::new(),
+            SearchMode::Hybrid {
+                field,
+                vector: Some(_),
+                model,
+                ..
+            } => vec![(field, model.as_deref())],
+            SearchMode::Hybrid { vector: None, .. } => Vec::new(),
+            SearchMode::Vector {
+                field, model, also, ..
+            } => std::iter::once((field, model.as_deref()))
+                .chain(also.iter().map(|t| (&t.field, t.model.as_deref())))
+                .collect(),
         }
     }
 
@@ -464,6 +502,7 @@ impl SearchMode {
                 vector,
                 weight,
                 also,
+                ..
             } => {
                 let also = also.iter().map(|t| (&t.field, &t.vector[..], t.weight));
                 std::iter::once((field, &vector[..], *weight))
@@ -476,8 +515,9 @@ impl SearchMode {
     /// What the mode asks that no ranking can do: the fault, with the
     /// field it names if any. A weight weighs one ranking against
     /// another, so it is above 0 and at most 1 000 000, a vector search
-    /// of one field takes none, no field is named twice, and every query
-    /// vector has a direction ([`no_direction`]).
+    /// of one field takes none, no field is named twice, every query
+    /// vector has a direction ([`no_direction`]), and a `model` names one
+    /// the caller brings.
     pub fn misfit(&self) -> Option<(Option<FieldName>, Case)> {
         let terms = self.vectors();
         let lone = matches!(self, SearchMode::Vector { also, .. } if also.is_empty());
@@ -504,6 +544,15 @@ impl SearchMode {
                 continue;
             };
             return Some((Some(field), fault));
+        }
+        if let SearchMode::Hybrid {
+            field,
+            vector: None,
+            model: Some(_),
+            ..
+        } = self
+        {
+            return Some((Some(field.clone()), Case::ModelWithoutVector));
         }
         let text = matches!(self, SearchMode::Hybrid { text_weight, .. } if !fits(*text_weight));
         text.then_some((None, Case::TextWeightRange))
@@ -594,7 +643,7 @@ impl<'de> Deserialize<'de> for Search {
         use serde::de::Error;
         let mut own = serde_json::Map::deserialize(d)?;
         let members = [
-            "mode", "text", "fields", "field", "vector", "weight", "also",
+            "mode", "text", "fields", "field", "vector", "weight", "also", "model",
         ];
         let mode = (members.iter().chain(&["text_weight"])).filter_map(|m| own.remove_entry(*m));
         let mode =
@@ -650,6 +699,12 @@ pub struct Axis {
     /// search's own, else its type's `search_weights` setting's, else 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight: Option<f64>,
+    /// The model the caller named for this axis's query vector, as it
+    /// was named: over a field declared as an embedding the field's own,
+    /// and over any other field not judged, since the lake knows no model
+    /// of its own there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// One search hit.

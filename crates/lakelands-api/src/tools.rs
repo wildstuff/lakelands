@@ -1158,6 +1158,11 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 json!({"type": "array", "items": {"type": "number"}}),
             ),
             (
+                "model",
+                json!({"type": "string",
+                "description": "The model that made `vector`, named only beside it; over a field that is a model's embedding, it must be that model."}),
+            ),
+            (
                 "weight",
                 json!({"type": "number", "exclusiveMinimum": 0, "maximum": 1000000,
                 "description": "The weight of `field`'s ranking against the text's (`text_weight`) or the fields' in `also`."}),
@@ -1169,7 +1174,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             (
                 "also",
                 json!({"type": "array", "items": {"type": "object", "required": ["field", "vector"]},
-                "description": "vector: further vector fields, each {field, vector, weight}, fused with `field` by weighted rank."}),
+                "description": "vector: further vector fields, each {field, vector, weight, model}, fused with `field` by weighted rank."}),
             ),
             ("k", json!({"type": "integer", "minimum": 1})),
             ("cursor", json!({"type": "string"})),
