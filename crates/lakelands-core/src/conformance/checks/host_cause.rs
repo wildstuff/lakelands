@@ -48,7 +48,7 @@ check!(
 
 check!(
     TRIGGER_CEILING_AT_APPEND = a_triggers_ceiling_is_read_with_the_cause_at_the_append,
-    "021, extended (lakelands#375): a reaction naming a cause past the head is refused as invalid even when the next append puts a firing there; once the firing is in the log, a reaction past its trigger's ceiling is refused too_deep naming the trigger, and that ceiling is read at the append, after the door's own checks, while the lake's ceiling comes first"
+    "021, extended (lakelands#375, lakelands#1216): a reaction naming a cause past the head is refused as invalid even when the next append puts a firing there; once the firing is in the log and its trigger's ceiling is lowered under the reaction, a reaction past that ceiling is refused too_deep naming the trigger, and that ceiling is read at the append, after the door's own checks, while the lake's ceiling comes first"
 );
 
 async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(store: Store) -> Held {
@@ -549,9 +549,9 @@ async fn a_triggers_ceiling_is_read_with_the_cause_at_the_append(store: Store) -
     let Declaration::Trigger(mut once) = trigger_on("once", "job", None) else {
         unreachable!("trigger_on declares a trigger")
     };
-    once.max_depth = Some(0);
-    let fut = cat.declare(own, Declaration::Trigger(once));
-    fut.await.must("declaring `once` with max_depth 0")?;
+    once.max_depth = Some(1);
+    let fut = cat.declare(own, Declaration::Trigger(once.clone()));
+    fut.await.must("declaring `once` with max_depth 1")?;
     let reader = reads_all(store.as_ref(), "reader");
     let write = |who: lakelands_api::Principal, ctx: WriteContext, key: &'static str| {
         let store = store.clone();
@@ -584,6 +584,12 @@ async fn a_triggers_ceiling_is_read_with_the_cause_at_the_append(store: Store) -
         "the write at {} fires `once` at {firing}; the head is elsewhere",
         fired.position()
     );
+    // A firing the store appends is one a reaction one deeper may answer
+    // (lakelands#1216): the ceiling binds it only once lowered under it.
+    once.max_depth = Some(0);
+    let fut = cat.declare(own, Declaration::Trigger(once));
+    fut.await.must("declaring `once` again with max_depth 0")?;
+    let lowered = store.head().await.must("reading the head")?;
     let mut red = Vec::new();
     for (what, who, too_deep) in [
         ("the owner", own.clone(), true),
@@ -606,14 +612,14 @@ async fn a_triggers_ceiling_is_read_with_the_cause_at_the_append(store: Store) -
     }
     ensure!(
         red.is_empty(),
-        "a reaction at depth 1 naming the firing of `once` (max_depth 0) is refused too_deep \
-         naming `once`, read at the append after the door's own checks, so one without a \
-         grant is refused by those first: {}",
+        "a reaction at depth 1 naming the firing of `once`, declared since with max_depth 0, \
+         is refused too_deep naming `once`, read at the append after the door's own checks, so \
+         one without a grant is refused by those first: {}",
         red.join("; ")
     );
     head_unmoved(
         store.as_ref(),
-        firing,
+        lowered,
         "the reactions past `once`'s ceiling",
     )
     .await

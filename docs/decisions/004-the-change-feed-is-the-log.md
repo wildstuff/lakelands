@@ -146,8 +146,9 @@ the write creates (or revives from retirement). A transition is a guard,
 transition only. A guard reads no other record. A trigger may also cap
 the depth of the reactions that name its firing as their cause
 (`docs/decisions/021-the-write-context-belongs-to-the-host.md`, extended).
-The firing is appended whatever the depth, since it is the durable fact a
-host reacts to.
+Past that depth, or the lake's, the write appends `trigger_dropped` in
+place of the firing: what would have fired stays a durable fact, and no
+host reacts to a firing whose reaction could write nothing.
 
 ### A guard reads the provenance its write leaves
 
@@ -426,6 +427,8 @@ own pace, and adding one changes nothing in the lake.
   depth of the reactions to it (lakelands#244).
 - A guard tells a retirement from an update through `retired()`
   (lakelands#271).
+- A trigger fired whatever the write's depth; past its ceiling it drops,
+  as `trigger_dropped` (lakelands#1216).
 - A set's declaration decides the records already there, where a set's
   membership was decided only when a record was written; the log format
   did not change. A set declared again over another type let go of the

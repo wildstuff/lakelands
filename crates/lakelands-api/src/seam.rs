@@ -190,8 +190,9 @@ pub struct FeedFilter {
     pub types: Vec<TypeName>,
     /// Only events about records with these keys (of the named types, or
     /// of any type when `types` is empty); all when empty. An event about
-    /// a record is a `record_*` event, `trigger_fired`, `object_set_changed`
-    /// or `verb_called`; no other event passes a key filter.
+    /// a record is a `record_*` event, `trigger_fired`, `trigger_dropped`,
+    /// `object_set_changed` or `verb_called`; no other event passes a key
+    /// filter.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keys: Vec<crate::id::RecordKey>,
 }

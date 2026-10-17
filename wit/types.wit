@@ -338,7 +338,8 @@ interface types {
         when: option<condition>,
         description: option<string>,
         /// How deep a reaction naming this trigger's firing as its cause
-        /// may be; at most the lake's ceiling.
+        /// may be: a write at this depth or deeper drops the firing
+        /// (the log's `trigger_dropped`) instead; at most the lake's ceiling.
         max-depth: option<u32>,
     }
 

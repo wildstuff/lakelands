@@ -644,7 +644,9 @@ impl Call<'_> {
         let reaction = |e: &Event| {
             matches!(
                 e.body,
-                EventBody::TriggerFired { .. } | EventBody::ObjectSetChanged { .. }
+                EventBody::TriggerFired { .. }
+                    | EventBody::TriggerDropped { .. }
+                    | EventBody::ObjectSetChanged { .. }
             )
         };
         // The append's events: its first, and each one caused by one of them.
@@ -772,6 +774,8 @@ fn outcome_of(events: &[Event]) -> Outcome {
                         set_off.fired.push(trigger.clone());
                     }
                 }
+                // A firing dropped past its depth fired nothing.
+                EventBody::TriggerDropped { .. } => {}
                 EventBody::ObjectSetChanged { set, joined, .. } => {
                     let names = if *joined {
                         &mut set_off.joined
@@ -2979,11 +2983,7 @@ impl Decide<'_> {
             let on = |t: &&TriggerDecl| t.on == after.ty;
             for t in w.ontology.triggers.values().map(|e| &e.decl).filter(on) {
                 if self.fires(t, before, after)? {
-                    out.push(system(EventBody::TriggerFired {
-                        trigger: t.name.clone(),
-                        ty: after.ty.clone(),
-                        key: after.key.clone(),
-                    }));
+                    out.push(system(self.firing(t, &after.ty, &after.key)));
                 }
             }
             let of = |s: &&ObjectSetDecl| s.of == after.ty;
