@@ -36,6 +36,12 @@ check!(
     given
 );
 
+check!(
+    REMOVED_SHREDDED = a_version_whose_values_are_all_taken_is_destroyed_and_the_rest_redacted,
+    "065: `crm` seals `p1` under its first version and `p2` and `p3` under its second; taking back what it wrote before `p3` destroys the first version, whose values it all selects, and not the second, which also seals `p3`: the preflight names the first version and counts `name` 2 redacted and 1 shredded, `city`, not erasable, 1 redacted, and 1 value of an erasable field redacted only; with `require_shredded` the act is refused naming that count and appends nothing; without it the act names the version in `values_removed`, the key store holds the second alone, the values read as erased at the head and before the act, `p3` keeps its own, `crm` seals on under the second, and a writer opened again, rebuilding with the first version gone, reads them erased, not lost; taking back all it wrote, `require_shredded` too, destroys the second, and `crm` writes on under a new version, before a reopen and after",
+    reopens
+);
+
 /// `visit` keyed by `id`: `duration`, `place` and `secret` from a source,
 /// `note` an
 /// author's, `twice` derived from `duration`, the admitting constraint `timed`, and
@@ -172,7 +178,7 @@ async fn a_sources_values_before_a_time_read_as_erased_at_every_position(store: 
     refused_like(
         "removing with a report of another head",
         store
-            .remove_values(&tracker, &selection, Some(&report.report_id))
+            .remove_values(&tracker, &selection, false, Some(&report.report_id))
             .await,
         &json!({"code": "remove_report_stale"}),
     )?;
@@ -180,7 +186,7 @@ async fn a_sources_values_before_a_time_read_as_erased_at_every_position(store: 
     let report = report.must("the preflight again")?;
     let before = store.head().await.must("reading the head")?;
     let done = store
-        .remove_values(&tracker, &selection, Some(&report.report_id))
+        .remove_values(&tracker, &selection, false, Some(&report.report_id))
         .await;
     let done = done.must("removing tracker's first day")?;
     let events = events_after(store.as_ref(), before).await?;
@@ -234,7 +240,7 @@ async fn a_sources_values_before_a_time_read_as_erased_at_every_position(store: 
         "a rebuild answers as the act left the lake: {answers:?}, then {again:?}"
     );
     // The act again appends nothing; so does a selection of nothing.
-    let repeat = store.remove_values(&tracker, &selection, None).await;
+    let repeat = store.remove_values(&tracker, &selection, false, None).await;
     repeat.must("removing tracker's first day again")?;
     let none = Selection::WrittenBefore(Timestamp(0));
     refused_like(
@@ -243,12 +249,13 @@ async fn a_sources_values_before_a_time_read_as_erased_at_every_position(store: 
             .remove_values(
                 &tracker,
                 &Selection::WrittenBefore(Timestamp(i64::MAX)),
+                false,
                 None,
             )
             .await,
         &json!({"code": "not_date_time"}),
     )?;
-    let empty = store.remove_values(&tracker, &none, None).await;
+    let empty = store.remove_values(&tracker, &none, false, None).await;
     let empty = empty.must("removing what tracker wrote before 1970")?;
     let after = store.head().await.must("reading the head")?;
     let removed = acts(store.as_ref(), before).await?.len();
@@ -288,7 +295,7 @@ async fn a_delivery_taken_back_reads_as_erased_and_a_later_one_stays(store: Stor
     deliver(Some("b3"), &[("v2", v("v2", 20))]).await?;
     let b3 = Selection::Delivery("b3".into());
     let none = store
-        .remove_values(&tracker, &b3, None)
+        .remove_values(&tracker, &b3, false, None)
         .await
         .must("removing b3")?;
     let after = store.head().await.must("reading the head")?;
@@ -299,7 +306,7 @@ async fn a_delivery_taken_back_reads_as_erased_and_a_later_one_stays(store: Stor
     );
     let own = own.ok_or_else(|| Failure::new("the store named its delivery"))?;
     let theirs = Selection::Delivery(own.clone());
-    let report = store.remove_values(&tracker, &theirs, None).await;
+    let report = store.remove_values(&tracker, &theirs, false, None).await;
     let report = report.must("removing the store's own delivery")?;
     let v4 = at(&l, "visit", "v4", None).await?;
     ensure!(
@@ -309,7 +316,7 @@ async fn a_delivery_taken_back_reads_as_erased_and_a_later_one_stays(store: Stor
     );
     let b1_sel = Selection::Delivery("b1".into());
     let report = store
-        .remove_values(&tracker, &b1_sel, None)
+        .remove_values(&tracker, &b1_sel, false, None)
         .await
         .must("removing b1")?;
     let (v1_then, v1_now) = (
@@ -367,7 +374,7 @@ async fn a_removal_a_crash_stopped_is_finished_by_the_next_writers_open(
     // The act's rebuild fails; the writer's next open finishes it.
     let all = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
     fails[1].store(1, Ordering::SeqCst);
-    let stopped = store.remove_values(&tracker, &all, None).await;
+    let stopped = store.remove_values(&tracker, &all, false, None).await;
     ensure!(
         stopped.is_err(),
         "the removal whose rebuild fails answers {stopped:?}"
@@ -396,12 +403,12 @@ async fn a_removal_a_crash_stopped_is_finished_by_the_next_writers_open(
     l.upsert("visit", "v3", json!({"note": "kept"})).await?;
     let again = Selection::WrittenBefore(Timestamp::from_date(9998, 1, 1).expect("a date"));
     fails[1].store(1, Ordering::SeqCst);
-    let stopped = store.remove_values(&tracker, &again, None).await;
+    let stopped = store.remove_values(&tracker, &again, false, None).await;
     ensure!(
         stopped.is_err(),
         "the second removal whose rebuild fails answers {stopped:?}"
     );
-    let repeat = store.remove_values(&tracker, &again, None).await;
+    let repeat = store.remove_values(&tracker, &again, false, None).await;
     repeat.must("repeating the act")?;
     finished(&store, "v2", "v4", 2, "the act's repeat").await?;
     let v3 = at(&l, "visit", "v3", None).await?;
@@ -443,7 +450,7 @@ async fn a_value_taken_from_a_hidden_field_is_told_as_one_never_written(
             .await
             .must("ingesting from tracker")?;
         l.upsert("visit", "v2", json!({"note": "kept"})).await?;
-        s.remove_values(&tracker, &all, None)
+        s.remove_values(&tracker, &all, false, None)
             .await
             .must("removing tracker's values")?;
     }
@@ -522,4 +529,157 @@ fn timeless(said: &[String]) -> Vec<String> {
             out
         })
         .collect()
+}
+
+async fn a_version_whose_values_are_all_taken_is_destroyed_and_the_rest_redacted(
+    store: Store,
+    reopen: crate::conformance::Reopen,
+) -> Held {
+    use super::erasable::{Keys, again, person, with};
+    use lakelands_api::seam::KeyStore;
+    use std::sync::Arc;
+    let keys = Arc::new(Keys::default());
+    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(person()).await?;
+    let crm: SourceId = "crm".into();
+    let p = |k: &str, name: &str| source_record("person", k, json!({"id": k, "name": name}));
+    let ada = source_record(
+        "person",
+        "p1",
+        json!({"id": "p1", "name": "Ada", "city": "Rome"}),
+    );
+    l.ingest("crm", vec![ada]).await.must("ingesting p1")?;
+    let v1 = super::erasable::first(&keys, store.as_ref(), "crm")?;
+    let v2 = keys
+        .create(store.lake(), &crm)
+        .must("making a second version")?;
+    let store = again(&reopen, store, with(&keys), "with a second version").await?;
+    let l = Lake::of(store.as_ref());
+    l.ingest("crm", vec![p("p2", "Bea")])
+        .await
+        .must("ingesting p2")?;
+    l.upsert("person", "p2", json!({"note": "kept"})).await?;
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    let mark = store.head().await.must("reading the head")?;
+    l.ingest("crm", vec![p("p3", "Cy")])
+        .await
+        .must("ingesting p3")?;
+    let after = events_from(store.as_ref(), mark.next()).await?;
+    let cut = after
+        .first()
+        .ok_or_else(|| Failure::new("p3 was logged"))?
+        .known_at;
+    let selection = Selection::WrittenBefore(cut);
+    let report = store.remove_values_preflight(&crm, &selection).await;
+    let report = report.must("the preflight")?;
+    let fields: Vec<_> = (report.fields.iter())
+        .map(|f| (f.field.as_str(), f.redacted, f.shredded))
+        .collect();
+    ensure!(
+        report.keys == [v1.clone()]
+            && fields == [("city", 1, 0), ("name", 2, 1)]
+            && report.unshredded == 1,
+        "the preflight destroys {v1} alone, counts `city` 1 redacted, `name` 2 redacted and 1 \
+         shredded, and 1 value of an erasable field redacted only: {report:?}"
+    );
+    let head = store.head().await.must("reading the head")?;
+    refused_like(
+        "removing with `require_shredded` what would be redacted only",
+        store.remove_values(&crm, &selection, true, None).await,
+        &json!({"code": "remove_not_shredded", "source": "crm", "count": 1}),
+    )?;
+    let unmoved = store.head().await.must("reading the head")?;
+    ensure!(unmoved == head, "the refused act appended up to {unmoved}");
+    store
+        .remove_values(&crm, &selection, false, None)
+        .await
+        .must("removing what crm wrote before p3")?;
+    let named: Vec<_> = (acts(store.as_ref(), head).await?.into_iter())
+        .filter_map(|e| match e.body {
+            EventBody::ValuesRemoved { keys, .. } => Some(keys),
+            _ => None,
+        })
+        .collect();
+    let left = keys.ids(store.lake(), &crm).must("listing crm's keys")?;
+    ensure!(
+        named == [vec![v1.clone()]] && left == [v2.clone()],
+        "`values_removed` names {v1}, and the key store holds {v2} alone: {named:?}, {left:?}"
+    );
+    // Read now, before the act, and by a writer opened again.
+    let erased_all = async |l: &Lake, by: &str| {
+        for when in [None, Some(head)] {
+            let p2 = at(l, "person", "p2", when).await?;
+            let p3 = at(l, "person", "p3", when).await?;
+            ensure!(
+                p2.as_ref()
+                    .is_some_and(|r| erased(r, "name", "crm")
+                        && r.fields.get("note") == Some(&json!("kept")))
+                    && p3
+                        .as_ref()
+                        .is_some_and(|r| r.fields.get("name") == Some(&json!("Cy"))),
+                "{by}, as of {when:?}, `p2` reads its name as erased and keeps its note, and `p3` \
+                 reads Cy: {p2:?}, {p3:?}"
+            );
+        }
+        let p1 = at(l, "person", "p1", Some(head)).await?;
+        ensure!(
+            p1.as_ref()
+                .is_some_and(|r| erased(r, "name", "crm") && erased(r, "city", "crm")),
+            "{by}, before the act `p1` reads its name and city as erased: {p1:?}"
+        );
+        Ok::<_, Failure>(())
+    };
+    erased_all(&l, "after the act").await?;
+    let before = store.head().await.must("reading the head")?;
+    l.ingest("crm", vec![p("p4", "Dee")])
+        .await
+        .must("ingesting p4")?;
+    let sealed: Vec<_> = (events_after(store.as_ref(), before).await?.into_iter())
+        .filter_map(|e| e.sealed.map(|s| s.key))
+        .collect();
+    ensure!(
+        sealed == [v2.clone()],
+        "crm seals p4 under {v2}: {sealed:?}"
+    );
+    let store = again(&reopen, store, with(&keys), "with the first version gone").await?;
+    store
+        .rebuild()
+        .await
+        .must("rebuilding with the first version gone")?;
+    erased_all(&Lake::of(store.as_ref()), "a writer opened again").await?;
+    // All crm wrote taken back: its newest version goes too, and it seals
+    // on under a new one, on this handle and on the next.
+    let all = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+    let done = store.remove_values(&crm, &all, true, None).await;
+    let done = done.must("removing all crm wrote")?;
+    let left = keys.ids(store.lake(), &crm).must("listing crm's keys")?;
+    ensure!(
+        done.keys == [v2.clone()] && left.is_empty(),
+        "taking back all crm wrote destroys {v2}, and the key store holds none: {done:?}, {left:?}"
+    );
+    let l = Lake::of(store.as_ref());
+    l.ingest("crm", vec![p("p5", "Eve")])
+        .await
+        .must("ingesting p5")?;
+    let store = again(&reopen, store, with(&keys), "after crm's last version went").await?;
+    let l = Lake::of(store.as_ref());
+    l.ingest("crm", vec![p("p6", "Fay")])
+        .await
+        .must("ingesting p6 after a reopen")?;
+    store.rebuild().await.must("rebuilding")?;
+    let names = (
+        at(&l, "person", "p5", None).await?,
+        at(&l, "person", "p6", None).await?,
+    );
+    let named = |r: &Option<lakelands_api::Record>, n: &str| {
+        r.as_ref()
+            .is_some_and(|r| r.fields.get("name") == Some(&json!(n)))
+    };
+    ensure!(
+        named(&names.0, "Eve") && named(&names.1, "Fay"),
+        "crm writes on after its last version went, before a reopen and after, and a rebuild \
+         reads `p5` Eve and `p6` Fay: {names:?}"
+    );
+    Ok(())
 }

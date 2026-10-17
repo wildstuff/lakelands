@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Case, Place, Said};
 use crate::expr::Condition;
 use crate::id::{
-    ConstraintName, Cursor, DeliveryId, FieldName, IdempotencyKey, Position, ProposalId, RecordKey,
-    RelationName, SourceId, TriggerName, TypeName, ValueTypeName, VerbName, Version,
+    ConstraintName, Cursor, DeliveryId, FieldName, IdempotencyKey, KeyId, Position, ProposalId,
+    RecordKey, RelationName, SourceId, TriggerName, TypeName, ValueTypeName, VerbName, Version,
 };
 use crate::ontology::{
     ANNOTATION_KEY_MAX_BYTES, ANNOTATIONS_MAX_BYTES, Annotations, FieldDecl, FieldType,
@@ -1691,6 +1691,8 @@ pub struct RemovedField {
     /// How many of its values read as erased at every position, their
     /// bytes still in the log.
     pub redacted: u64,
+    /// How many of those were sealed under a version the act destroys.
+    pub shredded: u64,
 }
 
 /// What `LakeStore::remove_values` took back, or what
@@ -1731,6 +1733,12 @@ pub struct RemoveReport {
     pub breaches: Vec<Breach>,
     /// Per relation, the live records left naming a record it retires.
     pub references: Vec<PurgeReference>,
+    /// The versions of the source's key it destroys, oldest first.
+    pub keys: Vec<KeyId>,
+    /// The values of an erasable field it redacts and does not shred: in
+    /// plaintext, or sealed under a version that also seals values outside
+    /// the selection. `require_shredded` refuses the act while any are.
+    pub unshredded: u64,
     /// The events the act's rebuild folds again: the log's length.
     pub log_events: u64,
     /// How long the act is expected to hold the writer's lock, in
@@ -1769,6 +1777,26 @@ impl RemoveReport {
         for f in &self.fields {
             let (ty, field, n) = (&f.ty, &f.field, f.redacted);
             said.push(format!("{n} values of `{ty}.{field}` read as erased at every position; the log keeps their bytes."));
+            if f.shredded > 0 {
+                let s = f.shredded;
+                said.push(format!(
+                    "{s} of them are shredded: the key that sealed them is destroyed."
+                ));
+            }
+        }
+        if !self.keys.is_empty() {
+            let keys: Vec<&str> = self.keys.iter().map(|k| k.as_str()).collect();
+            said.push(format!(
+                "Versions {} of `{}`'s key are destroyed.",
+                keys.join(", "),
+                self.source
+            ));
+        }
+        if self.unshredded > 0 {
+            let n = self.unshredded;
+            said.push(format!(
+                "{n} values of erasable fields are redacted only, their key still live or none."
+            ));
         }
         for t in &self.retired {
             said.push(format!("{} records of `{}` are retired.", t.retired, t.ty));

@@ -2044,7 +2044,9 @@ the version: a lost key is never read as an erasure. Nor is a new key
 made for a source whose sealed values the log holds while the store
 lacks the version it last sealed with: its next write is refused
 `key_missing`, so a wrong path, a fresh machine or an old backup fails
-at once. A version's id is the store's and is never given twice:
+at once, unless an act of removal in the log destroyed that version
+(`docs/decisions/065-part-of-a-source-may-be-taken-back.md`), when the
+source is given a new one. A version's id is the store's and is never given twice:
 `FileKeyring` makes it at random. Without a key store, a value that
 would be sealed is refused as `Unbound`, and a lake whose log holds one
 is folded only by a writer that holds the key.

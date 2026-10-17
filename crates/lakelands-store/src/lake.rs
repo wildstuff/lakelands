@@ -1721,7 +1721,10 @@ impl Lake {
                 };
                 match key {
                     Ok(key) => crate::sealing::open(&mut plain, &key)?,
-                    Err(_) if self.forgot(w, view, staged, source, e.position)? => {
+                    Err(_)
+                        if self.taken(w, view, source, &sealed.key)?
+                            || self.forgot(w, view, staged, source, e.position)? =>
+                    {
                         dropped = matches!(plain.body, EventBody::OutputRecorded { .. });
                         erased = crate::sealing::erase(&mut plain);
                     }
@@ -2130,7 +2133,29 @@ impl Lake {
             return Ok(false);
         };
         Ok(self.keys.opened(source, &sealed.key)?.is_none()
-            && self.forgot(w, view, staged, source, at)?)
+            && (self.taken(w, view, source, &sealed.key)?
+                || self.forgot(w, view, staged, source, at)?))
+    }
+
+    /// Whether an act of removal destroyed version `key` of `source`'s key
+    /// (065): the acts a fold met or a rebuild was told of, or else those
+    /// the projection lists, which a writer that opened since has not met.
+    fn taken(
+        &self,
+        w: &mut Writer,
+        view: &dyn ProjectionView,
+        source: &SourceId,
+        key: &lakelands_api::id::KeyId,
+    ) -> Result<bool> {
+        if w.removals.iter().any(|r| r.destroyed(source, key)) {
+            return Ok(true);
+        }
+        for act in crate::remove::acts(self, view)? {
+            if !w.removals.contains(&act) {
+                w.removals.push(act);
+            }
+        }
+        Ok(w.removals.iter().any(|r| r.destroyed(source, key)))
     }
 
     /// Keep the engine's vector index in step with a record's vector
@@ -2306,6 +2331,15 @@ impl Lake {
             for (source, _) in list.iter().filter(|(_, s)| *s == "owed") {
                 self.keys.destroy(source)?;
             }
+            let view = self.engine.view(None)?;
+            let owed = |r: &crate::remove::Removal| acts.get(&r.at).is_some_and(|s| s == "owed");
+            for act in crate::remove::acts(self, view.as_ref())?
+                .iter()
+                .filter(|r| owed(r))
+            {
+                self.keys.destroy_versions(&act.source, &act.keys)?;
+            }
+            drop(view);
             self.rebuild_held(w)?;
         }
         let (mut list, mut acts) = (listed(self)?, removed(self)?);

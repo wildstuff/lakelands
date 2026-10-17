@@ -76,6 +76,12 @@ source's versions whose values are all in the selection.
   shredded only once a retention cut's prefix covers it. A key outside
   the chain for one delivery is lakelands#1214.
 
+The act names the versions it destroys in its event, and drops them
+from the open lake's memory, so the lake seals and opens with none of
+them again. A source whose newest version an act destroyed is given a
+new one at its next sealed value, not refused as having lost it; a key
+store never gives a new version the id of one it destroyed.
+
 **A version gone with no act in the log is lost, not destroyed.** The
 fold reads a sealed value with no key as erased only where an act in the
 log names that version, a `source_forgotten` of the source or a
@@ -94,7 +100,10 @@ and appends nothing. It reads on any handle and takes no lease. The
 report gives, in counts and the first keys:
 - the selection, and for a time the first position it does not reach;
 - the events selected, and for a delivery those that keep none;
-- per type, the records reached; per field, the values taken;
+- per type, the records reached; per field, the values taken, and of
+  them those shredded;
+- the versions of the source's key it destroys, and the values of
+  erasable fields it redacts only;
 - the records retired, and those kept;
 - what is computed again;
 - the constraints the records it keeps would be left breaking;

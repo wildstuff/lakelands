@@ -211,8 +211,9 @@ impl Keys {
     }
 
     /// Drop `source`'s keys from memory, then have the key store destroy
-    /// every version of them (058). Destroying what is destroyed is no
-    /// change.
+    /// every version of them (058), and mark the source destroyed though
+    /// an act of removal took every version already (065). Destroying what
+    /// is destroyed is no change.
     pub fn destroy(&self, source: &SourceId) -> Result<()> {
         {
             let mut held = lock(&self.held);
@@ -221,10 +222,38 @@ impl Keys {
             held.lists.remove(source);
         }
         match &self.store {
-            Some(store) if !store.ids(&self.lake, source)?.is_empty() => {
-                store.destroy(&self.lake, source)
+            Some(store) => store.destroy(&self.lake, source),
+            None => Ok(()),
+        }
+    }
+
+    /// Drop the versions `keys` of `source`'s key, a prefix of them oldest
+    /// first, from memory, so the open lake seals and opens with none of
+    /// them again, then have the key store destroy the newest it still
+    /// holds, and with it every older one (065). A prefix destroyed
+    /// already is no change.
+    pub fn destroy_versions(&self, source: &SourceId, keys: &[KeyId]) -> Result<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        {
+            let mut held = lock(&self.held);
+            held.by
+                .retain(|(s, id), _| s != source || !keys.contains(id));
+            if held
+                .sealing
+                .get(source)
+                .is_some_and(|(id, _)| keys.contains(id))
+            {
+                held.sealing.remove(source);
             }
-            _ => Ok(()),
+            held.lists.remove(source);
+        }
+        let store = self.store()?;
+        let ids = store.ids(&self.lake, source)?;
+        match keys.iter().rev().find(|k| ids.contains(k)) {
+            Some(newest) => store.destroy_version(&self.lake, source, newest),
+            None => Ok(()),
         }
     }
 }

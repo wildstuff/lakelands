@@ -1337,6 +1337,8 @@ catalog! {
         PurgeReportStale => "that report is not of this purge at this head; run the preflight again",
         /// A purge of records another hand wrote too.
         PurgeShared { source: SourceId, #[serde(rename = "type")] ty: Option<TypeName>, count: usize, #[serde(with = "closed::list")] first: Vec<RecordName> } => "the purge of `{source}`[ from `{ty}`] is refused whole: {count} record(s) it brought in were also written by another hand (a principal, or another source), and a purge never half-removes a record; retire them or clear those fields, then purge again. First: {first}",
+        /// A removal asked to shred that would redact values of erasable fields only.
+        RemoveNotShredded { source: SourceId, count: u64 } => "{count} value(s) of erasable fields of `{source}` the removal takes would be redacted only, not shredded: in plaintext, or sealed under a version of its key that also seals values outside the selection; nothing is removed",
         /// A removal's report of another removal or head.
         RemoveReportStale => "that report is not of this removal at this head; run the preflight again",
         /// A record with no value for a required field.

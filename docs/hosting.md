@@ -295,15 +295,14 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     own, made at the period's first value: one key a period, made by the
     key store. A version is destroyed only with every older one
     (`KeyStore::destroy_version`), and a host's KMS that destroys only
-    whole sources leaves that call refused. Until the act that takes
-    part of a source back comes, a version is destroyed with the lake
-    closed, by calling `KeyStore::destroy_version`; one who edits the
-    file keyring by hand removes only a source's oldest entries, never one
-    with an older still there. An open lake keeps the keys it
-    holds in memory and goes on sealing with them. Such a version is a
-    lost key, since no act in the log names it: at the next open the
-    values and the outputs it sealed fail closed, `key_missing`, at a
-    rebuild or a re-plan.
+    whole sources leaves that call refused. The act that destroys
+    versions is `remove_values` (below), which names them in the log and
+    drops them from the open lake's memory. A version destroyed any
+    other way, by calling `KeyStore::destroy_version` or by editing the
+    file keyring, is a lost key, since no act in the log names it: an
+    open lake keeps the keys it holds in memory and goes on sealing with
+    them, and at the next open the values and the outputs it sealed fail
+    closed, `key_missing`, at a rebuild or a re-plan.
   - **An export** holds sealed values as ciphertext, and no key. It
     imports with the key store bound, or with none where the export
     holds the source's forgetting, whose values then arrive erased; any

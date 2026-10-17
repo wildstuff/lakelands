@@ -6,11 +6,16 @@
 //!
 //! The act runs as forgetting runs (058), under the writer's lock, each
 //! step idempotent:
-//! 1. one append: `values_removed`, and a `record_retired` for each live
-//!    record left holding nothing but what the selection wrote;
-//! 2. the projection is rebuilt from the log, where the fold, told every
-//!    act before it begins, folds each selected value as erased;
-//! 3. the engine reclaims the storage.
+//! 1. one append: `values_removed`, naming the versions of the source's
+//!    key it destroys, and a `record_retired` for each live record left
+//!    holding nothing but what the selection wrote;
+//! 2. those versions are dropped from memory and destroyed: the longest
+//!    prefix of them whose values it all selects, so what they sealed is
+//!    shredded, and the rest is redacted only;
+//! 3. the projection is rebuilt from the log, where the fold, told every
+//!    act before it begins, folds each selected value as erased, and a
+//!    value under a version an act destroyed as erased, not lost;
+//! 4. the engine reclaims the storage.
 //!
 //! What a crash leaves after the append is finished by the next writer's
 //! open, and a repeat of the act appends nothing again
@@ -24,6 +29,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use lakelands_api::engine::ProjectionView;
 use lakelands_api::error::Case;
 use lakelands_api::event::{Digest, Event, EventBody};
+use lakelands_api::id::KeyId;
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::{Origin, StoredRecord, Value};
 use lakelands_api::write::{
@@ -61,6 +67,8 @@ pub(crate) struct Removal {
     pub source: SourceId,
     pub selection: Selection,
     pub before: Option<Position>,
+    /// The versions of the source's key it destroyed.
+    pub keys: Vec<KeyId>,
 }
 
 impl Removal {
@@ -70,6 +78,7 @@ impl Removal {
             source,
             selection,
             before,
+            keys,
         } = &e.body
         else {
             return None;
@@ -80,7 +89,14 @@ impl Removal {
             source,
             selection,
             before,
+            keys: keys.clone(),
         })
+    }
+
+    /// Whether it destroyed version `key` of `source`'s key: a value
+    /// sealed under it, missing from the key store, is erased, not lost.
+    pub(crate) fn destroyed(&self, source: &SourceId, key: &KeyId) -> bool {
+        &self.source == source && self.keys.contains(key)
     }
 
     /// Whether it selects `e`: a `record_ingested` of its source before
@@ -191,6 +207,7 @@ fn found(
         source: source.clone(),
         selection: selection.clone(),
         before,
+        keys: Vec::new(),
     };
     // From the log: the selected events, the records they reached and the
     // values they carry, each by the names it bears now.
@@ -198,7 +215,11 @@ fn found(
     let (mut events, mut undelivered) = (0, 0);
     let mut selected = BTreeSet::new();
     let mut reached: BTreeSet<(TypeName, RecordKey)> = BTreeSet::new();
-    let mut fields: BTreeMap<(TypeName, FieldName), u64> = BTreeMap::new();
+    // Per field, the values taken, and of them those sealed, by version.
+    type Tally = (u64, BTreeMap<KeyId, u64>);
+    let mut fields: BTreeMap<(TypeName, FieldName), Tally> = BTreeMap::new();
+    // The versions sealing values it selects, and those sealing others.
+    let (mut inside, mut outside) = (BTreeSet::new(), BTreeSet::new());
     each_of(lake, view, source, |e| {
         let EventBody::RecordIngested { ty, key, patch, .. } = &e.body else {
             return;
@@ -207,21 +228,41 @@ fn found(
             return;
         }
         undelivered += u64::from(e.delivery.is_none());
+        let sealed = e.sealed.as_ref();
         if !act.selects(e) {
+            outside.extend(sealed.map(|s| s.key.clone()));
             return;
         }
+        inside.extend(sealed.map(|s| s.key.clone()));
         events += 1;
         selected.insert(e.position);
         let mut ty_now = ty.clone();
         for (f, _) in patch.iter().filter(|(_, v)| !v.is_null()) {
+            let under = sealed
+                .filter(|s| s.fields.contains(f))
+                .map(|s| s.key.clone());
             let (t, f) = named_now(&renames, e.position, ty, f);
             ty_now = t.clone();
             if ontology.ty(&t).is_ok_and(|d| takeable(d, &f)) {
-                *fields.entry((t, f)).or_default() += 1;
+                let tally = fields.entry((t, f)).or_default();
+                tally.0 += 1;
+                if let Some(k) = under {
+                    *tally.1.entry(k).or_default() += 1;
+                }
             }
         }
         reached.insert((ty_now, key.clone()));
     })?;
+    // The longest prefix of the versions the key store holds whose values
+    // it all selects: versions die oldest first (058).
+    let held = lake.keys.ids(source)?;
+    let keys: Vec<KeyId> = (held.iter())
+        .take_while(|k| inside.contains(*k) && !outside.contains(*k))
+        .cloned()
+        .collect();
+    // A value under a version it destroys, or one an earlier act or a
+    // forgetting destroyed already, is shredded.
+    let gone = |k: &KeyId| keys.contains(k) || !held.contains(k);
     if matches!(selection, Selection::WrittenBefore(_)) {
         undelivered = 0;
     }
@@ -299,11 +340,23 @@ fn found(
     }
     // What is computed again: a computed field that reads a field it
     // takes values of, and a view over a type it reaches.
+    let mut unshredded = 0;
     let fields: Vec<RemovedField> = (fields.into_iter())
-        .map(|((ty, field), redacted)| RemovedField {
-            ty,
-            field,
-            redacted,
+        .map(|((ty, field), (redacted, sealed))| {
+            let shredded = sealed.iter().filter(|(k, _)| gone(k)).map(|(_, n)| n).sum();
+            let erasable = ontology
+                .ty(&ty)
+                .ok()
+                .and_then(|d| d.fields.iter().find(|f| f.name == field));
+            if erasable.is_some_and(|f| f.erasable) {
+                unshredded += redacted - shredded;
+            }
+            RemovedField {
+                ty,
+                field,
+                redacted,
+                shredded,
+            }
         })
         .collect();
     let mut recomputed = Vec::new();
@@ -343,6 +396,8 @@ fn found(
         views,
         breaches,
         references: references.references,
+        keys,
+        unshredded,
         log_events,
         expected_ms: log_events.saturating_mul(1000) / rate,
         position: head.unwrap_or(Position::GENESIS),
@@ -399,13 +454,14 @@ pub fn preflight(lake: &Lake, source: &SourceId, selection: &Selection) -> Resul
 
 /// Take back `selection` of `source`, as the module says; with a
 /// preflight's `report_id`, only if that report is of this removal and
-/// the lake has not moved since. A selection that selects nothing
-/// appends nothing.
+/// the lake has not moved since; with `shredded`, only if no value of an
+/// erasable field would be redacted alone. A selection that selects
+/// nothing appends nothing.
 pub fn run(
     lake: &Lake,
     source: &SourceId,
     selection: &Selection,
-    report_id: Option<&str>,
+    (shredded, report_id): (bool, Option<&str>),
 ) -> Result<RemoveReport> {
     checked(selection)?;
     let mut w = lake.for_write()?;
@@ -428,11 +484,16 @@ pub fn run(
     if report.events == 0 {
         return Ok(report);
     }
+    if shredded && report.unshredded > 0 {
+        let (source, count) = (source.clone(), report.unshredded);
+        return Err(invalid(Case::RemoveNotShredded { source, count }));
+    }
     let now = lake.clock(&mut w);
     let removed = EventBody::ValuesRemoved {
         source: source.clone(),
         selection: selection.clone(),
         before: report.before,
+        keys: report.keys.clone(),
     };
     let system = lake.system("lakelands");
     let call = Call {

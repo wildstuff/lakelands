@@ -548,6 +548,7 @@ pub const ALL: &[Check] = &[
     removed::REMOVED_DELIVERY,
     removed::REMOVE_CRASH,
     removed::REMOVED_TWINS,
+    removed::REMOVED_SHREDDED,
     embeddings::EMBED_WRITE,
     embeddings::VECTOR_COVERAGE,
     embeddings::EMBED_ONCE,

@@ -266,6 +266,10 @@ pub enum EventBody {
         /// For a time, the first position it does not reach.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         before: Option<Position>,
+        /// The versions of the source's key it destroys, oldest first: the
+        /// longest prefix whose values it all selects.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keys: Vec<crate::id::KeyId>,
     },
     /// A record was retired.
     RecordRetired {
