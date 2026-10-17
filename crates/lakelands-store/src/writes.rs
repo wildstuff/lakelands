@@ -1780,10 +1780,7 @@ pub(crate) fn reaches_by_state(o: &Ontology, write: &ProposedWrite) -> bool {
                 .iter()
                 .any(|f| f.name == a.field && f.ty.target.is_some())
         };
-        let sets = match &v.effect {
-            VerbEffect::Write { set } => set.iter().any(reference),
-            VerbEffect::External { .. } => false,
-        };
+        let sets = v.effect.set().iter().any(reference);
         computes_a_reference(t) || across.is_none_or(|a| !a.is_empty()) || sets
     };
     match write {
@@ -2533,9 +2530,9 @@ impl Decide<'_> {
     }
 
     /// A retirement of `ty` at `key`. It answers in its own order: whether
-    /// the judged principal may retire the type before whether the record
-    /// is there, since a key it does not reach leaves nothing it could
-    /// make.
+    /// the judged principal may retire the type, then whether this door
+    /// retires it (lakelands#1148), before whether the record is there,
+    /// since a key it does not reach leaves nothing it could make.
     fn retire(
         &mut self,
         ty: &TypeName,
@@ -2545,6 +2542,9 @@ impl Decide<'_> {
         let decl = self.w.ontology.ty(ty)?;
         rights::not_a_view(decl)?;
         granted(rights::may_retire(self.who, decl))?;
+        if !self.door.admits_retirement(decl.retired_by) {
+            return Err(self.retired_by_verbs(decl));
+        }
         untold_setting(&Sight::held(self.who, &self.w.ontology), decl, key)?;
         let before = self.reached(decl, key, expected)?;
         // A setting naming what its writer is not told keeps that: the rest
@@ -2685,6 +2685,22 @@ impl Decide<'_> {
                 reason: Refusal::VerbsOnly { verbs },
             },
             false => e,
+        }
+    }
+
+    /// A retirement of a type only its verbs retire, refused at another
+    /// door: named the verbs that retire it which its writer is shown and
+    /// may call, else `wrong_door`, whatever the key (lakelands#1148).
+    fn retired_by_verbs(&self, decl: &TypeDecl) -> Error {
+        let sees = Sight::held(self.who, &self.w.ontology);
+        let verbs: Vec<VerbName> = (self.w.ontology.verbs.values().map(|e| &e.decl))
+            .filter(|v| v.on == decl.name && matches!(v.effect, VerbEffect::Retire))
+            .filter(|v| sees.verb_shown(v))
+            .map(|v| v.name.clone())
+            .collect();
+        match verbs.is_empty() {
+            true => refused(Refusal::WrongDoor),
+            false => refused(Refusal::VerbsOnly { verbs }),
         }
     }
 
@@ -3057,8 +3073,9 @@ impl Decide<'_> {
     }
 
     /// The events a verb's call appends when it runs: `verb_called`, and
-    /// for a write effect the record write it causes, then the triggers
-    /// and object-set changes that write causes, as for any other write;
+    /// for a write effect the record write it causes, for a retire effect
+    /// the retirement, then the triggers and object-set changes that
+    /// write causes, as for any other write;
     /// and the record that write leaves. `key` is `None` for a verb on its
     /// type, which reads no record and writes none. The record is read as
     /// the judged principal's write reaches it (051). The write is caused
@@ -3110,7 +3127,7 @@ impl Decide<'_> {
         let patch = assigned(o, &w.settings, verb, &record, payload, (now, &across))?;
         let called_at = self.next;
         self.next = called_at.next();
-        if let VerbEffect::Write { .. } = &verb.effect {
+        if matches!(verb.effect, VerbEffect::Write { .. } | VerbEffect::Retire) {
             let version = w.ontology.verbs.get(&verb.name).map_or(1, |e| e.version);
             let procedure = Some(Procedure {
                 name: verb.name.to_string(),
@@ -3123,11 +3140,19 @@ impl Decide<'_> {
             };
             let of_the_call = std::mem::replace(&mut self.envelope, of_the_write);
             // Through the verbs' own door: a field only its verbs write is
-            // written here and refused at `upsert` (lakelands#1130).
+            // written here and refused at `upsert` (lakelands#1130), and a
+            // type only its verbs retire is retired here and refused at
+            // `retire`, by the caller as `retire` judges it (lakelands#1148).
             let door = std::mem::replace(&mut self.door, Door::Verb);
-            let write = self.record(&verb.on, key, &patch, expected, Some(record));
+            let write = match &verb.effect {
+                VerbEffect::Retire => self.retire(&verb.on, key, expected).map(Ok),
+                _ => (self.record(&verb.on, key, &patch, expected, Some(record))).map(Err),
+            };
             (self.envelope, self.door) = (of_the_call, door);
-            let write = self.planned(write?)?;
+            let write = match write? {
+                Ok(retired) => retired,
+                Err(written) => self.planned(written)?,
+            };
             plan.drafts.extend(write.drafts);
             plan.after = write.after;
         }
@@ -4080,10 +4105,28 @@ impl Call<'_> {
             _ => return e,
         };
         let judged = matches!(e, Error::Refused { .. } | Error::NotFound { .. });
+        let sight = Sight::held(self.who, o);
+        // The verbs a refusal names are those its reviewer is shown and may
+        // call, as its own write would name them, else none: a verb kept
+        // from it is told by nothing (lakelands#1130, lakelands#1148).
+        let e = match e {
+            Error::Refused {
+                field,
+                reason: Refusal::VerbsOnly { verbs },
+            } => {
+                let shown = |v: &VerbName| o.verb(v).is_ok_and(|d| sight.verb_shown(d));
+                let verbs: Vec<VerbName> = verbs.into_iter().filter(shown).collect();
+                let reason = match verbs.is_empty() {
+                    true => Refusal::WrongDoor,
+                    false => Refusal::VerbsOnly { verbs },
+                };
+                Error::Refused { field, reason }
+            }
+            e => e,
+        };
         if !judged || self.who.grants.reads_everything() {
             return e;
         }
-        let sight = Sight::held(self.who, o);
         let read = |f: &FieldName| sight.reads_from(&ty, f);
         let sees = |t: &TypeName| sight.ty(t).is_ok();
         let requires = |v: &VerbName| o.verb(v).ok().and_then(|v| v.requires.clone());

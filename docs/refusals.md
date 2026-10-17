@@ -351,6 +351,8 @@ What a refusal is about.
 | `reads_no_input` | `field` (FieldName) | it reads `{field}`, which is not one of its inputs | A function's expression reading what is not one of its inputs. |
 | `reads_param_view` | `source` (TypeName), `param` (ParamName) | its view reads `{source}`, a view with the parameter `{param}`; only a read that names a view binds its parameters, so no view reads one | A view reading a view with parameters. |
 | `reference_no_target` | — | a reference names its target type | A reference with no target. |
+| `retire_verb_link` | `type` (TypeName) | it is declared on `{type}`, a relation's link type, and a link is retired by `unlink` | A retire verb on a link type: `unlink` retires a link. |
+| `retired_by_view` | — | a view's records are computed and never retired, so no verb retires them | A view marked retired by its verbs. |
 | `scale_not_decimal` | — | only a decimal has a scale | A scale on a value type that is no decimal. |
 | `set_of_view` | `type` (TypeName) | it holds `{type}`, a view the lake does not keep, and a set holds records the lake keeps: set `view_kept.{type}` to keep it first | An object set of a view the lake does not keep. |
 | `set_retyped` | `was` (TypeName), `type` (TypeName) | it holds records of `{was}`; a set of `{type}` takes another name | An object set declared again over another type. |
@@ -359,7 +361,7 @@ What a refusal is about.
 | `tool_names` | `problems` (list of NameProblem) | the lake's names would not all become tools: {problems} | The tool names the lake's declarations would give. |
 | `type_name_form` | `name` (String) | type name `{name}` is not ASCII identifiers joined by `.` | A type name that is not identifiers joined by `.`. |
 | `type_verb_requires` | `type` (TypeName) | it is declared on the type `{type}`; `requires` reads a record it does not have | A verb on its type with a `requires`. |
-| `type_verb_writes` | `type` (TypeName) | it is declared on the type `{type}`, and a write effect sets fields of a record it does not have | A verb on its type with a write effect. |
+| `type_verb_writes` | `type` (TypeName) | it is declared on the type `{type}`, and an effect on a record needs a record it does not have | A verb on its type with an effect on a record: a write or a retirement. |
 | `undeclared` | `type` (TypeName) | `{type}` is not a declared type | A type named that is not declared. |
 | `valid_time_not_time` | `field` (FieldName), `axis` (String), `kind` (StorageKind) | it names `{field}` as its `{axis}`, a {kind} field; a valid time is a date_time or a date field | A valid time over a field that is neither a date-time nor a date. |
 | `valid_time_stands` | `axis` (String) | its `{axis}` names a field you may not know of, and stands as declared | A field its author may name, sent as a valid time where one over a field it may not know of stands: the bound is taken. |

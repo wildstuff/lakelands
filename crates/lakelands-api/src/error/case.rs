@@ -946,6 +946,10 @@ catalog! {
         ReadsParamView { source: TypeName, param: ParamName } => "its view reads `{source}`, a view with the parameter `{param}`; only a read that names a view binds its parameters, so no view reads one",
         /// A reference with no target.
         ReferenceNoTarget => "a reference names its target type",
+        /// A retire verb on a link type: `unlink` retires a link.
+        RetireVerbLink { #[serde(rename = "type")] ty: TypeName } => "it is declared on `{ty}`, a relation's link type, and a link is retired by `unlink`",
+        /// A view marked retired by its verbs.
+        RetiredByView => "a view's records are computed and never retired, so no verb retires them",
         /// A scale on a value type that is no decimal.
         ScaleNotDecimal => "only a decimal has a scale",
         /// An object set of a view the lake does not keep.
@@ -962,8 +966,9 @@ catalog! {
         TypeNameForm { name: String } => "type name `{name}` is not ASCII identifiers joined by `.`",
         /// A verb on its type with a `requires`.
         TypeVerbRequires { #[serde(rename = "type")] ty: TypeName } => "it is declared on the type `{ty}`; `requires` reads a record it does not have",
-        /// A verb on its type with a write effect.
-        TypeVerbWrites { #[serde(rename = "type")] ty: TypeName } => "it is declared on the type `{ty}`, and a write effect sets fields of a record it does not have",
+        /// A verb on its type with an effect on a record: a write or a
+        /// retirement.
+        TypeVerbWrites { #[serde(rename = "type")] ty: TypeName } => "it is declared on the type `{ty}`, and an effect on a record needs a record it does not have",
         /// A type named that is not declared.
         Undeclared { #[serde(rename = "type")] ty: TypeName } => "`{ty}` is not a declared type",
         /// A valid time over a field that is neither a date-time nor a date.

@@ -959,6 +959,7 @@ fn verb_tool(verb: &VerbDescription, lake: &LakeDescription) -> ToolSpec {
             e.name
         ),
         None if verb.external => ", through an executor the lake's host binds; where none is bound, a call is refused and writes nothing.".into(),
+        None if verb.retires => ", and retires the record; its history stays in the lake.".into(),
         None => ".".into(),
     };
     ToolSpec {

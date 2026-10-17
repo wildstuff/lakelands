@@ -77,6 +77,7 @@ async fn a_read_as_of_the_head_is_never_refused_while_a_writer_appends() {
             valid_to: None,
             field_meta: true,
             insert_only: false,
+            retired_by: Default::default(),
             language: None,
             description: None,
             label: None,

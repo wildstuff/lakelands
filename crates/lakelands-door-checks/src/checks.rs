@@ -324,6 +324,7 @@ pub fn fixture() -> Vec<Declaration> {
         constraints: Default::default(),
         annotations: Default::default(),
         insert_only: false,
+        retired_by: Default::default(),
         name: INVOICE.into(),
         key: Vec::new(),
         fields: vec![
@@ -2001,6 +2002,7 @@ fn partner_totals_view() -> TypeDecl {
         constraints: Default::default(),
         annotations: Default::default(),
         insert_only: false,
+        retired_by: Default::default(),
         name: "partner_totals".into(),
         key: vec!["partner".into()],
         fields: vec![text("partner"), text("count")],
@@ -5260,6 +5262,7 @@ pub async fn sys_types_cannot_be_declared(store: Arc<dyn LakeStore>) {
         constraints: Default::default(),
         annotations: Default::default(),
         insert_only: false,
+        retired_by: Default::default(),
         name: "sys.setting".into(),
         key: Vec::new(),
         fields: vec![text("value")],
@@ -7830,6 +7833,7 @@ pub async fn schema_hashes_and_proposal_ids_have_the_stores_form(store: Arc<dyn 
         constraints: Default::default(),
         annotations: Default::default(),
         insert_only: false,
+        retired_by: Default::default(),
         name: "open_by_partner".into(),
         key: vec!["partner".into()],
         fields: vec![
@@ -9539,6 +9543,7 @@ pub async fn a_sort_index_setting_names_declared_scalar_fields_and_describe_show
         constraints: Default::default(),
         annotations: Default::default(),
         insert_only: false,
+        retired_by: Default::default(),
         name: "reading".into(),
         key: Vec::new(),
         fields: vec![
@@ -11062,6 +11067,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
         constraints: Default::default(),
         annotations: Default::default(),
         insert_only: false,
+        retired_by: Default::default(),
         name: "doc".into(),
         key: Vec::new(),
         fields: vec![
@@ -11357,6 +11363,7 @@ pub async fn an_order_by_latest_takes_no_field_and_no_view(store: Arc<dyn LakeSt
         constraints: Default::default(),
         annotations: Default::default(),
         insert_only: false,
+        retired_by: Default::default(),
         name: "partner_totals".into(),
         key: vec!["partner".into()],
         fields: vec![text("partner"), text("count")],
@@ -11557,6 +11564,7 @@ pub async fn a_trigger_watches_a_link_type_and_not_a_reference_relations(
         constraints: Default::default(),
         annotations: Default::default(),
         insert_only: false,
+        retired_by: Default::default(),
         name: "doc".into(),
         key: Vec::new(),
         fields: vec![text("title")],
@@ -12020,6 +12028,7 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
         constraints: Default::default(),
         annotations: Default::default(),
         insert_only: false,
+        retired_by: Default::default(),
         name: "doc".into(),
         key: Vec::new(),
         fields: vec![
@@ -12200,6 +12209,7 @@ pub async fn a_search_limited_to_named_fields_matches_and_probes_only_those(
         valid_to: None,
         field_meta: true,
         insert_only: false,
+        retired_by: Default::default(),
         language: None,
         description: None,
         label: None,
@@ -12340,6 +12350,7 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
         constraints: Default::default(),
         annotations: Default::default(),
         insert_only: false,
+        retired_by: Default::default(),
         name: "doc".into(),
         key: Vec::new(),
         fields: vec![

@@ -322,6 +322,10 @@ SHOWS = {
     "withdrawn": shows("a declared withdrawal of a trigger, at the version after the one it withdraws")(
         lambda e: declaration(e) == {"declare": "withdraw", "kind": "trigger", "name": "shelved"}
         and e["body"]["version"] == 2),
+    "retired_by_verbs": shows("a declared type whose records only its verbs retire, `retired_by: verbs`")(
+        lambda e: declaration(e).get("retired_by") == "verbs"),
+    "retire_effect": shows("a declared verb whose effect is `retire`")(
+        lambda e: declaration(e).get("declare") == "verb" and declaration(e).get("effect") == "retire"),
     "values_removed": shows("a `values_removed` taking back one delivery of a source")(
         lambda e: e["body"]["kind"] == "values_removed" and e["body"].get("source") == "erp"
         and e["body"].get("selection") == {"delivery": "batch-7"} and "before" not in e["body"]),

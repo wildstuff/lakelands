@@ -30,8 +30,8 @@ use lakelands_api::expr::Condition;
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
     Assignment, AtIngest, Authority, Cardinality, ComputedAt, ConstraintDecl, EmbedDecl, FieldDecl,
-    FieldType, Measure, OnInputChange, RelationDecl, Risk, StorageKind, TriggerDecl, TypeDecl,
-    ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewParam, ViewSource,
+    FieldType, Measure, OnInputChange, RelationDecl, RetiredBy, Risk, StorageKind, TriggerDecl,
+    TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewParam, ViewSource,
 };
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{
@@ -324,6 +324,7 @@ fn type_decl() -> TypeDecl {
         constraints: vec![constraint_decl()],
         annotations: [("acme.icon".to_owned(), serde_json::json!("x"))].into(),
         insert_only: true,
+        retired_by: RetiredBy::Verbs,
         name: "invoice".into(),
         key: vec!["f".into()],
         fields: vec![field_decl()],
@@ -633,6 +634,7 @@ fn type_description() -> TypeDescription {
         lineage: TypeLineage {
             sourced: true,
             insert_only: true,
+            retired_by: RetiredBy::Verbs,
             view_of: Some("t".into()),
         },
         lifecycle: TypeLifecycle {
@@ -1199,6 +1201,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     name: "ledger".into(),
                     bound: true,
                 }),
+                retires: true,
                 description: Some("d".into()),
             }),
         ),
@@ -1223,6 +1226,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     risk: Risk::Low,
                     external: false,
                     executor: None,
+                    retires: false,
                     description: None,
                 }],
                 value_types: vec![ValueTypeDecl {
@@ -1490,6 +1494,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     }
     // `#[non_exhaustive]`: its list is kept whole inside its crate.
     checks.push(("authority", case_names(&Authority::ALL, None)));
+    checks.push(("retired_by", case_names(&RetiredBy::ALL, None)));
     units!("on_input_change", OnInputChange, [Keep, Clear]);
     units!("computed_at", ComputedAt, [Write, Read]);
     units!(
@@ -1883,7 +1888,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
 
     fn effects(e: &VerbEffect) {
         match e {
-            VerbEffect::Write { .. } | VerbEffect::External { .. } => {}
+            VerbEffect::Write { .. } | VerbEffect::External { .. } | VerbEffect::Retire => {}
+            _ => unreachable!("an effect the WIT does not mirror"),
         }
     }
     let _ = effects;
@@ -1895,6 +1901,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 VerbEffect::External {
                     executor: "x".into(),
                 },
+                VerbEffect::Retire,
             ],
             Some("effect"),
         ),

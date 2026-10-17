@@ -477,6 +477,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
         valid_to: doc.valid_to.map(FieldName::new),
         field_meta: doc.field_meta,
         insert_only: doc.insert_only,
+        retired_by: doc.retired_by,
         language: doc.language,
         description: doc.description,
         label: doc.label,
@@ -486,13 +487,15 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
 }
 
 /// A verb: a write verb when it has `set`, an external one when it has
-/// `executor`, never both.
+/// `executor`, one that retires its record when it says `retire: true`;
+/// one of the three.
 pub(super) fn verb(l: &mut Lower<'_>, doc: VerbDoc) -> VerbDecl {
     let on = l.type_ref("`on`", &doc.on);
     let payload = l.fields("payload field", doc.payload);
     let requires = l.opt_cond("`requires`", doc.requires);
-    let effect = match (doc.set, doc.executor) {
-        (Some(set), None) => VerbEffect::Write {
+    let effect = match (doc.set, doc.executor, doc.retire) {
+        (None, None, true) => VerbEffect::Retire,
+        (Some(set), None, false) => VerbEffect::Write {
             set: set
                 .0
                 .into_iter()
@@ -516,15 +519,15 @@ pub(super) fn verb(l: &mut Lower<'_>, doc: VerbDoc) -> VerbDecl {
                 })
                 .collect(),
         },
-        (None, Some(executor)) => {
+        (None, Some(executor), false) => {
             l.name(Naming::Executor, &executor);
             VerbEffect::External { executor }
         }
-        (set, _) => {
-            let message = if set.is_some() {
-                "a verb either sets fields of its record (`set`) or runs an executor (`executor`), not both"
+        (set, executor, retire) => {
+            let message = if set.is_some() || executor.is_some() || retire {
+                "a verb sets fields of its record (`set`), runs an executor (`executor`) or retires its record (`retire`), one of the three"
             } else {
-                "a verb says what it does: `set` for the fields it writes, or `executor` for what it runs outside the lake"
+                "a verb says what it does: `set` for the fields it writes, `executor` for what it runs outside the lake, or `retire`"
             };
             l.fail(Problem::Contradiction, message.to_owned());
             VerbEffect::Write { set: Vec::new() }

@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 59, each
+- `further.json`: the lake's next events, positions 8 to 61, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -104,9 +104,12 @@ The files:
   - the trigger `shelved` withdrawn, a `declared` of `declare: withdraw`
     at version 2 (57): a declaration form format 17 holds and 16 does not
     (lakelands#1219);
-  - a `values_removed` taking the delivery `batch-7` back (58), and the
+  - a type `voucher` whose records only its verbs retire, `retired_by:
+    verbs` (58), and its verb `redeem` whose effect is `retire` (59):
+    two forms format 17 holds and 16 does not (lakelands#1148);
+  - a `values_removed` taking the delivery `batch-7` back (60), and the
     `record_retired` of `INV-2`, which only it wrote, in the same append
-    (59): a kind format 17 holds and 16 does not
+    (61): a kind format 17 holds and 16 does not
     (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
 
   Its `misplaced` holds five lines that are not of the lake. Each

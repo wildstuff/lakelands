@@ -629,6 +629,11 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
         };
         return Err(invalid_field(&f.name, at(&on, case)));
     }
+    // A view's records are computed and never retired, so the mark of who
+    // retires them means nothing there (lakelands#1148).
+    if t.view.is_some() && !t.retired_by.is_authors() {
+        return Err(invalid(at(&owner, Case::RetiredByView)));
+    }
     if let Some((field, why)) = t.embedding_problem() {
         return Err(invalid_field(&field, why));
     }
@@ -1631,9 +1636,10 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             }];
             let ty = v.on.clone();
             // A verb on its type has no record: nothing for a write effect
-            // to set, nothing for `requires` to read (013, extended).
+            // to set or a retirement to retire, nothing for `requires` to
+            // read (013, extended).
             if v.scope == VerbScope::Type {
-                if matches!(v.effect, VerbEffect::Write { .. }) {
+                if !matches!(v.effect, VerbEffect::External { .. }) {
                     return Err(invalid(at(&on, Case::TypeVerbWrites { ty })));
                 }
                 if v.requires.is_some() {
@@ -1648,6 +1654,11 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             let types = o.types.values().map(|e| &e.decl);
             if links::is_link_type(&v.on) && links::relation_of(types, &v.on).is_none() {
                 return Err(invalid(at(&on, Case::Undeclared { ty })));
+            }
+            // A link is retired by `unlink`, which judges its relation; a
+            // verb does not retire one (035, lakelands#1148).
+            if links::is_link_type(&v.on) && matches!(v.effect, VerbEffect::Retire) {
+                return Err(invalid(at(&on, Case::RetireVerbLink { ty })));
             }
             // Of the system types, a verb names a relation's link type, and
             // one whose effect is external a type of the host's vocabulary:
@@ -1703,6 +1714,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     }
                 }
                 VerbEffect::External { executor } => name(Naming::Executor, executor)?,
+                _ => {}
             }
         }
         Declaration::Trigger(t) => {

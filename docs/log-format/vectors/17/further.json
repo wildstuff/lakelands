@@ -302,16 +302,28 @@
       "hash": "dc11623be62d9a0ac373461bd0470b12babc847939a36a4c2abb5e2ca4cbcd1f"
     },
     {
+      "shows": "retired_by_verbs",
+      "about": "A `declared` type `voucher` whose records only its verbs retire (`retired_by: verbs`, lakelands#1148): `retire` is refused it, a verb whose effect is `retire` retires one. A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"no\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"authored\",\"name\":\"state\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"name\":\"voucher\",\"retired_by\":\"verbs\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"d7c1e690b06d73a93b740429382f988ee762cf6518f03a217da7580fd39cb12e\",\"id\":\"00000000000000000000000000000039\",\"known_at\":\"2026-10-05T09:00:28.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":58,\"prev\":\"dc11623be62d9a0ac373461bd0470b12babc847939a36a4c2abb5e2ca4cbcd1f\",\"v\":17,\"writer\":\"agent:agent\"}",
+      "hash": "d7c1e690b06d73a93b740429382f988ee762cf6518f03a217da7580fd39cb12e"
+    },
+    {
+      "shows": "retire_effect",
+      "about": "A `declared` verb `redeem` whose effect is `retire` (lakelands#1148): its call retires the record it is called on, under its `requires`. A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"verb\",\"effect\":\"retire\",\"name\":\"redeem\",\"on\":\"voucher\",\"requires\":\"state = 'issued'\",\"risk\":\"low\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"e9ab6dd0e08fa7aa4d6680e152b1c355efb7bb988f90e62fed735f0caa146221\",\"id\":\"0000000000000000000000000000003a\",\"known_at\":\"2026-10-05T09:00:29.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":59,\"prev\":\"d7c1e690b06d73a93b740429382f988ee762cf6518f03a217da7580fd39cb12e\",\"v\":17,\"writer\":\"agent:agent\"}",
+      "hash": "e9ab6dd0e08fa7aa4d6680e152b1c355efb7bb988f90e62fed735f0caa146221"
+    },
+    {
       "shows": "values_removed",
       "about": "A host took back `erp`'s delivery `batch-7`: each value its events wrote folds as erased, at every position (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). A form format 17 holds and 16 does not.",
-      "line": "{\"body\":{\"kind\":\"values_removed\",\"selection\":{\"delivery\":\"batch-7\"},\"source\":\"erp\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"34e94388a0dfe5fab9dfd588d289a3269779764db92c8bfe5774db1f9e14e6b8\",\"id\":\"00000000000000000000000000000039\",\"known_at\":\"2026-10-05T09:00:28.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":58,\"prev\":\"dc11623be62d9a0ac373461bd0470b12babc847939a36a4c2abb5e2ca4cbcd1f\",\"v\":17,\"writer\":\"system:lakelands\"}",
-      "hash": "34e94388a0dfe5fab9dfd588d289a3269779764db92c8bfe5774db1f9e14e6b8"
+      "line": "{\"body\":{\"kind\":\"values_removed\",\"selection\":{\"delivery\":\"batch-7\"},\"source\":\"erp\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"fd184aeeb817353ca66eaabcc3932ad9c100ec24449826baaeb1f31d143d69d2\",\"id\":\"0000000000000000000000000000003b\",\"known_at\":\"2026-10-05T09:00:30.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":60,\"prev\":\"e9ab6dd0e08fa7aa4d6680e152b1c355efb7bb988f90e62fed735f0caa146221\",\"v\":17,\"writer\":\"system:lakelands\"}",
+      "hash": "fd184aeeb817353ca66eaabcc3932ad9c100ec24449826baaeb1f31d143d69d2"
     },
     {
       "shows": "removal_retires",
       "about": "The `record_retired` of `INV-2`, which only that delivery wrote, in the same append as the act (065).",
-      "line": "{\"body\":{\"key\":\"INV-2\",\"kind\":\"record_retired\",\"type\":\"invoice\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"932aa4d1b90866973bff5d569da4a567456911cf26cc99438b4b48d36c05ce77\",\"id\":\"0000000000000000000000000000003a\",\"known_at\":\"2026-10-05T09:00:28.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":59,\"prev\":\"34e94388a0dfe5fab9dfd588d289a3269779764db92c8bfe5774db1f9e14e6b8\",\"v\":17,\"writer\":\"system:lakelands\"}",
-      "hash": "932aa4d1b90866973bff5d569da4a567456911cf26cc99438b4b48d36c05ce77"
+      "line": "{\"body\":{\"key\":\"INV-2\",\"kind\":\"record_retired\",\"type\":\"invoice\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"1a650437548f2a1792cfe60b088fcb818e05cde2c646566ce0fa82f28de8a91f\",\"id\":\"0000000000000000000000000000003c\",\"known_at\":\"2026-10-05T09:00:30.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":61,\"prev\":\"fd184aeeb817353ca66eaabcc3932ad9c100ec24449826baaeb1f31d143d69d2\",\"v\":17,\"writer\":\"system:lakelands\"}",
+      "hash": "1a650437548f2a1792cfe60b088fcb818e05cde2c646566ce0fa82f28de8a91f"
     }
   ],
   "misplaced": [

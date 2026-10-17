@@ -1,8 +1,8 @@
 use lakelands_api::expr::{Condition, Expr, Literal};
 use lakelands_api::ontology::{
     Assignment, Authority, Cardinality, FieldDecl, FieldType, Measure, OnInputChange, RelationDecl,
-    Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, VerbScope,
-    ViewDecl, ViewSource,
+    RetiredBy, Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
+    VerbScope, ViewDecl, ViewSource,
 };
 use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl};
 use lakelands_api::{FieldName, RelationName, TypeName, ValueTypeName, VerbName};
@@ -1173,6 +1173,32 @@ fn a_verb_needs_exactly_one_effect() {
         ],
         Problem::Contradiction,
     );
+}
+
+/// A type only its verbs retire, and a verb that retires: `retire: true`
+/// is an effect of its own, beside neither `set` nor `executor`
+/// (lakelands#1148).
+#[test]
+fn a_verb_may_retire_and_a_type_may_be_retired_by_its_verbs_alone() {
+    let partner = "name: partner\nretired_by: verbs\nfields:\n  name: text\n";
+    let b = load(&[
+        ("types/partner.yaml", partner),
+        (
+            "verbs/v.yaml",
+            "name: v\non: partner\nrisk: low\nretire: true\n",
+        ),
+    ])
+    .expect("the bundle loads");
+    assert_eq!(ty(&b, "partner").retired_by, RetiredBy::Verbs);
+    let effect = b.declarations.iter().find_map(|d| match d {
+        Declaration::Verb(v) => Some(&v.effect),
+        _ => None,
+    });
+    assert_eq!(effect, Some(&VerbEffect::Retire));
+    for both in ["set: {}\n", "executor: mailer\n"] {
+        let v = format!("name: v\non: partner\nrisk: low\nretire: true\n{both}");
+        one(&[PARTNER, ("verbs/v.yaml", &v)], Problem::Contradiction);
+    }
 }
 
 #[test]
