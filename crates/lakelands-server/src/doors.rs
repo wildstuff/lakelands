@@ -17,7 +17,7 @@ use lakelands_api::record::Patch;
 use lakelands_api::tools::{Door, ToolSpec};
 use lakelands_api::write::{
     Change, Declaration, FunctionDecl, Migration, ObjectSetDecl, ProposalFilter, ProposedWrite,
-    SettingDecl, ValueTypeMigration, WriteOpts,
+    SettingDecl, ValueTypeMigration, Withdrawal, WriteOpts,
 };
 use lakelands_api::{Catalog, Principal, Timestamp};
 use serde::Deserialize;
@@ -163,6 +163,7 @@ fn declared(kind: &str, members: Value) -> Option<(Naming, Said)> {
         "object_set" => (Naming::ObjectSet, one::<ObjectSetDecl>(members)),
         "function" => (Naming::Function, one::<FunctionDecl>(members)),
         "setting" => (Naming::Setting, one::<SettingDecl>(members)),
+        "withdraw" => (Naming::Withdrawal, one::<Withdrawal>(members)),
         _ => return None,
     };
     Some((what, said?))

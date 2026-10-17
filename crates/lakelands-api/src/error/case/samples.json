@@ -238,6 +238,21 @@
    "name": "s"
   },
   {
+   "by": "s",
+   "code": "withdrawn_in_use",
+   "kind": "type",
+   "name": "s"
+  },
+  {
+   "code": "withdrawn_undeclared",
+   "kind": "type",
+   "name": "s"
+  },
+  {
+   "code": "withdrawn_kind",
+   "kind": "type"
+  },
+  {
    "code": "group_unkeyable",
    "field": "f"
   },

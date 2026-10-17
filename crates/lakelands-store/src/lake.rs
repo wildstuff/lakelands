@@ -1230,6 +1230,7 @@ impl Lake {
                 .get(trigger.as_str())
                 .and_then(|e| e.decl.max_depth)
             && context.depth > m
+            && !self.withdrawn_since(trigger.as_str(), cause)?
         {
             return Err(Error::Refused {
                 field: Some(trigger.as_str().into()),
@@ -1237,6 +1238,23 @@ impl Lake {
             });
         }
         Ok(())
+    }
+
+    /// Whether the trigger `name` was withdrawn after `at`: a firing before
+    /// that is one of the trigger it withdrew, which the one in force does
+    /// not bind (lakelands#1219). Read only where a ceiling would refuse,
+    /// from the states the engine kept; one that keeps none binds it.
+    fn withdrawn_since(&self, name: &str, at: Position) -> Result<bool> {
+        let view = self.engine.view(None)?;
+        let Some(head) = view.position() else {
+            return Ok(false);
+        };
+        let key = format!("trigger {name}");
+        let replaced = view.replaced(at, head)?.unwrap_or_default();
+        Ok(replaced.iter().any(|d| {
+            matches!(d.declaration, Declaration::Withdraw(_))
+                && lakelands_core::engines::declaration_key(&d.declaration) == key
+        }))
     }
 
     /// Fold events into the projection: an append's in one transaction, a

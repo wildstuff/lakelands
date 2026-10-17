@@ -104,6 +104,13 @@ fn cases() -> Vec<Case> {
             }),
             names: &["colour", "write", "batch.size"],
         },
+        // A withdrawal is read as strictly as a declaration (lakelands#1219).
+        Case {
+            route: "schema/declare",
+            tool: None,
+            args: json!({"declaration": {"declare": "withdraw", "kind": "trigger", "name": "nightly", "colour": "red"}}),
+            names: &["colour", "declaration", "withdrawal", "nightly"],
+        },
     ]
 }
 

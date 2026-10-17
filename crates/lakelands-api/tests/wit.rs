@@ -45,7 +45,7 @@ use lakelands_api::write::{
     FieldConversion, FieldFill, FunctionDecl, InForce, Migration, MigrationReport, Misfit,
     ObjectSetDecl, Proposal, ProposalFilter, ProposalState, ProposedWrite, PurgeReport, RecordRef,
     ReferenceRewrite, Rekeyed, RelationRename, Restated, RuleRun, TypeRetired, ValueRenamed,
-    ValueTypeMigration, ValueTypeReport, ValueTypeUse,
+    ValueTypeMigration, ValueTypeReport, ValueTypeUse, Withdrawal,
 };
 use lakelands_api::{
     Access, After, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, IngestOpts,
@@ -718,6 +718,13 @@ fn in_force() -> InForce {
     }
 }
 
+fn withdrawal() -> Withdrawal {
+    Withdrawal {
+        kind: DeclarationKind::Trigger,
+        name: "t".into(),
+    }
+}
+
 fn setting_decl() -> lakelands_api::write::SettingDecl {
     lakelands_api::write::SettingDecl {
         key: "vat_rate".into(),
@@ -869,6 +876,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         ("object_set_decl", members(&object_set_decl())),
         ("function_decl", members(&function_decl())),
         ("setting_decl", members(&setting_decl())),
+        ("withdrawal", members(&withdrawal())),
         (
             "migration",
             members(&Migration {
@@ -1884,7 +1892,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Declaration::Trigger(_)
             | Declaration::ObjectSet(_)
             | Declaration::Function(_)
-            | Declaration::Setting(_) => {}
+            | Declaration::Setting(_)
+            | Declaration::Withdraw(_) => {}
             _ => unreachable!("a declaration of a kind the WIT does not mirror"),
         }
     }
@@ -1932,6 +1941,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     risk: Default::default(),
                 }),
                 Declaration::Setting(setting_decl()),
+                Declaration::Withdraw(withdrawal()),
             ],
             Some("declare"),
         ),

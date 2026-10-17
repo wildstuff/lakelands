@@ -123,6 +123,7 @@ mod view_stack;
 mod views;
 mod vocabulary;
 mod walks;
+mod withdraw;
 
 /// Every check, in the order the suite runs them.
 pub const ALL: &[Check] = &[
@@ -775,6 +776,9 @@ pub const ALL: &[Check] = &[
     triggers::RETIRED_ONLY_IN_A_GUARD,
     triggers::PER_TRIGGER_DEPTH,
     triggers::TRIGGER_CEILING,
+    withdraw::WITHDRAWN_TRIGGER,
+    withdraw::WITHDRAWN_FUNCTION,
+    withdraw::WITHDRAWAL_TWIN,
     after::AFTER_RESUMES,
     describe::DESCRIBE_IS_THE_DECLARATION,
     describe::DESCRIBED_AS_SHOWN,

@@ -294,6 +294,12 @@
       "about": "A `write_proposed` the store appended for the call of `notify` that the write at position 55 made due, as its writer: the record, the field its output fills and the call's digest on that record as that write made it (§2.5, 064). It holds no inputs: they are the record's, which a source's forgetting may have erased (058).",
       "line": "{\"body\":{\"kind\":\"write_proposed\",\"proposal\":\"00000000000000000000000000000038\",\"why\":\"`notify` is declared high risk; its call is made when accepted\",\"write\":{\"field\":\"notice\",\"function\":\"notify\",\"input\":\"8ff7e3a8569bdcce801457c2714e79a50f278951d066a1f022928062c260d1d6\",\"key\":\"a1\",\"type\":\"alert\",\"write\":\"compute\"}},\"cause\":55,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"3f8542ead941160ee9c6b7a5807bffaceba702e813519f1fdc5f1463a1537916\",\"id\":\"00000000000000000000000000000038\",\"known_at\":\"2026-10-05T09:00:26.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":56,\"prev\":\"95121296031567cb6611022f73e2cf63860aa5eb6bb985b8ad99ae1de562f615\",\"v\":17,\"writer\":\"human:owner\"}",
       "hash": "3f8542ead941160ee9c6b7a5807bffaceba702e813519f1fdc5f1463a1537916"
+    },
+    {
+      "shows": "withdrawn",
+      "about": "A `declared` withdrawal of the trigger `shelved` (lakelands#1219): from this position on it is not in force, and a read as of before still sees it; its version, 2, follows the declaration it withdraws, and a later declaration of the name takes 3. A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"withdraw\",\"kind\":\"trigger\",\"name\":\"shelved\"},\"kind\":\"declared\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"dc11623be62d9a0ac373461bd0470b12babc847939a36a4c2abb5e2ca4cbcd1f\",\"id\":\"20255277d343a5f6df3e3a890166e268\",\"known_at\":\"2026-10-05T09:00:27.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":57,\"prev\":\"3f8542ead941160ee9c6b7a5807bffaceba702e813519f1fdc5f1463a1537916\",\"v\":17,\"writer\":\"agent:agent\"}",
+      "hash": "dc11623be62d9a0ac373461bd0470b12babc847939a36a4c2abb5e2ca4cbcd1f"
     }
   ],
   "misplaced": [

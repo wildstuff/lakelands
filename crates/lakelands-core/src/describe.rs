@@ -323,6 +323,10 @@ impl Sight<'_> {
             Declaration::Function(f) => self.function_visible(f),
             Declaration::ValueType(v) => self.uses_shown(&v.name, declared),
             Declaration::Setting(s) => self.setting_visible(s),
+            // A withdrawal tells its kind and name alone. The store hands
+            // one only to a reader it judged by what it withdraws, as the
+            // lake held that (lakelands#1219).
+            Declaration::Withdraw(_) => true,
             _ => false,
         }
     }
