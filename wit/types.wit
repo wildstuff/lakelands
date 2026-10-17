@@ -146,6 +146,10 @@ interface types {
 
     enum authority { authored, source, shared, derived, verb }
 
+    /// Who retires a type's records: its authors through `retire`, or
+    /// only its verbs whose effect is `retire`.
+    enum retired-by { authors, verbs }
+
     enum on-input-change { keep, clear }
 
     /// When a computed field is computed: by the fold at a write, its value
@@ -262,6 +266,8 @@ interface types {
         field-meta: bool,
         /// Whether a source writes each of its records once.
         insert-only: bool,
+        /// Who retires its records: its authors, or only its verbs.
+        retired-by: retired-by,
         description: option<string>,
         label: option<string>,
         /// The host's own marks, by namespaced key (`acme.icon`), each a
@@ -303,11 +309,12 @@ interface types {
         value: condition,
     }
 
-    /// What a verb does: writes to its record, or reaches outside the
-    /// lake through the named executor.
+    /// What a verb does: writes to its record, reaches outside the lake
+    /// through the named executor, or retires its record.
     variant verb-effect {
         write(list<assignment>),
         external(string),
+        retire,
     }
 
     /// What a verb is called on: one record of its type, or the type,
@@ -1058,6 +1065,8 @@ interface types {
         sourced: bool,
         /// Whether a source writes each of its records once.
         insert-only: bool,
+        /// Who retires its records: only its verbs, or its authors too.
+        retired-by: retired-by,
         view-of: option<type-name>,
     }
 
@@ -1169,6 +1178,8 @@ interface types {
         /// Exactly when `executor` is there.
         external: bool,
         executor: option<executor-description>,
+        /// Whether it retires the record it is called on.
+        retires: bool,
         description: option<string>,
     }
 

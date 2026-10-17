@@ -141,6 +141,7 @@ fn projected(t: &TypeDescription) -> TypeDecl {
         constraints: Default::default(),
         annotations: t.annotations.clone(),
         insert_only: false,
+        retired_by: t.lineage.retired_by,
         name: t.name.clone(),
         key: t.access.key.clone(),
         fields: t.fields.iter().map(field_projected).collect(),

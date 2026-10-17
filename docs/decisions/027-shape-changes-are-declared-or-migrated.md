@@ -69,6 +69,16 @@ the type's verbs write the field (016, lakelands#1130). A migration
 whose `to` carries the change reports it in `restated`, and one that
 converts a `verb` field's values converts them, as for any field.
 
+### Marking a type retired by its verbs is a change of meaning
+
+A revision that only marks a type `retired_by: verbs`, or takes the mark
+off, changes no stored record, so `declare` takes it as it takes the
+marks above: the type's version moves, its hash does not, and no
+migration is asked. From that position only the type's retire verbs end
+its records (016, lakelands#1148); a record retired before stays
+retired, and a retirement proposed before is refused at its accept. A
+migration whose `to` carries the change reports it in `restated`.
+
 ### A migration converts by a closed table, and only where converting back gives the same information
 
 The conversions a migration may make are a closed table: a value
@@ -920,3 +930,4 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
   first read of its position (lakelands#1056).
 - Marking a field `authority: verb` is a change of meaning, taken by `declare` (lakelands#1130).
 - A trigger or a function is withdrawn by a declaration (lakelands#1219).
+- Marking a type `retired_by: verbs` is a change of meaning, taken by `declare` (lakelands#1148).

@@ -33,6 +33,23 @@ whether it is called or a call of it is proposed through `propose`
 a proposal that could not run when accepted would be a promise the store
 cannot keep.
 
+### A verb may retire the record it is called on
+
+A verb's effect is one of three: `write` sets fields of its record,
+`external` reaches outside the lake, and `retire` retires its record,
+with no member of its own (lakelands#1148). A retirement is the end of a
+lifecycle, and a host that declares how a record ends wants that end
+under a `requires` and a risk as every other move. The verb's call
+writes `verb_called`, then the `record_retired`, caused by it and
+carrying the verb as its procedure, with what a retirement sets off, as
+`retire` writes it. Its caller is judged as `retire` judges one: it may
+write every field of the type, or the verb is neither callable nor
+described to it (006). A `retire` verb is on a record, so on its type it
+is refused as `type_verb_writes`, and a relation's link type takes none
+(`retire_verb_link`): `unlink` ends a link, and a proposal makes or
+retires no link (below). On a type marked `retired_by: verbs`, such a
+verb is the only door that retires (016).
+
 ### A call is proposed only if it could run now, and an accept checks the write again at the head
 
 A call is proposed only if it could run when it is proposed. A call that
@@ -305,10 +322,10 @@ called with no key.
   runs nothing again and answers by what is recorded for its position,
   as for any external verb.
 - **Only an external effect.** A verb on its type reaches outside the
-  lake. A `write` effect sets fields of a record, and `requires` reads
-  one, so a declaration with either is refused as invalid, naming the
-  verb. Creating a record in the lake needs no anchor: it is `upsert`,
-  or a proposal of one.
+  lake. A `write` effect sets fields of a record, a `retire` effect
+  retires one, and `requires` reads one, so a declaration with any of
+  them is refused as invalid, naming the verb. Creating a record in the
+  lake needs no anchor: it is `upsert`, or a proposal of one.
 - **The key must fit the scope.** A key passed to a verb on its type, no
   key passed to a verb on a record, and an expected version with no key
   (there is no record version to compare) are each refused as invalid,
@@ -600,3 +617,5 @@ listing and its accept need, moved to
 - A failed executor's recorded output is the error's wire form, and an
   executor declines a call by `Error::declined` (lakelands#812): the
   refusal `declined`, the case `call_declined`.
+- A third effect, `retire`: a verb may retire the record it is called
+  on, under its `requires` and its risk (lakelands#1148).

@@ -427,6 +427,13 @@
    "code": "reference_no_target"
   },
   {
+   "code": "retire_verb_link",
+   "type": "t"
+  },
+  {
+   "code": "retired_by_view"
+  },
+  {
    "code": "scale_not_decimal"
   },
   {

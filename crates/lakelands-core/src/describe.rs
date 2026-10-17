@@ -844,7 +844,8 @@ impl Sight<'_> {
                 && !is_view
                 && !is_link
                 && fields.iter().any(FieldDescription::authored_writable),
-            retire: !is_link && crate::rights::may_retire(who, t),
+            // A type only its verbs retire is retired by calling one.
+            retire: !is_link && t.retired_by.is_authors() && crate::rights::may_retire(who, t),
             link: t
                 .relations
                 .iter()
@@ -931,6 +932,7 @@ impl Sight<'_> {
                 sourced: (fields.iter())
                     .any(|f| matches!(f.authority, Authority::Source | Authority::Shared)),
                 insert_only: t.insert_only,
+                retired_by: t.retired_by,
                 view_of: t.view.as_ref().map(|v| v.source.clone()),
             },
             lifecycle: TypeLifecycle {
@@ -978,13 +980,14 @@ impl Sight<'_> {
                 .collect(),
             risk: v.risk,
             external: matches!(v.effect, VerbEffect::External { .. }),
+            retires: matches!(v.effect, VerbEffect::Retire),
             // Whether the host binds it is the store's to say.
             executor: match &v.effect {
                 VerbEffect::External { executor } => Some(ExecutorDescription {
                     name: executor.clone(),
                     bound: false,
                 }),
-                VerbEffect::Write { .. } => None,
+                _ => None,
             },
             description: v.description.clone(),
         })

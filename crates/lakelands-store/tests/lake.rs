@@ -88,6 +88,7 @@ fn ty(name: &str, fields: Vec<FieldDecl>) -> TypeDecl {
         constraints: Default::default(),
         annotations: Default::default(),
         insert_only: false,
+        retired_by: Default::default(),
         name: name.into(),
         key: vec![],
         fields,

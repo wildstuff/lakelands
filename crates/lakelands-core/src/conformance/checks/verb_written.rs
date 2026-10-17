@@ -22,7 +22,7 @@ check!(
 
 check!(
     VERB_ONLY_TOLD = a_refusal_names_only_the_verbs_its_writer_is_shown,
-    "006 and 016, extended (lakelands#1130): a writer kept from a `verb` field is answered `unknown_field` at `upsert`, as for a field the type does not have; a verb that reads a field kept from its writer is not named to it, so where it is the only one that sets the field the writer is answered `wrong_door` as where no verb sets it, and beside verbs it is shown, `verbs_only` naming those alone; a holder whose `only` names such a field with its `initial`'s value creates by `upsert` and is told `upsert`, and one whose `only` names another value is told no `upsert` and its create refused, `describe` naming the field's authority `verb` and the upsert tool leaving it out"
+    "006 and 016, extended (lakelands#1130): a writer kept from a `verb` field is answered `unknown_field` at `upsert`, as for a field the type does not have; a verb that reads a field kept from its writer is not named to it, so where it is the only one that sets the field the writer is answered `wrong_door` as where no verb sets it, and beside verbs it is shown, `verbs_only` naming those alone; a reviewer not shown the one verb that sets such a field is answered at the accept of an `upsert` of it proposed before the field was marked `wrong_door`, byte for byte as where no verb sets it (lakelands#1148); a holder whose `only` names such a field with its `initial`'s value creates by `upsert` and is told `upsert`, and one whose `only` names another value is told no `upsert` and its create refused, `describe` naming the field's authority `verb` and the upsert tool leaving it out"
 );
 
 /// `order`: `no`, `status` (`verb`, initial `open`), `rank` (`verb`, a
@@ -383,6 +383,67 @@ async fn a_refusal_names_only_the_verbs_its_writer_is_shown(store: Store) -> Hel
          {only_hidden:?}, {none_sets:?}, {brooding:?}"
     );
     head_unmoved(s, before, "a write of a field only its verbs write").await?;
+    // A reviewer is answered at the accept as at its own `upsert`
+    // (lakelands#1148): an `upsert` of `state` proposed before `state` was
+    // marked, accepted by one kept from the `secret` that `seal` reads, is
+    // `wrong_door` on `sealed` as on `plain`, where no verb sets it.
+    let ledger = |ty: &str, authority: &str| {
+        json!({"declare": "type", "name": ty, "fields": [
+            {"name": "no", "type": {"kind": "text"}},
+            {"name": "secret", "type": {"kind": "text"}},
+            {"name": "state", "type": {"kind": "text"}, "authority": authority}]})
+    };
+    let mut early = Vec::new();
+    for ty in ["sealed", "plain"] {
+        l.declare_json(ledger(ty, "authored")).await?;
+        upsert(l.cat.as_ref(), &l.own, ty, "k1", json!({"no": "k1"})).await?;
+        let write = ProposedWrite::Upsert {
+            ty: ty.into(),
+            key: "k1".into(),
+            patch: patch(json!({"state": "x"})),
+            opts: WriteOpts::default(),
+        };
+        match l.cat.propose(&l.own, write, "by hand".into()).await {
+            Ok(lakelands_api::Outcome::Proposed { proposal, .. }) => early.push(proposal),
+            other => {
+                return Err(Failure::new(format!(
+                    "a proposal of {ty} k1's `state`: {other:?}"
+                )));
+            }
+        }
+        l.declare_json(ledger(ty, "verb")).await?;
+    }
+    l.declare_json(json!({"declare": "verb", "name": "seal", "on": "sealed", "risk": "low",
+        "requires": "secret = 'x'", "effect": "write", "set": [{"field": "state", "value": "'s'"}]}))
+        .await?;
+    let reviewer = holder(
+        s,
+        "reviewer",
+        json!({"default": "write", "review": true, "types": {
+            "sealed": {"fields": {"secret": "none"}}, "plain": {"fields": {"secret": "none"}}}}),
+    );
+    let before = s.head().await.must("reading the head")?;
+    let (on_sealed, on_plain) = (
+        accept(&l, &reviewer, &early[0]).await,
+        accept(&l, &reviewer, &early[1]).await,
+    );
+    let said = |r: &Result<&str, Error>| {
+        r.as_ref()
+            .err()
+            .map(|e| serde_json::to_string(e).unwrap_or_default())
+    };
+    ensure!(
+        on_sealed.as_ref().err() == Some(&wrong("state")) && said(&on_sealed) == said(&on_plain),
+        "a reviewer kept from `secret` accepting an `upsert` of `state` proposed before it was \
+         marked, by one shown `seal`, is answered `wrong_door` byte for byte as on `plain`, \
+         where no verb sets it: {on_sealed:?}, {on_plain:?}"
+    );
+    head_unmoved(
+        s,
+        before,
+        "a refused accept of a field only its verbs write",
+    )
+    .await?;
     // One whose `only` names a field only verbs write creates where the
     // field's `initial` is the value named, and is told it may; `describe`
     // names the field's authority, and the upsert tool leaves it out.

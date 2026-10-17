@@ -322,6 +322,10 @@ SHOWS = {
     "withdrawn": shows("a declared withdrawal of a trigger, at the version after the one it withdraws")(
         lambda e: declaration(e) == {"declare": "withdraw", "kind": "trigger", "name": "shelved"}
         and e["body"]["version"] == 2),
+    "retired_by_verbs": shows("a declared type whose records only its verbs retire, `retired_by: verbs`")(
+        lambda e: declaration(e).get("retired_by") == "verbs"),
+    "retire_effect": shows("a declared verb whose effect is `retire`")(
+        lambda e: declaration(e).get("declare") == "verb" and declaration(e).get("effect") == "retire"),
     "lake_upgraded": shows("a `lake_upgraded` from the format before to the one this lake is written in")(
         lambda e: e["body"]["kind"] == "lake_upgraded" and e["body"]["from"] == e["v"] - 1 and e["body"]["to"] == e["v"]),
     "function_risk": shows("a declared function whose backing reaches outside the lake, declared above `low` risk")(

@@ -77,6 +77,7 @@ fn verb(name: &str, risk: Risk, external: bool, payload: Vec<FieldDescription>) 
         risk,
         external,
         executor: None,
+        retires: false,
         description: None,
     }
 }

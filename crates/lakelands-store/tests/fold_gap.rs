@@ -346,6 +346,7 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
             constraints: Default::default(),
             annotations: Default::default(),
             insert_only: false,
+            retired_by: Default::default(),
             name: "note".into(),
             key: vec![],
             fields: vec![text],

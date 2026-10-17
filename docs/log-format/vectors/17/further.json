@@ -300,6 +300,18 @@
       "about": "A `declared` withdrawal of the trigger `shelved` (lakelands#1219): from this position on it is not in force, and a read as of before still sees it; its version, 2, follows the declaration it withdraws, and a later declaration of the name takes 3. A form format 17 holds and 16 does not.",
       "line": "{\"body\":{\"declaration\":{\"declare\":\"withdraw\",\"kind\":\"trigger\",\"name\":\"shelved\"},\"kind\":\"declared\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"dc11623be62d9a0ac373461bd0470b12babc847939a36a4c2abb5e2ca4cbcd1f\",\"id\":\"20255277d343a5f6df3e3a890166e268\",\"known_at\":\"2026-10-05T09:00:27.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":57,\"prev\":\"3f8542ead941160ee9c6b7a5807bffaceba702e813519f1fdc5f1463a1537916\",\"v\":17,\"writer\":\"agent:agent\"}",
       "hash": "dc11623be62d9a0ac373461bd0470b12babc847939a36a4c2abb5e2ca4cbcd1f"
+    },
+    {
+      "shows": "retired_by_verbs",
+      "about": "A `declared` type `voucher` whose records only its verbs retire (`retired_by: verbs`, lakelands#1148): `retire` is refused it, a verb whose effect is `retire` retires one. A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"no\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"authored\",\"name\":\"state\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"name\":\"voucher\",\"retired_by\":\"verbs\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"d7c1e690b06d73a93b740429382f988ee762cf6518f03a217da7580fd39cb12e\",\"id\":\"00000000000000000000000000000039\",\"known_at\":\"2026-10-05T09:00:28.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":58,\"prev\":\"dc11623be62d9a0ac373461bd0470b12babc847939a36a4c2abb5e2ca4cbcd1f\",\"v\":17,\"writer\":\"agent:agent\"}",
+      "hash": "d7c1e690b06d73a93b740429382f988ee762cf6518f03a217da7580fd39cb12e"
+    },
+    {
+      "shows": "retire_effect",
+      "about": "A `declared` verb `redeem` whose effect is `retire` (lakelands#1148): its call retires the record it is called on, under its `requires`. A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"verb\",\"effect\":\"retire\",\"name\":\"redeem\",\"on\":\"voucher\",\"requires\":\"state = 'issued'\",\"risk\":\"low\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"e9ab6dd0e08fa7aa4d6680e152b1c355efb7bb988f90e62fed735f0caa146221\",\"id\":\"0000000000000000000000000000003a\",\"known_at\":\"2026-10-05T09:00:29.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":59,\"prev\":\"d7c1e690b06d73a93b740429382f988ee762cf6518f03a217da7580fd39cb12e\",\"v\":17,\"writer\":\"agent:agent\"}",
+      "hash": "e9ab6dd0e08fa7aa4d6680e152b1c355efb7bb988f90e62fed735f0caa146221"
     }
   ],
   "misplaced": [

@@ -366,7 +366,7 @@ this object:
 |---|---|---|
 | `record_upserted` | `type`, `key`, `version`, `patch`, `made` | An authored write. From format 17 its `patch` may carry a field of `authority: verb` too, written by a verb's call or by an aging rule (lakelands#1130). `patch` is sparse: each member sets a field, `null` clears it, an absent field is unchanged (`docs/decisions/012-writes-touch-only-their-fields.md`). `made` is described below the table. |
 | `record_ingested` | `type`, `key`, `version`, `patch`, `made` | A write from a source; `source` is set in the envelope. Only `source` and `shared` fields may appear in the patch. `made` as on `record_upserted`. |
-| `record_retired` | `type`, `key`, `version` | The record is retired: invisible to reads at or after this position, its history kept. The same append closes its pending `compute`s (see `write_proposed`). |
+| `record_retired` | `type`, `key`, `version` | The record is retired: invisible to reads at or after this position, its history kept. From format 17 a verb whose `effect` is `retire` writes it, caused by its `verb_called` and carrying the verb as its `procedure` (lakelands#1148). The same append closes its pending `compute`s (see `write_proposed`). |
 | `source_forgotten` | `source`, `keys` (the versions of its key, a list) | From format 16. The host forgot the source (`docs/decisions/058-a-source-may-be-forgotten.md`): its keys are destroyed, and every value it sealed, before this position and after, folds as erased: the field holds no value, and its provenance is kept with `erased: true`; an `output_recorded` it sealed records nothing, and one that names it by `output_at` fills nothing. A sealed value whose key the key store does not give, where no `source_forgotten` of its source is in the log, is not erased: the fold fails closed. The `record_retired` of each record the source alone brought follows in the same append. A reader refuses one of a format before 16. |
 | `record_restricted` | `type`, `key`, `version`, `reason` | The record is withheld from principals without the `restricted` grant (a retention hold); `reason` is the host's. Written by the host through the store facade, never by a caller's door. |
 | `record_unrestricted` | `type`, `key`, `version` | The hold is lifted. |
@@ -1016,7 +1016,8 @@ below; no other spelling is read.
 | a relation's `cardinality` | `one_to_one`, `one_to_many`, `many_to_one`, `many_to_many` |
 | a verb's `risk`, a function's `risk` | `low`, `medium`, `high` |
 | a constraint's `at_ingest` (default `refuse`, which is never written) | `refuse`, `admit` |
-| a verb's `effect` | `write` (with `set`), `external` (with `executor`) |
+| a verb's `effect` | `write` (with `set`), `external` (with `executor`), `retire` (with neither; from format 17) |
+| a type's `retired_by` (default `authors`, which is never written) | `authors`, `verbs` (from format 17) |
 | a verb's `scope` (default `record`, which is never written) | `record`, `type` |
 | `declaration.declare` | `type`, `value_type`, `verb`, `trigger`, `object_set`, `function`, `setting` (from format 17), `withdraw` (from format 17) |
 | a proposal's `write.write` | `upsert`, `retire`, `call`, `compute`, `compute_sweep` |
@@ -1027,13 +1028,13 @@ with that declaration's members beside it. Every member not marked
 
 | Declaration | Members (default when absent) |
 |---|---|
-| `type` | `name` (required), `key` (`[]`), `fields` (`[]`), `relations` (`[]`), `view` (none), `valid_from`, `valid_to`, `language` (none), `field_meta` (`true`), `insert_only` (`false`), `description`, `label` (none), `annotations` (`{}`), `constraints` (`[]`: each `{ "name", "holds" }` required, `description` (none), `at_ingest` (`refuse`)) |
+| `type` | `name` (required), `key` (`[]`), `fields` (`[]`), `relations` (`[]`), `view` (none), `valid_from`, `valid_to`, `language` (none), `field_meta` (`true`), `insert_only` (`false`), `retired_by` (`authors`; from format 17), `description`, `label` (none), `annotations` (`{}`), `constraints` (`[]`: each `{ "name", "holds" }` required, `description` (none), `at_ingest` (`refuse`)) |
 | a field (in `fields`, a relation's `fields`, a verb's `payload`, a function's `inputs`) | `name` and `type` (required), `required` (`false`), `authority` (`authored`), `derived` (none), `computed_at` (none), `depends_on` (`[]`), `on_input_change` (`keep`), `initial` (none; on a type's own field alone), `sensitive` (`false`), `searchable` (`false`), `description`, `label` (none), `annotations` (`{}`) |
 | a field's `type` | `kind` (required), `value_type`, `target`, `dimensions` (none) |
 | a relation | `name` and `target` (required), `cardinality` (`many_to_one`), `authority` (`authored`; who writes its links, when link records carry it), `inverse`, `via` (none), `fields` (`[]`), `description` (none), `annotations` (`{}`), `derived` (none: `{ "match": [ { "from", "to" } ], "where" }`, a field of the owner and one of the target per pair, and `where` (none) a condition over `from.<field>` and `to.<field>`) |
 | a `view` | `source` and `measures` (required; each measure `{ "name", "expr" }`), `where` (none), `group_by` (`[]`), `params` (`[]`: each `{ "name", "kind" }`, a kind of `text`, `number`, `decimal`, `boolean`, `date_time` or `date`), `merge` (`[]`: each `{ "source", "where", "group_by", "measures" }`; `source` and `measures` required, `where` none, `group_by` `[]`) |
 | `value_type` | `name` and `kind` (required), `constraint` (none), `one_of` (`[]`), `format`, `scale`, `description` (none), `annotations` (`{}`) |
-| `verb` | `name`, `on`, `risk` and `effect` (required), `payload` (`[]`), `requires` (none), `description` (none); `effect: write` carries `set`, a list of `{ "field", "value" }`; `effect: external` carries `executor` |
+| `verb` | `name`, `on`, `risk` and `effect` (required), `payload` (`[]`), `requires` (none), `description` (none); `effect: write` carries `set`, a list of `{ "field", "value" }`; `effect: external` carries `executor`; `effect: retire` (from format 17) carries neither |
 | `trigger` | `name` and `on` (required), `when`, `description` (none), `max_depth` (none: an integer at most the lake's `max_reactive_depth`) |
 | `object_set` | `name`, `of` and `where` (required), `description` (none) |
 | `function` | `name` and `backing` (required), `inputs` (`[]`), `expr` (none), `config` (`null`), `description` (none), `risk` (`low`) |
