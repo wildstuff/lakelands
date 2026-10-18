@@ -174,6 +174,40 @@ Like `purge_source` and `forget_source`, it is no door: an agent cannot
 take a source's values back, and no principal's sight trims the report.
 A reader after it is answered as after 058: an erased value is absent,
 and its mark is shown only on a field the reader may read.
+The CLI's `lakelands values remove` is the host's too: it runs the act in
+the host's process, on the host's lake.
+
+### The doors around it
+
+- **The CLI.** `lakelands values remove --source <id>` with
+  `--before <instant>` (RFC 3339, or a date at midnight UTC) or `--delivery <id>`, one of
+  the two, and `--require-shredded`, as `forget` is shaped: without
+  `--report`, as with `--preflight`, it prints the report's sentences and
+  the id, appending nothing, and only `--report <id>` acts. The server
+  has no door for the act and nothing to configure for it: the doors are
+  the CLI and the host's own code.
+- **A mirror stops.** A mirror's target holds plaintext copies the act
+  cannot reach, redacted values among them, so a mirror that reads
+  `values_removed` of any source stops each running mapped type with a
+  field its reader reads that a removal may take: one a source writes,
+  or derived from one, that is neither a key field nor a reference,
+  erasable or not. The event names no type, and the copies hold only
+  what the reader saw, so the type as the reader sees it decides, never
+  the values the act reached: a field kept from the reader changes
+  nothing. The stop names the source and the way out: copy the type
+  again, or run `lakelands values remove` on `mirror:<lake>:<type>` in
+  the target, then restart. A type of key and reference fields goes on.
+- **An export carries the act.** An import folds it again, so the
+  values arrive redacted, and needs no key for a version the act
+  destroyed; a value under a version it left still needs its key, and
+  is refused as unbound before anything is written where none is bound.
+  A key store restored from a backup that still holds a destroyed
+  version has it destroyed by the import's finish.
+- **A reclaim that fails is owed**, for this act as for 058's. The act
+  and `rebuild()` answer all the same, the act naming the cause in
+  `reclaim_owed`, as a preflight does; an import answers, and the
+  writer's next open tells the cause. The next open, a repeat or a
+  compact that runs clears it.
 
 ## Why
 
@@ -205,8 +239,8 @@ whole log, which the preflight says; a scoped refold is lakelands#1120.
   checkpoints, the exports and the mirrors' positions stay valid (001,
   054). Only shredded values are beyond reading.
 - It does not reach copies outside the lake: backups, archives, an
-  export made before, a mirror's target. Until a mirror stops at the act
-  (lakelands#1153, its last step), a target keeps what it copied.
+  export made before, a mirror's target. A mirror stops at the act, and
+  its target keeps what it copied until the host takes it back there.
 - It does not select by the source's own time, or by anything but the
   source and the selection.
 - It is not a door, and not a purge: it never refuses a co-owned record,

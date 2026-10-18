@@ -48,6 +48,8 @@ struct Shell {
     root: PathBuf,
     backend: Backend,
     lakes: Arc<Mutex<BTreeMap<String, Arc<dyn LakeStore>>>>,
+    /// How many of the engine's next reclaims fail (the suite's harness).
+    fails: lakelands_core::conformance::checks::Fails,
 }
 
 struct Said {
@@ -67,12 +69,14 @@ impl Shell {
             root,
             backend,
             lakes: Arc::default(),
+            fails: Arc::default(),
         }
     }
 
     /// Open a lake once per shell, as the binary opens it once per process.
     fn open(&self, l: Location, mode: OpenMode, host: Seams) -> Opening {
         let (lakes, backend) = (self.lakes.clone(), self.backend);
+        let failing = lakelands_core::conformance::checks::failing(&self.fails);
         Box::pin(async move {
             let name = l.lake.to_string();
             if let Some(store) = lakes.lock().unwrap().get(&name) {
@@ -84,8 +88,8 @@ impl Shell {
             }
             let seams = Seams {
                 engines: vec![
-                    Arc::new(lakelands_engine_mem::MemoryOpener::new()),
-                    Arc::new(lakelands_engine_sqlite::SqliteOpener),
+                    failing(Arc::new(lakelands_engine_mem::MemoryOpener::new())),
+                    failing(Arc::new(lakelands_engine_sqlite::SqliteOpener)),
                 ],
                 ..host
             };
@@ -2021,6 +2025,141 @@ fn forget_erases_a_sources_values_and_prints_what_it_did() {
             "{backend:?}: {}",
             again.err
         );
+    }
+}
+
+/// `values remove` (065): without --report, as with --preflight, it says
+/// the report's sentences and the id, appending nothing; a stale id is
+/// refused in the store's words, and so is `--require-shredded` while a
+/// value of an erasable field would be redacted only, naming the count;
+/// `--before` and `--delivery` are one selection, given once; the act
+/// under the preflight's id takes the values back and says through which
+/// position, and, where its reclaim fails, that the reclaim is owed and
+/// why, as the preflights after it say (lakelands#1179).
+#[test]
+fn values_remove_takes_back_part_of_a_source_and_prints_what_it_did() {
+    const TYPES: [(&str, &str); 1] = [(
+        "types/visit.yaml",
+        "name: visit\nfields:\n  place: { type: text, authority: source }\n  email: { type: text, authority: source, erasable: true }\n  note: { type: text }\n",
+    )];
+    for backend in BACKENDS {
+        let sh = Shell::on("values-remove", backend);
+        sh.lake();
+        let config = r#"{"lakelands": 1, "owner": "owner", "keys": {"keyring": "keys"}}"#;
+        fs::write(sh.root.join("lakelands.json"), config).unwrap();
+        let applied = sh.run(&["apply", &sh.bundle("types", &TYPES)]);
+        assert_eq!(applied.code, 0, "{backend:?}: {}", applied.err);
+        // Two deliveries under one version of `tracker`'s key, the cut
+        // between them: the version also seals what the cut leaves.
+        let mut cut = String::new();
+        for (n, at) in [("v1", "Rome"), ("v2", "Oslo")] {
+            let row = format!(
+                "{{\"type\": \"visit\", \"key\": \"{n}\", \"fields\": {{\"place\": \"{at}\", \"email\": \"{n}@example.org\"}}}}\n"
+            );
+            let fed = sh.run(&[
+                "ingest",
+                &sh.file(&format!("{n}.ndjson"), &row),
+                "--source",
+                "tracker",
+            ]);
+            assert_eq!(fed.code, 0, "{backend:?}: {}", fed.err);
+            if cut.is_empty() {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+                let micros = now.unwrap().as_micros() as i64;
+                cut = lakelands_api::Timestamp(micros).to_string();
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+        let remove = |more: &[&str]| {
+            let mut args = vec!["values", "remove", "--source", "tracker"];
+            args.extend_from_slice(more);
+            sh.run(&args)
+        };
+        let all = ["--before", cut.as_str()];
+        let feed = sh.run(&["feed"]).out;
+        let bare = remove(&all);
+        let seen = remove(&[&all[..], &["--preflight"]].concat());
+        let said = format!("1 event of `tracker` written before {cut}");
+        assert!(
+            [&bare, &seen].iter().all(|r| r.code == 0
+                && r.out.starts_with(&said)
+                && r.out.contains("remove with --report ")),
+            "{backend:?}: {} {} / {} {}",
+            bare.out,
+            bare.err,
+            seen.out,
+            seen.err
+        );
+        assert_eq!(
+            sh.run(&["feed"]).out,
+            feed,
+            "{backend:?}: the preflight appends nothing"
+        );
+        let id = seen
+            .out
+            .rsplit("--report ")
+            .next()
+            .map(str::trim)
+            .unwrap_or_default();
+        for usage in [
+            remove(&[]),
+            remove(&[&all[..], &["--delivery", "d1"]].concat()),
+            remove(&[&all[..], &["--preflight", "--report", id]].concat()),
+        ] {
+            assert!(usage.code == 2, "{backend:?}: a usage error: {}", usage.err);
+        }
+        let stale = remove(&[&all[..], &["--report", "0"]].concat());
+        assert!(
+            stale.code != 0
+                && stale
+                    .err
+                    .contains("that report is not of this removal at this head"),
+            "{backend:?}: {}",
+            stale.err
+        );
+        let shredded = remove(&[&all[..], &["--require-shredded", "--report", id]].concat());
+        assert!(
+            shredded.code != 0
+                && shredded
+                    .err
+                    .contains("1 value(s) of erasable fields of `tracker`"),
+            "{backend:?}: {} {}",
+            shredded.out,
+            shredded.err
+        );
+        assert_eq!(
+            sh.run(&["feed"]).out,
+            feed,
+            "{backend:?}: the refusals append nothing"
+        );
+        // The act's reclaim fails: it answers, owing it, and so do the
+        // preflights after it.
+        sh.fails[0].store(1, std::sync::atomic::Ordering::SeqCst);
+        let done = remove(&[&all[..], &["--report", id]].concat());
+        let owed = "an act's reclaim is still owed, tried again at the next open or compact: lake ";
+        assert!(
+            done.code == 0
+                && done.out.starts_with(&said)
+                && done
+                    .out
+                    .contains("\ntook back from tracker through position ")
+                && done.out.contains(&format!("; {owed}")),
+            "{backend:?}: {} {}",
+            done.out,
+            done.err
+        );
+        for pre in [
+            remove(&all),
+            sh.run(&["forget", "--source", "tracker", "--preflight"]),
+        ] {
+            assert!(
+                pre.out.contains(&format!("tracker: {owed}")),
+                "{backend:?}: {} {}",
+                pre.out,
+                pre.err
+            );
+        }
     }
 }
 

@@ -44,7 +44,7 @@ check!(
 
 check!(
     REMOVED_IMPORT = a_shredding_act_imports_erased_and_destroys_a_backups_versions,
-    "065: an export made after an act destroyed `crm`'s only version imports with the key store as it is now, the fold meeting the values that version sealed before it meets the act: `p1` reads its name erased and keeps its note, before the act and after; imported with a backup of the key store from before the act, the import finishes it: the backup holds the version no more, and the first read answers the name erased",
+    "065: an export made after an act destroyed `crm`'s only version imports with the key store as it is now, the fold meeting the values that version sealed before it meets the act: `p1` reads its name erased and keeps its note, before the act and after; imported with a backup of the key store from before the act, the import finishes it: the backup holds the version no more, and the first read answers the name erased; imported with no key store it needs none for that version, while a value `crm` sealed after the act, under a version it left, is refused as unbound",
     given
 );
 
@@ -952,6 +952,24 @@ async fn a_shredding_act_imports_erased_and_destroys_a_backups_versions(
                 .all(|r| r.as_ref().is_some_and(|r| erased(r, "name", "crm"))),
         "imported with a backup from before the act, the import destroys its version, and \
          `p1` reads its name erased: {held:?}, {p1:?}"
+    );
+    let keyless = import(Default::default()).await.map(drop);
+    ensure!(
+        keyless.is_ok(),
+        "imported with no key store, the version the act destroyed needs no key: {keyless:?}"
+    );
+    // A value sealed under a version the act did not destroy needs its key.
+    let bob = source_record("person", "p2", json!({"id": "p2", "name": "Bob"}));
+    l.ingest("crm", vec![bob]).await.must("ingesting p2")?;
+    let _ = std::fs::remove_dir_all(&base);
+    crate::export::write(store.as_ref(), &base)
+        .await
+        .must("exporting again")?;
+    let live = import(Default::default()).await.map(drop);
+    ensure!(
+        matches!(live, Err(lakelands_api::Error::Unbound { .. })),
+        "imported with no key store, a value under a version the act left is refused as \
+         unbound: {live:?}"
     );
     Ok(())
 }

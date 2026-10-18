@@ -280,7 +280,11 @@ impl Keys {
             let doomed = keys.iter().map(|k| (source.clone(), k.clone()));
             held.doomed.extend(doomed);
         }
-        let store = self.store()?;
+        // With no key store there is none to destroy, as for a source's
+        // whole key: an import with none needs no key for these versions.
+        let Some(store) = &self.store else {
+            return Ok(());
+        };
         let ids = store.ids(&self.lake, source)?;
         match keys.iter().rev().find(|k| ids.contains(k)) {
             Some(newest) => store.destroy_version(&self.lake, source, newest),

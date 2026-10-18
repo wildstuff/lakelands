@@ -2,10 +2,11 @@
 //!
 //! `init` and `lake new` lay out a root: a directory with a
 //! configuration and one location per lake; `init --example` also makes
-//! a lake from an example the binary carries ([`example`]). `apply`, `ingest`, `feed`,
-//! `age`, `purge`, `forget`, `rebuild`, `compact`, `export` and `serve`
-//! open a lake at its location and call the library in-process: there is
-//! no command enum and no layer between the command and the catalog.
+//! a lake from an example the binary carries ([`example`]). `apply`,
+//! `ingest`, `feed`, `age`, `purge`, `forget`, `values remove`,
+//! `rebuild`, `compact`, `export` and `serve` open a lake at its location
+//! and call the library in-process: there is no command enum and no layer
+//! between the command and the catalog.
 //! `import` makes a lake from an export, through `lakelands_store::import`
 //! over the same engines.
 //! `settings` shows every listed setting with its value for a lake, and
@@ -303,6 +304,29 @@ fn command() -> Command {
                 .arg(Arg::new("preflight").long("preflight").action(ArgAction::SetTrue).conflicts_with("report").help("Say what the act would erase and retire, and how long it would hold the writer, appending nothing; what `forget` does without --report"))
                 .arg(Arg::new("report").long("report").value_name("ID").help("Forget, only under the id of a preflight of this source at this head")),
         )
+        .subcommand(
+            Command::new("values")
+                .about("Act on part of a source's values")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("remove")
+                        .about("Take back what one source wrote before a time, or in one delivery: its values read as erased at every position, as one act")
+                        .arg(
+                            Arg::new("source")
+                                .long("source")
+                                .value_name("ID")
+                                .required(true)
+                                .value_parser(clap::builder::NonEmptyStringValueParser::new())
+                                .help("The source whose values are taken back"),
+                        )
+                        .arg(Arg::new("before").long("before").value_name("RFC3339").value_parser(|s: &str| lakelands_api::Timestamp::parse(s).map_err(|e| e.to_string())).help("Take back what the source wrote before this instant: RFC 3339, or a date at midnight UTC"))
+                        .arg(Arg::new("delivery").long("delivery").value_name("ID").value_parser(clap::builder::NonEmptyStringValueParser::new()).help("Take back what the source wrote in this one delivery"))
+                        .group(clap::ArgGroup::new("selection").args(["before", "delivery"]).required(true))
+                        .arg(Arg::new("require-shredded").long("require-shredded").action(ArgAction::SetTrue).help("Refuse while a value of an erasable field would be redacted only, its key version not destroyed"))
+                        .arg(Arg::new("preflight").long("preflight").action(ArgAction::SetTrue).conflicts_with("report").help("Say what the act would take, retire and leave broken, and how long it would hold the writer, appending nothing; what `values remove` does without --report"))
+                        .arg(Arg::new("report").long("report").value_name("ID").help("Take back, only under the id of a preflight of this removal at this head")),
+                ),
+        )
         .subcommand(Command::new("rebuild").about("Delete the lake's projection and rebuild it from the log"))
         .subcommand(Command::new("compact").about("Give back the storage the lake's projection no longer uses"))
         .subcommand(
@@ -598,6 +622,20 @@ async fn dispatch(
             // preflight (058).
             let (source, report) = (text(sub, "source").unwrap_or_default(), text(sub, "report"));
             commands::forget(out, &store, &source, report.as_deref().map(Some)).await
+        }
+        "values" => {
+            // As `forget`: the act runs only under a preflight's id (065).
+            let of = sub.subcommand().map_or(sub, |(_, of)| of);
+            let source = text(of, "source").unwrap_or_default();
+            let selection = match of.get_one::<lakelands_api::Timestamp>("before") {
+                Some(t) => lakelands_api::write::Selection::WrittenBefore(*t),
+                None => lakelands_api::write::Selection::Delivery(
+                    text(of, "delivery").unwrap_or_default().into(),
+                ),
+            };
+            let (shredded, report) = (of.get_flag("require-shredded"), text(of, "report"));
+            let act = (shredded, report.as_deref().map(Some));
+            commands::values_remove(out, &store, (&source, &selection), act).await
         }
         "rebuild" => commands::rebuild(out, &store).await,
         "compact" => commands::compact(out, &store).await,
