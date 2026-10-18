@@ -360,6 +360,30 @@
       "about": "The `record_retired` of `INV-2`, which only that delivery wrote, in the same append as the act (065).",
       "line": "{\"body\":{\"key\":\"INV-2\",\"kind\":\"record_retired\",\"type\":\"invoice\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"3dc577af3790292a2c361264d4f8a263398a145647f4dff8195fbfd9a76e1bc8\",\"id\":\"00000000000000000000000000000042\",\"known_at\":\"2026-10-05T09:00:34.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":67,\"prev\":\"a09f869c79f5b415fdfe92ddb44ef588d72d8cebd78b11dab7e25a5360f99669\",\"v\":17,\"writer\":\"system:lakelands\"}",
       "hash": "3dc577af3790292a2c361264d4f8a263398a145647f4dff8195fbfd9a76e1bc8"
+    },
+    {
+      "shows": "delivery_own",
+      "about": "A `record_ingested` of `erp` whose caller named no delivery: it is in the store's own, `d` and the position of the first event its call appended (§1.1). A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"key\":\"INV-3\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"amount\":\"12.00\",\"number\":\"INV-3\"},\"type\":\"invoice\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"d68\",\"fence\":1,\"hash\":\"701d66fd167f15331011245cf5c3df560956460a3a96bd30b80655f7949250ad\",\"id\":\"c03aeadc58b93705f087d53c2a54f646\",\"known_at\":\"2026-10-05T09:00:35.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":68,\"prev\":\"3dc577af3790292a2c361264d4f8a263398a145647f4dff8195fbfd9a76e1bc8\",\"source\":\"erp\",\"v\":17,\"writer\":\"service:importer\"}",
+      "hash": "701d66fd167f15331011245cf5c3df560956460a3a96bd30b80655f7949250ad"
+    },
+    {
+      "shows": "removed_before",
+      "about": "A host took back what `erp` wrote before a time of the log's own clock: the act names the selection and `before`, the first position the time does not reach, and no `keys`, since `erp` seals nothing (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). What the delivery taken back at 66 wrote is not taken again. A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"before\":69,\"kind\":\"values_removed\",\"selection\":{\"written_before\":\"2026-10-05T09:00:36.000000Z\"},\"source\":\"erp\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"d6aabe5053273422b57186d4d97fc4f256d85ce64fe30abf8187da559f141a73\",\"id\":\"00000000000000000000000000000043\",\"known_at\":\"2026-10-05T09:00:36.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":69,\"prev\":\"701d66fd167f15331011245cf5c3df560956460a3a96bd30b80655f7949250ad\",\"v\":17,\"writer\":\"system:lakelands\"}",
+      "hash": "d6aabe5053273422b57186d4d97fc4f256d85ce64fe30abf8187da559f141a73"
+    },
+    {
+      "shows": "removal_by_time_retires",
+      "about": "The `record_retired` of `INV-3`, which only `erp` wrote before that time, in the same append as the act (065).",
+      "line": "{\"body\":{\"key\":\"INV-3\",\"kind\":\"record_retired\",\"type\":\"invoice\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"e72f0808c07f71330b49d86458b8b483a82209e13192b775a37a261f3705950d\",\"id\":\"00000000000000000000000000000044\",\"known_at\":\"2026-10-05T09:00:36.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":70,\"prev\":\"d6aabe5053273422b57186d4d97fc4f256d85ce64fe30abf8187da559f141a73\",\"v\":17,\"writer\":\"system:lakelands\"}",
+      "hash": "e72f0808c07f71330b49d86458b8b483a82209e13192b775a37a261f3705950d"
+    },
+    {
+      "shows": "proposed_migrate_recomputed",
+      "about": "A `write_proposed` whose write is a migration of `loan` that computes `days` again, its report as format 17 writes every migration's: it holds `recomputed`, the live records the migration computes again, here `l1`, and would hold `unlive` where the migration moved a reference (`docs/decisions/062-a-change-plans-before-it-acts.md`). The proposals at 12 and 29 are lines as format 16 wrote them, without it, which a writer of 17 never writes; a reader completes such a report as `recomputed: 0` and makes its `report_id` again. A member format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"kind\":\"write_proposed\",\"proposal\":\"p-days-inclusive\",\"why\":\"a loan's days count the day it went out\",\"write\":{\"migration\":{\"to\":{\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"out_on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"authored\",\"name\":\"back_on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"derived\",\"depends_on\":[\"out_on\",\"back_on\"],\"derived\":\"floor((back_on - out_on) / 1d) + 1\",\"name\":\"days\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"name\":\"loan\"}},\"report\":{\"fields\":[],\"from_schema_hash\":\"511da18676a5fa18d07778c05e74757021b0606ca2023cdabd3cb815c8bd0b89\",\"lossless\":true,\"recomputed\":1,\"records_scanned\":1,\"report_id\":\"b0ac56bb7aeecfdf6d5728a29297ce7b095d9c7d5a7decf4cfe7ade939214f3e\",\"restated\":[{\"field\":\"days\",\"member\":\"derived\",\"to\":\"floor((back_on - out_on) / 1d) + 1\",\"was\":\"floor((back_on - out_on) / 1d)\"}],\"to_schema_hash\":\"511da18676a5fa18d07778c05e74757021b0606ca2023cdabd3cb815c8bd0b89\",\"type\":\"loan\"},\"write\":\"migrate\"}},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"ec2e93e34b91edcba52db19702a3500c76498096f01258b807a39b3d48f3cfac\",\"id\":\"00000000000000000000000000000045\",\"known_at\":\"2026-10-05T09:00:37.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":71,\"prev\":\"e72f0808c07f71330b49d86458b8b483a82209e13192b775a37a261f3705950d\",\"v\":17,\"writer\":\"agent:agent\"}",
+      "hash": "ec2e93e34b91edcba52db19702a3500c76498096f01258b807a39b3d48f3cfac"
     }
   ],
   "misplaced": [

@@ -538,7 +538,7 @@ same fields itself
 | Kind | Payload | Fold |
 |---|---|---|
 | `verb_called` | `verb`, `key`, `payload` | A verb ran. Its writes follow as `record_upserted` events with `cause` set to this position and `procedure` naming the verb. A verb declared on its type (`scope: type`) is called with no record, and `key` is left out. |
-| `write_proposed` | `proposal`, `write`, `why`, `pinned` | A write was recorded as a proposal instead of being applied (`docs/decisions/013-verbs-run-by-declared-risk.md`). `write.write` is `upsert`, `retire` or `call`, with that write's arguments; or `declare`, a set of declarations, or `migrate`, a migration with its preflight's report, or `migrate_value_type`, a value type's new declaration with its preflight's report (Appendix A) and the values it renames; or `compute`, one record's call of a function above `low` risk (its record, field, function and the call's digest on its record; the inputs are the record's, and a listing shows them to a reader who is answered them, since the log holds none a forgotten source could leave readable), or `compute_sweep`, the calls a declaration or `recompute` made due over a type, which the store proposes as the writer of the event that made them due, caused by it, and no caller proposes; a pending `compute` is closed by a `write_rejected` of the system, caused by the `output_recorded` of its call's digest, by its record's `record_retired`, or by the `migrated` that moved its record to another key, with nothing owed (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`). `pinned: true` where the proposer's grant admits only some records of the type the write reaches: its accept is refused once the record at the key has an event after this position or the type was declared or migrated since (`docs/decisions/051-a-grant-may-admit-only-some-records.md`); absent when false. |
+| `write_proposed` | `proposal`, `write`, `why`, `pinned` | A write was recorded as a proposal instead of being applied (`docs/decisions/013-verbs-run-by-declared-risk.md`). `write.write` is `upsert`, `retire` or `call`, with that write's arguments; or `declare`, a set of declarations and, from format 17, the `plan` they were proposed with (`docs/decisions/062-a-change-plans-before-it-acts.md`), or `migrate`, a migration with its preflight's report, or `migrate_value_type`, a value type's new declaration with its preflight's report (Appendix A) and the values it renames; or, from format 17, `compute`, one record's call of a function above `low` risk (its record, field, function and the call's digest on its record; the inputs are the record's, and a listing shows them to a reader who is answered them, since the log holds none a forgotten source could leave readable), or `compute_sweep`, the calls a declaration or `recompute` made due over a type, which the store proposes as the writer of the event that made them due, caused by it, and no caller proposes; a pending `compute` is closed by a `write_rejected` of the system, caused by the `output_recorded` of its call's digest, by its record's `record_retired`, or by the `migrated` that moved its record to another key, with nothing owed (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`). `pinned: true` where the proposer's grant admits only some records of the type the write reaches: its accept is refused once the record at the key has an event after this position or the type was declared or migrated since (`docs/decisions/051-a-grant-may-admit-only-some-records.md`); absent when false. |
 | `write_accepted` | `proposal` | The proposal was accepted. Its write follows in the same append, with `cause` set to this position and the proposer as `writer`: for `declare` the `declared` events, for `migrate` the `migrated` event, for `migrate_value_type` the `declared` of the value type, or, when it renames values, the `value_type_migrated` event and what follows it (the link types the store derives, and the types it declares again for their `initial`, keep `system:lakelands` as writer). |
 | `write_rejected` | `proposal`, `reason` | The proposal was rejected; nothing else is written, but for a `compute` whose call its record no longer makes, which the same append records as rejected under its digest, and for a `compute` the system closes (§2.5). |
 
@@ -927,20 +927,33 @@ the first release with real installations
   it fired before, and one with `max_depth: 0` fires no more; a
   trigger's `when_strict` (lakelands#1215); a `trigger_fired`'s
   `change` and `created`, a trigger's `on_changes` and the guard's
-  `created()` (lakelands#1217); and a recorded output's
-  `input` digested under the oldest version that sealed the values it
-  reads (§1.4), where 16 took the source's first version. Over values
-  its first version sealed the two agree, and an output of 16 names
-  that version in its `sealed`. A call over a value a second version
-  sealed, which a lake of 16 holds only where its key store gained one,
-  is digested otherwise: the rebuild at the first open of 0.16.0 does
-  not find its output, and the call is made once more. This step
-  changes the fold's own list of the versions a source sealed with,
-  which now keeps each with the position of its first use; the
+  `created()` (lakelands#1217); a type's `retired_by` and a verb's
+  `effect: retire` (lakelands#1148); a `declare: withdraw`
+  (lakelands#1219); a function's input that states no `type`
+  (lakelands#933); a function's `risk`, and a `write_proposed` of a
+  `compute` or a `compute_sweep`
+  (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`);
+  the `plan` a `write_proposed` of declarations keeps, and a migration
+  report's `recomputed` and `unlive`, which a writer of 17 writes on
+  every `migrate` it proposes
+  (`docs/decisions/062-a-change-plans-before-it-acts.md`): a reader
+  completes a report of 16 as `recomputed: 0`, and makes its
+  `report_id` again over the completed report and the position before
+  the proposal; a `values_removed`
+  (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`); and a
+  recorded output's `input` digested under the oldest version that
+  sealed the values it reads (§1.4), where 16 took the source's first
+  version. Over values its first version sealed the two agree, and an
+  output of 16 names that version in its `sealed`. A call over a value a
+  second version sealed, which a lake of 16 holds only where its key
+  store gained one, is digested otherwise: the rebuild at the first open
+  of 0.16.0 does not find its output, and the call is made once more.
+  This step changes the fold's own list of the versions a source sealed
+  with, which now keeps each with the position of its first use; the
   projection is laid out anew at that open anyway (lakelands#1151), so
-  no list of 16 is read. No other step changes a fold, so the
-  projection stays. A step that changes how an event folds
-  says so here, and a writer's open then rebuilds the projection.
+  no list of 16 is read. No other step changes a fold, so the projection
+  stays. A step that changes how an event folds says so here, and a
+  writer's open then rebuilds the projection.
 - **A writer's open upgrades.** Where the newest event, read under the
   writer's lease, is in an older format the release reads, the open
   appends, right after its `lease_taken`, one `lake_upgraded` from that
@@ -1045,7 +1058,7 @@ with that declaration's members beside it. Every member not marked
 | `verb` | `name`, `on`, `risk` and `effect` (required), `payload` (`[]`), `requires` (none), `description` (none); `effect: write` carries `set`, a list of `{ "field", "value" }`; `effect: external` carries `executor`; `effect: retire` (from format 17) carries neither |
 | `trigger` | `name` and `on` (required), `when`, `description` (none), `max_depth` (none: an integer at most the lake's `max_reactive_depth`), `when_strict` (`false`; from format 17: a field or `previous(f)` its `when` reads absent or null fails the guard as a whole), `on_changes` (none: every kind; from format 17, a list of the kinds of change that fire it, as `trigger_fired`'s `change`) |
 | `object_set` | `name`, `of` and `where` (required), `description` (none) |
-| `function` | `name` and `backing` (required), `inputs` (`[]`), `expr` (none), `config` (`null`), `description` (none), `risk` (`low`) |
+| `function` | `name` and `backing` (required), `inputs` (`[]`), `expr` (none), `config` (`null`), `description` (none), `risk` (`low`; from format 17) |
 | `setting` (from format 17) | `key` and `type` (required; a field's `type`), `unit`, `description`, `group` (none). A host's own key of `sys.setting`; its records of `sys.setting` carry `group` as the store stamps it from this declaration (lakelands#996) |
 | `withdraw` (from format 17) | `kind` (`trigger`, `verb`, `object_set` or `function`) and `name` (required). The declaration in force of that kind and name, taken out of force (lakelands#1219) |
 
@@ -1078,15 +1091,25 @@ declaration, the members of a `type` declaration without `declare`;
 declarations as `declared` carries one each; `migrate` carries
 `migration`, as `migrated` carries it, and `report`, the preflight's
 report when it was proposed (`type`, `from_schema_hash`,
-`to_schema_hash`, `records_scanned`, `fields`, `dropped`, `rekeyed`,
-`references`, `sample_collisions`, `lossless`, `report_id`,
-`restated`, left out when empty: a list of
+`to_schema_hash`, `records_scanned`, `fields`, `dropped`,
+`relations`, `carried`, `rekeyed`, `references`, `sample_collisions`,
+`lossless`, `report_id`, `restated`, left out when empty: a list of
 `{ "field", "member", "was", "to" }`, `field` left out for a member of
-the type itself, and `breaches`, left out when empty: a list of
-`{ "type", "constraint", "records", "sample_keys" }`, as the
-`migrate` door answers it). `migrate_value_type`
-carries `to`, the value type's new declaration as `declared` carries
-one, and `report`, its preflight's report when it was proposed
+the type itself, `filled`, left out when empty: a list of
+`{ "field", "records", "sample_keys" }`, the live records that take a
+field's `initial`, `breaches`, left out when empty: a list of
+`{ "type", "constraint", "records", "sample_keys" }`, and, from format
+17, `recomputed`, the number of live records the migration computes
+again, 0 where it computes none, and `unlive`, left out when empty: a
+list of `{ "field", "records", "sample_keys" }`, per reference field
+the live records it would leave naming no live record
+(`docs/decisions/062-a-change-plans-before-it-acts.md`), as the
+`migrate` door answers it). A writer of format 17 writes `recomputed`
+on every migration's report; a report written without it, as format 16
+wrote each, is read as `recomputed: 0`, its `report_id` made again over
+the report so completed and the position before the proposal.
+`migrate_value_type` carries `to`, the value type's new declaration
+as `declared` carries one, and `report`, its preflight's report when it was proposed
 (`value_type`, `from_version`, `records_scanned`, `fields`, `misfits`,
 `first`, left out when empty, `fits`, `report_id`, `breaches`, left
 out when empty, as a migration's report holds it, as the

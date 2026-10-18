@@ -229,6 +229,8 @@ SHOWS = {
         lambda e: bool((proposed(e, "declare") or {}).get("declarations"))),
     "proposed_migrate": shows("a proposed migration with its preflight's report")(
         lambda e: (proposed(e, "migrate") or {}).get("report", {}).get("lossless") is True),
+    "proposed_migrate_recomputed": shows("a proposed migration whose report counts the live records it computes again")(
+        lambda e: (proposed(e, "migrate") or {}).get("report", {}).get("recomputed") == 1),
     "proposed_plan": shows("a proposed set of declarations carrying its plan")(
         lambda e: any(t.get("recomputed") and t.get("unlive")
                       for t in ((proposed(e, "declare") or {}).get("plan") or {}).get("types", []))),
@@ -334,6 +336,15 @@ SHOWS = {
         and e["body"].get("selection") == {"delivery": "batch-7"} and "before" not in e["body"]),
     "removal_retires": shows("the `record_retired` of a record only the delivery taken back wrote")(
         lambda e: e["body"]["kind"] == "record_retired" and e["body"].get("key") == "INV-2"),
+    "delivery_own": shows("an ingest in the store's own delivery, `d` and the position of its call's first event")(
+        lambda e: e["body"]["kind"] == "record_ingested" and e.get("delivery") == f"d{e['position']}"
+        and ingest_id(e) == e["id"]),
+    "removed_before": shows("a `values_removed` taking back what a source wrote before a time, naming the first position it does not reach")(
+        lambda e: e["body"]["kind"] == "values_removed" and e["body"].get("source") == "erp"
+        and set(e["body"].get("selection", {})) == {"written_before"} and e["body"].get("before") == e["position"]
+        and "keys" not in e["body"]),
+    "removal_by_time_retires": shows("the `record_retired` of a record only what was taken back by time wrote")(
+        lambda e: e["body"]["kind"] == "record_retired" and e["body"].get("key") == "INV-3"),
     "lake_upgraded": shows("a `lake_upgraded` from the format before to the one this lake is written in")(
         lambda e: e["body"]["kind"] == "lake_upgraded" and e["body"]["from"] == e["v"] - 1 and e["body"]["to"] == e["v"]),
     "function_risk": shows("a declared function whose backing reaches outside the lake, declared above `low` risk")(

@@ -160,35 +160,42 @@ terrain Lakelands is built for, and where it is not the right tool.
   map first. An agent can draw it over MCP (`declare_type`, `add_field`),
   but there is always a map.
 
-> **Status: `0.15.1`.** Lakelands `0.15.1` is the `lakelands` CLI, its
+> **Status: `0.16.0`.** Lakelands `0.16.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
-> SQLite, in-memory and PostgreSQL engines, all three passing the
-> whole conformance suite (623 checks through the doors and 70 through
-> the engine seam), with 60 decision records and the event log at
-> format version 16, installable from the release. Its budgets: the
-> store facade and engine traits hold 66 of 110 methods, the core
-> crates' product code 62 396 of 62 500 lines and their specification
-> 91 828 of 92 000, and 3 of 20 `cfg(feature)` sites. A ceiling rises
-> only by a recorded rule (decision 047): the operator set the round's
-> ceilings at 62 500 and 90 500, and its last pull requests raised the
-> specification's once more, to 92 000, by a measured row. Beside what
-> `0.14.0` held, a source may be forgotten: a field declared erasable
-> is sealed under its source's key, and forgetting the source destroys
-> that key in one act, so its values read as erased at every position
-> (decision 058), and a reclaim that fails keeps no writer out: it is
-> owed, said, and tried again at the next open. A type declares
-> constraints that every write door judges (decision 059). A set's
-> filter and a trigger's condition read across a reference, a link and
-> a derived relation. A declaration answers how it stands, a type
-> tells its value types, and a valid time is read one way at every
-> door. A feed waits for the next append, and the server's consumers
-> of one lake share one read of its log. An append syncs its two files
-> at once (decision 060). An ingest window asks its ids once, and a
-> listing reads the declarations' past once and asks for a page of
-> proposals at a time. A writer's open upgrades a lake of format 14 or
-> 15 to 16 by appending, and the lake this release writes, sealed
-> values and a forgotten source among them, is kept beside those of
-> the releases before.
+> SQLite, in-memory and PostgreSQL engines, all three passing the whole
+> conformance suite (716 checks through the doors and 72 through the
+> engine seam), with 67 decision records and the event log at format
+> version 17, installable from the release. Its budgets: the store
+> facade and engine traits hold 71 of 110 methods, the core crates'
+> product code 72 241 of 74 000 lines and their specification 107 360 of
+> 108 000, and 6 of 20 `cfg(feature)` sites. A ceiling rises only by a
+> recorded rule (decision 047): the operator set the round's ceilings at
+> 68 000 and 98 000 and raised them twice, measured, to 74 000 and
+> 108 000. Beside what `0.15.1` held, part of a source may be taken
+> back, what it wrote before a time or one delivery, from records
+> another hand also writes: its values read as erased, and a key version
+> whose values are all taken is destroyed (decision 065). A change to
+> the ontology tells its plan before it lands, and a proposal carries it
+> (decision 062). A field may be one only declared verbs write, and a
+> type's records ones only its verbs retire. A trigger, a verb, an
+> object set or a function may be withdrawn; a trigger past its depth
+> drops instead of firing, says what kind of change fired it, and may
+> fail closed on a field the record does not hold. A function that
+> reaches outside the lake runs by its declared risk (decision 064).
+> Every setting is in one list, with its kind, meaning and group
+> (decision 063); a set may hold a kept view (decision 066); a search
+> may take a second stage (decision 067), and a lexical search may weigh
+> one field above another (decision 025). A query vector names the model
+> that made it, a host's executor may decline a call by policy and say
+> so, and forgetting a source walks the log once. A reaction set off by
+> a value an act erased since is marked overruled on the feed, and not
+> told again. The projection's commit on PostgreSQL waits for no flush
+> of its own (decision 061). `lakelands verify` checks a lake's log, and
+> `lakelands init` makes a first lake and an agent's MCP configuration
+> in one command. A writer's open upgrades a lake of format 14, 15 or 16
+> to 17 by appending, and the lake this release writes, a part of a
+> source taken back and a destroyed key version among it, is kept beside
+> those of the releases before.
 
 ## Try it
 
