@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Case, Place, Said};
 use crate::expr::Condition;
 use crate::id::{
-    ConstraintName, Cursor, DeliveryId, FieldName, IdempotencyKey, Position, ProposalId, RecordKey,
-    RelationName, SourceId, TriggerName, TypeName, ValueTypeName, VerbName, Version,
+    ConstraintName, Cursor, DeliveryId, FieldName, IdempotencyKey, KeyId, Position, ProposalId,
+    RecordKey, RelationName, SourceId, TriggerName, TypeName, ValueTypeName, VerbName, Version,
 };
 use crate::ontology::{
     ANNOTATION_KEY_MAX_BYTES, ANNOTATIONS_MAX_BYTES, Annotations, FieldDecl, FieldType,
@@ -1447,6 +1447,11 @@ pub struct Breach {
     pub records: u64,
     /// Up to five of their keys, the smallest its reader is answered.
     pub sample_keys: Vec<RecordKey>,
+    /// A field declared `required` that an act taking back part of a
+    /// source leaves empty; `constraint` is then `required`
+    /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<FieldName>,
 }
 
 /// The live records a change would leave whose reference names no live
@@ -1804,6 +1809,222 @@ pub struct RecordField {
     pub ty: TypeName,
     /// The field.
     pub field: FieldName,
+}
+
+/// Which of a source's values `LakeStore::remove_values` takes back
+/// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Selection {
+    /// What it wrote before a time of the log's own clock.
+    WrittenBefore(Timestamp),
+    /// What it wrote in one delivery.
+    Delivery(DeliveryId),
+}
+
+/// The values one field of one type loses to a removal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovedField {
+    /// The type.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// The field.
+    pub field: FieldName,
+    /// How many of its values read as erased at every position, their
+    /// bytes still in the log.
+    pub redacted: u64,
+    /// How many of those were sealed under a version the act destroys.
+    pub shredded: u64,
+}
+
+/// What `LakeStore::remove_values` took back, or what
+/// `LakeStore::remove_values_preflight` says it would
+/// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveReport {
+    /// The source.
+    pub source: SourceId,
+    /// The selection, as asked.
+    pub selection: Selection,
+    /// For a time, the first position it does not reach: every event of
+    /// the source below it is selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Position>,
+    /// The source's `record_ingested` events selected.
+    pub events: u64,
+    /// For a delivery, the source's events written before the log kept
+    /// deliveries, which it cannot select.
+    pub undelivered: u64,
+    /// Per type, in name order, the records holding a value it removes.
+    pub types: Vec<ForgetRecords>,
+    /// Per type and field, in that order, the values it removes.
+    pub fields: Vec<RemovedField>,
+    /// Per type, in name order, the records left holding nothing of
+    /// another hand: retired, as a purge retires them.
+    pub retired: Vec<TypeRetired>,
+    /// Per type, in name order, the records reached that stay, with what
+    /// another hand or the source outside the selection wrote.
+    pub kept: Vec<ForgetRecords>,
+    /// The computed fields that read a field it removes values of, each
+    /// computed again, in type then field order.
+    pub recomputed: Vec<RecordField>,
+    /// The views over a type it removes values from, computed again.
+    pub views: Vec<TypeName>,
+    /// The constraints the records it keeps would be left breaking. The
+    /// act is not refused for them.
+    pub breaches: Vec<Breach>,
+    /// Per relation, the live records left naming a record it retires.
+    pub references: Vec<PurgeReference>,
+    /// The versions of the source's key it destroys, oldest first.
+    pub keys: Vec<KeyId>,
+    /// The values of an erasable field it redacts and does not shred: in
+    /// plaintext, or sealed under a version that also seals values outside
+    /// the selection. `require_shredded` refuses the act while any are.
+    pub unshredded: u64,
+    /// The events the act's rebuild folds again: the log's length.
+    pub log_events: u64,
+    /// How long the act is expected to hold the writer's lock, in
+    /// milliseconds: `log_events` at the engine's measured rebuild rate.
+    pub expected_ms: u64,
+    /// The head after the act, or the head the preflight read.
+    pub position: Position,
+    /// The projection's storage in bytes before and after the act's
+    /// reclaim, where the engine measures it; absent on a preflight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaimed: Option<CompactReport>,
+    /// Names a preflight's report; `remove_values` may repeat it. Empty
+    /// on the act's own report.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub report_id: String,
+}
+
+impl RemoveReport {
+    /// The report in sentences, for a host to tell its operator.
+    pub fn said(&self) -> Vec<String> {
+        let what = match (&self.selection, self.before) {
+            (Selection::WrittenBefore(t), Some(p)) => {
+                format!("written before {t} (below position {})", p.0)
+            }
+            (Selection::WrittenBefore(t), None) => format!("written before {t}"),
+            (Selection::Delivery(d), _) => format!("of delivery `{d}`"),
+        };
+        let (events, are) = (counted(self.events, "event"), be(self.events));
+        let mut said = vec![format!(
+            "{events} of `{}` {what} {are} selected.",
+            self.source
+        )];
+        if self.undelivered > 0 {
+            let n = counted(self.undelivered, "older event");
+            let keep = if self.undelivered == 1 {
+                "keeps"
+            } else {
+                "keep"
+            };
+            said.push(format!("{n} {keep} no delivery and stay."));
+        }
+        for f in &self.fields {
+            let (ty, field) = (&f.ty, &f.field);
+            let (n, read) = (
+                counted(f.redacted, "value"),
+                verb(f.redacted, "reads", "read"),
+            );
+            said.push(format!(
+                "{n} of `{ty}.{field}` {read} as erased at every position; the log keeps the bytes."
+            ));
+            if f.shredded > 0 {
+                let s = f.shredded;
+                said.push(format!(
+                    "{s} of them {} shredded: the key that sealed {} is destroyed.",
+                    be(s),
+                    if s == 1 { "it" } else { "them" }
+                ));
+            }
+        }
+        if !self.keys.is_empty() {
+            let keys: Vec<&str> = self.keys.iter().map(|k| k.as_str()).collect();
+            let n = self.keys.len() as u64;
+            said.push(format!(
+                "{} {} of `{}`'s key {} destroyed.",
+                if n == 1 { "Version" } else { "Versions" },
+                keys.join(", "),
+                self.source,
+                be(n)
+            ));
+        }
+        if self.unshredded > 0 {
+            let n = self.unshredded;
+            said.push(format!(
+                "{} of erasable fields {} redacted only, its key still live or none.",
+                counted(n, "value"),
+                be(n)
+            ));
+        }
+        for t in &self.retired {
+            let (n, ty) = (u64::from(t.retired), &t.ty);
+            said.push(format!(
+                "{} of `{ty}` {} retired.",
+                counted(n, "record"),
+                be(n)
+            ));
+        }
+        for k in &self.kept {
+            let (n, ty) = (k.records, &k.ty);
+            let stay = verb(n, "stays", "stay");
+            said.push(format!(
+                "{} of `{ty}` {stay}, with what others wrote.",
+                counted(n, "record")
+            ));
+        }
+        for f in &self.recomputed {
+            said.push(format!("`{}.{}` is computed again.", f.ty, f.field));
+        }
+        for v in &self.views {
+            said.push(format!("The view `{v}` is computed again."));
+        }
+        for b in &self.breaches {
+            let (n, ty, c) = (b.records, &b.ty, &b.constraint);
+            let records = counted(n, "record");
+            said.push(match &b.field {
+                Some(f) => format!(
+                    "{records} of `{ty}` {} left without `{f}`, which it requires.",
+                    be(n)
+                ),
+                None => format!("{records} of `{ty}` {} left breaking `{c}`.", be(n)),
+            });
+        }
+        for r in &self.references {
+            let (n, ty, rel) = (r.records, &r.ty, &r.relation);
+            said.push(format!(
+                "{} of `{ty}` {} left naming a retired one by `{rel}`.",
+                counted(n, "record"),
+                be(n)
+            ));
+        }
+        let (n, ms) = (counted(self.log_events, "event"), self.expected_ms);
+        said.push(format!(
+            "The act refolds {n}, about {ms} ms under the writer's lock."
+        ));
+        said
+    }
+}
+
+/// `n` and `noun`, plural but for one.
+fn counted(n: u64, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
+/// "is" for one, "are" for any other count.
+fn be(n: u64) -> &'static str {
+    verb(n, "is", "are")
+}
+
+/// `one` for a count of one, `many` for any other.
+fn verb(n: u64, one: &'static str, many: &'static str) -> &'static str {
+    if n == 1 { one } else { many }
 }
 
 /// The preflight of a value type's migration: what its new declaration

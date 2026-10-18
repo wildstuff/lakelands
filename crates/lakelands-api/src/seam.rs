@@ -330,7 +330,9 @@ pub trait KeyStore: Send + Sync {
     /// The key of that version, or none once it is destroyed.
     fn key(&self, lake: &LakeId, source: &SourceId, id: &KeyId) -> Result<Option<DataKey>>;
 
-    /// Destroy every version of the source's key.
+    /// Destroy every version of the source's key, and refuse it a new one:
+    /// a source whose versions are all destroyed already, or that has none,
+    /// is accepted and marked so.
     fn destroy(&self, lake: &LakeId, source: &SourceId) -> Result<()>;
 
     /// Destroy the version `id` of the source's key and every older one,
@@ -341,6 +343,15 @@ pub trait KeyStore: Send + Sync {
     fn destroy_version(&self, lake: &LakeId, source: &SourceId, id: &KeyId) -> Result<()> {
         let _ = (lake, source, id);
         Err(crate::Error::unbound(crate::error::Seam::KeyVersions))
+    }
+
+    /// Whether [`Self::destroy_version`] destroys: a key store that only
+    /// destroys whole sources answers false, as this default does, and an
+    /// act that takes back part of a source then shreds nothing and
+    /// redacts what it takes
+    /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+    fn destroys_versions(&self) -> bool {
+        false
     }
 
     /// The versions of the source's key, oldest first; none destroyed.

@@ -34,6 +34,7 @@ mod purge;
 mod reads;
 mod record;
 mod rekey;
+mod remove;
 mod sealing;
 #[doc(hidden)]
 pub mod writes;

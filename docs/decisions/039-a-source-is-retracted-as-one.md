@@ -130,6 +130,10 @@ type of the source held back the records of every other
 - **No event of its own.** A typed purge appends fewer of the same
   `record_retired`; nothing is replayed differently.
 
+A host that must take back part of a source, values and not records,
+co-owned ones included, has its own act
+(`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+
 ## Why
 
 A wrong export, a test feed, or a source the lake stops trusting is one

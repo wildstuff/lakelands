@@ -11,7 +11,7 @@
 //! never share one. The fold makes the nonce again from the event, so a
 //! sealed value moved to another place does not open.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use aes_gcm_siv::aead::{Aead, KeyInit};
@@ -53,6 +53,10 @@ struct Held {
     /// kept after, as a reader outside the writer's lock may have read it
     /// from a view a rebuild was clearing.
     generation: u64,
+    /// The versions an act of removal destroys (065), from the moment it
+    /// names them: none seals again, though the key store has not yet
+    /// destroyed it.
+    doomed: BTreeSet<(SourceId, KeyId)>,
 }
 
 /// The list [`USED`] keeps for a source, read once: as kept, and each
@@ -100,8 +104,10 @@ impl Keys {
     /// newest version the log used, [`USED`]), or where `rotate` says it
     /// belongs to a period past ([`rotates`]). A key store that lost the
     /// last of them answers `key_missing` here, at the write, and is never
-    /// given a new key the old values would read as erased. Without a key
-    /// store, refused as `Unbound`.
+    /// given a new key the old values would read as erased. So does a
+    /// version an act of removal named, which the key store may not have
+    /// destroyed yet: a value sealed under it would be erased with it.
+    /// Without a key store, refused as `Unbound`.
     pub fn sealing(
         &self,
         source: &SourceId,
@@ -122,7 +128,11 @@ impl Keys {
             Some(id) => id,
             None => {
                 let store = self.store()?;
-                let ids = store.ids(&self.lake, source)?;
+                let mut ids = store.ids(&self.lake, source)?;
+                {
+                    let held = lock(&self.held);
+                    ids.retain(|k| !held.doomed.contains(&(source.clone(), k.clone())));
+                }
                 if let Some(last) = newest.filter(|u| !ids.contains(u)) {
                     let (source, key) = (source.clone(), last.clone());
                     return Err(Error::unavailable(Situation::KeyMissing { source, key }));
@@ -221,9 +231,16 @@ impl Keys {
         }
     }
 
+    /// Whether the key store destroys a version with those before it: an
+    /// act of removal shreds nothing where it does not (065).
+    pub fn shreds(&self) -> bool {
+        self.store.as_ref().is_some_and(|s| s.destroys_versions())
+    }
+
     /// Drop `source`'s keys from memory, then have the key store destroy
-    /// every version of them (058). Destroying what is destroyed is no
-    /// change.
+    /// every version of them (058), and mark the source destroyed though
+    /// an act of removal took every version already (065). Destroying what
+    /// is destroyed is no change.
     pub fn destroy(&self, source: &SourceId) -> Result<()> {
         {
             let mut held = lock(&self.held);
@@ -233,10 +250,41 @@ impl Keys {
             held.generation += 1;
         }
         match &self.store {
-            Some(store) if !store.ids(&self.lake, source)?.is_empty() => {
-                store.destroy(&self.lake, source)
+            Some(store) => store.destroy(&self.lake, source),
+            None => Ok(()),
+        }
+    }
+
+    /// Drop the versions `keys` of `source`'s key, a prefix of them oldest
+    /// first, from memory, so the open lake seals and opens with none of
+    /// them again, then have the key store destroy the newest it still
+    /// holds, and with it every older one (065). A prefix destroyed
+    /// already is no change.
+    pub fn destroy_versions(&self, source: &SourceId, keys: &[KeyId]) -> Result<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        {
+            let mut held = lock(&self.held);
+            held.by
+                .retain(|(s, id), _| s != source || !keys.contains(id));
+            if held
+                .sealing
+                .get(source)
+                .is_some_and(|(id, _)| keys.contains(id))
+            {
+                held.sealing.remove(source);
             }
-            _ => Ok(()),
+            held.lists.remove(source);
+            held.generation += 1;
+            let doomed = keys.iter().map(|k| (source.clone(), k.clone()));
+            held.doomed.extend(doomed);
+        }
+        let store = self.store()?;
+        let ids = store.ids(&self.lake, source)?;
+        match keys.iter().rev().find(|k| ids.contains(k)) {
+            Some(newest) => store.destroy_version(&self.lake, source, newest),
+            None => Ok(()),
         }
     }
 }

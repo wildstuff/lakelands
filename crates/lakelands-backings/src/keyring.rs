@@ -201,6 +201,10 @@ impl KeyStore for FileKeyring {
         })
     }
 
+    fn destroys_versions(&self) -> bool {
+        true
+    }
+
     fn ids(&self, lake: &LakeId, source: &SourceId) -> Result<Vec<KeyId>> {
         let versions = self.versions(lake, source)?.unwrap_or_default();
         Ok(versions.keys.iter().map(|(id, _)| id.clone()).collect())

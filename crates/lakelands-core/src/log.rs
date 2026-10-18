@@ -300,6 +300,10 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
         let v = event.v;
         return Some(Flaw::ForgottenBefore { v });
     }
+    if matches!(event.body, EventBody::ValuesRemoved { .. }) && event.v < 17 {
+        let v = event.v;
+        return Some(Flaw::RemovedBefore { v });
+    }
     let told = |c: &Option<_>, m: &Option<bool>| c.is_some() || m.is_some();
     if let EventBody::TriggerFired {
         change, created, ..

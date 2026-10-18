@@ -326,15 +326,14 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     own, made at the period's first value: one key a period, made by the
     key store. A version is destroyed only with every older one
     (`KeyStore::destroy_version`), and a host's KMS that destroys only
-    whole sources leaves that call refused. Until the act that takes
-    part of a source back comes, a version is destroyed with the lake
-    closed, by calling `KeyStore::destroy_version`; one who edits the
-    file keyring by hand removes only a source's oldest entries, never one
-    with an older still there. An open lake keeps the keys it
-    holds in memory and goes on sealing with them. Such a version is a
-    lost key, since no act in the log names it: at the next open the
-    values and the outputs it sealed fail closed, `key_missing`, at a
-    rebuild or a re-plan.
+    whole sources leaves that call refused. The act that destroys
+    versions is `remove_values` (below), which names them in the log and
+    drops them from the open lake's memory. A version destroyed any
+    other way, by calling `KeyStore::destroy_version` or by editing the
+    file keyring, is a lost key, since no act in the log names it: an
+    open lake keeps the keys it holds in memory and goes on sealing with
+    them, and at the next open the values and the outputs it sealed fail
+    closed, `key_missing`, at a rebuild or a re-plan.
   - **An export** holds sealed values as ciphertext, and no key. It
     imports with the key store bound, or with none where the export
     holds the source's forgetting, whose values then arrive erased; any
@@ -345,6 +344,50 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     copies may hold that source's values under the mirror's own source.
     Copy the type again, or forget `mirror:<lake>:<type>` in the target,
     then restart.
+  **Taking part of a source back**
+  (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`):
+  `LakeStore::remove_values(source, selection, require_shredded,
+  report_id)` takes what a
+  source wrote before a time (`Selection::WrittenBefore`, the log's
+  clock) or in one delivery (`Selection::Delivery`, the id `ingest`
+  answered), and nothing another hand wrote. It appends
+  `values_removed`, retires each record left holding nothing of another
+  hand, rebuilds and reclaims, all under the writer's lock, as
+  forgetting does; its preflight, `remove_values_preflight`, says what
+  it takes, keeps and retires, what is computed again, the constraints
+  and references it leaves broken, the required fields it leaves empty
+  (a breach of `required` naming the field), and how long it expects to
+  hold the lock. `RemoveReport::said` says it in sentences. What the
+  host is told:
+  - **a redacted value** is read by no door at any position, `as_of`
+    included, but it is still in the log, every export and every
+    backup: in plaintext for a field that is not erasable, sealed under
+    a live key otherwise;
+  - **a shredded value** is in them only as ciphertext whose key version
+    is gone, so far as the key store's backups follow its destroys, as
+    for forgetting;
+  - **key periods** are how a retention cut shreds: each period's values
+    seal under a version of their own, and a cut destroys the versions
+    of the periods wholly before it. One delivery taken back is
+    redacted, and shredded only once such a cut covers it;
+  - **`require_shredded`** refuses the act, `remove_not_shredded`,
+    while a value of an erasable field it takes would be redacted only;
+    a key store that destroys a source's key only whole
+    (`KeyStore::destroys_versions` false) shreds nothing;
+  - **the feed** still delivers each event as the log holds it, a
+    redacted value of a field that is not erasable in plaintext, as for
+    forgetting: a host that relays the feed relays it;
+  - **after a crash** between its steps, open a writer, or repeat the
+    act: either finishes it and appends nothing again;
+  - **its cost** grows with the log, not with the selection: the act
+    is a rebuild. Taking back half of a lake of one event a record, in
+    a release build, held the writer 9.3 s at 100 000 records and
+    149 s at 1 000 000 on SQLite, and 77 s and 891 s (14.8 min) on
+    PostgreSQL, about 1.4 times a plain rebuild after it (644 s); that
+    PostgreSQL database was 3.1 GB. The preflight's `expected_ms`
+    under-reads the act on both: 59 s at 1 000 000 on SQLite and 402 s
+    on PostgreSQL, 2.5 and 2.2 times too low. Plan the act's window by
+    the measured times.
   Source ids and record keys stay plaintext in the log, so a lake is
   ready to forget when:
   - **a source id names no person:** an opaque id for a device or a feed,

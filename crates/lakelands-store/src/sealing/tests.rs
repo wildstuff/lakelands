@@ -338,3 +338,33 @@ async fn an_ingest_past_its_newest_version_s_day_seals_under_a_new_one() {
         "p2 sealed under k2: {list}"
     );
 }
+
+/// A key store that counts its destroys and holds no version.
+#[derive(Default)]
+struct Bare(std::sync::atomic::AtomicU32);
+impl KeyStore for Bare {
+    fn create(&self, _: &LakeId, _: &SourceId) -> Result<KeyId> {
+        Ok(KeyId::from("k1".to_owned()))
+    }
+    fn key(&self, _: &LakeId, _: &SourceId, _: &KeyId) -> Result<Option<DataKey>> {
+        Ok(None)
+    }
+    fn destroy(&self, _: &LakeId, _: &SourceId) -> Result<()> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+    fn ids(&self, _: &LakeId, _: &SourceId) -> Result<Vec<KeyId>> {
+        Ok(Vec::new())
+    }
+}
+
+/// A source whose versions an act of removal took all is still destroyed
+/// when it is forgotten: the key store marks it so, and gives it none
+/// again (065).
+#[test]
+fn a_source_with_no_version_left_is_destroyed_all_the_same() {
+    let store = std::sync::Arc::new(Bare::default());
+    let keys = Keys::new(LakeId::from("l"), Some(store.clone()));
+    keys.destroy(&SourceId::from("crm")).unwrap();
+    assert_eq!(store.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+}

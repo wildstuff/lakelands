@@ -14,7 +14,7 @@ interface store {
     use types.{
         lake-id, type-name, record-key, relation-name, verb-name, proposal-id, source-id, position,
         principal, write-context, limits, verification, error, timestamp, age-report, purge-report,
-        compact-report, vector-coverage, forget-report,
+        compact-report, vector-coverage, forget-report, selection, remove-report,
         find, found-reply, get, record-reply, patch, write-opts, outcome,
         proposed-write, proposal-filter, proposals-reply, source-record, committed, ingest-error, ingest-opts,
         feed-filter, feed-batch,
@@ -69,6 +69,18 @@ interface store {
         /// What `forget-source` would do, appending nothing, with the time
         /// it is expected to hold the writer's lock.
         forget-preflight: func(source: source-id) -> result<forget-report, error>;
+        /// Take back part of a source: each value a selected event of it
+        /// wrote erased at every position, the records left holding
+        /// nothing of another hand retired, the storage reclaimed, in one
+        /// act under the writer's lock; the versions of its key whose
+        /// values it all selects are destroyed. With `require-shredded`,
+        /// refused while a value of an erasable field would be redacted
+        /// only. With a preflight's id, refused unless that report is of
+        /// this removal at this head.
+        remove-values: func(source: source-id, selection: selection, require-shredded: bool, report-id: option<string>) -> result<remove-report, error>;
+        /// What `remove-values` would do, appending nothing, with the time
+        /// it is expected to hold the writer's lock.
+        remove-values-preflight: func(source: source-id, selection: selection) -> result<remove-report, error>;
         /// Give back the storage the projection no longer uses; appends
         /// nothing and changes no answer.
         compact: func() -> result<compact-report, error>;

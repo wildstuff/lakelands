@@ -301,6 +301,28 @@ impl LakeStore for BreaksMidway {
     ) -> lakelands_api::Result<lakelands_api::write::ForgetReport> {
         self.0.inner.forget_preflight(source).await
     }
+    async fn remove_values(
+        &self,
+        source: &lakelands_api::SourceId,
+        selection: &lakelands_api::write::Selection,
+        shredded: bool,
+        id: Option<&str>,
+    ) -> lakelands_api::Result<lakelands_api::write::RemoveReport> {
+        self.0
+            .inner
+            .remove_values(source, selection, shredded, id)
+            .await
+    }
+    async fn remove_values_preflight(
+        &self,
+        source: &lakelands_api::SourceId,
+        selection: &lakelands_api::write::Selection,
+    ) -> lakelands_api::Result<lakelands_api::write::RemoveReport> {
+        self.0
+            .inner
+            .remove_values_preflight(source, selection)
+            .await
+    }
     async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
         self.0.inner.compact().await
     }

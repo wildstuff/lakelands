@@ -348,6 +348,18 @@
       "about": "A `declared` function whose input states no `type` (lakelands#933): a type binds it as a field of any kind, and the function reads the value in the kind that type holds it. A form format 17 holds and 16 does not.",
       "line": "{\"body\":{\"declaration\":{\"backing\":\"http\",\"config\":{\"url\":\"https://notify.example/send\"},\"declare\":\"function\",\"inputs\":[{\"authority\":\"authored\",\"name\":\"amount\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false}],\"name\":\"tally\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"c7413c9aea25261da3b47d4ebd3ffe024cf80a5bf2b7857d01e9a23f9920ab33\",\"id\":\"00000000000000000000000000000040\",\"known_at\":\"2026-10-05T09:00:33.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":65,\"prev\":\"2ac33bc99e52b05f6761920e45fbd48c1e18eb570670fd5855b7e5a4bbccd48e\",\"v\":17,\"writer\":\"human:owner\"}",
       "hash": "c7413c9aea25261da3b47d4ebd3ffe024cf80a5bf2b7857d01e9a23f9920ab33"
+    },
+    {
+      "shows": "values_removed",
+      "about": "A host took back `erp`'s delivery `batch-7`: each value its events wrote folds as erased, at every position (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). A form format 17 holds and 16 does not.",
+      "line": "{\"body\":{\"kind\":\"values_removed\",\"selection\":{\"delivery\":\"batch-7\"},\"source\":\"erp\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"a09f869c79f5b415fdfe92ddb44ef588d72d8cebd78b11dab7e25a5360f99669\",\"id\":\"00000000000000000000000000000041\",\"known_at\":\"2026-10-05T09:00:34.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":66,\"prev\":\"c7413c9aea25261da3b47d4ebd3ffe024cf80a5bf2b7857d01e9a23f9920ab33\",\"v\":17,\"writer\":\"system:lakelands\"}",
+      "hash": "a09f869c79f5b415fdfe92ddb44ef588d72d8cebd78b11dab7e25a5360f99669"
+    },
+    {
+      "shows": "removal_retires",
+      "about": "The `record_retired` of `INV-2`, which only that delivery wrote, in the same append as the act (065).",
+      "line": "{\"body\":{\"key\":\"INV-2\",\"kind\":\"record_retired\",\"type\":\"invoice\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"3dc577af3790292a2c361264d4f8a263398a145647f4dff8195fbfd9a76e1bc8\",\"id\":\"00000000000000000000000000000042\",\"known_at\":\"2026-10-05T09:00:34.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":67,\"prev\":\"a09f869c79f5b415fdfe92ddb44ef588d72d8cebd78b11dab7e25a5360f99669\",\"v\":17,\"writer\":\"system:lakelands\"}",
+      "hash": "3dc577af3790292a2c361264d4f8a263398a145647f4dff8195fbfd9a76e1bc8"
     }
   ],
   "misplaced": [

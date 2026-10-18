@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 65, each
+- `further.json`: the lake's next events, positions 8 to 67, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -118,7 +118,11 @@ The files:
     lakelands#1216, lakelands#1217);
   - the function `tally` declared with an input that states no `type`,
     which a type binds as a field of any kind (65): a form format 17
-    holds and 16 does not (lakelands#933).
+    holds and 16 does not (lakelands#933);
+  - a `values_removed` taking the delivery `batch-7` back (66), and the
+    `record_retired` of `INV-2`, which only it wrote, in the same append
+    (67): a kind format 17 holds and 16 does not
+    (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
 
   Its `misplaced` holds five lines that are not of the lake. Each
   stands at its position after the event before it, in the release's

@@ -317,6 +317,7 @@ fn breach() -> Breach {
         constraint: "never_overpaid".into(),
         records: 2,
         sample_keys: vec!["k".into()],
+        field: Some("paid".into()),
     }
 }
 

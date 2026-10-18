@@ -551,6 +551,8 @@ What a refusal is about.
 | `proposal_plans_nothing` | `proposal` (ProposalId) | the proposal `{proposal}` changes no declaration, so it has no plan; accept it without one | A proposal accepted against a plan that changes no declaration. |
 | `purge_report_stale` | — | that report is not of this purge at this head; run the preflight again | A purge's report of another purge or head. |
 | `purge_shared` | `source` (SourceId), `type` (TypeName, optional), `count` (usize), `first` (list of RecordName) | the purge of `{source}`[ from `{type}`] is refused whole: {count} record(s) it brought in were also written by another hand (a principal, or another source), and a purge never half-removes a record; retire them or clear those fields, then purge again. First: {first} | A purge of records another hand wrote too. |
+| `remove_not_shredded` | `source` (SourceId), `count` (u64) | {count} value(s) of erasable fields of `{source}` the removal takes would be redacted only, not shredded: in plaintext, or sealed under a version of its key that also seals values outside the selection; nothing is removed | A removal asked to shred that would redact values of erasable fields only. |
+| `remove_report_stale` | — | that report is not of this removal at this head; run the preflight again | A removal's report of another removal or head. |
 | `required` | `type` (TypeName), `field` (FieldName) | `{type}` requires a value for `{field}` | A record with no value for a required field. |
 | `constraint_broken` | `constraint` (ConstraintName), `type` (TypeName), `key` (RecordKey) | `{type}` `{key}` would break the constraint `{constraint}` | A write that would leave a record breaking its type's constraint. |
 | `constraint_left_broken` | `constraint` (ConstraintName), `type` (TypeName), `records` (u64) | {records} record(s) of `{type}` would be left breaking the constraint `{constraint}`; fix them first | Records a walk of the lake would leave breaking their type's constraint: a declaration's or a migration's computing again, a re-key's rewritten references, a value type's renames. |
@@ -917,6 +919,7 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `change_before` | `v` (u32) | a `trigger_fired` of format {v} carries `change` or `created`, which format 17 added | A `trigger_fired` before format 17 carries `change` or `created`. |
 | `dropped_before` | `v` (u32) | an event of format {v} is a `trigger_dropped`, which format 17 added | A `trigger_dropped` in a format before the one that added it. |
 | `delivery_on` | `kind` (String), `v` (u32) | a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries | An event other than a `record_ingested` of format 17 on carries `delivery`. |
+| `removed_before` | `v` (u32) | an event of format {v} is a `values_removed`, which format 17 added | A `values_removed` event in a format before the one that added it. |
 | `upstream_on` | `kind` (String) | a `{kind}` event carries `upstream`, which only a `record_ingested` event carries | An event other than `record_ingested` carries `upstream`. |
 | `hash_mismatch` | — | the hash does not match the event | The hash does not match the event. |
 | `disagrees` | — | the engine's record of the event disagrees with its bytes | The engine's record of the event disagrees with its bytes. |

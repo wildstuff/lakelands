@@ -329,6 +329,11 @@ SHOWS = {
     "untyped_input": shows("a declared function whose input states no `type`, which a type binds as a field of any kind")(
         lambda e: declaration(e).get("declare") == "function" and declaration(e).get("inputs")
         and all("type" not in i for i in declaration(e)["inputs"])),
+    "values_removed": shows("a `values_removed` taking back one delivery of a source")(
+        lambda e: e["body"]["kind"] == "values_removed" and e["body"].get("source") == "erp"
+        and e["body"].get("selection") == {"delivery": "batch-7"} and "before" not in e["body"]),
+    "removal_retires": shows("the `record_retired` of a record only the delivery taken back wrote")(
+        lambda e: e["body"]["kind"] == "record_retired" and e["body"].get("key") == "INV-2"),
     "lake_upgraded": shows("a `lake_upgraded` from the format before to the one this lake is written in")(
         lambda e: e["body"]["kind"] == "lake_upgraded" and e["body"]["from"] == e["v"] - 1 and e["body"]["to"] == e["v"]),
     "function_risk": shows("a declared function whose backing reaches outside the lake, declared above `low` risk")(
@@ -441,6 +446,8 @@ def verify_dir(root):
                  f"a `{event['body'].get('kind')}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries")
             need(event["body"].get("kind") != "source_forgotten" or v >= 16,
                  f"an event of format {v} is a `source_forgotten`, which format 16 added")
+            need(event["body"].get("kind") != "values_removed" or v >= 17,
+                 f"an event of format {v} is a `values_removed`, which format 17 added")
             # known_at in its one form (§1.3), whose text orders as its
             # instant does, and never before the event before it.
             k = event.get("known_at")
