@@ -105,7 +105,7 @@ promises that have no check yet.
 | Method | Contract |
 |---|---|
 | `name` | The engine's name, as `EngineConfig` selects it. |
-| `rebuild_rate` | The events a rebuild folds a second on this engine, as measured: the store tells a host from it how long an act that rebuilds holds the writer's lock (`forget_preflight`, `docs/decisions/058-a-source-may-be-forgotten.md`). A constant of the engine, measured on a plain type, never a promise: it stands only until the handle has rebuilt once, after which the store reads the rate that rebuild measured. |
+| `rebuild_rate` | The events a rebuild folds a second on this engine, as measured: the store tells a host from it how long an act that rebuilds holds the writer's lock (`forget_preflight`, `docs/decisions/058-a-source-may-be-forgotten.md`). A constant of the engine, measured on a plain type, never a promise: it stands only until the handle has rebuilt once, after which the store reads the rate that rebuild measured (a `rebuild()`, an act's, or an open's that rebuilds). |
 | `lake` | The lake this handle keeps. |
 | `take_lease(holder)` | Take the writer lease with a fencing token greater than every token this lake ever handed out. **Fails at once** while the lease is held — by another process, another handle, or this one — with `Unavailable` whose message names the holder; never waits. `Unavailable` on a handle opened read-only. |
 | `release_lease(lease)` | Give the lease up; the next taker gets a greater token. The lease is always released; an engine that also records the holder in storage reports a failure to clear that record as `Unavailable`, after releasing. Releasing a lease that is no longer the current one does nothing, so a writer that lost the lease cannot release its successor's. A handle that is dropped releases the lease it took and still holds, so a writer that ends without closing does not keep the lake from every later writer. |
@@ -2285,8 +2285,11 @@ the source alone brought, has the key store destroy the source's keys,
 rebuilds the projection and reclaims the storage. `forget_preflight`
 answers the same report, appending nothing, with the time the act is
 expected to hold the lock: an estimate, `events` at the rate the
-handle's last rebuild measured, or at the engine's `rebuild_rate` before
-any.
+handle's last rebuild measured (its open's included), or at the
+engine's `rebuild_rate` before any, and the time of the last reclaim
+the handle ran, which a handle that has not reclaimed does not count,
+and the time of the preflight's own walk of the log, which the act walks
+again.
 The act is refused while the log holds a value of the source in an
 erasable field in plaintext, and a forgotten source's ingest is
 refused. It is no door's; `lakelands-client` answers it `unbound`. The

@@ -167,7 +167,6 @@ fn found(
         }
     })?;
     let events = view.position().map_or(0, |p| p.0);
-    let rate = lake.rebuild_rate();
     let report = ForgetReport {
         source: source.clone(),
         types,
@@ -181,7 +180,7 @@ fn found(
         views,
         plaintext,
         events,
-        expected_ms: events.saturating_mul(1000) / rate,
+        expected_ms: lake.expected_ms(events),
         position: view.position().unwrap_or(Position::GENESIS),
         reclaimed: None,
         reclaim_owed: lake.reclaim_owed(),
@@ -368,10 +367,13 @@ fn forgotten(view: &dyn ProjectionView, source: &SourceId) -> Result<bool> {
 /// What [`run`] would do, appending nothing, under the id the act may
 /// repeat.
 pub fn preflight(lake: &Lake, source: &SourceId) -> Result<ForgetReport> {
+    let began = std::time::Instant::now();
     let view = lake.engine.view(None)?;
     let ontology = Ontology::at(view.as_ref())?;
     let (mut report, _) = found(lake, view.as_ref(), &ontology, source)?;
     report.report_id = id(source, view.position());
+    // The act walks the log again under the lock, as this walk did.
+    report.expected_ms = (report.expected_ms).saturating_add(crate::lake::elapsed_ms(began));
     Ok(report)
 }
 

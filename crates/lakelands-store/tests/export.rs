@@ -480,11 +480,8 @@ async fn an_import_whose_reclaim_fails_is_imported_owing_it() {
         .await
         .unwrap();
     // Another place, whose engine fails its next reclaims.
-    let fails: lakelands_core::conformance::checks::Fails = Arc::new([
-        std::sync::atomic::AtomicU32::new(1),
-        Default::default(),
-        Default::default(),
-    ]);
+    let fails: lakelands_core::conformance::checks::Fails = Arc::default();
+    fails[0].store(1, std::sync::atomic::Ordering::SeqCst);
     let failing = lakelands_core::conformance::checks::failing(&fails);
     let seams = Seams {
         engines: vec![failing(Arc::new(MemoryOpener::new()))],

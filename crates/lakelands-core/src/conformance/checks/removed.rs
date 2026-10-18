@@ -515,9 +515,8 @@ async fn a_removal_a_crash_stopped_is_finished_by_the_next_writers_open(
     store: Store,
     given: crate::conformance::Given,
 ) -> Held {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    let fails: super::forgotten::Fails =
-        std::sync::Arc::new([AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)]);
+    use std::sync::atomic::Ordering;
+    let fails: super::forgotten::Fails = std::sync::Arc::default();
     let wrap = super::forgotten::failing(&fails);
     let fault = async |store: Store| {
         let open = (given.fault)(store, Default::default(), wrap.clone()).await;
@@ -1305,14 +1304,13 @@ async fn a_shredding_act_a_crash_stopped_is_finished_at_each_step(
     use super::erasable::{Keys, person};
     use lakelands_api::seam::{KeyStore, Seams};
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
     let keys = Arc::new(Keys::default());
     let failing = Arc::new(Failing {
         keys: keys.clone(),
         fails: AtomicBool::new(false),
     });
-    let fails: super::forgotten::Fails =
-        Arc::new([AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)]);
+    let fails: super::forgotten::Fails = Arc::default();
     let wrap = super::forgotten::failing(&fails);
     let fault = async |store: Store| {
         let seams = Seams {

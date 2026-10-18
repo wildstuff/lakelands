@@ -493,7 +493,6 @@ fn found(
     }
     let references = crate::purge::report(view, ontology, (source, None), &retire, Vec::new())?;
     let log_events = head.map_or(0, |p| p.0);
-    let rate = lake.rebuild_rate();
     let report = RemoveReport {
         source: source.clone(),
         selection: selection.clone(),
@@ -511,7 +510,7 @@ fn found(
         keys,
         unshredded,
         log_events,
-        expected_ms: log_events.saturating_mul(1000) / rate,
+        expected_ms: lake.expected_ms(log_events),
         position: head.unwrap_or(Position::GENESIS),
         reclaimed: None,
         reclaim_owed: lake.reclaim_owed(),
@@ -558,6 +557,7 @@ fn checked(selection: &Selection) -> Result<()> {
 /// repeat.
 pub fn preflight(lake: &Lake, source: &SourceId, selection: &Selection) -> Result<RemoveReport> {
     checked(selection)?;
+    let began = std::time::Instant::now();
     let view = lake.engine.view(None)?;
     let w = lake.reading(view.as_ref())?;
     let earlier = acts(lake, view.as_ref())?;
@@ -568,6 +568,8 @@ pub fn preflight(lake: &Lake, source: &SourceId, selection: &Selection) -> Resul
         (None, &earlier),
     )?;
     report.report_id = id(source, selection, view.position());
+    // The act walks the log again under the lock, as this walk did.
+    report.expected_ms = (report.expected_ms).saturating_add(crate::lake::elapsed_ms(began));
     Ok(report)
 }
 
