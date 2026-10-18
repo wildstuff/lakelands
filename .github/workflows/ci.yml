@@ -197,6 +197,7 @@ jobs:
           tool: cargo-semver-checks
       # The script's own comparisons, held to a fixture (lakelands#517).
       - run: scripts/release/host-changes-test.sh
+      - run: scripts/release/notes-test.sh
       - run: scripts/release/host-changes.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
   # The host surface changes only by its rule
