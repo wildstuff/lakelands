@@ -412,6 +412,7 @@ fn settings_and_provenance_come_from_the_scope() {
             position: lakelands_api::Position(3),
             writer: "service:importer".into(),
             source: None,
+            procedure: None,
             procedure_version: None,
             error: None,
             erased: false,

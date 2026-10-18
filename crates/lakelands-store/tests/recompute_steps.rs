@@ -172,7 +172,7 @@ fn context(n: u32) -> WriteContext {
 }
 
 /// The provenance `own(n, who, ..)` gives a field its fold computes, at
-/// `position`: by a function at `version`, or else by the event's own
+/// `position`: by the function `f` at `version`, or else by the event's own
 /// procedure.
 fn stamped(n: u32, who: &str, position: Position, version: Option<&str>) -> FieldMeta {
     FieldMeta {
@@ -182,6 +182,7 @@ fn stamped(n: u32, who: &str, position: Position, version: Option<&str>) -> Fiel
         position,
         writer: who.into(),
         source: Some(format!("source-{n}").as_str().into()),
+        procedure: Some(if version.is_some() { "f" } else { "by hand" }.into()),
         procedure_version: Some(version.map_or(format!("p{n}"), str::to_owned)),
         upstream: Some(upstream(n)),
         error: None,

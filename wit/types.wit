@@ -595,6 +595,9 @@ interface types {
         position: position,
         writer: string,
         source: option<source-id>,
+        /// For a value a procedure produced: its name (a verb's, a
+        /// function's, an embedding's model).
+        procedure: option<string>,
         procedure-version: option<string>,
         /// For a value read from another lake's log: that lake and
         /// position.

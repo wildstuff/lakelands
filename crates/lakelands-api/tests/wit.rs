@@ -458,6 +458,7 @@ fn field_meta() -> FieldMeta {
         position: Position(1),
         writer: "human:a".into(),
         source: Some("erp".into()),
+        procedure: Some("summarise".into()),
         procedure_version: Some("1".into()),
         error: Some("the backing failed".into()),
         erased: true,

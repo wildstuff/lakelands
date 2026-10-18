@@ -41,7 +41,7 @@ check!(
 
 check!(
     EMBED_WRITE = a_write_embeds_its_text_and_records_the_vector,
-    "022, extended, and the log format: the store embeds the joined `from` text after the write, records the vector as `output_recorded` under `embed:<model>` naming the field, and the field holds it",
+    "022, extended, and the log format: the store embeds the joined `from` text after the write, records the vector as `output_recorded` under `embed:<model>` naming the field, and the field holds it, its metadata naming the model as its procedure",
     embedding
 );
 
@@ -348,6 +348,13 @@ async fn a_write_embeds_its_text_and_records_the_vector(store: Store) -> Held {
          with the model as its procedure; the log holds seam {seam:?}, field {named:?}, \
          procedure {:?}",
         event.procedure
+    );
+    let r = l.read("note", "n1").await?;
+    let meta = r.meta.get("vec");
+    ensure!(
+        meta.is_some_and(|m| m.procedure.as_deref() == Some(EMBED_MODEL)),
+        "`vec`'s metadata names the model that made it, {EMBED_MODEL:?}, as its procedure; \
+         it reads {meta:?}"
     );
     Ok(())
 }

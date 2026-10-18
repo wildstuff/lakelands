@@ -45,7 +45,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use lakelands_api::error::{Case, Flaw, Part, Said};
-use lakelands_api::event::{Event, EventBody};
+use lakelands_api::event::{Event, EventBody, Procedure};
 use lakelands_api::expr::Expr;
 use lakelands_api::ontology::{OnInputChange, TypeDecl, ValueTypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
@@ -76,8 +76,9 @@ pub struct Plan {
     /// Its computed fields in the order the fold settles them
     /// ([`backed::computed_order`]).
     pub(crate) settled: std::result::Result<Vec<(FieldName, BTreeSet<FieldName>)>, Case>,
-    /// The version of the function that computes a field, by field.
-    versions: BTreeMap<FieldName, String>,
+    /// The function that computes a field, by field: its name and
+    /// version.
+    procedures: BTreeMap<FieldName, Procedure>,
     /// Its constraints, parsed once (lakelands#1119).
     pub(crate) constraints: Vec<Constraint>,
 }
@@ -96,9 +97,14 @@ impl Plan {
     fn of(o: &Ontology, raw: &TypeDecl) -> Plan {
         let decl = resolve_functions(raw, o);
         let named = raw.fields.iter().filter_map(|f| f.ty.value_type.as_ref());
-        let versions = raw.fields.iter().filter_map(|f| {
-            let function = o.functions.get(f.function.as_ref()?)?;
-            Some((f.name.clone(), function.version.to_string()))
+        let procedures = raw.fields.iter().filter_map(|f| {
+            let name = f.function.as_ref()?;
+            let function = o.functions.get(name)?;
+            let procedure = Procedure {
+                name: name.clone(),
+                version: function.version.to_string(),
+            };
+            Some((f.name.clone(), procedure))
         });
         let derived = derive::order(&decl);
         let computed = derived.as_deref().unwrap_or_default();
@@ -140,7 +146,7 @@ impl Plan {
                 .collect(),
             derived,
             settled: backed::computed_order(o, raw),
-            versions: versions.collect(),
+            procedures: procedures.collect(),
             constraints,
             decl,
         }
@@ -211,6 +217,7 @@ pub(crate) fn initial_meta(event: &Event) -> FieldMeta {
         upstream: None,
         seen_at: None,
         source: None,
+        procedure: None,
         procedure_version: None,
         ..meta_of(event, Origin::Initial)
     }
@@ -226,6 +233,7 @@ pub(crate) fn meta_of(event: &Event, origin: Origin) -> FieldMeta {
         position: event.position,
         writer: event.writer.clone(),
         source: event.source.clone(),
+        procedure: event.procedure.as_ref().map(|p| p.name.clone()),
         procedure_version: event.procedure.as_ref().map(|p| p.version.clone()),
         error: None,
         erased: false,
@@ -343,11 +351,12 @@ pub fn apply(
 
 /// The provenance of a value the fold computed: the event's, with
 /// `origin: derived`, and for a field a function computes, that
-/// function's version as the procedure's.
+/// function as the procedure.
 fn derived_meta(event: &Event, plan: &Plan, field: &FieldName) -> FieldMeta {
     let mut m = meta_of(event, Origin::Derived);
-    if let Some(version) = plan.versions.get(field) {
-        m.procedure_version = Some(version.clone());
+    if let Some(p) = plan.procedures.get(field) {
+        m.procedure = Some(p.name.clone());
+        m.procedure_version = Some(p.version.clone());
     }
     m
 }

@@ -489,6 +489,7 @@ clears, the fold records the field's provenance from the envelope
 | `position` | `position` |
 | `writer` | `writer` |
 | `source` | `source` |
+| `procedure` | `procedure.name` |
 | `procedure_version` | `procedure.version` |
 | `upstream` | `upstream` |
 
@@ -528,7 +529,7 @@ filled field as one the event changed: at a make every derived field is
 computed anyway, and no field holds a value an input change could clear,
 so nothing would read that count. The filled field's provenance is `origin: initial` with
 the event's `known_at`, `position` and `writer`, and no `seen_at`,
-`source`, `procedure_version` or `upstream`. A re-key does not fill. The
+`source`, `procedure`, `procedure_version` or `upstream`. A re-key does not fill. The
 patch stays as written, so a reader that folds the raw feed fills the
 same fields itself
 (`docs/decisions/050-a-field-declares-its-initial-value.md`).

@@ -50,6 +50,7 @@ fn stamp(_: &FieldName) -> lakelands_api::FieldMeta {
         position: lakelands_api::Position(1),
         writer: "service:fold".into(),
         source: None,
+        procedure: None,
         procedure_version: None,
         error: None,
         erased: false,
