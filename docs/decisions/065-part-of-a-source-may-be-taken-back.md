@@ -33,7 +33,14 @@ non-null, in its patch as the log stores it.
   nothing, and selects nothing.
 - A value another hand wrote is never in the selection.
 - A key field and a reference field identify records, so they are never
-  in it.
+  in it: a field that is one at the event's position or at the act's. A
+  value written while its field was part of a key is in the record's key
+  there, and one whose field became part of a key since is in the key a
+  re-keying moved it to (lakelands#1228).
+
+The records reached are found by the key each selected event wrote,
+followed through every rename and re-keying migration since, to the key
+the record bears now.
 
 ### The act is in the log, and the record keeps everyone else's values
 
@@ -54,10 +61,14 @@ a forgotten value.
 - So does everything computed from it: derived fields, outputs,
   embeddings, kept views, sets and memberships. A recorded output whose
   input held a removed value is not found for the inputs left, so the
-  field waits, as a write with no backend waits. A set whose `where`
-  reads across a reference is the exception for now: its membership is
-  in the log, decided at the far write, and keeps its history, as after
-  forgetting (lakelands#1232).
+  field waits, as a write with no backend waits.
+- **A membership the log holds** — of a set whose `where` reads across
+  an edge (055), or of a set of a kept view (066) — was decided at a
+  write, over the values then. From the first value an act erased that
+  such a set reads, the fold decides the set itself, at every write that
+  could move it, as a write decides it, and the logged
+  `object_set_changed` no longer stands for it. No membership is one an
+  erased value made, at the head or `as_of` (lakelands#1232).
 - No read answers it again, `as_of` included.
 - Its bytes stay in the log, its exports and its backups: in plaintext
   for a field that is not erasable, sealed under a live key otherwise.
@@ -228,6 +239,18 @@ never claims it where it did not happen.
 **Rejected: removing only from the act on.** `as_of` would still answer
 what the lake says it no longer holds, and an author's clear already
 does that.
+
+**The fold decides a membership again from the first erased value to
+the end of its run,** not only where a logged change read that value.
+Some transitions of the history without it were never logged, since at
+the write the membership did not change: a set the erasure makes (`where
+stop.place is null`), one another value kept (`stop.place = 'Rome' or
+stop.open`, `open` falling while Rome still held), and a referrer moving
+from the erased record to another in Rome. The run's end, not the act,
+bounds it, since an act a crash left owed lets writes land before its
+rebuild. A fold that begins midway in a lake with an act, as one
+continuing a stopped rebuild, cannot tell what was erased before it
+began, so it decides every such set from its first event.
 
 **The act rebuilds.** A rebuild is the projection's fold of the log, so
 no second path has to come out equal to it. It holds the writer for the

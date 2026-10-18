@@ -56,7 +56,7 @@ check!(
 
 check!(
     REMOVED_COMPUTED = what_is_computed_from_a_taken_value_goes_with_it,
-    "065: `tracker` writes `place` on the stops `s1` and `s2`, each kept by an author's note; `loud` is computed from `place` by the suite's backing, `vec` embedded from it, and the set `rome` holds the stops in Rome; taking back what `tracker` wrote before `s2` leaves `s1` with no `place`, `loud` nor `vec`, at the head and before the act, with no call made again, and `s1` out of `rome`, while `s2` keeps its own and stays in it; a rebuild answers the same. A membership decided across an edge is lakelands#1232",
+    "065: `tracker` writes `place` on the stops `s1` and `s2`, each kept by an author's note; `loud` is computed from `place` by the suite's backing, `vec` embedded from it, and the set `rome` holds the stops in Rome; taking back what `tracker` wrote before `s2` leaves `s1` with no `place`, `loud` nor `vec`, at the head and before the act, with no call made again, and `s1` out of `rome`, while `s2` keeps its own and stays in it; a rebuild answers the same",
     reopens
 );
 
@@ -141,7 +141,7 @@ fn stranded(r: &RemoveReport) -> Vec<(&str, &str, u64, Vec<String>)> {
 
 /// `key`'s fields of `ty` as of `at` (the head when `None`), with
 /// provenance; `None` where it is not found.
-async fn at(
+pub(super) async fn at(
     l: &Lake,
     ty: &str,
     key: &str,
@@ -156,7 +156,7 @@ async fn at(
 
 /// Whether `r` holds no value of `field` and its provenance says it was
 /// erased, from `source`.
-fn erased(r: &lakelands_api::Record, field: &str, source: &str) -> bool {
+pub(super) fn erased(r: &lakelands_api::Record, field: &str, source: &str) -> bool {
     let m = r.meta.get(field);
     !r.fields.contains_key(field)
         && m.is_some_and(|m| m.erased && m.source.as_ref().is_some_and(|s| s == source))

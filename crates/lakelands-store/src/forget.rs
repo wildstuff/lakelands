@@ -21,15 +21,18 @@
 //! erasable field in plaintext, written before the field was erasable or
 //! before the log sealed values: destroying a key cannot reach it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::ProjectionView;
 use lakelands_api::error::Case;
 use lakelands_api::event::{Event, EventBody};
+use lakelands_api::ontology::TypeDecl;
 use lakelands_api::principal::Renamed;
 use lakelands_api::record::{Origin, StoredRecord};
-use lakelands_api::write::{ForgetField, ForgetRecords, ForgetReport, RecordField, TypeRetired};
-use lakelands_api::{FieldName, Position, Result, SourceId, TypeName, WriteContext};
+use lakelands_api::write::{
+    Declaration, ForgetField, ForgetRecords, ForgetReport, RecordField, TypeRetired,
+};
+use lakelands_api::{FieldName, Position, RecordKey, Result, SourceId, TypeName, WriteContext};
 use lakelands_core::invalid;
 
 use crate::lake::{Lake, Staged, every, forgotten_list};
@@ -247,6 +250,108 @@ pub(crate) fn named_now(
         }
     }
     (ty, field)
+}
+
+/// What the log changed of the types up to the head of a view: each state
+/// of each type's declaration with the position it holds from, the
+/// renames, and the keys each re-keying migration moved, so that a value
+/// an event wrote is followed to the record it is in at any later
+/// position (lakelands#1228).
+pub(crate) struct History {
+    states: BTreeMap<TypeName, Vec<(Position, TypeDecl)>>,
+    pub renames: Vec<Renamed>,
+    /// By position, in the log's order: each key it moved, by the type's
+    /// name and the key there.
+    rekeys: Vec<(Position, Moved)>,
+}
+
+/// The keys one re-keying migration moved, by the type's name and the key
+/// before.
+type Moved = BTreeMap<(TypeName, RecordKey), RecordKey>;
+
+impl History {
+    /// Up to the head of `view`: the states in force and those replaced,
+    /// one read for all (lakelands#1064), and the `migrated` events at the
+    /// positions they hold from. An engine that keeps no replaced state
+    /// gives each type's state in force for every position.
+    pub(crate) fn new(lake: &Lake, view: &dyn ProjectionView) -> Result<History> {
+        let head = view.position().unwrap_or(Position::GENESIS);
+        let mut declared = view.declarations()?;
+        declared.extend(view.replaced(Position::GENESIS, head)?.unwrap_or_default());
+        let mut states: BTreeMap<TypeName, Vec<(Position, TypeDecl)>> = BTreeMap::new();
+        for d in declared {
+            if let Declaration::Type(t) = d.declaration {
+                states.entry(t.name.clone()).or_default().push((d.since, t));
+            }
+        }
+        states
+            .values_mut()
+            .for_each(|s| s.sort_by_key(|(at, _)| *at));
+        let at: BTreeSet<Position> = states.values().flatten().map(|(at, _)| *at).collect();
+        let rekeys = (lake.read_these(&Vec::from_iter(at))?.into_iter())
+            .filter_map(|e| match e.body {
+                EventBody::Migrated { rekeyed, .. } if !rekeyed.is_empty() => {
+                    let moves = rekeyed.into_iter().map(|r| ((r.ty, r.from), r.to));
+                    Some((e.position, moves.collect()))
+                }
+                _ => None,
+            })
+            .collect();
+        let renames = lake.renames(Some(view))?;
+        Ok(History {
+            states,
+            renames,
+            rekeys,
+        })
+    }
+
+    /// The declaration of the type named `ty` at `at`, or the first held.
+    pub(crate) fn ty(&self, ty: &TypeName, at: Position) -> Option<&TypeDecl> {
+        let states = self.states.get(ty)?;
+        let then = states.iter().rev().find(|(since, _)| *since <= at);
+        then.or(states.first()).map(|(_, d)| d)
+    }
+
+    /// The names at `to` of a type and a field an event at `at` wrote.
+    pub(crate) fn named(
+        &self,
+        (at, to): (Position, Position),
+        ty: &TypeName,
+        field: &FieldName,
+    ) -> (TypeName, FieldName) {
+        let before = self.renames.partition_point(|r| r.at < to);
+        named_now(&self.renames[..before], at, ty, field)
+    }
+
+    /// The type and the key at the head of the record an event at `at`
+    /// wrote at `key` of `ty`: each re-key and rename since, in the order
+    /// of the log, a migration's moves before the renames it records.
+    pub(crate) fn moved(
+        &self,
+        at: Position,
+        ty: &TypeName,
+        key: &RecordKey,
+    ) -> (TypeName, RecordKey) {
+        let (mut ty, mut key) = (ty.clone(), key.clone());
+        let mut renames = self.renames.iter().filter(|r| r.at > at).peekable();
+        for (p, moves) in self.rekeys.iter().filter(|(p, _)| *p > at) {
+            while let Some(r) = renames.next_if(|r| r.at < *p) {
+                ty = renamed(r, ty);
+            }
+            if let Some(to) = moves.get(&(ty.clone(), key.clone())) {
+                key = to.clone();
+            }
+        }
+        (renames.fold(ty, |ty, r| renamed(r, ty)), key)
+    }
+}
+
+/// `ty` after the rename `r`.
+fn renamed(r: &Renamed, ty: TypeName) -> TypeName {
+    match &r.to {
+        Some(to) if r.ty == ty => to.clone(),
+        _ => ty,
+    }
 }
 
 /// The id of the preflight of forgetting `source`, read at `head`.

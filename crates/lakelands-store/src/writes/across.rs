@@ -57,8 +57,8 @@ pub(super) fn holds<S: Scope>(
 
 /// One step back along a path, from the record it reached to those that
 /// reach it.
-#[derive(Clone)]
-enum Back<'d> {
+#[derive(Clone, PartialEq)]
+pub(crate) enum Back<'d> {
     /// The records of a type whose reference field names it.
     Ref(&'d TypeName, &'d FieldName),
     /// The record of a type its link's `from` names.
@@ -70,9 +70,9 @@ enum Back<'d> {
 /// One way a condition reaches a record of a type: the fields it reads
 /// there, and the steps back to the condition's own record, nearest first.
 pub(super) struct Reach<'d> {
-    ty: &'d TypeName,
-    reads: BTreeSet<FieldName>,
-    back: Vec<Back<'d>>,
+    pub ty: &'d TypeName,
+    pub reads: BTreeSet<FieldName>,
+    pub back: Vec<Back<'d>>,
 }
 
 /// The ways the paths of `e`, a condition over `on`, reach records of
@@ -143,19 +143,75 @@ pub(super) fn reaches<'d>(o: &'d Ontology, on: &'d TypeDecl, e: &Expr) -> Vec<Re
     out
 }
 
+/// What a decision across an edge reads besides the head: the records a
+/// write's drafts, or the events a fold has folded, wrote so far.
+pub(crate) trait Written {
+    /// A record as they leave it, or as `view` holds it.
+    fn record(
+        &self,
+        view: &dyn ProjectionView,
+        ty: &TypeName,
+        key: &RecordKey,
+    ) -> Result<Option<StoredRecord>>;
+
+    /// The records of `ty` they wrote, live or not.
+    fn wrote<'a>(&'a self, ty: &'a TypeName) -> Box<dyn Iterator<Item = &'a StoredRecord> + 'a>;
+
+    /// The records of `ty` in `view` whose fields hold one of `asked`, as
+    /// they leave them, those they wrote left out.
+    fn scan(
+        &self,
+        view: &dyn ProjectionView,
+        ty: &TypeName,
+        asked: &[Vec<(FieldName, Value)>],
+    ) -> Result<Vec<StoredRecord>> {
+        let scan = Scan {
+            limit: u32::MAX,
+            restricted: true,
+            equal_any: asked.to_vec(),
+            ..Default::default()
+        };
+        view.scan(ty, &scan)
+    }
+}
+
+impl Written for Pending {
+    fn record(
+        &self,
+        view: &dyn ProjectionView,
+        ty: &TypeName,
+        key: &RecordKey,
+    ) -> Result<Option<StoredRecord>> {
+        Pending::record(self, view, ty, key)
+    }
+
+    fn wrote<'a>(&'a self, ty: &'a TypeName) -> Box<dyn Iterator<Item = &'a StoredRecord> + 'a> {
+        let of = self.records.iter().filter(move |((t, _), _)| t == ty);
+        Box::new(of.map(|(_, r)| r))
+    }
+}
+
+/// The heads a decision reads across an edge: at the head of `view` and
+/// over what `written` wrote, to `max` steps.
+pub(crate) fn heads<R>(
+    (view, written, max): (&dyn ProjectionView, &dyn Written, u32),
+    f: impl FnOnce(Heads<'_>) -> R,
+) -> R {
+    let far = |t: &TypeName, k: &RecordKey| written.record(view, t, k);
+    let link = |t: &TypeName, r: &RelationName, k: &RecordKey| link(view, written, t, r, k);
+    f(Heads {
+        far: &far,
+        link: &link,
+        max,
+    })
+}
+
 impl Decide<'_> {
     /// The heads a write reads across an edge: at the head and over the
     /// append's drafts.
     fn with_heads<R>(&self, f: impl FnOnce(Heads<'_>) -> R) -> R {
-        let (view, pending) = (self.view, &self.pending);
-        let far = |t: &TypeName, k: &RecordKey| pending.record(view, t, k);
-        let link = |t: &TypeName, r: &RelationName, k: &RecordKey| pending.link(view, t, r, k);
         let max = self.call.lake.limits.max_depth;
-        f(Heads {
-            far: &far,
-            link: &link,
-            max,
-        })
+        heads((self.view, &self.pending, max), f)
     }
 
     /// Whether a trigger fires on a write that leaves `after` (it was
@@ -297,7 +353,7 @@ impl Decide<'_> {
             let reached = reaches(o, on, &e);
             let mut found = BTreeMap::new();
             for r in reached.iter().filter(|r| r.ty == &after.ty && moved(r)) {
-                for rec in self.back(&r.back, after.clone())? {
+                for rec in back((self.view, &self.pending), &r.back, after.clone())? {
                     found.insert(rec.key.clone(), rec);
                 }
             }
@@ -378,90 +434,84 @@ impl Decide<'_> {
         }
         Ok(())
     }
-
-    /// The live records the steps `back` lead to from `at`, each as the
-    /// append leaves it: one scan of a type a step, over the records it
-    /// reached, and the append's own drafts of that type.
-    fn back(&self, back: &[Back<'_>], at: StoredRecord) -> Result<Vec<StoredRecord>> {
-        let mut at = vec![at];
-        for step in back {
-            let (ty, asked): (&TypeName, Vec<Vec<(FieldName, Value)>>) = match step {
-                Back::From(on) => {
-                    let from =
-                        |r: &StoredRecord| r.fields.get(links::FROM)?.as_str().map(RecordKey::from);
-                    let keys: BTreeSet<RecordKey> = at.iter().filter_map(from).collect();
-                    let read = keys.iter().map(|k| self.pending.record(self.view, on, k));
-                    at = read
-                        .collect::<Result<Vec<_>>>()?
-                        .into_iter()
-                        .flatten()
-                        .collect();
-                    at.retain(|r| !r.retired);
-                    continue;
-                }
-                Back::Ref(t, f) => {
-                    let key = |r: &StoredRecord| vec![((*f).clone(), Value::from(r.key.as_str()))];
-                    (t, at.iter().map(key).collect())
-                }
-                Back::Matched(t, pairs) => {
-                    let pair = |r: &StoredRecord, p: &MatchPair| {
-                        Some((p.from.clone(), r.fields.get(&p.to)?.clone()))
-                    };
-                    let tuple = |r: &StoredRecord| pairs.iter().map(|p| pair(r, p)).collect();
-                    (t, at.iter().filter_map(tuple).collect())
-                }
-            };
-            if asked.is_empty() {
-                return Ok(Vec::new());
-            }
-            let holds = |r: &StoredRecord| {
-                (asked.iter()).any(|a| a.iter().all(|(f, v)| r.fields.get(f) == Some(v)))
-            };
-            let scan = Scan {
-                limit: u32::MAX,
-                restricted: true,
-                equal_any: asked.clone(),
-                ..Default::default()
-            };
-            let mut next: BTreeMap<RecordKey, StoredRecord> = (self.view.scan(ty, &scan)?)
-                .into_iter()
-                .map(|r| (r.key.clone(), r))
-                .collect();
-            let drafted = self.pending.records.iter().filter(|((t, _), _)| t == ty);
-            for ((_, k), r) in drafted {
-                match holds(r) && !r.retired {
-                    true => next.insert(k.clone(), r.clone()),
-                    false => next.remove(k),
-                };
-            }
-            at = next.into_values().collect();
-        }
-        Ok(at)
-    }
 }
 
-impl Pending {
-    /// The key of the one live link `from` of `ty` holds over `r`, as this
-    /// append leaves it: one it drafted, or the projection's.
-    pub(super) fn link(
-        &self,
-        view: &dyn ProjectionView,
-        ty: &TypeName,
-        r: &RelationName,
-        from: &RecordKey,
-    ) -> Result<Option<RecordKey>> {
-        let lt = links::link_type_name(ty, r);
-        let from_it = |l: &StoredRecord| {
-            !l.retired && l.fields.get(links::FROM).and_then(Value::as_str) == Some(from.as_str())
+/// The live records the steps `back` lead to from `at`, each as
+/// `written` leaves it: one scan of a type a step, over the records it
+/// reached, and the records of that type `written` wrote.
+pub(crate) fn back(
+    (view, written): (&dyn ProjectionView, &dyn Written),
+    back: &[Back<'_>],
+    at: StoredRecord,
+) -> Result<Vec<StoredRecord>> {
+    let mut at = vec![at];
+    for step in back {
+        let (ty, asked): (&TypeName, Vec<Vec<(FieldName, Value)>>) = match step {
+            Back::From(on) => {
+                let from =
+                    |r: &StoredRecord| r.fields.get(links::FROM)?.as_str().map(RecordKey::from);
+                let keys: BTreeSet<RecordKey> = at.iter().filter_map(from).collect();
+                let read = keys.iter().map(|k| written.record(view, on, k));
+                at = read
+                    .collect::<Result<Vec<_>>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                at.retain(|r| !r.retired);
+                continue;
+            }
+            Back::Ref(t, f) => {
+                let key = |r: &StoredRecord| vec![((*f).clone(), Value::from(r.key.as_str()))];
+                (t, at.iter().map(key).collect())
+            }
+            Back::Matched(t, pairs) => {
+                let pair = |r: &StoredRecord, p: &MatchPair| {
+                    Some((p.from.clone(), r.fields.get(&p.to)?.clone()))
+                };
+                let tuple = |r: &StoredRecord| pairs.iter().map(|p| pair(r, p)).collect();
+                (t, at.iter().filter_map(tuple).collect())
+            }
         };
-        let mut drafted = self
-            .records
-            .iter()
-            .filter(|((t, _), l)| t == &lt && from_it(l));
-        match drafted.next() {
-            Some(((_, k), _)) => Ok(Some(k.clone())),
-            None => link_from(view, ty, r, from),
+        if asked.is_empty() {
+            return Ok(Vec::new());
         }
+        let holds = |r: &StoredRecord| {
+            (asked.iter()).any(|a| a.iter().all(|(f, v)| r.fields.get(f) == Some(v)))
+        };
+        let mut next: BTreeMap<RecordKey, StoredRecord> = (written.scan(view, ty, &asked)?)
+            .into_iter()
+            .filter(|r| holds(r))
+            .map(|r| (r.key.clone(), r))
+            .collect();
+        for r in written.wrote(ty) {
+            match holds(r) && !r.retired && !r.is_ended() {
+                true => next.insert(r.key.clone(), r.clone()),
+                false => next.remove(&r.key),
+            };
+        }
+        at = next.into_values().collect();
+    }
+    Ok(at)
+}
+
+/// The key of the one live link `from` of `ty` holds over `r`, as
+/// `written` leaves it: one it wrote, or the projection's.
+fn link(
+    view: &dyn ProjectionView,
+    written: &dyn Written,
+    ty: &TypeName,
+    r: &RelationName,
+    from: &RecordKey,
+) -> Result<Option<RecordKey>> {
+    let lt = links::link_type_name(ty, r);
+    let from_it = |l: &StoredRecord| {
+        !l.retired
+            && !l.is_ended()
+            && l.fields.get(links::FROM).and_then(Value::as_str) == Some(from.as_str())
+    };
+    match written.wrote(&lt).find(|l| from_it(l)) {
+        Some(l) => Ok(Some(l.key.clone())),
+        None => link_from(view, ty, r, from),
     }
 }
 

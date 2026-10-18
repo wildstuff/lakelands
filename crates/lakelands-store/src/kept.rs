@@ -1139,6 +1139,13 @@ pub(crate) fn step(
     settled.map(|()| moved)
 }
 
+/// The groups the hooks put or ended since the last call, and from here
+/// on those of the next: a fold that decides a set of a view itself asks
+/// (lakelands#1232).
+pub(crate) fn moved(staged: &mut Staged) -> Moved {
+    staged.kept.moved.replace(Moved::new()).unwrap_or_default()
+}
+
 /// Whether the views as the transaction leaves them hold `view` whole.
 pub(crate) fn whole(at: &At<'_>, staged: &Staged, view: &TypeName) -> Result<bool> {
     Ok(at.state(staged, view)?.whole)

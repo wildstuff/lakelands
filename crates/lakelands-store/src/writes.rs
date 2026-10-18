@@ -77,13 +77,15 @@ use crate::record;
 
 mod across;
 mod plan;
+mod touched;
 mod viewed;
 
-pub(crate) use across::reads_across;
 use across::{Heads, fires_on};
+pub(crate) use across::{Written, reads_across};
 pub(crate) use plan::Against;
 pub(crate) use plan::When;
 pub(crate) use plan::shown_plan;
+pub(crate) use touched::{Folding, Zone};
 
 /// A set membership that changes: the set, the record's type and its key
 /// (after the migration, when one changes it), and whether it joined.

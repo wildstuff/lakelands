@@ -334,3 +334,66 @@ async fn a_forgotten_sources_values_are_folded_without_reading_ahead_for_each() 
         "of a log of {log} events, the act read {act} and the rebuild {rebuild}"
     );
 }
+
+/// A rebuild that decides a set itself, from the first value it erased
+/// that the set reads (lakelands#1232), pays what the writes paid to
+/// decide it: the log read once, and one scan of the referring type for
+/// each far write that moved what the set reads, never one a sealed value
+/// nor a walk of the type.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_set_decided_again_scans_once_a_far_write() {
+    let probe = Arc::new(Probe::default());
+    let seams = Seams {
+        engines: vec![Arc::new(ProbedOpener(MemoryOpener::new(), probe.clone()))],
+        keys: Some(Arc::new(Keys::default())),
+        ..Seams::default()
+    };
+    let store = lakelands_store::open(Location::memory("decided"), seams, OpenMode::Create)
+        .await
+        .unwrap();
+    let l = Lake::of(store.as_ref());
+    let text = json!({"kind": "text"});
+    l.declare_json(json!({"declare": "type", "name": "stop", "fields": [
+        {"name": "place", "type": text, "authority": "source", "erasable": true},
+        {"name": "open", "type": {"kind": "boolean"}}]}))
+        .await
+        .unwrap();
+    l.declare_json(json!({"declare": "type", "name": "call", "fields": [
+        {"name": "stop", "type": {"kind": "reference", "target": "stop"}}]}))
+        .await
+        .unwrap();
+    let set = json!({"declare": "object_set", "name": "near", "of": "call",
+                     "where": "stop.place = 'Rome' or stop.open"});
+    l.declare_json(set).await.unwrap();
+    const N: usize = 60;
+    let stops = (0..N).map(|i| source_record("stop", &format!("s{i}"), json!({"place": "Rome"})));
+    l.ingest("crm", stops.collect()).await.unwrap();
+    for i in 0..N {
+        l.upsert("stop", &format!("s{i}"), json!({"open": true}))
+            .await
+            .unwrap();
+        l.upsert("call", &format!("c{i}"), json!({"stop": format!("s{i}")}))
+            .await
+            .unwrap();
+    }
+    store
+        .forget_source(&SourceId::from("crm".to_owned()), None)
+        .await
+        .unwrap();
+    let log = store.head().await.unwrap().0 as usize;
+    probe.take();
+    probe.events_read.store(0, Ordering::SeqCst);
+    store.rebuild().await.unwrap();
+    let scans = (probe.take().into_iter())
+        .filter(|a| *a == probed::Asked::Scan("call".into()))
+        .count();
+    let read = probe.events_read.load(Ordering::SeqCst);
+    // The far writes after the first erased value: each stop made, then
+    // opened, each read back once though the set reads it by two paths.
+    assert!(
+        (1..=2 * N).contains(&scans) && read <= 2 * log,
+        "the rebuild scanned `call` {scans} times for {} far writes, and read {read} events of \
+         a log of {log}",
+        2 * N
+    );
+}
