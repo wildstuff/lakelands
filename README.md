@@ -167,7 +167,7 @@ terrain Lakelands is built for, and where it is not the right tool.
 > engine seam), with 67 decision records and the event log at format
 > version 17, installable from the release. Its budgets: the store
 > facade and engine traits hold 71 of 110 methods, the core crates'
-> product code 71 941 of 74 000 lines and their specification 107 128 of
+> product code 71 934 of 74 000 lines and their specification 107 128 of
 > 108 000, and 6 of 20 `cfg(feature)` sites. A ceiling rises only by a
 > recorded rule (decision 047): the operator set the round's ceilings at
 > 68 000 and 98 000 and raised them twice, measured, to 74 000 and
@@ -185,8 +185,10 @@ terrain Lakelands is built for, and where it is not the right tool.
 > Every setting is in one list, with its kind, meaning and group
 > (decision 063); a set may hold a kept view (decision 066); a search
 > may take a second stage (decision 067), and a lexical search may weigh
-> one field above another (decision 025). The projection's commit on
-> PostgreSQL waits for no flush of its own (decision 061).
+> one field above another (decision 025). A query vector names the model
+> that made it, a host's executor may decline a call by policy and say
+> so, and forgetting a source walks the log once. The projection's
+> commit on PostgreSQL waits for no flush of its own (decision 061).
 > `lakelands verify` checks a lake's log, and `lakelands init` makes a
 > first lake and an agent's MCP configuration in one command. A writer's
 > open upgrades a lake of format 14, 15 or 16 to 17 by appending, and

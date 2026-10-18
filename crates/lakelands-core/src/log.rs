@@ -139,15 +139,8 @@ const SEALED_FROM: u32 = 16;
 ///   format 15 is plaintext; and a set's `where` and a trigger's `when`
 ///   that read across an edge (055).
 /// - **16 → 17:** none. Format 17 is 0.16.0's one step, taken before any
-///   form it adds (lakelands#1164): a log of format 16 holds none of them,
-///   each named here by the change that adds it: a field's
-///   `authority: verb` (lakelands#1130); a `record_ingested`'s `delivery`,
-///   and a recorded output digested under the oldest version that sealed
-///   the values it reads, where 16 took the source's first (lakelands#1153);
-///   a type's `retired_by` and a verb's `effect: retire` (lakelands#1148);
-///   a `trigger_dropped` (lakelands#1216); a trigger's `when_strict`
-///   (lakelands#1215); a `trigger_fired`'s `change` and `created`, a
-///   trigger's `on_changes` and `created()` (lakelands#1217).
+///   form it adds (lakelands#1164): a log of format 16 holds none of them.
+///   `docs/log-format.md` §6 names each, by the change that adds it.
 #[doc(hidden)]
 pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
     debug_assert!(reads_format(v), "format {v} is not one this release reads");

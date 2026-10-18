@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 70, each
+- `further.json`: the lake's next events, positions 8 to 71, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -130,7 +130,14 @@ The files:
     `record_retired` of `INV-3`, which only it wrote, in the same append
     (70): forms format 17 holds and 16 does not (065). A `values_removed`
     that destroys a key version, with its `keys`, is in the kept lake of
-    format 17 (`../../lakes/17/`).
+    format 17 (`../../lakes/17/`);
+  - a `write_proposed` of a migration that computes `loan`'s `days`
+    again, its report holding `recomputed`, which a writer of format 17
+    writes on every migration's report, and `unlive` where the migration
+    moves a reference (71) (062). The migrations proposed at 12 and 29
+    are lines as format 16 wrote them, which a writer of 17 never writes:
+    a reader completes such a report as `recomputed: 0` and makes its
+    `report_id` again.
 
   Its `misplaced` holds five lines that are not of the lake. Each
   stands at its position after the event before it, in the release's

@@ -192,7 +192,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 531, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 538, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -394,7 +394,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 63] = [
+const SHOWN: [&str; 64] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -458,10 +458,11 @@ const SHOWN: [&str; 63] = [
     "delivery_own",
     "removed_before",
     "removal_by_time_retires",
+    "proposed_migrate_recomputed",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 70;
+const LAST: u64 = 71;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
@@ -740,6 +741,16 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
         }
         "removal_by_time_retires" => {
             matches!(&event.body, B::RecordRetired { key, .. } if key == "INV-3")
+        }
+        // A report of format 17 counts what it computes again, under its
+        // own id at the head it was made at (062).
+        "proposed_migrate_recomputed" => {
+            matches!(proposed, Some(ProposedWrite::Migrate { report, .. })
+            if report.recomputed == Some(1)
+                && report.report_id == lakelands_core::canonical::sha256_hex(&serde_json::json!({
+                    "report": lakelands_api::write::MigrationReport { report_id: String::new(), ..(**report).clone() },
+                    "head": 70,
+                })))
         }
         other => panic!("`further.json` shows `{other}`, which this test has no check for"),
     }

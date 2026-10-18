@@ -933,23 +933,27 @@ the first release with real installations
   (lakelands#933); a function's `risk`, and a `write_proposed` of a
   `compute` or a `compute_sweep`
   (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`);
-  the `plan` a `write_proposed` of declarations keeps
-  (`docs/decisions/062-a-change-plans-before-it-acts.md`); a
-  `values_removed`
+  the `plan` a `write_proposed` of declarations keeps, and a migration
+  report's `recomputed` and `unlive`, which a writer of 17 writes on
+  every `migrate` it proposes
+  (`docs/decisions/062-a-change-plans-before-it-acts.md`): a reader
+  completes a report of 16 as `recomputed: 0`, and makes its
+  `report_id` again over the completed report and the position before
+  the proposal; a `values_removed`
   (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`); and a
   recorded output's `input` digested under the oldest version that
-  sealed the values it reads (§1.4), where 16 took the source's first version. Over values
-  its first version sealed the two agree, and an output of 16 names
-  that version in its `sealed`. A call over a value a second version
-  sealed, which a lake of 16 holds only where its key store gained one,
-  is digested otherwise: the rebuild at the first open of 0.16.0 does
-  not find its output, and the call is made once more. This step
-  changes the fold's own list of the versions a source sealed with,
-  which now keeps each with the position of its first use; the
+  sealed the values it reads (§1.4), where 16 took the source's first
+  version. Over values its first version sealed the two agree, and an
+  output of 16 names that version in its `sealed`. A call over a value a
+  second version sealed, which a lake of 16 holds only where its key
+  store gained one, is digested otherwise: the rebuild at the first open
+  of 0.16.0 does not find its output, and the call is made once more.
+  This step changes the fold's own list of the versions a source sealed
+  with, which now keeps each with the position of its first use; the
   projection is laid out anew at that open anyway (lakelands#1151), so
-  no list of 16 is read. No other step changes a fold, so the
-  projection stays. A step that changes how an event folds
-  says so here, and a writer's open then rebuilds the projection.
+  no list of 16 is read. No other step changes a fold, so the projection
+  stays. A step that changes how an event folds says so here, and a
+  writer's open then rebuilds the projection.
 - **A writer's open upgrades.** Where the newest event, read under the
   writer's lease, is in an older format the release reads, the open
   appends, right after its `lease_taken`, one `lake_upgraded` from that
@@ -1087,15 +1091,25 @@ declaration, the members of a `type` declaration without `declare`;
 declarations as `declared` carries one each; `migrate` carries
 `migration`, as `migrated` carries it, and `report`, the preflight's
 report when it was proposed (`type`, `from_schema_hash`,
-`to_schema_hash`, `records_scanned`, `fields`, `dropped`, `rekeyed`,
-`references`, `sample_collisions`, `lossless`, `report_id`,
-`restated`, left out when empty: a list of
+`to_schema_hash`, `records_scanned`, `fields`, `dropped`,
+`relations`, `carried`, `rekeyed`, `references`, `sample_collisions`,
+`lossless`, `report_id`, `restated`, left out when empty: a list of
 `{ "field", "member", "was", "to" }`, `field` left out for a member of
-the type itself, and `breaches`, left out when empty: a list of
-`{ "type", "constraint", "records", "sample_keys" }`, as the
-`migrate` door answers it). `migrate_value_type`
-carries `to`, the value type's new declaration as `declared` carries
-one, and `report`, its preflight's report when it was proposed
+the type itself, `filled`, left out when empty: a list of
+`{ "field", "records", "sample_keys" }`, the live records that take a
+field's `initial`, `breaches`, left out when empty: a list of
+`{ "type", "constraint", "records", "sample_keys" }`, and, from format
+17, `recomputed`, the number of live records the migration computes
+again, 0 where it computes none, and `unlive`, left out when empty: a
+list of `{ "field", "records", "sample_keys" }`, per reference field
+the live records it would leave naming no live record
+(`docs/decisions/062-a-change-plans-before-it-acts.md`), as the
+`migrate` door answers it). A writer of format 17 writes `recomputed`
+on every migration's report; a report written without it, as format 16
+wrote each, is read as `recomputed: 0`, its `report_id` made again over
+the report so completed and the position before the proposal.
+`migrate_value_type` carries `to`, the value type's new declaration
+as `declared` carries one, and `report`, its preflight's report when it was proposed
 (`value_type`, `from_version`, `records_scanned`, `fields`, `misfits`,
 `first`, left out when empty, `fits`, `report_id`, `breaches`, left
 out when empty, as a migration's report holds it, as the

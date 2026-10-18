@@ -60,13 +60,15 @@ lake holds:
 | a `write_proposed` of declarations carrying its `plan` (`docs/decisions/062-a-change-plans-before-it-acts.md`) | 55 |
 | `values_removed`, by delivery and by time, with the retirements it causes (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`) | 57, 58; 62, 63 |
 | a key version destroyed: `values_removed`'s `keys` | 62 |
+| a migration's report counting `recomputed`, and `unlive` (`docs/decisions/062-a-change-plans-before-it-acts.md`) | no |
 | a function's `risk` above `low`, and the `write_proposed` of a `compute` (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`) | no |
 | a function's input that states no `type` (lakelands#933) | no |
 | a recorded output's `input` digested under the oldest version that sealed the values it reads (lakelands#1153) | no |
 
-The last three need a function backing, which a lake made with nothing
-bound but the file keyring has none of; the vectors of format 17
-(`docs/log-format/vectors/17/`) hold each of them.
+This lake proposes no migration; the vectors of format 17
+(`docs/log-format/vectors/17/`) hold one as 17 writes it. The last three
+need a function backing, which a lake made with nothing bound but the
+file keyring has none of; the vectors hold each of them too.
 
 `answers.json` keeps what v0.16.0 answered of it through its doors:
 every live record of each type it names (`types`), the link records,
