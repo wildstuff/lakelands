@@ -444,6 +444,7 @@ fn found(
         expected_ms: log_events.saturating_mul(1000) / rate,
         position: head.unwrap_or(Position::GENESIS),
         reclaimed: None,
+        reclaim_owed: lake.reclaim_owed(),
         report_id: String::new(),
     };
     Ok((report, retire))
@@ -571,6 +572,7 @@ pub fn run(
     drop(view);
     lake.append(&mut w, drafts)?;
     report.reclaimed = lake.finish_forgetting(&mut w)?;
+    report.reclaim_owed = lake.reclaim_owed();
     report.position = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
     Ok(report)
 }

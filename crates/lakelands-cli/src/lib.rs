@@ -132,11 +132,10 @@ pub fn open_store(location: Location, mode: OpenMode, host: Seams) -> Opening {
         if let Some(why) = store.rebuilt_at_open() {
             eprintln!("lakelands: the projection was rebuilt from the log at this open: {why}");
         }
-        // An owed reclaim kept no writer out; the host is told (lakelands#1161).
+        // An owed reclaim kept no writer out; the host is told its cause
+        // (lakelands#1161).
         if let Some(why) = store.reclaim_owed() {
-            eprintln!(
-                "lakelands: a forgetting still owes its reclaim, tried again at the next open: {why}"
-            );
+            eprintln!("lakelands: {}", commands::owed(&why));
         }
         lakes.insert(key, store.clone());
         Ok(store)

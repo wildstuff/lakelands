@@ -440,3 +440,87 @@ async fn verify_py_verifies_the_export_of_an_upgraded_lake() {
     assert!(said.trim_end().ends_with(&last), "verify.py said:\n{said}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// An import whose reclaim fails is imported all the same (lakelands#1179):
+/// the removal the export holds is finished but for the reclaim, the
+/// value reads as erased, the writer's next open owes the reclaim while it
+/// fails, naming its cause alone, and a second import onto the lake is refused as onto any lake.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_import_whose_reclaim_fails_is_imported_owing_it() {
+    use lakelands_core::conformance::fixture::{ingest, source_record};
+    let store = lake("owing").await;
+    let cat = store.catalog(WriteContext::default());
+    let who = owner(store.lake());
+    let decl = json!({"declare": "type", "name": "visit", "key": ["id"],
+        "fields": [{"name": "id", "type": {"kind": "text"}, "authority": "source"},
+                   {"name": "place", "type": {"kind": "text"}, "authority": "source"},
+                   {"name": "note", "type": {"kind": "text"}}]});
+    cat.declare(&who, serde_json::from_value(decl).unwrap())
+        .await
+        .unwrap();
+    let v1 = source_record("visit", "v1", json!({"id": "v1", "place": "Rome"}));
+    ingest(cat.as_ref(), &who, "tracker", vec![v1])
+        .await
+        .unwrap();
+    let note: Patch = serde_json::from_value(json!({"note": "kept"})).unwrap();
+    let (visit, v1) = (TypeName::from("visit"), RecordKey::from("v1"));
+    cat.upsert(&who, &visit, &v1, note, WriteOpts::default())
+        .await
+        .unwrap();
+    let all =
+        lakelands_api::write::Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).unwrap());
+    let tracker = SourceId::from("tracker");
+    store
+        .remove_values(&tracker, &all, false, None)
+        .await
+        .unwrap();
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("import-owing");
+    let _ = std::fs::remove_dir_all(&dir);
+    lakelands_store::export::write(store.as_ref(), &dir)
+        .await
+        .unwrap();
+    // Another place, whose engine fails its next reclaims.
+    let fails: lakelands_core::conformance::checks::Fails =
+        Arc::new([std::sync::atomic::AtomicU32::new(1), Default::default()]);
+    let failing = lakelands_core::conformance::checks::failing(&fails);
+    let seams = Seams {
+        engines: vec![failing(Arc::new(MemoryOpener::new()))],
+        ..Seams::default()
+    };
+    let at = Location::memory("owing");
+    let imported = lakelands_store::import(at.clone(), seams.clone(), dir.clone()).await;
+    let left = |n: u32| fails[0].swap(n, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        imported.is_ok() && left(1) == 0,
+        "the import answers, its reclaim tried: {imported:?}"
+    );
+    let opened = lakelands_store::open(at.clone(), seams.clone(), OpenMode::Write)
+        .await
+        .unwrap();
+    // The cause alone, which a host shows as it is: not the whole error.
+    let owed = opened.reclaim_owed().unwrap_or_default();
+    assert!(
+        left(0) == 0 && owed.starts_with("lake `the key store` could not be compacted"),
+        "the writer's next open owes the reclaim, saying its cause: {owed}"
+    );
+    let read = opened
+        .catalog(WriteContext::default())
+        .get(
+            &who,
+            &visit,
+            lakelands_core::conformance::fixture::get_at("v1", None),
+        )
+        .await
+        .unwrap()
+        .data;
+    assert!(
+        !read.fields.contains_key("place") && read.fields.get("note") == Some(&json!("kept")),
+        "{read:?}"
+    );
+    let again = lakelands_store::import(at, seams, dir).await;
+    let refused = again.as_ref().map_err(|e| format!("{e:?}"));
+    assert!(
+        refused.is_err_and(|e| e.contains("ImportNotEmpty")),
+        "a second import onto the lake is refused as not empty: {again:?}"
+    );
+}

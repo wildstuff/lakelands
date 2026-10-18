@@ -755,8 +755,8 @@ async fn a_forgetting_stopped_before_its_reclaim_is_reclaimed_by_the_next_open()
     fails.store(1, Ordering::SeqCst);
     let stopped = store.forget_source(&"crm".into(), None).await;
     assert!(
-        stopped.is_err(),
-        "the act stopped at its reclaim answers {stopped:?}"
+        stopped.is_ok_and(|r| r.reclaim_owed.is_some() && r.reclaimed.is_none()),
+        "the act stopped at its reclaim answers, owing it (lakelands#1179)"
     );
     let before = done.load(Ordering::SeqCst);
     // The act's repeat finishes what is owed, and appends nothing again.
@@ -783,7 +783,8 @@ async fn a_forgetting_stopped_before_its_reclaim_is_reclaimed_by_the_next_open()
     );
     // A stop the open finishes.
     fails.store(1, Ordering::SeqCst);
-    store.forget_source(&"erp".into(), None).await.unwrap_err();
+    let owed = store.forget_source(&"erp".into(), None).await.unwrap();
+    assert!(owed.reclaim_owed.is_some(), "{owed:?}");
     let before = done.load(Ordering::SeqCst);
     let reopen = || async {
         lakelands_store::open(

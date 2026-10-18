@@ -6,6 +6,9 @@
 
 use super::Check;
 
+/// An engine whose reclaims fail, for a test of what a failed reclaim owes.
+pub use forgotten::{Fails, failing};
+
 mod accepted_whole;
 mod after;
 mod aggregates;

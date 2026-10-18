@@ -1582,6 +1582,7 @@ interface types {
         expected-ms: u64,
         position: position,
         reclaimed: option<compact-report>,
+        reclaim-owed: option<string>,
         report-id: string,
     }
 
@@ -1645,6 +1646,7 @@ interface types {
         expected-ms: u64,
         position: position,
         reclaimed: option<compact-report>,
+        reclaim-owed: option<string>,
         report-id: string,
     }
 

@@ -896,6 +896,9 @@ pub async fn forget(
     if !report.report_id.is_empty() {
         let (head, id) = (report.position, &report.report_id);
         let seconds = report.expected_ms.div_ceil(1000);
+        if let Some(why) = &report.reclaim_owed {
+            put(out, format!("{source}: {}", owed(why)))?;
+        }
         return put(
             out,
             format!(
@@ -905,13 +908,7 @@ pub async fn forget(
             ),
         );
     }
-    let reclaimed = match report.reclaimed {
-        Some(r) => match (r.before, r.after) {
-            (Some(b), Some(a)) => format!(", the projection {b} → {a} bytes"),
-            _ => String::new(),
-        },
-        None => String::new(),
-    };
+    let reclaimed = reclaimed(report.reclaimed.as_ref(), report.reclaim_owed.as_deref());
     put(
         out,
         format!(
@@ -919,6 +916,23 @@ pub async fn forget(
             report.position
         ),
     )
+}
+
+/// What an act says of its reclaim: the projection's bytes before and
+/// after, where the engine measures them, or that the reclaim is owed
+/// and why (lakelands#1179).
+fn reclaimed(r: Option<&lakelands_api::write::CompactReport>, why: Option<&str>) -> String {
+    match (r.map(|r| (r.before, r.after)), why) {
+        (_, Some(why)) => format!("; {}", owed(why)),
+        (Some((Some(b), Some(a))), None) => format!(", the projection {b} → {a} bytes"),
+        _ => String::new(),
+    }
+}
+
+/// The line that tells a reclaim still owed, with its cause: the act
+/// answered, its values erased already (lakelands#1161).
+pub fn owed(why: &str) -> String {
+    format!("an act's reclaim is still owed, tried again at the next open or compact: {why}")
 }
 
 /// `rebuild`: rebuild the projection from the log. The lake was opened
