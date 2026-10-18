@@ -1566,12 +1566,12 @@ fn row_22_a_set_computes_its_records_again_once_at_its_last_declaration() {
         );
     }
     let meta = |name: &str| l.meta(None, "doc", &key(1), name).expect("provenance");
-    for name in ["x", "y", "z"] {
+    for (name, function) in [("x", "f"), ("y", "g"), ("z", "h")] {
         let m = meta(name);
         assert_eq!(
-            (m.position, m.procedure_version.as_deref()),
-            (q[2], Some("2")),
-            "row 22: `{name}` takes the set's last declaration and its function's version"
+            (m.position, m.procedure.as_deref(), m.procedure_version.as_deref()),
+            (q[2], Some(function), Some("2")),
+            "row 22: `{name}` takes the set's last declaration and its function, by name and version"
         );
     }
     assert_eq!(

@@ -162,7 +162,7 @@ still computed by that function, and the record's call has the recorded
 digest now. Otherwise the output stays recorded for its input and fills
 nothing: a later write moved the inputs on while the backing was called.
 A filled value takes the event's provenance, with `origin: derived` and
-the function's version as the procedure version. The record's version
+the function as the procedure: its name and its version. The record's version
 stays, since no write touched it.
 
 A fill is a change of that field, and it takes the fold's ordinary path,

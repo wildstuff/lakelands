@@ -83,7 +83,7 @@ check!(
 
 check!(
     EMBED_FAILURE_RETRIED = a_failed_embedding_clears_the_field_and_a_redeclaration_retries_it,
-    "022, extended: a failure is recorded, clears the field and puts its reason in the metadata; `recompute` calls again for that text once, the later output holds and the vector fills every record holding it",
+    "022, extended: a failure is recorded, clears the field and puts its reason in the metadata, which names the model; `recompute` calls again for that text once, the later output holds and the vector fills every record holding it",
     embedding
 );
 
@@ -523,10 +523,11 @@ async fn a_failed_embedding_clears_the_field_and_a_redeclaration_retries_it(stor
     let meta = r.meta.get("vec");
     ensure!(
         value(&r, "vec").is_none()
-            && meta.is_some_and(|m| m.error.is_some())
+            && meta
+                .is_some_and(|m| m.error.is_some() && m.procedure.as_deref() == Some(EMBED_MODEL))
             && embedded(text) == 1,
         "the backend failed on {text:?}: `vec` holds no value and its metadata carries the \
-         reason; it reads {:?} with metadata {meta:?}, after {} calls",
+         reason and the model; it reads {:?} with metadata {meta:?}, after {} calls",
         value(&r, "vec"),
         embedded(text)
     );

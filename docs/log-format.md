@@ -496,7 +496,8 @@ clears, the fold records the field's provenance from the envelope
 In the same event, the fold recomputes derived fields and applies
 `on_input_change: clear` to every field one of whose `depends_on` inputs
 the event changed; a field the fold writes carries `origin: derived` and
-the event's other provenance. Nothing about this is written to the log:
+the event's other provenance, but for a field a function computes, whose
+`procedure` and `procedure_version` are that function's name and version. Nothing about this is written to the log:
 the rules are deterministic, so a replay reproduces them. A derived
 field that calls `seen_at(f)` or `known_at(f)` reads the provenance the
 event leaves on `f`: the event's own where the event writes `f` or the
