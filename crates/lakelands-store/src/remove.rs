@@ -31,6 +31,7 @@ use lakelands_api::error::Case;
 use lakelands_api::event::{Digest, Event, EventBody};
 use lakelands_api::id::KeyId;
 use lakelands_api::ontology::TypeDecl;
+use lakelands_api::principal::Renamed;
 use lakelands_api::record::{Origin, StoredRecord, Value};
 use lakelands_api::write::{
     Breach, ForgetRecords, RecordField, RemoveReport, RemovedField, Selection, TypeRetired,
@@ -39,7 +40,7 @@ use lakelands_api::{FieldName, Position, RecordKey, Result, SourceId, Timestamp,
 use lakelands_core::invalid;
 use lakelands_core::sight::Sight;
 
-use crate::forget::{each_of, named_now};
+use crate::forget::{History, each_of, named_now};
 use crate::lake::{Lake, Staged, Writer};
 use crate::log::Draft;
 use crate::ontology::Ontology;
@@ -60,7 +61,7 @@ pub(crate) fn removed_at() -> Digest {
 }
 
 /// One act of removal, as its event names it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct Removal {
     /// The act's position: only events before it are selected.
     pub at: Position,
@@ -69,6 +70,39 @@ pub(crate) struct Removal {
     pub before: Option<Position>,
     /// The versions of the source's key it destroyed.
     pub keys: Vec<KeyId>,
+    /// What identifies records at it, where the fold was told it
+    /// ([`told`]).
+    pub fixed: Fixed,
+}
+
+impl PartialEq for Removal {
+    /// One act is its event, at its position: what it fixes is read with it.
+    fn eq(&self, other: &Removal) -> bool {
+        self.at == other.at
+    }
+}
+
+/// The fields that identify records at an act: each type's key fields
+/// and references, by the names they bear there, with the renames before
+/// it. A value of one is never taken, though it was not one where it was
+/// written (lakelands#1228).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Fixed {
+    fields: BTreeSet<(TypeName, FieldName)>,
+    renames: Vec<Renamed>,
+}
+
+impl Fixed {
+    /// At `at`, where `o` is in force, by the lake's `renames`.
+    pub(crate) fn of(o: &Ontology, renames: &[Renamed], at: Position) -> Fixed {
+        let mut fields = BTreeSet::new();
+        for d in o.types.values().map(|t| &t.decl) {
+            let fixed = d.fields.iter().filter(|f| !takeable(d, &f.name));
+            fields.extend(fixed.map(|f| (d.name.clone(), f.name.clone())));
+        }
+        let renames = renames.iter().filter(|r| r.at < at).cloned().collect();
+        Fixed { fields, renames }
+    }
 }
 
 impl Removal {
@@ -90,6 +124,7 @@ impl Removal {
             selection,
             before,
             keys: keys.clone(),
+            fixed: Fixed::default(),
         })
     }
 
@@ -109,6 +144,12 @@ impl Removal {
         };
         ingested && e.position < self.at && e.source.as_ref() == Some(&self.source) && picked
     }
+
+    /// Whether it takes the value of `field` of `ty` an event at `at`
+    /// wrote: one that identifies no record at the act either.
+    fn takes(&self, at: Position, ty: &TypeName, field: &FieldName) -> bool {
+        !(self.fixed.fields).contains(&named_now(&self.fixed.renames, at, ty, field))
+    }
 }
 
 /// Whether a field of `decl` may be taken: neither a key field nor a
@@ -119,13 +160,15 @@ fn takeable(decl: &TypeDecl, f: &FieldName) -> bool {
 }
 
 /// `e` with each value the acts `removals` select cleared, and the
-/// fields cleared; `None` where none selects it.
+/// fields cleared; `None` where none selects it. A value is taken where
+/// its field identifies records neither at the event nor at the act.
 pub(crate) fn redacted(
     removals: &[Removal],
     ontology: &Ontology,
     e: &Event,
 ) -> Option<(Event, Vec<FieldName>)> {
-    if !removals.iter().any(|r| r.selects(e)) {
+    let acts: Vec<&Removal> = removals.iter().filter(|r| r.selects(e)).collect();
+    if acts.is_empty() {
         return None;
     }
     let mut plain = e.clone();
@@ -134,8 +177,9 @@ pub(crate) fn redacted(
     };
     let decl = ontology.ty(ty).ok()?;
     let mut cleared = Vec::new();
+    let taken = |f: &FieldName| acts.iter().any(|r| r.takes(e.position, &decl.name, f));
     for (f, v) in patch.iter_mut() {
-        if !v.is_null() && takeable(decl, f) {
+        if !v.is_null() && takeable(decl, f) && taken(f) {
             *v = Value::Null;
             cleared.push(f.clone());
         }
@@ -184,6 +228,18 @@ pub(crate) fn acts(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Removal
         .collect())
 }
 
+/// [`acts`], each with what identifies records at it, as the fold is told
+/// them before a rebuild clears `view`: read as of the act.
+pub(crate) fn told(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Removal>> {
+    let renames = lake.renames(Some(view))?;
+    let mut acts = acts(lake, view)?;
+    for act in &mut acts {
+        let then = Ontology::at(lake.engine.view(Some(act.at))?.as_ref())?;
+        act.fixed = Fixed::of(&then, &renames, act.at);
+    }
+    Ok(acts)
+}
+
 /// What taking back `selection` of `source` at `at` (the head's next
 /// position when `None`) does at `view`, beside the acts `earlier`, whose
 /// events it leaves out: the report, and the live records it retires.
@@ -209,13 +265,19 @@ fn found(
         selection: selection.clone(),
         before,
         keys: Vec::new(),
+        fixed: Fixed::default(),
     };
     // From the log: the selected events, the records they reached and the
-    // values they carry, each by the names it bears now.
-    let renames = lake.renames(Some(view))?;
+    // values they carry, each by the names and the key it bears now. A
+    // value is taken where its field identifies records neither at its
+    // event nor at the act, as the fold takes it (lakelands#1228).
+    let history = History::new(lake, view)?;
     let (mut events, mut undelivered) = (0, 0);
     let mut selected = BTreeSet::new();
     let mut reached: BTreeSet<(TypeName, RecordKey)> = BTreeSet::new();
+    // The values of the selected events it does not take, by the event's
+    // position and the field's name now.
+    let mut untaken: BTreeSet<(Position, FieldName)> = BTreeSet::new();
     // Per field, the values taken, and of them those sealed, by version.
     type Tally = (u64, BTreeMap<KeyId, u64>);
     let mut fields: BTreeMap<(TypeName, FieldName), Tally> = BTreeMap::new();
@@ -241,14 +303,18 @@ fn found(
         }
         events += 1;
         selected.insert(e.position);
-        let mut ty_now = ty.clone();
-        for (f, _) in patch.iter().filter(|(_, v)| !v.is_null()) {
+        let then = history.ty(ty, e.position);
+        for (written, _) in patch.iter().filter(|(_, v)| !v.is_null()) {
             let under = sealed
-                .filter(|s| s.fields.contains(f))
+                .filter(|s| s.fields.contains(written))
                 .map(|s| s.key.clone());
-            let (t, f) = named_now(&renames, e.position, ty, f);
-            ty_now = t.clone();
-            if ontology.ty(&t).is_ok_and(|d| takeable(d, &f)) {
+            let (t, f) = history.named((e.position, act.at), ty, written);
+            let taken = then.is_some_and(|d| takeable(d, written))
+                && history.ty(&t, act.at).is_some_and(|d| takeable(d, &f));
+            let (t, f) = named_now(&history.renames, e.position, ty, written);
+            if !taken {
+                untaken.insert((e.position, f));
+            } else if ontology.ty(&t).is_ok() {
                 let tally = fields.entry((t, f)).or_default();
                 tally.0 += 1;
                 if let Some(k) = under {
@@ -256,7 +322,7 @@ fn found(
                 }
             }
         }
-        reached.insert((ty_now, key.clone()));
+        reached.insert(history.moved(e.position, ty, key));
     })?;
     // The longest prefix of the versions the key store holds whose values
     // it all selects: versions die oldest first (058). A key store that
@@ -294,7 +360,11 @@ fn found(
         let mut judged = Vec::new();
         for r in view.get_many(&ty, &keys)? {
             let lost: BTreeSet<FieldName> = (r.fields.keys())
-                .filter(|f| takeable(decl, f) && r.meta.get(*f).is_some_and(mine))
+                .filter(|f| {
+                    let m = r.meta.get(*f).filter(|m| mine(m));
+                    let kept = m.is_some_and(|m| untaken.contains(&(m.position, (*f).clone())));
+                    takeable(decl, f) && m.is_some() && !kept
+                })
                 .cloned()
                 .collect();
             // A record made again since holds nothing the selection wrote.

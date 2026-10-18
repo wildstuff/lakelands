@@ -102,7 +102,7 @@ The projection is the fold of the log and the key store by construction (001), t
 
 **Reads after:**
 - **An erased value is absent:** the field holds no value, as if cleared.
-- **With `with_meta`,** its provenance stays: the origin `source`, the source, the position. It gains `erased: true`, so a reader tells "erased" from "never written". This is not masked: a mask says the value exists and is withheld from this reader, while an erased value exists for no reader.
+- **With `with_meta`,** its provenance stays: the origin `source`, the source, the position. It gains `erased: true`, so a reader tells "erased" from "never written", and keeps it over a later migration that keeps the field (lakelands#1228). This is not masked: a mask says the value exists and is withheld from this reader, while an erased value exists for no reader.
 - **A record** whose every value was erased is retired (above). A co-owned one is read with the other hands' values.
 
 ### The engine's storage is reclaimed

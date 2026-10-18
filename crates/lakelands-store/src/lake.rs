@@ -1869,8 +1869,16 @@ impl Lake {
                     false => self.keys.ids(&act.source)?,
                 };
                 let destroyed = !act.keys.iter().any(|k| ids.contains(k));
+                // One met untold fixes what identifies records here, as a
+                // rebuild would be told it (lakelands#1228).
                 if !w.removals.contains(&act) {
-                    w.removals.push(act);
+                    let key = (RENAMES.to_owned(), Digest::zero());
+                    let renames = match staged.outputs.get(&key).and_then(|l| l.last()) {
+                        Some((_, list)) => renames_in(Some(list.clone()))?,
+                        None => renames_in(view.output(RENAMES, &key.1)?.map(|(_, l)| l))?,
+                    };
+                    let fixed = crate::remove::Fixed::of(&w.ontology, &renames, act.at);
+                    w.removals.push(crate::remove::Removal { fixed, ..act });
                 }
                 let mut list = crate::remove::removed_list(view, staged)?;
                 let state = if known && w.rebuilding && destroyed {
@@ -2412,14 +2420,16 @@ impl Lake {
         // No shape is kept from here until the fold is whole again, and no
         // list of a source's versions.
         // The acts of removal the projection lists are told to the fold
-        // before it meets the values they select (065). A list it cannot
-        // read tells none: the fold meets each act unknown, and leaves it
-        // owed for the rebuild after, which knows it.
+        // before it meets the values they select (065), each with what
+        // identifies records at it, in place of one the fold met untold.
+        // A list it cannot read tells none: the fold meets each act
+        // unknown, and leaves it owed for the rebuild after, which knows it.
         let view = self.engine.view(None);
-        let listed = view.and_then(|v| crate::remove::acts(self, v.as_ref()));
+        let listed = view.and_then(|v| crate::remove::told(self, v.as_ref()));
         for act in listed.unwrap_or_default() {
-            if !w.removals.contains(&act) {
-                w.removals.push(act);
+            match w.removals.iter_mut().find(|r| **r == act) {
+                Some(met) => *met = act,
+                None => w.removals.push(act),
             }
         }
         self.rebuilds.fetch_add(1, Ordering::SeqCst);
@@ -3622,9 +3632,11 @@ impl Migrated {
                 Some((_, to)) => to.clone(),
                 None => old,
             };
+            // An erased value's provenance stays with its field (058).
+            let declared = |f: &FieldName| self.migration.to.fields.iter().any(|d| &d.name == f);
             r.meta = (std::mem::take(&mut r.meta).into_iter())
                 .map(|(old, meta)| (renamed(old), meta))
-                .filter(|(new, _)| converted.contains_key(new))
+                .filter(|(new, m)| converted.contains_key(new) || m.erased && declared(new))
                 .collect();
             r.fields = converted;
             r.position = self.at;

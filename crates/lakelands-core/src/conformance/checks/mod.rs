@@ -73,6 +73,7 @@ mod proposals;
 mod provenance;
 mod purge;
 mod query_model;
+mod reached;
 mod reactions;
 mod reactive_depth;
 mod read_clock;
@@ -591,6 +592,8 @@ pub const ALL: &[Check] = &[
     removed::REMOVED_COMPUTED,
     removed::REMOVED_REPLAYED,
     removed::REMOVE_CRASH_SHREDDED,
+    reached::REMOVED_REKEYED,
+    reached::FORGOTTEN_REKEYED,
     embeddings::EMBED_WRITE,
     embeddings::VECTOR_COVERAGE,
     embeddings::EMBED_ONCE,

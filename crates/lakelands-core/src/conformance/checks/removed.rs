@@ -141,7 +141,7 @@ fn stranded(r: &RemoveReport) -> Vec<(&str, &str, u64, Vec<String>)> {
 
 /// `key`'s fields of `ty` as of `at` (the head when `None`), with
 /// provenance; `None` where it is not found.
-async fn at(
+pub(super) async fn at(
     l: &Lake,
     ty: &str,
     key: &str,
@@ -156,7 +156,7 @@ async fn at(
 
 /// Whether `r` holds no value of `field` and its provenance says it was
 /// erased, from `source`.
-fn erased(r: &lakelands_api::Record, field: &str, source: &str) -> bool {
+pub(super) fn erased(r: &lakelands_api::Record, field: &str, source: &str) -> bool {
     let m = r.meta.get(field);
     !r.fields.contains_key(field)
         && m.is_some_and(|m| m.erased && m.source.as_ref().is_some_and(|s| s == source))

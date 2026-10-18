@@ -33,7 +33,14 @@ non-null, in its patch as the log stores it.
   nothing, and selects nothing.
 - A value another hand wrote is never in the selection.
 - A key field and a reference field identify records, so they are never
-  in it.
+  in it: a field that is one at the event's position or at the act's. A
+  value written while its field was part of a key is in the record's key
+  there, and one whose field became part of a key since is in the key a
+  re-keying moved it to (lakelands#1228).
+
+The records reached are found by the key each selected event wrote,
+followed through every rename and re-keying migration since, to the key
+the record bears now.
 
 ### The act is in the log, and the record keeps everyone else's values
 
