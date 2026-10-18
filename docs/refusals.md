@@ -532,6 +532,9 @@ What a refusal is about.
 | `field_read_elsewhere` | `field` (FieldName), `type` (TypeName) | `{field}` is read by another part of `{type}` and cannot be removed or changed | A field taken away that another part of the type reads. |
 | `forget_plaintext` | `source` (SourceId), `count` (u64) | the log holds {count} value(s) of `{source}` in erasable fields in plaintext, written before the field was erasable or before the log sealed them; destroying its key cannot reach them, so it is not forgotten: export the lake, leave the source out and import that as a new lake | A forgetting refused while the log holds plaintext values of the source in erasable fields. |
 | `forget_report_stale` | — | that report is not of this forgetting at this head; run the preflight again | A forgetting's report of another source or head. |
+| `forget_set_empty` | — | a forgetting of several sources names at least one | A forgetting of several sources that names none. |
+| `forget_source_twice` | `source` (SourceId) | the set names `{source}` twice; a source is forgotten once | A forgetting of several sources that names one twice. |
+| `forget_source_unknown` | `source` (SourceId) | the log holds no event of `{source}`, so the set is not forgotten; forget it alone to keep the id from the lake | A forgetting of several sources that names one the log does not. |
 | `idempotency_key_nul` | — | an idempotency key holds no NUL character | An idempotency key holding a NUL. |
 | `is_a_view` | `type` (TypeName) | `{type}` is a view; it is computed, never written | A view at a door that writes or holds a record. |
 | `key_component_kind` | `part` (String), `kind` (StorageKind), `field` (FieldName) | the key component `{part}` is not a {kind} for `{field}` | A key component of a kind its field cannot read it as. |

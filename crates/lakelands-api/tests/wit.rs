@@ -673,6 +673,34 @@ fn purge_moved() -> lakelands_api::write::PurgeMoved {
     }
 }
 
+fn compact_report() -> lakelands_api::write::CompactReport {
+    lakelands_api::write::CompactReport {
+        before: Some(2),
+        after: Some(1),
+        head: Position(3),
+    }
+}
+
+fn forget_report() -> lakelands_api::write::ForgetReport {
+    lakelands_api::write::ForgetReport {
+        source: "erp".into(),
+        types: vec![forget_records()],
+        fields: vec![forget_field()],
+        outputs: 1,
+        retired: vec![],
+        co_owned: vec![forget_records()],
+        recomputed: vec![record_field()],
+        views: vec!["v".into()],
+        plaintext: 0,
+        events: 9,
+        expected_ms: 1,
+        position: Position(3),
+        reclaimed: Some(compact_report()),
+        reclaim_owed: Some("busy".into()),
+        report_id: "r".into(),
+    }
+}
+
 fn forget_records() -> lakelands_api::write::ForgetRecords {
     lakelands_api::write::ForgetRecords {
         ty: "ord".into(),
@@ -1389,26 +1417,15 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             }),
         ),
         ("purge_reference", members(&purge_reference())),
+        ("forget_report", members(&forget_report())),
         (
-            "forget_report",
-            members(&lakelands_api::write::ForgetReport {
-                source: "erp".into(),
-                types: vec![forget_records()],
-                fields: vec![forget_field()],
-                outputs: 1,
-                retired: vec![],
-                co_owned: vec![forget_records()],
-                recomputed: vec![record_field()],
-                views: vec!["v".into()],
-                plaintext: 0,
+            "forget_set_report",
+            members(&lakelands_api::write::ForgetSetReport {
+                sources: vec![forget_report()],
                 events: 9,
                 expected_ms: 1,
                 position: Position(3),
-                reclaimed: Some(lakelands_api::write::CompactReport {
-                    before: Some(2),
-                    after: Some(1),
-                    head: Position(3),
-                }),
+                reclaimed: Some(compact_report()),
                 reclaim_owed: Some("busy".into()),
                 report_id: "r".into(),
             }),

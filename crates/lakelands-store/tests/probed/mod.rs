@@ -107,6 +107,9 @@ pub struct Probe {
     /// Whether the feed's index decides nothing, as when a projection a
     /// rebuild cleared has not refolded the range asked.
     pub undecided: std::sync::atomic::AtomicBool,
+    /// Where the feed's index stops deciding a source's events, by the
+    /// source's id, as when a rebuild has refolded the log only so far.
+    pub decided: Mutex<std::collections::BTreeMap<String, Position>>,
     /// How often a view was asked for the declarations in force.
     pub declarations: AtomicUsize,
     /// How often a view was asked for the lake's list of renames.
@@ -286,7 +289,11 @@ impl ProjectionView for ProbedView<'_> {
         if self.probe.undecided.load(Ordering::SeqCst) {
             return Ok(lakelands_core::feed::undecided());
         }
-        self.inner.of_source(source, from, through, limit)
+        match self.probe.decided.lock().unwrap().get(source.as_str()) {
+            Some(at) if from > *at => Ok(lakelands_core::feed::undecided()),
+            Some(at) => self.inner.of_source(source, from, through.min(*at), limit),
+            None => self.inner.of_source(source, from, through, limit),
+        }
     }
 }
 

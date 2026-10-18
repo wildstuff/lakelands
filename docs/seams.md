@@ -2301,6 +2301,16 @@ reclaim that fails is not a failure of the act: the report answers it in
 the writer's next open, a repeat or a `compact` that runs clears it
 (lakelands#1179).
 
+`LakeStore::forget_sources(sources, report_id)` and
+`forget_sources_preflight(sources)` do the same for a set of sources in
+one act (lakelands#1183): one `source_forgotten` for each in one append,
+one rebuild and one reclaim under one hold of the lock, one report id and
+one expected time, each source's report beside them. A set that is
+empty, names a source twice or names one the log holds no event of is
+refused whole, appending nothing. A set of one answers as
+`forget_preflight` does, its id included. They default to `unbound` for
+a facade that does not carry them, as `lakelands-client` does.
+
 `LakeStore::remove_values(source, selection, require_shredded,
 report_id)` takes back what a source wrote before a time or in one
 delivery (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`),

@@ -407,6 +407,19 @@ mod tests {
         ) -> lakelands_api::Result<lakelands_api::write::ForgetReport> {
             self.inner.forget_preflight(source).await
         }
+        async fn forget_sources(
+            &self,
+            sources: &[lakelands_api::SourceId],
+            id: Option<&str>,
+        ) -> lakelands_api::Result<lakelands_api::write::ForgetSetReport> {
+            self.inner.forget_sources(sources, id).await
+        }
+        async fn forget_sources_preflight(
+            &self,
+            sources: &[lakelands_api::SourceId],
+        ) -> lakelands_api::Result<lakelands_api::write::ForgetSetReport> {
+            self.inner.forget_sources_preflight(sources).await
+        }
         async fn remove_values(
             &self,
             source: &lakelands_api::SourceId,
