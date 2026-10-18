@@ -94,7 +94,8 @@ A type whose key holds personal data is given a surrogate key. `hosting.md` says
 **The act scrubs by rebuilding.** After the keys are destroyed, the projection is folded again from the log. The fold meets each sealed value of the source with no key to open it, and a `source_forgotten` of that source in the log, so it folds the value as erased: cleared, its provenance kept and marked. So every state the projection keeps holds the erasure, history included, and with it:
 - the derived fields and views computed from the value, which the fold computes without it;
 - an output a backing recorded under the source's key, which is dropped, and a fill that names it, which fills nothing;
-- the index entries the value made: the text and sort indexes, full text, vectors, which the rebuild never makes.
+- the index entries the value made: the text and sort indexes, full text, vectors, which the rebuild never makes;
+- a membership the log holds, decided at a write over the value, which the fold decides again without it (065).
 
 **A key the key store does not give, with no act in the log,** is lost, not destroyed: the fold fails closed, and the value is never read as erased. A rebuild meets the values before the act that forgot them, so where a key is missing it looks ahead in the log for that act.
 

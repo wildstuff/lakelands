@@ -154,7 +154,7 @@ impl Removal {
 
 /// Whether a field of `decl` may be taken: neither a key field nor a
 /// reference, which identify records.
-fn takeable(decl: &TypeDecl, f: &FieldName) -> bool {
+pub(crate) fn takeable(decl: &TypeDecl, f: &FieldName) -> bool {
     let field = decl.fields.iter().find(|d| &d.name == f);
     !decl.key.contains(f) && field.is_some_and(|d| d.ty.target.is_none())
 }

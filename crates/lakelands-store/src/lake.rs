@@ -106,6 +106,9 @@ pub struct Writer {
     /// A rebuild is folding: an act it meets after its source's keys were
     /// destroyed has erased what they sealed.
     pub rebuilding: bool,
+    /// While a fold of the log runs: the sets it decides itself, from the
+    /// first value it erased that each reads (lakelands#1232).
+    pub(crate) zone: Option<crate::writes::Zone>,
 }
 
 /// What the lake declares at one position, as a read needs it and before
@@ -439,6 +442,20 @@ impl Left {
     }
 }
 
+/// What the fold's own decision of a set reads ([`crate::writes::Zone`]).
+macro_rules! folding {
+    ($w:expr, $view:expr, $projection:expr, $max:expr, $e:expr) => {
+        crate::writes::Folding {
+            ontology: &$w.ontology,
+            settings: &$w.settings,
+            view: $view,
+            projection: $projection,
+            max: $max,
+            at: $e,
+        }
+    };
+}
+
 /// What the kept views' hooks are handed in the fold of one event.
 macro_rules! kept_at {
     ($w:expr, $view:expr, $projection:expr) => {
@@ -675,6 +692,7 @@ impl Lake {
                 removals: Vec::new(),
                 ahead: BTreeSet::new(),
                 rebuilding: false,
+                zone: None,
             }),
             keys: Arc::new(crate::sealing::Keys::new(location.lake.clone(), seams_keys)),
             head: AtomicU64::new(0),
@@ -710,6 +728,7 @@ impl Lake {
             removals: Vec::new(),
             ahead: BTreeSet::new(),
             rebuilding: false,
+            zone: None,
         })
     }
 
@@ -1343,10 +1362,12 @@ impl Lake {
             projection.begin()?;
             let mut view = self.engine.view(None)?;
             for (i, e) in events.iter().enumerate() {
-                if reads_a_record(&e.body)
-                    && self.flush(w, view.as_ref(), &mut staged, &events[..i], owed)?
-                    && of_log
-                {
+                let flushed = reads_a_record(&e.body)
+                    && self.flush(w, view.as_ref(), &mut staged, &events[..i], owed)?;
+                if reads_a_record(&e.body) {
+                    self.decide_whole(w, view.as_ref(), &mut staged)?;
+                }
+                if flushed && of_log {
                     drop(view);
                     projection.commit(events[i - 1].position)?;
                     // What is committed stays owed, whatever fails next.
@@ -1366,8 +1387,8 @@ impl Lake {
                 let owes = owed.is_some_and(|p| e.position >= p);
                 self.fold(w, view.as_ref(), &mut staged, e, owes)?;
             }
-            self.flush(w, view.as_ref(), &mut staged, events, owed)
-                .map(drop)
+            self.flush(w, view.as_ref(), &mut staged, events, owed)?;
+            self.decide_whole(w, view.as_ref(), &mut staged)
         })()
         .and_then(|()| projection.commit(last.position));
         match result {
@@ -1529,17 +1550,7 @@ impl Lake {
             let Some(to) = step.types.get(&s.of) else {
                 continue;
             };
-            let known = staged.known(&s.of);
-            let mut keys = view.members(&s.name, known)?;
-            for ty in [known, &s.of] {
-                let put = staged.members.iter();
-                for ((_, _, key), member) in put.filter(|((n, t, _), _)| n == &s.name && t == ty) {
-                    match member {
-                        true => keys.insert(key.clone()),
-                        false => keys.remove(key),
-                    };
-                }
-            }
+            let keys = staged.members(view, &s.name, (staged.known(&s.of), &s.of))?;
             for key in keys {
                 staged.member(projection, &s.name, to, &key, true, step.at)?;
                 staged.member(projection, &s.name, &s.of, &key, false, step.at)?;
@@ -1675,8 +1686,37 @@ impl Lake {
         staged
             .steps
             .extend(steps.filter_map(|(s, put)| put.then(|| Step::Recomputed(Box::new(s)))));
+        let viewing = w.zone.as_ref().is_some_and(crate::writes::Zone::viewing);
+        if viewing {
+            kept::moved(staged);
+        }
         kept::made(&kept_at!(w, view, projection), staged, last.position)?;
+        if let Some(zone) = w.zone.as_ref().filter(|_| viewing) {
+            let at = (last.position, last.known_at);
+            let f = folding!(w, view, projection, self.limits.max_depth, at);
+            let moved = kept::moved(staged);
+            zone.groups(f, staged, &moved)?;
+        }
         Ok(kept)
+    }
+
+    /// The sets the fold decides itself that a declaration, a migration or
+    /// a setting moved, decided over all their records, after the flush
+    /// computed again what those made due ([`crate::writes::Zone`]).
+    fn decide_whole(
+        &self,
+        w: &mut Writer,
+        view: &dyn ProjectionView,
+        staged: &mut Staged,
+    ) -> Result<()> {
+        let projection = self.engine.projection();
+        let max = self.limits.max_depth;
+        let Some(zone) = w.zone.as_mut() else {
+            return Ok(());
+        };
+        let at = (Position::GENESIS, Timestamp(0));
+        let f = folding!(w, view, projection, max, at);
+        zone.decide_whole(f, staged)
     }
 
     /// Fold the log from `from` on, a page at a time, each page in its own
@@ -1692,12 +1732,18 @@ impl Lake {
     /// sees half a transaction. A fold that reaches the tip has handed out
     /// the calls of an append whose fold had failed.
     fn fold_from(&self, w: &mut Writer, from: Position) -> Result<()> {
+        // The sets it decides itself, from the first value it erases that
+        // each reads, or from the first event where it begins midway in a
+        // lake with an act (lakelands#1232).
+        let midway = from != Position::GENESIS && self.acts_known(w)?;
+        w.zone = Some(crate::writes::Zone::new(&w.ontology, midway));
         let folded = (|| {
             for page in self.pages(from) {
                 self.fold_all(w, &page?, Reads::default(), true)?;
             }
             Ok(())
         })();
+        w.zone = None;
         if folded.is_err() {
             // Whatever stopped it, a read of the log or a page's fold, the
             // projection is behind the log: nothing is appended until a
@@ -1710,6 +1756,16 @@ impl Lake {
             w.failed = None;
         }
         folded
+    }
+
+    /// Whether the lake holds an act that erased values.
+    fn acts_known(&self, w: &Writer) -> Result<bool> {
+        let view = self.engine.view(None)?;
+        let none = Staged::default();
+        Ok(!w.forgotten.is_empty()
+            || !w.removals.is_empty()
+            || !forgotten_list(view.as_ref(), &none)?.is_empty()
+            || !crate::remove::removed_list(view.as_ref(), &none)?.is_empty())
     }
 
     /// Fold the events the log holds past the projection, a page at a
@@ -1802,6 +1858,24 @@ impl Lake {
             None => e,
         };
         let projection = self.engine.projection();
+        // A set that reads what the fold erased is decided by the fold
+        // from here on (lakelands#1232).
+        if let Some(zone) = &mut w.zone {
+            let erased = match &e.body {
+                EventBody::RecordIngested { ty, .. } => Some((ty, erased.clone())),
+                EventBody::OutputRecorded {
+                    field: Some((ty, _, name)),
+                    ..
+                } if dropped => Some((ty, vec![name.clone()])),
+                _ => None,
+            };
+            if let Some((ty, fields)) = erased.filter(|(_, f)| !f.is_empty()) {
+                zone.erased(&w.ontology, ty, &fields);
+            }
+            if zone.viewing() {
+                kept::moved(staged);
+            }
+        }
         // The versions of each source's key the log sealed with, each with
         // the position of its first use ([`crate::sealing::USED`]).
         if let (EventBody::RecordIngested { .. }, Some(sealed), Some(source)) =
@@ -1910,16 +1984,7 @@ impl Lake {
                     && let Some(set) = w.ontology.set(&s.name)
                 {
                     let (name, of) = (set.name.clone(), set.of.clone());
-                    let mut keys = view.members(&name, &of)?;
-                    let put = staged.members.iter();
-                    for ((_, _, key), member) in put.filter(|((n, t, _), _)| n == &name && t == &of)
-                    {
-                        match member {
-                            true => keys.insert(key.clone()),
-                            false => keys.remove(key),
-                        };
-                    }
-                    for key in keys {
+                    for key in staged.members(view, &name, (&of, &of))? {
                         staged.member(projection, &name, &of, &key, false, e.position)?;
                     }
                 }
@@ -2067,6 +2132,7 @@ impl Lake {
                     let before = before.as_ref();
                     kept::note(&kept_at!(w, view, projection), staged, before, &after)?;
                     staged.put(after);
+                    self.decided(w, view, staged, e, (before, ty, key))?;
                 }
             }
             EventBody::WriteProposed {
@@ -2127,12 +2193,16 @@ impl Lake {
                 projection.put_proposal(&p, e.position)?;
                 staged.proposals.insert(proposal.clone(), p);
             }
+            // A set the fold decides itself holds what it decided.
             EventBody::ObjectSetChanged {
                 set,
                 ty,
                 key,
                 joined,
-            } => staged.member(projection, set, ty, key, *joined, e.position)?,
+            } if !w.zone.as_ref().is_some_and(|z| z.decides(set)) => {
+                staged.member(projection, set, ty, key, *joined, e.position)?
+            }
+            EventBody::ObjectSetChanged { .. } => {}
             EventBody::OutputRecorded {
                 seam,
                 input,
@@ -2194,11 +2264,43 @@ impl Lake {
                         self.index_vectors(&w.ontology, &next)?;
                         kept::note(&kept_at!(w, view, projection), staged, Some(&r), &next)?;
                         staged.put(next);
+                        self.decided(w, view, staged, e, (Some(&r), ty, key))?;
                     }
                 }
             }
         }
-        kept::settle(&kept_at!(w, view, projection), staged, e)
+        kept::settle(&kept_at!(w, view, projection), staged, e)?;
+        if let Some(zone) = &mut w.zone {
+            if zone.viewing() {
+                let at = (e.position, e.known_at);
+                let f = folding!(w, view, projection, self.limits.max_depth, at);
+                let moved = kept::moved(staged);
+                zone.groups(f, staged, &moved)?;
+            }
+            zone.shaped(&w.ontology, staged, e);
+        }
+        Ok(())
+    }
+
+    /// The record of `ty` at `key` the fold of `e` changed from `before`,
+    /// decided in each set the fold decides itself.
+    fn decided(
+        &self,
+        w: &Writer,
+        view: &dyn ProjectionView,
+        staged: &mut Staged,
+        e: &Event,
+        (before, ty, key): (Option<&StoredRecord>, &TypeName, &RecordKey),
+    ) -> Result<()> {
+        let Some(zone) = w.zone.as_ref().filter(|z| z.deciding()) else {
+            return Ok(());
+        };
+        let Some(after) = staged.records.get(&(ty.clone(), key.clone())).cloned() else {
+            return Ok(());
+        };
+        let (projection, at) = (self.engine.projection(), (e.position, e.known_at));
+        let f = folding!(w, view, projection, self.limits.max_depth, at);
+        zone.record(f, staged, (before, &after))
     }
 
     /// Whether the log forgot `source` (058): its list says so, or an act
@@ -3721,6 +3823,59 @@ impl Migrated {
     }
 }
 
+impl crate::writes::Written for Staged {
+    fn record(
+        &self,
+        view: &dyn ProjectionView,
+        ty: &TypeName,
+        key: &RecordKey,
+    ) -> Result<Option<StoredRecord>> {
+        Ok(Staged::record(self, view, ty, key)?.filter(|r| !r.is_ended()))
+    }
+
+    fn wrote<'a>(&'a self, ty: &'a TypeName) -> Box<dyn Iterator<Item = &'a StoredRecord> + 'a> {
+        Box::new(self.of_type(ty))
+    }
+
+    /// The view holds a record under the type and the key it had before
+    /// the steps this transaction folded: a reference to a key a step
+    /// moved is asked under the key it moved from too, and what is found
+    /// is taken through the steps.
+    fn scan(
+        &self,
+        view: &dyn ProjectionView,
+        ty: &TypeName,
+        asked: &[Vec<(FieldName, Value)>],
+    ) -> Result<Vec<StoredRecord>> {
+        let steps: Vec<&Migrated> = self.steps.iter().filter_map(Step::migrated).collect();
+        // A text that is a key a step moved to is asked as the key it
+        // moved from too; one asked wrongly so finds a row the walk drops.
+        let was = |v: &Value| {
+            let key = RecordKey::from(v.as_str()?);
+            let old = steps.iter().rev().fold(key, |k, s| {
+                let from = s.back.values().find_map(|m| m.get(&k));
+                from.cloned().unwrap_or(k)
+            });
+            Some(Value::from(old.as_str()))
+        };
+        let mut then = asked.to_vec();
+        for a in asked.iter().filter(|_| !steps.is_empty()) {
+            let old = |(f, v): &(FieldName, Value)| (f.clone(), was(v).unwrap_or(v.clone()));
+            then.push(a.iter().map(old).collect());
+        }
+        let scan = lakelands_api::engine::Scan {
+            limit: u32::MAX,
+            restricted: true,
+            equal_any: then,
+            ..Default::default()
+        };
+        let known = self.known(ty);
+        let rows = view.scan(known, &scan)?.into_iter();
+        let mine = rows.filter(|r| !self.wrote(known, &r.key));
+        mine.map(|r| self.stepped(view, r)).collect()
+    }
+}
+
 /// What one append has written so far, read before the projection.
 #[derive(Default)]
 pub struct Staged {
@@ -3880,10 +4035,46 @@ impl Staged {
             .map(|(_, r)| r)
     }
 
+    /// Whether the record of `ty` at `key` is a member of `set` as the
+    /// append leaves it so far.
+    pub(crate) fn is_member(
+        &self,
+        view: &dyn ProjectionView,
+        set: &str,
+        ty: &TypeName,
+        key: &RecordKey,
+    ) -> Result<bool> {
+        match self.members.get(&(set.to_owned(), ty.clone(), key.clone())) {
+            Some(m) => Ok(*m),
+            None => view.is_member(set, ty, key),
+        }
+    }
+
+    /// The members of `set` of the type the view knows as `known`, and of
+    /// `ty`, as the append leaves them so far.
+    pub(crate) fn members(
+        &self,
+        view: &dyn ProjectionView,
+        set: &str,
+        (known, ty): (&TypeName, &TypeName),
+    ) -> Result<BTreeSet<RecordKey>> {
+        let mut keys = view.members(set, known)?;
+        for t in [known, ty] {
+            let put = self.members.iter();
+            for ((_, _, key), member) in put.filter(|((n, of, _), _)| n == set && of == t) {
+                match member {
+                    true => keys.insert(key.clone()),
+                    false => keys.remove(key),
+                };
+            }
+        }
+        Ok(keys)
+    }
+
     /// Put a set membership, and remember it: the view a fold of several
     /// appends opened does not show it, and a re-key later in the page
     /// carries it to the record's new key.
-    fn member(
+    pub(crate) fn member(
         &mut self,
         projection: &dyn lakelands_api::engine::ProjectionStore,
         set: &str,
