@@ -31,11 +31,12 @@
 //! event is carried.
 //!
 //! **Then the files, as they are.** The first file's events go to
-//! `LakeEngine::import` in batches of at most [`BATCH`] bytes. Each later file starts with
-//! its `checkpoint`: its first batch is handed to
-//! `LakeEngine::seal_segment`, which closes the segment before it and
-//! begins the next with that batch in one step, once the digest the engine
-//! takes of that segment is the file's; the rest follows through `import`.
+//! `LakeEngine::import` in batches of at most [`BATCH`] bytes, an event
+//! larger than that alone. Each later file starts with its `checkpoint`:
+//! its first batch is handed to `LakeEngine::seal_segment`, which closes
+//! the segment before it and begins the next with that batch in one step,
+//! once the digest the engine takes of that segment is the file's; the
+//! rest follows through `import`.
 //! The projection is folded under the import's lease as a rebuild folds
 //! it, and nothing is appended: the head is the export's. The lease is
 //! given up, and the host opens the lake as always; that open takes a
@@ -80,6 +81,32 @@ const BATCH: usize = 512 << 10;
 /// What `event` counts against a [`BATCH`].
 fn weight(event: &CanonicalEvent) -> usize {
     event.bytes.len() + event.id.0.len() + event.prev.0.len() + event.hash.0.len()
+}
+
+/// Hands `events` on in batches of at most `limit` bytes by [`weight`]: a
+/// batch is handed before the event that would take it over, so only an
+/// event heavier than `limit` makes a larger one, and goes alone.
+fn batched(
+    events: impl Iterator<Item = Result<CanonicalEvent>>,
+    limit: usize,
+    hand: &mut dyn FnMut(&[CanonicalEvent]) -> Result<()>,
+) -> Result<()> {
+    let (mut batch, mut weighed) = (Vec::new(), 0);
+    for event in events {
+        let event = event?;
+        let weighs = weight(&event);
+        if !batch.is_empty() && weighed + weighs > limit {
+            hand(&batch)?;
+            batch.clear();
+            weighed = 0;
+        }
+        weighed += weighs;
+        batch.push(event);
+    }
+    if batch.is_empty() {
+        return Ok(());
+    }
+    hand(&batch)
 }
 
 /// What an import made.
@@ -354,22 +381,15 @@ fn carry(
                 .map(drop)
                 .ok_or_else(|| lakelands_core::damaged(Part::Log, None, Flaw::NothingToSeal))
         };
-        let (mut batch, mut weighed) = (Vec::new(), 0);
-        for event in events(path)? {
-            let event = event?.0;
-            weighed += weight(&event);
-            batch.push(event);
-            if weighed >= BATCH {
-                hand(&batch).map_err(|e| stopped(path, reached, e))?;
-                reached = batch.last().expect("a full window").position.next();
-                batch.clear();
-                weighed = 0;
-            }
-        }
-        if !batch.is_empty() {
-            hand(&batch).map_err(|e| stopped(path, reached, e))?;
+        let read = events(path)?.map(|event| event.map(|(event, _)| event));
+        batched(read, BATCH, &mut |batch| {
+            hand(batch).map_err(|e| stopped(path, reached, e))?;
             reached = batch.last().expect("not empty").position.next();
-        }
+            Ok(())
+        })?;
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
