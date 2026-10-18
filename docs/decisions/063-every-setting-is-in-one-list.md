@@ -169,7 +169,7 @@ it, its value's provenance (`known_at`, `position`, `writer`), and the
 `latest` order and the orders by those move with a change to entries
 it is not told. They tell that the record changed, when and by whom,
 never what: one record per setting and type would end that, a change
-of the log's form (lakelands#1210). An empty list it writes over
+of the log's form (lakelands#1250). An empty list it writes over
 entries it is not told departs from the twin, which tells `[]`: the entries
 stay, so the record names only fields the writer is kept from and is
 not there to it, and a proposal of it is listed to it as a retire.

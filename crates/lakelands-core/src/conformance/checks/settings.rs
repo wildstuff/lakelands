@@ -687,7 +687,7 @@ async fn a_setting_record_is_told_as_were_the_hidden_absent(store: Store) -> Hel
 
 check!(
     SETTING_RECORDS_PAGED = settings_are_paged_counted_and_proposed_as_told,
-    "063 (lakelands#1198): to a reader kept from a type or a field, the records of `sys.setting` are paged, counted and proposed as were these absent: a graph from `sys.setting` pages through each record it is told, at every limit, cut exactly where another page follows; a kept view counting them by group counts what a `find` tells it; a proposal is listed as the write it is told, with nothing left out of it: one over a record it is not told as over a key never set, its own too, a narrowed one whole, and one that leaves a record it is told none as a retire, also once that record is retired; the version a write answers over a record it is not told counts the writes it is not told (a stated limit, lakelands#1210)"
+    "063 (lakelands#1198): to a reader kept from a type or a field, the records of `sys.setting` are paged, counted and proposed as were these absent: a graph from `sys.setting` pages through each record it is told, at every limit, cut exactly where another page follows; a kept view counting them by group counts what a `find` tells it; a proposal is listed as the write it is told, with nothing left out of it: one over a record it is not told as over a key never set, its own too, a narrowed one whole, and one that leaves a record it is told none as a retire, also once that record is retired; the version a write answers over a record it is not told counts the writes it is not told (a stated limit, lakelands#1250)"
 );
 
 async fn settings_are_paged_counted_and_proposed_as_told(store: Store) -> Held {
@@ -851,7 +851,7 @@ async fn settings_are_paged_counted_and_proposed_as_told(store: Store) -> Held {
          reader is listed {retired:?}, where as before, {want:?}"
     );
     // Its write over a record it is not told answers the record's version,
-    // which counts the owner's write: pinned until lakelands#1210.
+    // which counts the owner's write: pinned until lakelands#1250.
     let written = upsert(
         l.cat.as_ref(),
         &arch,
@@ -868,7 +868,7 @@ async fn settings_are_paged_counted_and_proposed_as_told(store: Store) -> Held {
         version == Some(Version(2)),
         "the reader kept from `m` wrote `lookup_index.row` over the owner's, naming only `m`: \
          it answers {version:?}, where Some(Version(2)), the record's own (063 states this \
-         limit; lakelands#1210 ends it)"
+         limit; lakelands#1250 ends it)"
     );
     Ok(())
 }

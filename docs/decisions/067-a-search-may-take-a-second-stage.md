@@ -136,7 +136,7 @@ only what its reader reads and the paging stays one sequence.
 - It does not record the ranking, and a replay of the log never calls the
   reranker.
 - It does not mix two orders: nothing past `top` is answered.
-- It does not change a vector index's paging (lakelands#870): the stage
+- It does not change a vector index's paging (lakelands#1254): the stage
   takes whatever window the first stage gives, indexed or exact.
 - It is not a fallback: a search without a reranker is refused, not
   answered by the first stage.
