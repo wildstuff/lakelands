@@ -50,7 +50,7 @@ check!(
 
 check!(
     REMOVED_FIRED = a_reaction_decided_over_a_value_taken_back_is_overruled,
-    "065 (lakelands#1238): `stop` holds `place` from `tracker`, and `call` names a stop; the triggers `in_rome` (`place = 'Rome'`), `rome_or_open` (`place = 'Rome' or open`), `wrote` (no `when`) and, on `call`, `call_in_rome` (`stop.place = 'Rome'`), the set `at_rome` (`stop.place = 'Rome'`), and the set `late` of stops whose note is older than 0.3 s; `s1` is opened by its author and named by `c1` before `tracker` writes the `place` of `s1` and `s2` Rome, `s2` its alone, then `s1` is written again by its author and named by `c2`, those two with an idempotency key; once what `tracker` wrote is taken back, a poll of the feed from 0 names overruled the firings of `in_rome` and `call_in_rome`, those of `rome_or_open` on `s2`, at `tracker`'s write and at the act's retirement of `s2`, and the `at_rome` joins, and not those of `wrote`, of `rome_or_open` on the open `s1`, nor `s1` joining `late`, which reads the clock; the reactions it does not overrule are those of a twin lake where `tracker` never wrote a `place`, by kind, name and key, and the two keyed writes sent again answer what they set off as the twin's first writes were told; every reaction names the record event it reacts to as its cause, the act's retirement of `s2` included",
+    "065 (lakelands#1238): `stop` holds `place` from `tracker`, and `call` names a stop; the triggers `in_rome` (`place = 'Rome'`), `rome_or_open` (`place = 'Rome' or open`), `wrote` (no `when`) and, on `call`, `call_in_rome` (`stop.place = 'Rome'`), the set `at_rome` (`stop.place = 'Rome'`), on `stop` the set `romans` (`place = 'Rome'`), and the set `late` of stops whose note is older than 0.3 s; `s1` is opened by its author and named by `c1` before `tracker` writes the `place` of `s1` and `s2` Rome, `s2` its alone, then `s1` is written again by its author and named by `c2`, those two with an idempotency key; once what `tracker` wrote is taken back, a poll of the feed from 0 names overruled the firings of `in_rome` and `call_in_rome`, those of `rome_or_open` on `s2`, at `tracker`'s write and at the act's retirement of `s2`, the `at_rome` joins, and the `romans` joins and `s2` leaving it at that retirement, and not those of `wrote`, of `rome_or_open` on the open `s1`, nor `s1` joining `late`, which reads the clock; the reactions it does not overrule are those of a twin lake where `tracker` never wrote a `place`, by kind, name and key, and the two keyed writes sent again answer what they set off as the twin's first writes were told; every reaction names the record event it reacts to as its cause, the act's retirement of `s2` included",
     given
 );
 
@@ -534,6 +534,9 @@ async fn fired(store: &Store, act: Act, placed: bool) -> Result<[Vec<Vec<String>
     // `tracker`'s write, which decided it was not a member before.
     let late = object_set_on("late", "stop", "now() - known_at(note) > 0.3s");
     l.declare_as(late, "late").await?;
+    // `romans` reads the stop's own erased field, by its `where`.
+    let romans = object_set_on("romans", "stop", "place = 'Rome'");
+    l.declare_as(romans, "romans").await?;
     l.upsert("stop", "s1", json!({"note": "kept", "open": true}))
         .await?;
     l.upsert("call", "c1", json!({"stop": "s1"})).await?;
@@ -653,6 +656,9 @@ async fn overruled(store: Store, given: crate::conformance::Given, act: Act) -> 
         "in_rome s1",
         "in_rome s2",
         "in_rome s2",
+        "romans s1 true",
+        "romans s2 false",
+        "romans s2 true",
         "rome_or_open s2",
         "rome_or_open s2",
     ];
@@ -660,7 +666,8 @@ async fn overruled(store: Store, given: crate::conformance::Given, act: Act) -> 
         overruled == want,
         "after the act the feed names overruled the firings of `in_rome` and `call_in_rome`, \
          those of `rome_or_open` on `s2`, which is not open, at `tracker`'s write and at the \
-         act's retirement of it, and the `at_rome` joins, and nothing else: {overruled:?}"
+         act's retirement of it, the `at_rome` joins, and the `romans` joins and the leave at \
+         that retirement, and nothing else: {overruled:?}"
     );
     ensure!(
         told == twin_told,
