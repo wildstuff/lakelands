@@ -524,10 +524,18 @@ declaration's changes, and the times `recompute` appended it again (022).
   differs is appended in the set's order, and what that sets off
   happens: a recomputation, a set's memberships. A set wholly in force
   is answered at the head.
-- **A proposal is recorded,** in force or not. When it is
-  accepted, the proposal is decided and what is in force at that moment
-  is not appended again, so an acceptance may append `write_accepted`
-  alone.
+- **A proposal is recorded where it would change something.** One whose
+  declarations are all in force when it is proposed is not recorded: its
+  accept would change nothing, and a host that lets an agent without
+  `schema` file its declarations wants the answer `apply` gives its own
+  operator, not a proposal and an acceptance that both land in the log
+  for nothing. It is answered `applied` at the head, after every
+  refusal, with how each declaration stands, and appends nothing. A
+  proposal with one declaration that differs is recorded whole. When it
+  is accepted, the proposal is decided and what is in force at that
+  moment is not appended again, so an acceptance may append
+  `write_accepted` alone; the accept answers how each declaration of
+  the bundle stands after it, as `apply` does (lakelands#1187).
 - **Every kind:** a value type, a type, a function, a verb, a trigger,
   an object set. A function with a backing and a type with a field
   computed outside the lake are no exception (022).
@@ -948,6 +956,10 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
 - `declare` and `apply` answer how each declaration sent stands in
   force: its version, the position it stands from, and whether the call
   appended it (lakelands#1059).
+- Corrected: "A proposal is recorded, in force or not". A proposal of
+  declarations all in force is answered as `apply` answers it and is not
+  recorded, and an accept of declarations answers how each stands
+  (lakelands#1187).
 - Added: a declaring append leaves the shape after it, built at the
   first read of its position (lakelands#1056).
 - Marking a field `authority: verb` is a change of meaning, taken by `declare` (lakelands#1130).

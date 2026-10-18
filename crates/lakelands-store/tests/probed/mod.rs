@@ -81,6 +81,8 @@ pub struct Probe {
     pub states: AtomicUsize,
     /// The keys each type was read at by `get` and `get_many`, in all.
     pub gets: Mutex<std::collections::BTreeMap<TypeName, usize>>,
+    /// Of `gets`, the keys each type was read at by a `get` of one alone.
+    pub alone: Mutex<std::collections::BTreeMap<TypeName, usize>>,
     /// The last record put under each kept name and key.
     pub kept: Mutex<std::collections::BTreeMap<(TypeName, RecordKey), StoredRecord>>,
     /// The entries of the kept views' orders put since the last clear, by
@@ -184,6 +186,13 @@ impl ProjectionView for ProbedView<'_> {
     }
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
         self.probe.got(ty, 1)?;
+        *self
+            .probe
+            .alone
+            .lock()
+            .unwrap()
+            .entry(ty.clone())
+            .or_default() += 1;
         self.inner.get(ty, key)
     }
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {

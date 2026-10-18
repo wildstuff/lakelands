@@ -778,7 +778,9 @@ interface types {
         /// the one answered may know of them.
         renamed: list<tuple<field-name, field-name>>,
         /// For `declare` and `apply`: each declaration sent, in the order
-        /// sent, as it stands in force after the call.
+        /// sent, as it stands in force after the call; so for a `propose`
+        /// of declarations all in force, which files nothing, and for the
+        /// `accept` of proposed declarations.
         declared: list<in-force>,
         /// For a change to the ontology: the plan that applied.
         plan: option<plan>,
@@ -787,9 +789,9 @@ interface types {
     /// A declaration's kind. A later kind is an addition.
     enum declaration-kind { %type, value-type, verb, trigger, object-set, function, setting }
 
-    /// A declaration sent to `declare` or `apply`, as it stands in force
-    /// after the call: its version, the position it has stood from, and
-    /// whether this call appended it.
+    /// A declaration sent to `declare` or `apply`, or proposed, as it
+    /// stands in force after the call: its version, the position it has
+    /// stood from, and whether this call appended it.
     record in-force {
         kind: declaration-kind,
         name: string,

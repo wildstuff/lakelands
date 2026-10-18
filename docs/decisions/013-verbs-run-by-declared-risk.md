@@ -243,7 +243,10 @@ lose information is refused with its report. A proposed migration keeps
 that report, so a reviewer reads what it would move and what it would
 drop. Nothing about the ontology changes until the proposal is accepted,
 and a proposer needs no `schema` grant: proposing is how a principal
-without it asks.
+without it asks. A set whose declarations are all in force is not
+filed: it is answered as `apply` answers it, with how each stands, and
+appends nothing (lakelands#1187,
+`027 § A declaration in force appends nothing`).
 
 Accepting one needs `schema` as well as `review`
 (`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
