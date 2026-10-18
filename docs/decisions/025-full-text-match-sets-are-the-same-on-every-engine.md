@@ -439,7 +439,7 @@ engine that runs it.
   engine has no index to read for: on a server without pgvector, or
   while the field's mark is behind the head. Neither turns on the pull
   or on the field's size. Which way answered still shows by a neighbour
-  the index misses and the scan finds; that is left to lakelands#870.
+  the index misses and the scan finds; that is left to lakelands#1254.
 - **SQLite and memory** keep no such index. They accept the setting,
   say `index` and `indexed`, and answer the exact ranking: the index's
   set is the reference there. A SQLite lake that needs an index moves
@@ -585,7 +585,7 @@ that needs a ranked result whole and in order reads it in one page, up to
 `max_limit`, or leaves the field without the setting
 (`docs/hosting.md`). Pages that are one sequence under an index need
 an index that answers the candidates its reader may see, which is
-another design (lakelands#870).
+another design (lakelands#1254).
 
 ### An indexed field's set is stable between writes, and its recall is held at a floor
 
@@ -891,7 +891,7 @@ Of an index asked for:
   for; the function that compares sort values is
   `lakelands_core::expr::order::cmp_values`.
 - Corrected at the rewrite (lakelands#817), of the index's pulls: the
-  passage on a vector of zeros says what is left to lakelands#870; a
+  passage on a vector of zeros says what is left to lakelands#1254; a
   fused search "starts at `max_limit` and one" only where `max_limit`
   is the larger of the two; "4 096 to 12 097 candidates" holds for
   first pulls of 65 to 4 096, and a deeper first pull is one pull.
