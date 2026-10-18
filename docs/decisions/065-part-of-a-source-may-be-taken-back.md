@@ -2,7 +2,8 @@
 
 ## What is decided
 
-Decided by the operator on lakelands#1153; it is built in 0.16.0. It
+Decided by the operator on lakelands#1153; it is built in 0.16.0, and a
+delivery sealed apart in 0.17.0 (lakelands#1214). It
 stands beside 039, which retracts a source as one, and 058, which
 forgets a source whole.
 
@@ -110,14 +111,14 @@ source's versions whose values are all in the selection.
   (`key_period`) has a version per period of `known_at`, so a cut at `T`
   destroys each version whose period ends at or before `T`. A period the
   cut falls inside is redacted only, and the report counts it apart.
-- **One delivery is not shredded on its own.** Its values seal under the
-  source's version of their period, beside the values of every other
-  delivery in it. Destroying that version takes them too; destroying it
-  alone, with older versions left, breaks the prefix rule, which is what
-  lets an output sealed under the oldest of its inputs' versions die with
-  the first of them. So a delivery taken back is redacted, and is
-  shredded only once a retention cut's prefix covers it. A key outside
-  the chain for one delivery is lakelands#1214.
+- **One delivery is shredded on its own where it was sealed apart.** An
+  ordinary delivery's values seal under the source's version of their
+  period, beside the values of every other delivery in it. Destroying
+  that version takes them too, and destroying it alone, with older
+  versions left, would break the prefix rule. So such a delivery taken
+  back is redacted, and is shredded only once a retention cut's prefix
+  covers it. A delivery the source's ingest sealed apart (below) is
+  shredded when it is taken back.
 
 The act names the versions it destroys in its event, and drops them
 from the open lake's memory, so the lake seals and opens with none of
@@ -142,6 +143,87 @@ A key store that destroys a source's key only whole destroys no
 version: the act names none, and every value it takes is redacted only,
 as the report says. The act does not refuse for it, since redaction is
 always possible; `require: shredded` then refuses it.
+
+### A delivery may be sealed apart
+
+An ingest that asks `sealed_apart` (`IngestOpts`) gives its delivery a
+key of its own, outside the source's versions, so that the delivery can
+be shredded alone (lakelands#1214).
+
+- **What it seals under.** Each value of an erasable field is sealed
+  under the source's version of its period, as every ingest seals it,
+  composed with the delivery's own key: one key derived from both, the
+  version first. `sealed` names the version and, in `apart`, the
+  delivery's key. Each ingest call makes one such key per source it
+  writes for, at its first sealed value, so a later delivery under the
+  same id has a key of its own. An ingest that writes no value of an
+  erasable field seals nothing and asks for no key. A call still
+  writing when an act took its delivery back takes a new key for what
+  it writes after the act, which the act did not select. A key made for
+  a call that then appended nothing under it, all duplicates or refused,
+  seals nothing and is destroyed with the source.
+- **Destroying the apart key takes that delivery alone.** The versions
+  before it and after it, and every other delivery in its period, stay
+  readable. The key is in no chain, so the prefix rule is untouched, and
+  destroying its version still takes it, as a retention cut takes every
+  value of its period.
+- **An output dies with either key.** An output is sealed under the
+  oldest version that sealed a value its call reads, composed with every
+  apart key that sealed a value it reads, in the order of their ids. Its
+  input is digested under that composed key. No digest of it can be made
+  again, and it cannot be opened, once any one of those keys is gone. An
+  output that reads no value sealed apart is sealed under the version
+  alone, as before. The fold keeps which apart key sealed the value at
+  each position, under a name of its own, so a write's plan and a
+  rebuild compose the same keys.
+- **The act destroys every apart key whose values it all selects.** For
+  a delivery, that is the keys of the ingests of that delivery before
+  the act. For a time, it is the keys of the ingests below the position
+  the act names. It names them in its event, in `apart`, beside the
+  prefix of versions, and the report names them too. A value under an
+  apart key the act destroyed is shredded, so `require: shredded` is met
+  by a delivery sealed apart.
+- **Forgetting the source destroys its apart keys** with its versions
+  (058).
+- **A key store that makes no such key refuses.** An ingest that asks
+  for `sealed_apart` is refused as unbound at its first value of an
+  erasable field, and that value's window appends nothing; the windows
+  before it, which sealed nothing, stand, as any window does. The
+  default key store makes no apart key, and an act's finish asks a key
+  store to destroy only an apart key it holds, so a lake imported beside
+  such a store opens.
+- **A redelivery is its own.** An ingest's id is made from the patch as
+  stored (§3 of the log format), so a delivery sealed apart is never a
+  duplicate of another delivery's event by its id. Taking back the first
+  then leaves the second's values standing, where the second came under
+  another delivery id; one id selects every delivery under it before
+  the act. One that changes nothing still appends nothing, as any
+  ingest that changes nothing does.
+
+**Why it is composed, not apart alone.** A delivery sealed under its
+apart key alone would name, in `sealed.key`, a key that is in no chain:
+the list of versions a source sealed with, and the refusal of a key store
+that lost the newest of them, would each need an exception for it, and a
+retention cut that covers its period would leave it readable. Composed,
+the version is still the one its position says, and only the apart key
+is new.
+
+**Why an output is composed too.** An output over an apart value and an
+ordinary value of the same source must die with whichever key goes
+first. Sealed under the version alone, its digest would outlive the
+delivery taken back; sealed under the apart key alone, it would outlive a
+retention cut. Refusing such an output, as a call over two sources'
+values is refused, would leave empty every computed field of a record
+the source wrote in an ordinary delivery and corrected in one sealed
+apart, which is the case the option serves.
+
+**Rejected: an apart key derived from the version.** Destroying it alone
+would still need a secret of its own, so it is the composition with one
+more step. **Rejected: sealing twice**, under the version and then under
+the apart key: the same lifetime at twice the work per value and per
+digest. **Rejected: the apart key in each field's provenance.** That is
+what a reader is shown (`with: meta`); the fold's own list keeps it from
+readers.
 
 ### The act may be read before it is made
 
@@ -238,11 +320,16 @@ the host's process, on the host's lake.
   again, or run `lakelands values remove` on `mirror:<lake>:<type>` in
   the target, then restart. A type of key and reference fields goes on.
 - **An export carries the act.** An import folds it again, so the
-  values arrive redacted, and needs no key for a version the act
-  destroyed; a value under a version it left still needs its key, and
-  is refused as unbound before anything is written where none is bound.
-  A key store restored from a backup that still holds a destroyed
-  version has it destroyed by the import's finish.
+  values arrive redacted, and needs no key for a version or an apart key
+  the act destroyed, nor for the other keys of a value sealed under one;
+  a value whose keys it left still needs them, and is refused as unbound
+  before anything is written where none is bound. A key store restored
+  from a backup that still holds a destroyed key has it destroyed by the
+  import's finish.
+- **The ingest doors carry the seal.** `IngestOpts::sealed_apart`, and
+  `?sealed_apart` on the REST ingest; a catalog that does not carry it
+  to the store refuses it, `sealed_apart_not_carried`, rather than seal
+  the delivery under its version alone.
 - **A reclaim that fails is owed**, for this act as for 058's. The act
   and `rebuild()` answer all the same, the act naming the cause in
   `reclaim_owed`, as a preflight does; an import answers, and the
@@ -297,3 +384,11 @@ whole log, which the preflight says; a scoped refold is lakelands#1120.
   source and the selection.
 - It is not a door, and not a purge: it never refuses a co-owned record,
   and it retires only what holds nothing else.
+
+## How it came to be
+
+- Built in 0.16.0: a source's values taken back by a time or by one
+  delivery, redacted always and shredded by key periods (lakelands#1153).
+- A delivery sealed apart, under its version composed with a key of its
+  own, is shredded alone, and an output over it dies with either key
+  (lakelands#1214).

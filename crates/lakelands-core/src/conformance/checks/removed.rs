@@ -163,7 +163,7 @@ pub(super) fn erased(r: &lakelands_api::Record, field: &str, source: &str) -> bo
 }
 
 /// The `values_removed` events after `after`.
-async fn acts(store: &dyn LakeStore, after: Position) -> Result<Vec<Event>, Failure> {
+pub(super) async fn acts(store: &dyn LakeStore, after: Position) -> Result<Vec<Event>, Failure> {
     let events = events_after(store, after).await?;
     let act = |e: &Event| matches!(e.body, EventBody::ValuesRemoved { .. });
     Ok(events.into_iter().filter(act).collect())
@@ -369,6 +369,7 @@ async fn a_sources_values_before_a_time_read_as_erased_at_every_position(store: 
     let b1 = source_record("badge", "b1", json!({"id": "b1", "level": 3}));
     let opts = IngestOpts {
         delivery: Some(DeliveryId::from("badges")),
+        ..IngestOpts::default()
     };
     let said = lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &tracker, opts, vec![b1]);
     said.await.must("ingesting b1")?;
@@ -424,6 +425,7 @@ async fn a_delivery_taken_back_reads_as_erased_and_a_later_one_stays(store: Stor
     let deliver = async |id: Option<&str>, visits: &[(&str, Value)]| {
         let opts = IngestOpts {
             delivery: id.map(DeliveryId::from),
+            ..IngestOpts::default()
         };
         let records = (visits.iter())
             .map(|(k, f)| source_record("visit", k, f.clone()))
@@ -976,7 +978,7 @@ async fn a_shredding_act_imports_erased_and_destroys_a_backups_versions(
 
 /// A key store that destroys a source's key only whole: `destroy_version`
 /// is the seam's default.
-struct Whole(std::sync::Arc<super::erasable::Keys>);
+pub(super) struct Whole(pub(super) std::sync::Arc<super::erasable::Keys>);
 
 impl lakelands_api::seam::KeyStore for Whole {
     fn create(

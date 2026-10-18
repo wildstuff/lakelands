@@ -1038,6 +1038,7 @@ async fn an_ingests_delivery_id_goes_over_the_wire() {
     let remote = remote.catalog(WriteContext::default());
     let opts = |d: &str| IngestOpts {
         delivery: Some(d.into()),
+        ..IngestOpts::default()
     };
     let said = lakelands_api::ingest_all_with(
         remote.as_ref(),

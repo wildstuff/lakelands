@@ -412,23 +412,25 @@ const TWO_SOURCES: &str = "its inputs hold erasable values of two sources, and a
 /// The digest of `call`, as `computer` makes it from `fields`: by the
 /// sources of the erasable values it reads, through the fields it reads
 /// and those they are derived from. One source's are digested under the
-/// version of its key `version` names, a recorded output's own, else the
+/// keys `version` names, a recorded output's own, else under the
 /// oldest of those that sealed the values it reads: the last first used
 /// at or before each value's position ([`crate::sealing::USED`]), as the
 /// fold keeps it and a write's plan stages it for its own events. A value
 /// written in plaintext, before its field was erasable, counts as sealed
 /// by the version in force at its position, which only ever makes an
 /// output die sooner, and as none before any; where no value names one,
-/// the first is taken. So the digest is a
-/// function of the log, whatever the key store holds now, and the output
-/// lives as long as the oldest key period it read: destroying a version,
-/// and every older one with it, takes the outputs of its values. A source
-/// that sealed nothing has no key to digest under.
+/// the first is taken. That version is composed with every key of a
+/// delivery sealed apart that sealed a value it reads (065). So the
+/// digest is a function of the log, whatever the key store holds now, and
+/// the output lives as long as the oldest key period it read and every
+/// delivery sealed apart it read: destroying a version, and every older
+/// one with it, or one apart key takes the outputs of its values. A
+/// source that sealed nothing has no key to digest under.
 fn input_of(
     (decl, computer): (&TypeDecl, &Computer<'_>),
     (fields, metas): (&BTreeMap<FieldName, Value>, &BTreeMap<FieldName, FieldMeta>),
     (outputs, event): (&Outputs<'_>, &Event),
-    version: Option<&lakelands_api::id::KeyId>,
+    version: Option<&lakelands_api::event::Sealed>,
     call: &Value,
 ) -> Result<Input> {
     let mut todo: Vec<&FieldName> = match computer {
@@ -472,20 +474,57 @@ fn input_of(
         .filter_map(|p| crate::sealing::sealed_at(firsts, *p))
         .min_by_key(rank);
     let first = firsts.first().map(|(k, _)| k);
-    let Some(key) = version.or(oldest).or(first).or(sealing).cloned() else {
+    let Some(key) = (version.map(|s| &s.key))
+        .or(oldest)
+        .or(first)
+        .or(sealing)
+        .cloned()
+    else {
         return Ok(Input::Plain(digest(call)));
+    };
+    // With every key of a delivery sealed apart that sealed a value it
+    // reads, so the output dies with any of them (065).
+    let apart = match version {
+        Some(s) => s.apart.clone(),
+        None => apart_of((outputs, event), &source, &read)?,
     };
     let Some(keys) = outputs.keys else {
         return Ok(Input::Keyless);
     };
-    let k = keys.key(&source, &key)?;
-    let source = Some(source);
-    let sealed = lakelands_api::event::Sealed {
+    let mut sealed = lakelands_api::event::Sealed {
         key,
-        source,
+        source: None,
         fields: Vec::new(),
+        apart,
     };
+    let k = keys.sealed(&source, &sealed)?;
+    sealed.source = Some(source);
     Ok(Input::Sealed(crate::sealing::digest(&k, call), sealed))
+}
+
+/// The keys of deliveries sealed apart that sealed `source`'s values
+/// written at `read`, in id order: `event`'s own where it wrote one, else
+/// as the fold keeps them ([`crate::sealing::APART`]).
+fn apart_of(
+    (outputs, event): (&Outputs<'_>, &Event),
+    source: &lakelands_api::SourceId,
+    read: &[Position],
+) -> Result<Vec<lakelands_api::id::KeyId>> {
+    let mut apart = BTreeSet::new();
+    for p in read {
+        let own = (event.sealed.as_ref())
+            .filter(|_| *p == event.position && event.source.as_ref() == Some(source))
+            .filter(|_| matches!(event.body, EventBody::RecordIngested { .. }));
+        match own {
+            Some(s) => apart.extend(s.apart.iter().cloned()),
+            None => {
+                let at = crate::sealing::apart_at(source, *p);
+                let kept = outputs.recorded(crate::sealing::APART, &at)?;
+                apart.extend(kept.iter().flat_map(crate::sealing::apart_of));
+            }
+        }
+    }
+    Ok(apart.into_iter().collect())
 }
 
 /// The metadata of a value an output filled, or of a field it cleared.
@@ -791,8 +830,8 @@ pub fn put_output(
     else {
         return Ok(false);
     };
-    // Digested under the version the output names, as it was recorded.
-    let version = event.sealed.as_ref().map(|s| &s.key);
+    // Digested under the keys the output names, as it was recorded.
+    let version = event.sealed.as_ref();
     let now = match input_of(
         (decl, &computer),
         (fields, metas),

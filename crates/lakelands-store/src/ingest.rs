@@ -37,8 +37,10 @@ use lakelands_api::catalog::{CommitStream, SourceStream};
 use lakelands_api::engine::ProjectionView;
 use lakelands_api::error::{Case, Place, Said};
 use lakelands_api::event::{EventBody, EventId, Sealed};
+use lakelands_api::id::KeyId;
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::Origin;
+use lakelands_api::seam::DataKey;
 use lakelands_api::write::Committed;
 use lakelands_api::{DeliveryId, Principal, RecordKey, Result, SourceId, SourceRecord, Timestamp};
 use lakelands_core::rights::Door;
@@ -53,12 +55,18 @@ use lakelands_core::{canonical, links};
 /// How long a window waits for more records after its first.
 const WINDOW: Duration = Duration::from_millis(2);
 
+/// The keys of a call's delivery sealed apart, one per source it writes
+/// for, made at its first sealed value and kept for its every window
+/// (065).
+pub type Apart = std::sync::Mutex<BTreeMap<SourceId, KeyId>>;
+
 /// Decide and append one window, in the call's `delivery` where one is
-/// named or decided already.
+/// named or decided already, its values sealed apart too where `apart`
+/// keeps the call's keys.
 pub fn window(
     lake: &Lake,
     who: &Principal,
-    (context, delivery): (WriteContext, Option<DeliveryId>),
+    (context, delivery, apart): (WriteContext, Option<DeliveryId>, Option<&Apart>),
     source: &SourceId,
     (first, records): (u64, Vec<SourceRecord>),
 ) -> Result<Committed> {
@@ -84,7 +92,7 @@ pub fn window(
     let mut asks = Asks::default();
     let judged = loop {
         let judged = judge(
-            &call,
+            (&call, apart),
             &w,
             (view.as_ref(), now),
             (source, first, &records),
@@ -157,7 +165,7 @@ impl Asks {
 /// The window's records judged: their drafts, the reads they rest on, and
 /// how many were written and counted duplicates.
 fn judge(
-    call: &Call<'_>,
+    (call, apart): (&Call<'_>, Option<&Apart>),
     w: &Writer,
     (view, now): (&dyn ProjectionView, Timestamp),
     (source, first, records): (&SourceId, u64, &[SourceRecord]),
@@ -255,16 +263,25 @@ fn judge(
                     let list = lake.keys.listed(view, source)?;
                     let rotate = turns(&w.settings, list.as_deref(), source, now);
                     let newest = list.as_ref().and_then(|l| l.firsts.last());
-                    Some(lake.keys.sealing(source, newest.map(|(k, _)| k), rotate)?)
+                    let (id, key) = lake.keys.sealing(source, newest.map(|(k, _)| k), rotate)?;
+                    // A delivery sealed apart seals under its version and
+                    // its own key, composed (065).
+                    let apart = apart.map(|a| apart_key((lake, w), a, source)).transpose()?;
+                    let key = match &apart {
+                        Some((_, a)) => crate::sealing::compose(&key, std::slice::from_ref(a)),
+                        None => key,
+                    };
+                    Some((id, key, apart.map(|(id, _)| id)))
                 }
             };
-            let sealed = (sealing.as_ref()).map(|(key, _)| Sealed {
+            let sealed = (sealing.as_ref()).map(|(key, _, apart)| Sealed {
                 key: key.clone(),
                 source: None,
                 fields,
+                apart: apart.iter().cloned().collect(),
             });
             let id = match (&sealed, &sealing) {
-                (Some(s), Some((_, k))) => {
+                (Some(s), Some((_, k, _))) => {
                     let mut body = EventBody::RecordIngested {
                         ty: r.ty.clone(),
                         key: r.key.clone(),
@@ -396,6 +413,30 @@ fn stated(r: &SourceRecord) -> Result<()> {
     }
 }
 
+/// The key `source`'s values of the call are sealed apart under: the one
+/// `apart` keeps, else a new one the key store makes, kept there. One an
+/// act of removal named since, which a writer knows from the act it met
+/// or made, is not sealed under again: what the call writes after the act
+/// is not the act's, so it takes a key of its own (065).
+fn apart_key(
+    (lake, w): (&Lake, &Writer),
+    apart: &Apart,
+    source: &SourceId,
+) -> Result<(KeyId, DataKey)> {
+    let kept = lakelands_core::lock(apart).get(source).cloned();
+    let taken = |id: &KeyId| {
+        lake.keys.doomed(source, id) || w.removals.iter().any(|r| r.destroyed(source, id))
+    };
+    match kept.filter(|id| !taken(id)) {
+        Some(id) => Ok((id.clone(), lake.keys.key(source, &id)?)),
+        None => {
+            let (id, key) = lake.keys.apart(source)?;
+            lakelands_core::lock(apart).insert(source.clone(), id.clone());
+            Ok((id, key))
+        }
+    }
+}
+
 /// The next item of a stream, if it arrives before `deadline`.
 async fn next_before(
     stream: &mut SourceStream,
@@ -415,9 +456,10 @@ pub fn run(
     who: Principal,
     context: WriteContext,
     source: SourceId,
-    mut delivery: Option<DeliveryId>,
+    (mut delivery, sealed_apart): (Option<DeliveryId>, bool),
     mut records: SourceStream,
 ) -> CommitStream {
+    let apart = sealed_apart.then(|| Arc::new(Apart::default()));
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Committed>>(4);
     let size = lake.limits.commit_window_events.max(1) as usize;
     tokio::spawn(async move {
@@ -442,10 +484,13 @@ pub fn run(
                 continue;
             }
             let (l, w, s, d) = (lake.clone(), who.clone(), source.clone(), delivery.clone());
+            let a = apart.clone();
             let first = next;
             next += batch.len() as u64;
-            let run =
-                move || crate::lake::owing(|| window(&l, &w, (context, d), &s, (first, batch)));
+            let run = move || {
+                let how = (context, d, a.as_deref());
+                crate::lake::owing(|| window(&l, &w, how, &s, (first, batch)))
+            };
             let mut answer = exec::run(run).await;
             // The calls the window made due are made before it answers, so
             // its position is one the filled fields are visible from.

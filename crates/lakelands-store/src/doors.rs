@@ -854,7 +854,7 @@ impl Catalog for Doors {
             who.clone(),
             self.context,
             source.clone(),
-            opts.delivery,
+            (opts.delivery, opts.sealed_apart),
             records,
         ))
     }

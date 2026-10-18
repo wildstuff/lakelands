@@ -2085,10 +2085,12 @@ host's, never in the lake: not in its log, its projection or its export.
 | Method | Contract |
 |---|---|
 | `create(lake, source)` | Make a new version of the source's key and answer its id. A source whose keys were destroyed is never given one again (`key_destroyed`). |
-| `key(lake, source, id)` | The key of that version: 32 bytes, or none once destroyed. |
-| `destroy(lake, source)` | Destroy every version of the source's key. |
+| `key(lake, source, id)` | The key of that version, or of a key `create_apart` made: 32 bytes, or none once destroyed. |
+| `destroy(lake, source)` | Destroy every version of the source's key, and every key `create_apart` made of it. |
 | `destroy_version(lake, source, id)` | Destroy that version and every older one, never one alone; a version it does not hold is refused (`key_version_not_held`). The default refuses as `Unbound` (`key_versions`), for a store that destroys only whole sources. |
 | `ids(lake, source)` | The versions the store holds, oldest first; none once destroyed. |
+| `create_apart(lake, source)` | Make a key of the source outside its versions, for one delivery sealed apart, and answer its id: `key` answers it, `ids` never lists it, and `destroy` destroys it with the versions. The default refuses as `Unbound` (`key_apart`), and an ingest that asks `sealed_apart` is then refused. |
+| `destroy_apart(lake, source, id)` | Destroy that key alone; one it does not hold is no change. The default refuses as `Unbound` (`key_apart`). |
 
 The calls are synchronous: the writer makes them on the store's blocking
 threads, at a source's first sealed value of an open lake, and at a read

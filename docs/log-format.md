@@ -51,7 +51,7 @@ every kind, and `body`, which holds the kind and its payload.
 | `fence` | integer | always | The fencing token of the writer lease the event was appended under (§4); `0` for the event at position 0, which is written before any lease exists in the lake. |
 | `idempotency_key` | string | when given | The caller's idempotency key of an authored write. |
 | `delivery` | string | from format 17, on every `record_ingested` this release writes | The delivery the record came in: the id the caller gave its `ingest`, or the store's own, `d` and the position of the first event the call appended. A caller's id is not empty, holds no `0x00` and is not of the store's form. Only on `record_ingested`, and not before format 17; a reader refuses it elsewhere, naming the kind and the format. It is not part of the ingest id (§3). |
-| `sealed` | object | from format 16, when a source's key seals a value | `{ "key", "fields" }`, or `{ "key", "source" }`: the version of the source's key, and the members of the patch it seals, or, with `source`, the recorded output it seals (§1.4). Only on `record_ingested` and `output_recorded`; a reader refuses it on any other kind, naming the kind. |
+| `sealed` | object | from format 16, when a source's key seals a value | `{ "key", "fields" }`, or `{ "key", "source" }`: the version of the source's key, and the members of the patch it seals, or, with `source`, the recorded output it seals (§1.4). From format 18 it may hold `apart`, the source's keys outside its versions that seal the members too, in id order (§1.4); a reader refuses `apart` in a format before 18. Only on `record_ingested` and `output_recorded`; a reader refuses it on any other kind, naming the kind. |
 | `body` | object | always | The kind and its payload (§2). |
 | `hash` | string | always | SHA-256 of the event's canonical bytes without `hash`, as 64 lower-case hex digits (§1.2). |
 
@@ -249,6 +249,23 @@ version, which the key store answers by.
   as long as the oldest key period it read. A call whose inputs hold
   erasable values of two sources is not made; the field holds no value
   and says why.
+- **A delivery sealed apart** (from format 18,
+  `docs/decisions/065-part-of-a-source-may-be-taken-back.md`): an ingest
+  that asks for it is given, per source, one key of its own outside the
+  source's versions, which `sealed.apart` names beside the version in
+  `sealed.key`. Its members are sealed under one key composed of the two:
+  HKDF-SHA-256 with an empty salt over the version's 32 bytes followed by
+  each apart key's, in the order `apart` lists them, info
+  `lakelands:apart:v1`, 32 bytes out. The nonce is made as for any value.
+  A recorded output over values one source sealed is sealed and
+  digested under the oldest version they read composed the same way
+  with every apart key that sealed one of them, which its `sealed.apart`
+  lists in id order; the fold keeps, for each event a delivery sealed
+  apart, the keys it names, so a rebuild composes the same keys. With no
+  `apart` the composed key is the version itself, so every value of an
+  earlier format opens as it was sealed. Destroying any one key of a
+  composition, an apart key alone or a version with those before it,
+  leaves the members beyond reading.
 - **What equality tells.** A value's own ciphertext tells no equality
   across records or versions: its nonce is its place's. A recorded output
   is recorded once for one call (`docs/decisions/053-a-recorded-output-is-recorded-once.md`),
@@ -367,7 +384,7 @@ this object:
 | `record_upserted` | `type`, `key`, `version`, `patch`, `made` | An authored write. From format 17 its `patch` may carry a field of `authority: verb` too, written by a verb's call or by an aging rule (lakelands#1130). `patch` is sparse: each member sets a field, `null` clears it, an absent field is unchanged (`docs/decisions/012-writes-touch-only-their-fields.md`). `made` is described below the table. |
 | `record_ingested` | `type`, `key`, `version`, `patch`, `made` | A write from a source; `source` is set in the envelope. Only `source` and `shared` fields may appear in the patch. `made` as on `record_upserted`. |
 | `record_retired` | `type`, `key`, `version` | The record is retired: invisible to reads at or after this position, its history kept. From format 17 a verb whose `effect` is `retire` writes it, caused by its `verb_called` and carrying the verb as its `procedure` (lakelands#1148). The same append closes its pending `compute`s (see `write_proposed`). |
-| `values_removed` | `source`, `selection` (`{"written_before": <time>}` or `{"delivery": <id>}`), `before` (for a time, the first position it does not reach), `keys` (the versions of the source's key it destroys, oldest first; absent where none) | From format 17. The host took back part of the source (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`): each non-null member of the patch of a `record_ingested` of the source before this position that the selection names (below `before`, or of that `delivery`), a key field and a reference field excepted, folds as erased, as at `source_forgotten`. A value sealed under a version `keys` names, which the key store no longer gives, folds as erased, not as a lost key, and an output sealed under one records nothing. The `record_retired` of each record left holding nothing of another hand follows in the same append. A reader refuses one of a format before 17. |
+| `values_removed` | `source`, `selection` (`{"written_before": <time>}` or `{"delivery": <id>}`), `before` (for a time, the first position it does not reach), `keys` (the versions of the source's key it destroys, oldest first; absent where none), `apart` (from format 18, the source's keys of deliveries sealed apart it destroys, in id order; absent where none) | From format 17. The host took back part of the source (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`): each non-null member of the patch of a `record_ingested` of the source before this position that the selection names (below `before`, or of that `delivery`), a key field and a reference field excepted, folds as erased, as at `source_forgotten`. A value sealed under a version `keys` names, or a key `apart` names, which the key store no longer gives, folds as erased, not as a lost key, and an output sealed under one records nothing. The `record_retired` of each record left holding nothing of another hand follows in the same append. A reader refuses one of a format before 17. |
 | `source_forgotten` | `source`, `keys` (the versions of its key, a list) | From format 16. The host forgot the source (`docs/decisions/058-a-source-may-be-forgotten.md`): its keys are destroyed, and every value it sealed, before this position and after, folds as erased: the field holds no value, and its provenance is kept with `erased: true`; an `output_recorded` it sealed records nothing, and one that names it by `output_at` fills nothing. A sealed value whose key the key store does not give, where no `source_forgotten` of its source is in the log, is not erased: the fold fails closed. The `record_retired` of each record the source alone brought follows in the same append. A reader refuses one of a format before 16. |
 | `record_restricted` | `type`, `key`, `version`, `reason` | The record is withheld from principals without the `restricted` grant (a retention hold); `reason` is the host's. Written by the host through the store facade, never by a caller's door. |
 | `record_unrestricted` | `type`, `key`, `version` | The hold is lifted. |

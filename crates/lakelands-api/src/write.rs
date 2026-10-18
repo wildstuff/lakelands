@@ -47,6 +47,14 @@ pub struct IngestOpts {
     /// delivery is a duplicate and stays with the first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<DeliveryId>,
+    /// Seal the call's values of erasable fields under a key of their own
+    /// too, one per source, outside the source's versions, so that taking
+    /// back the delivery shreds it alone
+    /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+    /// Refused as unbound where the key store makes no such key. Off by
+    /// default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sealed_apart: bool,
 }
 
 /// What a write did. A writer never has to know in advance whether its
@@ -1883,6 +1891,10 @@ pub struct RemoveReport {
     pub references: Vec<PurgeReference>,
     /// The versions of the source's key it destroys, oldest first.
     pub keys: Vec<KeyId>,
+    /// The keys of the source's deliveries sealed apart it destroys, in id
+    /// order: each whose values it all selects.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apart: Vec<KeyId>,
     /// The values of an erasable field it redacts and does not shred: in
     /// plaintext, or sealed under a version that also seals values outside
     /// the selection. `require_shredded` refuses the act while any are.
@@ -1957,6 +1969,17 @@ impl RemoveReport {
             said.push(format!(
                 "{} {} of `{}`'s key {} destroyed.",
                 if n == 1 { "Version" } else { "Versions" },
+                keys.join(", "),
+                self.source,
+                be(n)
+            ));
+        }
+        if !self.apart.is_empty() {
+            let keys: Vec<&str> = self.apart.iter().map(|k| k.as_str()).collect();
+            let n = self.apart.len() as u64;
+            said.push(format!(
+                "The {} {} of `{}`'s deliveries sealed apart {} destroyed.",
+                if n == 1 { "key" } else { "keys" },
                 keys.join(", "),
                 self.source,
                 be(n)

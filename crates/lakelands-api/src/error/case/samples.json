@@ -1441,6 +1441,9 @@
    "code": "delivery_not_carried"
   },
   {
+   "code": "sealed_apart_not_carried"
+  },
+  {
    "code": "trigger_too_deep",
    "depth": 1,
    "max": 1

@@ -991,6 +991,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             "ingest_opts",
             members(&IngestOpts {
                 delivery: Some("batch-7".into()),
+                sealed_apart: true,
             }),
         ),
         // The `applied` record is the variant's members beside its tag.

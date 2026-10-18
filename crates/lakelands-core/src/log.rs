@@ -124,6 +124,10 @@ pub fn reads_format(v: u64) -> bool {
 /// The log format that first holds `sealed` and `source_forgotten` (058).
 const SEALED_FROM: u32 = 16;
 
+/// The log format that first holds `apart`, a delivery's key outside its
+/// source's versions (065).
+const APART_FROM: u32 = 18;
+
 /// An event as log format `v` wrote it, its members as the format this
 /// release writes says them, for the release's own structs to read. Its
 /// `v` stays the one it was written in, and its bytes and hash are the
@@ -260,7 +264,8 @@ pub fn created_in_another(event: &Event) -> Option<Flaw> {
 /// (`docs/decisions/058-a-source-may-be-forgotten.md`); and `delivery` on
 /// any kind but `record_ingested`, or before format 17
 /// (`docs/log-format.md` §1.1); and a `trigger_dropped`, or a
-/// `trigger_fired`'s `change` or `created`, before format 17.
+/// `trigger_fired`'s `change` or `created`, before format 17; and `apart`,
+/// in `sealed` or on a `values_removed`, before format 18 (065).
 /// No door
 /// puts any there; a reader holds the rule for a log written by something
 /// else.
@@ -298,6 +303,15 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
     if matches!(event.body, EventBody::ValuesRemoved { .. }) && event.v < 17 {
         let v = event.v;
         return Some(Flaw::RemovedBefore { v });
+    }
+    let apart = match &event.body {
+        EventBody::ValuesRemoved { apart, .. } => !apart.is_empty(),
+        _ => false,
+    };
+    let apart = apart || event.sealed.as_ref().is_some_and(|s| !s.apart.is_empty());
+    if apart && event.v < APART_FROM {
+        let v = event.v;
+        return Some(Flaw::ApartBefore { v });
     }
     let told = |c: &Option<_>, m: &Option<bool>| c.is_some() || m.is_some();
     if let EventBody::TriggerFired {

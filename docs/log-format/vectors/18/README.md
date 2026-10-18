@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 71, each
+- `further.json`: the lake's next events, positions 8 to 75, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -137,7 +137,17 @@ The files:
     moves a reference (71) (062). The migrations proposed at 12 and 29
     are lines as format 16 wrote them, which a writer of 17 never writes:
     a reader completes such a report as `recomputed: 0` and makes its
-    `report_id` again.
+    `report_id` again;
+  - an ingest of `hr` in the delivery `late`, sealed apart (72): its
+    `sealed` names `hr`'s version `1` and, in `apart`, the delivery's own
+    key `a1`, and its `email` is sealed under the key HKDF-SHA-256
+    derives from the two (`docs/log-format.md` §1.4); the output `shout`
+    recorded over it, sealed and digested under that composed key (73);
+    a `values_removed` taking `late` back, naming `a1` in `apart` and no
+    version (74); and the `record_retired` of `c5`, which only `late`
+    wrote, in the same append (75): forms format 18 holds and 17 does
+    not (065, lakelands#1214). `hr`'s version `1` is the same key as
+    `crm`'s, and `a1` is SHA-256 of `lakelands:vectors:apart`.
 
   Its `misplaced` holds five lines that are not of the lake. Each
   stands at its position after the event before it, in the release's

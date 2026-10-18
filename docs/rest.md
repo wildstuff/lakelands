@@ -218,7 +218,10 @@ window as it becomes durable,
 names the call's delivery, which every record's event carries; without
 it the store names its own, `d` and the position of the call's first
 event, and a window before any event of the call names none
-(`docs/log-format.md` §1.1). Where a window is cut is
+(`docs/log-format.md` §1.1). `?sealed_apart` seals the call's values
+of erasable fields under a key of their own too, so that taking back
+the delivery shreds it alone
+(`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). Where a window is cut is
 the store's, and no answer turns on it: a record is judged over the
 lake and the records before it, and a refused one is refused alike
 wherever the cut fell. What the cut decides is only the refusal's

@@ -354,6 +354,8 @@ catalog! {
         KeyStore => "a key store, which seals a source's values of an erasable field (the host bound none)",
         /// A key store that destroys a version of a source's key with those before it.
         KeyVersions => "a key store that destroys a version of a source's key with every older one (the bound one destroys only a whole source's)",
+        /// A key store that makes a source a key of its own for one delivery.
+        KeyApart => "a key store that makes a key of a source outside its versions, for a delivery sealed apart (the bound one makes none)",
         /// A reranker, the second stage of a search.
         Rerank => "a reranker, the second stage of a search (the host bound none)",
         /// A vector index, which this engine keeps none of.
@@ -694,6 +696,8 @@ catalog! {
         DeliveryOn { kind: String, v: u32 } => "a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries",
         /// A `values_removed` event in a format before the one that added it.
         RemovedBefore { v: u32 } => "an event of format {v} is a `values_removed`, which format 17 added",
+        /// An event of a format before 18 carries `apart`.
+        ApartBefore { v: u32 } => "an event of format {v} carries `apart`, which format 18 added",
         /// An event other than `record_ingested` carries `upstream`.
         UpstreamOn { kind: String } => "a `{kind}` event carries `upstream`, which only a `record_ingested` event carries",
         /// The hash does not match the event.

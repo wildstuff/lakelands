@@ -433,9 +433,9 @@ impl Catalog for Doors {
         opts: lakelands_api::IngestOpts,
         records: SourceStream,
     ) -> Result<CommitStream> {
-        match opts.delivery {
-            None => self.ingest(who, source, records).await,
-            Some(_) => self.inner.ingest_with(who, source, opts, records).await,
+        match (&opts.delivery, opts.sealed_apart) {
+            (None, false) => self.ingest(who, source, records).await,
+            _ => self.inner.ingest_with(who, source, opts, records).await,
         }
     }
     async fn ingest(

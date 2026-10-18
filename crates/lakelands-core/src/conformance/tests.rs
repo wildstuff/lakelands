@@ -399,7 +399,8 @@ fn next_drains_a_stream_in_order_and_then_ends() {
 }
 
 /// A catalog that carries no delivery id to the store refuses one, rather
-/// than drop it; with none, its `ingest_with` is its `ingest`.
+/// than drop it, and so a delivery sealed apart (065); with neither, its
+/// `ingest_with` is its `ingest`.
 #[test]
 fn a_catalog_that_carries_no_delivery_refuses_one() {
     use lakelands_api::error::Case;
@@ -414,6 +415,7 @@ fn a_catalog_that_carries_no_delivery_refuses_one() {
     let src = SourceId::from("crm");
     let with = |delivery: Option<&str>| IngestOpts {
         delivery: delivery.map(Into::into),
+        ..IngestOpts::default()
     };
     let named = block_on(cat.ingest_with(
         &who,
@@ -428,4 +430,11 @@ fn a_catalog_that_carries_no_delivery_refuses_one() {
         matches!(&none, Err(e) if e.situation() == down().situation()),
         "with no delivery it ingests, and this catalog's ingest is down"
     );
+    let apart = IngestOpts {
+        sealed_apart: true,
+        ..IngestOpts::default()
+    };
+    let apart = block_on(cat.ingest_with(&who, &src, apart, super::fixture::stream(vec![])));
+    let case = apart.err().and_then(|e| e.case().map(|s| s.case.clone()));
+    assert_eq!(case, Some(Case::SealedApartNotCarried));
 }

@@ -2970,13 +2970,19 @@ impl Decide<'_> {
     /// the fold's own function, which hands out no call here.
     fn apply(&self, before: Option<&StoredRecord>, d: &Draft) -> Result<StoredRecord> {
         let (w, event) = (self.w, provisional(self.call.lake, self.next, d));
-        let staged = match self.first_use(d)? {
-            Some((at, list)) => {
+        // Its own keys sealed apart are read from its event, so only a
+        // version's first use is staged (065).
+        let mut kept = self.kept(d)?;
+        kept.retain(|(at, _)| at.0 == crate::sealing::USED);
+        let staged = match kept.is_empty() {
+            false => {
                 let mut staged = self.pending.sealed.clone();
-                staged.entry(at).or_default().push((self.next, list));
+                for (at, list) in kept {
+                    staged.entry(at).or_default().push((self.next, list));
+                }
                 std::borrow::Cow::Owned(staged)
             }
-            None => std::borrow::Cow::Borrowed(&self.pending.sealed),
+            true => std::borrow::Cow::Borrowed(&self.pending.sealed),
         };
         let outputs = &mut Outputs {
             staged: Some(&staged),
@@ -3076,22 +3082,23 @@ impl Decide<'_> {
         Ok(drafts)
     }
 
-    /// The list of the version `d`, landing next, uses first, if it is the
-    /// first use of that version of its source's key.
-    fn first_use(&self, d: &Draft) -> Result<Option<((String, Digest), Value)>> {
+    /// What the fold keeps once `d`, landing next, seals: the list of the
+    /// version it uses first, if it is the first use of that version of
+    /// its source's key, and its keys sealed apart ([`crate::sealing::kept`]).
+    fn kept(&self, d: &Draft) -> Result<Vec<((String, Digest), Value)>> {
         let ingested = matches!(d.body, EventBody::RecordIngested { .. });
         let (Some(sealed), Some(source), true) = (&d.sealed, d.source.as_ref(), ingested) else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
-        let used = (source, &sealed.key, self.next, self.now);
+        let used = (source, sealed, self.next, self.now);
         let read = (&self.pending.sealed, self.view, &*self.call.lake.keys);
-        crate::sealing::first_use(read, used)
+        crate::sealing::kept(read, used)
     }
 
     /// A planned record write with what it sets off: its own event, which
     /// lands next, then the triggers and object-set changes it causes.
     pub(crate) fn planned(&mut self, plan: RecordPlan) -> Result<Plan> {
-        if let Some((at, list)) = self.first_use(&plan.draft)? {
+        for (at, list) in self.kept(&plan.draft)? {
             self.pending
                 .sealed
                 .entry(at)

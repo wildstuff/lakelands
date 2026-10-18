@@ -567,6 +567,7 @@ What a refusal is about.
 | `source_id_form` | — | a source id is not empty and holds no NUL character | A source id that is empty or holds a NUL. |
 | `delivery_id_form` | — | a delivery id is not empty, holds no NUL character, and is not `d` followed by digits, the form of the store's own | A delivery id that is empty, holds a NUL, or takes the form of the store's own. |
 | `delivery_not_carried` | — | this catalog does not carry a delivery id to the store | A delivery id given to a catalog that does not carry it. |
+| `sealed_apart_not_carried` | — | this catalog does not carry a delivery sealed apart to the store | An ingest asked to seal its delivery apart through a catalog that does not carry it. |
 | `trigger_too_deep` | `depth` (u32), `max` (u32) | its `max_depth` {depth} is above the lake's `max_reactive_depth` {max} | A trigger's ceiling above the lake's. |
 | `unanswered` | `position` (Position), `accepted` (bool) | [{?accepted}the acceptance\|the call] is in the log at position {position}, and no answer of the verb's executor is recorded for it, so this retry runs nothing; if the call is still running, or its answer is held, its answer will be recorded and a retry then answers it, unless the handle that ran it is dropped or loses its lease first; if its first answer said that the verb's executor was not handed the call, [{?accepted}propose the call again\|call the verb again under another key or with none] | A retry that finds no answer of the verb's executor recorded. |
 | `unclaimed_link_type` | `type` (TypeName) | `{type}` is the link type of no relation: its relation was renamed or removed | A link type no relation carries. |
@@ -830,6 +831,7 @@ A seam the call needs and the host has not bound.
 | `function_backing` | `kind` (String) | the `{kind}` function backing (the host bound none of that kind) | A function backing of a kind. |
 | `key_store` | — | a key store, which seals a source's values of an erasable field (the host bound none) | A key store, which seals a source's values of an erasable field. |
 | `key_versions` | — | a key store that destroys a version of a source's key with every older one (the bound one destroys only a whole source's) | A key store that destroys a version of a source's key with those before it. |
+| `key_apart` | — | a key store that makes a key of a source outside its versions, for a delivery sealed apart (the bound one makes none) | A key store that makes a source a key of its own for one delivery. |
 | `rerank` | — | a reranker, the second stage of a search (the host bound none) | A reranker, the second stage of a search. |
 | `vector_index` | — | a vector index (this engine keeps none) | A vector index, which this engine keeps none of. |
 | `engine` | `name` (String) | the engine `{name}` (no opener for it was passed in) | An engine, whose opener was not passed in. |
@@ -920,6 +922,7 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `dropped_before` | `v` (u32) | an event of format {v} is a `trigger_dropped`, which format 17 added | A `trigger_dropped` in a format before the one that added it. |
 | `delivery_on` | `kind` (String), `v` (u32) | a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries | An event other than a `record_ingested` of format 17 on carries `delivery`. |
 | `removed_before` | `v` (u32) | an event of format {v} is a `values_removed`, which format 17 added | A `values_removed` event in a format before the one that added it. |
+| `apart_before` | `v` (u32) | an event of format {v} carries `apart`, which format 18 added | An event of a format before 18 carries `apart`. |
 | `upstream_on` | `kind` (String) | a `{kind}` event carries `upstream`, which only a `record_ingested` event carries | An event other than `record_ingested` carries `upstream`. |
 | `hash_mismatch` | — | the hash does not match the event | The hash does not match the event. |
 | `disagrees` | — | the engine's record of the event disagrees with its bytes | The engine's record of the event disagrees with its bytes. |

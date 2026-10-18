@@ -20,7 +20,8 @@ feed, positions consecutive from 0 and naming their files in 20 digits,
 the hash chain from 64 zeros, every checkpoint against the position,
 the hash and the files before it, every line in the one format, `cause`
 never inside `context`, `upstream` only on a `record_ingested` event,
-`sealed` only on a `record_ingested` or an `output_recorded`,
+`sealed` only on a `record_ingested` or an `output_recorded`, `apart`
+only from format 18 on,
 and every `known_at` in its one form and never before the `known_at`
 before it (log-format §1.3). It prints one line per file and the last
 position and hash, or the position where the files stop being the log,
@@ -343,6 +344,18 @@ SHOWS = {
         lambda e: e["body"]["kind"] == "values_removed" and e["body"].get("source") == "erp"
         and set(e["body"].get("selection", {})) == {"written_before"} and e["body"].get("before") == e["position"]
         and "keys" not in e["body"]),
+    "sealed_apart": shows("an ingest of a delivery sealed apart, whose `sealed` names a version and the delivery's own key in `apart`")(
+        lambda e: e["body"]["kind"] == "record_ingested" and e.get("sealed", {}).get("apart") == ["a1"]
+        and e.get("delivery") == "late" and ingest_id(e) == e["id"]
+        and all(isinstance(e["body"]["patch"].get(f), str) and BASE64.fullmatch(e["body"]["patch"][f]) for f in e["sealed"]["fields"])),
+    "sealed_apart_output": shows("a recorded output sealed under a version composed with a delivery's key apart")(
+        lambda e: e["body"]["kind"] == "output_recorded" and e.get("sealed", {}).get("apart") == ["a1"]
+        and "source" in e["sealed"] and BASE64.fullmatch(e["body"].get("output", "")) is not None),
+    "removed_apart": shows("a `values_removed` that destroys a delivery's key apart and no version")(
+        lambda e: e["body"]["kind"] == "values_removed" and e["body"].get("apart") == ["a1"]
+        and "keys" not in e["body"]),
+    "removal_apart_retires": shows("the `record_retired` of a record only the delivery sealed apart wrote")(
+        lambda e: e["body"]["kind"] == "record_retired" and e["body"].get("key") == "c5"),
     "removal_by_time_retires": shows("the `record_retired` of a record only what was taken back by time wrote")(
         lambda e: e["body"]["kind"] == "record_retired" and e["body"].get("key") == "INV-3"),
     "lake_upgraded": shows("a `lake_upgraded` from the format before to the one this lake is written in")(
@@ -459,6 +472,9 @@ def verify_dir(root):
                  f"an event of format {v} is a `source_forgotten`, which format 16 added")
             need(event["body"].get("kind") != "values_removed" or v >= 17,
                  f"an event of format {v} is a `values_removed`, which format 17 added")
+            apart = bool(event.get("sealed", {}).get("apart")) or (
+                event["body"].get("kind") == "values_removed" and bool(event["body"].get("apart")))
+            need(not apart or v >= 18, f"an event of format {v} carries `apart`, which format 18 added")
             # known_at in its one form (§1.3), whose text orders as its
             # instant does, and never before the event before it.
             k = event.get("known_at")

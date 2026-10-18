@@ -755,6 +755,9 @@ interface types {
     /// Options an `ingest` takes.
     record ingest-opts {
         delivery: option<delivery-id>,
+        /// Seal the delivery under a key of its own too, so that taking
+        /// it back shreds it alone.
+        sealed-apart: bool,
     }
 
     record applied {

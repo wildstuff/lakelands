@@ -795,6 +795,7 @@ async fn an_ingests_delivery_is_the_callers_or_the_stores_own(store: Store) -> H
     let source = SourceId::from("sensor");
     let with = |delivery: Option<&str>| IngestOpts {
         delivery: delivery.map(DeliveryId::from),
+        ..IngestOpts::default()
     };
     let r = |key: &str, body: &str| source_record("feed", key, json!({"body": body}));
     // Each call's events and its answer, as the log and the windows hold them.

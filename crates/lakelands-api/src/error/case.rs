@@ -1415,6 +1415,8 @@ catalog! {
         DeliveryIdForm => "a delivery id is not empty, holds no NUL character, and is not `d` followed by digits, the form of the store's own",
         /// A delivery id given to a catalog that does not carry it.
         DeliveryNotCarried => "this catalog does not carry a delivery id to the store",
+        /// An ingest asked to seal its delivery apart through a catalog that does not carry it.
+        SealedApartNotCarried => "this catalog does not carry a delivery sealed apart to the store",
         /// A trigger's ceiling above the lake's.
         TriggerTooDeep { depth: u32, max: u32 } => "its `max_depth` {depth} is above the lake's `max_reactive_depth` {max}",
         /// A retry that finds no answer of the verb's executor recorded.

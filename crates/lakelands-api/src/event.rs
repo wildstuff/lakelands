@@ -137,6 +137,12 @@ pub struct Sealed {
     /// The patch members sealed, in name order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<FieldName>,
+    /// The keys of the source outside its versions that seal them too,
+    /// in id order, each a delivery's sealed apart: the members are
+    /// sealed under one key derived from `key` and these, from format 18
+    /// on (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apart: Vec<crate::id::KeyId>,
 }
 
 /// Every kind of event, and its payload. The set is closed per format
@@ -270,6 +276,10 @@ pub enum EventBody {
         /// longest prefix whose values it all selects.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         keys: Vec<crate::id::KeyId>,
+        /// The source's keys of deliveries sealed apart it destroys, in id
+        /// order: each whose values it all selects, from format 18 on.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        apart: Vec<crate::id::KeyId>,
     },
     /// A record was retired.
     RecordRetired {

@@ -152,6 +152,50 @@ impl Keys {
         Ok((id, key))
     }
 
+    /// A new key of `source` outside its versions, for the delivery an
+    /// ingest seals apart (065): refused as unbound where the key store
+    /// makes none.
+    pub fn apart(&self, source: &SourceId) -> Result<(KeyId, DataKey)> {
+        let id = self.store()?.create_apart(&self.lake, source)?;
+        let key = self.key(source, &id)?;
+        Ok((id, key))
+    }
+
+    /// The key `sealed` names of `source`: its version, composed with the
+    /// keys of deliveries sealed apart it names ([`compose`]). One the key
+    /// store does not give fails closed, naming it.
+    pub fn sealed(&self, source: &SourceId, sealed: &Sealed) -> Result<DataKey> {
+        match self.opened_sealed(source, sealed)? {
+            Ok(key) => Ok(key),
+            Err(mut missing) => {
+                let (source, key) = (source.clone(), missing.remove(0));
+                Err(Error::unavailable(Situation::KeyMissing { source, key }))
+            }
+        }
+    }
+
+    /// [`Self::sealed`], or those of its keys the key store does not
+    /// give, in its order: destroyed, which only an act in the log makes
+    /// an erasure.
+    pub fn opened_sealed(
+        &self,
+        source: &SourceId,
+        sealed: &Sealed,
+    ) -> Result<std::result::Result<DataKey, Vec<KeyId>>> {
+        let (mut keys, mut missing) = (Vec::with_capacity(1 + sealed.apart.len()), Vec::new());
+        for id in std::iter::once(&sealed.key).chain(&sealed.apart) {
+            match self.opened(source, id)? {
+                Some(k) => keys.push(k),
+                None => missing.push(id.clone()),
+            }
+        }
+        if !missing.is_empty() {
+            return Ok(Err(missing));
+        }
+        let (version, apart) = keys.split_first().expect("a seal names its version");
+        Ok(Ok(compose(version, apart)))
+    }
+
     /// The key of `source` of version `id`. One the key store does not
     /// give fails closed: a lost key is never read as an erasure.
     pub fn key(&self, source: &SourceId, id: &KeyId) -> Result<DataKey> {
@@ -220,6 +264,15 @@ impl Keys {
         let mut held = lock(&self.held);
         held.lists.clear();
         held.generation += 1;
+    }
+
+    /// Whether the key store holds `source`'s key `id`, asked of it, not
+    /// of memory; none is held without a key store.
+    pub fn holds(&self, source: &SourceId, id: &KeyId) -> Result<bool> {
+        match &self.store {
+            Some(store) => Ok(store.key(&self.lake, source, id)?.is_some()),
+            None => Ok(false),
+        }
     }
 
     /// The versions of `source`'s key the key store holds; none without
@@ -291,6 +344,62 @@ impl Keys {
             None => Ok(()),
         }
     }
+
+    /// Drop the keys `keys` of `source`'s deliveries sealed apart from
+    /// memory, so none seals again, though the key store has not yet
+    /// destroyed it, then have the key store destroy each it still holds
+    /// (065). A key gone already is no change, so a key store that makes
+    /// no such key is never asked.
+    pub fn destroy_apart(&self, source: &SourceId, keys: &[KeyId]) -> Result<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        {
+            let mut held = lock(&self.held);
+            held.by
+                .retain(|(s, id), _| s != source || !keys.contains(id));
+            let doomed = keys.iter().map(|k| (source.clone(), k.clone()));
+            held.doomed.extend(doomed);
+        }
+        let Some(store) = &self.store else {
+            return Ok(());
+        };
+        for id in keys {
+            if self.holds(source, id)? {
+                store.destroy_apart(&self.lake, source, id)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether an act of removal named `source`'s key `id`: from then on
+    /// it seals nothing.
+    pub fn doomed(&self, source: &SourceId, id: &KeyId) -> bool {
+        lock(&self.held)
+            .doomed
+            .contains(&(source.clone(), id.clone()))
+    }
+}
+
+/// One key from a version of a source's key and the keys of deliveries
+/// sealed apart that seal with it (065): HKDF-SHA-256 with an empty salt
+/// over the version's bytes then each apart key's, info
+/// `lakelands:apart:v1`. With none apart it is the version itself, so a
+/// value sealed before format 18 opens as it was sealed.
+pub fn compose(version: &DataKey, apart: &[DataKey]) -> DataKey {
+    if apart.is_empty() {
+        return version.clone();
+    }
+    let mac = |k: &[u8], parts: &[&[u8]]| {
+        let mut m = <Hmac<Sha256> as Mac>::new_from_slice(k).expect("HMAC takes any key");
+        parts.iter().for_each(|p| m.update(p));
+        Zeroizing::new(<[u8; 32]>::from(m.finalize().into_bytes()))
+    };
+    let ikm: Vec<&[u8]> = std::iter::once(&version.0[..])
+        .chain(apart.iter().map(|k| &k.0[..]))
+        .collect();
+    let prk = mac(&[0; 32], &ikm);
+    DataKey(*mac(&*prk, &[b"lakelands:apart:v1".as_slice(), &[1]]))
 }
 
 /// The store's own seam under which the fold keeps the sources the log
@@ -352,6 +461,25 @@ pub fn used_by(source: &SourceId) -> Digest {
     crate::backed::digest(&Value::from(source.as_str()))
 }
 
+/// The store's own seam under which the fold keeps, for each event a
+/// delivery sealed apart, the keys outside its source's versions it names
+/// in `sealed` (065): a value's version is the one its position says
+/// ([`USED`]), and its apart keys are the ones kept at its position, so a
+/// recorded output composes the same keys at the write and at a rebuild.
+pub const APART: &str = "sys:apart";
+
+/// The input [`APART`] keeps the apart keys of `source`'s event at `at`
+/// under.
+pub fn apart_at(source: &SourceId, at: Position) -> Digest {
+    crate::backed::digest(&serde_json::json!([source, at]))
+}
+
+/// The apart keys [`APART`] keeps as `value`.
+pub fn apart_of(value: &Value) -> Vec<KeyId> {
+    let ids = value.as_array().into_iter().flatten();
+    ids.filter_map(|v| Some(KeyId::from(v.as_str()?))).collect()
+}
+
 /// Whether a source whose newest version was first used at `first`
 /// (none where the list does not say) seals a value written at `now`
 /// under a new one: where the source has a key period and `now` is past
@@ -401,12 +529,30 @@ pub fn firsts(list: Option<&Value>) -> Vec<(KeyId, Position)> {
     ids.filter_map(first).collect()
 }
 
+/// What the fold keeps once `sealed` seals a value of `source` at `at`,
+/// written at `known`, each with the place it is kept under: the list
+/// [`USED`] where its version is first used there ([`first_use`]), and
+/// its apart keys under [`APART`] where it names any. The fold and a
+/// write's plan both keep them so, and read the same keys.
+pub fn kept(
+    read: (&crate::backed::Recorded, &dyn ProjectionView, &Keys),
+    (source, sealed, at, known): (&SourceId, &Sealed, Position, lakelands_api::Timestamp),
+) -> Result<Vec<((String, Digest), Value)>> {
+    let mut kept: Vec<_> = first_use(read, (source, &sealed.key, at, known))?
+        .into_iter()
+        .collect();
+    if !sealed.apart.is_empty() {
+        let place = (APART.to_owned(), apart_at(source, at));
+        kept.push((place, serde_json::json!(sealed.apart)));
+    }
+    Ok(kept)
+}
+
 /// The list [`USED`] keeps for `source` once `key` seals a value at `at`,
 /// written at `known`, with the place it is kept under: none where the
 /// list, as `staged` holds it or else `view` ([`Keys::listed`]), names
-/// `key` already. The fold and a write's plan both keep it so, and read
-/// the same versions.
-pub fn first_use(
+/// `key` already.
+fn first_use(
     (staged, view, keys): (&crate::backed::Recorded, &dyn ProjectionView, &Keys),
     (source, key, at, known): (&SourceId, &KeyId, Position, lakelands_api::Timestamp),
 ) -> Result<Option<((String, Digest), Value)>> {
