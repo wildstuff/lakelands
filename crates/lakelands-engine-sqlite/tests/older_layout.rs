@@ -1,17 +1,18 @@
 //! A projection an older build laid out (lakelands#1151): its `routes`
-//! without the `source` column and its mark one layout back. A reader's
-//! open is refused naming the layouts; the writer's open rebuilds it from
-//! the log under its lease, saying why, and the next writer's open
-//! rebuilds nothing.
+//! without the `source` column, its states without the `procedure` a
+//! computed field's metadata names (lakelands#1191), and its mark one
+//! layout back. A reader's open is refused naming the layouts; the
+//! writer's open rebuilds it from the log under its lease, saying why,
+//! and the next writer's open rebuilds nothing.
 
 use std::sync::Arc;
 
 use lakelands_api::engine::OpenMode;
 use lakelands_api::error::Situation;
-use lakelands_api::ontology::StorageKind::Text;
+use lakelands_api::ontology::StorageKind::{Decimal, Text};
 use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
-use lakelands_core::conformance::fixture::{Lake, source_record, sourced, type_decl};
+use lakelands_core::conformance::fixture::{Lake, computed_by, source_record, sourced, type_decl};
 use lakelands_engine_sqlite::SqliteOpener;
 use serde_json::json;
 
@@ -31,10 +32,17 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
     let location = Location::sqlite("older", &dir);
     let store = open(&location, OpenMode::Create).await.unwrap();
     let l = Lake::of(store.as_ref());
-    l.declare(type_decl("note", vec![sourced("text", Text)]))
-        .await
-        .unwrap();
-    let a = source_record("note", "a", json!({"text": "kept"}));
+    let twice = json!({"declare": "function", "name": "twice", "backing": "expr",
+        "inputs": [{"name": "n", "type": {"kind": "decimal"}}], "expr": "n * 2"});
+    let twice = serde_json::from_value(twice).unwrap();
+    l.declare_as(twice, "declaring `twice`").await.unwrap();
+    let fields = vec![
+        sourced("text", Text),
+        sourced("n", Decimal),
+        computed_by("double", Decimal, "twice", &["n"]),
+    ];
+    l.declare(type_decl("note", fields)).await.unwrap();
+    let a = source_record("note", "a", json!({"text": "kept", "n": "2"}));
     l.ingest("crm", vec![a]).await.unwrap();
     store.close().await.unwrap();
     let db = || rusqlite::Connection::open(dir.join("projection.db")).unwrap();
@@ -43,6 +51,14 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
             .unwrap()
     };
     let wanted = layout();
+    let unnamed = db().execute(
+        "UPDATE records SET state = replace(state, '\"procedure\":\"twice\",', '')",
+        [],
+    );
+    assert!(
+        unnamed.unwrap() > 0,
+        "a state names `twice` as its procedure"
+    );
     db().execute_batch(&format!(
         "DROP INDEX routes_source; ALTER TABLE routes DROP COLUMN source;
          UPDATE meta SET v = {} WHERE k = 'layout';",
@@ -63,6 +79,8 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
     );
     let note = Lake::of(store.as_ref()).read("note", "a").await.unwrap();
     assert_eq!(note.fields["text"], "kept");
+    let procedure = note.meta["double"].procedure.as_deref();
+    assert_eq!(procedure, Some("twice"), "the rebuild names the function");
     let sourced: i64 = (db().query_row(
         "SELECT count(*) FROM routes WHERE source = 'crm'",
         [],

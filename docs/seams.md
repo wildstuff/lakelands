@@ -1153,8 +1153,8 @@ record (`docs/decisions/022-functions-are-declarations.md`, extended):
   `embed:<model>`, keyed by the digest of `{"texts": [text]}`
   (`docs/log-format.md` §2.5), with the model as the procedure's name
   and the type's version that declared the `embed` as its version.
-  The field's `procedure_version` is the type's version when the vector
-  was produced. A later declaration of the type that leaves the vector's
+  The field's `procedure` is the model and its `procedure_version` the
+  type's version when the vector was produced. A later declaration of the type that leaves the vector's
   text and model as they are rewrites no record, so the metadata keeps
   that version. One
   text is embedded once per model in a lake; a replay, and every later

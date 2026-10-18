@@ -1,8 +1,9 @@
 //! A projection an older build laid out (lakelands#1151): its `routes`
-//! without the `source` column and its mark one layout back. A reader's
-//! open is refused naming the layouts; the writer's open rebuilds it from
-//! the log under its lease, saying why, and the next writer's open
-//! rebuilds nothing.
+//! without the `source` column, its states without the `procedure` a
+//! computed field's metadata names (lakelands#1191), and its mark one
+//! layout back. A reader's open is refused naming the layouts; the
+//! writer's open rebuilds it from the log under its lease, saying why,
+//! and the next writer's open rebuilds nothing.
 
 mod common;
 
@@ -10,10 +11,10 @@ use std::sync::Arc;
 
 use lakelands_api::engine::OpenMode;
 use lakelands_api::error::Situation;
-use lakelands_api::ontology::StorageKind::Text;
+use lakelands_api::ontology::StorageKind::{Decimal, Text};
 use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
-use lakelands_core::conformance::fixture::{Lake, source_record, sourced, type_decl};
+use lakelands_core::conformance::fixture::{Lake, computed_by, source_record, sourced, type_decl};
 use lakelands_engine_pg::PgOpener;
 use serde_json::json;
 
@@ -40,10 +41,17 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
     let location = common::location(&url, "older", &schema);
     let store = open(&location, OpenMode::Create).await.unwrap();
     let l = Lake::of(store.as_ref());
-    l.declare(type_decl("note", vec![sourced("text", Text)]))
-        .await
-        .unwrap();
-    let a = source_record("note", "a", json!({"text": "kept"}));
+    let twice = json!({"declare": "function", "name": "twice", "backing": "expr",
+        "inputs": [{"name": "n", "type": {"kind": "decimal"}}], "expr": "n * 2"});
+    let twice = serde_json::from_value(twice).unwrap();
+    l.declare_as(twice, "declaring `twice`").await.unwrap();
+    let fields = vec![
+        sourced("text", Text),
+        sourced("n", Decimal),
+        computed_by("double", Decimal, "twice", &["n"]),
+    ];
+    l.declare(type_decl("note", fields)).await.unwrap();
+    let a = source_record("note", "a", json!({"text": "kept", "n": "2"}));
     l.ingest("crm", vec![a]).await.unwrap();
     store.close().await.unwrap();
     let layout = format!("SELECT n FROM \"{schema}\".meta WHERE k = 'layout'");
@@ -53,8 +61,13 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
          UPDATE \"{schema}\".meta SET n = {} WHERE k = 'layout'",
         wanted - 1
     );
+    let unnamed = format!(
+        "UPDATE \"{schema}\".records SET state = replace(state, '\"procedure\":\"twice\",', '')"
+    );
     tokio::task::block_in_place(|| {
         let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        let n = client.execute(&unnamed, &[]).unwrap();
+        assert!(n > 0, "a state names `twice` as its procedure");
         client.batch_execute(&older).unwrap();
     });
     let refused = open(&location, OpenMode::Read).await.err().unwrap();
@@ -71,6 +84,8 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
     );
     let note = Lake::of(store.as_ref()).read("note", "a").await.unwrap();
     assert_eq!(note.fields["text"], "kept");
+    let procedure = note.meta["double"].procedure.as_deref();
+    assert_eq!(procedure, Some("twice"), "the rebuild names the function");
     let sourced = format!("SELECT count(*) FROM \"{schema}\".routes WHERE source = 'crm'");
     let (sourced, now) = tokio::task::block_in_place(|| (one(&url, &sourced), one(&url, &layout)));
     assert!(

@@ -172,7 +172,7 @@ fn context(n: u32) -> WriteContext {
 }
 
 /// The provenance `own(n, who, ..)` gives a field its fold computes, at
-/// `position`: by a function at `version`, or else by the event's own
+/// `position`: by the function `f` at `version`, or else by the event's own
 /// procedure.
 fn stamped(n: u32, who: &str, position: Position, version: Option<&str>) -> FieldMeta {
     FieldMeta {
@@ -182,6 +182,7 @@ fn stamped(n: u32, who: &str, position: Position, version: Option<&str>) -> Fiel
         position,
         writer: who.into(),
         source: Some(format!("source-{n}").as_str().into()),
+        procedure: Some(if version.is_some() { "f" } else { "by hand" }.into()),
         procedure_version: Some(version.map_or(format!("p{n}"), str::to_owned)),
         upstream: Some(upstream(n)),
         error: None,
@@ -1565,12 +1566,16 @@ fn row_22_a_set_computes_its_records_again_once_at_its_last_declaration() {
         );
     }
     let meta = |name: &str| l.meta(None, "doc", &key(1), name).expect("provenance");
-    for name in ["x", "y", "z"] {
+    for (name, function) in [("x", "f"), ("y", "g"), ("z", "h")] {
         let m = meta(name);
         assert_eq!(
-            (m.position, m.procedure_version.as_deref()),
-            (q[2], Some("2")),
-            "row 22: `{name}` takes the set's last declaration and its function's version"
+            (
+                m.position,
+                m.procedure.as_deref(),
+                m.procedure_version.as_deref()
+            ),
+            (q[2], Some(function), Some("2")),
+            "row 22: `{name}` takes the set's last declaration and its function, by name and version"
         );
     }
     assert_eq!(

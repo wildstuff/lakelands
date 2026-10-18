@@ -139,9 +139,11 @@ async fn a_backed_field_is_filled_from_the_output_the_store_records(store: Store
     let meta = r.meta.get("name");
     ensure!(
         meta.is_some_and(|m| m.origin == Origin::Derived
+            && m.procedure.as_deref() == Some("lookup")
             && m.procedure_version.as_deref() == Some("1")
             && m.error.is_none()),
-        "a filled field carries origin `derived`, the function's version (1) and no error; \
+        "a filled field carries origin `derived`, the function `lookup` at its version (1) \
+         and no error; \
          its metadata is {meta:?}"
     );
     ensure!(

@@ -69,7 +69,7 @@ check!(
 
 check!(
     VERB_PROCEDURE_VERSION = a_verbs_write_carries_the_verbs_procedure_version,
-    "010 and the log format §1.1: a value a verb produced carries, as its procedure_version, the version of the verb's declaration"
+    "010 and the log format §1.1: a value a verb produced carries, as its procedure and procedure_version, the verb's name and the version of its declaration"
 );
 
 async fn ledger(store: &dyn LakeStore) -> Result<Lake, Failure> {
@@ -895,8 +895,8 @@ async fn a_verbs_write_carries_the_verbs_procedure_version(store: Store) -> Held
         before
             .meta
             .get("status")
-            .is_some_and(|m| m.procedure_version.is_none()),
-        "`status` written by `upsert` must carry no procedure_version; its provenance \
+            .is_some_and(|m| m.procedure.is_none() && m.procedure_version.is_none()),
+        "`status` written by `upsert` must carry no procedure; its provenance \
          reads {:?}",
         before.meta.get("status")
     );
@@ -905,9 +905,10 @@ async fn a_verbs_write_carries_the_verbs_procedure_version(store: Store) -> Held
     let after = l.read("invoice", "i").await?;
     let meta = after.meta.get("status");
     ensure!(
-        meta.is_some_and(|m| m.procedure_version.as_deref() == Some("1")),
-        "`status` set by `approve` (declared once, version 1) must carry \
-         procedure_version \"1\"; its provenance reads {meta:?}"
+        meta.is_some_and(|m| m.procedure.as_deref() == Some("approve")
+            && m.procedure_version.as_deref() == Some("1")),
+        "`status` set by `approve` (declared once, version 1) must carry the procedure \
+         `approve` at procedure_version \"1\"; its provenance reads {meta:?}"
     );
     Ok(())
 }
