@@ -415,8 +415,12 @@ async fn a_description_says_only_what_its_reader_is_shown(store: Store) -> Held 
             ..RelationDecl::to("same", "salary")
         },
     ];
+    // Proposed with a change, as one all in force is not filed.
     let again = ProposedWrite::Declare {
-        declarations: vec![Declaration::Type(invoice.clone())],
+        declarations: vec![Declaration::Type(TypeDecl {
+            description: Some("again".into()),
+            ..invoice.clone()
+        })],
         plan: None,
     };
     let invoice_as_declared = invoice.clone();

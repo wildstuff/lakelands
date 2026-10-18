@@ -3567,6 +3567,8 @@ impl Call<'_> {
         // A re-key's sections of the other types, for the outcome (062).
         let mut others = Vec::new();
         let mut instead = None;
+        // A bundle wholly in force, answered as `apply` answers it.
+        let mut in_force = None;
         match &mut write {
             ProposedWrite::Upsert {
                 ty,
@@ -3629,7 +3631,10 @@ impl Call<'_> {
                 let mut changed = declarations.clone();
                 changed.retain(|d| !w.ontology.in_force(d));
                 let bundled = match changed.is_empty() {
-                    true => Some(Vec::new()),
+                    true => {
+                        in_force = Some(declarations.clone());
+                        Some(Vec::new())
+                    }
                     false => Some(as_plain.bundle_drafts(&w, changed, (now, 0, true))?.types),
                 };
                 *plan = bundled.map(|types| Box::new(plan::plan_of(&w, (types, Vec::new()))));
@@ -3682,6 +3687,17 @@ impl Call<'_> {
         };
         if let Some(p) = &mut shown {
             plan::shown_plan(p, &Sight::held(self.who, &w.ontology), view.as_ref())?;
+        }
+        // A bundle wholly in force is filed for nothing: its accept would
+        // change nothing. It is answered at the head, as `apply` answers it,
+        // and appends nothing (027, extended).
+        if let Some(sent) = in_force {
+            let at = head(&w);
+            let mut outcome = with_declared(applied(at, None), &w.ontology, &sent, at.next());
+            if let Outcome::Applied { plan, .. } = &mut outcome {
+                *plan = shown.map(Box::new);
+            }
+            return Ok(outcome);
         }
         let write = instead.unwrap_or(write);
         let d = self.proposal(&w, now, (write, why, pinned), &key_opt);
@@ -4153,6 +4169,11 @@ impl Call<'_> {
         let events = appended.map_err(|e| not_handed(e, external.is_some() && w.behind, by))?;
         let outcome = self.answered(&events, renamed);
         let mut outcome = self.told_of(&w.ontology, &events, outcome)?;
+        // Each declaration of the bundle as it stands after the accept, as
+        // `apply` answers it (027, extended).
+        if let ProposedWrite::Declare { declarations, .. } = write {
+            outcome = with_declared(outcome, &w.ontology, declarations, accepted_at);
+        }
         if let (true, Outcome::Applied { plan, .. }) = (write.is_schema(), &mut outcome) {
             *plan = Some(Box::new(plan::plan_of(&w, sections)));
         }
@@ -5086,7 +5107,8 @@ impl Call<'_> {
     /// change's plan is told the type's section, as its author is shown it
     /// (062): the records computed again, those that would be left naming
     /// no live record, and the constraints that admit that they would
-    /// break. A type nothing is judged of is neither walked nor counted. A
+    /// break. A type nothing is judged of is not counted, and is walked
+    /// only where it may read a source's sealed value (058). A
     /// type its author is not shown, or knows of none of the fields it
     /// computes again (those `fields` names of it, and those derived or
     /// embedded from them), has no section, and one it is not told of a reference of has
@@ -5147,12 +5169,25 @@ impl Call<'_> {
             let shown = |r: &StoredRecord| {
                 Ok(!sight.withheld(r) && crate::reads::answered(v, &sight, ty, &r.key)?)
             };
+            let with = (&computing, v, &plans, &*self.lake.keys);
+            // Unjudged, its outputs are planned again all the same where one
+            // may read a source's sealed value: under a key the key store
+            // lost, the fold would refuse it past the append, so it is
+            // refused here, appending nothing, as a write is (058).
+            let sealed = decl.fields.iter().any(|f| f.erasable)
+                && crate::backed::computed_outside(whole, decl);
             // Nothing judged: every record is computed again, uncounted. A
             // held record is counted only for one who holds `restricted`.
             let recomputed = match judges {
+                false if !telling && sealed => {
+                    live(v, ty, |r| {
+                        computed_again(with, r, event, &w.settings).map(drop)
+                    })?;
+                    None
+                }
                 false => None,
                 true => Some({
-                    let (with, mut n) = ((&computing, v, &plans, &*self.lake.keys), 0);
+                    let mut n = 0;
                     live(v, ty, |r| {
                         // A plan that only tells computes no held record: it
                         // counts none, and its inputs are not its author's.

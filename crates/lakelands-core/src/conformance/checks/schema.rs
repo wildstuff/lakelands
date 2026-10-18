@@ -13,13 +13,13 @@ use lakelands_api::tools::{Door, GENERIC_TOOLS, MAX_TOOL_NAME, ToolSpec, tools};
 use lakelands_api::write::{
     Declaration, DeclarationKind, InForce, Outcome, ProposedWrite, Recompute, ValueTypeMigration,
 };
-use lakelands_api::{Error, Grants, LakeStore, PrincipalKind, ReadAt, Refusal, TypeName};
+use lakelands_api::{Access, Error, Grants, LakeStore, PrincipalKind, ReadAt, Refusal, TypeName};
 use serde_json::{Value, json};
 
 use crate::conformance::fixture::{
-    Lake, Must, computed_by, count_view, dec, decimal, events_after, field, head_unmoved,
-    invalid_case, is_invalid, migration, object_set_on, principal, reason, refused_unmoved,
-    reviewer, trigger_on, type_decl, value, value_type, view_of, write_verb,
+    Lake, Must, computed_by, count_view, dec, decimal, events_after, field, field_access,
+    head_unmoved, invalid_case, is_invalid, migration, object_set_on, principal, reason,
+    refused_unmoved, reviewer, trigger_on, type_decl, value, value_type, view_of, write_verb,
 };
 use crate::conformance::{Failure, Given, Held, Store};
 
@@ -448,7 +448,7 @@ async fn redeclaring_a_type_with_its_fields_reordered_keeps_its_schema_hash(stor
 
 check!(
     IN_FORCE_APPENDS_NOTHING = a_declaration_that_is_the_one_in_force_appends_nothing,
-    "027, extended (lakelands#565): a declaration that is the one in force (a value type, a function, a type, a verb, a trigger, a set, and a type whose computed field is stated with its completed `depends_on` or without) is answered `applied` at the head and appends nothing, by `declare` and by `apply`, and its version stays; a refusal still comes first; of a set what differs is appended alone, and what it sets off happens; an accepted proposal of declarations in force appends its acceptance alone"
+    "027, extended (lakelands#565): a declaration that is the one in force (a value type, a function, a type, a verb, a trigger, a set, and a type whose computed field is stated with its completed `depends_on` or without) is answered `applied` at the head and appends nothing, by `declare` and by `apply`, and its version stays; a refusal still comes first; of a set what differs is appended alone, and what it sets off happens; an accepted proposal of declarations in force by then appends its acceptance alone, and each accept answers how each declaration stands after it, appended or not; a proposal of declarations all in force is not filed: it is answered `applied` at the head with how each stands, appending nothing, to one without `schema` kept from a field who proposes the type as it is shown it too, while a reviewer's accept of one that differs answers it appended (lakelands#1187)"
 );
 
 async fn a_declaration_that_is_the_one_in_force_appends_nothing(store: Store) -> Held {
@@ -508,23 +508,122 @@ async fn a_declaration_that_is_the_one_in_force_appends_nothing(store: Store) ->
         "a set of a changed function and an unchanged type appends the function alone, \
          and `gross` is computed again as 9; it reads {gross:?} after {written:?}"
     );
-    // An accepted proposal of declarations in force: its acceptance alone.
-    let declarations = vec![scaled(3), bill(&["net"])];
-    let proposed = ProposedWrite::Declare {
-        declarations,
+    // Proposed twice while it differs: the first accept appends the
+    // function, the second, all in force by then, its acceptance alone.
+    let declarations = vec![scaled(4), bill(&["net"])];
+    let proposed = || ProposedWrite::Declare {
+        declarations: declarations.clone(),
         plan: None,
     };
-    let proposed = l.cat.propose(&l.own, proposed, "again".into()).await;
-    let Outcome::Proposed { proposal, .. } = proposed.must("proposing")? else {
-        return Err(Failure::new("a proposed set is not answered as proposed"));
+    let mut filed = Vec::new();
+    for _ in 0..2 {
+        let proposal = l.cat.propose(&l.own, proposed(), "again".into()).await;
+        let Outcome::Proposed { proposal, .. } = proposal.must("proposing")? else {
+            return Err(Failure::new(
+                "a proposed change is not answered as proposed",
+            ));
+        };
+        filed.push(proposal);
+    }
+    let first = l.cat.accept(&l.own, &filed[0]).await.must("accepting")?;
+    let at = store.head().await.must("reading the head")?;
+    let second = l.cat.accept(&l.own, &filed[1]).await;
+    let second = second.must("accepting the second")?;
+    let written = events_after(store.as_ref(), at).await?;
+    let stood = |o: &Outcome| match o {
+        Outcome::Applied { declared, .. } => (declared.iter())
+            .map(|d| (d.name.clone(), d.version, d.appended))
+            .collect(),
+        Outcome::Proposed { .. } => Vec::new(),
     };
-    l.cat.accept(&l.own, &proposal).await.must("accepting")?;
-    let written = events_after(store.as_ref(), before).await?;
+    let both = |appended| vec![("scaled".into(), 3, appended), ("bill".into(), 1, false)];
     ensure!(
-        written.len() == 3 && matches!(written[2].body, EventBody::WriteAccepted { .. }),
-        "an accepted proposal of declarations in force appends `write_accepted` alone; \
-         after the function's, the log holds {:?}",
-        &written[1..]
+        stood(&first) == both(true)
+            && stood(&second) == both(false)
+            && written.len() == 1
+            && matches!(written[0].body, EventBody::WriteAccepted { .. }),
+        "the first accept answers `scaled` appended at version 3 and `bill` in force, \
+         the second both in force, appending `write_accepted` alone: {first:?}, then \
+         {second:?} after {written:?}"
+    );
+    // All in force, a proposal is not filed: answered as `apply` answers it.
+    let head = store.head().await.must("reading the head")?;
+    let again = l.cat.propose(&l.own, proposed(), "in force".into()).await;
+    let again = again.must("proposing what is in force")?;
+    head_unmoved(store.as_ref(), head, "the proposal of what is in force").await?;
+    ensure!(
+        matches!(again, Outcome::Applied { position, .. } if position == head)
+            && stood(&again) == both(false),
+        "a proposal of declarations all in force is answered `applied` at the head {head} \
+         with both in force; it answered {again:?}"
+    );
+    // The road the rule serves: one without `schema`, kept from `shade`,
+    // proposes `paint` as it is shown it and is answered as `apply`
+    // answers; a reviewer accepts what differs, answered how it stands.
+    let paint = |extra: &[&str]| {
+        let names = ["name"].iter().chain(extra);
+        let fields = names.map(|f| field(f, StorageKind::Text)).collect();
+        Declaration::Type(type_decl("paint", fields))
+    };
+    let since = l.declare_as(paint(&["shade"]), "declaring `paint`").await?;
+    let since = since.position();
+    let painter = field_access(
+        store.as_ref(),
+        "painter",
+        "paint",
+        &[("shade", Access::None)],
+    );
+    let shown = |extra| ProposedWrite::Declare {
+        declarations: vec![paint(extra)],
+        plan: None,
+    };
+    let stands = |version, since, appended| InForce {
+        kind: DeclarationKind::Type,
+        name: "paint".into(),
+        version,
+        since,
+        appended,
+    };
+    let declared = |o: &Outcome| match o {
+        Outcome::Applied { declared, .. } => declared.clone(),
+        Outcome::Proposed { .. } => Vec::new(),
+    };
+    let head = store.head().await.must("reading the head")?;
+    let as_shown = l.cat.propose(&painter, shown(&[]), "as shown".into()).await;
+    let as_shown = as_shown.must("proposing `paint` as it is shown")?;
+    head_unmoved(
+        store.as_ref(),
+        head,
+        "the proposal of `paint` as it is shown",
+    )
+    .await?;
+    ensure!(
+        matches!(as_shown, Outcome::Applied { position, .. } if position == head)
+            && declared(&as_shown) == [stands(1, since, false)],
+        "one kept from `shade` proposing `paint` as it is shown it is answered `applied` at \
+         the head {head}, `paint` standing from {since}; it answered {as_shown:?}"
+    );
+    let noted = l
+        .cat
+        .propose(&painter, shown(&["note"]), "a note".into())
+        .await;
+    let Outcome::Proposed { proposal, .. } = noted.must("proposing a note")? else {
+        return Err(Failure::new("a proposal that differs is not filed"));
+    };
+    let accepted = l
+        .cat
+        .accept(&reviewer(store.as_ref(), true), &proposal)
+        .await;
+    let accepted = accepted.must("accepting the note")?;
+    let written = events_after(store.as_ref(), head).await?;
+    let at = written
+        .iter()
+        .find(|e| matches!(e.body, EventBody::Declared { .. }));
+    let at = at.map(|e| e.position);
+    ensure!(
+        at.is_some_and(|at| declared(&accepted) == [stands(2, at, true)]),
+        "a reviewer's accept of `paint` with a note answers it appended at version 2, \
+         standing from its `declared`: {accepted:?} after {written:?}"
     );
     Ok(())
 }

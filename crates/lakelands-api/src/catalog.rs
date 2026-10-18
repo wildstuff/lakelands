@@ -148,7 +148,11 @@ pub trait Catalog: Send + Sync {
     /// Ranked retrieval over one type.
     async fn search(&self, who: &Principal, search: Search) -> Result<Reply<Hits>>;
 
-    /// Record a write as a proposal instead of applying it.
+    /// Record a write as a proposal instead of applying it. A proposal of
+    /// declarations all in force is not recorded: its accept would change
+    /// nothing, so it is answered `applied` at the head with how each
+    /// stands, as `apply` answers it
+    /// (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
     async fn propose(&self, who: &Principal, write: ProposedWrite, why: String) -> Result<Outcome>;
 
     /// Accept a proposal: its write is applied as it was logged, whole,
@@ -159,7 +163,8 @@ pub trait Catalog: Send + Sync {
     /// reads a field the reviewer may not read among them (013, 006). An accepted external
     /// verb answers its executor's recorded `output`, as `call` does, and
     /// so does the accept sent again; any other accept sent again is
-    /// `decided`.
+    /// `decided`. An accepted proposal of declarations answers how each
+    /// stands after it, as `apply` does.
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome>;
 
     /// `accept` of a proposed change to the ontology, only where the plan

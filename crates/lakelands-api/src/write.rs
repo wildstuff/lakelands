@@ -82,8 +82,9 @@ pub enum Outcome {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         renamed: Vec<(FieldName, FieldName)>,
         /// For `declare` and `apply`: each declaration sent, in the order
-        /// sent, as it stands in force after the call. Empty for every
-        /// other write.
+        /// sent, as it stands in force after the call; so for a `propose`
+        /// of declarations all in force, which files nothing, and for the
+        /// `accept` of proposed declarations. Empty for every other write.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         declared: Vec<InForce>,
         /// For a change to the ontology: the plan that applied, as the one
@@ -533,8 +534,8 @@ impl DeclarationKind {
     }
 }
 
-/// A declaration sent to `declare` or `apply`, as it stands in force
-/// after the call (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+/// A declaration sent to `declare` or `apply`, or proposed, as it stands
+/// in force after the call (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 /// extended).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InForce {
