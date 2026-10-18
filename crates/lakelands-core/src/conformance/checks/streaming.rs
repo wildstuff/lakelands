@@ -85,7 +85,10 @@
 //! each size's import and rebuild fold a view as large: its fold holds
 //! what a page of the log touches. On SQLite import and rebuild hold
 //! 12.2 MiB at both sizes at a page of 1 024 events and 6.1 MiB at 512;
-//! import held 5.7 MiB at the first size with no kept view. A harness
+//! import held 5.7 MiB at the first size with no kept view. On PostgreSQL
+//! import holds 17.2 and 18.4 MiB at 1 100 and 4 400 records: the driver
+//! keeps buffers sized to the largest batch it sent, so the import bounds
+//! a batch in bytes (lakelands#1241). A harness
 //! without a meter runs everything else the check claims and reports the
 //! heap as not measured.
 //!

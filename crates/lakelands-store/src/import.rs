@@ -31,7 +31,7 @@
 //! event is carried.
 //!
 //! **Then the files, as they are.** The first file's events go to
-//! `LakeEngine::import` [`BATCH`] at a time. Each later file starts with
+//! `LakeEngine::import` in batches of at most [`BATCH`] bytes. Each later file starts with
 //! its `checkpoint`: its first batch is handed to
 //! `LakeEngine::seal_segment`, which closes the segment before it and
 //! begins the next with that batch in one step, once the digest the engine
@@ -64,11 +64,23 @@ use sha2::{Digest as _, Sha256};
 
 use crate::lake::Lake;
 
-/// How many events an import hands the engine at a time: each batch is
-/// one durable append, so the batch is far larger than a write's commit
-/// window, and small enough that what it holds does not matter beside a
-/// page of the fold (some 600 bytes an event).
-const BATCH: usize = 2_048;
+/// How many bytes of events an import hands the engine at a time, each
+/// event counted by its line and the id and hashes it carries beside it:
+/// each batch is one durable append, so the batch is far larger than a
+/// write's commit window, and small enough that what it holds does not
+/// matter beside a page of the fold. It is bounded in bytes, not events:
+/// a driver keeps the buffers it grew for the largest statement it sent
+/// until its connection closes, so what an import holds follows its
+/// largest batch, and events grow larger as a lake does. On PostgreSQL a
+/// batch of 2 048 events held 5.4 MiB after the first segment and
+/// 10.8 MiB after the second, whose first batch was 13% larger, through
+/// the fold that follows (lakelands#1241).
+const BATCH: usize = 512 << 10;
+
+/// What `event` counts against a [`BATCH`].
+fn weight(event: &CanonicalEvent) -> usize {
+    event.bytes.len() + event.id.0.len() + event.prev.0.len() + event.hash.0.len()
+}
 
 /// What an import made.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -342,13 +354,16 @@ fn carry(
                 .map(drop)
                 .ok_or_else(|| lakelands_core::damaged(Part::Log, None, Flaw::NothingToSeal))
         };
-        let mut batch = Vec::with_capacity(BATCH);
+        let (mut batch, mut weighed) = (Vec::new(), 0);
         for event in events(path)? {
-            batch.push(event?.0);
-            if batch.len() == BATCH {
+            let event = event?.0;
+            weighed += weight(&event);
+            batch.push(event);
+            if weighed >= BATCH {
                 hand(&batch).map_err(|e| stopped(path, reached, e))?;
                 reached = batch.last().expect("a full window").position.next();
                 batch.clear();
+                weighed = 0;
             }
         }
         if !batch.is_empty() {
