@@ -167,7 +167,7 @@ fn found(
         }
     })?;
     let events = view.position().map_or(0, |p| p.0);
-    let rate = lake.engine.rebuild_rate().max(1);
+    let rate = lake.rebuild_rate();
     let report = ForgetReport {
         source: source.clone(),
         types,

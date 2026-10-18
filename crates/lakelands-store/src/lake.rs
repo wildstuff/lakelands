@@ -242,6 +242,11 @@ pub struct Lake {
     /// Moved when a rebuild begins and when it ends: a shape built across
     /// either read a projection cleared or half folded, and is not kept.
     rebuilds: AtomicU64,
+    /// The events a second the last rebuild this handle ran folded, 0
+    /// where none has run: the fold's cost is the ontology's, so a
+    /// preflight reads this before the engine's constant
+    /// ([`Self::rebuild_rate`], lakelands#1152).
+    rebuilt_rate: AtomicU64,
     /// The position of the last act that erased values (058, 065) this
     /// handle found folded or folded itself, 0 where none, and its time:
     /// only a reaction before it, or of its own append, is decided again
@@ -700,6 +705,7 @@ impl Lake {
             holds_lease: AtomicBool::new(false),
             shapes: Mutex::new(Vec::new()),
             rebuilds: AtomicU64::new(0),
+            rebuilt_rate: AtomicU64::new(0),
             acted: (AtomicU64::new(0), AtomicI64::new(i64::MIN)),
             reclaim_owed: Mutex::new(None),
             rebuilt_at_open: None,
@@ -2545,6 +2551,7 @@ impl Lake {
         self.rebuilds.fetch_add(1, Ordering::SeqCst);
         lakelands_core::lock(&self.shapes).clear();
         self.keys.unlist();
+        let began = std::time::Instant::now();
         let folded = (|| {
             self.engine.projection().clear()?;
             w.ontology = Ontology::default().named();
@@ -2563,9 +2570,25 @@ impl Lake {
         lakelands_core::lock(&self.shapes).clear();
         self.keys.unlist();
         folded?;
+        let events = w.tip.as_ref().map_or(0, |t| t.0.0);
+        let micros = u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX);
+        if events > 0 {
+            let rate = events.saturating_mul(1_000_000) / micros.max(1);
+            self.rebuilt_rate.store(rate.max(1), Ordering::SeqCst);
+        }
         // Everything the log holds is folded again: the head is its tip.
         self.publish(w);
         Ok(())
+    }
+
+    /// The events a second a rebuild of this lake is expected to fold:
+    /// the last one's this handle ran, measured over its clear and fold,
+    /// or, before any, the engine's constant. An estimate either way.
+    pub(crate) fn rebuild_rate(&self) -> u64 {
+        match self.rebuilt_rate.load(Ordering::SeqCst) {
+            0 => self.engine.rebuild_rate().max(1),
+            rate => rate,
+        }
     }
 
     /// Finish what a forgetting (058) or a removal (065) left owed, as the

@@ -517,7 +517,7 @@ async fn a_removal_a_crash_stopped_is_finished_by_the_next_writers_open(
 ) -> Held {
     use std::sync::atomic::{AtomicU32, Ordering};
     let fails: super::forgotten::Fails =
-        std::sync::Arc::new([AtomicU32::new(0), AtomicU32::new(0)]);
+        std::sync::Arc::new([AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)]);
     let wrap = super::forgotten::failing(&fails);
     let fault = async |store: Store| {
         let open = (given.fault)(store, Default::default(), wrap.clone()).await;
@@ -1311,7 +1311,8 @@ async fn a_shredding_act_a_crash_stopped_is_finished_at_each_step(
         keys: keys.clone(),
         fails: AtomicBool::new(false),
     });
-    let fails: super::forgotten::Fails = Arc::new([AtomicU32::new(0), AtomicU32::new(0)]);
+    let fails: super::forgotten::Fails =
+        Arc::new([AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)]);
     let wrap = super::forgotten::failing(&fails);
     let fault = async |store: Store| {
         let seams = Seams {

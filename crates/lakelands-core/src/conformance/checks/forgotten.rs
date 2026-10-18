@@ -607,9 +607,16 @@ check!(
     given
 );
 
+check!(
+    FORGET_EXPECTED_TIME = the_expected_time_follows_the_lakes_last_rebuild,
+    "058, extended (lakelands#1152): the time a preflight expects the act to hold the writer's lock is an estimate: before the handle has rebuilt, the log's events at the engine's stated rate; after a rebuild, at that rebuild's measured rate, within a factor of four of its time or 50 ms, for a forgetting and a removal alike, the engine's stated rate set aside",
+    given
+);
+
 /// How many of the next reclaims, and of the next clears a rebuild
-/// begins with, fail.
-pub type Fails = Arc<[AtomicU32; 2]>;
+/// begins with, fail; and the rebuild rate the engine states, where not
+/// 0 (lakelands#1152).
+pub type Fails = Arc<[AtomicU32; 3]>;
 
 /// The harness's engine with a projection whose next reclaims and
 /// clears fail as [`Fails`] says (lakelands#1161).
@@ -665,7 +672,10 @@ impl lakelands_api::engine::LakeEngine for Reclaims {
         self.inner.name()
     }
     fn rebuild_rate(&self) -> u64 {
-        self.inner.rebuild_rate()
+        match self.fails[2].load(Ordering::SeqCst) {
+            0 => self.inner.rebuild_rate(),
+            stated => u64::from(stated),
+        }
     }
     fn lake(&self) -> &LakeId {
         self.inner.lake()
@@ -799,7 +809,7 @@ async fn a_reclaim_that_fails_keeps_no_writer_out(
 ) -> Held {
     let keys = Arc::new(Keys::default());
     let seams = || with(&keys);
-    let fails: Fails = Arc::new([AtomicU32::new(0), AtomicU32::new(0)]);
+    let fails: Fails = Arc::new([AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)]);
     let wrap = failing(&fails);
     let fault = |store: Store, what: &str| {
         let (open, what) = ((given.fault)(store, seams(), wrap.clone()), what.to_owned());
@@ -905,5 +915,50 @@ async fn a_reclaim_that_fails_keeps_no_writer_out(
         "a forgetting whose rebuild fails, and the writer's open whose rebuild of it fails \
          again, are refused; they answered {stopped:?} and {refused:?}"
     );
+    Ok(())
+}
+
+async fn the_expected_time_follows_the_lakes_last_rebuild(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let keys = Arc::new(Keys::default());
+    // An engine that states one event a second: the act's time read from
+    // it is the log's events in seconds, far from any measured fold.
+    let fails: Fails = Arc::new([AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(1)]);
+    let store = (given.fault)(store, with(&keys), failing(&fails))
+        .await
+        .map_err(|e| Failure::new(format!("the writer's open was refused: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    lake(&l).await?;
+    people(store.as_ref(), &l).await?;
+    let (crm, erp): (SourceId, SourceId) = ("crm".into(), "erp".into());
+    let all = lakelands_api::write::Selection::WrittenBefore(
+        lakelands_api::Timestamp::from_date(9999, 1, 1).expect("a date"),
+    );
+    let pre = store.forget_preflight(&crm).await.must("the preflight")?;
+    ensure!(
+        pre.events > 0 && pre.expected_ms == pre.events * 1000,
+        "before a rebuild the preflight expects the log's events at the engine's rate of one a \
+         second, {} ms: {pre:?}",
+        pre.events * 1000
+    );
+    let began = std::time::Instant::now();
+    store.rebuild().await.must("rebuilding")?;
+    let took = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let pre = store.forget_preflight(&crm).await.must("the preflight")?;
+    let removal =
+        (store.remove_values_preflight(&erp, &all).await).must("the removal's preflight")?;
+    for (what, ms) in [
+        ("forgetting", pre.expected_ms),
+        ("removal", removal.expected_ms),
+    ] {
+        ensure!(
+            ms <= took.saturating_mul(4) + 50 && took <= ms.saturating_mul(4) + 50,
+            "after a rebuild of {took} ms the {what}'s preflight expects that time within a \
+             factor of four or 50 ms; it expects {ms} ms of {} events",
+            pre.events
+        );
+    }
     Ok(())
 }

@@ -493,7 +493,7 @@ fn found(
     }
     let references = crate::purge::report(view, ontology, (source, None), &retire, Vec::new())?;
     let log_events = head.map_or(0, |p| p.0);
-    let rate = lake.engine.rebuild_rate().max(1);
+    let rate = lake.rebuild_rate();
     let report = RemoveReport {
         source: source.clone(),
         selection: selection.clone(),
