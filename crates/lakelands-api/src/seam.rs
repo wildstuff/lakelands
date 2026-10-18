@@ -248,6 +248,15 @@ pub struct FeedBatch {
     pub next: Position,
     /// The head of the log when the batch was read.
     pub head: Position,
+    /// The positions of `events`' reactions an act overruled, in order: a
+    /// `trigger_fired`, `trigger_dropped` or `object_set_changed` whose
+    /// condition read a value an act erased since, and that the history
+    /// without that value does not make
+    /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). The
+    /// events stay as the log holds them; a consumer that acts on a
+    /// reaction passes these by.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overruled: Vec<Position>,
 }
 
 /// The most events one feed poll reads from the log and opens, matched or

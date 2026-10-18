@@ -99,6 +99,9 @@ pub struct Probe {
     /// A position the head's view is handed out at, as a projection being
     /// rebuilt lags the head.
     pub lags: Mutex<Option<Position>>,
+    /// A position the projection answers it is folded through, as while
+    /// a rebuild refolds the log.
+    pub refolded: Mutex<Option<Position>>,
     /// Whether the feed's index decides nothing, as when a projection a
     /// rebuild cleared has not refolded the range asked.
     pub undecided: std::sync::atomic::AtomicBool,
@@ -429,7 +432,10 @@ impl ProjectionStore for Probed {
         self.inner.projection().rollback();
     }
     fn folded_through(&self) -> Result<Option<Position>> {
-        self.inner.projection().folded_through()
+        match *self.probe.refolded.lock().unwrap() {
+            Some(at) => Ok(Some(at)),
+            None => self.inner.projection().folded_through(),
+        }
     }
     fn put_declaration(
         &self,

@@ -5,20 +5,23 @@
 //! that identifies records at the act or where it was written is never
 //! taken (lakelands#1228); a membership the log decided over an erased
 //! value, across an edge or of a kept view, is decided again without it,
-//! at every position (lakelands#1232).
+//! at every position (lakelands#1232); and a reaction it read is
+//! overruled where the history without it does not make it: the feed
+//! names it, and a replayed write does not tell it (lakelands#1238).
 
 use std::sync::Arc;
 
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::TypeDecl;
-use lakelands_api::write::{ForgetReport, RemoveReport, Selection};
+use lakelands_api::seam::FeedFilter;
+use lakelands_api::write::{ForgetReport, Outcome, RemoveReport, Selection, WriteOpts};
 use lakelands_api::{LakeStore, Position, SourceId, Timestamp};
 use serde_json::{Value, json};
 
 use super::erasable::{Keys, again, person, with};
 use super::removed::{at, erased};
 use crate::conformance::fixture::{
-    Lake, Must, events_after, events_from, find_at, object_set_on, source_record,
+    Lake, Must, events_after, events_from, find_at, object_set_on, patch, source_record, trigger_on,
 };
 use crate::conformance::{Failure, Held, Reopen, Store};
 
@@ -42,6 +45,18 @@ check!(
 check!(
     FORGOTTEN_ACROSS = a_membership_decided_over_a_forgotten_value_is_decided_again,
     "058 (lakelands#1232): the lake of `a_membership_decided_over_a_value_taken_back_is_decided_again`, `place` erasable and `tracker` forgotten in place of the values taken back, `s2` retired with it: no call is in `at_rome` nor `rome_or_open`, both are in `unplaced`, `busy` holds the group, and at the head after each step, read `as_of` after the act and after a rebuild, each set answers what it answers in the twin lake, and the stop written after the act tells the memberships it moved as in the twin",
+    given
+);
+
+check!(
+    REMOVED_FIRED = a_reaction_decided_over_a_value_taken_back_is_overruled,
+    "065 (lakelands#1238): `stop` holds `place` from `tracker`, and `call` names a stop; the triggers `in_rome` (`place = 'Rome'`), `rome_or_open` (`place = 'Rome' or open`), `wrote` (no `when`) and, on `call`, `call_in_rome` (`stop.place = 'Rome'`), the set `at_rome` (`stop.place = 'Rome'`), on `stop` the set `romans` (`place = 'Rome'`), and the set `late` of stops whose note is older than 0.3 s; `s1` is opened by its author and named by `c1` before `tracker` writes the `place` of `s1` and `s2` Rome, `s2` its alone, then `s1` is written again by its author and named by `c2`, those two with an idempotency key; once what `tracker` wrote is taken back, a poll of the feed from 0 names overruled the firings of `in_rome` and `call_in_rome`, those of `rome_or_open` on `s2`, at `tracker`'s write and at the act's retirement of `s2`, the `at_rome` joins, and the `romans` joins and `s2` leaving it at that retirement, and not those of `wrote`, of `rome_or_open` on the open `s1`, nor `s1` joining `late`, which reads the clock; the reactions it does not overrule are those of a twin lake where `tracker` never wrote a `place`, by kind, name and key, and the two keyed writes sent again answer what they set off as the twin's first writes were told; every reaction names the record event it reacts to as its cause, the act's retirement of `s2` included",
+    given
+);
+
+check!(
+    FORGOTTEN_FIRED = a_reaction_decided_over_a_forgotten_value_is_overruled,
+    "058 (lakelands#1238): the lake of `a_reaction_decided_over_a_value_taken_back_is_overruled`, `place` erasable and `tracker` forgotten in place of the values taken back: the feed names the same reactions overruled, those it does not are the twin's, and the keyed writes sent again answer as the twin's first writes",
     given
 );
 
@@ -484,4 +499,219 @@ async fn a_membership_decided_over_a_forgotten_value_is_decided_again(
     given: crate::conformance::Given,
 ) -> Held {
     decided_again(store, given, Act::Forget).await
+}
+
+/// The triggers of the FIRED rows: name, type and `when`.
+const FIRED: [(&str, &str, Option<&str>); 4] = [
+    ("in_rome", "stop", Some("place = 'Rome'")),
+    ("rome_or_open", "stop", Some("place = 'Rome' or open")),
+    ("wrote", "stop", None),
+    ("call_in_rome", "call", Some("stop.place = 'Rome'")),
+];
+
+/// The FIRED rows' steps on `store`, `tracker` writing `s1`'s `place`
+/// where `placed`, then `act`: what the two keyed writes set off, as
+/// first told, and as told when they are sent again after the act.
+async fn fired(store: &Store, act: Act, placed: bool) -> Result<[Vec<Vec<String>>; 2], Failure> {
+    let l = Lake::of(store.as_ref());
+    let text = json!({"kind": "text"});
+    l.declare_json(json!({"declare": "type", "name": "stop", "fields": [
+        {"name": "code", "type": text, "authority": "source"},
+        {"name": "place", "type": text, "authority": "source", "erasable": act == Act::Forget},
+        {"name": "open", "type": {"kind": "boolean"}},
+        {"name": "note", "type": text}]}))
+        .await?;
+    l.declare_json(json!({"declare": "type", "name": "call", "fields": [
+        {"name": "stop", "type": {"kind": "reference", "target": "stop"}}]}))
+        .await?;
+    for (name, on, when) in FIRED {
+        l.declare_as(trigger_on(name, on, when), name).await?;
+    }
+    let (name, filter) = SETS[0];
+    l.declare_as(object_set_on(name, "call", filter), name)
+        .await?;
+    // `late` reads the clock, and no erased value: `s1` joins it at
+    // `tracker`'s write, which decided it was not a member before.
+    let late = object_set_on("late", "stop", "now() - known_at(note) > 0.3s");
+    l.declare_as(late, "late").await?;
+    // `romans` reads the stop's own erased field, by its `where`.
+    let romans = object_set_on("romans", "stop", "place = 'Rome'");
+    l.declare_as(romans, "romans").await?;
+    l.upsert("stop", "s1", json!({"note": "kept", "open": true}))
+        .await?;
+    l.upsert("call", "c1", json!({"stop": "s1"})).await?;
+    crate::conformance::fixture::pause(std::time::Duration::from_millis(400)).await;
+    // `s2` is `tracker`'s alone: the act retires it, and its own append
+    // fires on the retirement over the place it takes.
+    let written = ["s1", "s2"].map(|k| {
+        let mut fields = json!({"code": k});
+        if placed {
+            fields["place"] = json!("Rome");
+        }
+        source_record("stop", k, fields)
+    });
+    l.ingest("tracker", written.to_vec())
+        .await
+        .must("tracker writing")?;
+    let keyed = [
+        ("stop", "s1", json!({"note": "again"})),
+        ("call", "c2", json!({"stop": "s1"})),
+    ];
+    let mut told = [Vec::new(), Vec::new()];
+    for (round, told) in told.iter_mut().enumerate() {
+        let tracker: SourceId = "tracker".into();
+        match (round, act) {
+            (0, _) => {}
+            (_, Act::Remove) => {
+                let all =
+                    Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+                let done = store.remove_values(&tracker, &all, false, None).await;
+                drop(done.must("taking back what tracker wrote")?);
+            }
+            (_, Act::Forget) => drop(
+                store
+                    .forget_source(&tracker, None)
+                    .await
+                    .must("forgetting")?,
+            ),
+        }
+        for (ty, key, fields) in &keyed {
+            let opts = WriteOpts {
+                idempotency_key: Some(format!("{ty}-{key}").into()),
+                ..WriteOpts::default()
+            };
+            let (t, k) = (&(*ty).into(), &(*key).into());
+            let done = l
+                .cat
+                .upsert(&l.own, t, k, patch(fields.clone()), opts)
+                .await;
+            let Outcome::Applied { set_off, .. } = done.must("a keyed write")? else {
+                return Err(Failure::new("a keyed write was applied"));
+            };
+            let fired = set_off.fired.iter().map(|t| t.to_string());
+            told.push([fired.collect(), set_off.joined, set_off.left].concat());
+        }
+    }
+    Ok(told)
+}
+
+/// The reactions a poll of `store`'s feed from 0 tells, by kind, name and
+/// key: those it does not name overruled, and those it does, in order.
+async fn reactions(store: &dyn LakeStore) -> Result<[Vec<String>; 2], Failure> {
+    let kinds = ["trigger_fired", "trigger_dropped", "object_set_changed"];
+    let filter = FeedFilter {
+        kinds: kinds.map(str::to_owned).to_vec(),
+        ..FeedFilter::default()
+    };
+    let (mut from, mut told) = (Position::GENESIS, [Vec::new(), Vec::new()]);
+    loop {
+        let b = store.feed().poll(from, &filter, 1024).await;
+        let b = b.must("polling the feed")?;
+        for e in &b.events {
+            let what = match &e.body {
+                EventBody::TriggerFired { trigger, key, .. }
+                | EventBody::TriggerDropped { trigger, key, .. } => format!("{trigger} {key}"),
+                EventBody::ObjectSetChanged {
+                    set, key, joined, ..
+                } => format!("{set} {key} {joined}"),
+                _ => continue,
+            };
+            told[usize::from(b.overruled.contains(&e.position))].push(what);
+        }
+        if b.next > b.head {
+            return Ok(told);
+        }
+        from = b.next;
+    }
+}
+
+/// A FIRED row: `act` in a lake where `tracker` wrote `s1`'s `place` and
+/// in its twin where it did not.
+async fn overruled(store: Store, given: crate::conformance::Given, act: Act) -> Held {
+    head(store.as_ref()).await?;
+    let keys = Arc::new(Keys::default());
+    let seams = with(&keys);
+    let store = match act {
+        Act::Forget => again(&given.reopen, store, seams.clone(), "with a key store").await?,
+        Act::Remove => store,
+    };
+    let twin = (given.twin)(store.lake().clone(), seams).await;
+    let twin = twin.map_err(|e| Failure::new(format!("the harness opened no twin: {e}")))?;
+    let ([_, again], [first, _]) = (
+        fired(&store, act, true).await?,
+        fired(&twin, act, false).await?,
+    );
+    let ([told, overruled], [twin_told, _]) = (
+        reactions(store.as_ref()).await?,
+        reactions(twin.as_ref()).await?,
+    );
+    let mut overruled = overruled;
+    overruled.sort();
+    let want = [
+        "at_rome c1 true",
+        "at_rome c2 true",
+        "call_in_rome c1",
+        "call_in_rome c2",
+        "in_rome s1",
+        "in_rome s1",
+        "in_rome s2",
+        "in_rome s2",
+        "romans s1 true",
+        "romans s2 false",
+        "romans s2 true",
+        "rome_or_open s2",
+        "rome_or_open s2",
+    ];
+    ensure!(
+        overruled == want,
+        "after the act the feed names overruled the firings of `in_rome` and `call_in_rome`, \
+         those of `rome_or_open` on `s2`, which is not open, at `tracker`'s write and at the \
+         act's retirement of it, the `at_rome` joins, and the `romans` joins and the leave at \
+         that retirement, and nothing else: {overruled:?}"
+    );
+    ensure!(
+        told == twin_told,
+        "the reactions the feed does not overrule are the twin's: {told:?}, and {twin_told:?} in \
+         the twin where tracker never wrote s1's place"
+    );
+    // The act's retirements are its own events: a reaction to one names it.
+    let log = events_from(store.as_ref(), Position::GENESIS).await?;
+    let record = |at: Option<Position>| {
+        let e = log.iter().find(|e| Some(e.position) == at);
+        e.is_some_and(|e| e.body.kind().starts_with("record_"))
+    };
+    let reactions = log.iter().filter(|e| {
+        matches!(
+            e.body,
+            EventBody::TriggerFired { .. } | EventBody::ObjectSetChanged { .. }
+        )
+    });
+    let stray: Vec<_> = reactions
+        .filter(|e| !record(e.cause))
+        .map(|e| e.position)
+        .collect();
+    ensure!(
+        stray.is_empty(),
+        "every reaction's cause is the record event it reacts to: not at {stray:?}"
+    );
+    ensure!(
+        again == first,
+        "the keyed writes sent again after the act answer what they set off as the twin's first \
+         writes were told: {again:?}, and {first:?} in the twin"
+    );
+    Ok(())
+}
+
+async fn a_reaction_decided_over_a_value_taken_back_is_overruled(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    overruled(store, given, Act::Remove).await
+}
+
+async fn a_reaction_decided_over_a_forgotten_value_is_overruled(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    overruled(store, given, Act::Forget).await
 }

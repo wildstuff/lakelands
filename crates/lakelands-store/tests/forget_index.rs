@@ -15,7 +15,7 @@ use lakelands_api::engine::OpenMode;
 use lakelands_api::id::KeyId;
 use lakelands_api::ontology::{FieldDecl, StorageKind::Text, TypeDecl};
 use lakelands_api::seam::{DataKey, KeyStore, Seams};
-use lakelands_api::{LakeId, Location, Result, SourceId};
+use lakelands_api::{LakeId, Location, Position, Result, SourceId};
 use lakelands_core::conformance::fixture::{Lake, source_record, sourced, type_decl};
 use lakelands_engine_mem::MemoryOpener;
 use probed::{Probe, ProbedOpener};
@@ -395,5 +395,97 @@ async fn a_set_decided_again_scans_once_a_far_write() {
         "the rebuild scanned `call` {scans} times for {} far writes, and read {read} events of \
          a log of {log}",
         2 * N
+    );
+}
+
+/// A poll of the feed decides a reaction again only after an act, by
+/// point reads (lakelands#1238): on a lake that never erased anything it
+/// reads no record, and after forgetting `crm` the firings over its 40
+/// stops, on each stop and across each call's edge, cost at most three
+/// reads each, with no scan of a type.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_poll_decides_a_reaction_again_by_point_reads_only_after_an_act() {
+    use lakelands_api::seam::FeedFilter;
+    let probe = Arc::new(Probe::default());
+    let seams = Seams {
+        engines: vec![Arc::new(ProbedOpener(MemoryOpener::new(), probe.clone()))],
+        keys: Some(Arc::new(Keys::default())),
+        ..Seams::default()
+    };
+    let store = lakelands_store::open(Location::memory("overruled"), seams, OpenMode::Create)
+        .await
+        .unwrap();
+    let l = Lake::of(store.as_ref());
+    let place = json!({"name": "place", "type": {"kind": "text"}, "authority": "source",
+                       "erasable": true});
+    l.declare_json(json!({"declare": "type", "name": "stop", "fields": [place]}))
+        .await
+        .unwrap();
+    l.declare_json(json!({"declare": "type", "name": "call", "fields": [
+        {"name": "stop", "type": {"kind": "reference", "target": "stop"}}]}))
+        .await
+        .unwrap();
+    for (name, on, when) in [
+        ("in_rome", "stop", "place"),
+        ("call_in_rome", "call", "stop.place"),
+    ] {
+        let t = json!({"declare": "trigger", "name": name, "on": on,
+                       "when": format!("{when} = 'Rome'")});
+        l.declare_json(t).await.unwrap();
+    }
+    const N: usize = 40;
+    let stops = (0..N).map(|i| source_record("stop", &format!("s{i}"), json!({"place": "Rome"})));
+    l.ingest("crm", stops.collect()).await.unwrap();
+    for i in 0..N {
+        l.upsert("call", &format!("c{i}"), json!({"stop": format!("s{i}")}))
+            .await
+            .unwrap();
+    }
+    let fired = FeedFilter {
+        kinds: vec!["trigger_fired".into()],
+        ..FeedFilter::default()
+    };
+    let poll = async || {
+        probe.take();
+        probe.gets.lock().unwrap().clear();
+        let b = store
+            .feed()
+            .poll(Position::GENESIS, &fired, 4096)
+            .await
+            .unwrap();
+        let gets: usize = probe.gets.lock().unwrap().values().sum();
+        let scans = probe
+            .take()
+            .into_iter()
+            .filter(|a| {
+                matches!(a, probed::Asked::Scan(t)
+            if t.as_str() == "stop" || t.as_str() == "call")
+            })
+            .count();
+        (b.events.len(), b.overruled.len(), gets, scans)
+    };
+    assert_eq!(poll().await, (2 * N, 0, 0, 0), "no act: nothing read");
+    store
+        .forget_source(&SourceId::from("crm".to_owned()), None)
+        .await
+        .unwrap();
+    // The act's retirement of each stop fires `in_rome` again.
+    let (events, overruled, gets, scans) = poll().await;
+    assert!(
+        (events, overruled, scans) == (3 * N, 3 * N, 0) && gets <= 3 * events,
+        "after the act, {overruled} of {events} firings overruled, by {gets} reads and {scans} \
+         scans"
+    );
+    // While a rebuild has refolded only part of the log, a poll stops at
+    // the first reaction it cannot decide yet, and tells nothing past it.
+    let all = store.feed().poll(Position::GENESIS, &fired, 4096).await;
+    let ninth = all.unwrap().events[9].position;
+    *probe.refolded.lock().unwrap() = Some(Position(ninth.0 - 1));
+    let b = store.feed().poll(Position::GENESIS, &fired, 4096).await;
+    *probe.refolded.lock().unwrap() = None;
+    let b = b.unwrap();
+    assert!(
+        b.events.len() == 9 && b.next == ninth && b.overruled.len() == 9,
+        "the poll stops at {ninth}: {b:?}"
     );
 }

@@ -84,6 +84,7 @@ impl Batch {
             events: Vec::new(),
             next: from,
             head: from,
+            overruled: Vec::new(),
         };
         Arc::new(Batch {
             from,
@@ -93,10 +94,17 @@ impl Batch {
         })
     }
 
-    /// The events' frames, as `frame` writes one.
-    pub fn frames(&self, frame: fn(&Event) -> Bytes) -> &[Bytes] {
-        self.frames
-            .get_or_init(|| self.batch.events.iter().map(frame).collect())
+    /// The events' frames, as `frame` writes one, told whether the batch
+    /// names it overruled.
+    pub fn frames(&self, frame: fn(&Event, bool) -> Bytes) -> &[Bytes] {
+        let overruled = |e: &Event| self.batch.overruled.binary_search(&e.position).is_ok();
+        self.frames.get_or_init(|| {
+            self.batch
+                .events
+                .iter()
+                .map(|e| frame(e, overruled(e)))
+                .collect()
+        })
     }
 }
 

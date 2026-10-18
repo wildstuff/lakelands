@@ -1453,6 +1453,16 @@ matches nothing, one record's history and its checkpoints):
   little may examine up to the head on the server. The stream's
   `: next` keeps its meaning: caught up.
 - `head`: the lake's last position when the poll began.
+- `overruled`: the positions of the batch's `trigger_fired`,
+  `trigger_dropped` and `object_set_changed` events that an act overruled:
+  decided over a value it erased since, which the history without the
+  value does not make
+  (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). The
+  events stay in `events` as the log holds them. Empty, and left out of
+  the wire form, on a lake that never erased anything. The MCP pump
+  tells none of them, the deliverer posts none, and the REST feed marks
+  each with the comment `: overruled` (`docs/rest.md`)
+  (suite: `REMOVED_FIRED`, `FORGOTTEN_FIRED`).
 
 The consumer keeps the position it has read up to. The store's own feed
 keeps no consumer state, and its `ack` is accepted and does nothing; `ack` exists for feeds
@@ -1493,7 +1503,9 @@ writer.
 
 - **What it sends.** Only `trigger_fired` and `object_set_changed`
   events, by default both. `kinds`, `triggers` and `sets` narrow them;
-  any other kind is refused when the configuration loads. Both carry
+  any other kind is refused when the configuration loads. One the batch
+  names `overruled` is not sent: it is journaled, and the deliverer
+  moves on. Both carry
   keys only, so no field value leaves the lake this way: a receiver
   reads the record through a door, under its own grants.
 - **The request.** One `POST` per event, in log order. The body is the
@@ -1540,8 +1552,9 @@ writer.
     process refuses to start rather than send everything twice.
   - `<endpoint>.ndjson` is the journal, one line per outcome:
     `position`, `id`, `attempt`, `at` (the host's clock), and `outcome`,
-    which is `delivered`, `retrying` (with `why` and `retry_in_secs`) or
-    `refused` (with `status`). It is only ever appended to, and opened
+    which is `delivered`, `retrying` (with `why` and `retry_in_secs`),
+    `refused` (with `status`) or `overruled` (at `attempt` 0: nothing was
+    sent). It is only ever appended to, and opened
     for appending, so the operator rotates it by renaming.
 - **What it says.** A message names the endpoint by its `name` and by
   host, port and path, never the URL as written, the secret or a body.

@@ -20,6 +20,12 @@
 //! followed, TLS trusting the configured bundle or the system's, a timeout
 //! over each whole request, and a reply limit.
 //!
+//! **An overruled reaction is not posted.** One the feed names overruled,
+//! decided over a value an act erased since, is journaled `overruled` and
+//! passed by: a receiver would act on it again when the deliverer reads
+//! from a position before the act
+//! (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+//!
 //! **Delivery is at least once, in order.** The position is written after
 //! each event the deliverer is done with, so a crash between a `POST` and
 //! that write sends the event again, and the receiver deduplicates by lake
@@ -449,8 +455,11 @@ impl Deliverer {
         let more = batch.next <= batch.head && batch.next > from;
         self.caught = (batch.next > batch.head).then_some(batch.head);
         for event in &batch.events {
-            if self.wanted(event) {
-                self.deliver(event).await;
+            let overruled = batch.overruled.binary_search(&event.position).is_ok();
+            match (self.wanted(event), overruled) {
+                (true, false) => self.deliver(event).await,
+                (true, true) => self.journal(event, 0, json!({ "outcome": "overruled" })),
+                (false, _) => {}
             }
             self.keep(event.position.next())?;
         }
