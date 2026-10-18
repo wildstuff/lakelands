@@ -49,6 +49,15 @@ impl KeyStore for Keys {
     }
 }
 
+/// A report without its expected time, which counts the preflight's own
+/// walk and so differs between two preflights alike (lakelands#1152).
+fn timeless(r: lakelands_api::write::ForgetReport) -> lakelands_api::write::ForgetReport {
+    lakelands_api::write::ForgetReport {
+        expected_ms: 0,
+        ..r
+    }
+}
+
 /// `person`, its `name` erasable or not.
 fn person(erasable: bool) -> TypeDecl {
     let id = FieldDecl {
@@ -93,7 +102,11 @@ async fn a_preflight_reads_the_sources_events_as_a_walk_does() {
     *probe.damaged.lock().unwrap() = None;
     probe.undecided.store(true, Ordering::SeqCst);
     let walked = store.forget_preflight(&crm).await.unwrap();
-    assert_eq!(indexed, walked, "the index answers what the walk answers");
+    assert_eq!(
+        timeless(indexed),
+        timeless(walked),
+        "the index answers what the walk answers"
+    );
     *probe.damaged.lock().unwrap() = Some(web);
     let opened = store.forget_preflight(&crm).await;
     assert!(
@@ -145,7 +158,8 @@ async fn after_the_act_the_index_counts_the_sources_outputs_as_a_walk_does() {
         "the walk counts crm's two outputs: {walked:?}"
     );
     assert_eq!(
-        indexed, walked,
+        timeless(indexed),
+        timeless(walked),
         "after the act the index answers what the walk answers"
     );
     assert_eq!(repeat.outputs, 2, "a repeat counts them too: {repeat:?}");
@@ -193,7 +207,11 @@ async fn a_source_past_one_page_of_the_index_is_read_page_by_page() {
     *probe.damaged.lock().unwrap() = None;
     probe.undecided.store(true, Ordering::SeqCst);
     let walked = store.forget_preflight(&crm).await.unwrap();
-    assert_eq!(indexed, walked, "the pages answer what the walk answers");
+    assert_eq!(
+        timeless(indexed),
+        timeless(walked),
+        "the pages answer what the walk answers"
+    );
 }
 
 /// A foreign log's ingest whose seal names another source than its
@@ -285,7 +303,11 @@ async fn a_foreign_ingest_is_indexed_under_its_envelopes_source() {
         indexed.plaintext, 1,
         "crm's `alice` is plaintext: {indexed:?}"
     );
-    assert_eq!(indexed, walked, "the index answers what the walk answers");
+    assert_eq!(
+        timeless(indexed),
+        timeless(walked),
+        "the index answers what the walk answers"
+    );
     let act = store.forget_source(&crm, None).await;
     let refused = act
         .as_ref()

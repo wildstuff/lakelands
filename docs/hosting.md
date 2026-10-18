@@ -408,8 +408,20 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     PostgreSQL, about 1.4 times a plain rebuild after it (644 s); that
     PostgreSQL database was 3.1 GB. The preflight's `expected_ms`
     under-reads the act on both: 59 s at 1 000 000 on SQLite and 402 s
-    on PostgreSQL, 2.5 and 2.2 times too low. Plan the act's window by
-    the measured times.
+    on PostgreSQL, 2.5 and 2.2 times too low, read at the engine's
+    constant. That figure is an estimate: the log's events at the rate
+    the handle's last rebuild measured (a `rebuild()`, an act's, or an
+    open's that rebuilt the projection), or, on a handle that has not
+    rebuilt, at the engine's constant rate, measured on a plain type,
+    which a lake of derived fields and kept views folds slower than;
+    the time of the handle's last reclaim, which a handle that has not
+    reclaimed does not count; and the preflight's own walk of the log,
+    which the act walks again. The rate and the reclaim's time live with the open handle, never
+    in the lake: a host that runs `rebuild()` and `compact()` through
+    the handle it will forget from, in a quiet moment, has its preflight
+    read the lake's own figures (lakelands#1152), while each CLI command
+    opens a handle of its own and reads the constant. Plan the act's
+    window by the measured times all the same.
   Source ids and record keys stay plaintext in the log, so a lake is
   ready to forget when:
   - **a source id names no person:** an opaque id for a device or a feed,
