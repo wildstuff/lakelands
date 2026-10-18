@@ -24,6 +24,7 @@ use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposalState,
 use lakelands_api::{Refusal, Timestamp};
 use serde_json::{Value, json};
 
+use super::EngineHarness;
 use super::projection::{fold, fold_one, record, view};
 use crate::conformance::fixture::{Must, order, reason};
 use crate::conformance::{Failure, Held};
@@ -66,6 +67,16 @@ engine_check!(
 engine_check!(
     SORTED_PAGE = a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it,
     "041 and lakelands#137: a page of 10 ordered by a field the `sort_index.<type>` setting names reads its page and at most three rows more, not the type, the first page and one continued after a value longer than the index keeps alike; the setting's write switches the same page from sorting the type to the index and back, and the answer stays what one scan over every state answers; and so for a view's kept records, whose index its `sort_index.<view>` setting asks for of the fields the view declares (lakelands#668)"
+);
+
+engine_check!(
+    CHOSEN_ORDER = a_chosen_order_index_is_built_beside_the_fold_and_read_only_once_it_is_kept,
+    "041 and lakelands#1131: a field the lake chose an order index for beside the log is started, filled in chunks of the head's records while puts land between the chunks, and kept; a page ordered by it sorts the type until it is kept, answers what one scan over every state answers all the while, and reads its page and at most three rows more once kept, the records put during the build among those it holds; `chosen` names the kept and the building fields; a `sort_index.<type>` setting naming a field takes the choice away and a step on such a type does nothing, and retiring the setting leaves the type with no index; a field dropped is sorted whole again; a `Start` of a field the type does not declare does nothing"
+);
+
+engine_check!(
+    CHOSEN_LEFT_BEHIND = reopening a_chosen_field_a_writer_without_it_folded_past_is_read_by_no_view,
+    "041 and lakelands#1131: a writer that keeps no chosen field (a binary before them) folds past a chosen field's rows and moves every `sorted.<type>` mark all the same; a page ordered by the field then answers what one scan over every state answers, read-only, after commits and a step of choosing through the handle that chose (its lease taken back with no open) and after a writer's open, and `chosen` names none, and the open drops the choice, so a later commit does not make the rows it left read again, and the lake chooses again; and so after such a writer's rebuild through the same position, which empties the order index and keeps every mark, the lake choosing again after a writer's open"
 );
 
 engine_check!(
@@ -3035,4 +3046,314 @@ fn a_kept_name_answers_as_a_stored_type_holding_the_same_states(engine: &dyn Lak
         );
     }
     Ok(())
+}
+
+fn a_chosen_field_a_writer_without_it_folded_past_is_read_by_no_view(
+    engine: &dyn LakeEngine,
+    harness: &dyn EngineHarness,
+) -> Held {
+    use lakelands_api::engine::{Choose, Chosen, OpenMode};
+    const N: u64 = 300;
+    let decl = declare(json!({
+        "declare": "type", "name": "t",
+        "fields": [
+            {"name": "v", "type": {"kind": "text"}},
+            {"name": "w", "type": {"kind": "text"}}
+        ]
+    }));
+    let Declaration::Type(t) = &decl else {
+        unreachable!("the check declares a type")
+    };
+    let mut states: Vec<StoredRecord> = (0..N)
+        .map(|i| {
+            record(
+                "t",
+                &format!("k{i:04}"),
+                json!({"v": format!("v{:04}", (i * 7919) % N)}),
+                1,
+            )
+        })
+        .collect();
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    let (ty, v) = (TypeName::from("t"), FieldName::from("v"));
+    // Start, fill in one chunk and keep `field`.
+    let choose = |opened: &dyn LakeEngine, field: &FieldName| -> Held {
+        let fill = Choose::Fill {
+            field: field.clone(),
+            after: None,
+            limit: N as u32,
+        };
+        for step in [
+            Choose::Start(field.clone()),
+            fill,
+            Choose::Keep(field.clone()),
+        ] {
+            let chosen = opened.projection().choose_order(&ty, &step);
+            chosen.must("a step of choosing")?;
+        }
+        Ok(())
+    };
+    choose(engine, &v)?;
+    if !harness.fold_as_before(engine.lake()) {
+        return Ok(());
+    }
+    let scan = Scan {
+        order_by: vec![order("v", OrderBy::Value, Direction::Asc)],
+        limit: 10,
+        ..Scan::default()
+    };
+    let answers = |opened: &dyn LakeEngine, states: &[StoredRecord], when: &str| -> Held {
+        let at = view(opened, None)?;
+        let page = at.scan(&ty, &scan).must("scanning a page ordered by `v`")?;
+        ensure!(
+            keys(&page) == keys(&crate::engines::scan(Some(t), states, &scan)),
+            "{when}, a page ordered by `v` is not what one scan over every state answers: it read the rows a writer without the chosen field left"
+        );
+        let chosen = at.chosen(&ty).must("reading the chosen fields")?;
+        ensure!(
+            chosen == Chosen::default(),
+            "{when}, `chosen` names {chosen:?}; a writer without it folded past the choice"
+        );
+        Ok(())
+    };
+    let open = |mode: OpenMode| {
+        let opened = harness.reopen(engine.lake(), mode);
+        opened.map_err(|e| Failure::new(format!("opening the lake {mode:?}: {e}")))
+    };
+    let reader = open(OpenMode::Read)?;
+    answers(reader.as_ref(), &states, "read-only")?;
+    // The handle that chose, its lease taken back with no open: neither its
+    // commit nor a step of choosing makes the rows left read again.
+    let put = |opened: &dyn LakeEngine, at: u64, states: &mut Vec<StoredRecord>| {
+        let new = record("t", &format!("n{at:04}"), json!({"v": "v0000"}), at);
+        states.push(new.clone());
+        fold_one(opened, at, new)
+    };
+    put(engine, 3, &mut states)?;
+    let start = Choose::Start(FieldName::from("w"));
+    engine
+        .projection()
+        .choose_order(&ty, &start)
+        .must("a step of choosing")?;
+    put(engine, 4, &mut states)?;
+    answers(
+        engine,
+        &states,
+        "after a commit and a step of choosing through the handle that chose",
+    )?;
+    let writer = open(OpenMode::Write)?;
+    answers(writer.as_ref(), &states, "after a writer's open")?;
+    put(writer.as_ref(), 5, &mut states)?;
+    answers(writer.as_ref(), &states, "after a commit of the writer")?;
+    answers(
+        reader.as_ref(),
+        &states,
+        "read-only, after a commit of the writer",
+    )?;
+    // The open dropped what was left: the lake chooses again.
+    choose(writer.as_ref(), &v)?;
+    let chosen = view(writer.as_ref(), None)?
+        .chosen(&ty)
+        .must("reading the chosen fields")?;
+    ensure!(
+        chosen.kept == [v.clone()],
+        "after a writer's open dropped the choice left behind, the lake must choose again; `chosen` names {chosen:?}"
+    );
+    // Such a writer's rebuild through the same position empties the order
+    // index and keeps every mark.
+    if harness.rebuild_as_before(engine.lake()) {
+        let when = "after a rebuild by a writer without the chosen fields";
+        answers(
+            open(OpenMode::Read)?.as_ref(),
+            &states,
+            &format!("read-only, {when}"),
+        )?;
+        let writer = open(OpenMode::Write)?;
+        answers(
+            writer.as_ref(),
+            &states,
+            &format!("{when} and a writer's open"),
+        )?;
+        choose(writer.as_ref(), &v)?;
+        let chosen = view(writer.as_ref(), None)?
+            .chosen(&ty)
+            .must("reading the chosen fields")?;
+        ensure!(
+            chosen.kept == [v],
+            "{when}, a writer's open must leave the lake choosing again; `chosen` names {chosen:?}"
+        );
+    }
+    Ok(())
+}
+
+fn a_chosen_order_index_is_built_beside_the_fold_and_read_only_once_it_is_kept(
+    engine: &dyn LakeEngine,
+) -> Held {
+    use lakelands_api::engine::Choose;
+    const N: u64 = 600;
+    const LIMIT: u32 = 10;
+    const CHUNK: u32 = 100;
+    let decl = declare(json!({
+        "declare": "type", "name": "t",
+        "fields": [{"name": "v", "type": {"kind": "text"}}]
+    }));
+    let Declaration::Type(t) = &decl else {
+        unreachable!("the check declares a type")
+    };
+    let v = |n: u64| json!({"v": format!("v{n:04}")});
+    let mut states: Vec<StoredRecord> = (0..N)
+        .map(|i| record("t", &format!("k{i:04}"), v((i * 7919) % N), 1))
+        .collect();
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    let ty = TypeName::from("t");
+    let field = FieldName::from("v");
+    let step = |s: Choose| {
+        engine
+            .projection()
+            .choose_order(&ty, &s)
+            .must("a step of choosing")
+    };
+    let chosen = || -> Result<Option<lakelands_api::engine::Chosen>, Failure> {
+        let held = view(engine, None)?
+            .chosen(&ty)
+            .must("reading the chosen fields")?;
+        Ok(Some(held).filter(|h| *h != lakelands_api::engine::Chosen::default()))
+    };
+    // A page ordered by `v`: whether it answers what one scan over every
+    // state answers, and how many rows it read.
+    let page = |states: &[StoredRecord]| -> Result<(u64, bool), Failure> {
+        let scan = Scan {
+            order_by: vec![order("v", OrderBy::Value, Direction::Asc)],
+            limit: LIMIT,
+            ..Scan::default()
+        };
+        let at = view(engine, None)?;
+        let before = crate::engines::rows_read();
+        let rows = at.scan(&ty, &scan).must("scanning a page ordered by `v`")?;
+        let read = crate::engines::rows_read() - before;
+        Ok((
+            read,
+            keys(&rows) == keys(&crate::engines::scan(Some(t), states, &scan)),
+        ))
+    };
+    let sorts = |what: &str, states: &[StoredRecord]| -> Held {
+        let (read, right) = page(states)?;
+        ensure!(
+            right,
+            "{what}, a page of {LIMIT} ordered by `v` is not what one scan over every state answers"
+        );
+        ensure!(
+            read >= N,
+            "{what}, a page of {LIMIT} ordered by `v` read {read} rows; no index is kept for `v` yet, so it sorts all {N}"
+        );
+        Ok(())
+    };
+    let reads_its_page = |what: &str, states: &[StoredRecord]| -> Held {
+        let (read, right) = page(states)?;
+        ensure!(
+            right,
+            "{what}, a page of {LIMIT} ordered by `v` is not what one scan over every state answers"
+        );
+        ensure!(
+            read <= u64::from(LIMIT) + 3,
+            "{what}, a page of {LIMIT} ordered by `v` read {read} of the {N} records; an index reads its page and at most three more"
+        );
+        Ok(())
+    };
+    ensure!(
+        chosen()?.is_none(),
+        "a lake that chose nothing must name no chosen field"
+    );
+    sorts("before anything is chosen", &states)?;
+    // A field the type does not hold is no step's, on every engine.
+    step(Choose::Start(FieldName::from("absent")))?;
+    ensure!(
+        chosen()?.is_none(),
+        "`Start` of a field the type does not declare must do nothing"
+    );
+    step(Choose::Start(field.clone()))?;
+    ensure!(
+        chosen()?.is_some_and(|c| c.building == [field.clone()] && c.kept.is_empty()),
+        "after `Start`, `v` must be building and none kept"
+    );
+    sorts("while `v` is being built", &states)?;
+    // Chunks, with a put between each: a record changed, and a new one.
+    let (mut after, mut at) = (None, 1);
+    for round in 0.. {
+        let next = step(Choose::Fill {
+            field: field.clone(),
+            after: after.clone(),
+            limit: CHUNK,
+        })?;
+        if round > 20 {
+            return Err(Failure::new(
+                "a fill of 600 records in chunks of 100 never ended",
+            ));
+        }
+        at += 1;
+        let mut moved = record("t", &format!("k{:04}", round * 7), v(1000 + round), at);
+        moved.version = lakelands_api::Version(at);
+        let new = record("t", &format!("n{round:04}"), v(2000 + round), at);
+        fold(engine, at, |p| {
+            p.put_record(&moved)?;
+            p.put_record(&new)
+        })?;
+        states.retain(|r| r.key != moved.key);
+        states.extend([moved, new]);
+        sorts(&format!("after chunk {round} of the build"), &states)?;
+        match next {
+            Some(last) => after = Some(last),
+            None => break,
+        }
+    }
+    step(Choose::Keep(field.clone()))?;
+    ensure!(
+        chosen()?.is_some_and(|c| c.kept == [field.clone()] && c.building.is_empty()),
+        "after `Keep`, `v` must be kept and none building"
+    );
+    reads_its_page(
+        "once `v` is kept, with the records put during its build",
+        &states,
+    )?;
+    // A host's setting wins: the choice goes, the setting's index stays.
+    at += 1;
+    fold_one(engine, at, sort_setting(json!(["v"]), at))?;
+    ensure!(
+        chosen()?.is_none(),
+        "a `sort_index.t` setting naming `v` must take the lake's choice away"
+    );
+    reads_its_page("with the setting", &states)?;
+    ensure!(
+        step(Choose::Start(field.clone()))?.is_none() && chosen()?.is_none(),
+        "a step on a type whose setting names a field must do nothing"
+    );
+    at += 1;
+    let mut gone = sort_setting(json!(["v"]), at);
+    gone.retired = true;
+    fold_one(engine, at, gone)?;
+    sorts("with the setting retired", &states)?;
+    // Built again, then dropped.
+    step(Choose::Start(field.clone()))?;
+    let mut after = None;
+    while let Some(last) = step(Choose::Fill {
+        field: field.clone(),
+        after,
+        limit: CHUNK,
+    })? {
+        after = Some(last);
+    }
+    step(Choose::Keep(field.clone()))?;
+    reads_its_page("once `v` is chosen again", &states)?;
+    step(Choose::Drop(field.clone()))?;
+    ensure!(
+        chosen()?.is_none(),
+        "a dropped field must no longer be chosen"
+    );
+    sorts("once `v` is dropped", &states)
 }

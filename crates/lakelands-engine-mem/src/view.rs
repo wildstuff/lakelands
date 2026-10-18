@@ -17,7 +17,7 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use lakelands_api::engine::{Declared, Matched, ProjectionView, Scan};
+use lakelands_api::engine::{Chosen, Declared, Matched, ProjectionView, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, TypeName};
@@ -62,6 +62,10 @@ impl ProjectionView for MemView {
 
     fn declarations(&self) -> Result<Vec<Declared>> {
         Ok(self.read(|p, at| p.declarations_at(at)))
+    }
+
+    fn chosen(&self, ty: &TypeName) -> Result<Chosen> {
+        Ok(self.read(|p, _| p.chosen(ty)))
     }
 
     fn replaced(&self, from: Position, to: Position) -> Result<Option<Vec<Declared>>> {
@@ -118,7 +122,7 @@ impl ProjectionView for MemView {
             // order, stop when full; at an earlier position, with the keys
             // changed since, and past the ceiling, sort the type.
             let sorted = if at.is_some() {
-                p.sorted_fields(ty)
+                p.read_fields(ty)
             } else {
                 Vec::new()
             };

@@ -25,7 +25,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::engine::Declared;
+use lakelands_api::engine::{Choose, Chosen, Declared};
 use lakelands_api::error::Result;
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::ontology::TypeDecl;
@@ -369,6 +369,7 @@ pub(crate) fn sorted_fields(
     conn: &Connection,
     ty: &TypeName,
     decl: Option<&TypeDecl>,
+    building: bool,
 ) -> Result<Vec<FieldName>> {
     let view = match engines::kept_view(ty) {
         Some(view) => type_at(conn, &view, None)?,
@@ -382,11 +383,181 @@ pub(crate) fn sorted_fields(
         &TypeName::from(SETTING_TYPE),
         &RecordKey::from(engines::sort_index_key(ty)),
     )?;
-    Ok(engines::sorted_fields(
+    let chosen = match building {
+        true => chosen_of(conn, ty)?,
+        false => chosen_kept(conn, ty)?,
+    };
+    Ok(engines::order_fields(
         ty,
         decl,
         setting.as_ref().and_then(engines::setting_value),
+        &chosen,
+        building,
     ))
+}
+
+/// The fields of `ty`'s order index the lake chose, as the meta row holds
+/// them: none where it holds none.
+pub(crate) fn chosen_of(conn: &Connection, ty: &TypeName) -> Result<Chosen> {
+    let text: Option<String> = one(
+        conn,
+        "SELECT v FROM meta WHERE k = ?1",
+        [engines::chosen_mark(ty)],
+    )?;
+    Ok(text.map_or_else(Chosen::default, |t| {
+        serde_json::from_str(&t).unwrap_or_default()
+    }))
+}
+
+/// Whether the lake's chosen fields are kept through the position folded
+/// through: no writer that keeps none folded past them. A lake that never
+/// chose holds no mark and is.
+fn chosen_held(conn: &Connection) -> Result<bool> {
+    one(
+        conn,
+        "SELECT NOT EXISTS (SELECT 1 FROM meta WHERE k = ?1 \
+         AND v IS NOT (SELECT v FROM meta WHERE k = 'folded'))",
+        [engines::CHOSEN_THROUGH],
+    )
+    .map(|held: Option<bool>| held.unwrap_or(true))
+}
+
+/// The fields of `ty`'s order index the lake chose, as a read takes them:
+/// none unless they are [held](chosen_held).
+pub(crate) fn chosen_kept(conn: &Connection, ty: &TypeName) -> Result<Chosen> {
+    match chosen_held(conn)? {
+        true => chosen_of(conn, ty),
+        false => Ok(Chosen::default()),
+    }
+}
+
+/// Keep `ty`'s chosen fields as `chosen`: no row where it holds none.
+/// The lake's first choice marks them kept through the position folded
+/// through, which the fold moves on from there.
+fn set_chosen(conn: &Connection, ty: &TypeName, chosen: &Chosen) -> Result<()> {
+    if *chosen == Chosen::default() {
+        return run(
+            conn,
+            "DELETE FROM meta WHERE k = ?1",
+            [engines::chosen_mark(ty)],
+        );
+    }
+    let text = serde_json::to_string(chosen).expect("the chosen fields serialise");
+    run(
+        conn,
+        "INSERT INTO meta (k, v) VALUES (?1, (SELECT v FROM meta WHERE k = 'folded')) \
+         ON CONFLICT (k) DO NOTHING",
+        [engines::CHOSEN_THROUGH],
+    )?;
+    run(
+        conn,
+        "INSERT INTO meta (k, v) VALUES (?1, ?2) ON CONFLICT (k) DO UPDATE SET v = ?2",
+        params![engines::chosen_mark(ty), text],
+    )
+}
+
+/// One step of choosing an order index for `ty` (`ProjectionStore::
+/// choose_order`), in a transaction of its own that moves no position.
+pub(crate) fn choose_order(
+    conn: &Connection,
+    ty: &TypeName,
+    step: &Choose,
+) -> Result<Option<RecordKey>> {
+    let Some(decl) = type_at(conn, ty, None)? else {
+        return Ok(None);
+    };
+    let setting = head_record(
+        conn,
+        &TypeName::from(SETTING_TYPE),
+        &RecordKey::from(engines::sort_index_key(ty)),
+    )?;
+    let named =
+        engines::sorted_fields(ty, &decl, setting.as_ref().and_then(engines::setting_value));
+    let sortable = |f: &FieldName| {
+        (decl.fields.iter()).any(|d| d.name == *f && lakelands_api::seam::sortable(&d.ty.kind))
+    };
+    if !named.is_empty() || decl.view.is_some() || matches!(step, Choose::Start(f) if !sortable(f))
+    {
+        return Ok(None);
+    }
+    // Nothing is chosen on a lake a writer that keeps no chosen field
+    // folded past, before a writer's open drops what it left.
+    let mut chosen = chosen_of(conn, ty)?;
+    if !chosen_held(conn)? || !engines::chosen_after(&mut chosen, step) {
+        return Ok(None);
+    }
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(sql)?;
+    let done = (|| match step {
+        Choose::Fill {
+            field,
+            after,
+            limit,
+        } => fill_chosen(conn, ty, field, after.as_ref(), *limit),
+        _ => {
+            set_chosen(conn, ty, &chosen)?;
+            match step {
+                Choose::Start(_) if sorted(conn, ty)?.is_none() => {
+                    set_sorted(conn, ty, folded(conn)?)?;
+                }
+                Choose::Drop(f) => {
+                    run(
+                        conn,
+                        "DELETE FROM sort_index WHERE ty = ?1 AND field = ?2",
+                        params![ty.as_str(), f.as_str()],
+                    )?;
+                    if sorted_fields(conn, ty, Some(&decl), true)?.is_empty() {
+                        set_sorted(conn, ty, None)?;
+                    }
+                }
+                _ => {}
+            }
+            Ok(None)
+        }
+    })();
+    match done {
+        Ok(next) => conn.execute_batch("COMMIT").map(|()| next).map_err(sql),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+/// Write the rows of `field` for up to `limit` head records of `ty` after
+/// `after`; the key the chunk ended at, none once the type is filled.
+fn fill_chosen(
+    conn: &Connection,
+    ty: &TypeName,
+    field: &FieldName,
+    after: Option<&RecordKey>,
+    limit: u32,
+) -> Result<Option<RecordKey>> {
+    let after = after.map_or("", RecordKey::as_str);
+    let page: Vec<String> = column(
+        conn,
+        "SELECT state FROM records WHERE ty = ?1 AND until IS NULL AND key > ?2 \
+         ORDER BY key LIMIT ?3",
+        params![ty.as_str(), after, limit],
+        Ok,
+    )?;
+    let mut last = None;
+    for state in &page {
+        let r = decode_record(state)?;
+        run(
+            conn,
+            "DELETE FROM sort_index WHERE ty = ?1 AND field = ?2 AND key = ?3",
+            params![ty.as_str(), field.as_str(), r.key.as_str()],
+        )?;
+        for (field, sort_key) in engines::order_rows(std::slice::from_ref(field), &r) {
+            run(
+                conn,
+                "INSERT INTO sort_index (ty, field, key, sort_key) VALUES (?1, ?2, ?3, ?4)",
+                params![ty.as_str(), field.as_str(), r.key.as_str(), sort_key],
+            )?;
+        }
+        last = Some(r.key);
+    }
+    Ok(last.filter(|_| page.len() == limit as usize))
 }
 
 /// Rewrite `ty`'s order index from its head records, under its setting and
@@ -397,7 +568,19 @@ pub(crate) fn sorted_fields(
 pub(crate) fn rebuild_sorted(conn: &Connection, ty: &TypeName, through: Position) -> Result<()> {
     run(conn, "DELETE FROM sort_index WHERE ty = ?1", [ty.as_str()])?;
     let decl = type_at(conn, ty, None)?;
-    let fields = sorted_fields(conn, ty, decl.as_ref())?;
+    // A host's setting that names a field wins: the lake's choice goes.
+    let setting = head_record(
+        conn,
+        &TypeName::from(SETTING_TYPE),
+        &RecordKey::from(engines::sort_index_key(ty)),
+    )?;
+    let named = decl
+        .as_ref()
+        .map(|d| engines::sorted_fields(ty, d, setting.as_ref().and_then(engines::setting_value)));
+    if named.is_some_and(|n| !n.is_empty()) {
+        set_chosen(conn, ty, &Chosen::default())?;
+    }
+    let fields = sorted_fields(conn, ty, decl.as_ref(), true)?;
     if fields.is_empty() {
         return set_sorted(conn, ty, None);
     }
@@ -447,7 +630,9 @@ fn set_sorted(conn: &Connection, ty: &TypeName, through: Option<Position>) -> Re
 /// it (a binary before it) folded past its mark or wrote its setting, and
 /// drop the index of a type whose setting such a writer removed. A
 /// setting asks for the indexes of [`engines::ordered_names`]; one of
-/// those that keeps no field has no mark and is not behind.
+/// those that keeps no field has no mark and is not behind. The lake's
+/// choice goes whole where such a writer folded past it: it left the
+/// chosen fields' rows as they were while it moved every `sorted.` mark.
 pub(crate) fn catch_up_sorted(conn: &Connection) -> Result<()> {
     let Some(folded) = folded(conn)? else {
         return Ok(());
@@ -477,18 +662,45 @@ pub(crate) fn catch_up_sorted(conn: &Connection) -> Result<()> {
         .flat_map(|t| engines::ordered_names(&t.as_str().into()))
     {
         if !marks.iter().any(|(t, _)| t == ty.as_str())
-            && !sorted_fields(conn, &ty, type_at(conn, &ty, None)?.as_ref())?.is_empty()
+            && !sorted_fields(conn, &ty, type_at(conn, &ty, None)?.as_ref(), true)?.is_empty()
         {
             behind.insert(ty.to_string());
         }
     }
-    if behind.is_empty() {
+    let through: Option<i64> = one(
+        conn,
+        "SELECT v FROM meta WHERE k = ?1",
+        [engines::CHOSEN_THROUGH],
+    )?;
+    let left = through.is_some_and(|v| v != folded.0 as i64);
+    let stale: Vec<TypeName> = match !left {
+        true => Vec::new(),
+        false => column(
+            conn,
+            "SELECT substr(k, 8) FROM meta WHERE k LIKE 'chosen.%'",
+            [],
+            |t: String| Ok(TypeName::from(t)),
+        )?,
+    };
+    behind.extend(stale.iter().map(ToString::to_string));
+    if behind.is_empty() && !left {
         return Ok(());
     }
     conn.execute_batch("BEGIN IMMEDIATE").map_err(sql)?;
-    let rebuilt = behind
-        .iter()
-        .try_for_each(|ty| rebuild_sorted(conn, &TypeName::from(ty.as_str()), folded));
+    let rebuilt = (stale.iter())
+        .try_for_each(|ty| set_chosen(conn, ty, &Chosen::default()))
+        .and_then(|()| match left {
+            true => run(
+                conn,
+                "DELETE FROM meta WHERE k = ?1",
+                [engines::CHOSEN_THROUGH],
+            ),
+            false => Ok(()),
+        })
+        .and_then(|()| {
+            (behind.iter())
+                .try_for_each(|ty| rebuild_sorted(conn, &TypeName::from(ty.as_str()), folded))
+        });
     match rebuilt {
         Ok(()) => conn.execute_batch("COMMIT").map_err(sql),
         Err(e) => {
@@ -499,10 +711,18 @@ pub(crate) fn catch_up_sorted(conn: &Connection) -> Result<()> {
 }
 
 /// Record that every order index the lake keeps is kept through
-/// `through`: the fold kept each with the head.
-pub(crate) fn mark_sorted(conn: &Connection, through: Position) -> Result<()> {
-    conn.prepare_cached("UPDATE meta SET v = ?1 WHERE k LIKE 'sorted.%'")
-        .and_then(|mut s| s.execute(params![through.0 as i64]))
+/// `through`: the fold kept each with the head. So are the chosen fields
+/// among them if they were kept through `from`, the position it folded
+/// from; a writer that keeps none folded past them otherwise, and they
+/// stay behind until a writer's open drops them.
+pub(crate) fn mark_sorted(
+    conn: &Connection,
+    from: Option<Position>,
+    through: Position,
+) -> Result<()> {
+    let from = from.map(|p| p.0 as i64);
+    conn.prepare_cached("UPDATE meta SET v = ?1 WHERE k LIKE 'sorted.%' OR (k = ?2 AND v IS ?3)")
+        .and_then(|mut s| s.execute(params![through.0 as i64, engines::CHOSEN_THROUGH, from]))
         .map(|_| ())
         .map_err(sql)
 }
@@ -739,7 +959,7 @@ fn indexed(conn: &Connection, ty: &TypeName) -> Result<Indexed> {
         Some(_) => None,
         None => type_at(conn, ty, None)?,
     };
-    let sorted = sorted_fields(conn, ty, decl.as_ref())?;
+    let sorted = sorted_fields(conn, ty, decl.as_ref(), true)?;
     let looked = match decl {
         Some(_) => Some(looked_fields(conn, ty)?),
         None => None,
@@ -823,7 +1043,7 @@ pub(crate) fn put_declaration(conn: &Connection, d: &Declared) -> Result<Option<
     conn.prepare_cached("DELETE FROM sort_index WHERE ty = ?1")
         .and_then(|mut s| s.execute([t.name.as_str()]))
         .map_err(sql)?;
-    let kept = !sorted_fields(conn, &t.name, Some(t))?.is_empty();
+    let kept = !sorted_fields(conn, &t.name, Some(t), true)?.is_empty();
     set_sorted(conn, &t.name, kept.then_some(d.since))?;
     Ok(Some(t.name.clone()))
 }

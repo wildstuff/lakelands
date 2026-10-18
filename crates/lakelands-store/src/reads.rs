@@ -1243,6 +1243,14 @@ impl<'a> Reader<'a> {
         let setting = settings.get(&core_engines::sort_index_key(&ordered));
         t.lifecycle.sorted = core_engines::sorted_fields(&ordered, decl, setting);
         t.lifecycle.sorted.retain(seen);
+        // What the lake chose by itself, told like the pages it sorted
+        // whole: to a holder of `schema` who reads the field, and at the
+        // head only, where it is kept (041).
+        let chosen = self.view.chosen(&t.name).ok().filter(|_| self.at_head);
+        let chosen = chosen.unwrap_or_default();
+        let schema = self.who.grants.schema;
+        let reads = |f: &&FieldName| schema && self.sight.reads(&t.name, f) && seen(f);
+        t.lifecycle.chosen = chosen.kept.iter().filter(reads).cloned().collect();
         // What was ordered by a whole sort, told to a holder of `schema`
         // who reads the field, who can weigh `sort_index.<type>`, and never
         // once it is indexed: its pages count every principal's reads and
@@ -1251,7 +1259,11 @@ impl<'a> Reader<'a> {
         let tally = lakelands_core::lock(&self.lake.sorted_whole).clone();
         let schema = self.who.grants.schema;
         let told = |f: &FieldName| {
-            schema && self.sight.reads(&t.name, f) && !t.lifecycle.sorted.contains(f)
+            schema
+                && self.sight.reads(&t.name, f)
+                && !t.lifecycle.sorted.contains(f)
+                && !chosen.kept.contains(f)
+                && !chosen.building.contains(f)
         };
         t.lifecycle.sorted_whole = (tally.into_iter())
             .filter(|((ty, f), _)| *ty == t.name && told(f))
@@ -2145,8 +2157,12 @@ impl<'a> Reader<'a> {
         if let (Some(field), Ok(_)) = (whole, &found) {
             let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
             let mut tally = lakelands_core::lock(&self.lake.sorted_whole);
-            let (pages, took) = tally.entry((ty.clone(), field)).or_default();
+            let (pages, took) = tally.entry((ty.clone(), field.clone())).or_default();
             (*pages, *took) = (*pages + 1, took.saturating_add(micros));
+            drop(tally);
+            self.lake.note_whole(ty, &field);
+        } else if let Some(o) = find.order_by.first().filter(|o| o.by == OrderBy::Value) {
+            self.lake.note_used(ty, &o.field);
         }
         found
     }
@@ -2163,7 +2179,11 @@ impl<'a> Reader<'a> {
         let f = decl.fields.iter().find(sortable)?;
         let setting = self.shape.settings.get(&core_engines::sort_index_key(ty));
         let sorted = core_engines::sorted_fields(ty, decl, setting);
-        (!sorted.contains(&f.name)).then(|| f.name.clone())
+        // A field the lake chose an index for is not sorted whole, nor
+        // one it is building.
+        let chosen = self.view.chosen(ty).unwrap_or_default();
+        let held = chosen.kept.contains(&f.name) || chosen.building.contains(&f.name);
+        (!sorted.contains(&f.name) && !held).then(|| f.name.clone())
     }
 
     /// [`Self::find`]'s answer.

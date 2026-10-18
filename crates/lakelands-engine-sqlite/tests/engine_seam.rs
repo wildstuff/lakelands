@@ -50,6 +50,19 @@ impl EngineHarness for Sqlite {
         marked.expect("marking the projection");
         true
     }
+
+    fn fold_as_before(&self, lake: &LakeId) -> bool {
+        let path = self.root.join(lake.as_str()).join("projection.db");
+        rusqlite::Connection::open(path)
+            .and_then(|db| {
+                db.execute_batch(
+                    "UPDATE sort_index SET sort_key = x'00'; \
+                     UPDATE meta SET v = v + 1 WHERE k = 'folded' OR k LIKE 'sorted.%';",
+                )
+            })
+            .expect("folding as a writer without the chosen fields");
+        true
+    }
 }
 
 #[test]

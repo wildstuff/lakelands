@@ -254,6 +254,27 @@ pub struct Limits {
     /// second stage ranks, which a cursor carries
     /// (`docs/decisions/067-a-search-may-take-a-second-stage.md`).
     pub max_rerank_top: u32,
+    /// Whether the lake chooses an order index from the pages it had to
+    /// sort whole, beside the fields `sort_index.<type>` names
+    /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`). Off, only
+    /// what the host sets is indexed.
+    pub choose_order_index: bool,
+    /// How many whole-sorted pages a field must have within
+    /// `order_window_secs` to be chosen.
+    pub order_after_pages: u32,
+    /// The window those pages are counted in, in seconds.
+    pub order_window_secs: u32,
+    /// The fewest live records a type holds for a field of it to be
+    /// chosen.
+    pub order_min_records: u32,
+    /// The most fields the lake chooses for one type.
+    pub order_max_fields: u32,
+    /// How long a chosen field may go without a page ordered by it before
+    /// the lake drops it, in seconds of the writer's life.
+    pub order_unused_secs: u32,
+    /// The records one chunk of a chosen index's build writes while it
+    /// holds the writer.
+    pub order_chunk: u32,
 }
 
 impl Default for Limits {
@@ -268,6 +289,13 @@ impl Default for Limits {
             max_offset: 100_000,
             max_set_changes: 20_000,
             max_rerank_top: 100,
+            choose_order_index: true,
+            order_after_pages: 3,
+            order_window_secs: 600,
+            order_min_records: 2_000,
+            order_max_fields: 4,
+            order_unused_secs: 604_800,
+            order_chunk: 10_000,
         }
     }
 }

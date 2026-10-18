@@ -178,6 +178,42 @@ pub const SETTINGS: &[Setting] = &[
         ..location("limits.max_rerank_top", "100")
     },
     Setting {
+        range: "`true` or `false`",
+        says: "Whether the lake chooses an order index itself, for a field a type is ordered by whole at least `limits.order_after_pages` times within `limits.order_window_secs`, beside what `sort_index` names; the host's own `sort_index` for a type always wins. Off, only what the host sets is indexed.",
+        cost: "each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records",
+        ..location("limits.choose_order_index", "true")
+    },
+    Setting {
+        range: "a count",
+        says: "How many pages ordered whole by one field of a type, within `limits.order_window_secs`, make the lake choose an index for it.",
+        ..location("limits.order_after_pages", "3")
+    },
+    Setting {
+        range: "seconds",
+        says: "The window the pages that make the lake choose an index are counted in.",
+        ..location("limits.order_window_secs", "600")
+    },
+    Setting {
+        range: "a count",
+        says: "The fewest live records a type holds for the lake to choose an index of its fields.",
+        ..location("limits.order_min_records", "2000")
+    },
+    Setting {
+        range: "a count",
+        says: "The most fields of one type the lake chooses an index for.",
+        ..location("limits.order_max_fields", "4")
+    },
+    Setting {
+        range: "seconds",
+        says: "How long a chosen index may go unused, in seconds of the writer's life, before the lake drops it.",
+        ..location("limits.order_unused_secs", "604800")
+    },
+    Setting {
+        range: "a count; 0 is taken as 1",
+        says: "The records one chunk of a chosen index's build writes while it holds the writer; a write waits for a chunk, never for the build.",
+        ..location("limits.order_chunk", "10000")
+    },
+    Setting {
         range: "KiB",
         says: "SQLite: the writer connection's page cache.",
         ..location("engine.tuning.writer_cache_kb", "65536")

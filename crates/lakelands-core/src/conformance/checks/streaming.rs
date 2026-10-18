@@ -1154,6 +1154,19 @@ impl Size<'_> {
         Ok(())
     }
 
+    /// [`Self::sorted_pages`] with the lake choosing no order index: its
+    /// build would read beside the pages the walks hold to their rows
+    /// (lakelands#1131). Answers the lake opened again as it was.
+    async fn sorted_walks(&mut self, store: Store, records: u64) -> Result<Store, Failure> {
+        let mut off = limits();
+        off.choose_order_index = false;
+        let store = (self.given.relimit)(store, seams(), off).await;
+        let store = store.map_err(|e| Failure::new(format!("opening the lake failed: {e}")))?;
+        self.sorted_pages(store.as_ref(), records).await?;
+        let store = (self.given.relimit)(store, seams(), limits()).await;
+        store.map_err(|e| Failure::new(format!("opening the lake again failed: {e}")))
+    }
+
     /// Walk the first pages of `reading` ordered by its `note`, a text field
     /// every record holds with its own value, first as a lake without an
     /// order index sorts them: a page holds the type, its heap reported
@@ -1166,7 +1179,7 @@ impl Size<'_> {
     /// three rows more than it answers, and two per record changed since
     /// its position. Every walk answers what the first, a sort of the
     /// type, answered. Then retire the setting.
-    async fn sorted_walks(&mut self, store: &dyn LakeStore, records: u64) -> Held {
+    async fn sorted_pages(&mut self, store: &dyn LakeStore, records: u64) -> Held {
         let limit = u64::from(limits().max_limit);
         // The store asks the engine for a page and one more row, which
         // tells it whether another page follows, and reads the lake's
@@ -1869,7 +1882,7 @@ async fn a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_doe
         size.counts(store.as_ref(), records).await?;
         size.groups(store.as_ref(), records).await?;
         size.jump(store.as_ref(), records).await?;
-        size.sorted_walks(store.as_ref(), records).await?;
+        store = size.sorted_walks(store, records).await?;
         size.searches(store.as_ref(), records).await?;
         size.traverse(store.as_ref(), records).await?;
         size.derived_walk(store.as_ref(), records).await?;

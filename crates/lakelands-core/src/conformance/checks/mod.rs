@@ -18,6 +18,7 @@ mod authored_reads;
 mod authors_view;
 mod backings;
 mod bundles;
+mod chosen;
 mod compact;
 mod computed_at;
 mod computed_inputs;
@@ -731,6 +732,11 @@ pub const ALL: &[Check] = &[
     fusion::SAME_LIST_UNREAD,
     fusion::FUSED_BY_WEIGHT,
     fusion::WEIGHTS_REFUSED,
+    chosen::CHOSEN_ORDER_INDEX,
+    chosen::CHOSEN_BUILD_BESIDE_WRITES,
+    chosen::CHOSEN_SWITCH,
+    chosen::CHOSEN_UNUSED,
+    chosen::CHOSEN_TOLD_TO_SCHEMA,
     rerank::RERANK_REORDERS_THE_WINDOW,
     rerank::RERANK_ONE_WINDOW,
     rerank::RERANK_ONE_WINDOW_ONLY,

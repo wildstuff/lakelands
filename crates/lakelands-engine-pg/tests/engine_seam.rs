@@ -70,6 +70,33 @@ impl EngineHarness for Pg {
         marked.expect("marking the projection");
         true
     }
+
+    fn fold_as_before(&self, lake: &LakeId) -> bool {
+        let schema = self.schemas.lock().unwrap()[lake.as_str()].clone();
+        let url = self.url.clone();
+        let folded = std::thread::spawn(move || {
+            let mut db = postgres::Client::connect(&url, postgres::NoTls)?;
+            db.batch_execute(&format!(
+                "UPDATE \"{schema}\".sort_index SET sort_key = '\\x00'::bytea; \
+                 UPDATE \"{schema}\".meta SET n = n + 1 WHERE k = 'folded' OR k LIKE 'sorted.%'"
+            ))
+        });
+        let folded = folded.join().expect("the folding thread");
+        folded.expect("folding as a writer without the chosen fields");
+        true
+    }
+
+    fn rebuild_as_before(&self, lake: &LakeId) -> bool {
+        let schema = self.schemas.lock().unwrap()[lake.as_str()].clone();
+        let url = self.url.clone();
+        let rebuilt = std::thread::spawn(move || {
+            let mut db = postgres::Client::connect(&url, postgres::NoTls)?;
+            db.batch_execute(&format!("DELETE FROM \"{schema}\".sort_index"))
+        });
+        let rebuilt = rebuilt.join().expect("the rebuilding thread");
+        rebuilt.expect("rebuilding as a writer without the chosen fields");
+        true
+    }
 }
 
 #[test]
