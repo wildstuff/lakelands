@@ -592,7 +592,7 @@ fn outcome_schema() -> Value {
                                        "appended": {"type": "boolean"},
                                    },
                                    "required": ["kind", "name", "version", "since", "appended"]},
-                         "description": "For `declare` and `apply`: each declaration sent, as it stands in force after the call, and whether this call appended it."},
+                         "description": "For `declare`, `apply`, a `propose` of declarations all in force and the `accept` of proposed declarations: each declaration sent, as it stands in force after the call, and whether this call appended it."},
             "proposal": {"type": "string"},
             "why": {"type": "string"},
         },
@@ -1272,7 +1272,9 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 rename values. A record write or a verb call needs the grants it would need \
                 applied: a proposal waits for review, it does not lift a grant. Declarations \
                 and a migration need no `schema` grant to propose; a reviewer holding it \
-                accepts them."
+                accepts them. Declarations all in force are not filed: they are answered \
+                applied at the head with `declared`, as apply answers them, and nothing is \
+                appended."
                 .into(),
             input_schema: obj(
                 props([("write", write), ("why", json!({"type": "string"}))]),

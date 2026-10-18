@@ -970,7 +970,9 @@ A host that already has a store of its own moves in four steps.
   `appended` it, so a host drops what it cached only for what changed
   (lakelands#1059). `lakelands apply` prints it: each declaration already
   in force says since which position, and a bundle wholly in force says
-  that nothing was appended (lakelands#1106). See
+  that nothing was appended (lakelands#1106). A proposal of declarations
+  all in force is answered the same way and is not filed, and the accept
+  of a proposed bundle answers `declared` too (lakelands#1187). See
   `docs/decisions/027-shape-changes-are-declared-or-migrated.md`.
 - **A read costs the same however much the lake declares
   (lakelands#557).** A handle builds what the lake declares once for a

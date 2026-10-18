@@ -3567,6 +3567,8 @@ impl Call<'_> {
         // A re-key's sections of the other types, for the outcome (062).
         let mut others = Vec::new();
         let mut instead = None;
+        // A bundle wholly in force, answered as `apply` answers it.
+        let mut in_force = None;
         match &mut write {
             ProposedWrite::Upsert {
                 ty,
@@ -3629,7 +3631,10 @@ impl Call<'_> {
                 let mut changed = declarations.clone();
                 changed.retain(|d| !w.ontology.in_force(d));
                 let bundled = match changed.is_empty() {
-                    true => Some(Vec::new()),
+                    true => {
+                        in_force = Some(declarations.clone());
+                        Some(Vec::new())
+                    }
                     false => Some(as_plain.bundle_drafts(&w, changed, (now, 0, true))?.types),
                 };
                 *plan = bundled.map(|types| Box::new(plan::plan_of(&w, (types, Vec::new()))));
@@ -3682,6 +3687,17 @@ impl Call<'_> {
         };
         if let Some(p) = &mut shown {
             plan::shown_plan(p, &Sight::held(self.who, &w.ontology), view.as_ref())?;
+        }
+        // A bundle wholly in force is filed for nothing: its accept would
+        // change nothing. It is answered at the head, as `apply` answers it,
+        // and appends nothing (027, extended).
+        if let Some(sent) = in_force {
+            let at = head(&w);
+            let mut outcome = with_declared(applied(at, None), &w.ontology, &sent, at.next());
+            if let Outcome::Applied { plan, .. } = &mut outcome {
+                *plan = shown.map(Box::new);
+            }
+            return Ok(outcome);
         }
         let write = instead.unwrap_or(write);
         let d = self.proposal(&w, now, (write, why, pinned), &key_opt);
@@ -4153,6 +4169,11 @@ impl Call<'_> {
         let events = appended.map_err(|e| not_handed(e, external.is_some() && w.behind, by))?;
         let outcome = self.answered(&events, renamed);
         let mut outcome = self.told_of(&w.ontology, &events, outcome)?;
+        // Each declaration of the bundle as it stands after the accept, as
+        // `apply` answers it (027, extended).
+        if let ProposedWrite::Declare { declarations, .. } = write {
+            outcome = with_declared(outcome, &w.ontology, declarations, accepted_at);
+        }
         if let (true, Outcome::Applied { plan, .. }) = (write.is_schema(), &mut outcome) {
             *plan = Some(Box::new(plan::plan_of(&w, sections)));
         }
