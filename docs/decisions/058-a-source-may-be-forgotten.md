@@ -86,6 +86,7 @@ A type whose key holds personal data is given a surrogate key. `hosting.md` says
 - Its `input`, the digest a replay finds the output by, is an HMAC under a key derived from the source's key, the version that seals the output: the oldest of those that sealed the values the call reads. So the output lives as long as the oldest key period it read, and destroying a version, with every older one, takes the outputs of its values. A SHA-256 of the call would be a digest of plaintext that outlives the key (lakelands#1042).
 - **What equality still tells.** A value's own ciphertext tells no equality across records or versions. An output is recorded once for one call (053), so its `input` is the same for two records of one source whose call reads the same values: the log tells that they are equal, never what they are, and never across sources. That is the price of recording once.
 - An output whose inputs hold erasable values of two sources records no value, and names the reason in its `error`. One key per output is all the first version carries.
+- **What a reaction still tells.** A `trigger_fired` or an `object_set_changed` in the log, an export or the raw feed tells that its condition held for a record at a position. The condition is declared and readable, so a trigger over an erasable field tells something of the value after its key is destroyed, as equality does. The doors and the deliverer do not tell one the act overruled (065). A host whose triggers read an erasable field should know that the log keeps their firings.
 
 ### The projection holds plaintext, and the act rebuilds it
 
@@ -127,8 +128,9 @@ All four are built from the projection, which holds plaintext. They work on eras
 
 **The feed** delivers events as the log holds them, sealed values
 included: an export reads through it and its hashes need the stored
-bytes. A reader that needs plaintext reads the records through the
-doors, or opens the values with the key store (lakelands#1042).
+bytes. Beside them it names the reactions the act overruled (065). A
+reader that needs plaintext reads the records through the doors, or
+opens the values with the key store (lakelands#1042).
 
 **Exports:**
 - An export carries the log, so one made after the feature holds the source's values only as ciphertext, and the destroyed key covers it.

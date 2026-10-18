@@ -1103,6 +1103,61 @@ async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_who
     }
 }
 
+/// A firing decided over a value an act took back since is overruled, and
+/// told to no one: a session subscribed from before it is told the firing
+/// that stands, never the one the feed names overruled (065).
+#[tokio::test]
+async fn a_firing_an_act_overruled_is_not_told() {
+    use lakelands_api::write::Selection;
+    let store = common::lake_on(Backend::Memory).await;
+    let place = json!({"name": "place", "type": {"kind": "text"}, "authority": "source"});
+    let stop = json!({"declare": "type", "name": "stop", "fields": [place]});
+    declare(store.as_ref(), stop).await;
+    for (name, when) in [("in_rome", json!("place = 'Rome'")), ("wrote", json!(null))] {
+        let t = json!({"declare": "trigger", "name": name, "on": "stop", "when": when});
+        declare(store.as_ref(), t).await;
+    }
+    let from = store.head().await.unwrap().next();
+    let s1 = lakelands_api::SourceRecord {
+        source: None,
+        upstream: None,
+        ty: "stop".into(),
+        key: "s1".into(),
+        fields: serde_json::from_value(json!({"place": "Rome"})).unwrap(),
+        seen_at: None,
+    };
+    let (cat, tracker) = (store.catalog(WriteContext::default()), "tracker".into());
+    let own = common::owner();
+    let fed = lakelands_api::ingest_all(cat.as_ref(), &own, &tracker, vec![s1]);
+    fed.await.unwrap();
+    let all = Selection::WrittenBefore(lakelands_api::Timestamp::from_date(9999, 1, 1).unwrap());
+    let act = store.remove_values(&tracker, &all, false, None);
+    act.await.unwrap();
+    let fired = lakelands_api::seam::FeedFilter {
+        kinds: vec!["trigger_fired".into()],
+        ..Default::default()
+    };
+    let b = store.feed().poll(from, &fired, 16).await.unwrap();
+    // `tracker`'s write fired both, and so did the act's retirement of
+    // `s1`, decided over the place it takes.
+    let at: Vec<u64> = b.events.iter().map(|e| e.position.0).collect();
+    let overruled: Vec<u64> = b.overruled.iter().map(|p| p.0).collect();
+    assert_eq!(
+        overruled,
+        [at[0], at[2]],
+        "the feed names `in_rome` overruled: {b:?}"
+    );
+    let mut s = Stdio::open(store.clone(), common::owner()).await;
+    let asked = json!({"from": from.0, "kinds": ["trigger_fired"]});
+    s.call("subscribe", asked).await;
+    let m = s.change().await;
+    assert_eq!(
+        m["params"]["position"],
+        json!(at[1]),
+        "the session is told `wrote`, not the overruled `in_rome`: {m}"
+    );
+}
+
 /// A set or a trigger whose condition reads across an edge tells what it
 /// reads there, so it is a principal's only where nothing of the far type
 /// is held from it (055, extended): one who reads every field but holds no

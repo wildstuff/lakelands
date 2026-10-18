@@ -257,6 +257,10 @@ answers those records' events (`types=invoice&key=INV-1` is one
 record's history), without them a key in any type (`docs/seams.md`
 §`ChangeFeed`). Each event's `id` is
 its position, its `event` its kind, its `data` the event as JSON; a
+reaction the batch names `overruled` carries the comment `: overruled`
+in its frame, after its `id`, which a reader that does not know the
+mark skips as it skips every comment
+(`docs/decisions/004-the-change-feed-is-the-log.md`). A
 reconnecting client sends `Last-Event-ID` and resumes after it. Each
 time the stream catches up at a position it has not named before, it
 sends the comment `: next <position>`: the first position not yet

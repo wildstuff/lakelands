@@ -40,11 +40,14 @@
 //!   (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
 //!   A condition over `sys.setting` is told only to one from whom nothing
 //!   is held, the only principal no setting is told narrowed or withheld.
+//!   One the feed names overruled, decided over a value an act erased
+//!   since, is told to no one
+//!   (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
 //!
 //! **What a gap says.** The positions a session is told are a subset of
 //! the log's, so a gap between two says that something happened the
-//! principal may not see. That is no more than every read's `position`
-//! already says: the lake's head moves for every event.
+//! principal may not see, or is not told. That is no more than every
+//! read's `position` already says: the lake's head moves for every event.
 //!
 //! **Retry, never loss.** A read that refuses (the principal may not see
 //! the record) hides the event. A read that fails for any other reason
@@ -418,6 +421,7 @@ pub async fn pump(
                     })
                 }
                 "declared" | "migrated" | "value_type_migrated" => None,
+                _ if batch.overruled.binary_search(&e.position).is_ok() => None,
                 kind => match &subscription {
                     Some(s) if e.position >= next && reads_kind(s, kind) => {
                         match view.of(e, s).await {

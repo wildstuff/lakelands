@@ -77,6 +77,7 @@ use crate::record;
 
 mod across;
 mod plan;
+mod stands;
 mod touched;
 mod viewed;
 
@@ -85,6 +86,7 @@ pub(crate) use across::{Written, reads_across};
 pub(crate) use plan::Against;
 pub(crate) use plan::When;
 pub(crate) use plan::shown_plan;
+pub(crate) use stands::overruled;
 pub(crate) use touched::{Folding, Zone};
 
 /// A set membership that changes: the set, the record's type and its key
@@ -3264,7 +3266,9 @@ impl Call<'_> {
     /// trigger fired, at a record other than the write's own, which a far
     /// write sets off across an edge, only where the caller is answered
     /// one of the records it moved, as a write's own record is its
-    /// writer's (055, extended).
+    /// writer's (055, extended); and, after an act, only where one of its
+    /// reactions stands ([`overruled`]): a replay answers what the history
+    /// without the erased values sets off (065).
     fn told_of(&self, o: &Ontology, events: &[Event], mut outcome: Outcome) -> Result<Outcome> {
         let Outcome::Applied {
             position, set_off, ..
@@ -3283,7 +3287,10 @@ impl Call<'_> {
         };
         let mut moved: BTreeMap<(&str, &TypeName), Vec<&RecordKey>> = BTreeMap::new();
         let mut mine = BTreeSet::new();
-        for e in events.iter().filter(|e| e.cause == Some(*position)) {
+        let reacts = |e: &&Event| e.cause == Some(*position);
+        let (gone, _) = overruled(self.lake, events.iter().filter(reacts))?;
+        let caused = |e: &&Event| reacts(e) && gone.binary_search(&e.position).is_err();
+        for e in events.iter().filter(caused) {
             let (name, ty, key) = match &e.body {
                 EventBody::ObjectSetChanged { set, ty, key, .. } => (set.as_str(), ty, key),
                 EventBody::TriggerFired {
@@ -3299,7 +3306,7 @@ impl Call<'_> {
                 }
             };
         }
-        if moved.is_empty() {
+        if moved.is_empty() && gone.is_empty() {
             return Ok(outcome);
         }
         let view = self.lake.engine.view(None)?;

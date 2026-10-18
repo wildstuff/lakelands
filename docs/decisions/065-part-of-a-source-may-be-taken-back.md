@@ -69,6 +69,35 @@ a forgotten value.
   could move it, as a write decides it, and the logged
   `object_set_changed` no longer stands for it. No membership is one an
   erased value made, at the head or `as_of` (lakelands#1232).
+- **A reaction the log holds** — a `trigger_fired`, a `trigger_dropped`,
+  an `object_set_changed` — is a fact of the write that made it, and
+  stays in the log, its exports and the raw feed. Where an act erased a
+  value its condition read, and the history without the value does not
+  make it, it is *overruled*: the feed names it in `overruled` (004), no
+  door tells it (the MCP pump, a replayed write's outcome), and the
+  deliverer does not post it (lakelands#1238). One that history makes
+  too stands. One that history would make, but the log does not hold, is
+  not made: an act runs no trigger over what it erases. The act's own
+  retirements fire in its append, decided over the values it takes, and
+  are decided again like any other.
+  - **How.** As the write decided it, over the projection as of its
+    cause, which the rebuild left without the value: a trigger's `when`
+    over the record then and just before, a path across an edge read
+    then, with the settings then; a set's change where the membership
+    before the cause is not the one it moved to and the membership after
+    it is. For a set across an edge or of a kept view that membership is
+    the kept one. For any other it is the `where` over the record, and
+    before the cause the membership the write read, kept by an earlier
+    decision, unless the record then holds an erased value the `where`
+    reads: a `where` that reads the clock moves without a write. A
+    trigger with no `when`, or withdrawn at its cause, stands.
+  - **What it costs.** Only a reaction before the lake's last act, or
+    sharing its time as every event of its append does, is decided: each
+    by a few point reads, and by the shape at its cause, which an `as_of`
+    read pays too, once per cause. No type is scanned. A lake that never
+    erased anything pays one atomic load a poll. While a rebuild refolds
+    the log, a poll stops before the first reaction the projection cannot
+    decide yet, and the next poll reads on from it.
 - No read answers it again, `as_of` included.
 - Its bytes stay in the log, its exports and its backups: in plaintext
   for a field that is not erasable, sealed under a live key otherwise.

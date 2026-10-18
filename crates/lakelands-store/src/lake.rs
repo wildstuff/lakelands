@@ -25,7 +25,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeInclusive;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use lakelands_api::engine::{CanonicalEvent, LakeEngine, Lease, OpenMode, ProjectionView};
@@ -242,6 +242,11 @@ pub struct Lake {
     /// Moved when a rebuild begins and when it ends: a shape built across
     /// either read a projection cleared or half folded, and is not kept.
     rebuilds: AtomicU64,
+    /// The position of the last act that erased values (058, 065) this
+    /// handle found folded or folded itself, 0 where none, and its time:
+    /// only a reaction before it, or of its own append, is decided again
+    /// ([`crate::writes::overruled`]).
+    acted: (AtomicU64, AtomicI64),
     /// The sources' keys the lake was given, and the key store (058).
     pub(crate) keys: Arc<crate::sealing::Keys>,
     /// Why a forgetting's reclaim is still owed, where the last one failed
@@ -695,6 +700,7 @@ impl Lake {
             holds_lease: AtomicBool::new(false),
             shapes: Mutex::new(Vec::new()),
             rebuilds: AtomicU64::new(0),
+            acted: (AtomicU64::new(0), AtomicI64::new(i64::MIN)),
             reclaim_owed: Mutex::new(None),
             rebuilt_at_open: None,
         }
@@ -897,6 +903,11 @@ impl Lake {
             let view = self.engine.view(None)?;
             w.ontology = Ontology::at(view.as_ref())?.named();
             w.settings = settings_in(view.as_ref(), &w.ontology)?;
+        }
+        if self.acts_known(w)? {
+            let last = last_act(self.engine.view(None)?.as_ref())?;
+            let at = self.read_events(last, 1)?.first().map(|e| e.known_at);
+            self.act_at(last, at.unwrap_or(Timestamp(i64::MIN)));
         }
         // The last event's time.
         if let Some((pos, _)) = &w.tip
@@ -1912,6 +1923,7 @@ impl Lake {
             // The act is owed until a rebuild after its keys were
             // destroyed has erased what they sealed, and the reclaim ran.
             EventBody::SourceForgotten { source, .. } => {
+                self.act_at(e.position, e.known_at);
                 w.forgotten.insert(source.clone());
                 let erased = w.rebuilding && self.keys.ids(source)?.is_empty();
                 let mut list = forgotten_list(view, staged)?;
@@ -1929,6 +1941,7 @@ impl Lake {
             // The act is owed until a rebuild that knew it before it began
             // has folded the log, and the reclaim ran (065).
             EventBody::ValuesRemoved { .. } => {
+                self.act_at(e.position, e.known_at);
                 let act = crate::remove::Removal::of(e).expect("the event is an act");
                 let known = w.removals.contains(&act) && !w.ahead.remove(&act.at);
                 // Its versions destroyed, as forgetting's keys must be: a
@@ -2937,6 +2950,21 @@ impl Lake {
         self.head()
     }
 
+    /// The position and the time of the last act that erased values, as
+    /// this handle knows it; none where it knows of none.
+    pub(crate) fn acted(&self) -> Option<(Position, Timestamp)> {
+        let at = Position(self.acted.0.load(Ordering::Acquire));
+        (at.0 > 0).then(|| (at, Timestamp(self.acted.1.load(Ordering::Acquire))))
+    }
+
+    /// An act at `at`, at the time `known`, unless a later one is known.
+    fn act_at(&self, at: Position, known: Timestamp) {
+        if self.acted.0.load(Ordering::Acquire) < at.0 {
+            self.acted.1.store(known.0, Ordering::Release);
+            self.acted.0.store(at.0, Ordering::Release);
+        }
+    }
+
     /// Whether this handle holds the lease.
     pub fn is_writer(&self) -> bool {
         self.holds_lease.load(Ordering::Acquire)
@@ -3346,6 +3374,30 @@ pub(crate) fn forgotten_list(
         None => view.output(&at.0, &at.1)?.map(|(_, v)| v),
     };
     Ok(crate::sealing::forgotten(list.as_ref()))
+}
+
+/// The position of the last act that erased values `view` has folded, by
+/// the feed's index; `view`'s own position where the index decides
+/// nothing, so a reaction it cannot place is decided again.
+fn last_act(view: &dyn ProjectionView) -> Result<Position> {
+    let Some(to) = view.position() else {
+        return Ok(Position::GENESIS);
+    };
+    let kinds = vec!["source_forgotten".into(), "values_removed".into()];
+    let acts = lakelands_api::seam::FeedFilter {
+        kinds,
+        ..Default::default()
+    };
+    let (mut from, mut last) = (Position::GENESIS, Position::GENESIS);
+    loop {
+        let m = view.matching(&acts, from, to, lakelands_api::seam::FEED_EXAMINED)?;
+        last = m.positions.last().copied().unwrap_or(last);
+        match m.through {
+            Some(t) if t < to => from = t.next(),
+            Some(_) => return Ok(last),
+            None => return Ok(to),
+        }
+    }
 }
 
 /// Whether the fold of an event reads a record: such an event is folded

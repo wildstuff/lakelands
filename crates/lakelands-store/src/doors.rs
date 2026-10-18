@@ -1065,7 +1065,8 @@ impl LakeStore for Store {
 }
 
 /// The change feed: the log, filtered by kind and type, read from a
-/// position (`docs/decisions/004-the-change-feed-is-the-log.md`).
+/// position (`docs/decisions/004-the-change-feed-is-the-log.md`), each
+/// batch naming the reactions in it an act overruled (065).
 pub struct Feed {
     lake: Arc<Lake>,
 }
@@ -1075,65 +1076,20 @@ impl ChangeFeed for Feed {
     async fn poll(&self, from: Position, filter: &FeedFilter, limit: u32) -> Result<FeedBatch> {
         let (lake, filter) = (self.lake.clone(), filter.clone());
         exec::run(move || {
-            let head = lake.head();
-            let want = limit.max(1) as usize;
-            let (mut read, mut events, mut next) = (0, Vec::new(), from);
-            // Up to the view's position the projection's index names the
-            // events the filter admits, and only those are read and opened,
-            // in one ask: where the index stops short of the view, so does
-            // the poll. One that decides nothing, as while the projection
-            // is rebuilt, leaves the poll to the log. A filter that names
-            // nothing admits every event.
-            let view = feed::seek(&filter)
-                .map(|_| lake.engine.view(None))
-                .transpose()?;
-            let indexed = view
-                .as_ref()
-                .and_then(|v| v.position())
-                .map(|p| p.min(head));
-            let mut decided = false;
-            if let (Some(view), Some(p)) = (&view, indexed.filter(|p| next <= *p)) {
-                let room = want.min(FEED_EXAMINED as usize) as u32;
-                let m = view.matching(&filter, next, p, room)?;
-                read = m.positions.len();
-                for e in lake.read_these(&m.positions)? {
-                    if feed::admits(&filter, e.body.kind(), &feed::about(&e.body)) {
-                        events.push(e);
-                    }
-                }
-                if let Some(through) = m.through {
-                    (decided, next) = (true, through.next());
-                }
+            let (mut events, mut next, head) = polled(&lake, from, &filter, limit)?;
+            // A reaction the projection cannot decide yet, while a rebuild
+            // runs, is left to the next poll with what follows it.
+            let (overruled, cut) = crate::writes::overruled(&lake, &events)?;
+            if let Some(cut) = cut {
+                events.retain(|e| e.position < cut);
+                next = cut;
             }
-            drop(view);
-            if decided && indexed.is_some_and(|p| next <= p) {
-                return Ok(FeedBatch { events, next, head });
-            }
-            // Past it, as while the projection is rebuilt, every event is
-            // read, to `limit` matches or to `last`, the head or the bound:
-            // nothing past the last position examined is read or verified.
-            let bound = (FEED_EXAMINED as usize - read) as u64;
-            let last = Position(next.0.saturating_add(bound).saturating_sub(1)).min(head);
-            'read: while bound > 0 && next <= last && events.len() < want {
-                let room = (last.0 - next.0 + 1).min(want.clamp(64, 1024) as u64);
-                let batch = lake.read_events(next, room as u32)?;
-                if batch.is_empty() {
-                    break;
-                }
-                for e in batch {
-                    if e.position > last {
-                        break 'read;
-                    }
-                    next = e.position.next();
-                    if feed::admits(&filter, e.body.kind(), &feed::about(&e.body)) {
-                        events.push(e);
-                        if events.len() >= want {
-                            break 'read;
-                        }
-                    }
-                }
-            }
-            Ok(FeedBatch { events, next, head })
+            Ok(FeedBatch {
+                events,
+                next,
+                head,
+                overruled,
+            })
         })
         .await
     }
@@ -1147,6 +1103,75 @@ impl ChangeFeed for Feed {
     async fn wait(&self, after: Position, within: std::time::Duration) -> Result<Position> {
         Ok(self.lake.wait_past(after, within).await)
     }
+}
+
+/// The events of one poll from `from` that `filter` admits, the position
+/// to poll from next and the head.
+fn polled(
+    lake: &Lake,
+    from: Position,
+    filter: &FeedFilter,
+    limit: u32,
+) -> Result<(Vec<lakelands_api::event::Event>, Position, Position)> {
+    let head = lake.head();
+    let want = limit.max(1) as usize;
+    let (mut read, mut events, mut next) = (0, Vec::new(), from);
+    // Up to the view's position the projection's index names the
+    // events the filter admits, and only those are read and opened,
+    // in one ask: where the index stops short of the view, so does
+    // the poll. One that decides nothing, as while the projection
+    // is rebuilt, leaves the poll to the log. A filter that names
+    // nothing admits every event.
+    let view = feed::seek(filter)
+        .map(|_| lake.engine.view(None))
+        .transpose()?;
+    let indexed = view
+        .as_ref()
+        .and_then(|v| v.position())
+        .map(|p| p.min(head));
+    let mut decided = false;
+    if let (Some(view), Some(p)) = (&view, indexed.filter(|p| next <= *p)) {
+        let room = want.min(FEED_EXAMINED as usize) as u32;
+        let m = view.matching(filter, next, p, room)?;
+        read = m.positions.len();
+        for e in lake.read_these(&m.positions)? {
+            if feed::admits(filter, e.body.kind(), &feed::about(&e.body)) {
+                events.push(e);
+            }
+        }
+        if let Some(through) = m.through {
+            (decided, next) = (true, through.next());
+        }
+    }
+    drop(view);
+    if decided && indexed.is_some_and(|p| next <= p) {
+        return Ok((events, next, head));
+    }
+    // Past it, as while the projection is rebuilt, every event is
+    // read, to `limit` matches or to `last`, the head or the bound:
+    // nothing past the last position examined is read or verified.
+    let bound = (FEED_EXAMINED as usize - read) as u64;
+    let last = Position(next.0.saturating_add(bound).saturating_sub(1)).min(head);
+    'read: while bound > 0 && next <= last && events.len() < want {
+        let room = (last.0 - next.0 + 1).min(want.clamp(64, 1024) as u64);
+        let batch = lake.read_events(next, room as u32)?;
+        if batch.is_empty() {
+            break;
+        }
+        for e in batch {
+            if e.position > last {
+                break 'read;
+            }
+            next = e.position.next();
+            if feed::admits(filter, e.body.kind(), &feed::about(&e.body)) {
+                events.push(e);
+                if events.len() >= want {
+                    break 'read;
+                }
+            }
+        }
+    }
+    Ok((events, next, head))
 }
 
 #[cfg(test)]
