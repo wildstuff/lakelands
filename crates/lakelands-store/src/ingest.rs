@@ -40,7 +40,7 @@ use lakelands_api::event::{EventBody, EventId, Sealed};
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::Origin;
 use lakelands_api::write::Committed;
-use lakelands_api::{DeliveryId, Principal, Result, SourceId, SourceRecord, Timestamp};
+use lakelands_api::{DeliveryId, Principal, RecordKey, Result, SourceId, SourceRecord, Timestamp};
 use lakelands_core::rights::Door;
 
 use crate::exec;
@@ -186,7 +186,23 @@ fn judge(
     for r in records.iter().take_while(formed) {
         keys.entry(&r.ty).or_default().push(r.key.clone());
     }
-    for (ty, keys) in keys {
+    // The targets the written references of those records name, read the
+    // same way: each reference is still judged from the same view.
+    let mut targets: BTreeMap<&lakelands_api::TypeName, Vec<_>> = Default::default();
+    for r in records.iter().take_while(formed) {
+        let decl = sees.ty(&r.ty).expect("a formed record names a type");
+        for f in &decl.fields {
+            let named = (f.ty.target.as_ref()).zip(r.fields.get(&f.name).and_then(|v| v.as_str()));
+            // Only a key an engine can hold is read; any other value is
+            // judged as before.
+            let named = named.map(|(target, to)| (target, RecordKey::from(to)));
+            if let Some((target, to)) = named.filter(|(_, to)| crate::writes::check_key(to).is_ok())
+            {
+                targets.entry(target).or_default().push(to);
+            }
+        }
+    }
+    for (ty, keys) in keys.into_iter().chain(targets) {
         d.pending.prime(view, ty, &keys)?;
     }
     // The keys of an insert-only type this window writes, each once.

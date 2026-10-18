@@ -872,3 +872,29 @@ async fn an_ingests_delivery_is_the_callers_or_the_stores_own(store: Store) -> H
     }
     Ok(())
 }
+
+check!(
+    REFERENCE_WITH_NUL = an_ingested_reference_holding_nul_is_refused_on_its_field,
+    "lakelands#1167: a reference an ingested record writes that holds U+0000 is refused naming the field, alone or among good records, never sent to the engine, as a key holding it is refused"
+);
+
+async fn an_ingested_reference_holding_nul_is_refused_on_its_field(store: Store) -> Held {
+    use crate::conformance::fixture::reference;
+    let l = Lake::of(store.as_ref());
+    l.declare(feed()).await?;
+    let r = lakelands_api::ontology::FieldDecl {
+        authority: lakelands_api::ontology::Authority::Source,
+        ..reference("r", "feed")
+    };
+    l.declare(type_decl("link", vec![r])).await?;
+    let nul = || source_record("link", "l1", json!({"r": "a\u{0}b"}));
+    let good = || source_record("feed", "k1", json!({"body": "text"}));
+    for window in [vec![nul()], vec![good(), nul()], vec![nul(), good()]] {
+        let err = l.ingest("bank", window).await;
+        ensure!(
+            matches!(refused_on(&err), Some(("r", Refusal::Constraint(..)))),
+            "a reference holding NUL is refused on `r` as a text holding NUL; it answered {err:?}"
+        );
+    }
+    Ok(())
+}

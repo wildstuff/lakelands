@@ -623,6 +623,7 @@ pub const ALL: &[Check] = &[
     ingest::DUPLICATE_ACROSS_WINDOWS,
     ingest::REFUSAL_NAMES,
     ingest::INSERT_ONLY,
+    ingest::REFERENCE_WITH_NUL,
     aging::MOVES_WHAT_HOLDS_FROM,
     aging::TWICE_IS_ONCE,
     aging::TODAY_IS_THE_DATE,
