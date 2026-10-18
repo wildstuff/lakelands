@@ -153,7 +153,7 @@ The first version carries no per-copy erasure across lakes.
 - the derived fields and views that recompute;
 - the mirror connections whose types it would stop;
 - **the values of the source that are plaintext in the log**: written before the field was erasable, or before the feature. Shredding cannot reach them, so the act refuses while they exist and names the count;
-- **the time it expects to hold the writer's lock**: an estimate, the log's events at the rate the handle's last rebuild measured, its open's included, or at the engine's stated rate before any, the time of the handle's last reclaim, where it ran one, and the time of the preflight's own walk of the log, which the act walks again, so a host can choose its moment. Every write waits while the act rebuilds.
+- **the time it expects to hold the writer's lock**: an estimate, the log's events at the rate the handle's last rebuild measured, its open's included, or at the engine's stated rate before any, the time of the handle's last reclaim, where it ran one, and the time of the preflight's own walk of the log, which the act walks again, so a host can choose its moment. Every write waits while the act rebuilds. After a measured rebuild and reclaim on the handle, the conformance suite holds the estimate to at most their measured time plus the walk, and to at least two thirds of that time less 10 ms.
 
 The preflight and the act each count from the source's own events, which the feed index names (`ProjectionView::of_source`), not from a walk of the whole log; where the index decides nothing, as while the projection is rebuilt, they walk the log from there. The judgement is the same either way: a field erasable now, under the names it bears now.
 
