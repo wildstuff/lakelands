@@ -33,6 +33,12 @@ check!(
 );
 
 check!(
+    APART_CUT = a_cut_by_time_takes_a_delivery_sealed_apart_with_its_version,
+    "065 (lakelands#1214): `crm` writes `p1`, then the delivery `late`, sealed apart, writes `p2`, both under its first version; after a second version `p3` is sealed under it alone; the preflight of taking back what `crm` wrote before `p3` names the first version and `late`'s key, and counts `name` 2 redacted, 2 shredded and none redacted only; with `require_shredded` the act appends a `values_removed` naming both, and the key store holds the second version alone and no key apart; `p1` and `p2` read their names erased and keep their notes, at the head and before the act, while `p3` reads Cy; a writer opened again and a rebuild each answer the same",
+    reopens
+);
+
+check!(
     APART_OFF = an_ingest_not_sealed_apart_seals_as_before,
     "065 (lakelands#1214): an ingest that does not ask `sealed_apart` seals under the source's version alone, `sealed` naming no `apart` and the key store making no key apart; one that asks it and writes no erasable value seals nothing and asks for no key; and with a key store that makes no key apart, one that asks it and writes an erasable value is refused as unbound (`key_apart`) and appends nothing, while the same records without it are written",
     reopens
@@ -426,6 +432,105 @@ async fn an_output_over_an_apart_value_dies_with_either_key(store: Store, reopen
     gone(&store, "after a reopen").await?;
     store.rebuild().await.must("rebuilding")?;
     gone(&store, "after a rebuild").await?;
+    Ok(())
+}
+
+async fn a_cut_by_time_takes_a_delivery_sealed_apart_with_its_version(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    let keys = Arc::new(Keys::default());
+    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(person()).await?;
+    let crm: SourceId = "crm".into();
+    let p = |k: &str, name: &str| source_record("person", k, json!({"id": k, "name": name}));
+    l.ingest("crm", vec![p("p1", "Ada")])
+        .await
+        .must("ingesting p1")?;
+    let v1 = first(&keys, store.as_ref(), "crm")?;
+    apart(&l, "late", vec![p("p2", "Bea")]).await?;
+    for k in ["p1", "p2"] {
+        l.upsert("person", k, json!({"note": "kept"})).await?;
+    }
+    let made = keys.apart(store.lake(), &crm);
+    let [a] = made.as_slice() else {
+        return Err(Failure::new(format!(
+            "the delivery makes one key apart; the key store holds {made:?}"
+        )));
+    };
+    let v2 = keys
+        .create(store.lake(), &crm)
+        .must("making a second version")?;
+    let store = again(&reopen, store, with(&keys), "with a second version").await?;
+    let l = Lake::of(store.as_ref());
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    let mark = store.head().await.must("reading the head")?;
+    l.ingest("crm", vec![p("p3", "Cy")])
+        .await
+        .must("ingesting p3")?;
+    let cut = (events_from(store.as_ref(), mark.next()).await?.first())
+        .ok_or_else(|| Failure::new("`p3` was logged"))?
+        .known_at;
+    let head = store.head().await.must("reading the head")?;
+    let before = Selection::WrittenBefore(cut);
+    let report = store.remove_values_preflight(&crm, &before).await;
+    let report = report.must("the preflight")?;
+    let fields: Vec<_> = (report.fields.iter())
+        .map(|f| (f.field.as_str(), f.redacted, f.shredded))
+        .collect();
+    ensure!(
+        report.keys == [v1.clone()]
+            && report.apart == [a.clone()]
+            && fields == [("name", 2, 2)]
+            && report.unshredded == 0,
+        "the preflight destroys {v1} and {a}, and counts `name` 2 redacted, 2 shredded: \
+         {report:?}"
+    );
+    store
+        .remove_values(&crm, &before, true, None)
+        .await
+        .must("taking back what crm wrote before `p3`, shredded")?;
+    let named: Vec<_> = (acts(store.as_ref(), head).await?.into_iter())
+        .filter_map(|e| match e.body {
+            EventBody::ValuesRemoved { keys, apart, .. } => Some((keys, apart)),
+            _ => None,
+        })
+        .collect();
+    let (ids, left) = (
+        keys.ids(store.lake(), &crm)
+            .must("listing crm's versions")?,
+        keys.apart(store.lake(), &crm),
+    );
+    ensure!(
+        named == [(vec![v1.clone()], vec![a.clone()])] && ids == [v2.clone()] && left.is_empty(),
+        "`values_removed` names {v1} and {a}, and the key store holds {v2} alone and no key \
+         apart: {named:?}, {ids:?}, {left:?}"
+    );
+    let read = async |l: &Lake, by: &str| {
+        for k in ["p1", "p2"] {
+            for when in [None, Some(head)] {
+                let r = at(l, "person", k, when).await?;
+                ensure!(
+                    r.as_ref().is_some_and(|r| erased(r, "name", "crm")
+                        && r.fields.get("note") == Some(&json!("kept"))),
+                    "{by}, as of {when:?}, `{k}` reads its name erased and keeps its note: {r:?}"
+                );
+            }
+        }
+        let p3 = at(l, "person", "p3", None).await?;
+        ensure!(
+            p3.as_ref()
+                .is_some_and(|r| r.fields.get("name") == Some(&json!("Cy"))),
+            "{by}, `p3` reads Cy: {p3:?}"
+        );
+        Ok::<_, Failure>(())
+    };
+    read(&l, "after the act").await?;
+    let store = again(&reopen, store, with(&keys), "after the act").await?;
+    read(&Lake::of(store.as_ref()), "a writer opened again").await?;
+    store.rebuild().await.must("rebuilding")?;
+    read(&Lake::of(store.as_ref()), "after a rebuild").await?;
     Ok(())
 }
 

@@ -68,6 +68,9 @@ pub struct List {
     pub firsts: Vec<(KeyId, Position)>,
     /// When the newest version was first used, where the list says.
     pub newest: Option<lakelands_api::Timestamp>,
+    /// The versions a delivery sealed apart sealed under, which the list
+    /// marks: only a value of one of these has apart keys kept ([`APART`]).
+    pub apart: Vec<KeyId>,
 }
 
 impl List {
@@ -77,10 +80,15 @@ impl List {
         let last = value.as_array().and_then(|l| l.last());
         let newest = last.and_then(|l| l.get(2)?.as_i64());
         let newest = newest.map(lakelands_api::Timestamp);
+        let entries = value.as_array().into_iter().flatten();
+        let marked = entries.filter(|l| l.get(3) == Some(&Value::Bool(true)));
+        let apart = marked.filter_map(|l| Some(KeyId::from(l.get(0)?.as_str()?)));
+        let apart = apart.collect();
         List {
             value,
             firsts,
             newest,
+            apart,
         }
     }
 }
@@ -531,17 +539,19 @@ pub fn firsts(list: Option<&Value>) -> Vec<(KeyId, Position)> {
 
 /// What the fold keeps once `sealed` seals a value of `source` at `at`,
 /// written at `known`, each with the place it is kept under: the list
-/// [`USED`] where its version is first used there ([`first_use`]), and
-/// its apart keys under [`APART`] where it names any. The fold and a
+/// [`USED`] where its version is first used there, or first seals a
+/// delivery sealed apart ([`first_use`]), and its apart keys under
+/// [`APART`] where it names any. The fold and a
 /// write's plan both keep them so, and read the same keys.
 pub fn kept(
     read: (&crate::backed::Recorded, &dyn ProjectionView, &Keys),
     (source, sealed, at, known): (&SourceId, &Sealed, Position, lakelands_api::Timestamp),
 ) -> Result<Vec<((String, Digest), Value)>> {
-    let mut kept: Vec<_> = first_use(read, (source, &sealed.key, at, known))?
+    let apart = !sealed.apart.is_empty();
+    let mut kept: Vec<_> = first_use(read, (source, &sealed.key, at, known), apart)?
         .into_iter()
         .collect();
-    if !sealed.apart.is_empty() {
+    if apart {
         let place = (APART.to_owned(), apart_at(source, at));
         kept.push((place, serde_json::json!(sealed.apart)));
     }
@@ -549,12 +559,16 @@ pub fn kept(
 }
 
 /// The list [`USED`] keeps for `source` once `key` seals a value at `at`,
-/// written at `known`, with the place it is kept under: none where the
-/// list, as `staged` holds it or else `view` ([`Keys::listed`]), names
-/// `key` already.
+/// written at `known`, `apart` where a delivery sealed apart seals it,
+/// with the place it is kept under: none where the list, as `staged`
+/// holds it or else `view` ([`Keys::listed`]), names `key` already, and
+/// marks it where `apart`. A mark is a fourth member, `true`, of the
+/// version's entry, so a recorded output reads [`APART`] only at a
+/// value whose version it marks.
 fn first_use(
     (staged, view, keys): (&crate::backed::Recorded, &dyn ProjectionView, &Keys),
     (source, key, at, known): (&SourceId, &KeyId, Position, lakelands_api::Timestamp),
+    apart: bool,
 ) -> Result<Option<((String, Digest), Value)>> {
     let place = (USED.to_owned(), used_by(source));
     let list = match staged.get(&place).and_then(|l| l.last()) {
@@ -563,12 +577,22 @@ fn first_use(
     };
     // A source seals with its newest version, so it is looked for first.
     let named = |l: &Arc<List>| l.firsts.iter().rev().any(|(k, _)| k == key);
-    if list.as_ref().is_some_and(named) {
+    let marked = |l: &Arc<List>| !apart || l.apart.contains(key);
+    if list.as_ref().is_some_and(|l| named(l) && marked(l)) {
         return Ok(None);
     }
     let used = list.and_then(|l| l.value.as_array().cloned());
     let mut used = used.unwrap_or_default();
-    used.push(serde_json::json!([key, at, known.0]));
+    let entry =
+        (used.iter_mut().rev()).find(|l| l.get(0).and_then(Value::as_str) == Some(key.as_str()));
+    match entry.and_then(Value::as_array_mut) {
+        Some(entry) => {
+            entry.resize(3, Value::Null);
+            entry.push(Value::Bool(true));
+        }
+        None if apart => used.push(serde_json::json!([key, at, known.0, true])),
+        None => used.push(serde_json::json!([key, at, known.0])),
+    }
     Ok(Some((place, Value::Array(used))))
 }
 

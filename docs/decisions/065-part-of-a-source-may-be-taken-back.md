@@ -175,7 +175,10 @@ be shredded alone (lakelands#1214).
   output that reads no value sealed apart is sealed under the version
   alone, as before. The fold keeps which apart key sealed the value at
   each position, under a name of its own, so a write's plan and a
-  rebuild compose the same keys.
+  rebuild compose the same keys. Its list of a source's versions marks
+  each version a delivery sealed apart sealed under, and an output looks
+  up the apart keys only at a value whose version is marked: a source
+  that never sealed apart costs no read.
 - **The act destroys every apart key whose values it all selects.** For
   a delivery, that is the keys of the ingests of that delivery before
   the act. For a time, it is the keys of the ingests below the position

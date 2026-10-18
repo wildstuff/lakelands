@@ -486,7 +486,7 @@ fn input_of(
     // reads, so the output dies with any of them (065).
     let apart = match version {
         Some(s) => s.apart.clone(),
-        None => apart_of((outputs, event), &source, &read)?,
+        None => apart_of((outputs, event), (&source, list.as_deref()), &read)?,
     };
     let Some(keys) = outputs.keys else {
         return Ok(Input::Keyless);
@@ -504,24 +504,30 @@ fn input_of(
 
 /// The keys of deliveries sealed apart that sealed `source`'s values
 /// written at `read`, in id order: `event`'s own where it wrote one, else
-/// as the fold keeps them ([`crate::sealing::APART`]).
+/// as the fold keeps them ([`crate::sealing::APART`]), looked up only at
+/// a value whose version `list` marks as sealing one, so a source that
+/// never sealed apart costs no read.
 fn apart_of(
     (outputs, event): (&Outputs<'_>, &Event),
-    source: &lakelands_api::SourceId,
+    (source, list): (&lakelands_api::SourceId, Option<&crate::sealing::List>),
     read: &[Position],
 ) -> Result<Vec<lakelands_api::id::KeyId>> {
     let mut apart = BTreeSet::new();
+    let (firsts, marked) = list.map_or((&[][..], &[][..]), |l| (&l.firsts[..], &l.apart[..]));
+    let marks =
+        |p: Position| crate::sealing::sealed_at(firsts, p).is_some_and(|k| marked.contains(k));
     for p in read {
         let own = (event.sealed.as_ref())
             .filter(|_| *p == event.position && event.source.as_ref() == Some(source))
             .filter(|_| matches!(event.body, EventBody::RecordIngested { .. }));
         match own {
             Some(s) => apart.extend(s.apart.iter().cloned()),
-            None => {
+            None if marks(*p) => {
                 let at = crate::sealing::apart_at(source, *p);
                 let kept = outputs.recorded(crate::sealing::APART, &at)?;
                 apart.extend(kept.iter().flat_map(crate::sealing::apart_of));
             }
+            None => {}
         }
     }
     Ok(apart.into_iter().collect())

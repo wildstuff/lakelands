@@ -1059,3 +1059,116 @@ async fn an_ingests_delivery_id_goes_over_the_wire() {
     let refused = said.await.unwrap_err();
     assert!(refused.to_string().contains("delivery id"), "{refused}");
 }
+
+/// A key store in memory, each key its id's bytes repeated.
+#[derive(Default)]
+struct Held(std::sync::Mutex<Vec<(SourceId, lakelands_api::id::KeyId, bool)>>);
+
+impl Held {
+    fn made(&self, source: &SourceId, apart: bool) -> lakelands_api::id::KeyId {
+        let mut held = self.0.lock().unwrap();
+        let id = lakelands_api::id::KeyId::from(format!("k{}", held.len()));
+        held.push((source.clone(), id.clone(), apart));
+        id
+    }
+}
+
+impl lakelands_api::seam::KeyStore for Held {
+    fn create(
+        &self,
+        _: &LakeId,
+        source: &SourceId,
+    ) -> lakelands_api::Result<lakelands_api::id::KeyId> {
+        Ok(self.made(source, false))
+    }
+    fn key(
+        &self,
+        _: &LakeId,
+        source: &SourceId,
+        id: &lakelands_api::id::KeyId,
+    ) -> lakelands_api::Result<Option<lakelands_api::seam::DataKey>> {
+        let held = self.0.lock().unwrap();
+        let found = held.iter().any(|(s, i, _)| s == source && i == id);
+        Ok(found.then(|| lakelands_api::seam::DataKey([id.as_str().len() as u8; 32])))
+    }
+    fn destroy(&self, _: &LakeId, source: &SourceId) -> lakelands_api::Result<()> {
+        self.0.lock().unwrap().retain(|(s, _, _)| s != source);
+        Ok(())
+    }
+    fn ids(
+        &self,
+        _: &LakeId,
+        source: &SourceId,
+    ) -> lakelands_api::Result<Vec<lakelands_api::id::KeyId>> {
+        let held = self.0.lock().unwrap();
+        let versions = held.iter().filter(|(s, _, apart)| s == source && !apart);
+        Ok(versions.map(|(_, i, _)| i.clone()).collect())
+    }
+    fn create_apart(
+        &self,
+        _: &LakeId,
+        source: &SourceId,
+    ) -> lakelands_api::Result<lakelands_api::id::KeyId> {
+        Ok(self.made(source, true))
+    }
+}
+
+/// An ingest's `sealed_apart` goes over the wire: the events of an ingest
+/// through the remote catalog that asks it name a key apart in `sealed`
+/// (lakelands#1214).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ingests_sealed_apart_goes_over_the_wire() {
+    use lakelands_api::engine::OpenMode;
+    use lakelands_api::event::EventBody;
+    use lakelands_api::ontology::{FieldDecl, StorageKind};
+    use lakelands_api::seam::Seams;
+    use lakelands_api::write::IngestOpts;
+    use lakelands_core::conformance::fixture::{self as fx, Lake};
+    let keys = Arc::new(Held::default());
+    let seams = Seams {
+        engines: vec![Arc::new(lakelands_engine_mem::MemoryOpener::new())],
+        keys: Some(keys.clone()),
+        ..Seams::default()
+    };
+    let location = lakelands_api::Location::memory("apart");
+    let store = lakelands_store::open(location, seams, OpenMode::Create)
+        .await
+        .expect("the lake opens");
+    let name = FieldDecl {
+        erasable: true,
+        ..fx::sourced("name", StorageKind::Text)
+    };
+    let id = FieldDecl {
+        required: true,
+        ..fx::sourced("id", StorageKind::Text)
+    };
+    let person = lakelands_api::ontology::TypeDecl {
+        key: vec!["id".into()],
+        ..fx::type_decl("person", vec![id, name])
+    };
+    Lake::of(store.as_ref()).declare(person).await.unwrap();
+    let (addr, api_keys) = common::serve(store.clone()).await;
+    let remote = common::remote(addr, store.lake(), api_keys);
+    let remote = remote.catalog(WriteContext::default());
+    let crm = SourceId::from("crm");
+    let p = |k: &str| fx::source_record("person", k, json!({"id": k, "name": "Ada"}));
+    let head = store.head().await.unwrap();
+    let ingest = async |apart: bool, k: &str| {
+        let opts = IngestOpts {
+            sealed_apart: apart,
+            ..IngestOpts::default()
+        };
+        let own = owner(store.lake());
+        lakelands_api::ingest_all_with(remote.as_ref(), &own, &crm, opts, vec![p(k)])
+            .await
+            .unwrap();
+    };
+    ingest(false, "p1").await;
+    ingest(true, "p2").await;
+    let events = fx::events_after(store.as_ref(), head).await.unwrap();
+    let apart: Vec<_> = (events.iter())
+        .filter(|e| matches!(e.body, EventBody::RecordIngested { .. }))
+        .map(|e| e.sealed.as_ref().map(|s| s.apart.len()))
+        .collect();
+    assert_eq!(apart, [Some(0), Some(1)], "{events:?}");
+}

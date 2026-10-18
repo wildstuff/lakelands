@@ -424,3 +424,13 @@ fn a_source_with_no_version_left_is_destroyed_all_the_same() {
     keys.destroy(&SourceId::from("crm")).unwrap();
     assert_eq!(store.0.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
+
+/// The list marks a version a delivery sealed apart sealed under with a
+/// fourth member, and only those (065).
+#[test]
+fn the_list_marks_the_versions_a_delivery_sealed_apart_sealed_under() {
+    let list = List::of(json!([["k1", 3, 7], ["k2", 9, 8, true], ["k3", 12]]));
+    assert_eq!(list.apart, [KeyId::from("k2")]);
+    assert_eq!(list.firsts.len(), 3);
+    assert!(List::of(json!([["k1", 3, 7]])).apart.is_empty());
+}
