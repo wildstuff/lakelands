@@ -128,6 +128,31 @@ delivery would then make more of the log that consumers read. It would
 also make one consumer's progress part of every other reader's lake,
 which is the coupling this record keeps out.
 
+### A batch names the reactions an act overruled
+
+A batch carries `overruled`: the positions of its `trigger_fired`,
+`trigger_dropped` and `object_set_changed` events that were decided over
+a value an act erased since, and that the history without the value
+does not make (065). The events stay as the log holds them, so an export
+and its hashes read them unchanged, and the log format does not change.
+- **The MCP pump** tells none of them, as it tells nothing its principal
+  may not see: a gap in the positions it tells already says that
+  something is not told.
+- **The deliverer** posts none of them, and journals each `overruled`. A
+  receiver would otherwise act again, on a firing over an erased value,
+  when the deliverer reads from a position before the act. So a
+  deliverer reading from an old position after an act posts fewer
+  events than before (056).
+- **The feed over the network door** (037) carries the mark as the
+  comment `: overruled` in the event's frame, since its reader reads
+  everything; `lakelands-client` reads it back into `overruled`.
+- **The raw feed for the host** keeps every event, with the list beside
+  it.
+
+**Why beside the events.** Dropping them from the batch would break the
+rule that the feed is the log: an export would miss bytes its hashes
+chain over, and a relay could not tell a gap from a loss.
+
 ### A trigger fires on every write of its type whose guard holds
 
 A trigger fires on every write of its type — `upsert`, `ingest`, a verb's

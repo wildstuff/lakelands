@@ -1176,11 +1176,13 @@ async fn feed(
     Ok(r)
 }
 
-/// An event as one SSE frame.
-fn frame(e: &lakelands_api::event::Event) -> Bytes {
+/// An event as one SSE frame, with the comment `: overruled` where its
+/// batch names it overruled (065).
+fn frame(e: &lakelands_api::event::Event, overruled: bool) -> Bytes {
     let data = serde_json::to_string(&to_json(e)).expect("JSON prints");
     let (at, kind) = (e.position.0, e.body.kind());
-    format!("id: {at}\nevent: {kind}\ndata: {data}\n\n").into()
+    let mark = if overruled { ": overruled\n" } else { "" };
+    format!("id: {at}\n{mark}event: {kind}\ndata: {data}\n\n").into()
 }
 
 /// Send the feed from `from` on, then wait for more, until the client

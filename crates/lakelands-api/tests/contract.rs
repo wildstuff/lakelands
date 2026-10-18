@@ -97,6 +97,7 @@ fn a_feed_that_cannot_wait_answers_at_once() {
                 events: Vec::new(),
                 next: from.max(head.next()),
                 head,
+                overruled: Vec::new(),
             })
         }
         async fn ack(&self, _: &str, _: Position) -> lakelands_api::Result<()> {

@@ -634,7 +634,7 @@ pub fn run(
         shown: None,
     };
     let mut drafts = vec![Draft::system(now, removed)];
-    let mut d = call.decide(&w, view.as_ref(), now, 0);
+    let mut d = call.decide(&w, view.as_ref(), now, drafts.len());
     for before in retire {
         let body = writes::retirement(&before.ty, &before.key, before.version);
         drafts.extend(d.retiring(&before, Draft::system(now, body))?);

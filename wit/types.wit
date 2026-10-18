@@ -1683,5 +1683,8 @@ interface types {
         events: list<json>,
         next: position,
         head: position,
+        /// The positions of the reactions among `events` an act overruled
+        /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+        overruled: list<position>,
     }
 }

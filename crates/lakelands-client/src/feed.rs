@@ -33,7 +33,8 @@ impl RemoteFeed {
 /// What one block of the stream said.
 #[derive(Debug, PartialEq)]
 enum Said {
-    Event(Box<Event>),
+    /// An event, and whether its batch names it overruled.
+    Event(Box<Event>, bool),
     Failed(Error),
     Next(Position),
     Nothing,
@@ -46,16 +47,19 @@ struct NotSse;
 /// What a block of lines says, by the rules of server-sent events: a
 /// field's value loses one leading space, `data` lines join with `\n`,
 /// a line starting `:` is a comment. The marker `: next <position>`
-/// counts only as a comment in a block that holds nothing else, and a
-/// block without `data` dispatches nothing.
+/// counts only as a comment in a block that holds nothing else, the
+/// marker `: overruled` marks the block's event, and a block without
+/// `data` dispatches nothing.
 fn block(lines: &[String]) -> std::result::Result<Said, NotSse> {
     let (mut kind, mut data, mut next, mut fields) = (None, None::<String>, None, false);
+    let mut overruled = false;
     for l in lines {
         if let Some(c) = l.strip_prefix(':') {
             let c = c.strip_prefix(' ').unwrap_or(c);
             if let Some(n) = c.strip_prefix("next ") {
                 next = Some(n.parse::<u64>().map_err(|_| NotSse)?);
             }
+            overruled |= c == "overruled";
             continue;
         }
         fields = true;
@@ -83,7 +87,7 @@ fn block(lines: &[String]) -> std::result::Result<Said, NotSse> {
             .map(Said::Failed)
             .map_err(|_| NotSse),
         (_, Some(d)) => serde_json::from_str(&d)
-            .map(|e| Said::Event(Box::new(e)))
+            .map(|e| Said::Event(Box::new(e), overruled))
             .map_err(|_| NotSse),
         (_, None) => Ok(Said::Nothing),
     }
@@ -145,6 +149,7 @@ impl ChangeFeed for RemoteFeed {
                 events: Vec::new(),
                 next: from,
                 head,
+                overruled: Vec::new(),
             });
         }
         // An empty key would be an empty `key=`, which the door refuses;
@@ -173,10 +178,13 @@ impl ChangeFeed for RemoteFeed {
             query.push_str(&format!("&key={}", enc(k.as_str())));
         }
         let mut stream = Stream::open(wire, key, query).await?;
-        let mut events: Vec<Event> = Vec::new();
+        let (mut events, mut overruled): (Vec<Event>, Vec<Position>) = (Vec::new(), Vec::new());
         let next = loop {
             match stream.said().await? {
-                Said::Event(e) => {
+                Said::Event(e, o) => {
+                    if o {
+                        overruled.push(e.position);
+                    }
                     events.push(*e);
                     if events.len() >= limit as usize {
                         break Position(events[events.len() - 1].position.0 + 1);
@@ -191,7 +199,12 @@ impl ChangeFeed for RemoteFeed {
         // The stream's head is the one it opened at; what it sent since
         // may lie past it.
         let head = Position(head.0.max(next.0.saturating_sub(1)));
-        Ok(FeedBatch { events, next, head })
+        Ok(FeedBatch {
+            events,
+            next,
+            head,
+            overruled,
+        })
     }
 
     /// The server keeps no consumer state; a consumer keeps its own
@@ -212,7 +225,7 @@ impl ChangeFeed for RemoteFeed {
         let past = async {
             loop {
                 match stream.said().await? {
-                    Said::Event(e) => return Ok(e.position),
+                    Said::Event(e, _) => return Ok(e.position),
                     Said::Next(n) if n > after.next() => return Ok(Position(n.0 - 1)),
                     Said::Failed(e) => return Err(e),
                     Said::Next(_) | Said::Nothing => {}
@@ -379,6 +392,22 @@ mod tests {
         assert_eq!(block(&lines(&[": next thirty"])), Err(NotSse));
         assert_eq!(block(&lines(&["event: x", ": next 30"])), Ok(Said::Nothing));
         assert_eq!(block(&lines(&[": nextish"])), Ok(Said::Nothing));
+    }
+
+    /// `: overruled` in an event's block marks the event (004); outside
+    /// one it is a comment like any other.
+    #[test]
+    fn the_overruled_mark_marks_its_blocks_event() {
+        let e = r#"{"body":{"key":"s1","kind":"trigger_fired","trigger":"wrote","type":"stop"},"context":{"depth":0,"origin":"direct"},"fence":1,"hash":"b24bae34b1cb98a888c26a50b5d6e80cd45ba528308b96822581335f7cdff7af","id":"5d9e8a7d2730bbd0e040b3cf60c48107","known_at":"2026-10-18T05:03:32.289866Z","lake":"l","origin":"system","position":12,"prev":"f66cb5de55179e25fc2dcb5a76d7cc9840bae8d475f55ca0dbdf871517324bef","v":17,"writer":"system:lakelands"}"#;
+        let data = format!("data: {e}");
+        for (mark, want) in [(": overruled", true), (": keep-alive", false)] {
+            let said = block(&lines(&["id: 12", mark, "event: trigger_fired", &data]));
+            assert!(
+                matches!(said, Ok(Said::Event(_, o)) if o == want),
+                "{mark}: {said:?}"
+            );
+        }
+        assert_eq!(block(&lines(&[": overruled"])), Ok(Said::Nothing));
     }
 
     /// A stream that sends its head and one keep-alive, then nothing, is
