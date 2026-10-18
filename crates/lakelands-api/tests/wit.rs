@@ -1408,6 +1408,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     after: Some(1),
                     head: Position(3),
                 }),
+                reclaim_owed: Some("busy".into()),
                 report_id: "r".into(),
             }),
         ),

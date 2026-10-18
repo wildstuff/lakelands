@@ -619,14 +619,9 @@ impl Lake {
             lake.append(&mut w, drafts)?;
             // What a crash left of a forgetting is finished first (058).
             // An owed rebuild refuses the open, since the projection is not
-            // whole without it; a reclaim that fails again stays owed, is
-            // told and is tried at the next open, never a lock-out: the
-            // values are erased already (lakelands#1161).
-            if let Err(e) = lake.finish_forgetting(&mut w)
-                && lake.reclaim_owed().is_none()
-            {
-                return Err(e);
-            }
+            // whole without it; a reclaim that fails again stays owed and
+            // is told, never a lock-out (lakelands#1161).
+            lake.finish_forgetting(&mut w)?;
         }
         {
             // A read-only handle keeps the folded position `catch_up`
@@ -2452,21 +2447,15 @@ impl Lake {
     /// act itself does and the writer's open after a crash between its
     /// steps: each source whose act the projection may still hold the
     /// values of has its keys destroyed, the projection is rebuilt, and the
-    /// storage reclaimed. Each step is idempotent. `None` where nothing was
-    /// owed.
+    /// storage reclaimed ([`Self::reclaim`]). Each step is idempotent.
+    /// `None` where nothing was owed, and where the reclaim failed: the
+    /// values are erased already, so a failed reclaim is owed and told,
+    /// never an error (lakelands#1179).
     pub(crate) fn finish_forgetting(
         &self,
         w: &mut Writer,
     ) -> Result<Option<lakelands_api::write::CompactReport>> {
-        let listed = |lake: &Lake| {
-            let view = lake.engine.view(None)?;
-            forgotten_list(view.as_ref(), &Staged::default())
-        };
-        let removed = |lake: &Lake| {
-            let view = lake.engine.view(None)?;
-            crate::remove::removed_list(view.as_ref(), &Staged::default())
-        };
-        let (list, acts) = (listed(self)?, removed(self)?);
+        let (list, acts) = self.acts_listed()?;
         if list.values().chain(acts.values()).all(|s| s == "done") {
             return Ok(None);
         }
@@ -2485,39 +2474,77 @@ impl Lake {
             drop(view);
             self.rebuild_held(w)?;
         }
-        let (mut list, mut acts) = (listed(self)?, removed(self)?);
+        Ok(self.reclaim()?.ok())
+    }
+
+    /// The forgotten sources and the acts of removal the projection
+    /// lists, each with its state.
+    fn acts_listed(&self) -> Result<(BTreeMap<SourceId, String>, BTreeMap<Position, String>)> {
+        let view = self.engine.view(None)?;
+        let list = forgotten_list(view.as_ref(), &Staged::default())?;
+        let acts = crate::remove::removed_list(view.as_ref(), &Staged::default())?;
+        Ok((list, acts))
+    }
+
+    /// Give back the storage the projection no longer uses, under the
+    /// writer's lock its caller holds: the last step of an act and a
+    /// manual compact alike. The engine's answer is the inner result. One
+    /// that fails while an act waits on it is owed, its cause kept for
+    /// [`Self::reclaim_owed`]; one that runs owes nothing, and each act
+    /// whose rebuild waited on it is done. The outer error is the lists'
+    /// own read or write failing.
+    fn reclaim(&self) -> Result<Result<lakelands_api::write::CompactReport>> {
+        let (mut list, mut acts) = self.acts_listed()?;
+        let waiting = list.values().chain(acts.values()).any(|s| s == "rebuilt");
         let reclaimed = self.engine.projection().compact();
-        *lakelands_core::lock(&self.reclaim_owed) = reclaimed.as_ref().err().map(Error::to_string);
-        let reclaimed = reclaimed?;
-        let states = list.values_mut().chain(acts.values_mut());
-        for state in states.filter(|s| *s == "rebuilt") {
-            *state = "done".to_owned();
+        // A compact that fails with no act waiting owes nothing.
+        if waiting || reclaimed.is_ok() {
+            *lakelands_core::lock(&self.reclaim_owed) = reclaimed.as_ref().err().map(Error::said);
         }
+        let reclaimed = match reclaimed {
+            Ok(r) => r,
+            Err(e) => return Ok(Err(e)),
+        };
         let head = self.head();
-        let projection = self.engine.projection();
-        let list = serde_json::to_value(&list).expect("a list serialises");
-        let at = crate::sealing::forgotten_at();
-        projection.begin()?;
-        if !list.as_object().is_some_and(serde_json::Map::is_empty) {
-            projection.put_output(crate::sealing::FORGOTTEN, &at, &list, head)?;
+        if waiting {
+            for state in list.values_mut().chain(acts.values_mut()) {
+                if state == "rebuilt" {
+                    *state = "done".to_owned();
+                }
+            }
+            let projection = self.engine.projection();
+            let list = serde_json::to_value(&list).expect("a list serialises");
+            let at = crate::sealing::forgotten_at();
+            projection.begin()?;
+            let written = (|| {
+                if !list.as_object().is_some_and(serde_json::Map::is_empty) {
+                    projection.put_output(crate::sealing::FORGOTTEN, &at, &list, head)?;
+                }
+                if !acts.is_empty() {
+                    let (at, acts) = (
+                        crate::remove::removed_at(),
+                        crate::remove::list_value(&acts),
+                    );
+                    projection.put_output(crate::remove::REMOVED, &at, &acts, head)?;
+                }
+                projection.commit(head)
+            })();
+            if written.is_err() {
+                projection.rollback();
+            }
+            written?;
         }
-        if !acts.is_empty() {
-            let (at, acts) = (
-                crate::remove::removed_at(),
-                crate::remove::list_value(&acts),
-            );
-            projection.put_output(crate::remove::REMOVED, &at, &acts, head)?;
-        }
-        projection.commit(head)?;
-        Ok(Some(lakelands_api::write::CompactReport {
+        Ok(Ok(lakelands_api::write::CompactReport {
             before: reclaimed.before,
             after: reclaimed.after,
             head,
         }))
     }
 
-    /// Why a forgetting's reclaim is still owed, where the last one tried
-    /// failed: the writer's open goes on without it (lakelands#1161).
+    /// Why a forgetting's or a removal's reclaim is still owed, where the
+    /// last one tried failed: the cause alone. The act answered, and the
+    /// writer's open goes on without it (lakelands#1161); the next open, a
+    /// repeat of the act or a compact that runs clears it.
     pub fn reclaim_owed(&self) -> Option<String> {
         lakelands_core::lock(&self.reclaim_owed).clone()
     }
@@ -2753,19 +2780,15 @@ impl Lake {
     /// it appends nothing, and the head stays where it is
     /// (`docs/decisions/040-maintenance-never-changes-an-answer.md`). A
     /// lost writer takes the lease again before it, as a write does: its
-    /// `lease_taken` changes no answer.
+    /// `lease_taken` changes no answer. It is an act's own reclaim: one
+    /// that runs clears a reclaim owed (lakelands#1179).
     pub fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
         let mut w = self.writer();
         self.regain(&mut w)?;
         if w.lease.is_none() {
             return Err(read_only());
         }
-        let reclaimed = self.engine.projection().compact()?;
-        Ok(lakelands_api::write::CompactReport {
-            before: reclaimed.before,
-            after: reclaimed.after,
-            head: self.head(),
-        })
+        self.reclaim()?
     }
 
     /// Give the lease up. The handle reads on; it no longer writes.

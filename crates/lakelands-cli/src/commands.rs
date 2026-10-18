@@ -1,7 +1,7 @@
 //! The commands that open a lake: `apply`, `ingest`, `feed`, `age`,
-//! `purge`, `forget`, `rebuild`, `compact`, `export` and `serve`. Each calls
-//! the library in-process and prints the position of every answer that has
-//! one.
+//! `purge`, `forget`, `values remove`, `rebuild`, `compact`, `export` and
+//! `serve`. Each calls the library in-process and prints the position of
+//! every answer that has one.
 //! `import` makes a lake instead of opening one.
 //!
 //! What a command says of its operator's own files and terminal (a file it
@@ -896,6 +896,9 @@ pub async fn forget(
     if !report.report_id.is_empty() {
         let (head, id) = (report.position, &report.report_id);
         let seconds = report.expected_ms.div_ceil(1000);
+        if let Some(why) = &report.reclaim_owed {
+            put(out, format!("{source}: {}", owed(why)))?;
+        }
         return put(
             out,
             format!(
@@ -905,17 +908,75 @@ pub async fn forget(
             ),
         );
     }
-    let reclaimed = match report.reclaimed {
-        Some(r) => match (r.before, r.after) {
-            (Some(b), Some(a)) => format!(", the projection {b} → {a} bytes"),
-            _ => String::new(),
-        },
-        None => String::new(),
-    };
+    let reclaimed = reclaimed(report.reclaimed.as_ref(), report.reclaim_owed.as_deref());
     put(
         out,
         format!(
             "forgot {source} through position {}{reclaimed}",
+            report.position
+        ),
+    )
+}
+
+/// What an act says of its reclaim: the projection's bytes before and
+/// after, where the engine measures them, or that the reclaim is owed
+/// and why (lakelands#1179).
+fn reclaimed(r: Option<&lakelands_api::write::CompactReport>, why: Option<&str>) -> String {
+    match (r.map(|r| (r.before, r.after)), why) {
+        (_, Some(why)) => format!("; {}", owed(why)),
+        (Some((Some(b), Some(a))), None) => format!(", the projection {b} → {a} bytes"),
+        _ => String::new(),
+    }
+}
+
+/// The line that tells a reclaim still owed, with its cause: the act
+/// answered, its values erased already (lakelands#1161).
+pub fn owed(why: &str) -> String {
+    format!("an act's reclaim is still owed, tried again at the next open or compact: {why}")
+}
+
+/// `values remove`: take back part of a source
+/// (`LakeStore::remove_values`): append the act, destroy the key versions
+/// whose values it all selects, rebuild and reclaim, and print the
+/// report's own sentences (`RemoveReport::said`). As for [`forget`],
+/// `report` is the `--report`, the only way to act; without one it
+/// prints the preflight, the time it expects to hold the writer's lock,
+/// and the id to make it under
+/// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+pub async fn values_remove(
+    out: Out<'_>,
+    store: &Arc<dyn LakeStore>,
+    (source, selection): (&str, &lakelands_api::write::Selection),
+    (shredded, report): (bool, Option<Option<&str>>),
+) -> Result<(), Failure> {
+    let id = SourceId::from(source);
+    let report = match report {
+        Some(given) => store.remove_values(&id, selection, shredded, given).await?,
+        None => store.remove_values_preflight(&id, selection).await?,
+    };
+    for line in report.said() {
+        put(out, line)?;
+    }
+    if !report.report_id.is_empty() {
+        let (head, id) = (report.position, &report.report_id);
+        let seconds = report.expected_ms.div_ceil(1000);
+        if let Some(why) = &report.reclaim_owed {
+            put(out, format!("{source}: {}", owed(why)))?;
+        }
+        return put(
+            out,
+            format!(
+                "{source}: preflight at position {head}; the act holds the writer about {seconds} s \
+                 ({} events); remove with --report {id}",
+                report.log_events
+            ),
+        );
+    }
+    let reclaimed = reclaimed(report.reclaimed.as_ref(), report.reclaim_owed.as_deref());
+    put(
+        out,
+        format!(
+            "took back from {source} through position {}{reclaimed}",
             report.position
         ),
     )

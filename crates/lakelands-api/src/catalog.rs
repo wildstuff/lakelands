@@ -432,12 +432,15 @@ pub trait LakeStore: Send + Sync {
     async fn vector_coverage(&self, ty: &TypeName) -> Result<Vec<crate::read::VectorCoverage>>;
 
     /// Delete the projection and rebuild it from the log. Answers the
-    /// position it was rebuilt through.
+    /// position it was rebuilt through; a reclaim an act owed that fails
+    /// again is not its failure, and stays in [`Self::reclaim_owed`].
     async fn rebuild(&self) -> Result<Position>;
 
-    /// Why a forgetting's reclaim is still owed, where the last one tried
-    /// failed: the writer opened without it and tries it at its next
-    /// open (`docs/decisions/058-a-source-may-be-forgotten.md`).
+    /// Why a forgetting's or a removal's reclaim is still owed, where the
+    /// last one tried failed, the cause alone: the act, an import or a
+    /// rebuild answered without it, and the writer's next open, the act's
+    /// repeat or a compact that runs clears it
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
     fn reclaim_owed(&self) -> Option<String> {
         None
     }
@@ -504,7 +507,9 @@ pub trait LakeStore: Send + Sync {
     /// all under the writer's lock. Refused while the log holds its values
     /// of an erasable field in plaintext. With a preflight's id, refused
     /// unless that report is of this source at this head. A step a crash
-    /// left owed is finished by the next writer's open.
+    /// left owed is finished by the next writer's open; a reclaim that
+    /// fails is not a failure of the act, which answers it in its report's
+    /// `reclaim_owed`.
     async fn forget_source(
         &self,
         source: &SourceId,
@@ -528,7 +533,9 @@ pub trait LakeStore: Send + Sync {
     /// `require_shredded`, refused while a value of an erasable field would
     /// be redacted only. With a preflight's id, refused unless that report
     /// is of this removal at this head. A step a crash left owed is
-    /// finished by the next writer's open.
+    /// finished by the next writer's open; a reclaim that fails is
+    /// answered in the report's `reclaim_owed`, as for
+    /// [`Self::forget_source`].
     async fn remove_values(
         &self,
         source: &SourceId,
@@ -550,7 +557,9 @@ pub trait LakeStore: Send + Sync {
     /// nothing and changes no answer, no event and no byte of an export;
     /// it prunes no history and does not seal. Only the writer's handle
     /// compacts; writes wait while it runs
-    /// (`docs/decisions/040-maintenance-never-changes-an-answer.md`).
+    /// (`docs/decisions/040-maintenance-never-changes-an-answer.md`). It
+    /// is an act's reclaim too: one that runs clears
+    /// [`Self::reclaim_owed`] and finishes the acts waiting on it.
     async fn compact(&self) -> Result<crate::write::CompactReport>;
 
     /// Bind the embedding backend the lake's declarations, writes and

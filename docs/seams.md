@@ -2277,7 +2277,22 @@ erasable field in plaintext, and a forgotten source's ingest is
 refused. It is no door's; `lakelands-client` answers it `unbound`. The
 CLI's `lakelands forget --source <id> [--preflight | --report <id>]` runs
 it. A mirror that meets `source_forgotten` in its source's feed stops each
-mapped type whose source type has an erasable field, past the act.
+mapped type whose source type has an erasable field, past the act. A
+reclaim that fails is not a failure of the act: the report answers it in
+`reclaim_owed`, the cause alone, as `LakeStore::reclaim_owed` does, and
+the writer's next open, a repeat or a `compact` that runs clears it
+(lakelands#1179).
+
+`LakeStore::remove_values(source, selection, require_shredded,
+report_id)` takes back what a source wrote before a time or in one
+delivery (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`),
+in the same steps and with the same answer of an owed reclaim;
+`remove_values_preflight` answers its report, appending nothing. It is
+no door's either. The CLI's `lakelands values remove --source <id>
+(--before <instant> | --delivery <id>) [--require-shredded]
+[--preflight | --report <id>]` runs it. A mirror that meets
+`values_removed` stops each mapped type with a field its reader reads
+that a removal may take, past the act.
 
 `LakeStore::purge_source(source, None, None)` retires every live record
 one source brought in, across every type it reached, restricted records and the

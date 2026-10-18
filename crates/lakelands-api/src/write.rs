@@ -1771,6 +1771,11 @@ pub struct ForgetReport {
     /// reclaim, where the engine measures it; absent on a preflight.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reclaimed: Option<CompactReport>,
+    /// Why the reclaim is still owed, where the last one tried failed:
+    /// the act answers all the same, its values erased already, and the
+    /// writer's next open, a repeat or a compact runs it again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaim_owed: Option<String>,
     /// Names a preflight's report; `forget_source` may repeat it. Empty
     /// on the act's own report.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1892,6 +1897,11 @@ pub struct RemoveReport {
     /// reclaim, where the engine measures it; absent on a preflight.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reclaimed: Option<CompactReport>,
+    /// Why the reclaim is still owed, where the last one tried failed:
+    /// the act answers all the same, its values erased already, and the
+    /// writer's next open, a repeat or a compact runs it again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaim_owed: Option<String>,
     /// Names a preflight's report; `remove_values` may repeat it. Empty
     /// on the act's own report.
     #[serde(default, skip_serializing_if = "String::is_empty")]

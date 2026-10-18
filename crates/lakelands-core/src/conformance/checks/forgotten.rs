@@ -603,13 +603,13 @@ async fn an_export_imports_with_its_keys_or_with_its_forgetting(
 
 check!(
     RECLAIM_OWED = a_reclaim_that_fails_keeps_no_writer_out,
-    "058, extended (lakelands#1161): a forgetting whose reclaim fails answers its failure with the values erased already, and owes the reclaim, saying why; the lake's next writer opens though the reclaim fails again, still owing it, writes and reads the values erased; the open after the reclaim can run finishes it and owes nothing, and the act's repeat answers it done; a rebuild a forgetting still owes refuses the writer's open while it fails, as before",
+    "058 and 065, extended (lakelands#1161, lakelands#1179): a forgetting whose reclaim fails answers its report, the values erased already, with the reclaim owed and its cause, as the lake does and its next preflight; a `rebuild()` whose reclaim fails answers, still owing it; the lake's next writer opens though the reclaim fails again, still owing it, writes and reads the values erased; the open after the reclaim can run finishes it and owes nothing, and the act's repeat answers it done; a removal whose reclaim fails answers as the forgetting does, and so does its preflight; a compact that runs clears what it owed, and the next open reclaims nothing, while one that fails with nothing owed owes nothing; a rebuild a forgetting still owes refuses the writer's open while it fails, as before",
     given
 );
 
 /// How many of the next reclaims, and of the next clears a rebuild
 /// begins with, fail.
-pub(super) type Fails = Arc<[AtomicU32; 2]>;
+pub type Fails = Arc<[AtomicU32; 2]>;
 
 /// The harness's engine with a projection whose next reclaims and
 /// clears fail as [`Fails`] says (lakelands#1161).
@@ -626,7 +626,7 @@ struct ReclaimsOpener {
 
 /// What makes of the harness's engine one whose reclaims and clears fail
 /// as `fails` says, for a [`crate::conformance::Given::fault`].
-pub(super) fn failing(fails: &Fails) -> crate::conformance::Wrap {
+pub fn failing(fails: &Fails) -> crate::conformance::Wrap {
     let fails = fails.clone();
     Arc::new(move |inner| {
         let fails = fails.clone();
@@ -787,6 +787,12 @@ impl ProjectionStore for Reclaims {
     }
 }
 
+/// Whether a report answered, naming the cause of the reclaim the lake
+/// owes.
+fn owing(store: &dyn LakeStore, said: Result<&Option<String>, &Error>) -> bool {
+    said.is_ok_and(|o| o.is_some() && *o == store.reclaim_owed())
+}
+
 async fn a_reclaim_that_fails_keeps_no_writer_out(
     store: Store,
     given: crate::conformance::Given,
@@ -807,16 +813,34 @@ async fn a_reclaim_that_fails_keeps_no_writer_out(
     lake(&l).await?;
     people(store.as_ref(), &l).await?;
     let crm: SourceId = "crm".into();
+    // A compact that fails with no act waiting on it owes nothing.
+    fails[0].store(1, Ordering::SeqCst);
+    let compacted = store.compact().await;
+    ensure!(
+        compacted.is_err() && store.reclaim_owed().is_none(),
+        "a compact that fails with nothing owed answers its failure and owes nothing: \
+         {compacted:?}, owing {:?}",
+        store.reclaim_owed()
+    );
     // The act's reclaim fails: the values are erased, the reclaim owed.
     fails[0].store(1, Ordering::SeqCst);
     let act = store.forget_source(&crm, None).await;
+    let pre = store.forget_preflight(&crm).await;
     ensure!(
-        act.is_err() && store.reclaim_owed().is_some(),
-        "a forgetting whose reclaim fails answers its failure and owes the reclaim; it answered \
-         {act:?}, owing {:?}",
+        owing(store.as_ref(), act.as_ref().map(|r| &r.reclaim_owed))
+            && owing(store.as_ref(), pre.as_ref().map(|r| &r.reclaim_owed)),
+        "a forgetting whose reclaim fails answers its report owing the reclaim, saying why, as \
+         the lake and its next preflight do; it answered {act:?} and {pre:?}, owing {:?}",
         store.reclaim_owed()
     );
     erased(&l, None).await?;
+    fails[0].store(1, Ordering::SeqCst);
+    let rebuilt = store.rebuild().await;
+    let tried = fails[0].load(Ordering::SeqCst) == 0;
+    ensure!(
+        rebuilt.is_ok() && tried && store.reclaim_owed().is_some(),
+        "a rebuild whose reclaim fails answers, still owing it: {rebuilt:?}, tried {tried}"
+    );
     // The next writer opens though the reclaim fails again.
     fails[0].store(1, Ordering::SeqCst);
     store = fault(store, "while its reclaim fails").await?;
@@ -837,6 +861,35 @@ async fn a_reclaim_that_fails_keeps_no_writer_out(
         "the open that can reclaim finishes it and owes nothing, and the act's repeat answers it \
          done: owing {:?}, the repeat {done:?}",
         store.reclaim_owed()
+    );
+    // A removal's reclaim is owed as a forgetting's, and a compact that
+    // runs clears it.
+    let all = lakelands_api::write::Selection::WrittenBefore(
+        lakelands_api::Timestamp::from_date(9999, 1, 1).expect("a date"),
+    );
+    let erp: SourceId = "erp".into();
+    fails[0].store(1, Ordering::SeqCst);
+    let act = store.remove_values(&erp, &all, false, None).await;
+    let pre = store.remove_values_preflight(&erp, &all).await;
+    ensure!(
+        owing(store.as_ref(), act.as_ref().map(|r| &r.reclaim_owed))
+            && owing(store.as_ref(), pre.as_ref().map(|r| &r.reclaim_owed)),
+        "a removal whose reclaim fails answers its report owing the reclaim, as its next \
+         preflight does; it answered {act:?} and {pre:?}"
+    );
+    let compacted = store.compact().await;
+    ensure!(
+        compacted.is_ok() && store.reclaim_owed().is_none(),
+        "a compact that runs clears the owed reclaim: {compacted:?}, owing {:?}",
+        store.reclaim_owed()
+    );
+    fails[0].store(1, Ordering::SeqCst);
+    store = fault(store, "after the compact").await?;
+    let left = fails[0].swap(0, Ordering::SeqCst);
+    ensure!(
+        left == 1 && store.reclaim_owed().is_none(),
+        "after the compact the acts are done: the next open reclaims nothing ({left} reclaim \
+         left to fail) and owes nothing"
     );
     // A rebuild still owed refuses the writer's open while it fails.
     let l = Lake::of(store.as_ref());

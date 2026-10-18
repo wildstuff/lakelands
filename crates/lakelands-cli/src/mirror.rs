@@ -1006,10 +1006,11 @@ impl Mirror {
             .poll(Position(from), &filter, self.batch)
             .await
             .map_err(|e| format!("the source's feed failed: {e}"))?;
-        // A forgetting is about no type: it is asked of the feed apart, over
-        // the batch's range, and met in the log's order (058).
+        // A forgetting and a removal are about no type: they are asked of
+        // the feed apart, over the batch's range, and met in the log's order
+        // (058, 065).
         let forgot = FeedFilter {
-            kinds: vec!["source_forgotten".to_owned()],
+            kinds: vec!["source_forgotten".to_owned(), "values_removed".to_owned()],
             ..FeedFilter::default()
         };
         let acts = feed
@@ -1027,7 +1028,12 @@ impl Mirror {
         for e in events {
             if let EventBody::SourceForgotten { source, .. } = &e.body {
                 self.flush(&mut run).await?;
-                self.forgotten(source, e.position).await?;
+                self.taken(source, e.position, false).await?;
+                continue;
+            }
+            if let EventBody::ValuesRemoved { source, .. } = &e.body {
+                self.flush(&mut run).await?;
+                self.taken(source, e.position, true).await?;
                 continue;
             }
             if let EventBody::ValueTypeMigrated { types, .. } = &e.body {
@@ -1603,14 +1609,18 @@ impl Mirror {
         }
     }
 
-    /// At the source's forgetting of `source` at `p`: each running type
-    /// whose source type has an erasable field may have copied that
-    /// source's values, which the target holds under the mirror's own
-    /// source, out of the act's reach. It stops past the act, saying so;
-    /// a restart goes on once the host has copied it again or forgotten
-    /// the mirror's source in the target
-    /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
-    async fn forgotten(&mut self, source: &SourceId, p: Position) -> Result<(), String> {
+    /// At the source's forgetting of `source` at `p`, or at its act of
+    /// removal (`removal`): each running type whose copies may hold that
+    /// source's values the act erased, under the mirror's own source and
+    /// out of the act's reach, stops past the act, saying so; a restart
+    /// goes on once the host has copied it again or taken those values
+    /// back in the target. A forgetting reaches the erasable fields
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`); a removal every
+    /// field it may take that the reader reads, erasable or not, decided
+    /// by the type as the reader sees it, never by the values the act
+    /// reached, so that a field kept from the reader changes nothing
+    /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+    async fn taken(&mut self, source: &SourceId, p: Position, removal: bool) -> Result<(), String> {
         let running: Vec<TypeName> = (self.kept.types.iter())
             .filter(|(t, s)| s.stopped.is_none() && p.0 >= s.next && self.map.contains_key(*t))
             .map(|(t, _)| t.clone())
@@ -1618,13 +1628,33 @@ impl Mirror {
         for s in running {
             let before = Position(p.0.saturating_sub(1));
             let t = self.describe_source(&s, Some(before)).await?;
-            if t.fields.iter().any(|f| f.erasable) {
-                let target = &self.map[&s].target;
+            // A field a removal may take: neither a key field nor a
+            // reference, and one a source writes or derived from one.
+            let takeable = |f: &&lakelands_api::describe::FieldDescription| {
+                let by = matches!(
+                    f.authority,
+                    Authority::Source | Authority::Shared | Authority::Derived
+                );
+                f.access.reads() && by && !t.access.key.contains(&f.name) && f.ty.target.is_none()
+            };
+            let reached = match removal {
+                false => t.fields.iter().any(|f| f.erasable),
+                true => t.fields.iter().any(|f| takeable(&f)),
+            };
+            if reached {
+                let (target, lake) = (&self.map[&s].target, self.source.lake());
+                let (did, held, undo) = match removal {
+                    false => ("forgot", "values of its erasable fields", "forget"),
+                    true => (
+                        "took back part of",
+                        "values",
+                        "run `lakelands values remove` on",
+                    ),
+                };
                 let why = format!(
-                    "the source forgot `{source}`, whose values of `{s}`'s erasable fields \
-                     its copies may hold in `{target}` under `mirror:{}:{s}`: copy the type \
-                     again, or forget that source in the target, then restart",
-                    self.source.lake()
+                    "the source {did} `{source}`, whose {held} `{s}`'s copies may hold in \
+                     `{target}` under `mirror:{lake}:{s}`: copy the type again, or {undo} \
+                     `mirror:{lake}:{s}` in the target, then restart"
                 );
                 self.stop(&[s], p.next(), why).await?;
             }

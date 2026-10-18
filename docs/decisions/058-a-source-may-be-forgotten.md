@@ -112,7 +112,7 @@ Deleting a row leaves its bytes in free pages until the engine reclaims them. So
 - **PostgreSQL:** `VACUUM` of the tables it touched;
 - **pgvector:** the `VACUUM` repairs the index graph after deletes (040's one exception).
 
-A reclaim that fails is owed, never a lock-out: the values are erased already, so the writer's open goes on without it, says so, and tries it again at the next (lakelands#1161).
+A reclaim that fails is owed, never a lock-out: the values are erased already, so the writer's open goes on without it, says so, and tries it again at the next open (lakelands#1161). The act answers its report all the same, naming the cause in `reclaim_owed`, and `rebuild()` answers too; an import answers, and the writer's next open tells the cause. A compact that runs is the reclaim, and clears it (lakelands#1179).
 
 **Out of the lake's reach:** a PostgreSQL WAL archive, a disk snapshot, a backup. They are the host's.
 

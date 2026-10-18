@@ -1912,3 +1912,100 @@ async fn a_forgetting_in_the_source_stops_a_type_with_an_erasable_field() {
         );
     }
 }
+
+/// At the source's act of removal (065), each mapped type with a field
+/// the reader reads that a removal may take stops past the act, erasable
+/// or not, naming the source and the way out; a type of key, reference
+/// and authored fields goes on, and a restart resumes once the host has copied
+/// the type again. The stop is decided by the type as the reader sees
+/// it: in a lake where the selected event wrote `secret`, which the
+/// reader may not read, and in its twin where it wrote nothing but the
+/// key, the mirror stops alike, at the same position, saying the same.
+#[tokio::test]
+async fn a_removal_in_the_source_stops_a_type_with_a_field_it_may_take() {
+    for engine in engines() {
+        let engine = &engine;
+        let partner = |note: bool| {
+            let mut f = vec![
+                required("name", "source"),
+                json!({"name": "parent", "type": {"kind": "reference", "target": "partner"}, "authority": "source"}),
+            ];
+            f.extend(note.then(|| text("note", "authored")));
+            decl(json!({"declare": "type", "name": "partner", "key": ["name"], "fields": f}))
+        };
+        let fields = |by: &str, secret: bool| {
+            let mut f = vec![required("code", by), text("name", by)];
+            f.extend(secret.then(|| text("secret", "source")));
+            f
+        };
+        let mut seen = Vec::new();
+        for hidden in [true, false] {
+            let source = vec![partner(true), customer_copy(fields("shared", true))];
+            let target = vec![partner(false), customer_copy(fields("source", false))];
+            let two = Two::with(&format!("removed-{hidden}"), engine, source, target).await;
+            two.upsert("customer", "c0", json!({"code": "c0", "name": "Ada"}))
+                .await;
+            let cat = doors(two.crm.as_ref());
+            let web = async |rows| {
+                let who = owner(two.crm.as_ref());
+                lakelands_core::conformance::fixture::ingest(cat.as_ref(), &who, "web", rows)
+                    .await
+                    .unwrap();
+            };
+            let row = lakelands_core::conformance::fixture::source_record;
+            let c1 = match hidden {
+                true => json!({"code": "c1", "secret": "s1"}),
+                false => json!({"code": "c1"}),
+            };
+            web(vec![
+                row("partner", "acme", json!({"name": "acme"})),
+                row("customer", "c1", c1),
+            ])
+            .await;
+            let mut m = two.mirror().await.unwrap();
+            settle(&mut m).await;
+            let all = lakelands_api::write::Selection::WrittenBefore(
+                lakelands_api::Timestamp::from_date(9999, 1, 1).unwrap(),
+            );
+            two.crm
+                .remove_values(&"web".into(), &all, false, None)
+                .await
+                .unwrap();
+            web(vec![row("partner", "globex", json!({"name": "globex"}))]).await;
+            settle(&mut m).await;
+            let stopped = m.kept().types[&TypeName::from("customer")].stopped.clone();
+            let stopped =
+                stopped.unwrap_or_else(|| panic!("{engine:?} {hidden}: customer stopped"));
+            assert!(
+                stopped.why.contains("took back part of `web`")
+                    && stopped
+                        .why
+                        .contains("`lakelands values remove` on `mirror:crm:customer`"),
+                "{}",
+                stopped.why
+            );
+            assert!(
+                two.copy("partner", "globex").await.is_some(),
+                "{engine:?}: partner, of key, reference and authored fields, goes on"
+            );
+            let c1 = two.copy("customer", "c1").await.map(|r| r.fields);
+            seen.push((stopped.at, stopped.why, c1));
+            // Once the host has copied the type again, a restart resumes
+            // past the act.
+            drop(m);
+            two.upsert("customer", "c2", json!({"code": "c2", "name": "Bo"}))
+                .await;
+            let mut m = two.mirror().await.unwrap();
+            settle(&mut m).await;
+            assert!(
+                m.kept().types[&TypeName::from("customer")]
+                    .stopped
+                    .is_none()
+                    && two.copy("customer", "c2").await.is_some(),
+                "{engine:?}: a restart resumes: {:?}",
+                m.kept()
+            );
+        }
+        assert_eq!(seen[0], seen[1], "{engine:?}: the twins stop alike");
+    }
+}

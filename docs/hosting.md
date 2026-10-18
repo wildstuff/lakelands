@@ -50,10 +50,11 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   fails as `unavailable` until `ca_file` names one.
 
   PostgreSQL in a container wants a `shm_size` of at least 256 MB:
-  its parallel workers take shared memory of `maintenance_work_mem`'s
-  size and more from `/dev/shm`, which Docker's default 64 MB cannot
-  give, and the statement then fails as unavailable ("could not resize
-  shared memory segment") (lakelands#1161).
+  a parallel index build, pgvector's HNSW during a rebuild for one,
+  takes shared memory of `maintenance_work_mem`'s size and more from
+  `/dev/shm`, which Docker's default 64 MB cannot give, and the
+  statement then fails as unavailable ("could not resize shared memory
+  segment") (lakelands#1161, lakelands#1179).
 
   The engine sets `synchronous_commit` itself: `on` for the log's
   appends and seals, so a server or role set to `off` loses no answered
@@ -303,10 +304,16 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     writer's open, or the act repeated, finishes what is owed. A
     handle that only reads answers what the projection held until then.
   - **A reclaim that fails** is owed, never a lock-out: the values are
-    erased already, so the writer opens without it, says why on the
+    erased already, so the act answers its report with the cause in
+    `reclaim_owed` (`LakeStore::reclaim_owed` holds it too, and a
+    preflight names it), the writer opens without it, says why on the
     CLI and in `serve`'s log, and tries it again at each open until it
-    runs (lakelands#1161). A rebuild still owed refuses the writer's
-    open while it fails, since the projection is not whole without it.
+    runs (lakelands#1161). `rebuild()` answers in the same way, and an
+    import answers and leaves the cause to the writer's next open;
+    `lakelands compact` that runs clears it (lakelands#1179). On SQLite
+    a reader holding a snapshot is enough to make it fail. A rebuild
+    still owed refuses the writer's open while it fails, since the
+    projection is not whole without it.
   - **Keep backups honest:** a key restored from a backup restores what
     it sealed. The key store's backups must follow its destroys, and the
     keyring stays out of the lake's backup set: a backup that carries
@@ -357,7 +364,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   it takes, keeps and retires, what is computed again, the constraints
   and references it leaves broken, the required fields it leaves empty
   (a breach of `required` naming the field), and how long it expects to
-  hold the lock. `RemoveReport::said` says it in sentences. What the
+  hold the lock. `RemoveReport::said` says it in sentences. The CLI's
+  `lakelands values remove --source <id> (--before <instant> |
+  --delivery <id>) [--require-shredded]` prints those sentences, and acts
+  only with `--report <id>`, the preflight's, as `forget` does. What the
   host is told:
   - **a redacted value** is read by no door at any position, `as_of`
     included, but it is still in the log, every export and every
@@ -378,7 +388,19 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     redacted value of a field that is not erasable in plaintext, as for
     forgetting: a host that relays the feed relays it;
   - **after a crash** between its steps, open a writer, or repeat the
-    act: either finishes it and appends nothing again;
+    act: either finishes it and appends nothing again; a reclaim that
+    fails is owed and told as for forgetting;
+  - **a mirror** stops at `values_removed` of any source, past it, for
+    each mapped type with a field its reader reads that a removal may
+    take, erasable or not (a source's field, or one derived from it,
+    neither a key nor a reference), since the target holds those copies
+    in plaintext; a type of key and reference fields goes on. Copy the
+    type again, or run `lakelands values remove` on
+    `mirror:<lake>:<type>` in the target, then restart;
+  - **an export** carries the act: an import folds it again, so the
+    values arrive redacted, and needs no key for a version it destroyed,
+    while a value under a version it left needs the key store as
+    before;
   - **its cost** grows with the log, not with the selection: the act
     is a rebuild. Taking back half of a lake of one event a record, in
     a release build, held the writer 9.3 s at 100 000 records and
