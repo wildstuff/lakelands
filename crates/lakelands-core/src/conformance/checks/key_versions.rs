@@ -20,7 +20,7 @@ use crate::conformance::{Failure, Held, Reopen, Store};
 
 check!(
     VERSION_DESTROYED = a_destroyed_version_takes_the_outputs_of_its_values,
-    "058 (lakelands#1153): a version of a source's key destroyed in the key store with the lake closed, outside an act that forgets it, is a lost key: once `crm`'s first version is destroyed while a newer one stands, `crm` writes on, sealed under the newer one; an output over values the newer one sealed is found again at a re-plan and called no more; an output over a value of the first and a value of the newer one, sealed under the first, is gone with it: a write that re-plans it is refused unavailable naming the source and the first version and appends nothing, a declaration that re-plans it is refused so by its fold, and neither calls anything or answers the recorded output",
+    "058 (lakelands#1153): a version of a source's key destroyed in the key store with the lake closed, outside an act that forgets it, is a lost key: once `crm`'s first version is destroyed while a newer one stands, `crm` writes on, sealed under the newer one; an output over values the newer one sealed is found again at a re-plan and called no more; an output over a value of the first and a value of the newer one, sealed under the first, is gone with it: a write that re-plans it is refused unavailable naming the source and the first version and appends nothing, and so is a declaration that re-plans it, before it appends (lakelands#1218), and neither calls anything or answers the recorded output",
     reopens
 );
 
@@ -141,18 +141,13 @@ async fn a_destroyed_version_takes_the_outputs_of_its_values(store: Store, reope
         "p2's nick set to x, y and x again calls `pair` twice and finds the first output again; it called {called} times and `both` reads {both}"
     );
     // p1's `both` reads Ada, of v1, and its nick, of v2: sealed under v1,
-    // no re-plan finds it, and none calls. A declaration re-plans in its
-    // fold, so its refusal comes as the fold's, as 058 has it for any
-    // lost key.
-    let missing = |e: Option<&Error>| {
-        let lost = |s: &Situation| matches!(s, Situation::KeyMissing { source, key } if source == "crm" && *key == v1);
-        match e.map(Error::unwrapped) {
-            Some(Error::Unavailable { situation }) => match &**situation {
-                Situation::NotFolded { cause, .. } => cause.situation().is_some_and(lost),
-                s => lost(s),
-            },
-            _ => false,
+    // no re-plan finds it, and none calls. A declaration plans its re-plan
+    // before it appends, as a write does.
+    let missing = |e: Option<&Error>| match e.map(Error::unwrapped) {
+        Some(Error::Unavailable { situation }) => {
+            matches!(&**situation, Situation::KeyMissing { source, key } if source == "crm" && *key == v1)
         }
+        _ => false,
     };
     let calls = made();
     let before = store.head().await.must("reading the head")?;
@@ -169,6 +164,7 @@ async fn a_destroyed_version_takes_the_outputs_of_its_values(store: Store, reope
         missing(declared.as_ref().err()),
         "a declaration that re-plans p1's `both`, over Ada of {v1} and A of {v2}, is refused unavailable naming crm and {v1}; it answered {declared:?}"
     );
+    head_unmoved(store.as_ref(), before, "the declaration that re-plans p1").await?;
     let after = made();
     ensure!(
         after == calls,
