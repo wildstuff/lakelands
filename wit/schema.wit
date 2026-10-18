@@ -1,4 +1,4 @@
-package lakelands:data@0.15.1;
+package lakelands:data@0.16.0;
 
 /// The lake's map: describing it and changing it. A bundle is declared
 /// whole with `apply`; a shape change goes through `migrate` and its

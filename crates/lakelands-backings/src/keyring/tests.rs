@@ -72,18 +72,17 @@ fn a_destroyed_source_has_no_key_and_gets_none() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The key file the kept lake of format 16 ships
-/// (`docs/log-format/lakes/16/keys/`) is read by this keyring as it is:
-/// every key the lake's log seals under is given for a source kept, and
-/// none for the source it forgot, which is destroyed. A change to the
-/// file's form that would no longer read it turns this red.
-#[test]
-fn the_kept_lakes_key_file_is_read_as_written() {
-    let lake =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/lakes/16");
+/// Each key the log of the kept lake of `format` seals under
+/// (`docs/log-format/lakes/<format>/`), as its source and whether the
+/// key file the lake ships gives it, in the log's order, with the keyring
+/// over that file.
+fn kept_lake_sealed(format: u32) -> (FileKeyring, LakeId, Vec<(String, bool)>) {
+    let lake = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/log-format/lakes")
+        .join(format.to_string());
     let log = std::fs::read_to_string(lake.join("log/00000000000000000000.jsonl")).unwrap();
     let ring = FileKeyring::new(lake.join("keys"));
-    let kept16 = LakeId::from("kept16");
+    let id = LakeId::from(format!("kept{format}").as_str());
     let mut sealed = Vec::new();
     for line in log.lines() {
         let event: serde_json::Value = serde_json::from_str(line).unwrap();
@@ -92,15 +91,53 @@ fn the_kept_lakes_key_file_is_read_as_written() {
             continue;
         };
         let (source, key) = (SourceId::from(source), lakelands_api::id::KeyId::from(key));
-        let given = ring.key(&kept16, &source, &key).unwrap();
+        let given = ring.key(&id, &source, &key).unwrap();
         sealed.push((source.to_string(), given.is_some()));
     }
+    (ring, id, sealed)
+}
+
+/// The key file the kept lake of format 16 ships
+/// (`docs/log-format/lakes/16/keys/`) is read by this keyring as it is:
+/// every key the lake's log seals under is given for a source kept, and
+/// none for the source it forgot, which is destroyed. A change to the
+/// file's form that would no longer read it turns this red.
+#[test]
+fn the_kept_lakes_key_file_is_read_as_written() {
+    let (ring, kept16, sealed) = kept_lake_sealed(16);
     assert_eq!(
         sealed,
         [("crm".to_owned(), true), ("web".to_owned(), false)]
     );
     assert!(
         ring.ids(&kept16, &SourceId::from("web"))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// The key file of the kept lake of format 17 is read as written too:
+/// `crm`'s key is given, the forgotten `web`'s is not, and of `ledger`'s
+/// two versions the first, which taking back what it wrote before `p5`
+/// destroyed (065), is not and the second is, the one version `ledger`
+/// holds.
+#[test]
+fn the_kept_lake_of_format_17s_key_file_is_read_as_written() {
+    let (ring, kept17, sealed) = kept_lake_sealed(17);
+    let given = |s: &str, g: bool| (s.to_owned(), g);
+    assert_eq!(
+        sealed,
+        [
+            given("crm", true),
+            given("web", false),
+            given("ledger", false),
+            given("ledger", true)
+        ]
+    );
+    let ledger = ring.ids(&kept17, &SourceId::from("ledger")).unwrap();
+    assert_eq!(ledger.len(), 1);
+    assert!(
+        ring.ids(&kept17, &SourceId::from("web"))
             .unwrap()
             .is_empty()
     );

@@ -538,7 +538,7 @@ same fields itself
 | Kind | Payload | Fold |
 |---|---|---|
 | `verb_called` | `verb`, `key`, `payload` | A verb ran. Its writes follow as `record_upserted` events with `cause` set to this position and `procedure` naming the verb. A verb declared on its type (`scope: type`) is called with no record, and `key` is left out. |
-| `write_proposed` | `proposal`, `write`, `why`, `pinned` | A write was recorded as a proposal instead of being applied (`docs/decisions/013-verbs-run-by-declared-risk.md`). `write.write` is `upsert`, `retire` or `call`, with that write's arguments; or `declare`, a set of declarations, or `migrate`, a migration with its preflight's report, or `migrate_value_type`, a value type's new declaration with its preflight's report (Appendix A) and the values it renames; or `compute`, one record's call of a function above `low` risk (its record, field, function and the call's digest on its record; the inputs are the record's, and a listing shows them to a reader who is answered them, since the log holds none a forgotten source could leave readable), or `compute_sweep`, the calls a declaration or `recompute` made due over a type, which the store proposes as the writer of the event that made them due, caused by it, and no caller proposes; a pending `compute` is closed by a `write_rejected` of the system, caused by the `output_recorded` of its call's digest, by its record's `record_retired`, or by the `migrated` that moved its record to another key, with nothing owed (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`). `pinned: true` where the proposer's grant admits only some records of the type the write reaches: its accept is refused once the record at the key has an event after this position or the type was declared or migrated since (`docs/decisions/051-a-grant-may-admit-only-some-records.md`); absent when false. |
+| `write_proposed` | `proposal`, `write`, `why`, `pinned` | A write was recorded as a proposal instead of being applied (`docs/decisions/013-verbs-run-by-declared-risk.md`). `write.write` is `upsert`, `retire` or `call`, with that write's arguments; or `declare`, a set of declarations and, from format 17, the `plan` they were proposed with (`docs/decisions/062-a-change-plans-before-it-acts.md`), or `migrate`, a migration with its preflight's report, or `migrate_value_type`, a value type's new declaration with its preflight's report (Appendix A) and the values it renames; or, from format 17, `compute`, one record's call of a function above `low` risk (its record, field, function and the call's digest on its record; the inputs are the record's, and a listing shows them to a reader who is answered them, since the log holds none a forgotten source could leave readable), or `compute_sweep`, the calls a declaration or `recompute` made due over a type, which the store proposes as the writer of the event that made them due, caused by it, and no caller proposes; a pending `compute` is closed by a `write_rejected` of the system, caused by the `output_recorded` of its call's digest, by its record's `record_retired`, or by the `migrated` that moved its record to another key, with nothing owed (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`). `pinned: true` where the proposer's grant admits only some records of the type the write reaches: its accept is refused once the record at the key has an event after this position or the type was declared or migrated since (`docs/decisions/051-a-grant-may-admit-only-some-records.md`); absent when false. |
 | `write_accepted` | `proposal` | The proposal was accepted. Its write follows in the same append, with `cause` set to this position and the proposer as `writer`: for `declare` the `declared` events, for `migrate` the `migrated` event, for `migrate_value_type` the `declared` of the value type, or, when it renames values, the `value_type_migrated` event and what follows it (the link types the store derives, and the types it declares again for their `initial`, keep `system:lakelands` as writer). |
 | `write_rejected` | `proposal`, `reason` | The proposal was rejected; nothing else is written, but for a `compute` whose call its record no longer makes, which the same append records as rejected under its digest, and for a `compute` the system closes (§2.5). |
 
@@ -927,9 +927,18 @@ the first release with real installations
   it fired before, and one with `max_depth: 0` fires no more; a
   trigger's `when_strict` (lakelands#1215); a `trigger_fired`'s
   `change` and `created`, a trigger's `on_changes` and the guard's
-  `created()` (lakelands#1217); and a recorded output's
-  `input` digested under the oldest version that sealed the values it
-  reads (§1.4), where 16 took the source's first version. Over values
+  `created()` (lakelands#1217); a type's `retired_by` and a verb's
+  `effect: retire` (lakelands#1148); a `declare: withdraw`
+  (lakelands#1219); a function's input that states no `type`
+  (lakelands#933); a function's `risk`, and a `write_proposed` of a
+  `compute` or a `compute_sweep`
+  (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`);
+  the `plan` a `write_proposed` of declarations keeps
+  (`docs/decisions/062-a-change-plans-before-it-acts.md`); a
+  `values_removed`
+  (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`); and a
+  recorded output's `input` digested under the oldest version that
+  sealed the values it reads (§1.4), where 16 took the source's first version. Over values
   its first version sealed the two agree, and an output of 16 names
   that version in its `sealed`. A call over a value a second version
   sealed, which a lake of 16 holds only where its key store gained one,
@@ -1045,7 +1054,7 @@ with that declaration's members beside it. Every member not marked
 | `verb` | `name`, `on`, `risk` and `effect` (required), `payload` (`[]`), `requires` (none), `description` (none); `effect: write` carries `set`, a list of `{ "field", "value" }`; `effect: external` carries `executor`; `effect: retire` (from format 17) carries neither |
 | `trigger` | `name` and `on` (required), `when`, `description` (none), `max_depth` (none: an integer at most the lake's `max_reactive_depth`), `when_strict` (`false`; from format 17: a field or `previous(f)` its `when` reads absent or null fails the guard as a whole), `on_changes` (none: every kind; from format 17, a list of the kinds of change that fire it, as `trigger_fired`'s `change`) |
 | `object_set` | `name`, `of` and `where` (required), `description` (none) |
-| `function` | `name` and `backing` (required), `inputs` (`[]`), `expr` (none), `config` (`null`), `description` (none), `risk` (`low`) |
+| `function` | `name` and `backing` (required), `inputs` (`[]`), `expr` (none), `config` (`null`), `description` (none), `risk` (`low`; from format 17) |
 | `setting` (from format 17) | `key` and `type` (required; a field's `type`), `unit`, `description`, `group` (none). A host's own key of `sys.setting`; its records of `sys.setting` carry `group` as the store stamps it from this declaration (lakelands#996) |
 | `withdraw` (from format 17) | `kind` (`trigger`, `verb`, `object_set` or `function`) and `name` (required). The declaration in force of that kind and name, taken out of force (lakelands#1219) |
 

@@ -144,6 +144,12 @@ check!(
     given
 );
 
+check!(
+    LAKE_17_READ = the_lake_of_format_17_is_read_as_it_answered,
+    "054 (lakelands#962): the lake v0.16.0 made through its doors (`docs/log-format/lakes/17/`), in format 17, imported on this engine, keeps its events as written and is read as that release answered it, as `answers.json` keeps the answers: every live record of each type it names with its fields, the link records of its relation, the counts of its view, a field only a verb writes, a host's setting with its group, a record a verb retired and two slips, one of them a reaction past its trigger's depth, among them; the members of its object set; the walk over its relation with the link's fields; and its sealed values read whole with the file keyring's file it ships, and a forgotten source's read as erased, each with its provenance, while the values a delivery taken back and a cut that destroyed a key version took are gone with the records only they wrote (065); imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies",
+    given
+);
+
 async fn a_lake_the_release_before_made_is_read_as_it_answered(store: Store, given: Given) -> Held {
     kept_lake_answers(store, given, 14).await
 }
@@ -154,6 +160,10 @@ async fn the_lake_of_format_15_is_read_as_it_answered(store: Store, given: Given
 
 async fn the_lake_of_format_16_is_read_as_it_answered(store: Store, given: Given) -> Held {
     kept_lake_answers(store, given, 16).await
+}
+
+async fn the_lake_of_format_17_is_read_as_it_answered(store: Store, given: Given) -> Held {
+    kept_lake_answers(store, given, 17).await
 }
 
 /// The kept lake of `format` (`docs/log-format/lakes/<format>/`), imported
@@ -230,13 +240,21 @@ async fn kept_lake_answers(store: Store, given: Given, format: u32) -> Held {
         owner(copy.as_ref()),
         crate::conformance::fixture::doors(copy.as_ref()),
     );
+    // The types whose records the answers keep: those they name, else
+    // the four every kept lake holds.
+    let named: Option<Vec<&str>> = answers["types"]
+        .as_array()
+        .map(|t| t.iter().filter_map(serde_json::Value::as_str).collect());
+    let types = named.unwrap_or_else(|| {
+        vec![
+            "partner",
+            "invoice",
+            "sys.link.invoice.approved_by",
+            "by_state",
+        ]
+    });
     let mut records = Vec::new();
-    for ty in [
-        "partner",
-        "invoice",
-        "sys.link.invoice.approved_by",
-        "by_state",
-    ] {
+    for ty in types {
         for r in all(cat.as_ref(), &own, ty).await? {
             records.push(serde_json::json!({"type": ty, "key": r.key, "fields": r.fields}));
         }

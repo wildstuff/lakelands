@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 67, each
+- `further.json`: the lake's next events, positions 8 to 70, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -122,7 +122,15 @@ The files:
   - a `values_removed` taking the delivery `batch-7` back (66), and the
     `record_retired` of `INV-2`, which only it wrote, in the same append
     (67): a kind format 17 holds and 16 does not
-    (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+    (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`);
+  - an ingest of `erp` whose caller named no delivery, in the store's
+    own, `d68` (68); a `values_removed` taking back what `erp` wrote
+    before a time, naming `before`, the first position it does not
+    reach, and no `keys`, since `erp` seals nothing (69); and the
+    `record_retired` of `INV-3`, which only it wrote, in the same append
+    (70): forms format 17 holds and 16 does not (065). A `values_removed`
+    that destroys a key version, with its `keys`, is in the kept lake of
+    format 17 (`../../lakes/17/`).
 
   Its `misplaced` holds five lines that are not of the lake. Each
   stands at its position after the event before it, in the release's
