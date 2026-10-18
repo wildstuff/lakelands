@@ -1,6 +1,6 @@
 # The log format
 
-**Format version 17.** Reviewed so that a verifier can be written from
+**Format version 18.** Reviewed so that a verifier can be written from
 this document alone (lakelands#14). A release reads and writes one
 format version, this one: every event of a lake carries it, from
 position 0, and a lake written in another is refused by name and never
@@ -264,7 +264,7 @@ store has lost the version it last sealed with: the write is refused the
 same way, so a wrong key store fails at the write, not at a later
 rebuild. A verifier without the
 keys checks every hash and id over the bytes as stored, and the form of
-each sealed member. `docs/log-format/vectors/17/` holds a sealed ingest
+each sealed member. `docs/log-format/vectors/18/` holds a sealed ingest
 and a sealed output under a key its README names.
 
 ## 2. Kinds
@@ -951,8 +951,11 @@ the first release with real installations
   This step changes the fold's own list of the versions a source sealed
   with, which now keeps each with the position of its first use; the
   projection is laid out anew at that open anyway (lakelands#1151), so
-  no list of 16 is read. No other step changes a fold, so the projection
-  stays. A step that changes how an event folds says so here, and a
+  no list of 16 is read. 17 → 18: none. Format 18 is 0.17.0's one
+  step, taken before any form it adds (lakelands#1214); each is said
+  here by the change that adds it, and a log of format 17 holds none of
+  them. No other step changes a fold, so the projection stays. A step
+  that changes how an event folds says so here, and a
   writer's open then rebuilds the projection.
 - **A writer's open upgrades.** Where the newest event, read under the
   writer's lease, is in an older format the release reads, the open
@@ -1268,7 +1271,7 @@ the record's type, and no set through itself.
   `m` 60 s, `s` 1 s) in microseconds, which must come out whole: `1.5h`
   is `5400000000`, and `30d` is `2592000000000`.
 
-`docs/log-format/vectors/17/schema-hash.json` shows a view whose conditions
+`docs/log-format/vectors/18/schema-hash.json` shows a view whose conditions
 are written as text, its shape object with those conditions in typed
 form, and the resulting hash. A shape's `key` is the key the type's
 records carry, so a grouped view hashes alike whether its declaration

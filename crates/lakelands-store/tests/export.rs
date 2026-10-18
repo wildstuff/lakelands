@@ -1,5 +1,5 @@
 //! An export read back by a verifier that shares no code with Lakelands:
-//! `docs/log-format/vectors/17/verify.py` in its directory mode, over a lake
+//! `docs/log-format/vectors/18/verify.py` in its directory mode, over a lake
 //! with a checkpoint (two files) and a re-key; and
 //! an export whose feed breaks, which leaves nothing behind.
 //!
@@ -105,7 +105,7 @@ async fn verify_py_verifies_an_export_with_a_checkpoint_and_a_rekey() {
     );
 
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/17/verify.py");
+        .join("../../docs/log-format/vectors/18/verify.py");
     let run = Command::new("python3").arg(&script).arg(&dir).output();
     let run = match run {
         Ok(run) => run,
@@ -174,7 +174,7 @@ type Damage<'a> = (&'a SegmentFile, &'a dyn Fn(&mut Value), Position);
 #[test]
 fn verify_py_refuses_the_negative_vector_whose_known_at_goes_back() {
     let vectors =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/17");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/18");
     let said = python(
         &vectors.join("verify.py"),
         &vectors.join("negative/known-at-goes-back"),
@@ -430,7 +430,7 @@ async fn verify_py_verifies_the_export_of_an_upgraded_lake() {
         .await
         .unwrap();
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/17/verify.py");
+        .join("../../docs/log-format/vectors/18/verify.py");
     let said = python(&script, &dir);
     let lake_says = store.verify(None, None).await.unwrap();
     let last = format!(

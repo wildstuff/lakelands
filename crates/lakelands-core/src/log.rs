@@ -141,6 +141,8 @@ const SEALED_FROM: u32 = 16;
 /// - **16 → 17:** none. Format 17 is 0.16.0's one step, taken before any
 ///   form it adds (lakelands#1164): a log of format 16 holds none of them.
 ///   `docs/log-format.md` §6 names each, by the change that adds it.
+/// - **17 → 18:** none. Format 18 is 0.17.0's one step, taken before any
+///   form it adds (lakelands#1214): a log of format 17 holds none of them.
 #[doc(hidden)]
 pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
     debug_assert!(reads_format(v), "format {v} is not one this release reads");
