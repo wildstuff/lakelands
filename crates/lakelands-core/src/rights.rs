@@ -654,7 +654,7 @@ pub fn check_known<'a>(
 /// and, since a vector embedded from text encodes that text, before each
 /// every field it is embedded from.
 ///
-/// A lexical or hybrid search that names `text_fields` probes those
+/// A lexical or hybrid search that names `fields` probes those
 /// instead of every searchable field, in name order; the vector half of a
 /// hybrid search is not narrowed. A named field must be declared, readable
 /// and searchable, judged in that order: an unreadable field is refused as
@@ -663,7 +663,7 @@ pub fn check_known<'a>(
 pub fn check_search(
     who: &Principal,
     decl: &TypeDecl,
-    text_fields: Option<&[FieldName]>,
+    fields: Option<&[FieldName]>,
     vector_fields: &[&FieldName],
 ) -> Result<(), Error> {
     let vectors = vector_fields.iter().flat_map(|v| {
@@ -671,7 +671,7 @@ pub fn check_search(
         let embed = field.and_then(|f| f.embed.as_ref());
         embed.into_iter().flat_map(|e| e.from.iter()).chain([*v])
     });
-    let Some(named) = text_fields else {
+    let Some(named) = fields else {
         return check_probe(who, decl, searched_fields(who, decl).chain(vectors));
     };
     if named.is_empty() {
@@ -687,6 +687,35 @@ pub fn check_search(
         }
     }
     check_probe(who, decl, vectors)
+}
+
+/// Refuse a search's own weights of its text the principal could not
+/// give, judged as its type's `search_weights` setting's `text_fields` is:
+/// each named field, in name order, probed as a field a search names, so
+/// one not declared and one not shown are answered alike, then searchable,
+/// then its weight one a search may give. A weight is never judged before
+/// the field it weighs. An empty map is refused as an empty `fields` is.
+pub fn check_text_weights(
+    who: &Principal,
+    decl: &TypeDecl,
+    weights: &BTreeMap<FieldName, f64>,
+) -> Result<(), Error> {
+    if weights.is_empty() {
+        return Err(crate::invalid(Case::SearchTextFieldsEmpty));
+    }
+    for (name, w) in weights {
+        check_probe(who, decl, [name])?;
+        let (field, ty) = (name.clone(), decl.name.clone());
+        let case = if !decl.fields.iter().any(|f| &f.name == name && f.searchable) {
+            Case::NotSearchable { field, ty }
+        } else if !lakelands_api::query::weight_fits(*w) {
+            Case::WeightRange { field }
+        } else {
+            continue;
+        };
+        return Err(refused(Some(name), Refusal::Invalid(Box::new(case.into()))));
+    }
+    Ok(())
 }
 
 /// The searchable fields a search that names none reads: those the

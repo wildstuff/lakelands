@@ -105,7 +105,7 @@ promises that have no check yet.
 | Method | Contract |
 |---|---|
 | `name` | The engine's name, as `EngineConfig` selects it. |
-| `rebuild_rate` | The events a rebuild folds a second on this engine, as measured: the store tells a host from it how long an act that rebuilds holds the writer's lock (`forget_preflight`, `docs/decisions/058-a-source-may-be-forgotten.md`). A constant of the engine, never a promise. |
+| `rebuild_rate` | The events a rebuild folds a second on this engine, as measured: the store tells a host from it how long an act that rebuilds holds the writer's lock (`forget_preflight`, `docs/decisions/058-a-source-may-be-forgotten.md`). A constant of the engine, measured on a plain type, never a promise: it stands only until the handle has rebuilt once, after which the store reads the rate that rebuild measured (a `rebuild()`, an act's, or an open's that rebuilds). |
 | `lake` | The lake this handle keeps. |
 | `take_lease(holder)` | Take the writer lease with a fencing token greater than every token this lake ever handed out. **Fails at once** while the lease is held — by another process, another handle, or this one — with `Unavailable` whose message names the holder; never waits. `Unavailable` on a handle opened read-only. |
 | `release_lease(lease)` | Give the lease up; the next taker gets a greater token. The lease is always released; an engine that also records the holder in storage reports a failure to clear that record as `Unavailable`, after releasing. Releasing a lease that is no longer the current one does nothing, so a writer that lost the lease cannot release its successor's. A handle that is dropped releases the lease it took and still holds, so a writer that ends without closing does not keep the lake from every later writer. |
@@ -1153,8 +1153,8 @@ record (`docs/decisions/022-functions-are-declarations.md`, extended):
   `embed:<model>`, keyed by the digest of `{"texts": [text]}`
   (`docs/log-format.md` §2.5), with the model as the procedure's name
   and the type's version that declared the `embed` as its version.
-  The field's `procedure_version` is the type's version when the vector
-  was produced. A later declaration of the type that leaves the vector's
+  The field's `procedure` is the model and its `procedure_version` the
+  type's version when the vector was produced. A later declaration of the type that leaves the vector's
   text and model as they are rewrites no record, so the metadata keeps
   that version. One
   text is embedded once per model in a lake; a replay, and every later
@@ -1897,20 +1897,21 @@ at least. `fields` and `text_weight` weigh each ranking a fused search
 of `<type>` gives no weight; `text_fields` weighs a match of the text by
 the field it is in, in every ranking of text: a lexical search's, a
 hybrid search's lexical half before the fusion, and its fallback to the
-text (§`ranked`, lakelands#1230). Each is read as the read finds it at
-its position. A write of it is refused as invalid when `<type>` is no
-declared stored type (`key`), when it names a field the type does not
-declare, in `fields` one it declares with a kind other than vector, in
-`text_fields` one it does not declare searchable, or a weight a search
-could not give (above 0, at most 1 000 000; the member named), and when
-its value is no such object or names nothing (`value`). A weight it
-holds that a search could not give, as a log the store did not write
-may hold, weighs nothing. A field a migration removed stays named and
-weighs nothing; declared again, it takes its weight again. A rename is
-not followed: the field is weighed by its old name at a position before
-it, and at the head by its new one, which the setting does not name
-until a host writes it again. The judge of
-all four settings is the contract's
+text (§`ranked`, lakelands#1230). A search's own `text_fields` wins
+over the setting's for each field it names (lakelands#1237). Each is
+read as the read finds it at its position. A write of it is refused as
+invalid when `<type>` is no declared stored type (`key`), when it names
+a field the type does not declare, in `fields` one it declares with a
+kind other than vector, in `text_fields` one it does not declare
+searchable, or a weight a search could not give (above 0, at most
+1 000 000; the member named), and when its value is no such object or
+names nothing (`value`). A weight it holds that a search could not give,
+as a log the store did not write may hold, weighs nothing. A field a
+migration removed stays named and weighs nothing; declared again, it
+takes its weight again. A rename is not followed: the field is weighed
+by its old name at a position before it, and at the head by its new one,
+which the setting does not name until a host writes it again. The judge
+of all four settings is the contract's
 (`lakelands_api::seam::check_setting`). It changes no answer's members,
 only the order a search ranks them in.
 
@@ -2286,7 +2287,12 @@ lock it appends `source_forgotten` with the retirements of the records
 the source alone brought, has the key store destroy the source's keys,
 rebuilds the projection and reclaims the storage. `forget_preflight`
 answers the same report, appending nothing, with the time the act is
-expected to hold the lock (`events` at the engine's `rebuild_rate`).
+expected to hold the lock: an estimate, `events` at the rate the
+handle's last rebuild measured (its open's included), or at the
+engine's `rebuild_rate` before any, and the time of the last reclaim
+the handle ran, which a handle that has not reclaimed does not count,
+and the time of the preflight's own walk of the log, which the act walks
+again.
 The act is refused while the log holds a value of the source in an
 erasable field in plaintext, and a forgotten source's ingest is
 refused. It is no door's; `lakelands-client` answers it `unbound`. The
@@ -2297,6 +2303,16 @@ reclaim that fails is not a failure of the act: the report answers it in
 `reclaim_owed`, the cause alone, as `LakeStore::reclaim_owed` does, and
 the writer's next open, a repeat or a `compact` that runs clears it
 (lakelands#1179).
+
+`LakeStore::forget_sources(sources, report_id)` and
+`forget_sources_preflight(sources)` do the same for a set of sources in
+one act (lakelands#1183): one `source_forgotten` for each in one append,
+one rebuild and one reclaim under one hold of the lock, one report id and
+one expected time, each source's report beside them. A set that is
+empty, names a source twice or names one the log holds no event of is
+refused whole, appending nothing. A set of one answers as
+`forget_preflight` does, its id included. They default to `unbound` for
+a facade that does not carry them, as `lakelands-client` does.
 
 `LakeStore::remove_values(source, selection, require_shredded,
 report_id)` takes back what a source wrote before a time or in one

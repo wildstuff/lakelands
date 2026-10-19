@@ -334,6 +334,7 @@ async fn a_move_is_written_by_the_system_as_its_rule(store: Store) -> Held {
     ensure!(
         m.origin == Origin::System
             && m.writer == "system:lakelands"
+            && m.procedure.as_deref() == Some("aging:overdue")
             && m.procedure_version.as_deref() == Some("2"),
         "the moved field's provenance is {m:?}"
     );

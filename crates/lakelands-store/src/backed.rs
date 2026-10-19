@@ -534,10 +534,11 @@ fn apart_of(
 }
 
 /// The metadata of a value an output filled, or of a field it cleared.
-fn meta(event: &Event, version: String, error: Option<String>) -> FieldMeta {
+fn meta(event: &Event, computer: &Computer, error: Option<String>) -> FieldMeta {
     FieldMeta {
         upstream: None,
-        procedure_version: Some(version),
+        procedure: Some(computer.name().to_owned()),
+        procedure_version: Some(computer.version()),
         error,
         ..crate::record::meta_of(event, Origin::Derived)
     }
@@ -575,7 +576,7 @@ fn put(
             Some(why)
         }
     };
-    metas.insert(field.name.clone(), meta(event, computer.version(), error));
+    metas.insert(field.name.clone(), meta(event, &computer, error));
     true
 }
 
@@ -710,7 +711,7 @@ pub fn settle_fields(
                     .is_some_and(|m| m.error.is_none() && computer.same_version(m));
             if !already {
                 fields.remove(&name);
-                metas.insert(name.clone(), meta(event, computer.version(), None));
+                metas.insert(name.clone(), meta(event, &computer, None));
                 changed.push(name.clone());
             }
             continue;
@@ -729,7 +730,7 @@ pub fn settle_fields(
             two @ (Input::Two | Input::Keyless) => {
                 fields.remove(&name);
                 let error = matches!(two, Input::Two).then(|| TWO_SOURCES.to_owned());
-                metas.insert(name.clone(), meta(event, computer.version(), error));
+                metas.insert(name.clone(), meta(event, &computer, error));
                 changed.push(name.clone());
                 continue;
             }

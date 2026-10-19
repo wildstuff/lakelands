@@ -530,6 +530,43 @@ pub trait LakeStore: Send + Sync {
     /// may repeat.
     async fn forget_preflight(&self, source: &SourceId) -> Result<crate::write::ForgetReport>;
 
+    /// Forget several sources in one act, as [`Self::forget_source`]
+    /// forgets one: one `source_forgotten` for each, appended together
+    /// with the records the set's sources alone brought retired, their
+    /// keys destroyed, one rebuild and one reclaim, under one hold of the
+    /// writer. A set that is empty, names a source twice, names one the
+    /// log holds no event of, or one whose values the log holds in
+    /// plaintext, is refused whole with nothing appended; the first two
+    /// before anything is read. With a preflight's id, refused unless
+    /// that report is of this set at this head. A source of the set
+    /// forgotten already
+    /// appends nothing again; a set whose every source is forgotten
+    /// finishes what is owed and answers it done, whatever report it names
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`, extended).
+    async fn forget_sources(
+        &self,
+        sources: &[SourceId],
+        report_id: Option<&str>,
+    ) -> Result<crate::write::ForgetSetReport> {
+        let _ = (sources, report_id);
+        Err(crate::Error::unbound(crate::error::Seam::Operation {
+            op: "forget_sources".to_owned(),
+        }))
+    }
+
+    /// What [`Self::forget_sources`] would do, appending nothing: each
+    /// source's report and the time the one act is expected to hold the
+    /// writer's lock, under one id the act may repeat.
+    async fn forget_sources_preflight(
+        &self,
+        sources: &[SourceId],
+    ) -> Result<crate::write::ForgetSetReport> {
+        let _ = sources;
+        Err(crate::Error::unbound(crate::error::Seam::Operation {
+            op: "forget_sources_preflight".to_owned(),
+        }))
+    }
+
     /// Take back part of a source
     /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`): append
     /// `values_removed` with the records left holding nothing of another

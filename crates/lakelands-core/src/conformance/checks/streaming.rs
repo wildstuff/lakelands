@@ -80,14 +80,16 @@
 //! in key order while one group's whole face differs from its open one,
 //! which holds the page and that group, not the view (lakelands#628), and
 //! a sum over the view and a pattern started on one of its groups, which
-//! hold a page of it (lakelands#731). The
-//! view, a group per record, is fed before the feed and the export, so
-//! each size's import and rebuild fold a view as large: its fold holds
-//! what a page of the log touches. On SQLite import and rebuild hold
-//! 12.2 MiB at both sizes at a page of 1 024 events and 6.1 MiB at 512;
-//! import held 5.7 MiB at the first size with no kept view. A harness
-//! without a meter runs everything else the check claims and reports the
-//! heap as not measured.
+//! hold a page of it (lakelands#731). The view, a group per record, is fed
+//! before the feed and the export, so each size's import and rebuild fold a
+//! view as large: its fold holds what a page of the log touches. On SQLite
+//! import and rebuild hold 12.2 MiB at both sizes at a page of 1 024 events
+//! and 6.1 MiB at 512; import held 5.7 MiB at the first size with no kept
+//! view. On PostgreSQL import holds 17.2 and 18.4 MiB at 1 100 and 4 400
+//! records: the driver keeps buffers sized to the largest batch it sent, so
+//! the import bounds a batch in bytes (lakelands#1241). A harness without a
+//! meter runs everything else the check claims and reports the heap as not
+//! measured.
 //!
 //! **A reported line.** One more operation is measured against the same
 //! bound and reported, but never fails the check: the same first pages
@@ -1409,6 +1411,7 @@ impl Size<'_> {
                         field: "vec".into(),
                         vector: None,
                         fields: None,
+                        text_fields: None,
                         weight: None,
                         text_weight: None,
                         model: None,

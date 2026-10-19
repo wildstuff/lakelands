@@ -506,7 +506,7 @@ fn record_schema(ty: &TypeDescription, lake: &LakeDescription) -> Value {
             "fields": {"type": "object", "properties": fields},
             "masked": {"type": "array", "items": {"type": "string"}},
             "meta": {"type": "object",
-                     "description": "Per field: origin, known_at, seen_at, position, writer, source, procedure_version, upstream (the lake and position a value read from another lake came from); and error, for a computed field whose function failed, which then holds no value."},
+                     "description": "Per field: origin, known_at, seen_at, position, writer, source, procedure (the verb, function or embedding model that produced the value) and procedure_version, upstream (the lake and position a value read from another lake came from); and error, for a computed field whose function failed, which then holds no value."},
         },
         "required": ["type", "key", "version", "fields"],
     })
@@ -1185,6 +1185,12 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 "fields",
                 json!({"type": "array", "items": {"type": "string"}, "minItems": 1,
                 "description": "lexical and hybrid: match the text only in these searchable fields."}),
+            ),
+            (
+                "text_fields",
+                json!({"type": "object", "minProperties": 1,
+                "additionalProperties": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000000},
+                "description": "lexical and hybrid: a weight for a match of the text in each searchable field named, over the type's `search_weights` setting; a field it leaves out takes the setting's, else 1."}),
             ),
             ("field", json!({"type": "string"})),
             (

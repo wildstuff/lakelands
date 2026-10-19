@@ -506,13 +506,15 @@ clears, the fold records the field's provenance from the envelope
 | `position` | `position` |
 | `writer` | `writer` |
 | `source` | `source` |
+| `procedure` | `procedure.name` |
 | `procedure_version` | `procedure.version` |
 | `upstream` | `upstream` |
 
 In the same event, the fold recomputes derived fields and applies
 `on_input_change: clear` to every field one of whose `depends_on` inputs
 the event changed; a field the fold writes carries `origin: derived` and
-the event's other provenance. Nothing about this is written to the log:
+the event's other provenance, but for a field a function computes, whose
+`procedure` and `procedure_version` are that function's name and version. Nothing about this is written to the log:
 the rules are deterministic, so a replay reproduces them. A derived
 field that calls `seen_at(f)` or `known_at(f)` reads the provenance the
 event leaves on `f`: the event's own where the event writes `f` or the
@@ -545,7 +547,7 @@ filled field as one the event changed: at a make every derived field is
 computed anyway, and no field holds a value an input change could clear,
 so nothing would read that count. The filled field's provenance is `origin: initial` with
 the event's `known_at`, `position` and `writer`, and no `seen_at`,
-`source`, `procedure_version` or `upstream`. A re-key does not fill. The
+`source`, `procedure`, `procedure_version` or `upstream`. A re-key does not fill. The
 patch stays as written, so a reader that folds the raw feed fills the
 same fields itself
 (`docs/decisions/050-a-field-declares-its-initial-value.md`).

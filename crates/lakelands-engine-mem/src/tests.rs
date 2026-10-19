@@ -535,6 +535,7 @@ fn a_scan_orders_by_when_a_field_was_learned() {
         position: Position(0),
         writer: "human:a".into(),
         source: None,
+        procedure: None,
         procedure_version: None,
         error: None,
         erased: false,

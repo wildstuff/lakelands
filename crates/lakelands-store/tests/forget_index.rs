@@ -49,6 +49,15 @@ impl KeyStore for Keys {
     }
 }
 
+/// A report without its expected time, which counts the preflight's own
+/// walk and so differs between two preflights alike (lakelands#1152).
+fn timeless(r: lakelands_api::write::ForgetReport) -> lakelands_api::write::ForgetReport {
+    lakelands_api::write::ForgetReport {
+        expected_ms: 0,
+        ..r
+    }
+}
+
 /// `person`, its `name` erasable or not.
 fn person(erasable: bool) -> TypeDecl {
     let id = FieldDecl {
@@ -93,7 +102,11 @@ async fn a_preflight_reads_the_sources_events_as_a_walk_does() {
     *probe.damaged.lock().unwrap() = None;
     probe.undecided.store(true, Ordering::SeqCst);
     let walked = store.forget_preflight(&crm).await.unwrap();
-    assert_eq!(indexed, walked, "the index answers what the walk answers");
+    assert_eq!(
+        timeless(indexed),
+        timeless(walked),
+        "the index answers what the walk answers"
+    );
     *probe.damaged.lock().unwrap() = Some(web);
     let opened = store.forget_preflight(&crm).await;
     assert!(
@@ -145,10 +158,111 @@ async fn after_the_act_the_index_counts_the_sources_outputs_as_a_walk_does() {
         "the walk counts crm's two outputs: {walked:?}"
     );
     assert_eq!(
-        indexed, walked,
+        timeless(indexed),
+        timeless(walked),
         "after the act the index answers what the walk answers"
     );
     assert_eq!(repeat.outputs, 2, "a repeat counts them too: {repeat:?}");
+}
+
+/// A set's report without its expected times.
+fn timeless_set(r: lakelands_api::write::ForgetSetReport) -> lakelands_api::write::ForgetSetReport {
+    lakelands_api::write::ForgetSetReport {
+        sources: r.sources.into_iter().map(timeless).collect(),
+        expected_ms: 0,
+        ..r
+    }
+}
+
+/// A set whose sources' events interleave, the index deciding each only
+/// so far, is read in one walk from the first place it stops: the walk
+/// gives each source the events from its own place on, and the set's
+/// preflight answers what the index answers whole, each source's report
+/// counting what its own preflight counts (lakelands#1183).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sets_walk_gives_each_source_its_events_from_where_its_index_stops() {
+    use lakelands_core::conformance::backing;
+    let probe = Arc::new(Probe::default());
+    let seams = Seams {
+        engines: vec![Arc::new(ProbedOpener(MemoryOpener::new(), probe.clone()))],
+        keys: Some(Arc::new(Keys::default())),
+        backings: backing::backings(),
+        ..Seams::default()
+    };
+    let store = lakelands_store::open(Location::memory("set"), seams, OpenMode::Create)
+        .await
+        .unwrap();
+    let l = Lake::of(store.as_ref());
+    l.declare_json(
+        json!({"declare": "function", "name": "shout", "backing": backing::KIND,
+        "inputs": [{"name": "name", "type": {"kind": "text"}}],
+        "config": {"token": "forget_set", "echo": "name"}}),
+    )
+    .await
+    .unwrap();
+    let mut t = person(true);
+    let loud = lakelands_core::conformance::fixture::computed_by("loud", Text, "shout", &["name"]);
+    t.fields.push(loud);
+    l.declare(t).await.unwrap();
+    let lead = |erasable| TypeDecl {
+        name: "lead".into(),
+        ..person(erasable)
+    };
+    l.declare(lead(false)).await.unwrap();
+    // Each person's `loud` is an output sealed under its source's key;
+    // each lead's `name` is plaintext once `lead` is made erasable.
+    let p = |ty: &str, key: &str| source_record(ty, key, json!({"id": key, "name": key}));
+    let mut heads = BTreeMap::new();
+    for (source, ty, key) in [
+        ("crm", "person", "a1"),
+        ("web", "person", "b1"),
+        ("crm", "lead", "c1"),
+        ("web", "lead", "d1"),
+        ("web", "person", "b2"),
+        ("crm", "person", "a2"),
+        ("web", "lead", "d2"),
+        ("crm", "lead", "c2"),
+    ] {
+        heads.insert(key, store.head().await.unwrap());
+        l.ingest(source, vec![p(ty, key)]).await.unwrap();
+    }
+    l.declare(lead(true)).await.unwrap();
+    let (crm, web) = (
+        SourceId::from("crm".to_owned()),
+        SourceId::from("web".to_owned()),
+    );
+    let set = [crm.clone(), web.clone()];
+    let indexed = store.forget_sources_preflight(&set).await.unwrap();
+    let counts: Vec<_> = (indexed.sources.iter())
+        .map(|r| (r.plaintext, r.outputs))
+        .collect();
+    assert_eq!(counts, [(2, 2), (2, 2)], "{indexed:?}");
+    // The index decides crm through the event before `c1`, and web
+    // through the one before `b2`: the walk starts at `c1`, and web's
+    // `d1` after it is web's by the index alone.
+    *probe.decided.lock().unwrap() =
+        BTreeMap::from([("crm".into(), heads["c1"]), ("web".into(), heads["b2"])]);
+    let walked = store.forget_sources_preflight(&set).await.unwrap();
+    let alone = [
+        store.forget_preflight(&crm).await.unwrap(),
+        store.forget_preflight(&web).await.unwrap(),
+    ];
+    probe.decided.lock().unwrap().clear();
+    let counted =
+        |r: &lakelands_api::write::ForgetReport| (r.plaintext, r.outputs, r.fields.clone());
+    for (r, one) in walked.sources.iter().zip(&alone) {
+        assert_eq!(
+            counted(r),
+            counted(one),
+            "{} counts in the set what it counts alone",
+            r.source
+        );
+    }
+    assert_eq!(
+        timeless_set(indexed),
+        timeless_set(walked),
+        "the set's walk answers what the index answers"
+    );
 }
 
 /// A source of more events than one read of the index answers is read
@@ -193,7 +307,11 @@ async fn a_source_past_one_page_of_the_index_is_read_page_by_page() {
     *probe.damaged.lock().unwrap() = None;
     probe.undecided.store(true, Ordering::SeqCst);
     let walked = store.forget_preflight(&crm).await.unwrap();
-    assert_eq!(indexed, walked, "the pages answer what the walk answers");
+    assert_eq!(
+        timeless(indexed),
+        timeless(walked),
+        "the pages answer what the walk answers"
+    );
 }
 
 /// A foreign log's ingest whose seal names another source than its
@@ -285,7 +403,11 @@ async fn a_foreign_ingest_is_indexed_under_its_envelopes_source() {
         indexed.plaintext, 1,
         "crm's `alice` is plaintext: {indexed:?}"
     );
-    assert_eq!(indexed, walked, "the index answers what the walk answers");
+    assert_eq!(
+        timeless(indexed),
+        timeless(walked),
+        "the index answers what the walk answers"
+    );
     let act = store.forget_source(&crm, None).await;
     let refused = act
         .as_ref()

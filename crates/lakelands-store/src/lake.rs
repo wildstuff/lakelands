@@ -242,6 +242,13 @@ pub struct Lake {
     /// Moved when a rebuild begins and when it ends: a shape built across
     /// either read a projection cleared or half folded, and is not kept.
     rebuilds: AtomicU64,
+    /// The events a second the last rebuild this handle ran folded, its
+    /// own or its open's, 0 where none has run, and the milliseconds the
+    /// last reclaim it ran took: the fold's cost is the ontology's, so a
+    /// preflight reads these before the engine's constant
+    /// ([`Self::expected_ms`], lakelands#1152).
+    rebuilt_rate: AtomicU64,
+    reclaim_ms: AtomicU64,
     /// The position of the last act that erased values (058, 065) this
     /// handle found folded or folded itself, 0 where none, and its time:
     /// only a reaction before it, or of its own append, is decided again
@@ -255,6 +262,11 @@ pub struct Lake {
     /// Why the writer's open rebuilt the projection: an older build laid
     /// it out (lakelands#1151).
     rebuilt_at_open: Option<String>,
+}
+
+/// The milliseconds since `began`.
+pub(crate) fn elapsed_ms(began: std::time::Instant) -> u64 {
+    u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Why a writer's open rebuilds the projection `e` refuses: an older
@@ -515,12 +527,18 @@ impl Lake {
                 Some(engine.take_lease(&format!("lakelands process {}", std::process::id()))?)
             }
         };
-        if mode == OpenMode::Rebuild || rebuilt_at_open.is_some() {
+        let rebuilds = mode == OpenMode::Rebuild || rebuilt_at_open.is_some();
+        let began = std::time::Instant::now();
+        if rebuilds {
             engine.projection().clear()?;
         }
         let mut lake = Lake::assemble(location, seams, engine, lease.clone());
         lake.rebuilt_at_open = rebuilt_at_open;
         lake.catch_up()?;
+        if rebuilds {
+            let folded = lake.writer().tip.as_ref().map_or(0, |t| t.0.0);
+            lake.measured(began, folded);
+        }
         if let Some(lease) = lease {
             let mut w = lake.writer();
             let now = lake.clock(&mut w);
@@ -700,6 +718,8 @@ impl Lake {
             holds_lease: AtomicBool::new(false),
             shapes: Mutex::new(Vec::new()),
             rebuilds: AtomicU64::new(0),
+            rebuilt_rate: AtomicU64::new(0),
+            reclaim_ms: AtomicU64::new(0),
             acted: (AtomicU64::new(0), AtomicI64::new(i64::MIN)),
             reclaim_owed: Mutex::new(None),
             rebuilt_at_open: None,
@@ -2583,6 +2603,7 @@ impl Lake {
         self.rebuilds.fetch_add(1, Ordering::SeqCst);
         lakelands_core::lock(&self.shapes).clear();
         self.keys.unlist();
+        let began = std::time::Instant::now();
         let folded = (|| {
             self.engine.projection().clear()?;
             w.ontology = Ontology::default().named();
@@ -2601,9 +2622,35 @@ impl Lake {
         lakelands_core::lock(&self.shapes).clear();
         self.keys.unlist();
         folded?;
+        self.measured(began, w.tip.as_ref().map_or(0, |t| t.0.0));
         // Everything the log holds is folded again: the head is its tip.
         self.publish(w);
         Ok(())
+    }
+
+    /// Keep the rate of a rebuild that began at `began` and folded the
+    /// log through `events`.
+    fn measured(&self, began: std::time::Instant, events: u64) {
+        let micros = u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX);
+        if events > 0 {
+            let rate = events.saturating_mul(1_000_000) / micros.max(1);
+            self.rebuilt_rate.store(rate.max(1), Ordering::SeqCst);
+        }
+    }
+
+    /// How long an act that rebuilds a log of `events` and reclaims is
+    /// expected to hold the writer's lock, in milliseconds: the events at
+    /// the rate of the last rebuild this handle ran, measured over its
+    /// clear and fold, or before any at the engine's constant, and the
+    /// time of the last reclaim it ran, where it ran one. An estimate
+    /// either way.
+    pub(crate) fn expected_ms(&self, events: u64) -> u64 {
+        let rate = match self.rebuilt_rate.load(Ordering::SeqCst) {
+            0 => self.engine.rebuild_rate().max(1),
+            rate => rate,
+        };
+        let folded = events.saturating_mul(1000) / rate;
+        folded.saturating_add(self.reclaim_ms.load(Ordering::SeqCst))
     }
 
     /// Finish what a forgetting (058) or a removal (065) left owed, as the
@@ -2660,7 +2707,11 @@ impl Lake {
     fn reclaim(&self) -> Result<Result<lakelands_api::write::CompactReport>> {
         let (mut list, mut acts) = self.acts_listed()?;
         let waiting = list.values().chain(acts.values()).any(|s| s == "rebuilt");
+        let began = std::time::Instant::now();
         let reclaimed = self.engine.projection().compact();
+        if reclaimed.is_ok() {
+            self.reclaim_ms.store(elapsed_ms(began), Ordering::SeqCst);
+        }
         // A compact that fails with no act waiting owes nothing.
         if waiting || reclaimed.is_ok() {
             *lakelands_core::lock(&self.reclaim_owed) = reclaimed.as_ref().err().map(Error::said);

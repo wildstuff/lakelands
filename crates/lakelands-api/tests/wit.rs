@@ -458,6 +458,7 @@ fn field_meta() -> FieldMeta {
         position: Position(1),
         writer: "human:a".into(),
         source: Some("erp".into()),
+        procedure: Some("summarise".into()),
         procedure_version: Some("1".into()),
         error: Some("the backing failed".into()),
         erased: true,
@@ -672,6 +673,34 @@ fn purge_moved() -> lakelands_api::write::PurgeMoved {
     }
 }
 
+fn compact_report() -> lakelands_api::write::CompactReport {
+    lakelands_api::write::CompactReport {
+        before: Some(2),
+        after: Some(1),
+        head: Position(3),
+    }
+}
+
+fn forget_report() -> lakelands_api::write::ForgetReport {
+    lakelands_api::write::ForgetReport {
+        source: "erp".into(),
+        types: vec![forget_records()],
+        fields: vec![forget_field()],
+        outputs: 1,
+        retired: vec![],
+        co_owned: vec![forget_records()],
+        recomputed: vec![record_field()],
+        views: vec!["v".into()],
+        plaintext: 0,
+        events: 9,
+        expected_ms: 1,
+        position: Position(3),
+        reclaimed: Some(compact_report()),
+        reclaim_owed: Some("busy".into()),
+        report_id: "r".into(),
+    }
+}
+
 fn forget_records() -> lakelands_api::write::ForgetRecords {
     lakelands_api::write::ForgetRecords {
         ty: "ord".into(),
@@ -710,6 +739,7 @@ fn search_mode() -> SearchMode {
         field: "f".into(),
         vector: Some(vec![1.0]),
         fields: Some(vec!["f".into()]),
+        text_fields: Some([("f".into(), 2.0)].into()),
         weight: None,
         text_weight: None,
         model: None,
@@ -1158,7 +1188,15 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     with_meta: true,
                     at: read_at(),
                 }),
-                &["as_of", "valid_at", "text", "field", "vector", "fields"],
+                &[
+                    "as_of",
+                    "valid_at",
+                    "text",
+                    "field",
+                    "vector",
+                    "fields",
+                    "text_fields",
+                ],
                 &["at"],
             ),
         ),
@@ -1389,26 +1427,15 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             }),
         ),
         ("purge_reference", members(&purge_reference())),
+        ("forget_report", members(&forget_report())),
         (
-            "forget_report",
-            members(&lakelands_api::write::ForgetReport {
-                source: "erp".into(),
-                types: vec![forget_records()],
-                fields: vec![forget_field()],
-                outputs: 1,
-                retired: vec![],
-                co_owned: vec![forget_records()],
-                recomputed: vec![record_field()],
-                views: vec!["v".into()],
-                plaintext: 0,
+            "forget_set_report",
+            members(&lakelands_api::write::ForgetSetReport {
+                sources: vec![forget_report()],
                 events: 9,
                 expected_ms: 1,
                 position: Position(3),
-                reclaimed: Some(lakelands_api::write::CompactReport {
-                    before: Some(2),
-                    after: Some(1),
-                    head: Position(3),
-                }),
+                reclaimed: Some(compact_report()),
                 reclaim_owed: Some("busy".into()),
                 report_id: "r".into(),
             }),
@@ -1905,6 +1932,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 SearchMode::Lexical {
                     text: "t".into(),
                     fields: Some(vec!["f".into()]),
+                    text_fields: None,
                 },
                 SearchMode::Vector {
                     field: "f".into(),

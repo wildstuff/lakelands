@@ -301,6 +301,19 @@ impl LakeStore for BreaksMidway {
     ) -> lakelands_api::Result<lakelands_api::write::ForgetReport> {
         self.0.inner.forget_preflight(source).await
     }
+    async fn forget_sources(
+        &self,
+        sources: &[lakelands_api::SourceId],
+        id: Option<&str>,
+    ) -> lakelands_api::Result<lakelands_api::write::ForgetSetReport> {
+        self.0.inner.forget_sources(sources, id).await
+    }
+    async fn forget_sources_preflight(
+        &self,
+        sources: &[lakelands_api::SourceId],
+    ) -> lakelands_api::Result<lakelands_api::write::ForgetSetReport> {
+        self.0.inner.forget_sources_preflight(sources).await
+    }
     async fn remove_values(
         &self,
         source: &lakelands_api::SourceId,
@@ -480,8 +493,8 @@ async fn an_import_whose_reclaim_fails_is_imported_owing_it() {
         .await
         .unwrap();
     // Another place, whose engine fails its next reclaims.
-    let fails: lakelands_core::conformance::checks::Fails =
-        Arc::new([std::sync::atomic::AtomicU32::new(1), Default::default()]);
+    let fails: lakelands_core::conformance::checks::Fails = Arc::default();
+    fails[0].store(1, std::sync::atomic::Ordering::SeqCst);
     let failing = lakelands_core::conformance::checks::failing(&fails);
     let seams = Seams {
         engines: vec![failing(Arc::new(MemoryOpener::new()))],

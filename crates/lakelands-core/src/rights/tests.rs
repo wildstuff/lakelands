@@ -57,6 +57,7 @@ fn stored() -> StoredRecord {
         position: Position(1),
         writer: "service:feed".into(),
         source: None,
+        procedure: None,
         procedure_version: None,
         error: None,
         erased: false,

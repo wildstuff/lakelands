@@ -60,11 +60,12 @@ pub(crate) fn brought_by(r: &StoredRecord, source: &SourceId) -> bool {
 }
 
 /// Whether a field of `r` that holds a value came from another hand than
-/// `source`: a principal's write, or another source. A field cleared since
-/// holds no value and co-owns nothing, and neither does one that declares
-/// an `initial` value, whoever wrote it last: it is there because the
-/// record is (`docs/decisions/050-a-field-declares-its-initial-value.md`).
-pub(crate) fn co_owned(decl: &TypeDecl, r: &StoredRecord, source: &SourceId) -> bool {
+/// the sources of `set`: a principal's write, or another source. A field
+/// cleared since holds no value and co-owns nothing, and neither does one
+/// that declares an `initial` value, whoever wrote it last: it is there
+/// because the record is
+/// (`docs/decisions/050-a-field-declares-its-initial-value.md`).
+pub(crate) fn co_owned(decl: &TypeDecl, r: &StoredRecord, set: &[SourceId]) -> bool {
     let starts = |f: &FieldName| {
         decl.fields
             .iter()
@@ -73,7 +74,7 @@ pub(crate) fn co_owned(decl: &TypeDecl, r: &StoredRecord, source: &SourceId) -> 
     r.fields.keys().filter(|f| !starts(f)).any(|f| {
         r.meta.get(f).is_some_and(|m| match m.origin {
             Origin::Authored => true,
-            Origin::Source => m.source.as_ref() != Some(source),
+            Origin::Source => !m.source.as_ref().is_some_and(|s| set.contains(s)),
             _ => false,
         })
     })
@@ -123,7 +124,7 @@ fn selection(
             if !brought_by(&r, source) {
                 continue;
             }
-            if co_owned(decl, &r, source) {
+            if co_owned(decl, &r, std::slice::from_ref(source)) {
                 let (ty, key) = (r.ty.clone(), r.key.clone());
                 shared.push(RecordName::Of { ty, key });
             } else {

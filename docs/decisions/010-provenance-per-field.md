@@ -15,8 +15,12 @@ Every field of every record carries its own provenance:
 - `position`: the exact log coordinate of that event;
 - `writer`: the principal that wrote it;
 - `source`: where it came from;
-- `procedure_version`: for a value a procedure produced, which version
-  of the procedure produced it.
+- `procedure` and `procedure_version`: for a value a procedure
+  produced, which procedure produced it and which version of it. The
+  name is the one the log's event carries: a verb's, a function's, an
+  embedding's model. A reader of a vector learns which model made it
+  from the value's own metadata, without reading the declaration, which
+  may have moved since the value was computed.
 
 The values come from the event, so they are part of the log format. The
 fold writes them beside the value every time it changes a field, and a
@@ -61,8 +65,8 @@ is made without a value for it
 which an aging move writes on the same lifecycle fields, so a reader
 tells the value a record started with from one the lake moved since.
 It takes the creating event's `known_at`, `position` and `writer`, and
-nothing of a source: no `source`, `seen_at`, `upstream` or
-`procedure_version`, since the value came from the declaration.
+nothing of a source: no `source`, `seen_at`, `upstream`,
+`procedure` or `procedure_version`, since the value came from the declaration.
 
 ### A record that is judged is judged with its provenance
 

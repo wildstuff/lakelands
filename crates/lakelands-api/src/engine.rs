@@ -96,10 +96,11 @@ pub trait LakeEngine: Send + Sync {
     /// The engine's name (`sqlite`, `memory`).
     fn name(&self) -> &str;
 
-    /// The events a rebuild folds a second on this engine, as measured: a
-    /// host is told from it how long an act that rebuilds holds the
-    /// writer's lock. An engine that states none is taken as slow as the
-    /// slowest measured here (PostgreSQL's).
+    /// The events a rebuild folds a second on this engine, as measured on
+    /// a plain type: a host is told from it how long an act that rebuilds
+    /// holds the writer's lock until the handle has rebuilt once and
+    /// measured its own lake. An engine that states none is taken as slow
+    /// as the slowest measured here (PostgreSQL's).
     fn rebuild_rate(&self) -> u64 {
         2_500
     }

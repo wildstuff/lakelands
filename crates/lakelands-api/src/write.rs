@@ -1772,7 +1772,13 @@ pub struct ForgetReport {
     /// The events the act's rebuild folds again: the log's length.
     pub events: u64,
     /// How long the act is expected to hold the writer's lock, in
-    /// milliseconds: `events` at the engine's measured rebuild rate.
+    /// milliseconds: an estimate, `events` at the rate the last rebuild
+    /// this handle ran folded (its own, an act's, or its open's), or
+    /// before any at the engine's stated rate, and the time the last
+    /// reclaim it ran took, where it ran one: a handle that has not
+    /// reclaimed counts no reclaim; and the time the preflight's own walk
+    /// of the log took, which the act walks again. The fold's cost is the ontology's and
+    /// a reclaim's the projection's, so the act may still differ from it.
     pub expected_ms: u64,
     /// The head after the act, or the head the preflight read.
     pub position: Position,
@@ -1787,6 +1793,42 @@ pub struct ForgetReport {
     pub reclaim_owed: Option<String>,
     /// Names a preflight's report; `forget_source` may repeat it. Empty
     /// on the act's own report.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub report_id: String,
+}
+
+/// What `LakeStore::forget_sources` erased, or what
+/// `LakeStore::forget_sources_preflight` says it would: several sources
+/// forgotten in one act, one log walk and one rebuild under one hold of
+/// the writer (`docs/decisions/058-a-source-may-be-forgotten.md`,
+/// extended).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForgetSetReport {
+    /// Per source, in id order, what forgetting it takes, as
+    /// `forget_source` answers it, the set's time, position and
+    /// `reclaim_owed` in each; the act's reclaim and the preflight's id
+    /// are the set's alone, below. A record the set's sources alone
+    /// brought is retired under the first of them that brought it, and
+    /// one another hand wrote too is co-owned.
+    pub sources: Vec<ForgetReport>,
+    /// The events the act's one rebuild folds again: the log's length.
+    pub events: u64,
+    /// How long the act is expected to hold the writer's lock, in
+    /// milliseconds, as `ForgetReport::expected_ms` says it: one rebuild
+    /// and one reclaim, and the preflight's own walk for the whole set.
+    pub expected_ms: u64,
+    /// The head after the act, or the head the preflight read.
+    pub position: Position,
+    /// The projection's storage in bytes before and after the act's
+    /// reclaim, where the engine measures it; absent on a preflight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaimed: Option<CompactReport>,
+    /// Why the reclaim is still owed, as `ForgetReport::reclaim_owed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaim_owed: Option<String>,
+    /// Names a preflight's report over the set; `forget_sources` may
+    /// repeat it. For a set of one it is the id `forget_preflight`
+    /// answers. Empty on the act's own report.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub report_id: String,
 }
@@ -1902,7 +1944,9 @@ pub struct RemoveReport {
     /// The events the act's rebuild folds again: the log's length.
     pub log_events: u64,
     /// How long the act is expected to hold the writer's lock, in
-    /// milliseconds: `log_events` at the engine's measured rebuild rate.
+    /// milliseconds: an estimate, `log_events` at the rate the last
+    /// rebuild this handle ran folded, the last reclaim's time and the
+    /// preflight's own walk, as [`ForgetReport::expected_ms`].
     pub expected_ms: u64,
     /// The head after the act, or the head the preflight read.
     pub position: Position,

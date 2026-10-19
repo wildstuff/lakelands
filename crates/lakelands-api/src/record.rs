@@ -49,6 +49,10 @@ pub struct FieldMeta {
     /// The source it came from, for a value from a source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceId>,
+    /// For a value a procedure produced: its name, as the log's
+    /// procedure gives it (a verb's, a function's, an embedding's model).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub procedure: Option<String>,
     /// For a value a procedure produced: which version of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub procedure_version: Option<String>,

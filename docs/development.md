@@ -281,6 +281,8 @@ one. Nothing is published to crates.io yet.
 
 ### A patch release
 
+What a patch may carry, and what makes a release a minor one, is
+`docs/decisions/068-a-patch-carries-fixes-and-anything-new-is-a-minor.md`.
 A minor release `vX.Y.0` is tagged on `develop`. A fix to it ships as
 `vX.Y.1` on `main`, so that `develop`, which already holds work for the
 next minor, does not ship with it.

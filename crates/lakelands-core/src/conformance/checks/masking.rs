@@ -1374,6 +1374,7 @@ fn lexical(ty: &str, text: &str, fields: Option<Vec<FieldName>>, with_meta: bool
         mode: SearchMode::Lexical {
             text: text.into(),
             fields,
+            text_fields: None,
         },
         k: 5,
         cursor: None,
