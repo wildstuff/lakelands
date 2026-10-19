@@ -411,6 +411,21 @@ impl fmt::Display for Names {
     }
 }
 
+/// A part of a declared condition in the text form, as
+/// [`crate::expr::print`] writes it. It names nothing of its own: what it
+/// reads is read by the declaration named beside it, and judged with it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Printed(pub String);
+
+impl Param for Printed {
+    fn said(&self) -> Option<String> {
+        Some(self.0.clone())
+    }
+
+    fn names(&self, _: &mut Named) {}
+}
+
 /// A cardinality by its name in a declaration: `many_to_one`.
 impl Param for Cardinality {
     fn said(&self) -> Option<String> {
@@ -1421,8 +1436,17 @@ catalog! {
         /// constraint: a declaration's or a migration's computing again, a
         /// re-key's rewritten references, a value type's renames.
         ConstraintLeftBroken { constraint: ConstraintName, #[serde(rename = "type")] ty: TypeName, records: u64 } => "{records} record(s) of `{ty}` would be left breaking the constraint `{constraint}`; fix them first",
-        /// A verb's `requires` that does not hold.
-        RequiresUnmet { verb: VerbName, #[serde(rename = "type")] ty: TypeName, key: RecordKey } => "verb `{verb}` requires what `{ty}` `{key}` does not hold",
+        /// A verb's `requires` that does not hold, and the part of it the
+        /// record fails: of a conjunction, its first conjunct that does
+        /// not hold; else the whole condition (006).
+        RequiresUnmet {
+            verb: VerbName,
+            #[serde(rename = "type")]
+            ty: TypeName,
+            key: RecordKey,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            part: Option<Box<Printed>>,
+        } => "verb `{verb}` requires what `{ty}` `{key}` does not hold[: `{part}`]",
         /// A restriction of what is restricted, or a release of what is not.
         Restriction { #[serde(rename = "type")] ty: TypeName, key: RecordKey, already: bool } => "`{ty}` `{key}` is [{?already}already|not] restricted",
         /// A set of declarations that names one twice.

@@ -4,8 +4,8 @@
 //! caller may not read would answer that field's value, by running or not,
 //! or copy it whole, so it is not that caller's to call or to be shown.
 
-use lakelands_api::error::Case;
 use lakelands_api::error::Missing;
+use lakelands_api::error::{Case, Printed};
 use lakelands_api::id::ProposalId;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::principal::TypeGrants;
@@ -136,7 +136,13 @@ async fn a_verb_that_reads_a_field_its_caller_may_not_read_is_not_its_to_call(
     });
     let unmet = |verb: &str, key: &str| {
         let (verb, ty, key) = (verb.into(), "memo".into(), key.into());
-        let case = Case::RequiresUnmet { verb, ty, key };
+        let part = Some(Box::new(Printed("secret = 'x'".into())));
+        let case = Case::RequiresUnmet {
+            verb,
+            ty,
+            key,
+            part,
+        };
         Err(Error::Refused {
             field: None,
             reason: Refusal::Precondition(Box::new(case.into())),

@@ -1430,6 +1430,7 @@
   {
    "code": "requires_unmet",
    "key": "k",
+   "part": "a = 1",
    "type": "t",
    "verb": "v"
   },

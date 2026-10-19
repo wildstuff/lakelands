@@ -3,7 +3,7 @@
 //! the link's fields and, through its `to`, the far record's (055,
 //! extended).
 
-use lakelands_api::error::Case;
+use lakelands_api::error::{Case, Printed};
 use lakelands_api::key::link_key;
 use lakelands_api::ontology::{
     Cardinality, Derived, MatchPair, RelationDecl, StorageKind, TypeDecl,
@@ -83,10 +83,20 @@ fn verb(name: &str, risk: &str, requires: &str, set: (&str, &str)) -> Value {
            "effect": "write", "set": [{"field": set.0, "value": set.1}]})
 }
 
-/// The refusal of `verb` on the deal `key` whose `requires` is unmet.
-fn unmet(verb: &str, key: &str) -> Result<&'static str, Error> {
+/// The first part of what `close` and `vet` require.
+const DAYS: &str = "with.days >= 10";
+
+/// The refusal of `verb` on the deal `key` whose `requires` is unmet at
+/// `part`.
+fn unmet(verb: &str, key: &str, part: &str) -> Result<&'static str, Error> {
     let (verb, ty, key) = (verb.into(), "deal".into(), key.into());
-    let case = Case::RequiresUnmet { verb, ty, key };
+    let part = Some(Box::new(Printed(part.into())));
+    let case = Case::RequiresUnmet {
+        verb,
+        ty,
+        key,
+        part,
+    };
     Err(Error::Refused {
         field: None,
         reason: Refusal::Precondition(Box::new(case.into())),
@@ -171,10 +181,10 @@ async fn a_verbs_path_reads_the_one_link_a_relation_holds(store: Store) -> Held 
     }
     let want = [
         Ok("applied"),
-        unmet("close", "d2"),
-        unmet("close", "d3"),
+        unmet("close", "d2", DAYS),
+        unmet("close", "d3", DAYS),
         Ok("applied"),
-        unmet("bare", "d2"),
+        unmet("bare", "d2", "with.note is null"),
     ];
     ensure!(
         got == want,
@@ -208,7 +218,7 @@ async fn a_verbs_path_reads_the_one_link_a_relation_holds(store: Store) -> Held 
         call(&l, &l.own, "linked", "d3").await,
     ];
     ensure!(
-        got == [Ok("applied"), unmet("linked", "d3")],
+        got == [Ok("applied"), unmet("linked", "d3", "exists(with)")],
         "`exists(with)` holds for a deal that holds its link and not for one without; {got:?}"
     );
 
@@ -496,7 +506,7 @@ async fn a_verb_that_reads_a_link_is_its_callers_only_where_the_relation_holds_n
     for (verb, deal) in [("close", "dh"), ("close", "dl"), ("bare", "d3")] {
         got.push(call(&l, &free, verb, deal).await);
     }
-    let want = [Ok("applied"), unmet("close", "dl"), Ok("applied")];
+    let want = [Ok("applied"), unmet("close", "dl", DAYS), Ok("applied")];
     ensure!(
         got == want,
         "one the relation holds nothing from calls as the link holds: {got:?}, expected {want:?}"
@@ -597,7 +607,7 @@ async fn a_proposed_call_reaches_the_link_it_reads(store: Store) -> Held {
     moved.await.must("writing the link again")?;
     let got = accept(&l, &partial, &p).await;
     ensure!(
-        got == unmet("vet", "d5"),
+        got == unmet("vet", "d5", DAYS),
         "the accept of a call its link no longer meets is told so; {got:?}"
     );
     // The reach holds the link's ends: a verb that reads the link alone,

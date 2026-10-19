@@ -5,7 +5,7 @@
 //! them, as the system. A refusal names the retire verbs its writer is
 //! shown and may call, and none it is not, whatever the key.
 
-use lakelands_api::error::Case;
+use lakelands_api::error::{Case, Printed};
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::RetiredBy;
 use lakelands_api::write::{ProposedWrite, WriteOpts};
@@ -160,6 +160,7 @@ async fn a_type_only_its_verbs_retire_is_refused_at_retire(store: Store) -> Held
         verb: "archive".into(),
         ty: "order".into(),
         key: "o1".into(),
+        part: Some(Box::new(Printed("status = 'closed'".into()))),
     };
     let precondition = Error::Refused {
         field: None,
