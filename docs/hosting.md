@@ -1413,6 +1413,12 @@ A host that already has a store of its own moves in four steps.
 - **Every answer carries its position.** A host that records what an
   agent saw records the position, and reads `as_of` it later. See
   `docs/decisions/009-every-response-carries-its-position.md`.
+- **Order by the stored field, not by a day count computed at the
+  read.** `order_by` a field computed at the read is refused as
+  `order_at_read`. A host that wants records ordered by
+  `floor((today() - due_date) / 1d)` orders by `due_date` instead: for a
+  computation that rises or falls with one stored field the order is the
+  same, descending where the count falls as the field rises.
 
 ## Building declarations in Rust
 
