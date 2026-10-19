@@ -14,7 +14,7 @@ interface store {
     use types.{
         lake-id, type-name, record-key, relation-name, verb-name, proposal-id, source-id, position,
         principal, write-context, limits, verification, error, timestamp, age-report, purge-report,
-        compact-report, vector-coverage, forget-report, selection, remove-report,
+        compact-report, vector-coverage, forget-report, forget-set-report, selection, remove-report,
         find, found-reply, get, record-reply, patch, write-opts, outcome,
         proposed-write, proposal-filter, proposals-reply, source-record, committed, ingest-error, ingest-opts,
         feed-filter, feed-batch,
@@ -69,6 +69,15 @@ interface store {
         /// What `forget-source` would do, appending nothing, with the time
         /// it is expected to hold the writer's lock.
         forget-preflight: func(source: source-id) -> result<forget-report, error>;
+        /// Forget several sources in one act: one `source-forgotten` for
+        /// each, one rebuild and one reclaim under one hold of the
+        /// writer. A set empty, naming a source twice or one the log
+        /// holds no event of is refused whole. With a preflight's id,
+        /// refused unless that report is of this set at this head.
+        forget-sources: func(sources: list<source-id>, report-id: option<string>) -> result<forget-set-report, error>;
+        /// What `forget-sources` would do, appending nothing, with the
+        /// time the one act is expected to hold the writer's lock.
+        forget-sources-preflight: func(sources: list<source-id>) -> result<forget-set-report, error>;
         /// Take back part of a source: each value a selected event of it
         /// wrote erased at every position, the records left holding
         /// nothing of another hand retired, the storage reclaimed, in one

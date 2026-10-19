@@ -1591,6 +1591,20 @@ interface types {
         report-id: string,
     }
 
+    /// What one forgetting of several sources erased, or its preflight
+    /// says it would: each source's report, the events its one rebuild
+    /// folds and the time it is expected to hold the writer's lock, the
+    /// position, the act's reclaim, and a preflight's id over the set.
+    record forget-set-report {
+        sources: list<forget-report>,
+        events: u64,
+        expected-ms: u64,
+        position: position,
+        reclaimed: option<compact-report>,
+        reclaim-owed: option<string>,
+        report-id: string,
+    }
+
     /// Records of one type a forgetting reads: how many, and the first ten.
     record forget-records {
         %type: type-name,

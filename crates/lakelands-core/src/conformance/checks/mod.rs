@@ -586,6 +586,8 @@ pub const ALL: &[Check] = &[
     forgotten::FORGET_IMPORT,
     forgotten::RECLAIM_OWED,
     forgotten::FORGET_EXPECTED_TIME,
+    forgotten::FORGET_SET,
+    forgotten::FORGET_SET_OWED,
     removed::REMOVED_BEFORE,
     removed::REMOVED_DELIVERY,
     removed::REMOVE_CRASH,

@@ -1337,6 +1337,12 @@ catalog! {
         ForgetPlaintext { source: SourceId, count: u64 } => "the log holds {count} value(s) of `{source}` in erasable fields in plaintext, written before the field was erasable or before the log sealed them; destroying its key cannot reach them, so it is not forgotten: export the lake, leave the source out and import that as a new lake",
         /// A forgetting's report of another source or head.
         ForgetReportStale => "that report is not of this forgetting at this head; run the preflight again",
+        /// A forgetting of several sources that names none.
+        ForgetSetEmpty => "a forgetting of several sources names at least one",
+        /// A forgetting of several sources that names one twice.
+        ForgetSourceTwice { source: SourceId } => "the set names `{source}` twice; a source is forgotten once",
+        /// A forgetting of several sources that names one the log does not.
+        ForgetSourceUnknown { source: SourceId } => "the log holds no event of `{source}`, so the set is not forgotten; forget it alone to keep the id from the lake",
         /// An idempotency key holding a NUL.
         IdempotencyKeyNul => "an idempotency key holds no NUL character",
         /// A view at a door that writes or holds a record.

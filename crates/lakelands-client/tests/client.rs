@@ -581,6 +581,20 @@ async fn every_host_operation_is_unbound_naming_it() {
                 .await
                 .map(|_| ()),
         ),
+        (
+            "forget_sources",
+            remote
+                .forget_sources(&[SourceId::from("bank")], None)
+                .await
+                .map(|_| ()),
+        ),
+        (
+            "forget_sources_preflight",
+            remote
+                .forget_sources_preflight(&[SourceId::from("bank")])
+                .await
+                .map(|_| ()),
+        ),
         ("compact", remote.compact().await.map(|_| ())),
         (
             "bind_embed",

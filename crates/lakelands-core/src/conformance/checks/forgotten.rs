@@ -41,7 +41,7 @@ check!(
 
 check!(
     FORGET_PLAINTEXT = a_source_with_plaintext_values_in_the_log_is_not_forgotten,
-    "058: a source's value written before its field was erasable is plaintext in the log; the preflight counts it, and `forget_source` is refused naming the count, appending nothing; so is a value written under a field's old name, before a migration renamed it to a field that is erasable now",
+    "058: a source's value written before its field was erasable is plaintext in the log; the preflight counts it, and `forget_source` is refused naming the count, appending nothing; so is a value written under a field's old name, before a migration renamed it to a field that is erasable now; `forget_sources` over a set holding such a source is refused whole, naming it, appending nothing (lakelands#1183)",
     reopens
 );
 
@@ -214,6 +214,22 @@ async fn erased(l: &Lake, at: Option<Position>) -> Held {
     ensure!(
         p3.fields.get("name") == Some(&json!("Cy")),
         "as of {at:?}, erp's `p3` reads Cy: {p3:?}"
+    );
+    Ok(())
+}
+
+/// Whether `p2` holds no value of crm's as of `at`, nor one computed
+/// from it, and keeps its author's note.
+async fn crm_erased(l: &Lake, at: Option<Position>) -> Held {
+    let p2 = person_at(l, "p2", at).await?;
+    let held: Vec<&str> = ["name", "initial", "loud"]
+        .into_iter()
+        .filter(|f| p2.fields.contains_key(*f))
+        .collect();
+    ensure!(
+        held.is_empty() && p2.fields.get("note") == Some(&json!("kept")),
+        "as of {at:?}, `p2` holds no value of crm's and keeps its author's note: it holds \
+         {held:?} in {p2:?}"
     );
     Ok(())
 }
@@ -508,6 +524,24 @@ async fn a_source_with_plaintext_values_in_the_log_is_not_forgotten(
         store.forget_source(&"web".into(), None).await,
         &json!({"code": "forget_plaintext", "source": "web", "count": 1}),
     )?;
+    // A set of erp, whose value is sealed, and web is refused whole.
+    let cy = source_record("person", "p3", json!({"id": "p3", "name": "Cy"}));
+    l.ingest("erp", vec![cy]).await.must("ingesting p3")?;
+    let set = ["erp".into(), "web".into()];
+    let pre = (store.forget_sources_preflight(&set).await).must("the preflight of the set")?;
+    let counted: Vec<u64> = pre.sources.iter().map(|r| r.plaintext).collect();
+    ensure!(
+        counted == [0, 1],
+        "the preflight of the set counts web's plaintext value alone: {pre:?}"
+    );
+    let before = store.head().await.must("reading the head")?;
+    refused_like(
+        "forgetting erp and web with web's plaintext value in the log",
+        store.forget_sources(&set, Some(&pre.report_id)).await,
+        &json!({"code": "forget_plaintext", "source": "web", "count": 1}),
+    )?;
+    let head = store.head().await.must("reading the head")?;
+    ensure!(head == before, "the refused set appended up to {head}");
     Ok(())
 }
 
@@ -613,11 +647,24 @@ check!(
     given
 );
 
+check!(
+    FORGET_SET = several_sources_are_forgotten_in_one_act,
+    "058, extended (lakelands#1183): `forget_sources_preflight` over a set answers each source's report in id order, a record the set's sources alone brought retired under the first of them and one another hand wrote co-owned, with one id and one expected time; a set of one answers as `forget_preflight` does, its id included; a set that is empty, names a source twice or names one the log holds no event of is refused, by the preflight and the act, appending nothing, as is a stale report over the set; `forget_sources` with the report appends one `source_forgotten` for each source and rebuilds the projection once, after which every value of the set reads as erased, at the head and as of before, an ingest from each is refused, and another source's values stay; forgetting the set again appends nothing",
+    given
+);
+
+check!(
+    FORGET_SET_OWED = a_set_beside_a_forgotten_source_forgets_what_it_owes,
+    "058, extended (lakelands#1183): a set holding a source forgotten already and one not appends a `source_forgotten` for the new one only, its preflight's id accepted, and judges retirement over the whole set: a record only the two wrote is retired, where the new one's own preflight keeps it co-owned by the source forgotten before; a set act whose rebuild fails after its append answers the failure and owes the rebuild, and the set's repeat runs it, appending nothing, after which crm's values, and what is computed from them, read as erased at the head and as of before; once it ran, a repeat rebuilds nothing",
+    given
+);
+
 /// How many of the next reclaims, and of the next clears a rebuild
 /// begins with, fail; the rebuild rate the engine states, where not 0;
-/// and how many of the next writer's opens meet a projection an older
-/// build laid out, so the store opens it for a rebuild (lakelands#1152).
-pub type Fails = Arc<[AtomicU32; 4]>;
+/// how many of the next writer's opens meet a projection an older build
+/// laid out, so the store opens it for a rebuild (lakelands#1152); and
+/// how many clears ran, one for each rebuild (lakelands#1183).
+pub type Fails = Arc<[AtomicU32; 5]>;
 
 /// The harness's engine with a projection whose next reclaims and
 /// clears fail as [`Fails`] says (lakelands#1161).
@@ -788,10 +835,12 @@ impl ProjectionStore for Reclaims {
         self.inner.projection().mark_applied(applied)
     }
     fn clear(&self) -> lakelands_api::Result<()> {
-        match fails(&self.fails, 1) {
-            true => Err(crashed()),
-            false => self.inner.projection().clear(),
+        if fails(&self.fails, 1) {
+            return Err(crashed());
         }
+        self.inner.projection().clear()?;
+        self.fails[4].fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
     fn compact(&self) -> lakelands_api::Result<lakelands_api::engine::Reclaimed> {
         match fails(&self.fails, 0) {
@@ -1002,5 +1051,310 @@ async fn the_expected_time_follows_the_lakes_last_rebuild(
             pre.events
         );
     }
+    Ok(())
+}
+
+async fn several_sources_are_forgotten_in_one_act(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let keys = Arc::new(Keys::default());
+    let fails: Fails = Arc::default();
+    let opened = |e: Error| Failure::new(format!("the writer's open was refused: {e}"));
+    let store = (given.fault)(store, with(&keys), failing(&fails))
+        .await
+        .map_err(opened)?;
+    let l = Lake::of(store.as_ref());
+    lake(&l).await?;
+    let before = people(store.as_ref(), &l).await?;
+    // `p7` from crm and erp alone, `p6` from web.
+    let gus = source_record("person", "p7", json!({"id": "p7", "name": "Gus"}));
+    l.ingest("crm", vec![gus])
+        .await
+        .must("ingesting from crm")?;
+    let oslo = source_record("person", "p7", json!({"id": "p7", "city": "Oslo"}));
+    l.ingest("erp", vec![oslo])
+        .await
+        .must("ingesting from erp")?;
+    let fay = source_record("person", "p6", json!({"id": "p6", "name": "Fay"}));
+    l.ingest("web", vec![fay])
+        .await
+        .must("ingesting from web")?;
+    let (crm, erp): (SourceId, SourceId) = ("crm".into(), "erp".into());
+    // A set refused whole, by the preflight and the act, appending nothing.
+    let head = store.head().await.must("reading the head")?;
+    let refusals = [
+        (vec![], json!({"code": "forget_set_empty"})),
+        (
+            vec![crm.clone(), crm.clone()],
+            json!({"code": "forget_source_twice", "source": "crm"}),
+        ),
+        (
+            vec![crm.clone(), "nobody".into()],
+            json!({"code": "forget_source_unknown", "source": "nobody"}),
+        ),
+    ];
+    for (set, want) in &refusals {
+        let what = format!("the preflight of {set:?}");
+        refused_like(&what, store.forget_sources_preflight(set).await, want)?;
+        let what = format!("forgetting {set:?}");
+        refused_like(&what, store.forget_sources(set, None).await, want)?;
+    }
+    let after = store.head().await.must("reading the head")?;
+    ensure!(after == head, "the refused sets appended up to {after}");
+    // A set of one answers as the one-source preflight.
+    let one = store.forget_preflight(&erp).await.must("erp's preflight")?;
+    let set = (store
+        .forget_sources_preflight(std::slice::from_ref(&erp))
+        .await)
+        .must("the preflight of erp alone")?;
+    ensure!(
+        matches!(set.sources.as_slice(), [r] if shape(r) == shape(&one))
+            && set.report_id == one.report_id
+            && (set.events, set.position) == (one.events, one.position),
+        "the preflight of a set of one answers as `forget_preflight`: {set:?} and {one:?}"
+    );
+    // The set, given out of order, is read in id order.
+    let pre = (store
+        .forget_sources_preflight(&[erp.clone(), crm.clone()])
+        .await)
+        .must("the preflight of the set")?;
+    let shapes: Vec<Value> = pre.sources.iter().map(shape).collect();
+    let (computed, views) = (json!(["initial", "loud"]), json!(["by_name"]));
+    let want = json!([
+        {"types": [["person", 3]], "fields": [["person", "name", 3]], "retired": [["person", 2]],
+         "co_owned": [["person", ["p2"]]], "recomputed": computed, "views": views, "plaintext": 0},
+        {"types": [["person", 1]], "fields": [["person", "name", 1]], "retired": [["person", 1]],
+         "co_owned": [], "recomputed": computed, "views": views, "plaintext": 0},
+    ]);
+    let named: Vec<&SourceId> = pre.sources.iter().map(|r| &r.source).collect();
+    ensure!(
+        named == [&crm, &erp] && json!(shapes) == want,
+        "the preflight of the set names crm then erp, `p7` retired under crm: {want}; it names \
+         {named:?} with {}",
+        json!(shapes)
+    );
+    ensure!(
+        !pre.report_id.is_empty()
+            && pre.report_id != one.report_id
+            && pre.reclaimed.is_none()
+            && (pre.sources.iter())
+                .all(|r| (r.expected_ms, r.position) == (pre.expected_ms, pre.position)),
+        "the preflight of the set carries its own id, and its one expected time and head in \
+         each source's report: {pre:?}"
+    );
+    // A report over the set of another head is refused.
+    l.upsert("person", "p6", json!({"note": "moved"})).await?;
+    let at = store.head().await.must("reading the head")?;
+    let set = [crm.clone(), erp.clone()];
+    refused_like(
+        "forgetting the set with a report of another head",
+        store.forget_sources(&set, Some(&pre.report_id)).await,
+        &json!({"code": "forget_report_stale"}),
+    )?;
+    let after = store.head().await.must("reading the head")?;
+    ensure!(after == at, "the stale report appended up to {after}");
+    let pre = (store.forget_sources_preflight(&set).await).must("the preflight again")?;
+    // A report of one source of the set, at this head, is not the set's.
+    let part = store.forget_preflight(&erp).await.must("erp's preflight")?;
+    refused_like(
+        "forgetting the set with the report of erp alone",
+        store.forget_sources(&set, Some(&part.report_id)).await,
+        &json!({"code": "forget_report_stale"}),
+    )?;
+    let cleared = fails[4].load(Ordering::SeqCst);
+    let done =
+        (store.forget_sources(&set, Some(&pre.report_id)).await).must("forgetting the set")?;
+    let rebuilds = fails[4].load(Ordering::SeqCst) - cleared;
+    ensure!(
+        rebuilds == 1 && done.reclaimed.is_some() && done.position > at,
+        "the act over the set appends, rebuilds the projection once and reclaims; it rebuilt \
+         {rebuilds} time(s) and answered {done:?}"
+    );
+    let forgot = forgettings(store.as_ref(), at).await?;
+    let named: Vec<&EventBody> = forgot.iter().map(|e| &e.body).collect();
+    ensure!(
+        matches!(named.as_slice(), [
+            EventBody::SourceForgotten { source: a, .. },
+            EventBody::SourceForgotten { source: b, .. },
+        ] if a == "crm" && b == "erp"),
+        "one `source_forgotten` for crm and one for erp; the log holds {named:?}"
+    );
+    let events = events_after(store.as_ref(), at).await?;
+    let mut retired: Vec<&str> = (events.iter())
+        .filter_map(|e| match &e.body {
+            EventBody::RecordRetired { key, .. } => Some(key.as_str()),
+            _ => None,
+        })
+        .collect();
+    retired.sort_unstable();
+    ensure!(
+        retired == ["p1", "p3", "p7"],
+        "the act retires `p1`, `p3` and `p7` once each; it retired {retired:?}"
+    );
+    for source in &set {
+        let left = keys.ids(store.lake(), source).ok().unwrap_or_default();
+        ensure!(
+            left.is_empty(),
+            "the key store holds no key of {source}: {left:?}"
+        );
+    }
+    let web = keys
+        .ids(store.lake(), &"web".into())
+        .ok()
+        .unwrap_or_default();
+    ensure!(!web.is_empty(), "web keeps its key");
+    for key in ["p1", "p3", "p7"] {
+        let r = (l.cat)
+            .get(&l.own, &"person".into(), get_at(key, None))
+            .await;
+        ensure!(
+            r.is_err(),
+            "`{key}`, which the set alone brought, is retired: {r:?}"
+        );
+    }
+    for at in [None, Some(before)] {
+        crm_erased(&l, at).await?;
+    }
+    let p3 = person_at(&l, "p3", Some(before)).await?;
+    ensure!(
+        !p3.fields.contains_key("name"),
+        "as of before the act, `p3` holds no name of erp's: {p3:?}"
+    );
+    let p6 = read(&l, "p6", "name").await?;
+    ensure!(p6 == json!("Fay"), "web's `p6` reads Fay; it reads {p6}");
+    for source in ["crm", "erp"] {
+        let dee = source_record("person", "p4", json!({"id": "p4", "name": "Dee"}));
+        refused_like(
+            &format!("an ingest from the forgotten {source}"),
+            l.ingest(source, vec![dee]).await,
+            &json!({"code": "source_forgotten", "source": source}),
+        )?;
+    }
+    // Forgetting the set again appends nothing.
+    let head = store.head().await.must("reading the head")?;
+    let again = (store.forget_sources(&set, None).await).must("forgetting the set again")?;
+    let after = store.head().await.must("reading the head")?;
+    ensure!(
+        after == head && again.sources.iter().all(|r| r.retired.is_empty()),
+        "forgetting the set again appends nothing; it answered {again:?}, the head moving \
+         {head} to {after}"
+    );
+    Ok(())
+}
+
+async fn a_set_beside_a_forgotten_source_forgets_what_it_owes(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let keys = Arc::new(Keys::default());
+    let fails: Fails = Arc::default();
+    let opened = |e: Error| Failure::new(format!("the writer's open was refused: {e}"));
+    let store = (given.fault)(store, with(&keys), failing(&fails))
+        .await
+        .map_err(opened)?;
+    let l = Lake::of(store.as_ref());
+    lake(&l).await?;
+    let before = people(store.as_ref(), &l).await?;
+    // `p8`: erp's `city`, which is not erasable, and pos's `name`.
+    let lima = source_record("person", "p8", json!({"id": "p8", "city": "Lima"}));
+    l.ingest("erp", vec![lima])
+        .await
+        .must("ingesting from erp")?;
+    let hal = source_record("person", "p8", json!({"id": "p8", "name": "Hal"}));
+    l.ingest("pos", vec![hal])
+        .await
+        .must("ingesting from pos")?;
+    let (crm, erp, pos): (SourceId, SourceId, SourceId) =
+        ("crm".into(), "erp".into(), "pos".into());
+    (store.forget_source(&erp, None).await).must("forgetting erp")?;
+    // Alone, pos's preflight keeps `p8`: erp's city co-owns it.
+    let alone = store.forget_preflight(&pos).await.must("pos's preflight")?;
+    let (retired, co_owned) = (&shape(&alone)["retired"], &shape(&alone)["co_owned"]);
+    ensure!(
+        *retired == json!([]) && *co_owned == json!([["person", ["p8"]]]),
+        "forgetting pos alone keeps `p8`, co-owned by the forgotten erp: {alone:?}"
+    );
+    let set = [erp.clone(), pos.clone()];
+    let pre = (store.forget_sources_preflight(&set).await).must("the preflight of the set")?;
+    let retired: Vec<Value> = pre
+        .sources
+        .iter()
+        .map(|r| shape(r)["retired"].clone())
+        .collect();
+    ensure!(
+        retired == [json!([["person", 1]]), json!([])]
+            && pre.sources.iter().all(|r| r.co_owned.is_empty()),
+        "over the set of erp and pos, `p8` is retired under erp and co-owned by none: {pre:?}"
+    );
+    let at = store.head().await.must("reading the head")?;
+    let done =
+        (store.forget_sources(&set, Some(&pre.report_id)).await).must("forgetting the set")?;
+    let events = events_after(store.as_ref(), at).await?;
+    let forgot: Vec<&SourceId> = (events.iter())
+        .filter_map(|e| match &e.body {
+            EventBody::SourceForgotten { source, .. } => Some(source),
+            _ => None,
+        })
+        .collect();
+    let retired: Vec<&str> = (events.iter())
+        .filter_map(|e| match &e.body {
+            EventBody::RecordRetired { key, .. } => Some(key.as_str()),
+            _ => None,
+        })
+        .collect();
+    ensure!(
+        forgot == [&pos] && retired == ["p8"] && done.position > at,
+        "the act over the set appends a `source_forgotten` for pos alone and retires `p8`; the \
+         log holds {forgot:?} and retires {retired:?}, the act answered {done:?}"
+    );
+    let p8 = (l.cat)
+        .get(&l.own, &"person".into(), get_at("p8", None))
+        .await;
+    ensure!(p8.is_err(), "`p8` is retired: {p8:?}");
+    let p1 = person_at(&l, "p1", None).await?;
+    ensure!(
+        p1.fields.contains_key("name"),
+        "`p1`, crm's alone, stays while crm is not forgotten: {p1:?}"
+    );
+    // The set of crm and the forgotten erp, its rebuild failing after the
+    // append: the act answers the failure, the rebuild owed.
+    let set = [crm.clone(), erp.clone()];
+    let at = store.head().await.must("reading the head")?;
+    fails[1].store(1, Ordering::SeqCst);
+    let failed = store.forget_sources(&set, None).await;
+    let forgot = forgettings(store.as_ref(), at).await?;
+    let named: Vec<&EventBody> = forgot.iter().map(|e| &e.body).collect();
+    ensure!(
+        matches!(failed, Err(Error::Unavailable { .. }))
+            && fails[1].load(Ordering::SeqCst) == 0
+            && matches!(named.as_slice(), [EventBody::SourceForgotten { source, .. }]
+                if *source == crm),
+        "a set act whose rebuild fails answers the failure, having appended crm's \
+         `source_forgotten` alone; it answered {failed:?}, the log holding {named:?}"
+    );
+    let head = store.head().await.must("reading the head")?;
+    let cleared = fails[4].load(Ordering::SeqCst);
+    let again = (store.forget_sources(&set, None).await).must("forgetting the set again")?;
+    let rebuilds = fails[4].load(Ordering::SeqCst) - cleared;
+    let after = store.head().await.must("reading the head")?;
+    ensure!(
+        after == head && rebuilds == 1 && again.sources.iter().all(|r| r.retired.is_empty()),
+        "the set's repeat runs the owed rebuild once and appends nothing; it rebuilt {rebuilds} \
+         time(s), the head moving {head} to {after}, and answered {again:?}"
+    );
+    for at in [None, Some(before)] {
+        crm_erased(&l, at).await?;
+    }
+    let p1 = (l.cat)
+        .get(&l.own, &"person".into(), get_at("p1", None))
+        .await;
+    ensure!(p1.is_err(), "`p1`, crm's alone, is retired: {p1:?}");
+    let done = (store.forget_sources(&set, None).await).must("forgetting the set a third time")?;
+    let after = store.head().await.must("reading the head")?;
+    ensure!(
+        after == head && fails[4].load(Ordering::SeqCst) == cleared + 1,
+        "once the rebuild ran, the set's repeat is done and rebuilds nothing: {done:?}"
+    );
     Ok(())
 }
