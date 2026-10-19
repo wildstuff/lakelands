@@ -2,9 +2,9 @@
 
 ## What is decided
 
-**Proposed** on lakelands#1264, for the operator's word; nothing of it
-is built. It extends 016, whose doors it opens by one named source, and
-leaves 039 and 065, which take that source's values back, as they are.
+Decided on lakelands#1264 by the operator (2026-10-19), for 0.17.0. It
+extends 016, whose doors it opens by one named source, and leaves 039
+and 065, which take that source's values back, as they are.
 
 ### A field of authority `authored` may name the sources it admits
 
