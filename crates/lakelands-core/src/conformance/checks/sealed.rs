@@ -180,7 +180,7 @@ async fn a_declaration_that_holds_an_integer_no_reader_reads_exactly_is_refused_
     let set = |name: &str, filter: Value| {
         read(json!({"declare": "object_set", "name": name, "of": "parcel", "where": filter}))
     };
-    let old = |micros: u64| typed("now() - known_at(code) > 1d", micros);
+    let old = |micros: u64| typed("known_at(sent) - known_at(code) > 1d", micros);
     let late = |derived: Value, initial: f64| {
         read(json!({"declare": "type", "name": "parcel", "fields": [
             {"name": "code", "type": {"kind": "text"}},
@@ -194,7 +194,7 @@ async fn a_declaration_that_holds_an_integer_no_reader_reads_exactly_is_refused_
         function("fits", json!({"most": MAX, "more": 1e21})),
         late(typed("sent + 1d", MAX), MAX as f64),
         set("old", old(MAX)),
-        set("older", json!("now() - known_at(code) > 104249d")),
+        set("older", json!("known_at(sent) - known_at(code) > 104249d")),
     ] {
         l.declare_as(fits, "a declaration within the range").await?;
     }
@@ -223,7 +223,10 @@ async fn a_declaration_that_holds_an_integer_no_reader_reads_exactly_is_refused_
             "where.rhs.value.value",
         ),
         (
-            set("ancient", json!("now() - known_at(code) > 104250d")),
+            set(
+                "ancient",
+                json!("known_at(sent) - known_at(code) > 104250d"),
+            ),
             &ancient,
             "where",
         ),

@@ -8,7 +8,7 @@
 //! escalated by a second one, and that one's write-off called, proposed
 //! and accepted. The answers are derived by hand from the records below:
 //! who owes what (the view
-//! `debtor`), since when (`days_overdue` and the set `overdue`), and the
+//! `debtor`), since when (`days_overdue`, read in a `where`), and the
 //! cash (`cash_position`).
 
 use std::path::PathBuf;
@@ -77,7 +77,6 @@ fn the_open_book_bundle_loads_with_every_lane_it_holds() {
             "verb resolve_dunning",
             "verb set_credit_limit",
             "verb write_off_dunning",
-            "object_set overdue",
         ]
     );
 }
@@ -349,7 +348,8 @@ async fn a_day(location: Location) {
         ],
         "days overdue at the read: {late:?}"
     );
-    let overdue = found(cat.as_ref(), &owner, "invoice", Some("in_set('overdue')")).await;
+    let past = "direction = 'outbound' and status = 'open' and days_overdue > 30";
+    let overdue = found(cat.as_ref(), &owner, "invoice", Some(past)).await;
     let keys: Vec<String> = overdue.iter().map(|r| r.key.to_string()).collect();
     assert_eq!(keys, ["i1", "i2"], "more than thirty days past due");
     // The cash: the last known balances in euros.

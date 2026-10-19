@@ -50,7 +50,7 @@ check!(
 
 check!(
     REMOVED_FIRED = a_reaction_decided_over_a_value_taken_back_is_overruled,
-    "065 (lakelands#1238): `stop` holds `place` from `tracker`, and `call` names a stop; the triggers `in_rome` (`place = 'Rome'`), `rome_or_open` (`place = 'Rome' or open`), `wrote` (no `when`) and, on `call`, `call_in_rome` (`stop.place = 'Rome'`), the set `at_rome` (`stop.place = 'Rome'`), on `stop` the set `romans` (`place = 'Rome'`), and the set `late` of stops whose note is older than 0.3 s; `s1` is opened by its author and named by `c1` before `tracker` writes the `place` of `s1` and `s2` Rome, `s2` its alone, then `s1` is written again by its author and named by `c2`, those two with an idempotency key; once what `tracker` wrote is taken back, a poll of the feed from 0 names overruled the firings of `in_rome` and `call_in_rome`, those of `rome_or_open` on `s2`, at `tracker`'s write and at the act's retirement of `s2`, the `at_rome` joins, and the `romans` joins and `s2` leaving it at that retirement, and not those of `wrote`, of `rome_or_open` on the open `s1`, nor `s1` joining `late`, which reads the clock; the reactions it does not overrule are those of a twin lake where `tracker` never wrote a `place`, by kind, name and key, and the two keyed writes sent again answer what they set off as the twin's first writes were told; every reaction names the record event it reacts to as its cause, the act's retirement of `s2` included",
+    "065 (lakelands#1238): `stop` holds `place` from `tracker`, and `call` names a stop; the triggers `in_rome` (`place = 'Rome'`), `rome_or_open` (`place = 'Rome' or open`), `wrote` (no `when`) and, on `call`, `call_in_rome` (`stop.place = 'Rome'`), the set `at_rome` (`stop.place = 'Rome'`), on `stop` the set `romans` (`place = 'Rome'`), and the set `late` of stops whose `code` was learned after their note; `s1` is opened by its author and named by `c1` before `tracker` writes the `place` of `s1` and `s2` Rome, `s2` its alone, then `s1` is written again by its author and named by `c2`, those two with an idempotency key; once what `tracker` wrote is taken back, a poll of the feed from 0 names overruled the firings of `in_rome` and `call_in_rome`, those of `rome_or_open` on `s2`, at `tracker`'s write and at the act's retirement of `s2`, the `at_rome` joins, and the `romans` joins and `s2` leaving it at that retirement, and not those of `wrote`, of `rome_or_open` on the open `s1`, nor `s1` joining `late`, which reads when `code` was learned; the reactions it does not overrule are those of a twin lake where `tracker` never wrote a `place`, by kind, name and key, and the two keyed writes sent again answer what they set off as the twin's first writes were told; every reaction names the record event it reacts to as its cause, the act's retirement of `s2` included",
     given
 );
 
@@ -530,9 +530,10 @@ async fn fired(store: &Store, act: Act, placed: bool) -> Result<[Vec<Vec<String>
     let (name, filter) = SETS[0];
     l.declare_as(object_set_on(name, "call", filter), name)
         .await?;
-    // `late` reads the clock, and no erased value: `s1` joins it at
-    // `tracker`'s write, which decided it was not a member before.
-    let late = object_set_on("late", "stop", "now() - known_at(note) > 0.3s");
+    // `late` reads when `code` was learned, and no erased value: `s1`
+    // joins it at `tracker`'s write, which decided it was not a member
+    // before.
+    let late = object_set_on("late", "stop", "known_at(code) > known_at(note)");
     l.declare_as(late, "late").await?;
     // `romans` reads the stop's own erased field, by its `where`.
     let romans = object_set_on("romans", "stop", "place = 'Rome'");

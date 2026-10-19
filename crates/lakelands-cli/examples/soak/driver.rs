@@ -28,7 +28,7 @@
 //!    beside the server, imported into a fresh lake, read alike at the
 //!    head and as of earlier positions;
 //! 4. the model's sums: `debtor` and `cash_position` against the
-//!    driver's own fold, the set `overdue` against its filter;
+//!    driver's own fold, `days_overdue` against its fold;
 //! 5. the feed: a gap or a repeat in its positions across the kills;
 //! 6. a refusal the driver did not ask for;
 //! 7. a reader with `only` on one partner and without `restricted`
@@ -269,8 +269,8 @@ impl Book {
         let mut book = Book {
             rng: Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1),
             day: 0,
-            // The run's days end at today, so that `days_overdue` and the
-            // set `overdue`, which read today, read the run's calendar.
+            // The run's days end at today, so that `days_overdue`,
+            // which reads today, reads the run's calendar.
             start: today() - days,
             partners: Vec::new(),
             limits: BTreeMap::new(),
@@ -1204,7 +1204,7 @@ async fn sums_hold(desk: &Desk, book: &Book) -> Result<(), String> {
         ));
     }
     let find = Find {
-        filter: Some("in_set('overdue')".into()),
+        filter: Some("direction = 'outbound' and status = 'open' and days_overdue > 30".into()),
         limit: Some(1000),
         ..Find::default()
     };
@@ -1225,7 +1225,7 @@ async fn sums_hold(desk: &Desk, book: &Book) -> Result<(), String> {
         .collect();
     if got.len() < 1000 && got != want {
         return Err(format!(
-            "the set `overdue` holds {} invoices, its filter selects {}",
+            "`days_overdue > 30` finds {} invoices, the driver's fold selects {}",
             got.len(),
             want.len()
         ));

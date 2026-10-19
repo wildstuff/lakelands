@@ -883,6 +883,10 @@ A host that already has a store of its own moves in four steps.
   it the declaration is refused `too_large`. The host raises the limit
   for a quiet moment, or widens the filter in steps; `docs/seams.md`,
   "Declaring a set over a large type", has the costs.
+- **A set's `where` does not read the clock.** A set keeps the
+  memberships it decided at each write, so a `where` that calls `now()` or
+  `today()` is refused `set_reads_clock`; a host keeps a time window in a
+  view's `where` or in a computed field instead.
 - **A whole-graph measure is read in one page.** `degree` and
   `components` are computed whole for every page read, so a walk through
   small pages computes the measure once per page. A host that wants the

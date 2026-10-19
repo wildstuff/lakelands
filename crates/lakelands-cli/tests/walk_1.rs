@@ -62,7 +62,6 @@ fn the_liquidity_bundle_loads_with_every_lane_the_walk_needs() {
             "type transaction",
             "verb pay_invoice",
             "trigger invoice_overdue",
-            "object_set overdue",
         ]
     );
 }
@@ -140,17 +139,17 @@ fn walk(engine: &str) {
     let applied = sh.ok(&["--root", &root, "apply", &example().display().to_string()]);
     let rule = |l: &&str| l.starts_with("  aging rule ");
     assert!(
-        applied.starts_with("applied 8 declaration(s), in force from position ")
+        applied.starts_with("applied 7 declaration(s), in force from position ")
             && applied
                 .lines()
                 .filter(|l| l.starts_with("  ") && !rule(l))
                 .count()
-                == 8,
-        "apply applies the bundle's eight declarations as one set:\n{applied}"
+                == 7,
+        "apply applies the bundle's seven declarations as one set:\n{applied}"
     );
     assert_eq!(
         applied.lines().filter(rule).collect::<Vec<_>>(),
-        ["  aging rule `invoice_overdue` written at position 13"],
+        ["  aging rule `invoice_overdue` written at position 12"],
         "apply writes the bundle's aging rule after its declarations:\n{applied}"
     );
 
@@ -307,11 +306,11 @@ fn init_with_an_example_makes_the_walks_lake_and_its_mcp_configuration() {
     let sh = Shell { root: dir.clone() };
     let out = sh.ok(&["init", &dir.display().to_string(), "--example", "liquidity"]);
     assert!(
-        out.contains("applied 8 declaration(s), in force from position 12:"),
+        out.contains("applied 7 declaration(s), in force from position 11:"),
         "{out}"
     );
     assert!(
-        out.contains("  aging rule `invoice_overdue` written at position 13"),
+        out.contains("  aging rule `invoice_overdue` written at position 12"),
         "{out}"
     );
     let committed: Vec<&str> = out
@@ -321,9 +320,9 @@ fn init_with_an_example_makes_the_walks_lake_and_its_mcp_configuration() {
     assert_eq!(
         committed,
         [
-            "committed 4 record(s), 0 already in the lake, through position 17",
-            "committed 10 record(s), 0 already in the lake, through position 41",
-            "committed 3 record(s), 9 already in the lake, through position 47",
+            "committed 4 record(s), 0 already in the lake, through position 16",
+            "committed 10 record(s), 0 already in the lake, through position 33",
+            "committed 3 record(s), 9 already in the lake, through position 37",
         ],
         "{out}"
     );
@@ -358,7 +357,7 @@ fn init_with_an_example_makes_the_walks_lake_and_its_mcp_configuration() {
     assert!(out.contains(&walk), "{out}");
     assert!(
         out.contains(
-            "as the lake stood at position 41 (pin it): P-100, P-200 and P-300 Cedar Logistics"
+            "as the lake stood at position 33 (pin it): P-100, P-200 and P-300 Cedar Logistics"
         ),
         "{out}"
     );
@@ -376,7 +375,7 @@ fn init_with_an_example_makes_the_walks_lake_and_its_mcp_configuration() {
         ]),
         "at the head"
     );
-    let then = block_on(over(location, Some(Position(41))));
+    let then = block_on(over(location, Some(Position(33))));
     assert_eq!(
         then,
         BTreeMap::from([
@@ -552,7 +551,7 @@ fn fault(n: usize, there: &[&str]) {
     );
     assert_eq!(failed.status.code(), Some(1), "{out}\n{err}");
     assert!(
-        out.contains("through position 17") && !out.contains("through position 41"),
+        out.contains("through position 16") && !out.contains("through position 33"),
         "the fault is to land in the August ingest:\n{out}\n{err}"
     );
     assert!(err.contains("nothing this run made is left in"), "{err}");
@@ -577,5 +576,5 @@ fn fault(n: usize, there: &[&str]) {
     let again = run("unlimited");
     let out = String::from_utf8_lossy(&again.stdout);
     assert!(again.status.success(), "{out}");
-    assert!(out.contains("through position 47"), "{out}");
+    assert!(out.contains("through position 37"), "{out}");
 }

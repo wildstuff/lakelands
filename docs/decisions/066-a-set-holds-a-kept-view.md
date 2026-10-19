@@ -74,6 +74,23 @@ event; so does a set of declarations that stamps such a setting again.
 A membership answers what a read's `in_set` answers (below), which reads
 the setting as it is.
 
+### A set's `where` does not read the clock
+
+A set keeps the memberships it decided at the write, and nothing writes
+again when a clock passes a boundary; a read's `in_set` evaluates `now()`
+and `today()` at the read's clock (052). A `where` that read the clock
+would let the two drift apart as time passes, so a set whose `where`
+calls `now()` or `today()`, at any depth, is refused `set_reads_clock`,
+naming the set and the call, whether it is a set of a type or of a kept
+view. No ticker re-decides memberships as time passes. A host keeps a
+time window in a view's `where`, which a read evaluates at its own clock,
+or in a computed field. A trigger's `when` is not touched: it is decided
+once, at the write that fires it.
+
+The check is made where a declaration is judged. A log written before
+holds such a set and opens and replays as it did; the lake meets the
+refusal only when it declares that set again.
+
 ### What would leave a set of a view without its rows is refused
 
 While a set holds a view, through any view it reads too:

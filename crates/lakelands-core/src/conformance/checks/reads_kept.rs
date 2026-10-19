@@ -666,7 +666,7 @@ async fn a_declaration_reads_only_fields_its_type_has(store: Store) -> Held {
         verb("note", "status = setting('mode')", "payload.note"),
         verb("own", "status = 'x'", "concat(payload, payload.note)"),
         trigger("retired() or changed(status) and previous(status) = 'x'"),
-        set("status = 'x' and now() > today()"),
+        set("status = 'x' and upper(old) = 'Y'"),
     ] {
         l.declare_json(d).await?;
     }
