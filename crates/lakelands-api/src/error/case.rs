@@ -1246,7 +1246,7 @@ catalog! {
             ty: TypeName,
         } => "the grant's `only` on `{ty}` cannot be applied here; the host's grants need fixing",
         /// An order by a field computed at the read.
-        OrderAtRead { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "`order_by` names `{field}` of `{ty}`, which is computed at the read and moves with the clock; a page's order would not hold to the next",
+        OrderAtRead { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "`order_by` names `{field}` of `{ty}`, which is computed at the read; order by a stored field it is computed from",
         /// An order by a value or a time that names no field.
         OrderNamesNoField => "an order by a value, `known_at` or `seen_at` names its field",
         /// A view's parameter not given, or met where no read binds it.

@@ -111,13 +111,13 @@ all.
 ### `order_by` a field computed at the read is refused
 
 `order_by` a field computed at the read is refused, in `find` and in a
-pattern: its value moves with the clock, so the order one page is read
-in would not hold to the next. Since a cursor carries its clock, that
-holds no longer for a cursor; it still holds for `after`, which carries
-no clock, and for a cursor handed out before. Whether the refusal stays
-is asked in lakelands#1189. The refusal comes after the reader is known
-to read the field: one kept from the field, or from its type, is
-told nothing of it.
+pattern. No engine holds such a field, so each page would compute it
+for every record of the type and sort them all; the store does not take
+that cost per page. The order would also move with the clock, and
+`after` carries no clock, so a page's order would not hold to the next.
+A host orders by a stored field the value is computed from. The refusal
+comes after the reader is known to read the field: one kept from the
+field, or from its type, is told nothing of it.
 
 ### A declaration that changes `computed_at` computes the type's records again
 

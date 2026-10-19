@@ -491,7 +491,7 @@ What a refusal is about.
 | `not_searchable` | `field` (FieldName), `type` (TypeName) | `{field}` of `{type}` is not searchable | A field a search, or a `search_weights` setting's `text_fields`, names that is not searchable. |
 | `offset_beside` | `other` (String) | `offset` and `{other}` both say where the answer starts; give one | An `offset` beside another start of the answer. |
 | `only_unappliable` | `type` (TypeName) | the grant's `only` on `{type}` cannot be applied here; the host's grants need fixing | A grant's `only` that cannot be applied to the read. |
-| `order_at_read` | `field` (FieldName), `type` (TypeName) | `order_by` names `{field}` of `{type}`, which is computed at the read and moves with the clock; a page's order would not hold to the next | An order by a field computed at the read. |
+| `order_at_read` | `field` (FieldName), `type` (TypeName) | `order_by` names `{field}` of `{type}`, which is computed at the read; order by a stored field it is computed from | An order by a field computed at the read. |
 | `order_names_no_field` | — | an order by a value, `known_at` or `seen_at` names its field | An order by a value or a time that names no field. |
 | `param_missing` | `type` (TypeName), `name` (ParamName), `kind` (StorageKind), `unbound` (bool) | view `{type}` needs parameter `{name}` ({kind})[{?unbound}, and only a read that names the view binds it] | A view's parameter not given, or met where no read binds it. |
 | `param_unknown` | `type` (TypeName), `name` (ParamName), `declared` (Names, optional) | `{type}` declares no parameter `{name}`, so it binds nothing[; its parameters are {declared}] | A parameter given that the type does not declare. |
