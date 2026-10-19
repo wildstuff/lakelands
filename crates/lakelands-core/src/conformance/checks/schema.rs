@@ -748,7 +748,7 @@ async fn a_declaration_answers_how_it_stands_in_force(store: Store, given: Given
 
 check!(
     MIGRATION_IN_FORCE = a_migration_to_what_is_in_force_appends_nothing,
-    "027, extended (lakelands#577): a migration whose `to` is the type in force and that renames nothing is answered `applied` at the head and appends nothing only where it fills no record (050); a stale report is refused first; an accepted proposal of it appends its acceptance alone; a value type's migration to itself is refused as before, there being nothing to migrate"
+    "027, extended (lakelands#577): a migration whose `to` is the type in force and that renames nothing is answered `applied` at the head and appends nothing only where it fills no record (050); a stale report is refused first; a proposal of it is answered `applied` at the head and appends nothing (lakelands#1267), one with a change being filed whole and migrating when accepted; a value type's migration to itself is refused as before, there being nothing to migrate"
 );
 
 async fn a_migration_to_what_is_in_force_appends_nothing(store: Store) -> Held {
@@ -782,21 +782,53 @@ async fn a_migration_to_what_is_in_force_appends_nothing(store: Store) -> Held {
          the head is {after}, `bill` at version {version}, and they answered {stale:?}, \
          {typed:?} and {got:?}"
     );
-    // Proposed and accepted: the proposal and its acceptance, nothing more.
-    let (migration, report) = (Box::new(migration(bill)), Default::default());
-    let write = ProposedWrite::Migrate { migration, report };
+    // Proposed: answered `applied` at the head with how `bill` stands, and
+    // nothing filed (lakelands#1267); accepting what was never filed is not
+    // possible, so the log is as it was.
+    let (same, report) = (Box::new(migration(bill.clone())), Default::default());
+    let write = ProposedWrite::Migrate {
+        migration: same,
+        report,
+    };
     let proposed = l.cat.propose(&l.own, write, "again".into()).await;
-    let Outcome::Proposed { proposal, .. } = proposed.must("proposing")? else {
+    let proposed = proposed.must("proposing")?;
+    let (after, version) = (
+        store.head().await.must("reading the head")?,
+        l.describe_type("bill").await?.lifecycle.version,
+    );
+    ensure!(
+        matches!(&proposed, Outcome::Applied { position, declared, .. }
+            if *position == before && declared.len() == 1 && !declared[0].appended)
+            && (after, version) == (before, 1),
+        "a proposed migration to the type in force is answered `applied` at the head \
+         {before} with `bill` not appended, and files nothing; the head is {after}, \
+         `bill` at version {version}, and it answered {proposed:?}"
+    );
+    // One with a change is proposed whole, and its accept migrates.
+    let mut noted = bill;
+    noted.fields.push(field("note", StorageKind::Text));
+    let (changed, report) = (Box::new(migration(noted)), Default::default());
+    let write = ProposedWrite::Migrate {
+        migration: changed,
+        report,
+    };
+    let proposed = l.cat.propose(&l.own, write, "noted".into()).await;
+    let Outcome::Proposed { proposal, .. } = proposed.must("proposing a change")? else {
         return Err(Failure::new(
-            "a proposed migration is not answered as proposed",
+            "a proposed migration with a change is not answered as proposed",
         ));
     };
-    l.cat.accept(&l.own, &proposal).await.must("accepting")?;
     let written = events_after(store.as_ref(), before).await?;
     ensure!(
-        written.len() == 2 && matches!(written[1].body, EventBody::WriteAccepted { .. }),
-        "an accepted proposal of a migration to the type in force appends `write_accepted` \
-         alone; the log holds {written:?}"
+        written.len() == 1 && matches!(written[0].body, EventBody::WriteProposed { .. }),
+        "a proposed migration with a change is filed whole as `write_proposed`; the log \
+         holds {written:?}"
+    );
+    l.cat.accept(&l.own, &proposal).await.must("accepting")?;
+    let version = l.describe_type("bill").await?.lifecycle.version;
+    ensure!(
+        version == 2,
+        "the accepted migration with a change migrates `bill` to version 2; it is at {version}"
     );
     Ok(())
 }

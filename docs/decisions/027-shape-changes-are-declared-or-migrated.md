@@ -536,6 +536,7 @@ declaration's changes, and the times `recompute` appended it again (022).
   moment is not appended again, so an acceptance may append
   `write_accepted` alone; the accept answers how each declaration of
   the bundle stands after it, as `apply` does (lakelands#1187).
+  A proposed migration whose `to` is the type in force, renaming and filling nothing, is answered the same way and not recorded (lakelands#1267).
 - **Every kind:** a value type, a type, a function, a verb, a trigger,
   an object set. A function with a backing and a type with a field
   computed outside the lake are no exception (022).
