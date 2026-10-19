@@ -21,7 +21,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use lakelands_api::engine::{About, Applied, Declared};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{FieldName, Position, ProposalId, RecordKey, RelationName, TypeName};
+use lakelands_api::id::{
+    FieldName, Position, ProposalId, RecordKey, RelationName, SourceId, TypeName,
+};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::Edge;
 use lakelands_api::read::Direction;
@@ -143,12 +145,14 @@ pub(crate) struct Projection {
     pub(crate) declarations: BTreeMap<String, History<Declared>>,
     pub(crate) records: BTreeMap<(TypeName, RecordKey), History<StoredRecord>>,
     pub(crate) proposals: BTreeMap<ProposalId, History<Proposal>>,
+    /// Each proposal's id by its position, newest last (lakelands#1063).
+    pub(crate) by_position: BTreeMap<Position, ProposalId>,
     pub(crate) members: BTreeMap<(String, TypeName, RecordKey), History<bool>>,
     pub(crate) outputs: BTreeMap<(String, Digest), History<Value>>,
     pub(crate) applied: BTreeMap<EventId, Position>,
     /// The feed's index of the log: every applied position's kind and
-    /// what its event is about, and the positions of each kind, type and
-    /// key.
+    /// what its event is about, and the positions of each kind, type, key
+    /// and source.
     pub(crate) routes: Routes,
     pub(crate) folded: Option<Position>,
     /// Per type, every record state put, by position and key: the keys a
@@ -180,6 +184,7 @@ pub(crate) struct Routes {
     pub(crate) kinds: BTreeMap<&'static str, BTreeSet<Position>>,
     pub(crate) types: BTreeMap<TypeName, BTreeSet<Position>>,
     pub(crate) keys: BTreeMap<RecordKey, BTreeSet<Position>>,
+    pub(crate) sources: BTreeMap<SourceId, BTreeSet<Position>>,
 }
 
 impl Routes {
@@ -192,6 +197,9 @@ impl Routes {
             if let Some(key) = &about.key {
                 self.keys.entry(key.clone()).or_default().insert(a.at);
             }
+        }
+        if let Some(source) = a.source {
+            self.sources.entry(source).or_default().insert(a.at);
         }
         self.events.insert(a.at, (a.kind, a.about));
     }
@@ -511,6 +519,7 @@ impl Projection {
                     .put(from, r);
             }
             Put::Proposal { proposal, at } => {
+                (self.by_position).insert(proposal.position, proposal.id.clone());
                 self.proposals
                     .entry(proposal.id.clone())
                     .or_default()
@@ -563,6 +572,17 @@ impl Projection {
             .values()
             .filter_map(|h| h.at(at).cloned())
             .collect()
+    }
+
+    /// Every state of a declaration replaced after `from` and by `to`.
+    pub(crate) fn replaced(&self, from: Position, to: Position) -> Vec<Declared> {
+        let ended =
+            |w: &[(Position, Declared)]| (w[1].0 > from && w[1].0 <= to).then(|| w[0].1.clone());
+        let each = self
+            .declarations
+            .values()
+            .flat_map(|h| h.0.windows(2).filter_map(ended));
+        each.collect()
     }
 
     /// The type declaration in force for `ty` at `at`.
@@ -640,6 +660,7 @@ mod tests {
             fields: [("n".into(), json!(n))].into_iter().collect(),
             meta: BTreeMap::new(),
             position: Position(position),
+            made: Position(position),
             retired: false,
             restricted: false,
         }
@@ -683,6 +704,7 @@ mod tests {
             .collect(),
             meta: BTreeMap::new(),
             position: Position(at),
+            made: Position(at),
             retired,
             restricted: false,
         };

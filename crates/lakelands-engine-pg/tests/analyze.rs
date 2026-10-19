@@ -47,6 +47,7 @@ fn fold(engine: &dyn LakeEngine, from: u64, n: u64, at: u64) {
             fields: serde_json::from_value(json!({"v": format!("v{i}")})).unwrap(),
             meta: Default::default(),
             position: Position(at),
+            made: Position(at),
             retired: false,
             restricted: false,
         })
@@ -168,6 +169,7 @@ fn the_order_index_a_setting_rebuilds_counts_toward_the_analysis() {
         fields: serde_json::from_value(json!({"key": "sort_index.t", "value": ["v"]})).unwrap(),
         meta: Default::default(),
         position: Position(3),
+        made: Position(3),
         retired: false,
         restricted: false,
     })

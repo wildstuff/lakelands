@@ -78,6 +78,12 @@ check!(
 );
 
 check!(
+    VERIFY_THROUGH = a_verify_reads_no_further_than_it_is_asked,
+    "`LakeStore::verify` (lakelands#1156): a log whose event after the tip is damaged, written in the format before the release's so that its format falls, with one more event after it in the release's, opens to read; `verify` through the tip holds and names it, through the damaged event, and with no end, is refused as `damaged` at its position: an event past the range asked is not read",
+    given
+);
+
+check!(
     PROJECTION_AHEAD = a_projection_folded_past_its_log_opens_only_for_a_rebuild,
     "054 and lakelands#865: a projection folded past its log's tip stands for events the log does not hold. Committed two positions ahead through the engine's seam, the lake is refused as `damaged`, the part the log and the flaw `ends_before` naming the position the projection is folded through, at an open to read, to write and to create, and is left as it was: its tip, that position and its free lease, so the writers appended nothing. An open to rebuild makes the projection from the log as it stands, and the lake answers the record it held",
     given
@@ -97,7 +103,7 @@ check!(
 
 check!(
     IMPORTED_VIEW_CYCLE = a_cycle_of_views_from_an_imported_log_is_refused_on_read,
-    "018 and 030: a log can bring in a cycle of views over `source` that `declare` would have refused; a read of a view on it is refused as invalid, naming the chain, the process goes on, and a view off the cycle reads as before",
+    "018 and 030: a log can bring in a cycle of views over `source` that `declare` would have refused; a read of a view on it is refused as invalid, naming the chain, the process goes on, and a view off the cycle reads as before, while one that reads into the cycle is refused naming it too, alike for the owner, a holder of `only` and a reader without `restricted`, each of whom is described the lake (lakelands#942)",
     given
 );
 
@@ -1056,7 +1062,9 @@ async fn a_lake_is_written_in_one_format_and_another_is_refused_whole(
         reads: reads.into(),
     };
     let mut cases: Vec<(String, bool, Change, Flaw)> = Vec::new();
-    for v in [reads - 1, reads + 1] {
+    // Older than the oldest format this release reads, and newer.
+    let older = lakelands_api::event::OLDEST_LOG_FORMAT - 1;
+    for v in [older, reads + 1] {
         for last in [false, true] {
             let what = format!("in format {v}");
             cases.push((what, last, Box::new(move |e| e["v"] = json!(v)), other(v)));
@@ -1108,8 +1116,8 @@ async fn a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_whe
     given: crate::conformance::Given,
 ) -> Held {
     use crate::conformance::Lines;
-    use lakelands_api::engine::{CanonicalEvent, OpenMode};
-    use lakelands_api::event::{Digest, Event, EventId};
+    use lakelands_api::engine::OpenMode;
+    use lakelands_api::event::{Event, EventId};
     use lakelands_api::seam::Seams;
     let reads = lakelands_api::event::LOG_FORMAT_VERSION;
     let l = Lake::of(store.as_ref());
@@ -1134,31 +1142,20 @@ async fn a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_whe
                 v,
                 position,
                 id: EventId(format!("{:032x}", position.0)),
-                prev: prev.clone(),
+                prev,
                 known_at,
                 fence,
                 body: EventBody::LeaseTaken { fence, holder },
                 ..template
             };
-            let mut value = json!(event);
-            value.as_object_mut().map(|m| m.remove("hash"));
-            let hash = Digest(canonical::sha256_hex(&value));
-            value["hash"] = json!(hash);
-            let line = CanonicalEvent {
-                position,
-                id: event.id,
-                prev,
-                hash,
-                fence,
-                bytes: canonical::to_vec(&value),
-            };
-            (vec![line], 0)
+            (vec![crate::conformance::fixture::canonical_line(event)], 0)
         })
     };
     let nothing = || -> Lines { Box::new(|_, _| (Vec::new(), 0)) };
     let mut held = Some(store);
     let mut first_other = None;
-    for other in [reads - 1, reads + 1] {
+    let older = lakelands_api::event::OLDEST_LOG_FORMAT - 1;
+    for other in [older, reads + 1] {
         let modes = [OpenMode::Read, OpenMode::Write, OpenMode::Rebuild];
         for (n, mode) in modes.into_iter().enumerate() {
             let lines = if n == 0 { line(other) } else { nothing() };
@@ -1169,7 +1166,7 @@ async fn a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_whe
             let e = c.opened.err();
             ensure!(
                 matches!(e.as_ref().and_then(Error::situation),
-                    Some(Situation::LogFormat { lake: l, found, reads: r })
+                    Some(Situation::LogFormat { lake: l, found, reads: r, .. })
                         if l == lake.as_str() && *found == u64::from(other) && *r == u64::from(reads)),
                 "a lake whose newest event is in format {other} is refused at an open for \
                  {mode:?} as `log_format`, naming the lake, that format and the one this \
@@ -1207,14 +1204,14 @@ async fn a_lake_another_release_wrote_is_not_opened_and_its_event_is_refused_whe
             position: Some(p),
             flaw: Flaw::FormatOther { v, reads: r },
             ..
-        }) if *p == at && *v == u64::from(reads - 1) && *r == u64::from(reads))
+        }) if *p == at && *v == u64::from(older) && *r == u64::from(reads))
     };
     let verified = reader.verify(None, None).await;
     ensure!(
         refused(verified.as_ref().err()),
         "`verify` of a log that holds an event in format {} at {at} is refused as \
          `format_other` at that position, naming both formats; it answered {verified:?}",
-        reads - 1
+        older
     );
     let tip = c.before.tip;
     held = Some(reader);
@@ -1278,6 +1275,76 @@ async fn an_export_holding_an_integer_no_reader_reads_exactly_is_damaged_at_its_
             if held { "be" } else { "not be" }
         );
     }
+    Ok(())
+}
+
+async fn a_verify_reads_no_further_than_it_is_asked(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    use lakelands_api::engine::OpenMode;
+    use lakelands_api::event::{Digest, Event, EventId};
+    use lakelands_api::seam::Seams;
+    let lake = store.lake().clone();
+    let events = crate::conformance::fixture::log_events(store.as_ref()).await?;
+    let taken = |e: &&Event| matches!(e.body, EventBody::LeaseTaken { .. });
+    let (Some(taken), Some(last)) = (events.iter().find(taken), events.last()) else {
+        return Err(Failure::new(
+            "the lake's log holds its writer's `lease_taken`",
+        ));
+    };
+    let (template, known_at, tip) = (taken.clone(), last.known_at, last.position);
+    // Two events after the tip: the first in the format before the
+    // release's, a fall a reader refuses at its position, and the second in
+    // the release's, so the log's end reads as whole on every engine.
+    let lines: crate::conformance::Lines = Box::new(move |(tip, prev), fence| {
+        let event = |position: Position, prev: Digest, v: u32| Event {
+            v,
+            position,
+            id: EventId(format!("{:032x}", position.0)),
+            prev,
+            known_at,
+            fence,
+            body: EventBody::LeaseTaken {
+                fence,
+                holder: "another release".into(),
+            },
+            ..template.clone()
+        };
+        let format = lakelands_api::event::LOG_FORMAT_VERSION;
+        let fallen = event(tip.next(), prev, format - 1);
+        let damaged = crate::conformance::fixture::canonical_line(fallen);
+        let after = event(tip.next().next(), damaged.hash.clone(), format);
+        let after = crate::conformance::fixture::canonical_line(after);
+        (vec![damaged, after], 0)
+    });
+    let c = (given.continued)(Some(store), lake, lines, OpenMode::Read, Seams::default());
+    let c = c
+        .await
+        .map_err(|e| Failure::new(format!("continuing the lake below the store: {e}")))?;
+    let reader = c
+        .opened
+        .map_err(|e| Failure::new(format!("opening the lake to read: {e}")))?;
+    let at = tip.next();
+    let held = reader.verify(None, Some(tip)).await;
+    ensure!(
+        held.as_ref().is_ok_and(|v| v.through == tip),
+        "`verify` through {tip}, before the event at {at} whose format falls, holds and names {tip}; it \
+         answered {held:?}"
+    );
+    for through in [Some(at), None] {
+        let refused = reader.verify(None, through).await;
+        ensure!(
+            matches!(refused.as_ref().err().and_then(Error::situation),
+                Some(Situation::Damaged { position: Some(p), .. }) if *p == at),
+            "`verify` through {through:?} reads the event at {at}, whose format falls, and is \
+             refused as `damaged` there; it answered {refused:?}"
+        );
+    }
+    reader
+        .close()
+        .await
+        .map_err(|e| Failure::new(format!("closing the lake: {e}")))?;
     Ok(())
 }
 
@@ -1388,6 +1455,17 @@ async fn a_cycle_of_views_from_an_imported_log_is_refused_on_read(
     l.declare(tally_view("view_a", "tally")).await?;
     l.declare(tally_view("view_b", "view_a")).await?;
     l.declare(tally_view("view_c", "tally")).await?;
+    // Off the cycle, a view that reads into it, both of its views.
+    let mut into = tally_view("view_d", "view_a");
+    into.fields
+        .push(crate::conformance::fixture::field("m", Number));
+    if let Some(v) = into.view.as_mut() {
+        let merge = json!({"source": "view_b", "group_by": ["k"],
+                           "measures": [{"name": "m", "expr": "count()"}]});
+        v.merge
+            .push(serde_json::from_value(merge).expect("a merged source"));
+    }
+    l.declare(into).await?;
     // The last event declares `view_a` again; the export's copy of it is
     // made to read `view_b`, closing a cycle no door would declare.
     let mut again = tally_view("view_a", "tally");
@@ -1454,5 +1532,39 @@ async fn a_cycle_of_views_from_an_imported_log_is_refused_on_read(
         "`view_c` is off the cycle and counts the one tally; it answered {:?}",
         off.data
     );
+    // So for a holder of `only` and a reader without `restricted`, and
+    // each is described the lake (lakelands#942).
+    let only = json!({"default": "read", "restricted": true,
+                      "types": {"tally": {"only": {"k": "x"}}}});
+    let readers = [
+        own.clone(),
+        super::only::holder(imported.as_ref(), "only", only),
+        super::only::holder(imported.as_ref(), "plain", json!({"default": "read"})),
+    ];
+    for who in &readers {
+        for view in ["view_a", "view_b", "view_d"] {
+            let r = cat
+                .find(who, &view.into(), lakelands_api::read::Find::default())
+                .await;
+            ensure!(
+                matches!(invalid_case(&r), Some(Case::ViewReadsItself { chain, .. })
+                    if ["view_a", "view_b"].iter().all(|v| chain.0.iter().any(|c| c == v))),
+                "`{view}` read by `{}` is refused as reading itself; it answered {r:?}",
+                who.id
+            );
+        }
+        let off = cat
+            .find(who, &"view_c".into(), lakelands_api::read::Find::default())
+            .await;
+        let off = off.must("reading `view_c`")?;
+        ensure!(
+            matches!(&off.data, lakelands_api::Found::Records { rows, .. } if rows.len() == 1),
+            "`view_c` read by `{}` counts the one tally; it answered {:?}",
+            who.id,
+            off.data
+        );
+        let d = cat.describe(who, Default::default()).await;
+        d.must(&format!("describing the lake to `{}`", who.id))?;
+    }
     Ok(())
 }

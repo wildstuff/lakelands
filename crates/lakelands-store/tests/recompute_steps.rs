@@ -185,6 +185,7 @@ fn stamped(n: u32, who: &str, position: Position, version: Option<&str>) -> Fiel
         procedure_version: Some(version.map_or(format!("p{n}"), str::to_owned)),
         upstream: Some(upstream(n)),
         error: None,
+        erased: false,
     }
 }
 
@@ -626,11 +627,7 @@ fn migrated(to: TypeDecl, moves: &[(&str, &str)]) -> EventBody {
     };
     EventBody::Migrated {
         schema_hash: lakelands_core::shape::schema_hash(&to).expect("a schema hash"),
-        migration: Migration {
-            to,
-            renames: Vec::new(),
-            relation_renames: Vec::new(),
-        },
+        migration: Migration::to(to),
         version: 2,
         report_id: "by hand".into(),
         rekeyed: moves.iter().map(moved).collect(),

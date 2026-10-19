@@ -118,13 +118,28 @@ link type as on any type.
   refused at `declare` and goes through `migrate` on the owner type.
   Its preflight reports the link records beside the type's, each field
   named with its relation, and `migrate_apply` migrates each changed
-  link type in the same append.
+  link type in the same append. A retargeted relation's live links convert only where
+  their `to` names a live record of the new target, as any reference
+  does (`docs/decisions/032-a-reference-names-a-live-record.md`,
+  lakelands#1071).
 - A link field is never renamed: a rename is a drop plus an add.
+- A migration's `to` meets every check of its link types that
+  `declare` makes, a reshaping one too: a link field only those checks
+  refuse is refused by the preflight and by the apply, naming the link
+  type, and an embedding no bound backend makes is refused as unbound
+  there, as on the type itself (lakelands#1124). One it renames, or a
+  relation it renames, is compared with the one it is renamed from:
+  its vectors are carried, so it needs no backend. A name a rename frees
+  and `to` declares again is a field anew. What it needs bound is asked
+  after its renames are judged, against the links stored too, so a
+  malformed rename is told so whatever is bound. A link field that a
+  link field its author may not know of reads stands to that author as
+  it is (027): no check of the link type names the hidden one.
 - The link type is classified at every declaration, against the one in
   force. A relation dropped by `migrate` and declared again with
-  another target, or with a field retyped, would reshape the links it
-  kept, so it is refused, naming the link type, and goes through
-  `migrate`.
+  another target, or with a field retyped, would reshape the retired
+  links its link type holds as history, so it is refused, naming the
+  link type, and goes through `migrate`.
 - Narrowing a relation's cardinality is a migration. Its preflight
   counts the live links that would break the narrower rule, and
   refuses while any would.
@@ -132,19 +147,38 @@ link type as on any type.
   under `dropped` with the number of its live links, as it lists a
   removed field with its values
   (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
-  extended); the links stay as history.
+  extended), and its apply retires each of them in its own append, as
+  a purge retires what it takes: one `record_retired` a link, caused by
+  the `migrated`, with what a retirement sets off. The links stay as
+  history, and a read as of before answers them.
+- A relation's removal is refused while another relation targets its
+  link type, whichever type declares it, or a reference field refers to
+  it: either would name the links of no relation (lakelands#920). Its
+  author retargets or removes it first, or removes both in one
+  migration. A removal in a migration that re-keys the type is refused
+  too, naming the relation: the re-key would move the links the removal
+  retires, so the two are two migrations, as a rename and a re-key are.
+- A relation may target a link type, so a link's end may be a link; but
+  no declaration closes a ring of link types, each the end of the one
+  before, by a type, a set or a migration (`link_type_ring`, naming the
+  ring). A link of a ring needs a live link of the next one as its end,
+  so none can be written, and the links written before the ring closed
+  would be judged by ends no write could make again (lakelands#919).
 - The link type is checked as any type is, when its owner is declared:
   its fields' kinds, functions and embeddings. A field that cannot work
   fails at `declare`, not at the first write.
-- A relation removed from its type keeps its link type and its records
-  as history, and its link doors refuse it.
+- A relation removed from its type keeps its link type and its retired
+  records as history, and its link doors refuse it. Declared again, in
+  any shape, it starts with no link: a removal made by mistake is
+  mended from a read as of before, not by declaring the relation
+  again.
 
 ### A trigger on a relation watches its link type
 
 A trigger on a relation watches its link type: `on` names
 `sys.link.<type>.<relation>`. It fires on every write of a link, as a
 trigger on a type fires on every write of a record: `link`, a link
-written again, `unlink`, and each link a source ingests, per window.
+written again, `unlink`, and each link a source ingests, link by link.
 Its guard reads the link's fields (`from`, `to` and the relation's
 own), and `changed(f)` holds on a write that changes `f`. On `unlink`
 the guard reads the link's fields as they were, and none reads as
@@ -166,8 +200,8 @@ verb is declared, as `link` refuses an end among its fields. Each door
 keeps the order of its family: a verb's call on a link answers a stale
 expected version before it judges the ends, as any verb compares the
 version where it reads its record (024), and `link` judges the ends
-first, as any record write judges its references before the version
-(016).
+first, as any record write judges its sent references before the
+version (016).
 
 ### A renamed relation keeps its edges
 
@@ -195,7 +229,7 @@ rename, `relation_renames`, old name to new:
   cardinality, the link fields and who writes them stay; a migration
   that also re-keys records is refused, as is one that changes the link
   fields, each naming the relation. A rename onto a name whose link type
-  still holds the links of an earlier, removed relation is refused, and
+  holds the retired links of an earlier, removed relation is refused, and
   so is one whose link type a reference field or a relation of another
   type names: that type is named to an author who is shown it, and
   another is told that a declaration refers to it.
@@ -209,10 +243,11 @@ rename, `relation_renames`, old name to new:
   while a verb is declared on its link type, and its author declares the
   verb again on another type first (027, extended; lakelands#843). A
   trigger, a view and an object set of it stay, and may be declared
-  there anew, over the links it keeps. Neither `link`, `unlink` nor an
-  ingest reaches those links any more; a purge still takes its source's
-  links away: the trigger fires for each, and the set and the view
-  follow. Where a renamed
+  there anew. The removal's retirements set them off as any retirement
+  does: the trigger fires for each link, and the set and the view
+  follow. After it the link type holds no live link: neither `link`,
+  `unlink` nor an ingest reaches it, and a purge finds nothing there to
+  take. Where a renamed
   relation takes a name whose link type stands, empty, in another shape,
   that link type is declared again in the shape of the links it takes;
   a declaration that reads a field of it which the renamed relation
@@ -308,8 +343,19 @@ doors that check the relation's authority and cardinality.
   stay at `lakelands:data@0.2.0`, not yet released; the package takes
   the number of the release that first ships it (034), and `wit/` says
   so.
+- A migration that removes a relation retires its live links; before,
+  they stayed live under a link type no relation carries, at every read
+  but a walk, authored ones had no door left, and the relation declared
+  again in the same shape took them back. A relation's removal is
+  refused while another relation or a reference field refers to its
+  link type, and in a migration that re-keys (lakelands#938,
+  lakelands#920).
+- A ring of link types is refused at its declaration; before, a
+  migration or a set could close one, and its links were read as far as
+  those written before it closed (lakelands#919).
 - At the rewrite (lakelands#817): the sentences in "Why" on what two
   new event kinds would cost every reader of the log name no format
   version by its number; `docs/log-format.md` has it. The first rule's
   sentence that the log format does not change, untrue since
   lakelands#429, left.
+- A trigger on a relation fires on each link a source ingests, link by link: "per window" said of it what no answer turns on (lakelands#886).

@@ -8,7 +8,7 @@
 //! lives in `lakelands_api::key`, where a host reaches it too.
 
 use lakelands_api::error::Flaw;
-use lakelands_api::event::{Event, EventBody, EventId, LOG_FORMAT_VERSION};
+use lakelands_api::event::{Event, EventBody, EventId, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT};
 use lakelands_api::{
     IdempotencyKey, LakeId, Patch, Position, ProposalId, RecordKey, SourceId, TypeName,
 };
@@ -16,7 +16,9 @@ use sha2::{Digest as _, Sha256};
 
 use crate::canonical;
 
-pub use lakelands_api::key::{key_component, key_components, keyable, record_key};
+pub use lakelands_api::key::record_key;
+#[doc(hidden)]
+pub use lakelands_api::key::{key_component, key_components, keyable};
 
 /// SHA-256 over the parts joined by `0x00`, as an event id: the first 16
 /// bytes, in lower-case hex.
@@ -28,6 +30,7 @@ fn id_of(parts: &[&[u8]]) -> EventId {
 /// version before the event (0 for a key not yet written) and its patch.
 /// A redelivery against the same state has the same id; a value that
 /// returns after a change (A, B, A) is a new event.
+#[doc(hidden)]
 pub fn ingest_id(
     source: &SourceId,
     ty: &TypeName,
@@ -47,6 +50,7 @@ pub fn ingest_id(
 
 /// The id of an authored write with an idempotency key: one key from one
 /// writer is one write in the whole lake.
+#[doc(hidden)]
 pub fn authored_id(writer: &str, key: &IdempotencyKey) -> EventId {
     id_of(&[
         b"lakelands:authored:v1",
@@ -59,6 +63,7 @@ pub fn authored_id(writer: &str, key: &IdempotencyKey) -> EventId {
 /// name, the record it moves and the date aged, in the one form of §1.3
 /// at midnight. A date aged twice gives the same ids, and the store
 /// appends nothing for an id already in the lake.
+#[doc(hidden)]
 pub fn aging_id(
     rule: &str,
     ty: &TypeName,
@@ -77,6 +82,7 @@ pub fn aging_id(
 /// The id of the answer recorded for the external verb the event at
 /// `position` made due (`docs/log-format.md` §3): a retry finds it by a
 /// seek, however far the log has grown since.
+#[doc(hidden)]
 pub fn output_id(lake: &LakeId, position: Position) -> EventId {
     id_of(&[
         b"lakelands:output:v1",
@@ -87,6 +93,7 @@ pub fn output_id(lake: &LakeId, position: Position) -> EventId {
 
 /// The id of a proposal's acceptance (`docs/log-format.md` §3): an accept
 /// sent again finds the acceptance by a seek.
+#[doc(hidden)]
 pub fn accepted_id(lake: &LakeId, proposal: &ProposalId) -> EventId {
     id_of(&[
         b"lakelands:accepted:v1",
@@ -96,6 +103,7 @@ pub fn accepted_id(lake: &LakeId, proposal: &ProposalId) -> EventId {
 }
 
 /// The id Lakelands' store gives every other event: its lake and position.
+#[doc(hidden)]
 pub fn positional_id(lake: &LakeId, position: Position) -> EventId {
     id_of(&[
         b"lakelands:event:v1",
@@ -104,16 +112,132 @@ pub fn positional_id(lake: &LakeId, position: Position) -> EventId {
     ])
 }
 
-/// The flaw of a `lake_created` that says another log format than the
-/// release's one, at whatever position it stands: its lake was made by
-/// another release
+/// Whether this release reads an event written in log format `v`: from
+/// [`OLDEST_LOG_FORMAT`], the first a release with real installations
+/// wrote, to the one it writes
+/// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+#[doc(hidden)]
+pub fn reads_format(v: u64) -> bool {
+    (u64::from(OLDEST_LOG_FORMAT)..=u64::from(LOG_FORMAT_VERSION)).contains(&v)
+}
+
+/// The log format that first holds `sealed` and `source_forgotten` (058).
+const SEALED_FROM: u32 = 16;
+
+/// An event as log format `v` wrote it, its members as the format this
+/// release writes says them, for the release's own structs to read. Its
+/// `v` stays the one it was written in, and its bytes and hash are the
+/// stored ones: a converter changes what an event is read as, never the
+/// log. Each step of the format is one function here, from 14 on.
+///
+/// - **14 → 15:** none. Format 15 lets a verb's path read across a
+///   reference or a relation's link (055); a log of format 14 holds no
+///   such declaration, and nothing else of an event changed.
+/// - **15 → 16:** none. Format 16 is 0.15.0's one step: a log of format
+///   15 holds none of the forms it adds, each named here by its change:
+///   an event's `sealed` and a field's `erasable` (058), so each value of
+///   format 15 is plaintext; and a set's `where` and a trigger's `when`
+///   that read across an edge (055).
+/// - **16 → 17:** none. Format 17 is 0.16.0's one step, taken before any
+///   form it adds (lakelands#1164): a log of format 16 holds none of them.
+///   `docs/log-format.md` §6 names each, by the change that adds it.
+#[doc(hidden)]
+pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
+    debug_assert!(reads_format(v), "format {v} is not one this release reads");
+    event
+}
+
+/// A walk along a log's formats: a lake's format changes only where a
+/// new writer upgrades it, and never falls. The format rises at the new
+/// writer's `lease_taken`, the first event it appends, and that writer's
+/// next event is the `lake_upgraded` from the format before to the new
+/// one; a `lake_upgraded` anywhere else, and any other change, is a flaw
+/// at its position (`docs/log-format.md` §6).
+#[derive(Clone, Copy, Debug, Default)]
+#[doc(hidden)]
+pub struct FormatSteps {
+    /// The format of the event before, if one was read.
+    before: Option<u32>,
+    /// The step a `lease_taken` began, which the next event must mark.
+    owed: Option<(u32, u32)>,
+    /// Whether the walk began right after a `lease_taken`, whose step, if
+    /// it began one, it could not see.
+    leased: bool,
+}
+
+impl FormatSteps {
+    /// A walk that begins after `prev`, if any: a range that starts
+    /// inside the log, `verify` from a position. Right after a
+    /// `lease_taken` it takes a `lake_upgraded` whose `to` is the format
+    /// there without knowing the format before the lease: a `verify` of
+    /// the whole log is what judges the step.
+    pub fn after(prev: Option<&Event>) -> FormatSteps {
+        FormatSteps {
+            before: prev.map(|e| e.v),
+            owed: None,
+            leased: prev.is_some_and(|e| matches!(e.body, EventBody::LeaseTaken { .. })),
+        }
+    }
+
+    /// Judge the next event of the log.
+    pub fn next(&mut self, event: &Event) -> Option<Flaw> {
+        let (before, owed, v) = (self.before, self.owed.take(), event.v);
+        let leased = std::mem::take(&mut self.leased);
+        self.before = Some(v);
+        let upgraded = |from: u32, to: u32| matches!(event.body, EventBody::LakeUpgraded { from: f, to: t } if f == from && t == to);
+        let flaw = |before: u32| {
+            Some(Flaw::FormatStep {
+                v: v.into(),
+                before: before.into(),
+            })
+        };
+        if let Some((from, to)) = owed {
+            return (!(v == to && upgraded(from, to)))
+                .then(|| flaw(from))
+                .flatten();
+        }
+        let before = before?;
+        // Right after a lease the walk did not see rise: its marker.
+        let unseen = matches!(event.body,
+            EventBody::LakeUpgraded { from, to } if from < to && to == v && v == before);
+        if leased && unseen {
+            return None;
+        }
+        let marker = matches!(event.body, EventBody::LakeUpgraded { .. });
+        let leased = matches!(event.body, EventBody::LeaseTaken { .. });
+        if v == before && !marker {
+            return None;
+        }
+        if v > before && leased {
+            self.owed = Some((before, v));
+            return None;
+        }
+        flaw(before)
+    }
+
+    /// The step a `lease_taken` began and no `lake_upgraded` marked yet,
+    /// at the end of what was read: a flaw where the log ends there.
+    pub fn unmarked(&self) -> Option<Flaw> {
+        let (from, to) = self.owed?;
+        Some(Flaw::FormatStep {
+            v: to.into(),
+            before: from.into(),
+        })
+    }
+}
+
+/// The flaw of a `lake_created` that says another log format than its
+/// own line, or one this release does not read, at whatever position it
+/// stands: its lake was made by another release
 /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 /// A caller asks this of an event whose own `v` it has judged.
+#[doc(hidden)]
 pub fn created_in_another(event: &Event) -> Option<Flaw> {
-    let reads = u64::from(LOG_FORMAT_VERSION);
     match event.body {
-        EventBody::LakeCreated { format } if u64::from(format) != reads => {
-            let format = format.into();
+        EventBody::LakeCreated { format }
+            if u64::from(format) != u64::from(event.v) || !reads_format(format.into()) =>
+        {
+            let (format, reads) = (format.into(), u64::from(LOG_FORMAT_VERSION));
             Some(Flaw::CreatedInAnother { format, reads })
         }
         _ => None,
@@ -128,9 +252,17 @@ pub fn created_in_another(event: &Event) -> Option<Flaw> {
 /// origin `initial`, a field's provenance alone, never an event's
 /// (`docs/decisions/050-a-field-declares-its-initial-value.md`); and an
 /// output both carried and named by `output_at`, or neither
-/// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`). No door
+/// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`); and
+/// `sealed` on any kind but `record_ingested` and `output_recorded`, or
+/// on an event of a format before 16
+/// (`docs/decisions/058-a-source-may-be-forgotten.md`); and `delivery` on
+/// any kind but `record_ingested`, or before format 17
+/// (`docs/log-format.md` §1.1); and a `trigger_dropped`, or a
+/// `trigger_fired`'s `change` or `created`, before format 17.
+/// No door
 /// puts any there; a reader holds the rule for a log written by something
 /// else.
+#[doc(hidden)]
 pub fn misplaced(event: &Event) -> Option<Flaw> {
     if event.context.cause.is_some() {
         return Some(Flaw::CauseInContext);
@@ -146,8 +278,45 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
         return Some(Flaw::InitialOrigin);
     }
     let kind = event_kind(&event.body);
-    (event.upstream.is_some() && !matches!(event.body, EventBody::RecordIngested { .. }))
-        .then_some(Flaw::UpstreamOn { kind })
+    let seals = matches!(
+        event.body,
+        EventBody::RecordIngested { .. } | EventBody::OutputRecorded { .. }
+    );
+    if event.sealed.is_some() && !seals {
+        return Some(Flaw::SealedOn { kind });
+    }
+    if event.sealed.is_some() && event.v < SEALED_FROM {
+        let v = event.v;
+        return Some(Flaw::SealedBefore { v });
+    }
+    if matches!(event.body, EventBody::SourceForgotten { .. }) && event.v < SEALED_FROM {
+        let v = event.v;
+        return Some(Flaw::ForgottenBefore { v });
+    }
+    if matches!(event.body, EventBody::ValuesRemoved { .. }) && event.v < 17 {
+        let v = event.v;
+        return Some(Flaw::RemovedBefore { v });
+    }
+    let told = |c: &Option<_>, m: &Option<bool>| c.is_some() || m.is_some();
+    if let EventBody::TriggerFired {
+        change, created, ..
+    } = &event.body
+        && told(change, created)
+        && event.v < 17
+    {
+        let v = event.v;
+        return Some(Flaw::ChangeBefore { v });
+    }
+    if matches!(event.body, EventBody::TriggerDropped { .. }) && event.v < 17 {
+        let v = event.v;
+        return Some(Flaw::DroppedBefore { v });
+    }
+    let ingested = matches!(event.body, EventBody::RecordIngested { .. });
+    if event.delivery.is_some() && (!ingested || event.v < 17) {
+        let v = event.v;
+        return Some(Flaw::DeliveryOn { kind, v });
+    }
+    (event.upstream.is_some() && !ingested).then_some(Flaw::UpstreamOn { kind })
 }
 
 /// An event body's kind, as the log writes it.

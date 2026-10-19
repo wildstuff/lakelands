@@ -23,7 +23,9 @@ again.
 ### A seam's failure is its output, and only a `declared` event retries it
 
 What a seam answered is recorded, whether it answered a value or
-failed. A failure is recorded as `{"error": "<why>"}` and read back on
+failed. A failure is recorded as `{"error": "<why>"}`, a verb's
+executor's as its error's wire form (lakelands#812,
+`docs/decisions/013-verbs-run-by-declared-risk.md`), and read back on
 replay like any other output, so a replay reproduces the failure
 exactly, and the store never calls the seam again for the same input to
 see whether it would answer differently now. That holds for a replay
@@ -85,3 +87,6 @@ narrow contract that a host implements.
   declaration in force appends none (lakelands#565).
 - An output the log holds is named by its position, not carried again
   (lakelands#663).
+- A reranker's call is a read: it records nothing, and a replay never makes
+  one (`docs/decisions/067-a-search-may-take-a-second-stage.md`,
+  lakelands#993).

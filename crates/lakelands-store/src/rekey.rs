@@ -118,8 +118,8 @@ fn tally(
     ty: &TypeName,
     keyed: Vec<(RecordKey, Option<RecordKey>)>,
     plan: &mut Plan,
-    seen: &dyn Fn(&TypeName, &[&RecordKey]) -> bool,
-) {
+    seen: &dyn Fn(&TypeName, &[&RecordKey]) -> Result<bool>,
+) -> Result<()> {
     // The records that would take each new key, by the keys they have.
     let mut taken: BTreeMap<&RecordKey, Vec<&RecordKey>> = BTreeMap::new();
     for (old, new) in &keyed {
@@ -148,7 +148,7 @@ fn tally(
     }
     let collide = taken.iter().filter(|(_, takers)| takers.len() > 1);
     for (new, takers) in collide {
-        if plan.collisions.len() < NAMED && seen(ty, takers) {
+        if plan.collisions.len() < NAMED && seen(ty, takers)? {
             let (ty, key) = (ty.clone(), (*new).clone());
             plan.collisions.push(RecordRef { ty, key });
         }
@@ -159,6 +159,7 @@ fn tally(
     if !moves.is_empty() {
         plan.moves.insert(ty.clone(), moves);
     }
+    Ok(())
 }
 
 /// Plan a re-key. `after` is the ontology with the migrated type's new
@@ -173,10 +174,10 @@ pub fn plan(
     migrated: &TypeName,
     keyed: Vec<(RecordKey, Option<RecordKey>)>,
     renames: &[(FieldName, FieldName)],
-    seen: &dyn Fn(&TypeName, &[&RecordKey]) -> bool,
+    seen: &dyn Fn(&TypeName, &[&RecordKey]) -> Result<bool>,
 ) -> Result<Plan> {
     let mut plan = Plan::default();
-    tally(migrated, keyed, &mut plan, seen);
+    tally(migrated, keyed, &mut plan, seen)?;
     // The closure: types keyed by a reference to a re-keyed type. Each one
     // it can reach waits until every other type its key references has its
     // moves, and is scanned only if one of them has any.
@@ -211,7 +212,7 @@ pub fn plan(
             keyed.push((r.key, lakelands_core::log::record_key(&decl, &fields)));
             Ok(())
         })?;
-        tally(&name, keyed, &mut plan, seen);
+        tally(&name, keyed, &mut plan, seen)?;
     }
     // No order makes keys that are made of each other: those of a moved
     // type whose key reads its own keys (the migrated type's: any that moved

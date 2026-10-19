@@ -164,7 +164,10 @@ async fn a_set_computes_its_records_again_once_at_its_last_declaration(store: St
     let set = vec![over_n("g", "n + 3"), over_n("f", "n * 4")];
     let proposed = cat.propose(
         own,
-        ProposedWrite::Declare { declarations: set },
+        ProposedWrite::Declare {
+            declarations: set,
+            plan: None,
+        },
         "again".into(),
     );
     let Outcome::Proposed { proposal, .. } = proposed.await.must("proposing `g` and `f`")? else {

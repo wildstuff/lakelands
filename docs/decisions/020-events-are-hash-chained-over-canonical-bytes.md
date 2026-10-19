@@ -25,7 +25,7 @@ Every event also carries the fencing token of the lease it was written
 under, and the provenance the fold materialises per field. The
 specification is `docs/log-format.md`.
 
-`docs/log-format/vectors/` carries a worked log that a test in
+`docs/log-format/vectors/<N>/` carries, for each format, a worked log that a test in
 `lakelands-core` and an independent script both recompute, so the rules
 are checked against bytes rather than read.
 

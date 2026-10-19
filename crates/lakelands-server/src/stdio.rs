@@ -19,9 +19,13 @@ use tokio::sync::mpsc;
 use crate::session::{Session, code, error};
 use crate::watch::QUEUE;
 
-/// How long a caught-up stdio session waits before it reads the feed
-/// again.
+/// How long a caught-up stdio session waits for the lake's next append
+/// before it reads the feed again.
 pub const POLL: Duration = Duration::from_millis(250);
+
+/// How often, at most, a stdio session reads the feed: one session a
+/// process, so no herd of them slows the writer.
+pub const FLOOR: Duration = Duration::from_millis(25);
 
 /// Serve one session over a reader and a writer until the reader ends.
 pub async fn serve_io<R, W>(
@@ -36,7 +40,7 @@ where
 {
     let mut session = Session::new(store, who, true);
     let (tx, mut notes) = mpsc::channel(QUEUE);
-    let pump = tokio::spawn(session.pump(tx, POLL));
+    let pump = tokio::spawn(session.pump(tx, POLL, FLOOR));
     let watch = session.watch();
     let mut lines = reader.lines();
     let served = async {

@@ -10,11 +10,7 @@ fn value_type(name: &str, k: StorageKind) -> ValueTypeDecl {
     ValueTypeDecl {
         name: name.into(),
         kind: k,
-        constraint: None,
-        one_of: Vec::new(),
-        format: None,
-        scale: None,
-        description: None,
+        ..Default::default()
     }
 }
 

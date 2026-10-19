@@ -6,7 +6,6 @@
 //! write out where its reader may see nothing of it, and answers its
 //! filters on what it shows.
 
-use lakelands_api::error::Case;
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::write::{Declaration, Migration, Proposal, ProposalFilter, ProposedWrite};
 use lakelands_api::{Access, LakeStore, Principal, WriteOpts};
@@ -14,8 +13,7 @@ use serde_json::{Value, json};
 
 use super::rekey::{IBANS, lake, to_iban};
 use crate::conformance::fixture::{
-    Lake, Must, field_access, invalid_case, object_set_on, patch, refused_like, reviewer,
-    trigger_on,
+    Lake, Must, field_access, object_set_on, patch, refused_like, reviewer, trigger_on,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -26,7 +24,7 @@ check!(
 
 check!(
     LISTED_AS_SHOWN = a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_field,
-    "013 and 024, extended (lakelands#499): a proposal on a restricted record without the grant is listed without its write and says `more`, and one on a type its reader may not see is not listed (lakelands#762); `type` and `kind` are answered on the entry as shown, so a hidden type answers what an undeclared one answers and an entry without a write is of no kind, while the unfiltered listing and `state` hold it; an accept refused because a declaration reads a field the migration takes away names neither to an accepter who may not know of the field"
+    "013 and 024, extended (lakelands#499): a proposal on a restricted record is not listed to a reader without the grant (lakelands#1008), nor one on a type its reader may not see (lakelands#762); `type` and `kind` are answered on the entry as shown, a bundle that moves a verb or a trigger to another type found by the type it leaves as by the one it moves to (lakelands#916), so a hidden type answers what an undeclared one answers and an entry without a write is of no kind, while the unfiltered listing and `state` hold it; an accepter who may not know of a field the migration takes away, which a declaration reads, is listed it in part and refused its accept as not granted, naming neither (lakelands#867)"
 );
 
 /// The lake of the re-key checks with a type `doc`, and the proposals of
@@ -48,9 +46,8 @@ async fn proposed(store: &dyn LakeStore) -> Result<Lake, Failure> {
         let to = serde_json::from_value(to).expect("a type");
         let renames = (renames.iter().map(|(a, b)| ((*a).into(), (*b).into()))).collect();
         let migration = Box::new(Migration {
-            to,
             renames,
-            relation_renames: Vec::new(),
+            ..Migration::to(to)
         });
         ProposedWrite::Migrate {
             migration,
@@ -75,7 +72,10 @@ async fn proposed(store: &dyn LakeStore) -> Result<Lake, Failure> {
         serde_json::from_value(ledger).expect("a type"),
     ];
     let hidden = vec![trigger_on("held_too", "account", Some("holder = 'y'"))];
-    let declare = |declarations| ProposedWrite::Declare { declarations };
+    let declare = |declarations| ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     let (ty, opts) = (|| "account".into(), WriteOpts::default);
     let saved = patch(json!({"kind": "savings"}));
     let upsert = |key: &str| ProposedWrite::Upsert {
@@ -190,7 +190,10 @@ async fn a_proposed_shape_names_only_what_its_reader_may_know_of(store: Store) -
                        "fields": [text("number"), n], "view": view});
     let tally: Declaration = serde_json::from_value(tally).expect("a view");
     let declarations = vec![tally.clone()];
-    let write = ProposedWrite::Declare { declarations };
+    let write = ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     let o = l.cat.propose(&l.own, write, "view".into()).await;
     o.must("the owner proposing `view`")?;
     let rekey = ["\"payment\"", "\"entry\"", "\"holder\""];
@@ -281,20 +284,23 @@ async fn a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_fi
 ) -> Held {
     let (s, l) = (store.as_ref(), proposed(store.as_ref()).await?);
     let [hid, plain, unseeing] = readers(s);
-    // A record its reader is not answered: restricted, without the grant.
-    for (who, why, shown) in [
-        (&plain, "upsert", true),
-        (&plain, "restricted", false),
-        (&plain, "retire restricted", false),
-        (&l.own, "restricted", true),
-    ] {
+    // A record its reader is not answered: restricted, without the grant,
+    // and a proposal to write it is not there (lakelands#1008).
+    for (who, why) in [(&plain, "upsert"), (&l.own, "restricted")] {
         let (write, more) = entry(&l, who, why).await?;
-        let (who, with) = (&who.id, if shown { "with" } else { "without" });
         ensure!(
-            write.is_some() == shown && more != shown,
-            "`{who}` must list `{why}` {with} its write; it reads {write:?}, `more` {more}"
+            write.is_some() && !more,
+            "`{}` must list `{why}` with its write; it reads {write:?}, `more` {more}",
+            who.id
         );
     }
+    let theirs = listed(&l, &plain, json!({})).await?;
+    let held = ["restricted", "retire restricted"];
+    ensure!(
+        !theirs.iter().any(|p| held.contains(&p.why.as_str())),
+        "`plain` must list no proposal on a restricted record; it lists {:?}",
+        theirs.iter().map(|p| &p.why).collect::<Vec<_>>()
+    );
     // A proposal on a type its reader may not see is not listed at all
     // (lakelands#762).
     let theirs = listed(&l, &unseeing, json!({})).await?;
@@ -324,6 +330,38 @@ async fn a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_fi
          the four that name no `account`, and the owner six by the type and two upserts; they \
          list {counts:?}"
     );
+    // A bundle that moves a verb or a trigger off `doc` is found by `doc`
+    // as by the type it moves to, as its entry is judged (lakelands#916).
+    let verb = |on: &str, f: &str| {
+        json!({"declare": "verb", "name": "stamp", "on": on,
+        "risk": "low", "effect": "write", "set": [{"field": f, "value": "'x'"}]})
+    };
+    l.declare_json(verb("doc", "title")).await?;
+    l.declare_as(trigger_on("tick", "doc", None), "a trigger on `doc`")
+        .await?;
+    for (why, d) in [
+        ("moved verb", verb("account", "holder")),
+        ("moved trigger", json!(trigger_on("tick", "account", None))),
+    ] {
+        let write = ProposedWrite::Declare {
+            declarations: vec![serde_json::from_value(d).expect("a declaration")],
+            plan: None,
+        };
+        l.cat.propose(&l.own, write, why.into()).await.must(why)?;
+    }
+    for filter in [
+        json!({}),
+        json!({"type": "doc"}),
+        json!({"type": "account"}),
+        json!({"type": "doc", "kind": "declare"}),
+    ] {
+        let found = listed(&l, &l.own, filter.clone()).await?;
+        let moved = found.iter().filter(|p| p.why.starts_with("moved")).count();
+        ensure!(
+            moved == 2,
+            "the owner must list both moved declarations under {filter}; it lists {moved}"
+        );
+    }
     // The accept: a trigger declared since reads the field the migration drops.
     let watch = trigger_on("watch", "doc", Some("secret = 'x'"));
     l.declare_as(watch, "a trigger that reads `secret`").await?;
@@ -335,10 +373,14 @@ async fn a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_fi
     let wire = told.as_ref().err().map(|e| json!(e).to_string());
     let wire = wire.unwrap_or_default();
     let names = wire.contains("secret") || wire.contains("watch");
+    let not_granted = lakelands_api::Error::Refused {
+        field: None,
+        reason: lakelands_api::Refusal::NotGranted,
+    };
     ensure!(
-        matches!(invalid_case(&told), Some(Case::ReadsTakenAway)) && !names,
-        "an accepter who may not know of `secret` is told that a declaration reads a field \
-         the migration takes away, and neither name; it answered {told:?}"
+        told.as_ref().err() == Some(&not_granted) && !names,
+        "an accepter who may not know of `secret`, listed the migration in part, must be \
+         refused its accept as not granted, naming neither; it answered {told:?}"
     );
     let told = l.cat.accept(&l.own, &drop).await;
     let case = json!({"code": "migration_takes_read", "unnamed": false, "field": "secret",

@@ -75,7 +75,11 @@ names `0..` on each step.
 ### A graph cut by `limit` pages as rows do
 
 A graph cut by `limit` says `truncated` and carries a `next_cursor`,
-exactly as a page of rows does. The next page is the next `limit`
+exactly as a page of rows does. Each node comes with its depth, in the
+order of the nodes (`depths`): the fewest hops that reach it from a
+start, 0 for a start, which keeps 0 however a cycle comes back to it (a
+graph holds each record once; the edge back says the hop the cycle
+closes at). Along a path a node's depth is its hop. The next page is the next `limit`
 records of the one order (depth, type, key), with every link between a
 record of that page and one of this or an earlier page, so the pages
 together are the graph, each record and link once. Each page walks
@@ -104,7 +108,7 @@ refuse them for that.
 ### An `order_by` orders rows and nothing else
 
 An `order_by` on a graph, a path or an aggregate is refused. A graph
-comes by depth, type and key (029), a path by its hops and an
+comes by depth, type and key (025), a path by its hops and an
 aggregate's groups by their key, so an order names nothing they honour.
 It is refused as invalid where `as` is, before a step is judged. A
 measure refuses it in its own words.
@@ -125,10 +129,26 @@ the first record would not be possible.
 
 Each record a pattern binds has a name. The start and each step may
 give one with `as`. A record without one is bound under its type's name.
-A row holds `<name>.<field>` and `<name>.key`, and every path a pattern
-names reads those names. A field is still judged on its record's type: a
+A row holds `<name>.<field>`, `<name>.key`, `<name>._depth` and
+`<name>._type`, and every path a pattern names reads those names.
+`<name>._depth` is the hops the record's step took to reach it, 0 for
+the start: the depth the walk already orders by, which a caller could
+otherwise learn only by asking each depth on its own. `<name>._type` is
+the record's type. A field is still judged on its record's type: a
 field its reader may not know of answers under any name as it does on
 the type, and a refusal names the type, not the name.
+
+Under a bound name, `_depth` and `_type` are the lake's own columns,
+never fields. A field of either name that a lake already holds is not
+reachable from a pattern's rows, and `get` and `find` answer it under
+its name. So that the lake's columns never meet a declared field, a
+declaration, a set and a migration refuse a new field whose name begins
+with `_` (`field_name_kept`). A field the type already holds keeps its
+name, as a lake written before the rule holds it, and under a bound name
+any such field but `_depth` and `_type` is bound as a field. Were the
+lake's columns bare words, a type's field `depth` would hide the
+record's depth wherever it is declared, and a name over several types
+would read the field for one type and the column for another.
 
 A pattern that would bind two records under one name is refused before
 any record is read. A name is never numbered for the caller: an order or
@@ -138,13 +158,34 @@ means nothing to a graph, a path, a degree or components, which answer
 nodes or fixed columns, so it is refused there, as `to` is outside a
 graph.
 
-### Under one name a record has one type, so a step whose records are bound reaches one type or names its `type`
+### Under one name a record has one type where a path reads its fields, so a step whose fields are read reaches one type or names its `type`
 
 A type the pattern binds is the one type each step reaches. Under one
-name a record has one type, so a step whose records rows or an aggregate
-bind reaches one type or names its `type`, as it does when it reads a
-`where`, and is refused where it does not: under each name a row's paths
-are read against one type. With its `type` the step binds that type's
+name a record has one type where a path reads one of its fields, so a
+step whose records rows or an aggregate bind reaches one type or names
+its `type`, as it does when it reads a `where`, and is refused where it
+does not (`step_several_types`, naming every type it reaches): under
+each name a row's paths are read against one type.
+
+A last step over several types that names no `type` and reads no
+`where` may be bound all the same, where nothing reads its fields. Its
+records are bound under the step's `as`, or under its relation as the
+caller wrote it (the inverse's name where it named the inverse), and a
+row holds their `key`, `_type` and `_depth` alone, since a field would
+be read against one of the types. Its key is the record's key, whatever
+field `key` one of the types declares. An order, `fields`, a group key
+or a measure that reads one of its fields is refused as above. A plain
+`count` reads no field, so it counts what the step reaches over every
+type, and grouped by `<name>._type` it counts each type: the answer a
+caller would otherwise add up from one typed query a type. A step
+another follows still reaches one type or names it: the next step is
+read from one type. Its key, `_type` and `_depth` are the lake's
+columns, read against no type and never probed, so a field `key` one
+of the types declares turns nothing. A host names with `as` a step that
+may reach several types: left out, its name follows the types its
+reader is shown, so a reader shown one of them binds under that type's
+name, as on a lake without the others, and one query would not give two
+readers the same columns. With its `type` the step binds that type's
 records alone, and the step after it is read from that type. Were a
 chain's step to bind only the first type that declares its relation,
 which paths its rows could be read by would depend on the order of the
@@ -218,8 +259,8 @@ row's shape: one field for each path, of its declared kind.
 An order and a projected field read their path by the aggregate's rule,
 named whole: the longest name the pattern binds, then one of its fields
 or `key`. Any other name is refused as the aggregate refuses it.
-`<name>.key` is the record's key, as in the aggregate, and is never
-probed. An order probes its field before a row is read (024). A
+`<name>.key` is the record's key, as in the aggregate, `<name>._depth`
+its depth and `<name>._type` its type; none is ever probed. An order probes its field before a row is read (024). A
 projected field is named, not computed over, so it is not probed. A
 field its reader may not know of is refused as one the type does not
 have. A masked one is left out of the row, as an absent value is: a row
@@ -257,6 +298,48 @@ Components hold every record they reach, so the lake bounds them by its
 `max_graph_nodes`; past it they are refused `too_large`, naming the
 ceiling, for the reason a step too deep is refused: a partition of part
 of the graph would look like the whole of it.
+
+`components` alone may leave its start's `type` out. A host that asks
+for the components of the graph a set of relations spans, across every
+type that holds such a link, would otherwise ask once per type and merge
+partitions it cannot number by the lake's rule without computing them
+again; only the lake can number the merged partition. With no type, every
+record that holds a link the caller may see over a step's relation is a
+start, in every type it is shown that declares one; a link's owning end
+is always in such a type, whatever carries it. A record with no such
+link is no component and counts nothing against `max_graph_nodes`, and
+neither is a record whose links reach only a record the caller may not
+see, which answered alone would tell of that link; a record linked to
+itself is a component of one. Any other projection needs the start's
+type, and so do a `key`, a `where`, a `search` and `params`, each of
+which picks records of one type: each is refused `start_no_type`, naming
+what needs it. A step's relation is one that a type the caller is shown
+declares, or that relation's `inverse`; another is refused
+`no_relation_anywhere`, whether it is absent or hidden.
+
+### What each step reaches is a projection
+
+`reach` answers, for a chain of steps, what each step reaches: step `i`
+walks from every record step `i - 1` kept, the start for the first, and
+a record no later step continues from stays in the answer. Rows are
+matches, a record for every step; rows that held a prefix would make a
+match mean two things and repeat a record once for every path to it,
+and a graph neither pages by step nor says which step reached a record.
+So `reach` is a projection of its own, as a measure is: rows with fixed
+columns `step` (from 1), `depth`, `type` and `key`, one per record, at
+the first step that reaches it with that step's fewest hops from any
+record it walked from. The start is listed only where a step reaches it:
+at depth 0 where that step's range begins at 0, and at the hop a walk
+comes back to it, as a chain reports a cycle back to its start; a step
+walked `both` comes back over its own link at 2. Each step honours its
+`depth`, `type` and `where` as a chain's does. Its
+order is `(step, depth, type, key)`, so it refuses `order_by`, and `as`,
+which names no column of it, and `to`, as every projection but a graph
+does, and a reach of no steps, which could never answer a row, as a
+measure of none is. It holds every record it reached, so a page whose
+walk would pass the lake's `max_graph_nodes` is refused `too_large`; a
+page that stops earlier is answered, because a reach row is exact
+whatever follows it.
 
 ### A view's records are computed when they are read
 
@@ -313,8 +396,10 @@ refused when the view is declared, and a search on a view is refused,
 naming it; neither is answered empty. For the same reason a declaration
 that could never act on a view is refused when declared, naming both.
 A trigger on a view would never fire, since no write has the view's
-type. An object set holds stored records, and a set evaluated over
-computed records would be a feature of its own. A relation on a view is
+type. An object set holds stored records, or the groups of a view the
+lake keeps, decided at every write that moves one
+(`docs/decisions/066-a-set-holds-a-kept-view.md`); of a view the lake
+does not keep no write would decide it. A relation on a view is
 refused unless it is derived from matching values. A link names a live,
 written record as its `from` (035), so a relation carried by link
 records could never hold an edge. A view has no stored field for `via`
@@ -453,6 +538,10 @@ used.
   are one walk, not a chain.
 - A view's records are computed when they are read.
 - `degree` and `components` joined the projections (lakelands#149).
+- `components` may leave the start's `type` out and grow from every
+  linked record (lakelands#992).
+- `reach` joined the projections (lakelands#991): a host walking a path
+  of relations asked one rows query per prefix and compared them.
 - A pattern that starts on a view, or a walk that reaches one, reads its
   computed records (lakelands#281); a view is not searched
   (lakelands#290); a view declares exactly the fields it computes
@@ -535,3 +624,19 @@ used.
   without a field `order_names_no_field` where both answered
   `pattern_no_path`, and `latest` with a field `latest_takes_no_field`
   where it answered `latest_no_change` (lakelands#901).
+- A row says the hops each step took, `<name>._depth`, and a graph each
+  node's depth (lakelands#989): the walk computed the depth and ordered
+  by it, and the answer dropped it, so a caller asked one query a depth
+  to learn it. A new field may not begin with `_`, the lake's names
+  under a bound name, and a field a type already holds keeps its name.
+- A last step over several types is bound where nothing reads its fields
+  (lakelands#990): under its relation's name, with each record's key,
+  `_type` and `_depth`, counted over every type and grouped by `_type`,
+  where every such step was refused and a caller asked one typed query a
+  type. `step_several_types` names the types. 018 named every `_` name
+  under a bound name the lake's column, where only `_depth` and `_type`
+  are; a field an older lake holds under another `_` name is bound as a
+  field.
+- An object set may hold the groups of a view the lake keeps, decided
+  at every write that moves one; before, every set of a view was refused
+  (lakelands#1185).

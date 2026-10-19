@@ -18,7 +18,9 @@ called, the store looks at that declaration and nothing else:
   reject it (`WriteRejected`).
 
 Declared risk is the only thing that decides between running and
-proposing, whatever the effect.
+proposing, whatever the effect. A function's outside call is governed
+the same way, by the function's own declared risk
+(`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`).
 
 ### A verb that reaches outside the lake runs only through an executor the host has bound
 
@@ -31,6 +33,23 @@ whether it is called or a call of it is proposed through `propose`
 a proposal that could not run when accepted would be a promise the store
 cannot keep.
 
+### A verb may retire the record it is called on
+
+A verb's effect is one of three: `write` sets fields of its record,
+`external` reaches outside the lake, and `retire` retires its record,
+with no member of its own (lakelands#1148). A retirement is the end of a
+lifecycle, and a host that declares how a record ends wants that end
+under a `requires` and a risk as every other move. The verb's call
+writes `verb_called`, then the `record_retired`, caused by it and
+carrying the verb as its procedure, with what a retirement sets off, as
+`retire` writes it. Its caller is judged as `retire` judges one: it may
+write every field of the type, or the verb is neither callable nor
+described to it (006). A `retire` verb is on a record, so on its type it
+is refused as `type_verb_writes`, and a relation's link type takes none
+(`retire_verb_link`): `unlink` ends a link, and a proposal makes or
+retires no link (below). On a type marked `retired_by: verbs`, such a
+verb is the only door that retires (016).
+
 ### A call is proposed only if it could run now, and an accept checks the write again at the head
 
 A call is proposed only if it could run when it is proposed. A call that
@@ -41,11 +60,17 @@ conflict and a `requires` that does not hold is a precondition, and
 neither is recorded as a proposal (lakelands#338).
 
 Accepting a proposal applies its write as it was logged, whole, in the
-proposer's name and not under its grant
-(`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
+proposer's name and not under its grant, and so only a reviewer listed
+it whole accepts it; one listed it in part rejects it (lakelands#867,
+`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
 At acceptance the store checks the write again at the head, as the
 order of refusals lists it, and records the write with the proposer as
-its writer, caused by the acceptance. A verb's write, run at once or on
+its writer, caused by the acceptance. A call that reads across a
+reference reads the far record as it stands at the accept
+(`docs/decisions/055-a-path-steps-through-a-reference.md`): a
+`requires` it no longer meets refuses the accept as a precondition, and
+a far record no longer reached refuses it `not_live`; either leaves the
+proposal pending. A verb's write, run at once or on
 acceptance, fires triggers and changes object sets exactly as any other
 write does (`docs/decisions/004-the-change-feed-is-the-log.md`).
 
@@ -59,23 +84,23 @@ accept, whatever the verb's effect: the link live and answered to the
 proposer, and the reviewer by the records the call reaches, the link
 and its two end records among them
 (`006 § An accept decides only what its reviewer is shown, and its refusal names only what the listing shows`).
-A proposed call of a verb that sets fields of a link type sets a live
-link's own fields, and its accept judges both ends again too, live and
-answered to the proposer: an accept of such a call proposed before an
-end was retired is refused as `not_live` on that end
-(`a_verb_on_a_link_type_keeps_what_the_link_door_keeps`, lakelands#847).
-A proposed call on a link of a verb that reaches outside the lake
-writes no record: for the proposer its accept judges of the ends only
-that none is held from it, an end retired or not. Cardinality is judged
-only where a link is made, by `link` and by ingest, since no verb moves
-an end.
+A verb on a link, whatever its risk or effect, finds both ends live and
+answered to its caller, at the call and again at its accept, as `link`
+with a field does: a call, or the accept of one proposed before an end
+was retired, is refused as `not_live` on that end
+(`a_verb_on_a_link_type_keeps_what_the_link_door_keeps`, lakelands#847,
+lakelands#935). A verb that sets fields of a link type sets a live
+link's own fields; one that reaches outside the lake writes no record,
+and is held to the same ends: an executor is handed no link whose end
+is gone. Cardinality is judged only where a link is made, by `link` and
+by ingest, since no verb moves an end.
 
 ### An executor's failure is recorded as its output, and a call no executor was handed is answered so
 
 An external verb is due at the position of the event that made it due,
 and it stays due: an executor's failure does not take that event back.
-The failure is recorded as the executor's output — `{"error": "<its
-error text>"}` in the `output_recorded` event that position causes — and
+The failure is recorded as the executor's output — the error's wire
+form (below), in the `output_recorded` event that position causes — and
 the caller's outcome is applied at that position with the recorded
 output in it, the error form included: an error reply would say nothing
 was written when the position is real, and a caller should not have to
@@ -177,6 +202,37 @@ hand-out still runs it would happen are each a rule a host would have to
 read. A host that needs it carries its effect under a key of its own and
 calls the verb again.
 
+### An executor's error is recorded as the wire carries it, and a call may be declined
+
+An executor that fails answers an `Error`, and the log records that error
+as the wire carries it: `error`, its `reason` where it is a refusal, and
+`message`. It no longer records the sentence alone, which told a reader
+neither the kind nor the case. A host's surface decodes the recorded
+answer as an `Error` and renders its case in its own language; the log
+reads a deliberate denial as one. An error whose wire form holds an
+integer beyond ±(2^53 − 1), which the log does not write (a case that
+repeats a large number or the caller's value), or that cannot be written,
+is recorded in the one-member form, its sentence: that loses nothing, where
+the wire form would lose the answer and turn a refusal into an outage. The
+caller's outcome is unchanged: the
+call is applied, and its output is the recorded answer. Answers recorded
+before stay as their logs hold them: the store never decodes an
+output, so nothing reads them otherwise.
+
+An executor that declines a call by the host's policy answers
+`Error::declined(verb)`: the refusal `declined`, with the case
+`call_declined` naming the verb, said at the verb. The call did not
+run, and a retry under the same idempotency key answers the same. Neither `not_granted`, which speaks
+of the lake's own grants, nor `unavailable`, which is an outage of a lake
+that cannot answer a correct request (015), says that. The case carries
+no text of the host's: its reason, a rule or a ruling, belongs in the
+host's own trail, under the invocation's dedup key (the lake and the
+position), which joins that trail to the lake's record exactly. This keeps
+what a model reads back inside the closed catalog.
+
+A host code inside `Refusal::Unknown` was weighed and not built: it could
+not be told from a newer lake's code, and it would open the closed set.
+
 ### A declaration is proposed like a write
 
 A set of declarations, or a type's migration, can be proposed as a
@@ -266,10 +322,10 @@ called with no key.
   runs nothing again and answers by what is recorded for its position,
   as for any external verb.
 - **Only an external effect.** A verb on its type reaches outside the
-  lake. A `write` effect sets fields of a record, and `requires` reads
-  one, so a declaration with either is refused as invalid, naming the
-  verb. Creating a record in the lake needs no anchor: it is `upsert`,
-  or a proposal of one.
+  lake. A `write` effect sets fields of a record, a `retire` effect
+  retires one, and `requires` reads one, so a declaration with any of
+  them is refused as invalid, naming the verb. Creating a record in the
+  lake needs no anchor: it is `upsert`, or a proposal of one.
 - **The key must fit the scope.** A key passed to a verb on its type, no
   key passed to a verb on a record, and an expected version with no key
   (there is no record version to compare) are each refused as invalid,
@@ -523,10 +579,8 @@ listing and its accept need, moved to
   judged only where a link is written, and no proposal writes one". An
   accepted call of a verb that sets fields of a link type writes the
   link's own fields (lakelands#759), and its accept judges the link and
-  both ends again, the ends live where the verb writes the link and only
-  as not held from the proposer where it reaches outside the lake: the
-  ends are judged live in the record's write, which only a verb with a
-  write effect makes. Cardinality is judged where a link is made. The
+  both ends again (lakelands#935 made the ends live for every verb, see
+  below). Cardinality is judged where a link is made. The
   order's "a link type at an ordinary door" at `propose` is an upsert
   or a retirement of one.
 - Corrected at the rewrite (lakelands#817): "At any other risk the call
@@ -550,3 +604,18 @@ listing and its accept need, moved to
   the pin, and that a holder of `only` proposes one only where it can be
   pinned (lakelands#660), and that a value type's renames are proposed
   only by one shown every field they write (lakelands#553).
+- An accept reads a record its call reads across a reference as it
+  stands at the accept (lakelands#567).
+- A verb on a link finds both ends live whatever its effect
+  (lakelands#935): one that reaches outside the lake ran on a link whose
+  end was retired, at the call and at the accept of one proposed
+  before, its ends judged only as not held from its caller, since they
+  were judged live in the record's write, which such a verb does not
+  make.
+- A function's outside call is governed by the function's declared risk
+  as a verb's call is by its own (lakelands#997, record 064).
+- A failed executor's recorded output is the error's wire form, and an
+  executor declines a call by `Error::declined` (lakelands#812): the
+  refusal `declined`, the case `call_declined`.
+- A third effect, `retire`: a verb may retire the record it is called
+  on, under its `requires` and its risk (lakelands#1148).

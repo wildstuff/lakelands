@@ -31,8 +31,8 @@ use super::outage::{Aimless, Exchange, closed, named};
 use crate::expr::Condition;
 use crate::expr::kind::Kind;
 use crate::id::{
-    FieldName, LakeId, ParamName, Position, ProposalId, RecordKey, RelationName, SourceId,
-    TriggerName, TypeName, ValueTypeName, VerbName,
+    ConstraintName, FieldName, KeyId, LakeId, ParamName, Position, ProposalId, RecordKey,
+    RelationName, SourceId, TriggerName, TypeName, ValueTypeName, VerbName,
 };
 use crate::ontology::{Authority, Cardinality, FieldType, StorageKind};
 use crate::query::Walk;
@@ -63,7 +63,7 @@ macro_rules! catalog {
         $(#[$meta])*
         // A parameter is documented by the template that names it.
         #[allow(missing_docs)]
-        #[derive(Clone, Debug, PartialEq, ::serde::Serialize, ::serde::Deserialize)]
+        #[derive(Clone, Debug, PartialEq, Eq, ::serde::Serialize, ::serde::Deserialize)]
         #[serde(tag = $tag, rename_all = "snake_case")]
         pub enum $set {
             $(
@@ -154,6 +154,10 @@ pub struct Named {
     pub keys: Vec<RecordKey>,
     /// Verbs.
     pub verbs: Vec<VerbName>,
+    /// Constraints of the type written: shown to one who reads every
+    /// field each reads, which its type alone says, so [`Self::shown_by`]
+    /// shows none and a caller judges and takes them first.
+    pub constraints: Vec<ConstraintName>,
     /// Values.
     pub values: Vec<Value>,
     /// What a field's declaration says: the values it allows, its value
@@ -201,6 +205,7 @@ impl Named {
         }
         let key_shown = |k: &RecordKey| Some(k) == key || listed(&Value::from(k.as_str()));
         !self.unjudged
+            && self.constraints.is_empty()
             && self.types.iter().all(sees)
             && self.fields.iter().chain(&read).all(reads)
             && (!self.declared || !self.fields.is_empty())
@@ -304,11 +309,13 @@ said_by_display!(
     RecordKey => keys,
     RelationName,
     TriggerName,
+    ConstraintName => constraints,
     TypeName => types,
     ValueTypeName => declared,
     VerbName => verbs,
     ProposalId,
     SourceId,
+    KeyId => nothing,
     Timestamp => nothing,
     super::Detail,
 );
@@ -512,10 +519,16 @@ named! {
         Executor = "executor" => "executor",
         /// A trigger.
         Trigger = "trigger" => "trigger",
+        /// A type's constraint.
+        Constraint = "constraint" => "constraint",
         /// An object set.
         ObjectSet = "object_set" => "object set",
         /// A function.
         Function = "function" => "function",
+        /// A host's setting.
+        Setting = "setting" => "setting",
+        /// A declaration's withdrawal.
+        Withdrawal = "withdrawal" => "withdrawal",
         /// A function's backing.
         Backing = "backing" => "backing",
         /// An aging rule.
@@ -566,6 +579,8 @@ catalog! {
         ValueType { name: ValueTypeName } => "value type `{name}`",
         /// A trigger.
         Trigger { name: TriggerName } => "trigger `{name}`",
+        /// A type's constraint.
+        TypeConstraint { name: ConstraintName } => "constraint `{name}`",
         /// An object set.
         ObjectSet { name: String } => "object set `{name}`",
         /// A function.
@@ -598,6 +613,10 @@ catalog! {
         Constraint => "`constraint`",
         /// A field's `initial` value.
         Initial => "`initial`",
+        /// A field's `erasable`.
+        Erasable => "`erasable`",
+        /// A field's `authority`.
+        Authority => "`authority`",
         /// The link types of a type's relations.
         Links { name: TypeName } => "the links of `{name}`",
         /// A pattern's start.
@@ -731,8 +750,9 @@ catalog! {
         LinkFieldAtRead => "a link's field is computed at the write; a walk reads links as stored",
         /// A key field computed at the read.
         AtReadKey => "computed at the read, it is no key, which is read as stored",
-        /// A derived relation's match computed at the read.
-        AtReadMatch => "computed at the read, it is no derived relation's match, which is read as stored",
+        /// A field a derived relation's match or `where` reads, computed at
+        /// the read.
+        AtReadMatch => "computed at the read, it is read by no derived relation's match or `where`, which read records as stored",
         /// A field computed at the read that reads what only a write has.
         AtReadPrevious => "computed at the read, it reads no `previous` or `changed`, which a write has and a read has not",
         /// A required field computed at the read.
@@ -763,6 +783,11 @@ catalog! {
         ComputedCycle { fields: Names } => "computed fields read each other in a cycle: {fields}",
         /// A computed field that reads itself.
         ComputedReadsItself { field: FieldName } => "the computed field `{field}` reads itself",
+        /// A type naming two constraints alike.
+        ConstraintNamedTwice { constraint: ConstraintName } => "two constraints are named `{constraint}`",
+        /// A constraint that reads what can change without a write of the
+        /// record.
+        ConstraintReadsBeyond { constraint: ConstraintName, reads: Box<Beyond> } => "constraint `{constraint}` reads {reads}, which can change without a write of the record; a constraint reads the record's own fields",
         /// A name declared twice in one declaration.
         DeclaredTwice { what: Naming, name: String } => "it declares the {what} `{name}` twice",
         /// A field both derived and computed by a function.
@@ -773,6 +798,9 @@ catalog! {
         DerivedNoPair => "a derived relation matches at least one pair of fields",
         /// A derived field that reads itself.
         DerivedReadsItself { field: FieldName } => "derived field `{field}` reads itself",
+        /// A derived relation's `where` reading a path that is no field of
+        /// one of its two records.
+        DerivedWherePath { path: String } => "`{path}`: a derived relation's `where` reads `from.<field>` and `to.<field>`, a field of the owner's record or of the target's, one step",
         /// A derived relation with a carrier of its own.
         DerivedStoresEdge => "a derived relation stores no edge, so it has no `via`, no fields and no link authority",
         /// Dimensions on what is no vector.
@@ -797,8 +825,33 @@ catalog! {
         EmbedNotDerived => "an embedding has the authority `derived`",
         /// An embedding that is not a vector with dimensions.
         EmbedNotVector => "only a vector with dimensions is the embedding of text",
+        /// A field declared erasable that only its authors or the fold write.
+        ErasableAuthored => "only a source's values are sealed under its key; an author's stay plaintext",
+        /// A field that was erasable declared without it.
+        ErasableDropped => "a source's later values would enter the log in plaintext, and the ones sealed stay sealed",
+        /// A field of no type declared erasable.
+        ErasableNotOfType => "only a field of a type declares it",
+        /// A key field declared erasable.
+        ErasableKey => "a key's field is the record's key, which stays plaintext in every event",
+        /// A field that names a record declared erasable.
+        ErasableReference => "a field that names a record is read by every walk, so it stays plaintext",
+        /// A field only verbs write declared required with no `initial`.
+        VerbRequired => "a required field is written by every create, and a verb writes only a record that stands; it needs an `initial`",
+        /// A field only verbs write that the fold computes.
+        VerbComputed => "the fold computes it, so no door writes it, a verb's neither",
+        /// An `initial` of fields only verbs write that a type's constraint
+        /// refuses: no create could hold it.
+        InitialBreaks { constraint: ConstraintName, field: FieldName } => "the `initial` of `{field}`, which only the type's verbs write, breaks the constraint `{constraint}`: no record of the type could be made",
+        /// A field only verbs write with no `initial`, which a create
+        /// leaves null, where a constraint reading only such fields
+        /// refuses that.
+        NoInitialBreaks { constraint: ConstraintName, field: FieldName } => "`{field}`, which only the type's verbs write, has no `initial`, and a create leaves it null, which the constraint `{constraint}` refuses: no record of the type could be made",
+        /// A key field only verbs write.
+        VerbKey => "a key's field is written by every create, and a verb writes only a record that stands",
         /// An `expr` function with no expression.
         ExprNoExpression => "it is backed by `expr` and has no expression",
+        /// An `expr` function declared above `low` risk.
+        ExprRisk => "it is backed by `expr`, which reaches nothing outside the lake, so its risk is `low`",
         /// An expression on a function another backing computes.
         ExpressionNotExpr { backing: String } => "it has an expression but is backed by `{backing}`",
         /// A function's input the type holds as another kind.
@@ -807,6 +860,12 @@ catalog! {
         FunctionNotDerived => "a field computed by a function has the authority `derived`",
         /// A field naming a function that is not declared.
         FunctionUndeclared { name: String } => "it names the function `{name}`, which is not declared",
+        /// A withdrawal of a declaration something in force reads.
+        WithdrawnInUse { kind: Naming, name: String, by: String } => "the {kind} `{name}` is in use by {by}, so it is not withdrawn",
+        /// A withdrawal of a name not in force.
+        WithdrawnUndeclared { kind: Naming, name: String } => "the {kind} `{name}` is not declared, so it is not withdrawn",
+        /// A withdrawal of a kind that leaves force another way.
+        WithdrawnKind { kind: Naming } => "a {kind} is not withdrawn: a trigger, a verb, an object set or a function is; a type leaves by `migrate`, and a setting by its record",
         /// A view grouped by a field no key may be.
         GroupUnkeyable { field: FieldName } => "it groups by `{field}`, whose kind cannot be part of a key",
         /// An `initial` value on a field its inputs clear.
@@ -816,7 +875,7 @@ catalog! {
         /// An `initial` value on a key field.
         InitialKey => "a key's field is given by the record's key",
         /// An `initial` value on a field its authors do not write alone.
-        InitialNotAuthored => "only a field its authors alone write takes one, not one a source writes or the fold computes",
+        InitialNotAuthored => "only a field its authors or its type's verbs alone write takes one, not one a source writes or the fold computes",
         /// An `initial` value on a field of no type.
         InitialNotOfType => "only a field of a type declares one",
         /// An `initial` value on a field that names a record.
@@ -833,6 +892,11 @@ catalog! {
         LinkFieldAuthority { field: FieldName, authority: Authority } => "its links arrive from a source, so its field `{field}` is `source` (or derived); an `{authority}` field of a link no door could write",
         /// A link field named as a link's end.
         LinkFieldIsEnd { field: FieldName } => "a link's `{field}` is its end; the relation cannot name a field of its own so",
+        /// Relations whose link types are each other's ends, in a ring.
+        LinkTypeRing { ring: Names } => "its relations close a ring of link types, each the end of the one before: {ring}; no link of a ring can be written",
+        /// A verb reading a derived relation whose match is not its
+        /// target's key.
+        MatchNotKey { relation: RelationName, target: TypeName } => "`{relation}` matches fields of `{target}` other than its key, so it may reach several records; a verb reads a derived relation whose match names every key field of its target",
         /// A measure named twice in a view.
         MeasureTwice { name: FieldName } => "its view names the measure `{name}` twice; a view's measures and its merged sources' share one set of names",
         /// A merged measure that calls no aggregate.
@@ -873,16 +937,23 @@ catalog! {
         ReadAsStored => "a trigger, a verb, an object set or another type's derived relation in force reads it as stored, so it is not computed at the read",
         /// A declaration reading as stored a field computed at the read.
         ReadsAtRead { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "it reads `{field}`, which `{ty}` computes at the read; it is evaluated over the record as stored, which never holds it",
+        /// A set's `where` or a trigger's `when` reading across an edge a
+        /// field computed outside the lake.
+        SetReadsComputed { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "it reads `{field}` of `{ty}` across an edge, which is computed outside the lake: its value lands with no write that would decide this again",
         /// A function's expression reading what is not one of its inputs.
         ReadsNoInput { field: FieldName } => "it reads `{field}`, which is not one of its inputs",
         /// A view reading a view with parameters.
         ReadsParamView { source: TypeName, param: ParamName } => "its view reads `{source}`, a view with the parameter `{param}`; only a read that names a view binds its parameters, so no view reads one",
         /// A reference with no target.
         ReferenceNoTarget => "a reference names its target type",
+        /// A retire verb on a link type: `unlink` retires a link.
+        RetireVerbLink { #[serde(rename = "type")] ty: TypeName } => "it is declared on `{ty}`, a relation's link type, and a link is retired by `unlink`",
+        /// A view marked retired by its verbs.
+        RetiredByView => "a view's records are computed and never retired, so no verb retires them",
         /// A scale on a value type that is no decimal.
         ScaleNotDecimal => "only a decimal has a scale",
-        /// An object set of a view.
-        SetOfView { #[serde(rename = "type")] ty: TypeName } => "it holds `{ty}`, a view; a view's records are computed on read, and an object set holds stored records only",
+        /// An object set of a view the lake does not keep.
+        SetOfView { #[serde(rename = "type")] ty: TypeName } => "it holds `{ty}`, a view the lake does not keep, and a set holds records the lake keeps: set `view_kept.{ty}` to keep it first",
         /// An object set declared again over another type.
         SetRetyped { was: TypeName, #[serde(rename = "type")] ty: TypeName } => "it holds records of `{was}`; a set of `{ty}` takes another name",
         /// A view reading a source twice.
@@ -895,8 +966,9 @@ catalog! {
         TypeNameForm { name: String } => "type name `{name}` is not ASCII identifiers joined by `.`",
         /// A verb on its type with a `requires`.
         TypeVerbRequires { #[serde(rename = "type")] ty: TypeName } => "it is declared on the type `{ty}`; `requires` reads a record it does not have",
-        /// A verb on its type with a write effect.
-        TypeVerbWrites { #[serde(rename = "type")] ty: TypeName } => "it is declared on the type `{ty}`, and a write effect sets fields of a record it does not have",
+        /// A verb on its type with an effect on a record: a write or a
+        /// retirement.
+        TypeVerbWrites { #[serde(rename = "type")] ty: TypeName } => "it is declared on the type `{ty}`, and an effect on a record needs a record it does not have",
         /// A type named that is not declared.
         Undeclared { #[serde(rename = "type")] ty: TypeName } => "`{ty}` is not a declared type",
         /// A valid time over a field that is neither a date-time nor a date.
@@ -904,6 +976,8 @@ catalog! {
         /// A field its author may name, sent as a valid time where one over
         /// a field it may not know of stands: the bound is taken.
         ValidTimeStands { axis: String } => "its `{axis}` names a field you may not know of, and stands as declared",
+        /// A `valid_to` declared without a `valid_from`.
+        ValidToAlone { field: FieldName } => "it names `{field}` as its `valid_to` and no `valid_from`; a valid time has a start",
         /// A value type naming a format that does not exist.
         ValueTypeFormat { value_type: ValueTypeName, format: String } => "value type `{value_type}` names the unknown format `{format}`",
         /// A field stored as another kind than its value type.
@@ -918,6 +992,11 @@ catalog! {
         ViewCycle { chain: Names } => "its view closes a cycle, reading {chain} in turn; a view may not read itself, through other views or directly",
         /// A view's field nothing fills.
         ViewFieldUnfilled { field: FieldName } => "its field `{field}` is neither a `group_by` field nor a measure of its view, so nothing would fill it",
+        /// A view a set holds no longer kept.
+        ViewKeptForSet { #[serde(rename = "type")] ty: TypeName } => "it holds `{ty}`, a view the lake keeps, and the view stays kept while the set holds it: withdraw the set first",
+        /// A change of a view's source that no write decides a set over the
+        /// view again for.
+        ViewSourceStepped { #[serde(rename = "type")] ty: TypeName, source: TypeName } => "it holds `{ty}`, a view over `{source}`, and the change moves records of `{source}` where no write decides the set again: withdraw the set, make the change, then declare the set again",
         /// A view's `key` that names other fields than its `group_by`.
         ViewKey { group_by: Option<Names> } => "a view's records are keyed by its `group_by`[ ({group_by})|, and it has none]; its `key` names the same fields in that order, or is left out",
         /// A stored relation on a view.
@@ -956,6 +1035,8 @@ catalog! {
         DivisionByZero => "division by zero",
         /// An `in` with an empty list.
         InEmpty => "an `in` lists one value at least",
+        /// An `exists` outside a verb's `requires` and set values.
+        ExistsHere => "exists() has meaning in a verb's `requires` and set values, over a relation a path may begin at",
         /// An `in_set` left where no set's filter stands.
         InSetHere => "in_set() has meaning in an object set's `where`, a trigger's `when` and a read's `where`",
         /// A negation of what has no negative.
@@ -1032,8 +1113,14 @@ catalog! {
         PathEmpty => "a path names at least one field",
         /// A pattern the matcher refuses.
         RegexUnmatchable { pattern: String, limit: Option<usize> } => "`{pattern}` cannot be matched[: its compiled form is over {limit} bytes]",
+        /// A path through a relation that may hold several links from a record.
+        RelationHoldsMany { relation: RelationName, cardinality: Cardinality } => "`{relation}` may hold several links from a record ({cardinality}): a path reads a relation that holds at most one, `many_to_one` or `one_to_one`; walk it in a pattern",
+        /// A path through a relation carried by a reference field.
+        RelationViaField { relation: RelationName, field: FieldName } => "`{relation}` is carried by the field `{field}`: a path steps through `{field}`",
         /// A `retired` outside a trigger's guard.
         RetiredOnlyInGuard => "retired() has meaning only in a trigger's guard",
+        /// A `created` outside a trigger's guard.
+        CreatedOnlyInGuard => "created() has meaning only in a trigger's guard",
         /// A set that names itself through others.
         SetCycle { set: String, through: Names } => "in_set('{set}') names a set that names it in turn, through {through}",
         /// A set of another type named in a filter.
@@ -1050,6 +1137,8 @@ catalog! {
         SumNotNumber { #[serde(with = "closed")] value: Box<Operand> } => "sum() met {value}, which is not a number",
 
         // ---- views
+        /// A view's measure that cannot be computed over a group.
+        MeasureFails { group: RecordKey, #[serde(with = "closed")] why: Box<Case> } => "its value for the group `{group}` cannot be computed: {why}",
         /// A measure's value for a group that its field would not take written.
         MeasureUnfit { group: RecordKey, #[serde(with = "closed")] why: Box<Case>, decimal: bool } => "its value for the group `{group}` does not fit its field: {why}[{?decimal}; a field of kind `decimal` takes it]",
         /// A sum or an average of a kind that is no number.
@@ -1124,9 +1213,26 @@ catalog! {
         MeasureNoType { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `type`: it reads every link of a relation, whatever it reaches",
         /// A measure's step with a `where`.
         MeasureNoWhere { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `where`",
+        /// A `model` on a hybrid search that brings no query vector.
+        ModelWithoutVector => "`model` names the model of a query vector the search brings, and it brings no `vector`; where the field is an embedding, the lake makes that one itself, with that model",
+        /// A `rerank` whose `top` is 0.
+        RerankTopZero => "`rerank.top` is how many of the search's first hits the second stage ranks, and it is 1 at least",
+        /// A location whose `limits.max_rerank_top` is 0.
+        RerankNoWindow => "the location's `limits.max_rerank_top` is 0, which lets no search take a second stage; set it to 1 at least, or leave it out for 100",
+        /// A `rerank` whose `top` is above the lake's bound.
+        RerankTopAbove { max: u32 } => "`rerank.top` is above the lake's `limits.max_rerank_top`, {max}; ask for a window of at most {max}, or raise the setting in the lake's location",
+        /// A `rerank` with no text to rank against, or a blank one: its own
+        /// `text`, else the search's, which a vector search has none of.
+        RerankNeedsText => "the second stage has no text to rank against: give `rerank.text`, which a vector search needs, and give it, or the search's own text, not blank",
+        /// A start's `rerank` beside no `search`.
+        RerankWithoutSearch => "`rerank` is the second stage of a search, and the start has no `search`",
+        /// A step over a relation no type declares, where the start names
+        /// no type.
+        NoRelationAnywhere { relation: RelationName } => "no type has a relation `{relation}` to walk",
         /// A step over a relation that its type does not walk that way.
         NoRelationToWalk { #[serde(rename = "type")] ty: TypeName, relation: RelationName, walk: Walk } => "`{ty}` has no relation `{relation}` to walk {walk}",
-        /// A field a search names that is not searchable.
+        /// A field a search, or a `search_weights` setting's `text_fields`,
+        /// names that is not searchable.
         NotSearchable {
             field: FieldName,
             #[serde(rename = "type")]
@@ -1169,6 +1275,11 @@ catalog! {
         ProposalOrder { members: Names, field: FieldName, by: OrderBy } => "`order_by` orders proposals by their members ({members}) and their values, and `{field}` by `{by}` is not one",
         /// A query vector of another length than the field declares.
         QueryDimensions { query: usize, held: usize } => "the query vector has {query} dimensions, and the field holds vectors of {held}",
+        /// A query vector the caller names another model for than the one
+        /// the field is the embedding of.
+        QueryModel { query: String, held: String } => "the query vector is of the model `{query}`, and the field holds vectors of `{held}`",
+        /// A `retired` count beside an aggregate.
+        RetiredWithAggregate => "`retired` counts the retired records a page's `where` matches; an `aggregate` answers groups, so give one",
         /// A search's `fields` that names none.
         SearchFieldsEmpty => "`fields` names no field; leave it out to search every searchable field",
         /// A hybrid search without a vector over a vector field no model
@@ -1177,10 +1288,17 @@ catalog! {
         SearchNeedsVector { field: FieldName } => "`{field}` holds vectors its writers make, in a space the lake does not know; a hybrid search over it brings its own query vector",
         /// A vector ranking over a field that holds no vectors.
         SearchNotVector { field: FieldName, kind: StorageKind } => "`{field}` is a {kind} field; a vector ranking reads a vector field",
+        /// A start with no type where a type is needed.
+        StartNoType { asks: String } => "`{asks}` needs the start's `type`; only `components` may leave it out, and then names no `key`, `where`, `search` or `params`",
         /// A step that reaches another type than it names.
         StepReaches { reached: TypeName, #[serde(rename = "type")] ty: TypeName, also: Option<Names> } => "it reaches `{reached}`[, {also}], not `{ty}`",
-        /// A step reaching several types where a `where`, a row or the next step reads one.
-        StepSeveralTypes => "it reaches several types, and a `where`, a row or the step after it reads one; name the step's `type`",
+        /// A step reaching several types where a `where`, the next step or a path that reads a field reads one.
+        StepSeveralTypes {
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            reached: Option<TypeName>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            also: Option<Names>,
+        } => "it reaches several types[, `{reached}`][, {also}], and a `where`, the step after it or a path that reads one of its fields reads one; name the step's `type`",
         /// A step deeper than the lake walks.
         StepTooDeep { max: u32, asked: u32 } => "a step may walk at most {max} hops; this one asks for {asked}",
         /// A `text_weight` out of range.
@@ -1201,14 +1319,26 @@ catalog! {
         WeightRange { field: FieldName } => "the weight of `{field}` must be above 0 and at most 1000000",
 
         // ---- writes
+        /// A call a verb's executor declined by the host's policy.
+        CallDeclined { verb: VerbName } => "the host declined the call of `{verb}`: it did not run, and a retry under the same idempotency key answers the same",
         /// A host's cause past the head.
         CausePastHead { cause: Position, head: Option<Position> } => "the cause {cause} is past the lake's head [{head}|(none)]",
         /// A type declared again since its migration was proposed.
         ChangedSinceProposed { #[serde(rename = "type")] ty: TypeName } => "`{ty}` changed since this migration was proposed; propose it again",
+        /// A bundle's declaration under a name declared again since it was proposed.
+        DeclaredSinceProposed { what: Naming, name: String } => "the {what} `{name}` was declared since this bundle was proposed; propose it again",
         /// A field added that the type has.
         FieldExists { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`{ty}` already has a field `{field}`",
+        /// A new field whose name begins with `_`, which the lake keeps for its own columns.
+        FieldNameKept { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "a new field of `{ty}` may not begin with `_`: the lake keeps such names for its own columns of a pattern's rows (`<name>._depth`, `<name>._type`); name it `{field}` without the `_`",
         /// A field taken away that another part of the type reads.
-        FieldReadElsewhere { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "`{field}` is read by another part of `{ty}` and cannot be removed",
+        FieldReadElsewhere { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "`{field}` is read by another part of `{ty}` and cannot be removed or changed",
+        /// A forgetting refused while the log holds plaintext values of the source in erasable fields.
+        ForgetPlaintext { source: SourceId, count: u64 } => "the log holds {count} value(s) of `{source}` in erasable fields in plaintext, written before the field was erasable or before the log sealed them; destroying its key cannot reach them, so it is not forgotten: export the lake, leave the source out and import that as a new lake",
+        /// A forgetting's report of another source or head.
+        ForgetReportStale => "that report is not of this forgetting at this head; run the preflight again",
+        /// An idempotency key holding a NUL.
+        IdempotencyKeyNul => "an idempotency key holds no NUL character",
         /// A view at a door that writes or holds a record.
         IsAView {
             #[serde(rename = "type")]
@@ -1240,12 +1370,27 @@ catalog! {
         PayloadRequired { verb: VerbName, member: FieldName } => "verb `{verb}` requires `{member}` in its payload",
         /// A payload member a verb does not declare.
         PayloadUndeclared { verb: VerbName, member: FieldName } => "verb `{verb}` has no `{member}` in its payload",
+        /// A change enacted against a plan of another head, or one its caller was not shown.
+        PlanStale => "the lake moved since that plan, or it is not the one this caller was shown; plan the change again",
+        /// A proposal accepted against a plan that changes no declaration.
+        ProposalPlansNothing { proposal: ProposalId } => "the proposal `{proposal}` changes no declaration, so it has no plan; accept it without one",
         /// A purge's report of another purge or head.
         PurgeReportStale => "that report is not of this purge at this head; run the preflight again",
         /// A purge of records another hand wrote too.
         PurgeShared { source: SourceId, #[serde(rename = "type")] ty: Option<TypeName>, count: usize, #[serde(with = "closed::list")] first: Vec<RecordName> } => "the purge of `{source}`[ from `{ty}`] is refused whole: {count} record(s) it brought in were also written by another hand (a principal, or another source), and a purge never half-removes a record; retire them or clear those fields, then purge again. First: {first}",
+        /// A removal asked to shred that would redact values of erasable fields only.
+        RemoveNotShredded { source: SourceId, count: u64 } => "{count} value(s) of erasable fields of `{source}` the removal takes would be redacted only, not shredded: in plaintext, or sealed under a version of its key that also seals values outside the selection; nothing is removed",
+        /// A removal's report of another removal or head.
+        RemoveReportStale => "that report is not of this removal at this head; run the preflight again",
         /// A record with no value for a required field.
         Required { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`{ty}` requires a value for `{field}`",
+        /// A write that would leave a record breaking its type's
+        /// constraint.
+        ConstraintBroken { constraint: ConstraintName, #[serde(rename = "type")] ty: TypeName, key: RecordKey } => "`{ty}` `{key}` would break the constraint `{constraint}`",
+        /// Records a walk of the lake would leave breaking their type's
+        /// constraint: a declaration's or a migration's computing again, a
+        /// re-key's rewritten references, a value type's renames.
+        ConstraintLeftBroken { constraint: ConstraintName, #[serde(rename = "type")] ty: TypeName, records: u64 } => "{records} record(s) of `{ty}` would be left breaking the constraint `{constraint}`; fix them first",
         /// A verb's `requires` that does not hold.
         RequiresUnmet { verb: VerbName, #[serde(rename = "type")] ty: TypeName, key: RecordKey } => "verb `{verb}` requires what `{ty}` `{key}` does not hold",
         /// A restriction of what is restricted, or a release of what is not.
@@ -1256,6 +1401,20 @@ catalog! {
         SetEmpty => "nothing to apply: the set holds no declaration",
         /// A set of declarations with several problems.
         SetRefused { count: usize, problems: Vec<super::Error> } => "the set of `declarations` is refused whole, with {count} problems: {problems}",
+        /// A write from a source that was forgotten.
+        SourceForgotten { source: SourceId } => "the source `{source}` was forgotten, and is never given a key again: it writes nothing more; a device that comes back is a new source",
+        /// A source whose keys were destroyed, asked for a new one.
+        KeyDestroyed { source: SourceId } => "the keys of the source `{source}` were destroyed, and a forgotten source is never given a key again",
+        /// A version of a source's key the key store does not hold, asked
+        /// to be destroyed.
+        KeyVersionNotHeld { source: SourceId, key: KeyId } => "the key store holds no version `{key}` of the key of the source `{source}` to destroy",
+        /// A source id that is empty or holds a NUL.
+        SourceIdForm => "a source id is not empty and holds no NUL character",
+        /// A delivery id that is empty, holds a NUL, or takes the form
+        /// of the store's own.
+        DeliveryIdForm => "a delivery id is not empty, holds no NUL character, and is not `d` followed by digits, the form of the store's own",
+        /// A delivery id given to a catalog that does not carry it.
+        DeliveryNotCarried => "this catalog does not carry a delivery id to the store",
         /// A trigger's ceiling above the lake's.
         TriggerTooDeep { depth: u32, max: u32 } => "its `max_depth` {depth} is above the lake's `max_reactive_depth` {max}",
         /// A retry that finds no answer of the verb's executor recorded.
@@ -1276,14 +1435,16 @@ catalog! {
         VerbTypeTakesNoKey { verb: VerbName, #[serde(rename = "type")] ty: TypeName } => "verb `{verb}` is called on the type `{ty}`, not on a record: it takes no key",
         /// A verb's assignment computing what its field does not take.
         VerbValueUnfit { verb: VerbName, field: FieldName } => "verb `{verb}` computes a value that does not fit `{field}`",
-        /// A link one ingest window made already where one is allowed.
-        WindowLinksAlready { from: RecordKey, to: RecordKey, relation: RelationName, cardinality: Cardinality } => "the window links `{from}` to `{to}` over `{relation}` already, and it allows one ({cardinality})",
+        /// An ingest of a record an insert-only type holds already.
+        WrittenOnce { #[serde(rename = "type")] ty: TypeName, key: RecordKey } => "`{ty}` `{key}` is written once: its type is insert-only, and a record stands at the key, live or retired",
         /// A pinned proposal's accept after its record or type changed.
         WriteChangedSinceProposed { #[serde(rename = "type")] ty: TypeName, #[serde(default, skip_serializing_if = "Option::is_none")] key: Option<RecordKey> } => "`{ty}`[ `{key}`] changed since this write was proposed; propose it again",
+        /// A principal whose id holds a NUL.
+        WriterNul => "a principal's id holds no NUL character",
 
         // ---- aging
         /// An aging rule's field that its door does not write.
-        AgingAuthority { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`{ty}`.`{field}` is not `authored` or `shared`; aging writes it as `upsert` does",
+        AgingAuthority { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`{ty}`.`{field}` is not `authored`, `shared` or `verb`; aging writes it as `upsert` or a verb does",
         /// An aging rule on a key field.
         AgingKey { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`{ty}`.`{field}` is part of the key; aging never moves a key",
         /// An aging rule's member with no value.
@@ -1300,6 +1461,10 @@ catalog! {
         AgingSystemType { #[serde(rename = "type")] ty: TypeName } => "`{ty}` is a system type; aging never moves it",
 
         // ---- settings
+        /// An exact-text index of a field computed at the read.
+        LookupIndexAtRead { field: FieldName } => "`{field}` is computed at the read; an exact-text index keeps stored values",
+        /// An exact-text index of a field that is no text.
+        LookupIndexKind { field: FieldName, kind: StorageKind } => "`{field}` is of kind {kind}; an exact-text index keeps text fields",
         /// A type named as a stored type that is none.
         NoStoredType {
             #[serde(rename = "type")]
@@ -1330,8 +1495,24 @@ catalog! {
         } => "it holds an array of field names of `{ty}`, or null for no index",
         /// A `view_kept` setting that holds no boolean.
         SettingKeptHolds => "it holds `true` for a view that is kept, or `false`",
+        /// A key period that names none.
+        SettingKeyPeriod => "it holds `day`, `week` or `month`, the period a source's key is used for, or null for no period",
+        /// A key under the prefix of the store's own settings that names
+        /// none of them.
+        SettingUnlisted { prefix: String } => "keys under `{prefix}.` are the store's own settings, and this is none of them",
+        /// A host's setting declared under a key the store reads, or
+        /// under the prefix of one.
+        SettingStoreKey { prefix: String } => "keys under `{prefix}` are the store's own settings; a host declares a key of its own",
+        /// A write of `sys.setting` naming a group other than the one the
+        /// store stamps from the setting's declaration.
+        SettingGroupStamped => "the store writes a setting's group from its declaration; leave `group` out",
+        /// A host's setting declared into the store's own group.
+        SettingStoreGroup => "the group `store` holds the store's own settings; a host's setting is in a group of its own",
+        /// A host's setting declared to hold a reference, whose record
+        /// nothing would hold to it.
+        SettingReference => "a setting holds no reference; keep the record's key as `text`",
         /// A `search_weights` setting of the wrong shape.
-        SettingWeightsShape => "it holds an object of `fields` (vector fields and their weights) and `text_weight`, one at least, or null",
+        SettingWeightsShape => "it holds an object of `fields` (vector fields and their weights), `text_fields` (searchable text fields and their weights) and `text_weight`, one at least, or null",
         /// A vector index of a field computed at the read.
         VectorIndexAtRead { field: FieldName } => "`{field}` is computed at the read; a vector index keeps stored values",
         /// A vector index of a field that is no vector.
@@ -1343,6 +1524,8 @@ catalog! {
         } => "the view `{ty}` cannot be kept",
 
         // ---- migrations
+        /// A constraint added to a type in force, or changed, by `declare`.
+        ConstraintNeedsMigrate { #[serde(rename = "type")] ty: TypeName, constraint: ConstraintName } => "`{ty}`'s constraint `{constraint}` is added or changed, which stored records may break; that is a migration, whose preflight lists them",
         /// A value a migration renames that a computed field's expression holds.
         ComputedHoldsRenamed { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`{ty}`.`{field}` is computed from an expression that holds a value this migration renames; change the expression first",
         /// A key field that is not required in a migration that changes the key.
@@ -1359,6 +1542,8 @@ catalog! {
         MigrationTakesKey { #[serde(rename = "type")] ty: TypeName } => "the migration takes every key field of `{ty}` away, and leaves no rule to make its records' keys",
         /// A migration that removes a relation a verb is declared on the link type of.
         MigrationTakesLinkType { unnamed: bool, relation: RelationName, #[serde(rename = "type")] ty: TypeName } => "[{?unnamed}a declaration|it] is declared on `{ty}`, the link type of the relation `{relation}`, which the migration removes; declare it on another type first",
+        /// A migration that removes a relation whose link type another relation or a reference field refers to.
+        MigrationTakesTarget { unnamed: bool, relation: RelationName, #[serde(rename = "type")] ty: TypeName } => "[{?unnamed}a declaration|it] refers to `{ty}`, the link type of the relation `{relation}`, which the migration removes; retarget or remove it first",
         /// A migration that takes away a field a declaration reads.
         MigrationTakesRead { unnamed: bool, field: FieldName, #[serde(rename = "type")] ty: TypeName, renamed: Option<FieldName> } => "[{?unnamed}a declaration|it] reads `{field}` of `{ty}`, which the migration [renames to `{renamed}`|drops]",
         /// A migration that would make a stored type a view.
@@ -1393,10 +1578,20 @@ catalog! {
         RenameReferredLinks { #[serde(rename = "type")] ty: Option<TypeName>, links: TypeName } => "[`{ty}`|a declaration] refers to its link type `{links}`, whose records would move; retarget it first",
         /// A field renamed from or to twice.
         RenameRepeated { field: FieldName } => "the field `{field}` is renamed more than once",
+        /// A field a migration fills that its new declaration does not declare.
+        FillUnknown { field: FieldName } => "the migration fills `{field}`, which the new declaration does not declare",
+        /// A field a migration fills that declares no initial value.
+        FillNoInitial { field: FieldName } => "the migration fills `{field}`, which declares no `initial` to fill it with",
+        /// A field a migration fills more than once.
+        FillRepeated { field: FieldName } => "the migration fills `{field}` more than once",
+        /// A field a migration fills by the name a rename takes away.
+        FillRenamed { field: FieldName, to: FieldName } => "the migration renames `{field}` to `{to}`; fill it as `{to}`",
         /// A field renamed to one the new declaration does not have.
         RenameToUnknown { to: FieldName } => "rename to `{to}`: no such field after the migration",
         /// A relation rename in a migration that re-keys.
         RenameWhileRekeying => "the same migration re-keys records; rename in one migration and re-key in another",
+        /// A relation carried by link records removed by a migration that re-keys records.
+        RemoveWhileRekeying => "the same migration re-keys records; remove the relation in one migration and re-key in another",
         /// A declaration that reshapes stored records.
         Reshapes { #[serde(rename = "type")] ty: TypeName, #[serde(with = "closed::list")] reasons: Vec<Revision> } => "`{ty}` would reshape stored records ({reasons}); that is a migration",
         /// A declaration that reshapes stored links.
@@ -1439,6 +1634,8 @@ catalog! {
         IntegerTooLarge { n: Number } => "{n} is beyond ±(2^53 − 1), the largest integer every reader reads exactly",
         /// Bytes that are not base64.
         NotBase64 => "not standard base64 with padding",
+        /// A text holding U+0000, which not every store can hold.
+        NulInText => "a text in it holds U+0000, which not every engine can store",
         /// A date-time that is no UTC instant.
         NotDateTime { value: String } => "not a UTC date-time: \"{value}\"",
         /// A date that is no calendar date.
@@ -1677,6 +1874,28 @@ catalog! {
 }
 
 catalog! {
+    tag = "kind";
+    /// What a constraint reads that can change without a write of its
+    /// record (lakelands#1119).
+    pub enum Beyond {
+        /// A path across a reference or a link.
+        Path => "a path across a reference or a link",
+        /// An object set.
+        InSet => "`in_set`",
+        /// A setting.
+        Setting => "`setting`",
+        /// The clock.
+        Clock => "the clock",
+        /// A relation's links.
+        Exists => "`exists`",
+        /// A field computed outside the lake.
+        ComputedOutside { field: FieldName } => "`{field}`, computed outside the lake",
+        /// A field computed at the read.
+        ComputedAtRead { field: FieldName } => "`{field}`, computed at the read",
+    }
+}
+
+catalog! {
     tag = "reason";
     /// One difference between two declarations of a type; a field's names the relation whose links carry it.
     pub enum Revision {
@@ -1710,9 +1929,9 @@ catalog! {
 }
 
 /// A case and the places it is said at, outermost first: "type `T`, field
-/// `x`: …". What a refusal of `invalid`, `constraint`, `precondition` or
-/// `unanswered` says.
-#[derive(Clone, Debug, PartialEq)]
+/// `x`: …". What a refusal of `invalid`, `constraint`, `precondition`,
+/// `declined` or `unanswered` says.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Said {
     /// The places, outermost first.
     pub at: Vec<Place>,

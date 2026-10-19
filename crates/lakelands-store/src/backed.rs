@@ -46,10 +46,11 @@ use lakelands_api::error::{Case, Exchange, Flaw, Part, Remote, Situation};
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
 use lakelands_api::ontology::{EmbedDecl, FieldDecl, TypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, Patch};
-use lakelands_api::seam::{EmbedBackend, FunctionCall};
-use lakelands_api::write::FunctionDecl;
+use lakelands_api::seam::{Accepted, CallCause, EmbedBackend, FunctionCall};
+use lakelands_api::write::{FunctionDecl, ProposalFilter, ProposalState, ProposedWrite};
 use lakelands_api::{
-    FieldName, LakeId, Position, RecordKey, Result, Timestamp, TypeName, Value, WriteContext,
+    FieldName, LakeId, Position, ProposalId, RecordKey, Result, SourceId, Timestamp, TypeName,
+    Value, WriteContext,
 };
 use serde_json::json;
 
@@ -74,7 +75,7 @@ pub enum Call {
         /// The backing kind.
         kind: String,
         /// The call, as the backing receives it.
-        call: FunctionCall,
+        call: Box<FunctionCall>,
     },
     /// The embedding backend, which must name this model and make vectors
     /// of these dimensions.
@@ -96,14 +97,20 @@ pub struct Due {
     pub ty: TypeName,
     /// The record's key.
     pub key: RecordKey,
+    /// The write that made the record ([`on_record`]).
+    pub made: Position,
     /// The field the output fills.
     pub field: FieldName,
     /// What computes it, as the log names its procedure.
     pub procedure: Procedure,
     /// The seam the output is recorded under.
     pub seam: String,
-    /// The call's digest.
+    /// The call's digest; of a function above `low`, on its record
+    /// ([`on_record`]).
     pub input: Digest,
+    /// The key its output is sealed under, where the call reads a source's
+    /// erasable values (058).
+    pub sealed: Option<lakelands_api::event::Sealed>,
     /// The call.
     pub call: Call,
     /// Whether a recorded failure for the call is called again: the
@@ -135,6 +142,9 @@ pub struct Outputs<'a> {
     pub waiting: bool,
     /// The plans the records are computed by.
     pub plans: &'a crate::record::Plans,
+    /// The sources' keys, where the reader has the writer's: a call that
+    /// reads a source's erasable values is digested under its key (058).
+    pub keys: Option<&'a crate::sealing::Keys>,
 }
 
 /// The outputs one transaction recorded, by seam and input: every
@@ -146,6 +156,7 @@ impl Outputs<'_> {
     pub(crate) fn planning<'a>(
         view: &'a dyn ProjectionView,
         plans: &'a crate::record::Plans,
+        keys: &'a crate::sealing::Keys,
     ) -> Outputs<'a> {
         let (staged, before, due, waiting) = (None, None, None, false);
         Outputs {
@@ -155,6 +166,26 @@ impl Outputs<'_> {
             due,
             waiting,
             plans,
+            keys: Some(keys),
+        }
+    }
+
+    /// The list [`crate::sealing::USED`] keeps for `source`: the
+    /// transaction's last the reader may read, else the view's, read once
+    /// a position where the reader has the keys ([`Keys::listed`]).
+    ///
+    /// [`Keys::listed`]: crate::sealing::Keys::listed
+    fn used(&self, source: &lakelands_api::SourceId) -> Result<Option<Arc<crate::sealing::List>>> {
+        use crate::sealing::{List, USED, used_by};
+        let input = used_by(source);
+        let staged = (self.staged).and_then(|s| s.get(&(USED.to_owned(), input.clone())));
+        let read = |(at, _): &&(Position, Value)| self.before.is_none_or(|before| *at < before);
+        if let Some((_, v)) = staged.and_then(|all| all.iter().rev().find(read)) {
+            return Ok(Some(Arc::new(List::of(v.clone()))));
+        }
+        match self.keys {
+            Some(keys) => keys.listed(self.view, source),
+            None => Ok((self.view.output(USED, &input)?).map(|(_, v)| Arc::new(List::of(v)))),
         }
     }
 
@@ -198,8 +229,8 @@ pub fn call_of(f: &FunctionDecl, fields: &BTreeMap<FieldName, Value>) -> Value {
         .iter()
         .map(|i| {
             (
-                i.name.to_string(),
-                fields.get(&i.name).cloned().unwrap_or(Value::Null),
+                i.name().to_string(),
+                fields.get(i.name()).cloned().unwrap_or(Value::Null),
             )
         })
         .collect();
@@ -209,6 +240,17 @@ pub fn call_of(f: &FunctionDecl, fields: &BTreeMap<FieldName, Value>) -> Value {
 /// The digest of a call: SHA-256 over its canonical bytes.
 pub fn digest(call: &Value) -> Digest {
     Digest(lakelands_core::canonical::sha256_hex(call))
+}
+
+/// The digest of a call that waits for a decision, on the record that
+/// makes it: SHA-256 over the canonical bytes of `{ "call", "record":
+/// [type, key], "made" }`, where `made` is the position of the write that
+/// made the record ([`StoredRecord::made`](lakelands_api::record::StoredRecord::made)).
+/// Such a call is its record's, so its proposal, its decision and its
+/// output reach no other record that makes the same call, a record made
+/// again at a retired key included (064).
+pub fn on_record(call: &Digest, ty: &TypeName, (key, made): (&RecordKey, Position)) -> Digest {
+    digest(&json!({ "call": call, "record": [ty, key], "made": made }))
 }
 
 /// What a recorded output makes of a field: its value, or why it holds
@@ -320,6 +362,11 @@ impl Computer<'_> {
         }
     }
 
+    /// Whether its call waits for a decision: a function above `low`.
+    fn decided(&self) -> bool {
+        matches!(self, Computer::Function(f) if !f.decl.risk.is_low())
+    }
+
     /// The call a record's fields make; `None` for an embedding with no
     /// text, which calls nothing.
     fn call(&self, fields: &BTreeMap<FieldName, Value>) -> Option<Value> {
@@ -344,6 +391,101 @@ fn backed_fields<'o>(
         let func = ontology.functions.get(f.function.as_deref()?)?;
         is_backed(&func.decl).then_some((f, Computer::Function(func)))
     })
+}
+
+/// What a call's digest is (058).
+enum Input {
+    /// SHA-256 of its canonical bytes: it reads no erasable value.
+    Plain(Digest),
+    /// HMAC under the key of the one source whose erasable values it
+    /// reads, and that key's version, which seals its output.
+    Sealed(Digest, lakelands_api::event::Sealed),
+    /// It reads erasable values of two sources: no output is recorded.
+    Two,
+    /// It reads a source's erasable values and the reader holds no keys.
+    Keyless,
+}
+
+/// Why a field computed from two sources' erasable values holds none.
+const TWO_SOURCES: &str = "its inputs hold erasable values of two sources, and an output is sealed under one source's key";
+
+/// The digest of `call`, as `computer` makes it from `fields`: by the
+/// sources of the erasable values it reads, through the fields it reads
+/// and those they are derived from. One source's are digested under the
+/// version of its key `version` names, a recorded output's own, else the
+/// oldest of those that sealed the values it reads: the last first used
+/// at or before each value's position ([`crate::sealing::USED`]), as the
+/// fold keeps it and a write's plan stages it for its own events. A value
+/// written in plaintext, before its field was erasable, counts as sealed
+/// by the version in force at its position, which only ever makes an
+/// output die sooner, and as none before any; where no value names one,
+/// the first is taken. So the digest is a
+/// function of the log, whatever the key store holds now, and the output
+/// lives as long as the oldest key period it read: destroying a version,
+/// and every older one with it, takes the outputs of its values. A source
+/// that sealed nothing has no key to digest under.
+fn input_of(
+    (decl, computer): (&TypeDecl, &Computer<'_>),
+    (fields, metas): (&BTreeMap<FieldName, Value>, &BTreeMap<FieldName, FieldMeta>),
+    (outputs, event): (&Outputs<'_>, &Event),
+    version: Option<&lakelands_api::id::KeyId>,
+    call: &Value,
+) -> Result<Input> {
+    let mut todo: Vec<&FieldName> = match computer {
+        Computer::Function(f) => f.decl.inputs.iter().map(|i| i.name()).collect(),
+        Computer::Embed(e, _) => e.from.iter().collect(),
+    };
+    let (mut seen, mut sources, mut read) = (BTreeSet::new(), BTreeSet::new(), Vec::new());
+    while let Some(n) = todo.pop() {
+        let Some(f) = decl
+            .fields
+            .iter()
+            .find(|f| &f.name == n)
+            .filter(|_| seen.insert(n))
+        else {
+            continue;
+        };
+        if f.erasable && fields.contains_key(n) {
+            let m = metas.get(n).filter(|m| m.source.is_some());
+            sources.extend(m.and_then(|m| m.source.clone()));
+            read.extend(m.map(|m| m.position));
+        }
+        todo.extend(&f.depends_on);
+    }
+    let mut sources = sources.into_iter();
+    let (source, two) = (sources.next(), sources.next().is_some());
+    let Some(source) = source.filter(|_| !two) else {
+        return Ok(if two {
+            Input::Two
+        } else {
+            Input::Plain(digest(call))
+        });
+    };
+    let list = outputs.used(&source)?;
+    let firsts = list.as_ref().map_or(&[][..], |l| &l.firsts[..]);
+    let sealing = (event.sealed.as_ref())
+        .filter(|_| matches!(event.body, EventBody::RecordIngested { .. }))
+        .filter(|s| s.source.as_ref().or(event.source.as_ref()) == Some(&source))
+        .map(|s| &s.key);
+    let rank = |k: &&lakelands_api::id::KeyId| firsts.iter().position(|(f, _)| f == *k);
+    let oldest = (read.iter())
+        .filter_map(|p| crate::sealing::sealed_at(firsts, *p))
+        .min_by_key(rank);
+    let first = firsts.first().map(|(k, _)| k);
+    let Some(key) = version.or(oldest).or(first).or(sealing).cloned() else {
+        return Ok(Input::Plain(digest(call)));
+    };
+    let Some(keys) = outputs.keys else {
+        return Ok(Input::Keyless);
+    };
+    let k = keys.key(&source, &key)?;
+    let source = Some(source);
+    let sealed = lakelands_api::event::Sealed {
+        key,
+        source,
+        fields: Vec::new(),
+    };
+    Ok(Input::Sealed(crate::sealing::digest(&k, call), sealed))
 }
 
 /// The metadata of a value an output filled, or of a field it cleared.
@@ -403,7 +545,7 @@ pub(crate) fn computed_reads(o: &Ontology, f: &FieldDecl) -> Option<BTreeSet<Fie
         return Some(e.from.iter().cloned().collect());
     }
     if let Some(func) = f.function.as_deref().and_then(|n| o.functions.get(n)) {
-        return Some(func.decl.inputs.iter().map(|i| i.name.clone()).collect());
+        return Some(func.decl.inputs.iter().map(|i| i.name().clone()).collect());
     }
     let e = f.derived.as_ref()?;
     let e = crate::declare::condition(e, lakelands_core::expr::Place::Write, &[]).ok()?;
@@ -465,7 +607,7 @@ pub fn settle_fields(
     ontology: &Ontology,
     lake: &LakeId,
     decl: &TypeDecl,
-    key: &RecordKey,
+    (key, made): (&RecordKey, Position),
     before: Option<&BTreeMap<FieldName, Value>>,
     fields: &mut BTreeMap<FieldName, Value>,
     metas: &mut BTreeMap<FieldName, FieldMeta>,
@@ -529,8 +671,36 @@ pub fn settle_fields(
             continue;
         };
         let seam = computer.seam();
-        let input = digest(&call);
-        let recorded = outputs.recorded(&seam, &input)?;
+        let input = input_of(
+            (decl, &computer),
+            (fields, metas),
+            (outputs, event),
+            None,
+            &call,
+        )?;
+        let (input, sealed) = match input {
+            Input::Plain(input) => (input, None),
+            Input::Sealed(input, sealed) => (input, Some(sealed)),
+            two @ (Input::Two | Input::Keyless) => {
+                fields.remove(&name);
+                let error = matches!(two, Input::Two).then(|| TWO_SOURCES.to_owned());
+                metas.insert(name.clone(), meta(event, computer.version(), error));
+                changed.push(name.clone());
+                continue;
+            }
+        };
+        // A call that waits for a decision is its record's (064). An output
+        // recorded under the call alone, while the function was `low`, is
+        // read for a record whose value stands on it, and for no record
+        // that makes the call anew: that would tell of another that made it.
+        let (input, plain) = match computer.decided() {
+            true => (on_record(&input, &decl.name, (key, made)), Some(input)),
+            false => (input, None),
+        };
+        let mut recorded = outputs.recorded(&seam, &input)?;
+        if let (None, Some(plain), false, false) = (&recorded, &plain, moved, unsettled) {
+            recorded = outputs.recorded(&seam, plain)?;
+        }
         // A value type's rename is forced so that a call it moved is
         // seen, and calls no recorded failure again: that call is as it was.
         let renames = matches!(event.body, EventBody::ValueTypeMigrated { .. });
@@ -559,12 +729,13 @@ pub fn settle_fields(
             let call = match computer {
                 Computer::Function(f) => Call::Function {
                     kind: f.decl.backing.clone(),
-                    call: FunctionCall {
+                    call: Box::new(FunctionCall {
                         lake: lake.clone(),
                         function: f.decl.name.clone(),
                         inputs: call["inputs"].clone(),
                         config: f.decl.config.clone(),
-                    },
+                        cause: None,
+                    }),
                 },
                 Computer::Embed(e, _) => Call::Embed {
                     model: e.model.clone(),
@@ -575,6 +746,7 @@ pub fn settle_fields(
             due.push(Due {
                 ty: decl.name.clone(),
                 key: key.clone(),
+                made,
                 field: name,
                 procedure: Procedure {
                     name: computer.name().to_owned(),
@@ -582,6 +754,7 @@ pub fn settle_fields(
                 },
                 seam,
                 input,
+                sealed,
                 call,
                 retry,
                 cause: event.position,
@@ -594,28 +767,51 @@ pub fn settle_fields(
 
 /// Put a recorded output into the field it names, when the field is
 /// still computed by what the seam names and the record's call has the
-/// recorded digest now. Answers whether the field changed.
+/// recorded digest now, on the record `key` made at `made` where the call
+/// waits for a decision ([`on_record`]). Answers whether the field changed.
 #[allow(clippy::too_many_arguments)]
 pub fn put_output(
     ontology: &Ontology,
     decl: &TypeDecl,
-    field: &FieldName,
+    (key, made, field): (&RecordKey, Position, &FieldName),
     seam_name: &str,
     input: &Digest,
     output: &Value,
     event: &Event,
     fields: &mut BTreeMap<FieldName, Value>,
     metas: &mut BTreeMap<FieldName, FieldMeta>,
-) -> bool {
+    outputs: &Outputs<'_>,
+) -> Result<bool> {
     let Some((f, computer)) = backed_fields(ontology, decl).find(|(f, _)| &f.name == field) else {
-        return false;
+        return Ok(false);
     };
-    if computer.seam() != seam_name
-        || computer.call(fields).map(|c| digest(&c)).as_ref() != Some(input)
-    {
-        return false;
+    let Some(call) = computer
+        .call(fields)
+        .filter(|_| computer.seam() == seam_name)
+    else {
+        return Ok(false);
+    };
+    // Digested under the version the output names, as it was recorded.
+    let version = event.sealed.as_ref().map(|s| &s.key);
+    let now = match input_of(
+        (decl, &computer),
+        (fields, metas),
+        (outputs, event),
+        version,
+        &call,
+    )? {
+        Input::Plain(d) | Input::Sealed(d, _) => d,
+        Input::Two | Input::Keyless => return Ok(false),
+    };
+    let decided = computer
+        .decided()
+        .then(|| on_record(&now, &decl.name, (key, made)));
+    if &now != input && decided.as_ref() != Some(input) {
+        return Ok(false);
     }
-    put(ontology, decl, f, computer, output, event, fields, metas)
+    Ok(put(
+        ontology, decl, f, computer, output, event, fields, metas,
+    ))
 }
 
 /// What an append left owed to the backings, until the drain has recorded
@@ -636,7 +832,45 @@ pub struct Owed {
     /// How often a migration moved it: a batch read before leaves it as
     /// the migration did.
     pub moved: u32,
+    /// The event that set the calls off, as a backing is told of it.
+    pub by: By,
+    /// A reviewer's decision this entry carries out: the calls of one
+    /// function above `low` it makes, or records as rejected (064).
+    pub decided: Option<Decided>,
+    /// Of a sweep: the calls of each function above `low` it found owed,
+    /// which it proposes as one when it ends: by function, how many and
+    /// the first keys.
+    pub proposing: BTreeMap<String, (u64, Vec<RecordKey>)>,
 }
+
+/// The event that set an entry's calls off, as it names itself.
+#[derive(Clone, Debug, PartialEq)]
+pub struct By {
+    /// Its position.
+    pub at: Position,
+    /// Its writer.
+    pub writer: String,
+    /// Its source, where it came from one.
+    pub source: Option<SourceId>,
+}
+
+/// A reviewer's decision on a proposed call of a function above `low`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Decided {
+    /// The function.
+    pub function: String,
+    /// The one call it decides; `None` for every call of a sweep.
+    pub only: Option<Digest>,
+    /// The decision's position.
+    pub position: Position,
+    /// Who decided.
+    pub reviewer: String,
+    /// The reason, where it rejected the calls.
+    pub rejected: Option<String>,
+}
+
+/// How many keys a sweep's proposal names, the first in key order.
+pub const FIRST_KEYS: usize = 10;
 
 /// What an [`Owed`] entry names.
 #[derive(Clone, Debug, PartialEq)]
@@ -659,14 +893,125 @@ impl Owed {
     /// What the event `e` leaves owed of the type `ty`.
     pub fn new(e: &Event, ty: TypeName, of: Of) -> Owed {
         let (cause, context) = (e.cause.unwrap_or(e.position), e.context);
+        let by = By {
+            at: e.position,
+            writer: e.writer.clone(),
+            source: e.source.clone(),
+        };
         Owed {
             ty,
             cause,
             context,
             of,
             moved: 0,
+            by,
+            decided: None,
+            proposing: BTreeMap::new(),
         }
     }
+
+    /// What the decision `e` on a proposed call leaves owed: the call, made
+    /// or recorded as rejected, set off by the event `by`, the one the
+    /// proposal names as its cause. Of a `compute` its record alone, since
+    /// a decision holds for its record; of a sweep every record of its type
+    /// the sweep owes a call. None for any other proposal (064).
+    pub fn decided(e: &Event, write: &ProposedWrite, by: &Event) -> Option<Owed> {
+        let (ty, function, only, of) = match write {
+            ProposedWrite::Compute {
+                ty,
+                key,
+                function,
+                input,
+                ..
+            } => (ty, function, Some(input.clone()), Of::Record(key.clone())),
+            ProposedWrite::ComputeSweep { ty, function, .. } => {
+                let of = Of::Sweep {
+                    after: None,
+                    retried: Some(BTreeSet::new()),
+                };
+                (ty, function, None, of)
+            }
+            _ => return None,
+        };
+        let rejected = match &e.body {
+            EventBody::WriteRejected { reason, .. } => Some(reason.clone()),
+            _ => None,
+        };
+        let mut o = Owed::new(e, ty.clone(), of);
+        o.by = By {
+            at: by.position,
+            writer: by.writer.clone(),
+            source: by.source.clone(),
+        };
+        o.decided = Some(Decided {
+            function: function.clone(),
+            only,
+            position: e.position,
+            reviewer: e.writer.clone(),
+            rejected,
+        });
+        Some(o)
+    }
+
+    /// Whether this entry carries out a decision on the call `d`.
+    fn decides(&self, d: &Due) -> Option<&Decided> {
+        let decided = self.decided.as_ref()?;
+        let called =
+            matches!(&d.call, Call::Function { call, .. } if call.function == decided.function);
+        let one = decided.only.as_ref().is_none_or(|i| *i == d.input);
+        (called && one).then_some(decided)
+    }
+}
+
+/// The calls a record makes now, by the field each fills, made or not:
+/// what an accept or a rejection compares a proposed call with (064). A
+/// retired record makes none.
+pub(crate) fn call_now(
+    lake: &Lake,
+    w: &crate::lake::Writer,
+    view: &dyn ProjectionView,
+    ty: &TypeName,
+    record: Option<&lakelands_api::record::StoredRecord>,
+) -> Result<Vec<(FieldName, Digest)>> {
+    let (Some(r), Ok(decl)) = (record, w.ontology.ty(ty)) else {
+        return Ok(Vec::new());
+    };
+    if r.retired || r.is_ended() {
+        return Ok(Vec::new());
+    }
+    let draft = Draft::system(Timestamp(0), EventBody::LakeCreated { format: 0 });
+    let event = crate::writes::provisional(lake, r.position, &draft);
+    let (mut fields, mut metas, mut due) = (r.fields.clone(), r.meta.clone(), Vec::new());
+    // Its computed fields settled from nothing, so a call whose output the
+    // record holds already is listed as one that waits.
+    for (f, _) in backed_fields(&w.ontology, decl) {
+        fields.remove(&f.name);
+        metas.remove(&f.name);
+    }
+    let mut outputs = Outputs {
+        view,
+        staged: None,
+        before: None,
+        due: Some(&mut due),
+        waiting: true,
+        plans: &w.plans,
+        keys: Some(&lake.keys),
+    };
+    let (o, lake_id) = (&w.ontology, &lake.id);
+    let (key, before) = ((&r.key, r.made), Some(&r.fields));
+    settle_fields(
+        o,
+        lake_id,
+        decl,
+        key,
+        before,
+        &mut fields,
+        &mut metas,
+        &event,
+        true,
+        &mut outputs,
+    )?;
+    Ok(due.into_iter().map(|d| (d.field, d.input)).collect())
 }
 
 /// The seam and digest an output is recorded under.
@@ -738,6 +1083,7 @@ pub fn page(lake: &Lake, o: &Owed) -> Result<(Vec<(RecordKey, Vec<(Due, Option<V
                 due: Some(&mut due),
                 waiting: true,
                 plans: &w.plans,
+                keys: Some(&lake.keys),
             };
             let sweep = matches!(
                 o.of,
@@ -750,7 +1096,7 @@ pub fn page(lake: &Lake, o: &Owed) -> Result<(Vec<(RecordKey, Vec<(Due, Option<V
                 &w.ontology,
                 &lake.id,
                 decl,
-                &r.key,
+                (&r.key, r.made),
                 Some(&r.fields),
                 &mut fields,
                 &mut metas,
@@ -760,8 +1106,24 @@ pub fn page(lake: &Lake, o: &Owed) -> Result<(Vec<(RecordKey, Vec<(Due, Option<V
             )?;
         }
         let mut owes = Vec::new();
-        for d in due {
+        for mut d in due {
             let recorded = view.output(&d.seam, &d.input)?.map(|(_, v)| v);
+            let accepted = o.decides(&d).filter(|x| x.rejected.is_none());
+            let accepted = accepted.map(|x| Accepted {
+                position: x.position,
+                reviewer: x.reviewer.clone(),
+            });
+            if let Call::Function { call, .. } = &mut d.call {
+                call.cause = Some(CallCause {
+                    position: o.by.at,
+                    writer: o.by.writer.clone(),
+                    ty: d.ty.clone(),
+                    key: d.key.clone(),
+                    source: o.by.source.clone(),
+                    context: o.context,
+                    accepted,
+                });
+            }
             owes.push((d, recorded));
         }
         out.push((r.key, owes));
@@ -776,6 +1138,8 @@ struct Took {
     read: Owed,
     left: Owed,
     done: bool,
+    /// The calls of a function above `low` it proposes, one record's.
+    propose: Vec<Due>,
 }
 
 /// One batch: calls of one model and dimensions, at most [`EMBED_BATCH`],
@@ -906,13 +1270,44 @@ async fn take(lake: &Arc<Lake>, ours: &impl Fn(&Owed) -> bool) -> Result<Batch> 
         let (mine, rest): (Vec<_>, Vec<_>) = all.partition(|(_, o)| ours(o));
         mine.into_iter().chain(rest).collect()
     };
+    let risky: BTreeSet<String> = (lake.writer().ontology.functions.iter())
+        .filter(|(_, f)| !f.decl.risk.is_low())
+        .map(|(name, _)| name.clone())
+        .collect();
     let mut batch = Batch::default();
     for (at, read) in entries {
         let (l, o) = (lake.clone(), read.clone());
         let (rows, end) = exec::run(move || page(&l, &o)).await?;
         let (t, mut left, mut whole) = (batch.took.len(), read.clone(), true);
+        let mut propose = Vec::new();
         for (key, calls) in rows {
             for (d, recorded) in calls {
+                let function = match &d.call {
+                    Call::Function { call, .. } => Some(&call.function),
+                    Call::Embed { .. } => None,
+                };
+                // A decision is carried out on the calls it decides alone.
+                if read.decided.is_some() && read.decides(&d).is_none() {
+                    continue;
+                }
+                // A call of a function above `low` that is not made yet is
+                // proposed, unless a decision on it is carried out (064).
+                let asks = recorded.is_none() || d.retry;
+                if asks && function.is_some_and(|f| risky.contains(f)) && read.decides(&d).is_none()
+                {
+                    let f = function.cloned().unwrap_or_default();
+                    match &read.of {
+                        Of::Record(_) => propose.push(d),
+                        Of::Sweep { .. } => {
+                            let (count, first) = left.proposing.entry(f).or_default();
+                            *count += 1;
+                            if first.len() < FIRST_KEYS && !first.contains(&d.key) {
+                                first.push(d.key.clone());
+                            }
+                        }
+                    }
+                    continue;
+                }
                 if !bound(lake, &d.call) && (recorded.is_none() || d.retry) {
                     continue;
                 }
@@ -934,6 +1329,7 @@ async fn take(lake: &Arc<Lake>, ours: &impl Fn(&Owed) -> bool) -> Result<Batch> 
             read,
             left,
             done,
+            propose,
         });
         if batch.full() {
             break;
@@ -963,6 +1359,11 @@ async fn make(lake: &Arc<Lake>, batch: Batch) -> Result<()> {
     for (t, d, recorded) in &calls {
         let k = key(d);
         if answers.contains_key(&k) || ask.iter().any(|a| key(a) == k) {
+            continue;
+        }
+        // A rejected call is answered so, and no backing is asked (064).
+        if let Some(why) = took[*t].read.decides(d).and_then(|x| x.rejected.as_ref()) {
+            answers.insert(k, rejected(why));
             continue;
         }
         let retried = match &mut took[*t].left.of {
@@ -1041,6 +1442,7 @@ async fn make(lake: &Arc<Lake>, batch: Batch) -> Result<()> {
             known.insert(k);
         }
     }
+    propose(lake, &took).await?;
     let mut w = lake.writer();
     took.sort_by_key(|t| std::cmp::Reverse(t.at));
     for t in took {
@@ -1051,6 +1453,203 @@ async fn make(lake: &Arc<Lake>, batch: Batch) -> Result<()> {
             true => drop(w.owed.remove(t.at)),
             false => w.owed[t.at] = t.left,
         }
+    }
+    Ok(())
+}
+
+/// The output a rejected call is recorded with (064).
+pub(crate) fn rejected(why: &str) -> Value {
+    json!({ "error": format!("rejected: {why}") })
+}
+
+/// The `write_rejected` of each pending proposal of the calls `inputs`
+/// under `seam`, by the system, caused by `at`: an output recorded for a
+/// call decides it, made or rejected, so none of them waits on. A call that
+/// waits for a decision is digested on its record ([`on_record`]), so
+/// only that record's proposal is closed (064).
+pub(crate) fn closed(
+    view: &dyn ProjectionView,
+    (seam, inputs): (&str, &[Digest]),
+    (now, at): (Timestamp, Position),
+) -> Result<Vec<Draft>> {
+    if !seam.starts_with("function:") {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for p in view.proposals(&pending_computes())? {
+        let call =
+            matches!(&p.write, Some(ProposedWrite::Compute { input: i, .. }) if inputs.contains(i));
+        if call {
+            out.push(closing(p.id, "its call's output is recorded", (now, at)));
+        }
+    }
+    Ok(out)
+}
+
+/// The pending proposals of records' calls, by record: what a record's
+/// retirement, or its move by a re-key, closes ([`closing`]).
+pub(crate) fn pending_calls(
+    view: &dyn ProjectionView,
+) -> Result<BTreeMap<(TypeName, RecordKey), Vec<ProposalId>>> {
+    let mut out: BTreeMap<_, Vec<_>> = BTreeMap::new();
+    for p in view.proposals(&pending_computes())? {
+        if let Some(ProposedWrite::Compute { ty, key, .. }) = p.write {
+            out.entry((ty, key)).or_default().push(p.id);
+        }
+    }
+    Ok(out)
+}
+
+/// What [`closed`] and [`pending_calls`] read: the pending `compute`s.
+fn pending_computes() -> ProposalFilter {
+    ProposalFilter {
+        state: Some(ProposalState::Pending),
+        kind: Some(lakelands_api::write::ProposalKind::Compute),
+        ..Default::default()
+    }
+}
+
+/// The system's `write_rejected` of `proposal`, caused by `at`. A
+/// retired record's pending calls, and a moved record's, are closed by it
+/// in the append of the event that ends them: a record made again at the
+/// key is another, whose calls are its own ([`on_record`]), and a moved
+/// record's calls are digested on its new key (064).
+pub(crate) fn closing(
+    proposal: ProposalId,
+    reason: &str,
+    (now, at): (Timestamp, Position),
+) -> Draft {
+    let reason = reason.to_owned();
+    let body = EventBody::WriteRejected { proposal, reason };
+    Draft {
+        cause: Some(at),
+        ..Draft::system(now, body)
+    }
+}
+
+/// Propose what a batch found of functions above `low`, in one append:
+/// each record's call that no pending proposal holds already, and a
+/// sweep's calls as one once it ends (064). The proposer is the writer
+/// that set them off, and the proposal is caused by its event.
+async fn propose(lake: &Arc<Lake>, took: &[Took]) -> Result<()> {
+    let ends = |t: &&Took| t.done && !t.left.proposing.is_empty();
+    if took.iter().all(|t| t.propose.is_empty()) && !took.iter().any(|t| ends(&t)) {
+        return Ok(());
+    }
+    let (l, took) = (lake.clone(), took.iter().map(Took::proposals).collect());
+    exec::run(move || proposed(&l, took)).await
+}
+
+impl Took {
+    /// What it proposes: the writes, each with the entry it came from, and
+    /// a record's call with the write that made the record.
+    fn proposals(&self) -> (Owed, Vec<Proposing>) {
+        let mut out = Vec::new();
+        for d in &self.propose {
+            if let Call::Function { call, .. } = &d.call {
+                let write = ProposedWrite::Compute {
+                    ty: d.ty.clone(),
+                    key: d.key.clone(),
+                    field: d.field.clone(),
+                    function: call.function.clone(),
+                    inputs: None,
+                    input: d.input.clone(),
+                };
+                out.push((write, Some(d.made)));
+            }
+        }
+        for (function, (count, first)) in self.left.proposing.iter().filter(|_| self.done) {
+            let write = ProposedWrite::ComputeSweep {
+                ty: self.left.ty.clone(),
+                function: function.clone(),
+                count: *count,
+                first: first.clone(),
+            };
+            out.push((write, None));
+        }
+        (self.read.clone(), out)
+    }
+}
+
+/// A write to propose, and for a record's call the write that made the
+/// record.
+type Proposing = (ProposedWrite, Option<Position>);
+
+fn proposed(lake: &Lake, took: Vec<(Owed, Vec<Proposing>)>) -> Result<()> {
+    let mut w = lake.for_write()?;
+    let view = lake.engine.view(None)?;
+    // A record's call a pending proposal holds is not proposed again; the
+    // same call on another record is (064).
+    let pending = ProposalFilter {
+        state: Some(ProposalState::Pending),
+        kind: Some(lakelands_api::write::ProposalKind::Compute),
+        ..Default::default()
+    };
+    let call = |w: &ProposedWrite| match w {
+        ProposedWrite::Compute {
+            ty,
+            key,
+            field,
+            input,
+            ..
+        } => Some((ty.clone(), key.clone(), field.clone(), input.clone())),
+        _ => None,
+    };
+    let mut held = BTreeSet::new();
+    for p in view.proposals(&pending)? {
+        held.extend(p.write.as_ref().and_then(call));
+    }
+    let now = lake.clock(&mut w);
+    let first = Position(w.tip.as_ref().map_or(0, |t| t.0.0 + 1));
+    let mut drafts = Vec::new();
+    for (o, writes) in took {
+        for (write, made) in writes {
+            if call(&write).is_some_and(|c| !held.insert(c)) {
+                continue;
+            }
+            // A record retired since its call was read, or made again, is
+            // proposed nothing: its retirement closed what it had (064).
+            // Defensive: no conformance check reaches it; it holds for a
+            // record retired or made again between the drain's page and
+            // its append.
+            if let (ProposedWrite::Compute { ty, key, .. }, Some(made)) = (&write, made) {
+                let there = view.get(ty, key)?;
+                if there.is_none_or(|r| r.retired || r.made != made) {
+                    continue;
+                }
+            }
+            let function = match &write {
+                ProposedWrite::Compute { function, .. }
+                | ProposedWrite::ComputeSweep { function, .. } => function.clone(),
+                _ => continue,
+            };
+            let risk = (w.ontology.functions.get(&function)).map(|f| f.decl.risk);
+            let why = format!(
+                "`{function}` is declared {} risk; its call is made when accepted",
+                crate::writes::risk_word(risk.unwrap_or_default())
+            );
+            let at = Position(first.0 + drafts.len() as u64);
+            let proposal = lakelands_core::log::positional_id(&lake.id, at);
+            drafts.push(Draft {
+                writer: o.by.writer.clone(),
+                origin: lakelands_api::record::Origin::Authored,
+                context: o.context,
+                cause: Some(o.by.at),
+                ..Draft::system(
+                    now,
+                    EventBody::WriteProposed {
+                        proposal: lakelands_api::ProposalId::from(proposal.0.as_str()),
+                        write,
+                        why,
+                        pinned: false,
+                    },
+                )
+            });
+        }
+    }
+    drop(view);
+    if !drafts.is_empty() {
+        lake.append(&mut w, drafts)?;
     }
     Ok(())
 }
@@ -1147,10 +1746,14 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
         .filter(|(_, v)| *v == output && !is_failure(v))
         .map(|(p, _)| p);
     let context = d.context;
+    // An output computed from a source's erasable values is sealed under
+    // that source's key, as they are (058).
+    let sealed = d.sealed.clone().filter(|_| output_at.is_none());
     let draft = Draft {
         cause: Some(d.cause),
         procedure: Some(d.procedure.clone()),
         context,
+        sealed,
         ..Draft::system(
             now,
             EventBody::OutputRecorded {
@@ -1187,6 +1790,7 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
                 due: None,
                 waiting: false,
                 plans: &w.plans,
+                keys: Some(&lake.keys),
             },
         )?;
         if let Some(after) = after {
@@ -1200,13 +1804,21 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
                 shown: None,
             };
             let mut d = call.decide(&w, view.as_ref(), now, 0);
-            drafts = d.reactions(Some(&before), &after)?;
+            let filled = lakelands_api::event::ChangeKind::Recomputed;
+            drafts = d.reactions(filled, Some(&before), &after)?;
         }
     }
-    drop(view);
     if known && !fills {
         return Ok(None);
     }
+    // A call made without a decision, the function `low` now, decides the
+    // record's proposal of it from when it was above `low`.
+    let low = (w.ontology.functions.get(&d.procedure.name)).is_some_and(|f| f.decl.risk.is_low());
+    let decided = (low && matches!(d.call, Call::Function { .. }))
+        .then(|| on_record(&d.input, &d.ty, (&d.key, d.made)));
+    let inputs: Vec<Digest> = [d.input.clone()].into_iter().chain(decided).collect();
+    drafts.extend(closed(view.as_ref(), (&d.seam, &inputs), (now, at))?);
+    drop(view);
     drafts.insert(0, draft);
     let events = lake.append(&mut w, drafts)?;
     Ok(events.last().map(|e| e.position))

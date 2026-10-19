@@ -55,9 +55,11 @@ impl Default for Depth {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Start {
-    /// The start's type.
-    #[serde(rename = "type")]
-    pub ty: TypeName,
+    /// The start's type. Only `components` may leave it out, and then
+    /// grows from every record that holds a link over the steps'
+    /// relations, in every type (`docs/decisions/018-one-pattern-query.md`).
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub ty: Option<TypeName>,
     /// One record by key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<RecordKey>,
@@ -67,6 +69,10 @@ pub struct Start {
     /// Records a search finds, best first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search: Option<SearchMode>,
+    /// A second stage for `search`: the pattern starts from the reranked
+    /// window, best first (`docs/decisions/067-a-search-may-take-a-second-stage.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank: Option<Rerank>,
     /// The values bound to the parameters of a view the pattern starts on.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: Params,
@@ -114,8 +120,10 @@ pub enum Projection {
     },
     /// Nodes and edges. For viewers. A graph always includes the start
     /// node, the root a viewer draws from, whatever the steps' `min`;
-    /// `Rows` holds a start only where its steps reach a match from it
-    /// (`docs/decisions/026-the-store-walks-the-graph.md`).
+    /// `Rows` holds a start only where its steps reach a match from it.
+    /// A chain's graph is walked whole for every page, and one whose
+    /// records would number more than the lake's `max_graph_nodes` is
+    /// refused `too_large` (`docs/decisions/026-the-store-walks-the-graph.md`).
     Graph,
     /// Aggregates over the matches.
     Aggregate(Aggregate),
@@ -129,10 +137,20 @@ pub enum Projection {
     /// over the steps' relations taken both ways. Components are ordered
     /// by size, largest first, then by their least `(type, key)`, and
     /// numbered from 0 in that order; a component's records by
-    /// `(type, key)`. A walk that would reach more than the lake's
+    /// `(type, key)`. With no start type, every record that holds a link it
+    /// may see over the steps' relations is a start, and no record stands
+    /// alone. A walk that would reach more than the lake's
     /// `max_graph_nodes` is refused `too_large`, never cut
     /// (`docs/decisions/026-the-store-walks-the-graph.md`).
     Components,
+    /// What each step reaches: one row per record, `step`, `depth`,
+    /// `type` and `key`. Step `i` walks from every record step `i - 1`
+    /// kept, a dead end included; each record is listed once, at the
+    /// first step that keeps it, with that step's fewest hops, and the
+    /// start only where a step reaches it. Ordered by `(step, depth, type,
+    /// key)`; a page that would walk past the lake's `max_graph_nodes` is
+    /// refused `too_large` (`docs/decisions/018-one-pattern-query.md`).
+    Reach,
 }
 
 impl<'de> Deserialize<'de> for Projection {
@@ -151,6 +169,7 @@ impl<'de> Deserialize<'de> for Projection {
             Aggregate(Aggregate),
             Degree {},
             Components {},
+            Reach {},
         }
         Ok(match Wire::deserialize(d)? {
             Wire::Rows { fields } => Projection::Rows { fields },
@@ -158,6 +177,7 @@ impl<'de> Deserialize<'de> for Projection {
             Wire::Aggregate(a) => Projection::Aggregate(a),
             Wire::Degree {} => Projection::Degree,
             Wire::Components {} => Projection::Components,
+            Wire::Reach {} => Projection::Reach,
         })
     }
 }
@@ -204,10 +224,11 @@ impl Pattern {
     fn from(ty: TypeName, key: RecordKey, steps: Vec<Step>, project: Projection) -> Pattern {
         Pattern {
             start: Start {
-                ty,
+                ty: Some(ty),
                 key: Some(key),
                 filter: None,
                 search: None,
+                rerank: None,
                 params: Default::default(),
                 named: None,
             },
@@ -299,6 +320,10 @@ pub enum QueryResult {
     Graph {
         /// The records reached.
         nodes: Vec<Record>,
+        /// Each node's depth, in the order of `nodes`: the fewest hops that
+        /// reach it from a start, 0 for a start; along a path, its hop.
+        #[serde(default)]
+        depths: Vec<u32>,
         /// The links walked.
         edges: Vec<Edge>,
         /// Whether the limit cut the graph short.
@@ -354,6 +379,11 @@ pub enum SearchMode {
         /// and fused with `field`'s ranking by weighted rank.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         also: Vec<VectorTerm>,
+        /// The model that made the query vector, if the caller names it:
+        /// over a field declared as an embedding, it must be the field's
+        /// own model.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     /// Both, fused by rank. Without a vector, the store asks the lake's
     /// embedding backend for one, or falls back to lexical and says so.
@@ -375,7 +405,49 @@ pub enum SearchMode {
         /// The weight of the lexical half; absent, 1.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text_weight: Option<f64>,
+        /// The model that made the query vector, if the caller names it:
+        /// over a field declared as an embedding, it must be the field's
+        /// own model. It names the caller's `vector`, so without one it is
+        /// refused.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
+}
+
+/// The second stage of a search: the first `top` hits of its ranking,
+/// ranked again by the lake's reranker against a text
+/// (`docs/decisions/067-a-search-may-take-a-second-stage.md`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rerank {
+    /// How many of the first stage's hits the stage ranks, 1 at least and
+    /// at most the lake's `max_rerank_top`. The answer ends at this window.
+    pub top: u32,
+    /// What the window is ranked against; absent, the search's own text.
+    /// A vector search has none, so it must give one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+impl Rerank {
+    /// What the stage asks of `mode` that cannot be: no window, or no text
+    /// to rank against, as a blank one is none.
+    pub fn misfit(&self, mode: &SearchMode) -> Option<Case> {
+        match self.top {
+            0 => Some(Case::RerankTopZero),
+            _ if self.query(mode).trim().is_empty() => Some(Case::RerankNeedsText),
+            _ => None,
+        }
+    }
+
+    /// The text the window is ranked against: its own, else the search's.
+    pub fn query<'a>(&'a self, mode: &'a SearchMode) -> &'a str {
+        match (&self.text, mode) {
+            (Some(text), _) => text,
+            (_, SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. }) => text,
+            (_, SearchMode::Vector { .. }) => "",
+        }
+    }
 }
 
 /// One further vector field of a vector search.
@@ -389,6 +461,9 @@ pub struct VectorTerm {
     /// The weight of its ranking; absent, 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight: Option<f64>,
+    /// The model that made its query vector, if the caller names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl SearchMode {
@@ -409,6 +484,7 @@ impl SearchMode {
             vector,
             weight: None,
             also: Vec::new(),
+            model: None,
         }
     }
 
@@ -422,6 +498,29 @@ impl SearchMode {
             fields: None,
             weight: None,
             text_weight: None,
+            model: None,
+        }
+    }
+
+    /// The model each query vector the caller brings names, by its field,
+    /// in the order [`SearchMode::vectors`] names them: none where the
+    /// caller names none, and none for a hybrid search's vector the lake
+    /// makes.
+    pub fn models(&self) -> Vec<(&FieldName, Option<&str>)> {
+        match self {
+            SearchMode::Lexical { .. } => Vec::new(),
+            SearchMode::Hybrid {
+                field,
+                vector: Some(_),
+                model,
+                ..
+            } => vec![(field, model.as_deref())],
+            SearchMode::Hybrid { vector: None, .. } => Vec::new(),
+            SearchMode::Vector {
+                field, model, also, ..
+            } => std::iter::once((field, model.as_deref()))
+                .chain(also.iter().map(|t| (&t.field, t.model.as_deref())))
+                .collect(),
         }
     }
 
@@ -444,6 +543,7 @@ impl SearchMode {
                 vector,
                 weight,
                 also,
+                ..
             } => {
                 let also = also.iter().map(|t| (&t.field, &t.vector[..], t.weight));
                 std::iter::once((field, &vector[..], *weight))
@@ -456,8 +556,9 @@ impl SearchMode {
     /// What the mode asks that no ranking can do: the fault, with the
     /// field it names if any. A weight weighs one ranking against
     /// another, so it is above 0 and at most 1 000 000, a vector search
-    /// of one field takes none, no field is named twice, and every query
-    /// vector has a direction ([`no_direction`]).
+    /// of one field takes none, no field is named twice, every query
+    /// vector has a direction ([`no_direction`]), and a `model` names one
+    /// the caller brings.
     pub fn misfit(&self) -> Option<(Option<FieldName>, Case)> {
         let terms = self.vectors();
         let lone = matches!(self, SearchMode::Vector { also, .. } if also.is_empty());
@@ -484,6 +585,15 @@ impl SearchMode {
                 continue;
             };
             return Some((Some(field), fault));
+        }
+        if let SearchMode::Hybrid {
+            field,
+            vector: None,
+            model: Some(_),
+            ..
+        } = self
+        {
+            return Some((Some(field.clone()), Case::ModelWithoutVector));
         }
         let text = matches!(self, SearchMode::Hybrid { text_weight, .. } if !fits(*text_weight));
         text.then_some((None, Case::TextWeightRange))
@@ -537,6 +647,9 @@ pub struct Search {
     /// Only records matching this filter.
     #[serde(default, rename = "where", skip_serializing_if = "Option::is_none")]
     pub filter: Option<Condition>,
+    /// A second stage over the first `top` hits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank: Option<Rerank>,
     /// Return each field's provenance with its value.
     #[serde(default)]
     pub with_meta: bool,
@@ -564,6 +677,8 @@ struct SearchWire {
     #[serde(default, rename = "where")]
     filter: Option<Condition>,
     #[serde(default)]
+    rerank: Option<Rerank>,
+    #[serde(default)]
     with_meta: bool,
     #[serde(default, flatten)]
     at: ReadAt,
@@ -574,20 +689,21 @@ impl<'de> Deserialize<'de> for Search {
         use serde::de::Error;
         let mut own = serde_json::Map::deserialize(d)?;
         let members = [
-            "mode", "text", "fields", "field", "vector", "weight", "also",
+            "mode", "text", "fields", "field", "vector", "weight", "also", "model",
         ];
         let mode = (members.iter().chain(&["text_weight"])).filter_map(|m| own.remove_entry(*m));
         let mode =
             serde_json::from_value(Value::Object(mode.collect())).map_err(D::Error::custom)?;
         let w: SearchWire = serde_json::from_value(Value::Object(own)).map_err(D::Error::custom)?;
-        let (ty, k, cursor, filter, with_meta, at) =
-            (w.ty, w.k, w.cursor, w.filter, w.with_meta, w.at);
+        let (ty, k, cursor, filter, rerank, with_meta, at) =
+            (w.ty, w.k, w.cursor, w.filter, w.rerank, w.with_meta, w.at);
         Ok(Search {
             ty,
             mode,
             k,
             cursor,
             filter,
+            rerank,
             with_meta,
             at,
         })
@@ -605,8 +721,14 @@ pub struct Hits {
     /// The mode that actually ranked them (a hybrid search without a
     /// vector or a backend is lexical, and says so here): `lexical`,
     /// `vector`, `hybrid`, or `index` and `hybrid (index)` when the vector
-    /// field is one the lake asks an index for, whose set the hits are.
+    /// field is one the lake asks an index for, whose set the hits are; a
+    /// search with a second stage adds ` + rerank`.
     pub ranked_by: String,
+    /// Whether the first stage holds more hits than the second stage's
+    /// window took, unranked and not answered. Only a reranked search
+    /// ends at a window.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
     /// Each axis that ranked, in the order the fusion sums them.
     #[serde(default)]
     pub axes: Vec<Axis>,
@@ -615,7 +737,7 @@ pub struct Hits {
 /// One axis a search ranked by.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Axis {
-    /// `lexical` or `vector`.
+    /// `lexical`, `vector` or `rerank`.
     pub axis: String,
     /// The vector field it ranked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -630,6 +752,12 @@ pub struct Axis {
     /// search's own, else its type's `search_weights` setting's, else 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight: Option<f64>,
+    /// The model the caller named for this axis's query vector, as it
+    /// was named (for the `rerank` axis, the reranker's own): over a field
+    /// declared as an embedding the field's own, and over any other field
+    /// not judged, since the lake knows no model of its own there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// One search hit.

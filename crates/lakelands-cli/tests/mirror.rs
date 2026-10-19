@@ -217,6 +217,9 @@ struct Two {
     main: Arc<dyn LakeStore>,
     crm_at: Location,
     main_at: Location,
+    /// The engine, and every further lake's location handed out on it.
+    engine: Engine,
+    more: Vec<Location>,
     seams: Seams,
     dir: PathBuf,
     restricted: bool,
@@ -287,11 +290,21 @@ impl Two {
             main,
             crm_at,
             main_at,
+            engine: engine.clone(),
+            more: Vec::new(),
             seams,
             dir,
             restricted: false,
             grants: writer_grants(),
         }
+    }
+
+    /// The location of a further lake `name` on the same engine, whose
+    /// schema is dropped with the two (lakelands#1011).
+    fn lake(&mut self, name: &str) -> Location {
+        let at = location(&self.engine, &self.dir, name);
+        self.more.push(at.clone());
+        at
     }
 
     fn config(&self, start: Start) -> MirrorConfig {
@@ -448,6 +461,7 @@ impl Drop for Two {
     fn drop(&mut self) {
         let schemas: Vec<(String, String)> = [&self.crm_at, &self.main_at]
             .into_iter()
+            .chain(&self.more)
             .filter_map(schema)
             .collect();
         if schemas.is_empty() {
@@ -522,11 +536,7 @@ async fn settle(m: &mut Mirror) {
 async fn migrate(lake: &dyn LakeStore, to: Value) {
     let cat = doors(lake);
     let who = owner(lake);
-    let migration = Migration {
-        to: serde_json::from_value(to).unwrap(),
-        renames: vec![],
-        relation_renames: Vec::new(),
-    };
+    let migration = Migration::to(serde_json::from_value(to).unwrap());
     let report = cat.migrate(&who, migration.clone()).await.unwrap().data;
     assert!(report.lossless, "{report:?}");
     cat.migrate_apply(&who, migration, &report.report_id)
@@ -616,15 +626,15 @@ async fn a_mirror_reads_on_past_a_bounded_poll() {
 async fn a_source_lake_of_another_format_is_refused_at_its_open() {
     use lakelands_api::canonical;
     use lakelands_api::error::Situation;
-    use lakelands_api::event::LOG_FORMAT_VERSION;
+    use lakelands_api::event::{LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT};
     for engine in engines() {
         let two = Two::new("format", &engine).await;
         two.upsert("partner", "acme", json!({"name": "acme"})).await;
         two.crm.close().await.unwrap();
         let (crm_at, seams) = (two.crm_at.clone(), two.seams.clone());
-        // The source's next event as the release before wrote it: its
-        // format one below, its hash made right.
-        let other = LOG_FORMAT_VERSION - 1;
+        // The source's next event as a later release would write it: its
+        // format one above, its hash made right.
+        let other = LOG_FORMAT_VERSION + 1;
         {
             let name = match engine {
                 Engine::Memory => "memory",
@@ -661,17 +671,98 @@ async fn a_source_lake_of_another_format_is_refused_at_its_open() {
             panic!("a source lake in format {other} opened to be mirrored");
         };
         assert!(
-            matches!(e.situation(), Some(Situation::LogFormat { lake, found, reads })
+            matches!(e.situation(), Some(Situation::LogFormat { lake, found, reads, .. })
                 if lake == "crm" && *found == u64::from(other)
                     && *reads == u64::from(LOG_FORMAT_VERSION)),
             "{}: {e:?}",
             engine.name()
         );
         let said = format!(
-            "lake `crm` is written in log format {other}, and this release reads and writes \
-             format {LOG_FORMAT_VERSION} alone; nothing was read from it and nothing appended"
+            "lake `crm` is written in log format {other}, and this release reads log formats \
+             {OLDEST_LOG_FORMAT} to {LOG_FORMAT_VERSION} and writes {LOG_FORMAT_VERSION}; \
+             nothing was read from it and nothing appended"
         );
         assert!(e.to_string().contains(&said), "{e}");
+    }
+}
+
+/// A source lake the release before wrote whole, in format 14, is not
+/// read as it is: the open a mirror makes of its source, read-only, is
+/// refused with the way, on every engine; its first writer's open
+/// upgrades it (`docs/log-format.md` §6).
+#[tokio::test]
+async fn a_source_lake_of_the_format_before_is_refused_until_it_is_upgraded() {
+    use lakelands_api::canonical;
+    use lakelands_api::error::Situation;
+    use lakelands_api::event::{LOG_FORMAT_VERSION as NEW, OLDEST_LOG_FORMAT as OLD};
+    for engine in engines() {
+        let mut two = Two::new("format14", &engine).await;
+        let at = two.lake("older");
+        let name = match engine {
+            Engine::Memory => "memory",
+            Engine::Sqlite => "sqlite",
+            Engine::Postgres(_) => "pg",
+        };
+        let opener = two.seams.engines.iter().find(|e| e.name() == name).unwrap();
+        let seam = opener.open(&at, OpenMode::Create).unwrap();
+        let lease = seam.take_lease("the release before").unwrap();
+        let older = |e: lakelands_api::engine::CanonicalEvent, format: bool| {
+            let mut v: Value = serde_json::from_slice(&e.bytes).unwrap();
+            v["v"] = json!(OLD);
+            if format {
+                v["body"]["format"] = json!(OLD);
+            }
+            v.as_object_mut().unwrap().remove("hash");
+            let hash = canonical::sha256_hex(&v);
+            v["hash"] = json!(hash);
+            lakelands_api::engine::CanonicalEvent {
+                hash: lakelands_api::event::Digest(hash),
+                bytes: canonical::to_vec(&v),
+                ..e
+            }
+        };
+        let made = lakelands_store::log::Draft::system(
+            lakelands_api::Timestamp(1),
+            EventBody::LakeCreated { format: OLD },
+        );
+        let zero = lakelands_api::event::Digest::zero();
+        let (_, made) =
+            lakelands_store::log::seal(&at.lake, lakelands_api::Position(0), &zero, 0, made);
+        let made = older(made, true);
+        let taken = lakelands_store::log::Draft::system(
+            lakelands_api::Timestamp(2),
+            EventBody::LeaseTaken {
+                fence: lease.fence,
+                holder: lease.holder.clone(),
+            },
+        );
+        let (_, taken) = lakelands_store::log::seal(
+            &at.lake,
+            lakelands_api::Position(1),
+            &made.hash,
+            lease.fence,
+            taken,
+        );
+        seam.append(&lease, &[made, older(taken, false)]).unwrap();
+        seam.release_lease(&lease).unwrap();
+        drop(seam);
+        let Err(e) = lakelands_store::open(at.clone(), two.seams.clone(), OpenMode::Read).await
+        else {
+            panic!(
+                "{}: a source lake in format {OLD} opened as it is",
+                engine.name()
+            );
+        };
+        assert!(
+            matches!(e.situation(), Some(Situation::LogUpgradeOwed { lake, found, reads })
+                if lake == "older" && *found == u64::from(OLD) && *reads == u64::from(NEW)),
+            "{}: {e:?}",
+            engine.name()
+        );
+        let writer = lakelands_store::open(at.clone(), two.seams.clone(), OpenMode::Write).await;
+        writer.unwrap().close().await.unwrap();
+        let reader = lakelands_store::open(at, two.seams.clone(), OpenMode::Read).await;
+        assert!(reader.is_ok(), "{}: {:?}", engine.name(), reader.err());
     }
 }
 
@@ -1032,6 +1123,54 @@ async fn a_value_renamed_in_the_source_is_copied_again() {
     }
 }
 
+/// A migration's fill writes values and no record event: the mirror copies
+/// the type again, and the copy names the source's state after the fill,
+/// whose value is of origin `initial` there.
+#[tokio::test]
+async fn a_field_filled_in_the_source_is_copied_again() {
+    for engine in engines() {
+        for start in [Start::Snapshot, Start::Head] {
+            let two = Two::new(&format!("filled-{start:?}"), &engine).await;
+            let mut m = two.mirror_from(start).await.unwrap();
+            settle(&mut m).await;
+            two.upsert("customer", "c1", json!({"code": "c1"})).await;
+            settle(&mut m).await;
+            let cat = doors(two.crm.as_ref());
+            let who = owner(two.crm.as_ref());
+            let mut to = serde_json::to_value(&source_types()[1]).unwrap();
+            to["fields"][2]["initial"] = json!("gold");
+            to.as_object_mut().unwrap().remove("declare");
+            let mut migration = Migration::to(serde_json::from_value(to).unwrap());
+            migration.fill = vec!["tier".into()];
+            let report = cat.migrate(&who, migration.clone()).await.unwrap().data;
+            let applied = cat.migrate_apply(&who, migration, &report.report_id);
+            let at = match applied.await.unwrap() {
+                lakelands_api::write::Outcome::Applied { position, .. } => position,
+                other => panic!("{other:?}"),
+            };
+            settle(&mut m).await;
+            let get = Get {
+                key: RecordKey::from("c1"),
+                with_meta: true,
+                at: ReadAt::default(),
+                params: Default::default(),
+            };
+            let source = cat.get(&who, &"customer".into(), get).await.unwrap().data;
+            let filled = &source.meta[&lakelands_api::FieldName::from("tier")];
+            assert_eq!((filled.origin, filled.position), (Origin::Initial, at));
+            let copy = two.copy("customer", "c1").await.expect("copied");
+            assert_eq!(copy.fields.get("tier"), Some(&json!("gold")), "{start:?}");
+            let upstream = copy.meta[&lakelands_api::FieldName::from("tier")]
+                .upstream
+                .clone();
+            assert!(
+                upstream.is_some_and(|u| u.lake.as_str() == "crm" && u.position >= at),
+                "{start:?}: {copy:?}"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn snapshot_copies_what_is_there_and_head_does_not() {
     for engine in engines() {
@@ -1154,8 +1293,10 @@ async fn a_target_type_the_source_does_not_own_whole_is_refused_at_start() {
 
 /// A derived relation of a mirrored type stores nothing, so its source
 /// writes nothing for it (lakelands#902): the mirror starts whether the
-/// source declares the relation or not, and a walk over it in the target
-/// answers what the same walk answers in the source.
+/// source derives the relation, carries one of that name by links or
+/// declares none, and a walk over it in the target answers by the
+/// target's own match: what the same walk answers in the source where
+/// the source derives it too, and not what the source's links answer.
 #[tokio::test]
 async fn a_derived_relation_of_a_mirrored_type_is_the_targets_own_reading() {
     use lakelands_api::query as q;
@@ -1170,12 +1311,13 @@ async fn a_derived_relation_of_a_mirrored_type_is_the_targets_own_reading() {
         };
         let pattern = q::Pattern {
             start: q::Start {
-                ty: "customer".into(),
+                ty: Some("customer".into()),
                 key: Some("c1".into()),
                 filter: None,
                 search: None,
                 params: Default::default(),
                 named: None,
+                rerank: None,
             },
             steps: vec![step],
             to: None,
@@ -1693,5 +1835,177 @@ async fn a_copy_crosses_at_its_source_depth_and_a_chain_past_the_targets_ceiling
             .expect("customer stopped")
             .why;
         assert!(why.contains("at depth 9"), "{why}");
+    }
+}
+
+/// At the source's forgetting of a source (058), a mapped type whose
+/// source type has an erasable field stops past the act, naming the
+/// source, since its copies may hold that source's values under the
+/// mirror's own; a type with no erasable field goes on.
+#[tokio::test]
+async fn a_forgetting_in_the_source_stops_a_type_with_an_erasable_field() {
+    for engine in engines() {
+        let engine = &engine;
+        let email = json!({"name": "email", "type": {"kind": "text"}, "authority": "source", "erasable": true});
+        let source = vec![
+            decl(
+                json!({"declare": "type", "name": "partner", "key": ["name"],
+                        "fields": [required("name", "authored")]}),
+            ),
+            decl(
+                json!({"declare": "type", "name": "customer", "key": ["code"],
+                        "fields": [required("code", "source"), email]}),
+            ),
+        ];
+        let target = vec![
+            decl(
+                json!({"declare": "type", "name": "partner", "key": ["name"],
+                        "fields": [required("name", "source")]}),
+            ),
+            customer_copy(vec![required("code", "source"), text("email", "source")]),
+        ];
+        let mut two = Two::with("forgotten", engine, source, target).await;
+        // The source lake again, with a keyring.
+        two.crm.close().await.unwrap();
+        let keyring = lakelands_backings::FileKeyring::new(two.dir.join("keys"));
+        let seams = Seams {
+            keys: Some(Arc::new(keyring)),
+            ..two.seams.clone()
+        };
+        two.crm = lakelands_store::open(two.crm_at.clone(), seams, OpenMode::Write)
+            .await
+            .unwrap();
+        let rows = vec![lakelands_core::conformance::fixture::source_record(
+            "customer",
+            "c1",
+            json!({"code": "c1", "email": "ada@example.org"}),
+        )];
+        let cat = doors(two.crm.as_ref());
+        lakelands_core::conformance::fixture::ingest(
+            cat.as_ref(),
+            &owner(two.crm.as_ref()),
+            "web",
+            rows,
+        )
+        .await
+        .unwrap();
+        two.upsert("partner", "acme", json!({"name": "acme"})).await;
+        let mut m = two.mirror().await.unwrap();
+        settle(&mut m).await;
+        assert!(
+            two.copy("customer", "c1").await.is_some(),
+            "{engine:?}: c1 crossed"
+        );
+        two.crm.forget_source(&"web".into(), None).await.unwrap();
+        two.upsert("partner", "globex", json!({"name": "globex"}))
+            .await;
+        settle(&mut m).await;
+        let kept = m.kept().types[&TypeName::from("customer")].clone();
+        let why = kept.stopped.expect("customer stopped").why;
+        assert!(
+            why.contains("forgot `web`") && why.contains("mirror:"),
+            "{why}"
+        );
+        assert!(
+            two.copy("partner", "globex").await.is_some(),
+            "{engine:?}: partner, with no erasable field, goes on"
+        );
+    }
+}
+
+/// At the source's act of removal (065), each mapped type with a field
+/// the reader reads that a removal may take stops past the act, erasable
+/// or not, naming the source and the way out; a type of key, reference
+/// and authored fields goes on, and a restart resumes once the host has copied
+/// the type again. The stop is decided by the type as the reader sees
+/// it: in a lake where the selected event wrote `secret`, which the
+/// reader may not read, and in its twin where it wrote nothing but the
+/// key, the mirror stops alike, at the same position, saying the same.
+#[tokio::test]
+async fn a_removal_in_the_source_stops_a_type_with_a_field_it_may_take() {
+    for engine in engines() {
+        let engine = &engine;
+        let partner = |note: bool| {
+            let mut f = vec![
+                required("name", "source"),
+                json!({"name": "parent", "type": {"kind": "reference", "target": "partner"}, "authority": "source"}),
+            ];
+            f.extend(note.then(|| text("note", "authored")));
+            decl(json!({"declare": "type", "name": "partner", "key": ["name"], "fields": f}))
+        };
+        let fields = |by: &str, secret: bool| {
+            let mut f = vec![required("code", by), text("name", by)];
+            f.extend(secret.then(|| text("secret", "source")));
+            f
+        };
+        let mut seen = Vec::new();
+        for hidden in [true, false] {
+            let source = vec![partner(true), customer_copy(fields("shared", true))];
+            let target = vec![partner(false), customer_copy(fields("source", false))];
+            let two = Two::with(&format!("removed-{hidden}"), engine, source, target).await;
+            two.upsert("customer", "c0", json!({"code": "c0", "name": "Ada"}))
+                .await;
+            let cat = doors(two.crm.as_ref());
+            let web = async |rows| {
+                let who = owner(two.crm.as_ref());
+                lakelands_core::conformance::fixture::ingest(cat.as_ref(), &who, "web", rows)
+                    .await
+                    .unwrap();
+            };
+            let row = lakelands_core::conformance::fixture::source_record;
+            let c1 = match hidden {
+                true => json!({"code": "c1", "secret": "s1"}),
+                false => json!({"code": "c1"}),
+            };
+            web(vec![
+                row("partner", "acme", json!({"name": "acme"})),
+                row("customer", "c1", c1),
+            ])
+            .await;
+            let mut m = two.mirror().await.unwrap();
+            settle(&mut m).await;
+            let all = lakelands_api::write::Selection::WrittenBefore(
+                lakelands_api::Timestamp::from_date(9999, 1, 1).unwrap(),
+            );
+            two.crm
+                .remove_values(&"web".into(), &all, false, None)
+                .await
+                .unwrap();
+            web(vec![row("partner", "globex", json!({"name": "globex"}))]).await;
+            settle(&mut m).await;
+            let stopped = m.kept().types[&TypeName::from("customer")].stopped.clone();
+            let stopped =
+                stopped.unwrap_or_else(|| panic!("{engine:?} {hidden}: customer stopped"));
+            assert!(
+                stopped.why.contains("took back part of `web`")
+                    && stopped
+                        .why
+                        .contains("`lakelands values remove` on `mirror:crm:customer`"),
+                "{}",
+                stopped.why
+            );
+            assert!(
+                two.copy("partner", "globex").await.is_some(),
+                "{engine:?}: partner, of key, reference and authored fields, goes on"
+            );
+            let c1 = two.copy("customer", "c1").await.map(|r| r.fields);
+            seen.push((stopped.at, stopped.why, c1));
+            // Once the host has copied the type again, a restart resumes
+            // past the act.
+            drop(m);
+            two.upsert("customer", "c2", json!({"code": "c2", "name": "Bo"}))
+                .await;
+            let mut m = two.mirror().await.unwrap();
+            settle(&mut m).await;
+            assert!(
+                m.kept().types[&TypeName::from("customer")]
+                    .stopped
+                    .is_none()
+                    && two.copy("customer", "c2").await.is_some(),
+                "{engine:?}: a restart resumes: {:?}",
+                m.kept()
+            );
+        }
+        assert_eq!(seen[0], seen[1], "{engine:?}: the twins stop alike");
     }
 }

@@ -1,0 +1,4 @@
+name: invoice_status
+kind: text
+one_of: [open, paid, cancelled]
+description: Where an invoice stands. A late invoice is still open; how late it is, is its days_overdue.

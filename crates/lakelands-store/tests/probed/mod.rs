@@ -1,6 +1,6 @@
 //! The memory engine behind a wrapper that remembers what was asked of
 //! it and can fail a call: the most rows one `scan` handed out, a scan of a
-//! type to fail, the scans, the puts of records and the commits in the
+//! type to fail, the reads of a type by key to fail, the scans, the puts of records and the commits in the
 //! order they came, a commit, a `begin` or a view to refuse, a look at
 //! the lake before each commit, while its transaction is open, and a seal
 //! that hands another digest than the engine took or asks twice; and it
@@ -53,6 +53,8 @@ pub struct Probe {
     pub most: AtomicUsize,
     /// A scan to fail: the n-th of a type from now, counted from 1.
     pub fail: Mutex<Option<(TypeName, usize)>>,
+    /// A type whose every `get` and `get_many` fails while it is set.
+    pub fail_get: Mutex<Option<TypeName>>,
     /// The scans, the puts of records and the commits, in order.
     pub asked: Mutex<Vec<Asked>>,
     /// A commit to refuse: the n-th from now, counted from 1.
@@ -77,6 +79,8 @@ pub struct Probe {
     pub rows: Mutex<std::collections::BTreeMap<TypeName, usize>>,
     /// How many times a kept view's state was read (`sys:kept`).
     pub states: AtomicUsize,
+    /// The keys each type was read at by `get` and `get_many`, in all.
+    pub gets: Mutex<std::collections::BTreeMap<TypeName, usize>>,
     /// The last record put under each kept name and key.
     pub kept: Mutex<std::collections::BTreeMap<(TypeName, RecordKey), StoredRecord>>,
     /// The entries of the kept views' orders put since the last clear, by
@@ -95,6 +99,9 @@ pub struct Probe {
     /// A position the head's view is handed out at, as a projection being
     /// rebuilt lags the head.
     pub lags: Mutex<Option<Position>>,
+    /// A position the projection answers it is folded through, as while
+    /// a rebuild refolds the log.
+    pub refolded: Mutex<Option<Position>>,
     /// Whether the feed's index decides nothing, as when a projection a
     /// rebuild cleared has not refolded the range asked.
     pub undecided: std::sync::atomic::AtomicBool,
@@ -120,6 +127,22 @@ impl Probe {
 
     fn asked(&self, what: Asked) {
         self.asked.lock().unwrap().push(what);
+    }
+
+    /// A read of `ty`'s records by key, failed where `fail_get` names it.
+    fn got(&self, ty: &TypeName, n: usize) -> Result<()> {
+        *self.gets.lock().unwrap().entry(ty.clone()).or_default() += n;
+        if self.fail_get.lock().unwrap().as_ref() != Some(ty) {
+            return Ok(());
+        }
+        let message = format!("the read of `{ty}` failed (planted)");
+        Err(lakelands_api::Error::unavailable(
+            lakelands_api::error::Situation::Storage {
+                doing: lakelands_api::error::Doing::Read,
+                part: lakelands_api::error::Part::Projection,
+                detail: lakelands_api::error::Detail::scrubbed(message),
+            },
+        ))
     }
 
     /// Whether this call is the one `planted` names: it counts down.
@@ -160,9 +183,11 @@ impl ProjectionView for ProbedView<'_> {
         self.inner.declarations()
     }
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
+        self.probe.got(ty, 1)?;
         self.inner.get(ty, key)
     }
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
+        self.probe.got(ty, keys.len())?;
         self.inner.get_many(ty, keys)
     }
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
@@ -242,11 +267,26 @@ impl ProjectionView for ProbedView<'_> {
         }
         self.inner.matching(filter, from, through, limit)
     }
+    fn of_source(
+        &self,
+        source: &lakelands_api::SourceId,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<lakelands_api::engine::Matched> {
+        if self.probe.undecided.load(Ordering::SeqCst) {
+            return Ok(lakelands_core::feed::undecided());
+        }
+        self.inner.of_source(source, from, through, limit)
+    }
 }
 
 impl LakeEngine for Probed {
     fn name(&self) -> &str {
         self.inner.name()
+    }
+    fn rebuild_rate(&self) -> u64 {
+        self.inner.rebuild_rate()
     }
     fn lake(&self) -> &LakeId {
         self.inner.lake()
@@ -392,7 +432,10 @@ impl ProjectionStore for Probed {
         self.inner.projection().rollback();
     }
     fn folded_through(&self) -> Result<Option<Position>> {
-        self.inner.projection().folded_through()
+        match *self.probe.refolded.lock().unwrap() {
+            Some(at) => Ok(Some(at)),
+            None => self.inner.projection().folded_through(),
+        }
     }
     fn put_declaration(
         &self,

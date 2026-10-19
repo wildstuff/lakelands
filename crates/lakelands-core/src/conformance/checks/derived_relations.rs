@@ -65,7 +65,10 @@ fn pair(from: &str, to: &str) -> MatchPair {
 fn derived(name: &str, target: &str, pairs: Vec<MatchPair>) -> RelationDecl {
     RelationDecl {
         cardinality: Cardinality::ManyToOne,
-        derived: Some(Derived { pairs }),
+        derived: Some(Derived {
+            pairs,
+            filter: None,
+        }),
         ..RelationDecl::to(name, target)
     }
 }

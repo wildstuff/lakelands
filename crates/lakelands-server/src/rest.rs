@@ -44,7 +44,7 @@ use lakelands_api::error::{Case, Error, Form, Names, Refusal, Said};
 use lakelands_api::id::{LakeId, Position, SourceId};
 use lakelands_api::read::POSITION_HEADER;
 use lakelands_api::record::SourceRecord;
-use lakelands_api::seam::{ChangeFeed, FeedFilter};
+use lakelands_api::seam::FeedFilter;
 use lakelands_api::tools::{Door, tools};
 use lakelands_api::{Catalog, LakeStore, Principal, WriteContext};
 use serde_json::{Map, Value, json};
@@ -61,8 +61,6 @@ type Stop = Box<Answer>;
 
 /// The longest line an ingest body may carry.
 const MAX_LINE: usize = 4 << 20;
-/// How many events one poll of the feed reads.
-const FEED_BATCH: u32 = 256;
 /// A quiet feed sends a comment this often, so a proxy keeps it open and
 /// a closed connection is noticed.
 pub(crate) const KEEP_ALIVE: Duration = Duration::from_secs(15);
@@ -88,8 +86,13 @@ fn failure_json(e: &Error, f: &Failure) -> Value {
 /// The status a contract error answers with.
 fn status_of(e: &Error) -> StatusCode {
     match e {
+        Error::Ingested { error, .. } => status_of(error),
         Error::Refused { reason, .. } => match reason {
-            Refusal::NotGranted | Refusal::WrongDoor | Refusal::Reserved => StatusCode::FORBIDDEN,
+            Refusal::NotGranted
+            | Refusal::WrongDoor
+            | Refusal::VerbsOnly { .. }
+            | Refusal::Reserved
+            | Refusal::Declined(_) => StatusCode::FORBIDDEN,
             Refusal::Decided | Refusal::Unanswered(_) => StatusCode::CONFLICT,
             Refusal::Invalid(_)
             | Refusal::Constraint(_)
@@ -189,13 +192,14 @@ enum Kind {
 }
 
 const AT: [(&str, Kind); 2] = [("as_of", Kind::Int), ("valid_at", Kind::Text)];
-const FIND: [(&str, Kind); 12] = [
+const FIND: [(&str, Kind); 13] = [
     ("where", Kind::Text),
     ("order_by", Kind::Order),
     ("limit", Kind::Int),
     ("cursor", Kind::Text),
     ("offset", Kind::Int),
     ("total", Kind::Flag),
+    ("retired", Kind::Flag),
     ("after", Kind::Json),
     ("aggregate", Kind::Json),
     ("with_meta", Kind::Flag),
@@ -580,6 +584,14 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
             BodyAs::Nothing,
             Writes::No,
         ),
+        (["proposals", id, "accept_planned"], Method::POST) => r(
+            Door::Accept,
+            "POST …/proposals/<id>/accept_planned",
+            arg("proposal", id),
+            &[],
+            BodyAs::Args,
+            Writes::No,
+        ),
         (["proposals", id, "reject"], Method::POST) => r(
             Door::Reject,
             "POST …/proposals/<id>/reject",
@@ -623,6 +635,22 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
         (["schema", "recompute"], Method::POST) => r(
             Door::Recompute,
             "POST …/schema/recompute",
+            none,
+            &[],
+            BodyAs::Args,
+            Writes::No,
+        ),
+        (["schema", "plan"], Method::POST) => r(
+            Door::Plan,
+            "POST …/schema/plan",
+            none,
+            &[],
+            BodyAs::Args,
+            Writes::No,
+        ),
+        (["schema", "enact"], Method::POST) => r(
+            Door::Enact,
+            "POST …/schema/enact",
             none,
             &[],
             BodyAs::Args,
@@ -830,7 +858,7 @@ async fn door(
             }
         }
     }
-    let v = doors::run(catalog.as_ref(), who, &r.door, r.label, a)
+    let v = doors::run(catalog.as_ref(), who, &r.door, r.label, (a, None))
         .await
         .map_err(fault_answer)?;
     let status = if v["outcome"] == "proposed" {
@@ -1012,7 +1040,15 @@ async fn ingest(
     source: SourceId,
     req: Request<Incoming>,
 ) -> Result<Answer, Stop> {
-    query_args(req.uri().query(), &[], "POST …/ingest/<source>")?;
+    let args = query_args(
+        req.uri().query(),
+        &[("delivery", Kind::Text)],
+        "POST …/ingest/<source>",
+    )?;
+    let delivery = args.get("delivery").and_then(Value::as_str);
+    let opts = lakelands_api::IngestOpts {
+        delivery: delivery.map(Into::into),
+    };
     if let Some(ct) = header(req.headers(), CONTENT_TYPE.as_str())
         && ![
             "application/x-ndjson",
@@ -1039,7 +1075,7 @@ async fn ingest(
     };
     let catalog: Arc<dyn Catalog> = store.catalog(WriteContext::default());
     let mut commits = catalog
-        .ingest(who, &source, Box::pin(lines))
+        .ingest_with(who, &source, opts, Box::pin(lines))
         .await
         .map_err(contract)?;
     let (tx, rx) = mpsc::channel(16);
@@ -1132,80 +1168,91 @@ async fn feed(
         }));
     }
     let (tx, rx) = mpsc::channel(16);
-    let (source, pause) = (store.feed(), state.feed_poll);
-    tokio::spawn(tail(source, from, filter, pause, tx));
+    let pace = (state.feed_poll, state.feed_floor);
+    tokio::spawn(tail(store.clone(), from, filter, pace, tx));
     let mut r = with_position(streamed("text/event-stream", rx), Some(head));
     r.headers_mut()
         .insert("cache-control", HeaderValue::from_static("no-store"));
     Ok(r)
 }
 
+/// An event as one SSE frame, with the comment `: overruled` where its
+/// batch names it overruled (065).
+fn frame(e: &lakelands_api::event::Event, overruled: bool) -> Bytes {
+    let data = serde_json::to_string(&to_json(e)).expect("JSON prints");
+    let (at, kind) = (e.position.0, e.body.kind());
+    let mark = if overruled { ": overruled\n" } else { "" };
+    format!("id: {at}\n{mark}event: {kind}\ndata: {data}\n\n").into()
+}
+
 /// Send the feed from `from` on, then wait for more, until the client
-/// goes away.
+/// goes away. It reads the lake's hub for its filter's kinds and types,
+/// applying its keys itself (lakelands#1113).
 async fn tail(
-    source: Arc<dyn ChangeFeed>,
+    store: Arc<dyn LakeStore>,
     mut at: Position,
     filter: FeedFilter,
-    pause: Duration,
+    (pause, floor): (Duration, Duration),
     tx: mpsc::Sender<Bytes>,
 ) {
+    let failure = async |e: Error| {
+        let f = Failure::from(e.clone());
+        let data = serde_json::to_string(&failure_json(&e, &f)).expect("JSON prints");
+        let _ = tx
+            .send(format!("event: error\ndata: {data}\n\n").into())
+            .await;
+    };
+    let mut follow = match crate::hub::Follow::new(&store, filter, (pause, floor)).await {
+        Ok(f) => f,
+        Err(e) => return failure(e).await,
+    };
     let mut last_sent = Instant::now();
     // The `next` last told, so a client that stops when caught up hears it
     // once per position, not once per pause.
     let mut told: Option<Position> = None;
     loop {
-        let batch = match source.poll(at, &filter, FEED_BATCH).await {
-            Ok(b) => b,
-            Err(e) => {
-                let f = Failure::from(e.clone());
-                let data = serde_json::to_string(&failure_json(&e, &f)).expect("JSON prints");
-                let _ = tx
-                    .send(format!("event: error\ndata: {data}\n\n").into())
-                    .await;
-                return;
+        match follow.next(at, pause).await {
+            Err(e) => return failure(e).await,
+            Ok(crate::hub::Next::Quiet) => {}
+            Ok(crate::hub::Next::Batch(b)) => {
+                // Of the batch, the events at `at` and after that its keys
+                // admit, as the frames the batch made once.
+                let events = b.batch.events.iter().zip(b.frames(frame));
+                let new = |(e, _): &(&lakelands_api::event::Event, &Bytes)| {
+                    e.position >= at && follow.admits(e)
+                };
+                for (_, f) in events.filter(new) {
+                    if tx.send(f.clone()).await.is_err() {
+                        return;
+                    }
+                    last_sent = Instant::now();
+                }
+                let caught_up = crate::hub::caught_up(&b.batch, at);
+                at = at.max(b.batch.next);
+                // Caught up: the first position not yet examined, the `next`
+                // a poll would answer, told when it moved since last told.
+                if caught_up && told != Some(at) {
+                    let next = format!(": next {}\n\n", at.0);
+                    if tx.send(next.into()).await.is_err() {
+                        return;
+                    }
+                    told = Some(at);
+                    last_sent = Instant::now();
+                }
             }
-        };
-        for e in &batch.events {
-            let data = serde_json::to_string(&to_json(e)).expect("JSON prints");
-            let event = format!(
-                "id: {}\nevent: {}\ndata: {data}\n\n",
-                e.position.0,
-                e.body.kind()
-            );
-            if tx.send(event.into()).await.is_err() {
+        }
+        if last_sent.elapsed() >= KEEP_ALIVE {
+            if tx
+                .send(Bytes::from_static(b": keep-alive\n\n"))
+                .await
+                .is_err()
+            {
                 return;
             }
             last_sent = Instant::now();
         }
-        let caught_up = batch.next > batch.head || batch.next == at;
-        at = batch.next;
-        if caught_up {
-            // Caught up: the first position not yet examined, the `next` a
-            // poll would answer, told when it moved since it was last told.
-            if told != Some(at) {
-                if tx
-                    .send(format!(": next {}\n\n", at.0).into())
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-                told = Some(at);
-                last_sent = Instant::now();
-            } else if last_sent.elapsed() >= KEEP_ALIVE {
-                if tx
-                    .send(Bytes::from_static(b": keep-alive\n\n"))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-                last_sent = Instant::now();
-            }
-            tokio::time::sleep(pause).await;
-            if tx.is_closed() {
-                return;
-            }
+        if tx.is_closed() {
+            return;
         }
     }
 }

@@ -51,7 +51,7 @@ check!(
 
 check!(
     STEP_TO_UNBOUND_VIEW = a_step_arriving_at_a_view_with_parameters_is_refused_before_reading,
-    "018 and 029: a view's parameters are bound only by a read that names it, so a pattern (rows or a measure) whose step arrives at a view with parameters other than its start is refused as invalid before any record is read, naming the view and the relation, the same with no records and with some; a pattern started on that view with its parameters, stepping out, is answered"
+    "018 and 029: a view's parameters are bound only by a read that names it, so a pattern (rows or a measure) whose step arrives at a view with parameters other than its start is refused as invalid before any record is read, naming the view and the relation, the same with no records and with some, and from depth 0, where the step reaches the start's type too and binds under its relation's name (lakelands#990); a pattern started on that view with its parameters, stepping out, is answered"
 );
 
 fn payment() -> TypeDecl {
@@ -109,6 +109,7 @@ fn paid() -> TypeDecl {
                 from: "account".into(),
                 to: "account".into(),
             }],
+            filter: None,
         }),
         ..RelationDecl::to("window", "account_window")
     }];
@@ -421,21 +422,56 @@ async fn a_step_arriving_at_a_view_with_parameters_is_refused_before_reading(sto
     let hop = || vec![step("window", Walk::Out)];
     let rows = || pattern("payment", None, hop(), Projection::Rows { fields: vec![] });
     let degree = || pattern("payment", None, hop(), Projection::Degree);
+    // `on` is declared by `abacus`, which comes first by name, and by the
+    // view: from an account the step reaches both and binds them under its
+    // name (lakelands#990), so the view is arrived at though the first type
+    // it reaches is not one.
+    let on = |owner: TypeDecl| {
+        let mut t = owner;
+        t.relations.push(RelationDecl {
+            derived: Some(Derived {
+                pairs: vec![MatchPair {
+                    from: "account".into(),
+                    to: "account".into(),
+                }],
+                filter: None,
+            }),
+            ..RelationDecl::to("on", "acct")
+        });
+        t
+    };
+    let mut acct = type_decl("acct", vec![field("account", StorageKind::Text)]);
+    acct.key = vec!["account".into()];
+    l.declare(acct).await?;
+    l.declare(on(type_decl(
+        "abacus",
+        vec![field("account", StorageKind::Text)],
+    )))
+    .await?;
+    l.declare(on(account_window())).await?;
+    let open = || {
+        let s = step("on", Walk::In);
+        pattern("acct", None, vec![s], Projection::Rows { fields: vec![] })
+    };
     // The answer does not depend on the data: with no payment and with one.
     for (when, write) in [("with no payment", false), ("with one payment", true)] {
         if write {
             let p1 = json!({"account": "a", "date": "2026-06-10", "amount": "10.00"});
             l.upsert("payment", "p1", p1).await?;
         }
-        for (what, p) in [("rows", rows()), ("a degree", degree())] {
+        for (what, p, rel) in [
+            ("rows", rows(), "window"),
+            ("a degree", degree(), "window"),
+            ("rows over a relation the view also declares", open(), "on"),
+        ] {
             let r = l.cat.query(&l.own, p).await;
             ensure!(
                 invalid_like(
                     &r,
                     &json!({"code": "param_missing", "type": "account_window",
-                                         "unbound": true, "at": [{"relation": "window"}]})
+                                         "unbound": true, "at": [{"relation": rel}]})
                 ),
-                "a pattern of {what} from `payment` stepping over `window` arrives at the view \
+                "a pattern of {what} stepping over `{rel}` arrives at the view \
                  `account_window` with no parameters bound, and must be refused as invalid \
                  {when}, naming the view and the relation; it answered {r:?}"
             );

@@ -109,6 +109,8 @@ pub(crate) fn driver<R: Send>(f: impl FnOnce() -> R + Send) -> R {
 pub(crate) struct Db {
     client: Option<Client>,
     prepared: HashMap<String, Statement>,
+    /// A `COMMIT` was sent since [`Db::transaction`] last began one.
+    committing: bool,
 }
 
 impl Drop for Db {
@@ -122,6 +124,18 @@ impl Drop for Db {
 type Params<'a> = &'a [&'a (dyn ToSql + Sync)];
 
 impl Db {
+    /// Whether the server or the network closed the connection: what was
+    /// sent on it last failed, or no statement can be sent on it now.
+    /// Whether a `COMMIT` was sent since [`Db::transaction`] last began:
+    /// a connection that closes after it leaves the outcome unknown.
+    pub(crate) fn committing(&self) -> bool {
+        self.committing
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.client.as_ref().is_none_or(Client::is_closed)
+    }
+
     pub(crate) fn batch(&mut self, statements: &str) -> Result<()> {
         let client = self.client.as_mut().expect("a connection until dropped");
         driver(move || client.batch_execute(statements)).map_err(sql)
@@ -221,6 +235,7 @@ impl Db {
         begin: &str,
         f: impl FnOnce(&mut Db) -> Result<R>,
     ) -> Result<R> {
+        self.committing = false;
         self.batch(begin)?;
         let answer = f(self);
         self.end(answer)
@@ -231,6 +246,7 @@ impl Db {
     pub(crate) fn end<R>(&mut self, answer: Result<R>) -> Result<R> {
         match answer {
             Ok(r) => {
+                self.committing = true;
                 self.batch("COMMIT")?;
                 Ok(r)
             }
@@ -322,6 +338,9 @@ pub(crate) fn connect(target: &Target) -> Result<Db> {
         None => "-c plan_cache_mode=force_custom_plan".to_owned(),
     };
     config.options(&options);
+    // An operator finds the lake's connections by name in
+    // `pg_stat_activity`.
+    config.application_name(&format!("lakelands {}", target.schema));
     let client = match target.tls.mode {
         PgTlsMode::Disable => {
             config.ssl_mode(postgres::config::SslMode::Disable);
@@ -338,6 +357,7 @@ pub(crate) fn connect(target: &Target) -> Result<Db> {
     let mut db = Db {
         client: Some(client),
         prepared: HashMap::new(),
+        committing: false,
     };
     let version: i32 = db
         .query_one("SELECT current_setting('server_version_num')::int4", &[])?

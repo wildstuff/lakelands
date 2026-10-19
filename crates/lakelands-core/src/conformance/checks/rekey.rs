@@ -108,6 +108,64 @@ check!(
     "027, 013 and 024: the references a re-key rewrites are counted for a field the same migration renames, under its new name, and that entry is answered only to a reader who may know of the field in the shape the migration leaves"
 );
 
+check!(
+    REMOVED_WHILE_REKEYING = a_rekey_that_removes_a_relation_is_refused,
+    "027 and 035, extended (lakelands#938): a migration that re-keys a type and removes a relation of it carried by link records is refused as invalid by the preflight and by the apply, naming the relation, and appends nothing: the re-key would move the links its retirements name; the removal and the re-key made as two migrations are applied, the removal retiring the link at its key, and after the re-key no link is live at the old key or the new one"
+);
+
+async fn a_rekey_that_removes_a_relation_is_refused(store: Store) -> Held {
+    const LT: &str = "sys.link.account.owner";
+    let l = lake(store.as_ref(), IBANS).await?;
+    let Lake { cat, own } = &l;
+    let mut both = to_iban();
+    both.to.relations.clear();
+    let case = json!({"code": "remove_while_rekeying",
+                      "at": [{"code": "relation", "name": "owner"}]});
+    let before = store.head().await.must("reading the head")?;
+    let preflight = cat.migrate(own, both.clone()).await;
+    let applied = cat.migrate_apply(own, both, "none").await;
+    let red: Vec<_> = [
+        ("the preflight", preflight.map(drop)),
+        ("the apply", applied.map(drop)),
+    ]
+    .into_iter()
+    .filter(|(_, a)| !crate::conformance::fixture::invalid_like(a, &case))
+    .map(|(what, a)| format!("{what}: {a:?}"))
+    .collect();
+    ensure!(
+        red.is_empty(),
+        "a migration that re-keys `account` and removes `owner` must be refused, naming the \
+         relation: {}",
+        red.join("; ")
+    );
+    head_unmoved(store.as_ref(), before, "a re-key that removes a relation").await?;
+    // As two migrations: the removal retires `1:x`, the re-key moves no link.
+    let mut removal = account_to("number");
+    removal.to.relations.clear();
+    removal.to.fields[1].required = false;
+    let report = cat.migrate(own, removal.clone()).await;
+    let report = report.must("the preflight of removing `owner`")?.data;
+    let applied = cat.migrate_apply(own, removal, &report.report_id).await;
+    applied.must("removing `owner`")?;
+    let mut rekey = to_iban();
+    rekey.to.relations.clear();
+    let report = cat.migrate(own, rekey.clone()).await;
+    let report = report.must("the preflight of the re-key alone")?.data;
+    let applied = cat.migrate_apply(own, rekey, &report.report_id).await;
+    applied.must("re-keying `account` alone")?;
+    let (old, new) = (
+        found(&l, LT, "1:x", None).await?,
+        found(&l, LT, "DE1:x", None).await?,
+    );
+    let links = all(cat.as_ref(), own, LT).await?.len();
+    ensure!(
+        old.is_none() && new.is_none() && links == 0,
+        "removed and then re-keyed, `owner`'s link is live at neither key: `1:x` {old:?}, \
+         `DE1:x` {new:?}, {links} live"
+    );
+    Ok(())
+}
+
 fn account(key: &str, iban_required: bool) -> Value {
     json!({"name": "account", "key": [key],
            "fields": [
@@ -124,11 +182,7 @@ fn account_to(key: &str) -> Migration {
     let mut to: serde_json::Map<String, Value> =
         account(key, true).as_object().cloned().unwrap_or_default();
     to.remove("declare");
-    Migration {
-        to: serde_json::from_value(Value::Object(to)).expect("a type"),
-        renames: vec![],
-        relation_renames: Vec::new(),
-    }
+    Migration::to(serde_json::from_value(Value::Object(to)).expect("a type"))
 }
 
 pub(super) fn to_iban() -> Migration {

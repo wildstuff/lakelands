@@ -1,0 +1,10 @@
+The host surface against v0.1.0: 3 addition(s), 1 deprecated removal(s), 4 change(s) the list names.
+
+Refused:
+- `lakelands-api`: NAME in crates/lakelands-api/src/two.rs (pub_module_level_const_missing): neither an addition, nor a removal v0.1.0 deprecated, nor a line of the list
+- `lakelands-api`: enum Shape (enum_marked_non_exhaustive): neither an addition, nor a removal v0.1.0 deprecated, nor a line of the list
+- `lakelands-api`: field Shape.wider (struct_field_type_changed): neither an addition, nor a removal v0.1.0 deprecated, nor a line of the list
+- `lakelands-api`: variant Order::Desc 0 -> 1 (enum_no_repr_variant_discriminant_changed): neither an addition, nor a removal v0.1.0 deprecated, nor a line of the list
+- `lakelands-store`: function lakelands_store::gone_long_ago (function_missing): a line of scripts/release/fixtures/surface-held/list.txt that no change answers
+- `lakelands-store`: function lakelands_store::kept_door (function_missing): neither an addition, nor a removal v0.1.0 deprecated, nor a line of the list
+- `lakelands-store`: lakelands_store::named_door now takes 2 parameters instead of 1 (function_parameter_count_changed): neither an addition, nor a removal v0.1.0 deprecated, nor a line of the list

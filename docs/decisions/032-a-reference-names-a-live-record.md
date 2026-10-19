@@ -7,7 +7,9 @@ field's target type: one at the head, one written earlier in the same
 append or ingest window, or the record being written itself. A write that
 names any other record is refused whole, on that field, and appends
 nothing. The rule holds for every write door: `upsert`, a verb's write,
-an accepted proposal and `ingest`.
+an accepted proposal and `ingest`. A verb that reads a field across a
+reference reaches the far record by the same rule, at the call
+(`docs/decisions/055-a-path-steps-through-a-reference.md`).
 
 **A reference a record computes is held to the same rule.** A
 `reference` field may be computed at the write, by an expression or an
@@ -17,7 +19,8 @@ writer reaches held (a record written again after it was retired has
 none), and each that is computed from a field the write sends, whatever
 value it then holds, names a live record its writer is answered, as one
 the write sends does (a record held from the writer or outside its
-`only` is to it not there, 006 and 051). A field sent again is a key
+`only` is to it not there, 006 and 051, and so is every record of a
+type it is not shown). A field sent again is a key
 sent again, and that is judged though the record held it already; were
 it not, a writer who may not read the reference would learn it by
 guessing, a dead guess being applied exactly when it is the key held.
@@ -25,8 +28,10 @@ One the write neither moves nor sends a field of is not judged again,
 as a sent one outside the patch is not: else a record whose reference
 names a record retired since could not be written at all. A field is
 sent for a reference that reads it directly or through other computed
-fields; a written reference is computed from nothing, whatever it
-lists beside it. At `ingest` a record its window sends wholly unchanged
+fields, and for one that lists it in `depends_on` whether its
+expression reads it or not: the type in force lists what a computed
+field is computed from (lakelands#936). A written reference is computed
+from nothing, whatever it lists beside it. At `ingest` a record its window sends wholly unchanged
 is a duplicate and is not written, so nothing of it is judged, a sent
 key as little as a computed one. A proposal's accept judges the record as the declarations in force then
 compute it, and what a proposal reaches counts the records its computed
@@ -54,6 +59,37 @@ and a reference that reads a field a backing or an embedding computes,
 directly or through other computed fields, since it lands in the fold
 with that field. The refusal is the door's: the fold is not touched, and
 a log that holds such a declaration folds as before.
+
+**A migration that gives a reference another target converts it only
+where it names a live record of the new target.** A type's reference
+field retargeted, or a relation and so its link type's `to`, keeps each
+stored value that names a live record of the type it now refers to; a
+value that names none is one the migration would lose, so the
+migration is lossy, refused at its proposal and its apply, its report
+naming the records that hold such a value as it names any (lakelands#531).
+The values are looked up in the new target once per field, as distinct
+keys. Apply and accept plan the migration again at the head, so a
+target record retired after the preview makes them lossy there too.
+Live is judged as the migration's author is answered, as its write of
+that reference would be: a target record withheld from it, or a link
+whose end is, is not live to it, so its preview is lossy and its proposal and apply are refused,
+exactly as for an absent key, while an author who holds `restricted`
+converts onto such a record, since it could write the reference itself.
+A proposed retarget reaches the records its values name in the new
+target, of the type's fields and of its link types', so a reviewer not
+answered one is not listed the proposal and its accept and reject are
+not found (051), as for any write that reaches a held record: the
+listing would otherwise tell it, against its own preview, that the
+record exists. Where the new targets hold no restricted record and the
+reviewer holds no `only`, none of them can be withheld from it, and the
+listing does not walk the type for its values. An accept plans the
+migration as its proposer, not as
+the reviewer, holding `restricted` where a value it converted named a
+record restricted then; a report shown to another reader is cut to
+that reader, as every report is.
+Without it a reference came to name, under another target, a record
+of the old one, and a reader kept from the old type read its key
+(lakelands#1071).
 
 Retiring a record that others refer to stays allowed. The references
 then name a retired record, and a walk hides that end as it hides any
@@ -88,7 +124,11 @@ for the partner to be committed.
   computes every record's reference again, with no writer and no
   judgement, and the records may then name what a writer could not
   have written. The next write of such a record that sends no field
-  the reference is computed from is applied.
+  the reference is computed from is applied. The declarer is told of
+  them by the change's plan, before the act and in its outcome: per
+  reference field, the live records it would leave naming no live record
+  (`unlive`, `docs/decisions/062-a-change-plans-before-it-acts.md`,
+  lakelands#1140). The act is never refused for them.
 
 ## How it came to be
 
@@ -97,3 +137,8 @@ for the partner to be committed.
   where only the patch was read and a computed reference could name a
   record that was absent, retired or held; one computed at the read or
   by a function's backing is refused at declare (lakelands#795).
+- A verb that reads across a reference reaches the far record by this
+  rule (lakelands#567).
+- A migration that gives a reference another target converts only the
+  values that name a live record of it; before, every value was kept,
+  naming a record of the old target (lakelands#1071).

@@ -1,0 +1,4 @@
+name: overdue
+of: invoice
+where: "direction = 'outbound' and status = 'open' and due_on < today() - 30d"
+description: Open receivables more than thirty days past their due date.

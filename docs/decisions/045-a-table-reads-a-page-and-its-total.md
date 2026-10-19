@@ -16,6 +16,15 @@
   writers write in between. A page read without the cursor reads the
   head and counts there. `total` beside an `aggregate` is refused as
   invalid: the aggregate is already the count.
+- **A count of the retired, when asked.** `Find.retired` asks `find`
+  to answer, as `retired`, how many retired records match: the same
+  `where`, parameters, `valid_at`, grants and position as the total,
+  each counted where its reader would be answered it were it live
+  (`docs/decisions/006-grants-not-roles.md`). As of an earlier position
+  it counts what stood retired then. A view answers 0: its records are
+  computed and never retired, and a host reading every type need not
+  know which are views. Beside an `aggregate` it is refused as invalid,
+  as the total is (lakelands#1024).
 - **A jump, bounded.** `Find.offset` skips that many rows of `find`'s
   one order (025) before the page. The page's `next_cursor` continues by
   keyset after its last row, as any page's does, so page 8 after a jump
@@ -55,6 +64,12 @@ while a refresh, which reads the head, shows the head's.
 - **Not an estimate.** The total is exact at its position. An engine's
   statistics would answer faster and wrongly.
 - **Not offered for an aggregate**, whose groups are no page.
+- **Not a field.** A retired record is counted, never read: no filter
+  names retirement, and `retired()` keeps its meaning in a trigger's
+  guard alone. The count of the retired costs what the total costs, a
+  pass over the type's records with the retired ones, beside the live
+  count, which a `find` that asks the total too has taken already
+  (lakelands#1024).
 - **Rejected: no offset.** A host could reach page k by walking k
   cursors, or by keeping every cursor it has handed out. That pushes the
   cost of a jump onto every host and leaves it unbounded. A bounded
@@ -64,6 +79,8 @@ while a refresh, which reads the head, shows the head's.
 
 - The first version: a total when asked, and a bounded jump
   (lakelands#381).
+- A count of the retired beside it, for a host that warns of a type
+  that only grows (lakelands#1024).
 - The order and the cursor it cites stand in 025, where the rules of
   029 moved; "the guarantee 029 gives every walk" names a cursor of
   `find` (lakelands#817).

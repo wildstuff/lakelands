@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Case, Place, Said};
 use crate::expr::{Condition, Func};
 use crate::id::{
-    FieldName, ParamName, RelationName, TriggerName, TypeName, ValueTypeName, VerbName,
+    ConstraintName, FieldName, ParamName, RelationName, TriggerName, TypeName, ValueTypeName,
+    VerbName,
 };
 
 /// A host's own marks on a declaration: a map from a namespaced key
@@ -114,7 +115,7 @@ impl std::fmt::Display for StorageKind {
 /// A value type: what a value means and what it must satisfy, declared
 /// in the bundle over a storage kind. The set is open; adding one needs
 /// no engine change.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ValueTypeDecl {
     /// The value type's name (`iban`, `money`, `email`).
@@ -141,6 +142,10 @@ pub struct ValueTypeDecl {
     /// What the value type means, for people and agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The host's own marks (a unit: `acme.unit: "EUR"`); never read by
+    /// Lakelands.
+    #[serde(default, skip_serializing_if = "Annotations::is_empty")]
+    pub annotations: Annotations,
 }
 
 /// A field's type: a storage kind, optionally refined by a value type
@@ -179,6 +184,7 @@ impl FieldType {
 /// principals of that authority may.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Authority {
     /// Written by authors, through `upsert` and verbs.
     #[default]
@@ -190,12 +196,47 @@ pub enum Authority {
     Shared,
     /// Computed by the fold from other fields; no door writes it.
     Derived,
+    /// Written only by the type's verbs' `set`, its `initial` and an aging
+    /// rule; `upsert` and `ingest` are refused it (lakelands#1130).
+    Verb,
 }
 
 impl Authority {
+    /// Every authority, in declaration order.
+    pub const ALL: [Authority; 5] = [
+        Authority::Authored,
+        Authority::Source,
+        Authority::Shared,
+        Authority::Derived,
+        Authority::Verb,
+    ];
+
     /// Whether this is the default, `authored`.
     pub fn is_authored(&self) -> bool {
         *self == Authority::Authored
+    }
+}
+
+/// Who retires a type's records (lakelands#1148).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum RetiredBy {
+    /// Its authors, through `retire`, and its verbs whose effect retires.
+    #[default]
+    Authors,
+    /// Only its verbs whose effect is `retire`: `retire` is refused, and
+    /// a purge, a forgetting and a migration still retire as the system.
+    Verbs,
+}
+
+impl RetiredBy {
+    /// Every value, in declaration order.
+    pub const ALL: [RetiredBy; 2] = [RetiredBy::Authors, RetiredBy::Verbs];
+
+    /// Whether this is the default, `authors`.
+    pub fn is_authors(&self) -> bool {
+        *self == RetiredBy::Authors
     }
 }
 
@@ -269,6 +310,12 @@ pub struct FieldDecl {
     /// Whether full-text search covers this field.
     #[serde(default)]
     pub searchable: bool,
+    /// Whether a source's values of the field are kept in the log sealed
+    /// under that source's key, so forgetting the source erases them
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`). Not part of
+    /// the schema hash: it says how values are kept, not what they are.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub erasable: bool,
     /// What the field means, for people and agents. Not part of the
     /// schema hash (`docs/decisions/007-schema-hash-covers-shape.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -284,6 +331,173 @@ pub struct FieldDecl {
     /// The host's own marks; never read by Lakelands.
     #[serde(default, skip_serializing_if = "Annotations::is_empty")]
     pub annotations: Annotations,
+}
+
+/// One input of a function: a field of the type that binds it, of the
+/// kind its `type` states, or of any kind when it states none
+/// (`docs/decisions/022-functions-are-declarations.md`,
+/// extended). On the wire it is a field's declaration, with `type` left out
+/// of an input of any kind.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FunctionInput {
+    /// The input as a field is declared. Of an input of any kind, its
+    /// `ty` is a placeholder nothing reads.
+    pub field: FieldDecl,
+    /// Whether it states no `type`.
+    pub any_kind: bool,
+}
+
+impl FunctionInput {
+    /// An input of the kind `field` declares.
+    pub fn typed(field: FieldDecl) -> FunctionInput {
+        FunctionInput {
+            field,
+            any_kind: false,
+        }
+    }
+
+    /// An input of any kind.
+    pub fn any(name: impl Into<FieldName>) -> FunctionInput {
+        FunctionInput {
+            field: FieldDecl::of(name, StorageKind::Text),
+            any_kind: true,
+        }
+    }
+
+    /// The input's name.
+    pub fn name(&self) -> &FieldName {
+        &self.field.name
+    }
+
+    /// The kind a type must hold the input in; none for an input of any.
+    pub fn kind(&self) -> Option<StorageKind> {
+        (!self.any_kind).then_some(self.field.ty.kind)
+    }
+}
+
+/// A function's input as it is written: a field's declaration whose `type`
+/// may be left out. Every member is a field's, each in the form
+/// [`FieldDecl`] gives it, and the conversions name every one, so a member
+/// added to a field stops this compiling until it is mirrored.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InputWire {
+    name: FieldName,
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    ty: Option<FieldType>,
+    #[serde(default)]
+    required: bool,
+    #[serde(default)]
+    authority: Authority,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    derived: Option<Condition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    function: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    computed_at: Option<ComputedAt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    depends_on: Vec<FieldName>,
+    #[serde(default)]
+    on_input_change: OnInputChange,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    initial: Option<serde_json::Value>,
+    #[serde(default)]
+    sensitive: bool,
+    #[serde(default)]
+    searchable: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    erasable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    embed: Option<EmbedDecl>,
+    #[serde(default, skip_serializing_if = "Annotations::is_empty")]
+    annotations: Annotations,
+}
+
+impl From<&FunctionInput> for InputWire {
+    fn from(i: &FunctionInput) -> InputWire {
+        let FieldDecl {
+            name,
+            ty,
+            required,
+            authority,
+            derived,
+            function,
+            computed_at,
+            depends_on,
+            on_input_change,
+            initial,
+            sensitive,
+            searchable,
+            erasable,
+            description,
+            label,
+            embed,
+            annotations,
+        } = i.field.clone();
+        InputWire {
+            ty: (!i.any_kind).then_some(ty),
+            name,
+            required,
+            authority,
+            derived,
+            function,
+            computed_at,
+            depends_on,
+            on_input_change,
+            initial,
+            sensitive,
+            searchable,
+            erasable,
+            description,
+            label,
+            embed,
+            annotations,
+        }
+    }
+}
+
+impl From<InputWire> for FunctionInput {
+    fn from(w: InputWire) -> FunctionInput {
+        let any_kind = w.ty.is_none();
+        FunctionInput {
+            any_kind,
+            field: FieldDecl {
+                ty: w.ty.unwrap_or_default(),
+                name: w.name,
+                required: w.required,
+                authority: w.authority,
+                derived: w.derived,
+                function: w.function,
+                computed_at: w.computed_at,
+                depends_on: w.depends_on,
+                on_input_change: w.on_input_change,
+                initial: w.initial,
+                sensitive: w.sensitive,
+                searchable: w.searchable,
+                erasable: w.erasable,
+                description: w.description,
+                label: w.label,
+                embed: w.embed,
+                annotations: w.annotations,
+            },
+        }
+    }
+}
+
+impl Serialize for FunctionInput {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        InputWire::from(self).serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for FunctionInput {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<FunctionInput, D::Error> {
+        InputWire::deserialize(d).map(FunctionInput::from)
+    }
 }
 
 impl FieldDecl {
@@ -341,6 +555,93 @@ pub struct EmbedDecl {
 }
 
 impl TypeDecl {
+    /// The fields a path reads, each with the type it is a field of: its
+    /// first segment here, and while the field so read is a reference and
+    /// the path goes on, the next segment on the reference's target as `ty`
+    /// answers it. A path steps through a reference to the one record it
+    /// names; what is left of it digs into the last field's value. A first
+    /// segment that names no field but a relation carried by link records
+    /// steps to the link its record holds under it: it reads the link
+    /// type's `from`, and the next segment is the link's.
+    pub fn stepped<'d>(
+        &'d self,
+        path: &[FieldName],
+        ty: &dyn Fn(&TypeName) -> Option<&'d TypeDecl>,
+    ) -> Vec<(&'d TypeDecl, &'d FieldDecl)> {
+        let (mut on, mut read) = (Some(self), Vec::new());
+        let named = |r: &&RelationDecl| r.carried_by_links() && r.name.as_str() == path[0].as_str();
+        let first = path.len() > 1 && !self.fields.iter().any(|f| f.name == path[0]);
+        let link = (first.then(|| self.relations.iter().find(named)).flatten())
+            .and_then(|r| ty(&crate::key::link_type_name(&self.name, &r.name)));
+        let from = |lt: &'d TypeDecl| {
+            (lt.fields.iter().find(|f| f.name == crate::key::FROM)).map(|f| (lt, f))
+        };
+        if let Some(step) = link.and_then(from) {
+            (on, read) = (Some(step.0), vec![step]);
+        }
+        for (i, name) in path.iter().enumerate().skip(read.len()) {
+            let field = on.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == name)?)));
+            let Some((t, f)) = field else { break };
+            read.push((t, f));
+            let further = f.ty.target.as_ref().filter(|_| i + 1 < path.len());
+            on = further.and_then(ty);
+        }
+        read
+    }
+
+    /// The derived relation a path's first segment `n` names, where the
+    /// type has no field of that name.
+    pub fn derived_step(&self, n: &FieldName) -> Option<&RelationDecl> {
+        let field = self.fields.iter().any(|f| &f.name == n);
+        let named = |r: &&RelationDecl| r.derived.is_some() && r.name.as_str() == n.as_str();
+        self.relations.iter().find(named).filter(|_| !field)
+    }
+
+    /// The fields of other records `paths` read from a record of the
+    /// type: each field a path reads past its first, across a reference,
+    /// and each of a link read from a relation, its `from` with them
+    /// ([`Self::stepped`]), with the type it is a field of. A path that
+    /// begins at a derived relation reads what an edge of it reads on both
+    /// records ([`Derived::reads`]) and goes on from its target.
+    pub fn reads_across<'d>(
+        &'d self,
+        paths: &[Vec<FieldName>],
+        ty: &dyn Fn(&TypeName) -> Option<&'d TypeDecl>,
+    ) -> Vec<(&'d TypeDecl, &'d FieldDecl)> {
+        let on = self;
+        let far = |p: &Vec<FieldName>| -> Vec<(&'d TypeDecl, &'d FieldDecl)> {
+            if let Some(r) = on.derived_step(&p[0])
+                && let Some(target) = ty(&r.target)
+            {
+                let [from, to] = r.derived.as_ref().map(Derived::reads).unwrap_or_default();
+                let field = |t: &'d TypeDecl, n: &FieldName| t.fields.iter().find(|f| &f.name == n);
+                let own = from.iter().filter_map(|n| Some((on, field(on, n)?)));
+                let there = to.iter().filter_map(|n| Some((target, field(target, n)?)));
+                let rest = target.stepped(&p[1..], ty);
+                return own.chain(there).chain(rest).collect();
+            }
+            // `exists` over a relation carried by links reads its link's
+            // `from`, as a path through the link does.
+            if let [n] = p.as_slice() {
+                let field = on.fields.iter().any(|f| &f.name == n);
+                let named = |r: &&RelationDecl| {
+                    !field && r.carried_by_links() && r.name.as_str() == n.as_str()
+                };
+                let lt = on.relations.iter().find(named);
+                let lt = lt.and_then(|r| ty(&crate::key::link_type_name(&on.name, &r.name)));
+                let from = |lt: &'d TypeDecl| {
+                    let f = lt.fields.iter().find(|f| f.name == crate::key::FROM);
+                    f.map(|f| (lt, f))
+                };
+                return lt.and_then(from).into_iter().collect();
+            }
+            let read = on.stepped(p, ty);
+            let own = read.first().is_some_and(|r| r.0.name == on.name);
+            read.into_iter().skip(usize::from(own)).collect()
+        };
+        paths.iter().flat_map(far).collect()
+    }
+
     /// The fields a record of the type is keyed by: its `key`, or, of a
     /// view, its `group_by`, none where it groups by nothing. A view's
     /// `key` names the same or is left out; one that came in past
@@ -498,10 +799,9 @@ impl TypeDecl {
                 }
             }
         }
-        let pairs = self
-            .relations
-            .iter()
-            .flat_map(|r| r.derived.iter().flat_map(|d| &d.pairs));
+        let own: Vec<FieldName> = (self.relations.iter())
+            .flat_map(|r| r.derived.iter().flat_map(|d| d.reads()[0].clone()))
+            .collect();
         let named = (self.key.iter().map(|n| (n, Case::AtReadKey)))
             .chain(self.valid_from.iter().map(|n| (n, Case::AtReadValidFrom)))
             .chain(self.valid_to.iter().map(|n| (n, Case::AtReadValidTo)))
@@ -510,7 +810,7 @@ impl TypeDecl {
                     .iter()
                     .filter_map(|r| Some((r.via.as_ref()?, Case::AtReadVia))),
             )
-            .chain(pairs.map(|p| (&p.from, Case::AtReadMatch)));
+            .chain(own.iter().map(|n| (n, Case::AtReadMatch)));
         for (n, case) in named {
             if let Some(f) = self.fields.iter().find(|f| &f.name == n && f.at_read()) {
                 return said(&[ty()], f, case);
@@ -538,7 +838,7 @@ fn computed_at_problem<'f>(
     };
     let reads: Vec<&FieldName> = match (&expr, called, &f.embed) {
         (Some(e), _, _) => e.fields_read().into_iter().collect(),
-        (None, Some(func), _) => func.inputs.iter().map(|i| &i.name).collect(),
+        (None, Some(func), _) => func.inputs.iter().map(|i| i.name()).collect(),
         (_, _, Some(embed)) => embed.from.iter().collect(),
         _ => Vec::new(),
     };
@@ -718,13 +1018,44 @@ pub struct RelationDecl {
 }
 
 /// What connects the records of a derived relation: every pair of fields
-/// holds the same non-null value on both sides.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// holds the same non-null value on both sides, and the condition, where
+/// one is given, holds over the two records.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Derived {
     /// The pairs, one or more.
     #[serde(rename = "match")]
     pub pairs: Vec<MatchPair>,
+    /// What the two records hold besides the match: a condition over
+    /// `from.<field>`, the owner's record, and `to.<field>`, the target's,
+    /// whichever way the edge is walked, with the clock of the read.
+    #[serde(default, rename = "where", skip_serializing_if = "Option::is_none")]
+    pub filter: Option<Condition>,
+}
+
+impl Derived {
+    /// The fields an edge reads of the owner's record and of the target's:
+    /// each pair's sides, then the condition's `from.<field>` and
+    /// `to.<field>`, a condition that does not parse reading none.
+    pub fn reads(&self) -> [Vec<FieldName>; 2] {
+        let mut sides = [Vec::new(), Vec::new()];
+        for p in &self.pairs {
+            sides[0].push(p.from.clone());
+            sides[1].push(p.to.clone());
+        }
+        let typed = self.filter.as_ref().and_then(|c| c.typed().ok());
+        let mut paths = Vec::new();
+        typed.iter().for_each(|e| crate::expr::paths(e, &mut paths));
+        for p in paths {
+            let side = [crate::key::FROM, crate::key::TO]
+                .iter()
+                .position(|s| p.first().is_some_and(|f| f.as_str() == *s));
+            if let (Some(i), Some(field)) = (side, p.get(1)) {
+                sides[i].push(field.clone());
+            }
+        }
+        sides
+    }
 }
 
 /// One pair of a derived relation's match.
@@ -877,6 +1208,17 @@ pub struct TypeDecl {
     /// (`docs/decisions/010-provenance-per-field.md`).
     #[serde(default = "yes")]
     pub field_meta: bool,
+    /// Whether a source writes a record of it once: an ingest that would
+    /// change a record its key already holds, live or retired, is refused
+    /// (lakelands#1044). Its authored fields stay writable. Not part of
+    /// the schema hash.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub insert_only: bool,
+    /// Who retires its records: its authors through `retire` (the
+    /// default), or only its verbs whose effect is `retire`
+    /// (lakelands#1148). Not part of the schema hash.
+    #[serde(default, skip_serializing_if = "RetiredBy::is_authors")]
+    pub retired_by: RetiredBy,
     /// What the type means. Not part of the schema hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -886,6 +1228,47 @@ pub struct TypeDecl {
     /// The host's own marks; never read by Lakelands.
     #[serde(default, skip_serializing_if = "Annotations::is_empty")]
     pub annotations: Annotations,
+    /// What every record of the type holds, judged at every write door
+    /// on the record as written (lakelands#1119).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<ConstraintDecl>,
+}
+
+/// A constraint over a record of its type: a condition over the record's
+/// own fields, `previous(f)` and `changed(f)` among them, that every
+/// write which moves a field it reads must leave true (lakelands#1119).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConstraintDecl {
+    /// Its name, unique in its type.
+    pub name: ConstraintName,
+    /// What every record of the type holds.
+    pub holds: Condition,
+    /// What it means, for people and agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Whether `ingest` refuses a record that breaks it, or writes the
+    /// record as its source sent it.
+    #[serde(default, skip_serializing_if = "AtIngest::refuses")]
+    pub at_ingest: AtIngest,
+}
+
+/// What `ingest` does with a record that breaks a constraint.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AtIngest {
+    /// Refuse the record, as an authored write is refused.
+    #[default]
+    Refuse,
+    /// Write it as its source sent it: a feed never stops at a breach.
+    Admit,
+}
+
+impl AtIngest {
+    /// Whether it refuses.
+    pub fn refuses(&self) -> bool {
+        *self == AtIngest::Refuse
+    }
 }
 
 fn yes() -> bool {
@@ -894,10 +1277,13 @@ fn yes() -> bool {
 
 /// How dangerous a verb is, as its author declares it
 /// (`docs/decisions/013-verbs-run-by-declared-risk.md`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Risk {
     /// Runs at once when its effect is writing authored fields.
+    #[default]
     Low,
     /// Lands as a proposal.
     Medium,
@@ -905,9 +1291,17 @@ pub enum Risk {
     High,
 }
 
+impl Risk {
+    /// Whether it is `low`, the default a function's risk is left out at.
+    pub fn is_low(&self) -> bool {
+        *self == Risk::Low
+    }
+}
+
 /// What a verb does when it runs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "effect", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum VerbEffect {
     /// Writes authored fields of the record it is called on: each field
     /// is set from an expression over the payload (`payload.<name>`) and
@@ -922,6 +1316,19 @@ pub enum VerbEffect {
         /// The executor the host binds for it.
         executor: String,
     },
+    /// Retires the record it is called on, as `retire` does; on a type
+    /// retired by its verbs, the only door that does (lakelands#1148).
+    Retire,
+}
+
+impl VerbEffect {
+    /// The fields it sets: none but a write's.
+    pub fn set(&self) -> &[Assignment] {
+        match self {
+            VerbEffect::Write { set } => set,
+            VerbEffect::External { .. } | VerbEffect::Retire => &[],
+        }
+    }
 }
 
 /// What a verb is called on: one record of its type, or its type
@@ -986,30 +1393,70 @@ pub struct VerbDecl {
 }
 
 impl VerbDecl {
-    /// The record's fields the verb reads: those its `requires` reads, and
-    /// those its set values read but for `payload.<name>`, a member of the
+    /// The paths the verb reads of a record: those of its `requires`, and
+    /// those of its set values but for `payload.<name>`, a member of the
     /// call's payload. `None` where one of them does not parse.
-    pub fn fields_read(&self) -> Option<std::collections::BTreeSet<FieldName>> {
-        let set = match &self.effect {
-            VerbEffect::Write { set } => set.as_slice(),
-            VerbEffect::External { .. } => &[],
-        };
-        let mut read = std::collections::BTreeSet::new();
-        if let Some(r) = &self.requires {
-            read.extend(r.typed().ok()?.fields_read().into_iter().cloned());
-        }
-        for a in set {
-            read.extend(
-                a.value
-                    .typed()
-                    .ok()?
-                    .record_fields_read()
-                    .into_iter()
-                    .cloned(),
-            );
+    pub fn record_paths(&self) -> Option<Vec<Vec<FieldName>>> {
+        let set = self.effect.set();
+        let values = set.iter().map(|a| (&a.value, true));
+        let mut read = Vec::new();
+        for (c, value) in self.requires.iter().map(|r| (r, false)).chain(values) {
+            let (e, mut paths) = (c.typed().ok()?, Vec::new());
+            crate::expr::paths(&e, &mut paths);
+            let payload = |p: &[FieldName]| value && p.len() == 2 && p[0].as_str() == "payload";
+            read.extend(paths.iter().filter(|p| !payload(p)).map(|p| p.to_vec()));
         }
         Some(read)
     }
+
+    /// The record's fields the verb reads: the first of each of its paths
+    /// ([`Self::record_paths`]).
+    pub fn fields_read(&self) -> Option<std::collections::BTreeSet<FieldName>> {
+        let paths = self.record_paths()?.into_iter();
+        Some(paths.filter_map(|p| p.into_iter().next()).collect())
+    }
+
+    /// The fields of other records the verb reads, as
+    /// [`TypeDecl::reads_across`] gives them for its paths
+    /// ([`Self::record_paths`]).
+    pub fn reads_across<'d>(
+        &self,
+        on: &'d TypeDecl,
+        ty: &dyn Fn(&TypeName) -> Option<&'d TypeDecl>,
+    ) -> Option<Vec<(&'d TypeDecl, &'d FieldDecl)>> {
+        Some(on.reads_across(&self.record_paths()?, ty))
+    }
+
+    /// The relations an `exists(…)` of the verb's `requires` and set values
+    /// names.
+    pub fn exists_relations(&self) -> Vec<FieldName> {
+        let set = self.effect.set();
+        let mut out = Vec::new();
+        let values = set.iter().map(|a| &a.value);
+        for e in self
+            .requires
+            .iter()
+            .chain(values)
+            .filter_map(|c| c.typed().ok())
+        {
+            exists_args(&e, &mut out);
+        }
+        out
+    }
+}
+
+/// The relation each `exists(…)` in `e` names, added to `out`.
+pub fn exists_args(e: &crate::expr::Expr, out: &mut Vec<FieldName>) {
+    use crate::expr::Expr;
+    if let Expr::Call {
+        func: Func::Exists,
+        args,
+    } = e
+        && let Some(Expr::Path { path }) = args.first()
+    {
+        out.extend(path.first().cloned());
+    }
+    crate::expr::children(e).for_each(|c| exists_args(c, out));
 }
 
 /// A verb as it is read: the effect's members beside the verb's own, each
@@ -1042,6 +1489,7 @@ struct VerbWire {
 enum EffectKind {
     Write,
     External,
+    Retire,
 }
 
 impl TryFrom<VerbWire> for VerbDecl {
@@ -1051,6 +1499,12 @@ impl TryFrom<VerbWire> for VerbDecl {
         let effect = match (w.effect, w.set, w.executor) {
             (EffectKind::Write, Some(set), None) => VerbEffect::Write { set },
             (EffectKind::External, None, Some(executor)) => VerbEffect::External { executor },
+            (EffectKind::Retire, None, None) => VerbEffect::Retire,
+            (EffectKind::Retire, ..) => {
+                return Err(
+                    "a verb whose `effect` is `retire` has no member `set` or `executor`".into(),
+                );
+            }
             (EffectKind::Write, _, Some(_)) => {
                 return Err("a verb whose `effect` is `write` has no member `executor`".into());
             }
@@ -1074,8 +1528,9 @@ impl TryFrom<VerbWire> for VerbDecl {
 }
 
 /// A trigger: a condition the store watches. When a write makes it
-/// hold, the store appends `TriggerFired` in the same append. What
-/// reacts to it is the host's business.
+/// hold, the store appends `TriggerFired` in the same append, or
+/// `TriggerDropped` where the write is at or past the depth a reaction
+/// to it could write at. What reacts to it is the host's business.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TriggerDecl {
@@ -1091,10 +1546,28 @@ pub struct TriggerDecl {
     /// What the trigger is for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// How deep a reaction to this trigger's firing may be: a reactive
-    /// write whose `cause` names a firing of it, deeper than this, is
-    /// refused `too_deep`. At most the lake's `max_reactive_depth`
+    /// How deep a reaction to this trigger's firing may be: a write at
+    /// this depth or deeper drops the firing (`TriggerDropped`), and a
+    /// reactive write whose `cause` names a firing or a drop of it,
+    /// deeper than this, is refused `too_deep`. At most the lake's
+    /// `max_reactive_depth`
     /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_depth: Option<u32>,
+    /// Whether the trigger fires only where its `when` reads every field,
+    /// and every `previous(f)`, it asks for: one absent or null fails the
+    /// guard as a whole, through `not`, `and`, `or` and `changed`. `false`
+    /// by default: an absent field is null, and a comparison with it is
+    /// false (lakelands#1215).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub when_strict: bool,
+    /// The kinds of change that fire it; every kind where absent. A
+    /// trigger that names `[upserted, ingested]` stays silent when a
+    /// source is forgotten or purged, or a field is filled
+    /// (lakelands#1217).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_changes: Option<Vec<crate::event::ChangeKind>>,
 }
+
+#[cfg(test)]
+mod tests;

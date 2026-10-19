@@ -1,0 +1,6 @@
+# The vector directories of the formats a release shipped. Each is kept
+# as the tag that shipped it holds it, byte for byte, and never edited
+# (`scripts/gates/vectors-kept.sh`): <format> <tag> <its path at the tag>.
+14 v0.13.0 docs/log-format/vectors
+15 v0.14.0 docs/log-format/vectors/15
+16 v0.15.0 docs/log-format/vectors/16

@@ -17,7 +17,7 @@ use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
-use lakelands_api::{Position, RecordKey, RelationName, Result, TypeName, Value};
+use lakelands_api::{Position, RecordKey, RelationName, Result, SourceId, TypeName, Value};
 use lakelands_core::engines as core_engines;
 
 use crate::lake::Lake;
@@ -55,25 +55,44 @@ impl Since {
                 _ => None,
             })
         };
-        let (mut due, mut rekeys) = (
-            types(head.declarations()?).collect::<Vec<_>>(),
-            BTreeMap::new(),
-        );
-        while let Some((since, ty)) = due.pop() {
-            if rekeys.contains_key(&since) {
-                continue;
-            }
+        let rekeyed = |since: Position| -> Result<Vec<_>> {
             let event = lake.read_events(since, 1)?.into_iter().next();
-            let rekeyed = match event.map(|e| e.body) {
+            Ok(match event.map(|e| e.body) {
                 Some(EventBody::Migrated { rekeyed, .. }) => rekeyed,
                 _ => Vec::new(),
-            };
-            rekeys.insert(since, rekeyed);
-            let before = lake
-                .engine
-                .view(Some(Position(since.0 - 1)))?
-                .declarations()?;
-            due.extend(types(before).filter(|(_, t)| *t == ty));
+            })
+        };
+        let now: Vec<(Position, TypeName)> = types(head.declarations()?).collect();
+        let mut rekeys = BTreeMap::new();
+        let to = head.position().unwrap_or(Position::GENESIS);
+        match head.replaced(at, to)? {
+            // Each state since `at` of a type in force now under its name:
+            // the head's, and those replaced since, one read for all
+            // (lakelands#1064).
+            Some(replaced) => {
+                let named: BTreeSet<&TypeName> = now.iter().map(|(_, t)| t).collect();
+                let before: Vec<(Position, TypeName)> = types(replaced).collect();
+                let states = (now.iter()).chain(before.iter().filter(|(_, t)| named.contains(t)));
+                for (since, _) in states {
+                    if !rekeys.contains_key(since) {
+                        rekeys.insert(*since, rekeyed(*since)?);
+                    }
+                }
+            }
+            None => {
+                let mut due = now;
+                while let Some((since, ty)) = due.pop() {
+                    if rekeys.contains_key(&since) {
+                        continue;
+                    }
+                    rekeys.insert(since, rekeyed(since)?);
+                    let before = lake
+                        .engine
+                        .view(Some(Position(since.0 - 1)))?
+                        .declarations()?;
+                    due.extend(types(before).filter(|(_, t)| *t == ty));
+                }
+            }
         }
         let mut since = Since {
             renamed,
@@ -210,6 +229,10 @@ impl ProjectionView for HeldNow<'_> {
         self.then.declarations()
     }
 
+    fn replaced(&self, from: Position, to: Position) -> Result<Option<Vec<Declared>>> {
+        self.then.replaced(from, to)
+    }
+
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
         let row = self.then.get(ty, key)?.into_iter().collect();
         Ok(self.now(ty, row)?.pop())
@@ -290,6 +313,14 @@ impl ProjectionView for HeldNow<'_> {
         self.then.proposals(filter)
     }
 
+    fn proposals_before(
+        &self,
+        filter: &ProposalFilter,
+        before: Option<Position>,
+    ) -> Result<Option<Vec<Proposal>>> {
+        self.then.proposals_before(filter, before)
+    }
+
     fn is_member(&self, set: &str, ty: &TypeName, key: &RecordKey) -> Result<bool> {
         self.then.is_member(set, ty, key)
     }
@@ -314,6 +345,16 @@ impl ProjectionView for HeldNow<'_> {
         limit: u32,
     ) -> Result<Matched> {
         self.then.matching(filter, from, through, limit)
+    }
+
+    fn of_source(
+        &self,
+        source: &SourceId,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<Matched> {
+        self.then.of_source(source, from, through, limit)
     }
 }
 

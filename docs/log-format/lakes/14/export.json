@@ -1,0 +1,14 @@
+{
+  "lake": "kept14",
+  "through": 22,
+  "hash": "093495e9db7ba2f47aedde61026a0fb1897d23aa9d4f6acb3266a0d8672a4854",
+  "format": 14,
+  "segments": [
+    {
+      "file": "log/00000000000000000000.jsonl",
+      "first": 0,
+      "last": 22,
+      "digest": "a7d83345437015bc5ae88330901d31ca8f8722072b43214eefd9045ac6fd2417"
+    }
+  ]
+}

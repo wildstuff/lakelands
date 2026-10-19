@@ -34,15 +34,18 @@
 
 use std::collections::BTreeSet;
 
-use lakelands_api::error::{Case, Names, Naming, Place, Said};
+use lakelands_api::error::{Beyond, Case, Names, Naming, Place, Said};
 use lakelands_api::expr::kind::{self, Kind};
 use lakelands_api::expr::{Condition, Expr, Func};
 use lakelands_api::ontology::{
-    Authority, Derived, FieldDecl, OnInputChange, RelationDecl, StorageKind, TriggerDecl, TypeDecl,
-    ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, lands_in_the_fold,
+    Authority, Cardinality, ConstraintDecl, Derived, FieldDecl, FunctionInput, OnInputChange,
+    RelationDecl, StorageKind, TypeDecl, ValueTypeDecl, VerbEffect, VerbScope, ViewDecl,
+    lands_in_the_fold,
 };
 use lakelands_api::tools::{NameProblem, name_problems};
-use lakelands_api::write::{Carrier, Declaration, ObjectSetDecl};
+use lakelands_api::write::{
+    Carrier, Declaration, DeclarationKind, FunctionDecl, ObjectSetDecl, SettingDecl, Withdrawal,
+};
 use lakelands_api::{Error, FieldName, Refusal, RelationName, Result, TypeName, VerbName};
 use lakelands_core::expr::{Place as Eval, check, parse};
 use lakelands_core::rights::is_system;
@@ -118,6 +121,32 @@ fn source_cycle(o: &Ontology, t: &TypeDecl, v: &ViewDecl) -> std::result::Result
         return Ok(());
     }
     Err(chain.into_iter().collect())
+}
+
+/// The link types of a ring `t` closes, from the link type of one of its
+/// relations to the one whose end it is, each the end of the one before
+/// (lakelands#919). A link of a ring needs a live link of the next one as
+/// its end, so none can be written: the declaration that closes it is
+/// refused, whether by a type, a set or a migration.
+fn link_ring(o: &Ontology, t: &TypeDecl) -> Option<Names> {
+    for r in &t.relations {
+        let start = links::link_type_name(&t.name, &r.name);
+        let (mut ring, mut end) = (vec![start.clone()], r.target.clone());
+        while let Some((owner, relation)) = links::link_type_parts(&end) {
+            if end == start {
+                return Some(ring.into_iter().collect());
+            }
+            if ring.contains(&end) {
+                break;
+            }
+            ring.push(end.clone());
+            let owner = (owner == t.name).then_some(t).or_else(|| o.ty(&owner).ok());
+            let next = owner.and_then(|d| d.relations.iter().find(|x| x.name == relation));
+            let Some(next) = next else { break };
+            end = next.target.clone();
+        }
+    }
+    None
 }
 
 /// The field `g` of `source` a view groups by, one a key may be, since the
@@ -345,13 +374,13 @@ pub fn names_set(o: &Ontology, s: &ObjectSetDecl, target: &str) -> bool {
         asked.set(asked.get() || n == target);
         o.set(n)
     };
-    let _ = filter(&lookup, &s.of, &s.filter, Eval::Record, &[]);
+    let _ = set_filter(&lookup, s, &[]);
     asked.get()
 }
 
 /// A condition parsed and checked for its place, the sets it names left
 /// as it names them.
-fn typed(c: &Condition, place: Eval) -> std::result::Result<Expr, Case> {
+pub(crate) fn typed(c: &Condition, place: Eval) -> std::result::Result<Expr, Case> {
     let e = match c {
         Condition::Expr(e) => e.clone(),
         Condition::Text(t) => parse(t).map_err(|e| {
@@ -377,11 +406,25 @@ pub fn filter<'s>(
     place: Eval,
     on: &[Place],
 ) -> Result<Expr> {
+    filter_kept(set, &|_| false, ty, c, place, on)
+}
+
+/// [`filter`], each set `kept` names left as `in_set('name')`, answered by
+/// its kept membership where the condition is evaluated: a read's `in_set`
+/// of a set across an edge (055, extended).
+pub fn filter_kept<'s>(
+    set: &dyn Fn(&str) -> Option<&'s ObjectSetDecl>,
+    kept: &dyn Fn(&str) -> bool,
+    ty: &TypeName,
+    c: &Condition,
+    place: Eval,
+    on: &[Place],
+) -> Result<Expr> {
     let e = typed(c, place).map_err(|c| invalid(at(on, c)))?;
     let named = |name: &str| {
         let set_name = name.to_owned();
         match set(name) {
-            Some(s) if &s.of == ty => typed(&s.filter, Eval::Record).map_err(Said::from),
+            Some(s) if &s.of == ty => typed(&s.filter, place).map_err(Said::from),
             Some(s) => {
                 let (of, ty) = (s.of.clone(), ty.clone());
                 Err(Case::SetOfOtherType {
@@ -394,7 +437,18 @@ pub fn filter<'s>(
             None => Err(Case::SetUndeclared { set: set_name }.into()),
         }
     };
-    lakelands_api::expr::expand(&e, &named).map_err(|s| invalid(at(on, s)))
+    lakelands_api::expr::expand_kept(&e, &named, kept).map_err(|s| invalid(at(on, s)))
+}
+
+/// A set's `where`, the sets it names standing in it, as a write decides
+/// a membership: in a verb's place, where `exists` has meaning and a path
+/// steps across an edge (055, extended).
+pub fn set_filter<'s>(
+    set: &dyn Fn(&str) -> Option<&'s ObjectSetDecl>,
+    s: &ObjectSetDecl,
+    on: &[Place],
+) -> Result<Expr> {
+    filter(set, &s.of, &s.filter, Eval::Verb, on)
 }
 
 /// The kind an expression certainly computes over `decl`'s records, or the
@@ -402,7 +456,26 @@ pub fn filter<'s>(
 /// A failure that depends on one record's value is not known here, and
 /// stays that record's: it does not match, or its value is null.
 pub fn evaluates(e: &Expr, decl: &TypeDecl, on: &[Place]) -> Result<Option<Kind>> {
-    let field = |n: &FieldName| decl.fields.iter().find(|f| &f.name == n).map(|f| f.ty.kind);
+    evaluates_across(&|_| None, e, decl, on)
+}
+
+/// As [`evaluates`], where a path steps through a reference to a type
+/// `far` answers, as a verb's `requires` and values read.
+fn evaluates_across<'d>(
+    far: &dyn Fn(&TypeName) -> Option<&'d TypeDecl>,
+    e: &Expr,
+    decl: &'d TypeDecl,
+    on: &[Place],
+) -> Result<Option<Kind>> {
+    let field = |p: &[FieldName]| {
+        let derived = decl.derived_step(&p[0]).and_then(|r| far(&r.target));
+        let read = match derived {
+            Some(t) => t.stepped(&p[1..], far),
+            None => decl.stepped(p, far),
+        };
+        let steps = read.len() + usize::from(derived.is_some());
+        read.last().map(|(_, f)| (f.ty.kind, steps))
+    };
     kind::of(e, &field).map_err(|why| invalid(at(on, why)))
 }
 
@@ -417,7 +490,12 @@ fn initial(o: &Ontology, owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) 
     let why = match of {
         None => Case::InitialNotOfType,
         Some(t) if t.view.is_some() => Case::InitialInView,
-        Some(_) if !f.authority.is_authored() || f.derived.is_some() => Case::InitialNotAuthored,
+        Some(_)
+            if !matches!(f.authority, Authority::Authored | Authority::Verb)
+                || f.derived.is_some() =>
+        {
+            Case::InitialNotAuthored
+        }
         Some(t) if t.key.contains(&f.name) => Case::InitialKey,
         Some(t) if f.ty.kind == StorageKind::Reference || names(t) => Case::InitialReference,
         Some(_) if f.on_input_change == OnInputChange::Clear => Case::InitialCleared,
@@ -427,6 +505,44 @@ fn initial(o: &Ontology, owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) 
         }
     };
     let on = [owner, &[of_field(&f.name), Place::Initial]].concat();
+    Err(invalid_field(&f.name, at(&on, why)))
+}
+
+/// `erasable` stands on a type's own field that a source writes and that
+/// is neither a key nor names a record, and a field once erasable stays
+/// so (`docs/decisions/058-a-source-may-be-forgotten.md`).
+fn erasable(o: &Ontology, owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) -> Result<()> {
+    let was = |t: &TypeDecl| {
+        let now = o.types.get(&t.name).map(|c| &c.decl.fields);
+        now.is_some_and(|fs| fs.iter().any(|g| g.name == f.name && g.erasable))
+    };
+    let names = |t: &TypeDecl| t.relations.iter().any(|r| r.via.as_ref() == Some(&f.name));
+    let why = match of {
+        Some(t) if !f.erasable && was(t) => Case::ErasableDropped,
+        _ if !f.erasable => return Ok(()),
+        None => Case::ErasableNotOfType,
+        Some(_) if !matches!(f.authority, Authority::Source | Authority::Shared) => {
+            Case::ErasableAuthored
+        }
+        Some(t) if t.key.contains(&f.name) => Case::ErasableKey,
+        Some(t) if f.ty.kind == StorageKind::Reference || names(t) => Case::ErasableReference,
+        Some(_) => return Ok(()),
+    };
+    let on = [owner, &[of_field(&f.name), Place::Erasable]].concat();
+    Err(invalid_field(&f.name, at(&on, why)))
+}
+
+/// A field only verbs write (lakelands#1130) is no key, required only with
+/// an `initial`, as a verb writes a record that stands, and not computed.
+fn verb_written(owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) -> Result<()> {
+    let why = match of {
+        _ if f.authority != Authority::Verb => return Ok(()),
+        _ if f.derived.is_some() => Case::VerbComputed,
+        Some(t) if t.key.contains(&f.name) => Case::VerbKey,
+        Some(_) if f.required && f.initial.is_none() => Case::VerbRequired,
+        _ => return Ok(()),
+    };
+    let on = [owner, &[of_field(&f.name), Place::Authority]].concat();
     Err(invalid_field(&f.name, at(&on, why)))
 }
 
@@ -453,6 +569,8 @@ fn field_type(
 ) -> Result<()> {
     name(Naming::Field, f.name.as_str())?;
     initial(o, owner, f, of)?;
+    erasable(o, owner, f, of)?;
+    verb_written(owner, f, of)?;
     let ty = &f.ty;
     let on = [owner, &[of_field(&f.name)]].concat();
     let wrong = |c: Case| invalid_field(&f.name, at(&on, c));
@@ -512,6 +630,11 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
         };
         return Err(invalid_field(&f.name, at(&on, case)));
     }
+    // A view's records are computed and never retired, so the mark of who
+    // retires them means nothing there (lakelands#1148).
+    if t.view.is_some() && !t.retired_by.is_authors() {
+        return Err(invalid(at(&owner, Case::RetiredByView)));
+    }
     if let Some((field, why)) = t.embedding_problem() {
         return Err(invalid_field(&field, why));
     }
@@ -534,13 +657,15 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             .and_then(|n| o.functions.get(n.as_str()))
         {
             // A function computes a field from inputs the type holds, each
-            // of the kind the function declares for it.
+            // of the kind the function declares for it, or of any kind for
+            // an input that declares none.
             for input in &func.decl.inputs {
                 let (function, ty) = (func.decl.name.clone(), t.name.clone());
-                let why = match t.fields.iter().find(|d| d.name == input.name) {
-                    Some(d) if d.ty.kind == input.ty.kind => continue,
+                let why = match t.fields.iter().find(|d| d.name == *input.name()) {
+                    Some(_) if input_kind_held(t, input).is_none() => continue,
                     Some(d) => {
-                        let (input, kind, held) = (input.name.clone(), input.ty.kind, d.ty.kind);
+                        let (input, kind, held) =
+                            (input.name().clone(), input.field.ty.kind, d.ty.kind);
                         at(
                             &on,
                             Case::FunctionInputKind {
@@ -553,7 +678,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
                         )
                     }
                     None => {
-                        let field = input.name.clone();
+                        let field = input.name().clone();
                         let on = [&on[..], &[Place::Function { name: function }]].concat();
                         at(&on, Case::UnknownField { ty, field })
                     }
@@ -603,6 +728,16 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             let (field, axis) = (k.clone(), axis.to_owned());
             let case = Case::ValidTimeNotTime { field, axis, kind };
             return Err(invalid_field(k, at(&owner, case)));
+        }
+    }
+    // A valid time has a start (028, extended): a read at `valid_at`
+    // filters by `valid_to` only beside one. A type in force that holds
+    // one alone, as its author is shown it, keeps one.
+    if let (None, Some(to)) = (&t.valid_from, &t.valid_to) {
+        let held = o.types.get(&t.name).map(|e| &e.decl);
+        if !held.is_some_and(|h| h.valid_from.is_none() && h.valid_to.is_some()) {
+            let case = Case::ValidToAlone { field: to.clone() };
+            return Err(invalid_field(to, at(&owner, case)));
         }
     }
     // Before any relation is judged: one its author is not shown, put back
@@ -698,6 +833,9 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             let target = r.target.clone();
             return Err(invalid(at(&owner, Case::InverseTwice { inverse, target })));
         }
+    }
+    if let Some(ring) = link_ring(o, t) {
+        return Err(invalid(at(&owner, Case::LinkTypeRing { ring })));
     }
     if let Some(v) = &t.view {
         source_cycle(o, t, v).map_err(|chain| invalid(at(&owner, Case::ViewCycle { chain })))?;
@@ -819,7 +957,8 @@ fn view_kinds(o: &Ontology, owner: &[Place], t: &TypeDecl, v: &ViewDecl) -> Resu
         });
         for (name, on, e) in by.chain(measures) {
             if let Some(f) = field(name) {
-                lands(f, kind::of(&e?, &read).ok().flatten(), &on)?;
+                let first = |p: &[FieldName]| read(p.first()?).map(|k| (k, 1));
+                lands(f, kind::of(&e?, &first).ok().flatten(), &on)?;
             }
         }
     }
@@ -835,7 +974,7 @@ fn path(name: &FieldName) -> Expr {
 
 /// A type's relations carried by link records, as the tool generator
 /// names their doors.
-fn link_relations(t: &TypeDecl) -> Vec<(TypeName, RelationName)> {
+pub(crate) fn link_relations(t: &TypeDecl) -> Vec<(TypeName, RelationName)> {
     t.relations
         .iter()
         .filter(|r| r.carried_by_links())
@@ -927,6 +1066,45 @@ fn derived(o: &Ontology, t: &TypeDecl, r: &RelationDecl, d: &Derived, on: &[Plac
             return wrong(Case::PairAtRead { from, to, target });
         }
     }
+    // The condition reads a stored field of either record, one step each,
+    // and what a read's `where` may call of the record and the clock.
+    let Some(c) = &d.filter else { return Ok(()) };
+    let e = condition(c, Eval::Record, on)?;
+    let mut paths = Vec::new();
+    lakelands_api::expr::paths(&e, &mut paths);
+    for p in paths {
+        let side = match (p.first().map(FieldName::as_str), p.len()) {
+            (Some(links::FROM), 2) => Some(t),
+            (Some(links::TO), 2) => target,
+            _ => {
+                let path = p
+                    .iter()
+                    .map(FieldName::as_str)
+                    .collect::<Vec<_>>()
+                    .join(".");
+                return wrong(Case::DerivedWherePath { path });
+            }
+        };
+        let (Some(side), field) = (side, &p[1]) else {
+            continue;
+        };
+        let ty = side.name.clone();
+        match side.fields.iter().find(|f| &f.name == field) {
+            None => {
+                return wrong(Case::UnknownField {
+                    ty,
+                    field: field.clone(),
+                });
+            }
+            Some(f) if f.at_read() => {
+                return wrong(Case::ReadsAtRead {
+                    field: field.clone(),
+                    ty,
+                });
+            }
+            Some(_) => {}
+        }
+    }
     Ok(())
 }
 
@@ -940,9 +1118,66 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
         Declaration::ObjectSet(s) => o.ty(&s.of).ok(),
         _ => None,
     };
+    // A verb's path may begin at a relation of its type and go on to the
+    // link's fields (055, extended); the relation is judged below. One
+    // carried by links begins a path only where `o` holds its link type's
+    // `from`: to an author who may not know of the link type, judged over
+    // the lake as it is shown, the path names a field the type lacks.
+    let link_known = |on: &TypeDecl, r: &RelationDecl| {
+        let lt = o.ty(&links::link_type_name(&on.name, &r.name));
+        !r.carried_by_links() || lt.is_ok_and(|lt| lt.fields.iter().any(|f| f.name == links::FROM))
+    };
+    // A set's `where` and a trigger's `when` take the paths a verb's
+    // condition takes (055, extended); `exists(r)` reads the relation alone.
+    let (paths, exists) = match d {
+        Declaration::Verb(v) => (v.record_paths().unwrap_or_default(), v.exists_relations()),
+        Declaration::Trigger(_) | Declaration::ObjectSet(_) => {
+            let conditions = conditions_of(d).into_iter().filter_map(|c| c.typed().ok());
+            let (mut paths, mut exists) = (Vec::new(), Vec::new());
+            for e in conditions {
+                let mut read = Vec::new();
+                lakelands_api::expr::paths(&e, &mut read);
+                paths.extend(read.into_iter().map(<[FieldName]>::to_vec));
+                lakelands_api::ontology::exists_args(&e, &mut exists);
+            }
+            (paths, exists)
+        }
+        _ => Default::default(),
+    };
+    // A relation's name alone, beside the `exists` that names it, stays
+    // a field the type does not have.
+    let bare = |n: &FieldName| {
+        let alone = paths.iter().filter(|p| p.len() == 1 && &p[0] == n).count();
+        alone > exists.iter().filter(|e| *e == n).count()
+    };
+    let begins_at_relation = |n: &FieldName| match on {
+        Some(on) => {
+            paths.iter().any(|p| {
+                let long = p.len() > 1 || exists.contains(n);
+                long && &p[0] == n && related(on, n).is_some_and(|r| link_known(on, r))
+            }) && !bare(n)
+        }
+        None => false,
+    };
+    // `exists` over a field is no question of a relation; over a name the
+    // type has neither as a field nor as a relation it is the unknown
+    // field a path through it would be.
+    if let Some(on) = on
+        && let Some(n) = exists.iter().find(|n| related(on, n).is_none())
+    {
+        let case = match on.fields.iter().any(|f| &f.name == n) {
+            true => Case::ExistsHere,
+            false => Case::UnknownField {
+                ty: on.name.clone(),
+                field: n.clone(),
+            },
+        };
+        return Err(invalid(at(&[d.place()], case)));
+    }
     if let Some(on) = on
         && let reads = lakelands_core::describe::declaration_reads(d, &on.name, &|_| None)
-        && let Some(n) = (reads.iter()).find(|n| !on.fields.iter().any(|f| &f.name == *n))
+        && let Some(n) = (reads.iter())
+            .find(|n| !on.fields.iter().any(|f| &f.name == *n) && !begins_at_relation(n))
     {
         let (ty, field) = (on.name.clone(), n.clone());
         return Err(invalid(at(&[d.place()], Case::UnknownField { ty, field })));
@@ -956,8 +1191,127 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
         let (field, ty) = (n.clone(), on.name.clone());
         return Err(invalid(at(&[d.place()], Case::ReadsAtRead { field, ty })));
     }
+    // What a verb, a trigger and a set read across a reference, the record
+    // it reaches has, as stored.
+    let across = matches!(
+        d,
+        Declaration::Verb(_) | Declaration::Trigger(_) | Declaration::ObjectSet(_)
+    );
+    let far = |n: &TypeName| o.ty(n).ok().filter(|_| across);
+    if let Some(on) = on.filter(|_| across) {
+        let wrong = |c| Err(invalid(at(&[d.place()], c)));
+        for path in paths.iter().cloned() {
+            // A relation reads the one link a record holds under it, so one
+            // whose records each hold one link record at most.
+            let long = path.len() > 1 || exists.contains(&path[0]);
+            if let (Some(r), true) = (related(on, &path[0]), long) {
+                let (relation, cardinality) = (r.name.clone(), r.cardinality);
+                let many = matches!(
+                    cardinality,
+                    Cardinality::OneToMany | Cardinality::ManyToMany
+                );
+                // A derived relation reaches one record at most where its
+                // match names every key field of its target, whatever its
+                // cardinality says (044 enforces none).
+                if let Some(d) = &r.derived {
+                    let target = o.ty(&r.target).ok().filter(|t| t.view.is_none());
+                    let to: Vec<&FieldName> = d.pairs.iter().map(|p| &p.to).collect();
+                    let Some(target) = target
+                        .filter(|t| !t.key.is_empty() && t.key.iter().all(|k| to.contains(&k)))
+                    else {
+                        let target = r.target.clone();
+                        return wrong(Case::MatchNotKey { relation, target });
+                    };
+                    let read = target.stepped(&path[1..], &far);
+                    let next = read.last().and_then(|l| l.1.ty.target.as_ref());
+                    let next = if read.is_empty() {
+                        Some(target)
+                    } else {
+                        next.and_then(far)
+                    };
+                    if let Some((t, field)) = next.zip(path.get(1 + read.len())) {
+                        let (ty, field) = (t.name.clone(), field.clone());
+                        return wrong(Case::UnknownField { ty, field });
+                    }
+                    if let Some((t, f)) = read.iter().find(|r| r.1.at_read()) {
+                        let (field, ty) = (f.name.clone(), t.name.clone());
+                        return wrong(Case::ReadsAtRead { field, ty });
+                    }
+                    continue;
+                }
+                let case = match (&r.derived, &r.via) {
+                    (Some(_), _) => None,
+                    (_, Some(field)) => Some(Case::RelationViaField {
+                        relation,
+                        field: field.clone(),
+                    }),
+                    _ => many.then_some(Case::RelationHoldsMany {
+                        relation,
+                        cardinality,
+                    }),
+                };
+                if let Some(case) = case {
+                    return wrong(case);
+                }
+            }
+            let read = on.stepped(&path, &far);
+            // The next segment is the link's where the path began at a
+            // relation, else the far record's of the last reference read.
+            let target = read.last().and_then(|l| l.1.ty.target.as_ref());
+            let next = match read.as_slice() {
+                [(link, _)] if link.name != on.name => Some(*link),
+                _ => target.and_then(far),
+            };
+            if let Some((t, field)) = next.zip(path.get(read.len())) {
+                let (ty, field) = (t.name.clone(), field.clone());
+                return wrong(Case::UnknownField { ty, field });
+            }
+            if let Some((t, f)) = read.iter().skip(1).find(|r| r.1.at_read()) {
+                let (field, ty) = (f.name.clone(), t.name.clone());
+                return wrong(Case::ReadsAtRead { field, ty });
+            }
+        }
+        // A set and a trigger are decided again at a write of the far
+        // record, which a value computed outside the lake, and every field
+        // computed from one at any depth, lands without: a fill writes no
+        // record a path is decided at.
+        let function = |n: &str| o.functions.get(n).map(|e| &e.decl);
+        let lands = |(t, f): &&(&TypeDecl, &FieldDecl)| {
+            lakelands_api::ontology::lands_in_the_fold(&t.fields, f, &function, &mut Vec::new())
+        };
+        for p in paths.iter().filter(|_| !matches!(d, Declaration::Verb(_))) {
+            // A derived relation's match reads the condition's own record
+            // first; what follows is the far record's.
+            let own = on.derived_step(&p[0]).and_then(|r| r.derived.as_ref());
+            let own = own.map_or(0, |d| {
+                let [from, _] = d.reads();
+                from.iter()
+                    .filter(|n| on.fields.iter().any(|f| &f.name == *n))
+                    .count()
+            });
+            let read = on.reads_across(std::slice::from_ref(p), &far);
+            if let Some((t, f)) = read.iter().skip(own).find(lands) {
+                let (field, ty) = (f.name.clone(), t.name.clone());
+                return wrong(Case::SetReadsComputed { field, ty });
+            }
+        }
+    }
     // And each of its conditions can be evaluated over that type's records.
-    let conditions: Vec<&Condition> = match d {
+    for c in conditions_of(d) {
+        let typed = match c {
+            Condition::Expr(e) => Some(e.clone()),
+            Condition::Text(t) => parse(t).ok(),
+        };
+        if let (Some(on), Some(e)) = (on, typed) {
+            evaluates_across(&far, &e, on, &[d.place()])?;
+        }
+    }
+    Ok(())
+}
+
+/// The conditions of a declaration over its type's records.
+fn conditions_of(d: &Declaration) -> Vec<&Condition> {
+    match d {
         Declaration::Trigger(t) => t.when.iter().collect(),
         Declaration::ObjectSet(s) => vec![&s.filter],
         Declaration::Verb(v) => match &v.effect {
@@ -967,17 +1321,29 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
             _ => v.requires.iter().collect(),
         },
         _ => vec![],
-    };
-    for c in conditions {
-        let typed = match c {
-            Condition::Expr(e) => Some(e.clone()),
-            Condition::Text(t) => parse(t).ok(),
-        };
-        if let (Some(on), Some(e)) = (on, typed) {
-            evaluates(&e, on, &[d.place()])?;
-        }
     }
-    Ok(())
+}
+
+/// The relation of `on` a path's first segment `n` names, where `on` has
+/// no field of that name.
+fn related<'d>(on: &'d TypeDecl, n: &FieldName) -> Option<&'d RelationDecl> {
+    let field = on.fields.iter().any(|f| &f.name == n);
+    (on.relations.iter()).find(|r| !field && r.name.as_str() == n.as_str())
+}
+
+/// The fields of `ty` a declaration reads
+/// ([`lakelands_core::describe::declaration_reads`]), with those a verb
+/// reads of it across a reference.
+pub fn reads_of(o: &Ontology, d: &Declaration, ty: &TypeName) -> BTreeSet<FieldName> {
+    let mut reads = lakelands_core::describe::declaration_reads(d, ty, &|_| None);
+    if let Declaration::Verb(v) = d
+        && let Ok(on) = o.ty(&v.on)
+    {
+        let far = v.reads_across(on, &|n| o.ty(n).ok());
+        let of_ty = far.iter().flatten().filter(|r| &r.0.name == ty);
+        reads.extend(of_ty.map(|r| r.1.name.clone()));
+    }
+    reads
 }
 
 /// Refuse taking to the read a field that a trigger, a verb, an object set
@@ -990,25 +1356,15 @@ fn read_as_stored(o: &Ontology, t: &TypeDecl) -> Result<()> {
     }
     let mut read = BTreeSet::new();
     for d in o.declared().iter().map(|d| &d.declaration) {
-        if let Declaration::Verb(VerbDecl { on, .. })
-        | Declaration::Trigger(TriggerDecl { on, .. })
-        | Declaration::ObjectSet(ObjectSetDecl { of: on, .. }) = d
-            && on == &t.name
-        {
-            read.extend(lakelands_core::describe::declaration_reads(d, on, &|_| {
-                None
-            }));
+        if let Declaration::Verb(_) | Declaration::Trigger(_) | Declaration::ObjectSet(_) = d {
+            read.extend(reads_of(o, d, &t.name));
         }
     }
     let others = o.types.values().filter(|e| e.decl.name != t.name);
     let matching = others
         .flat_map(|e| &e.decl.relations)
         .filter(|r| r.target == t.name);
-    read.extend(
-        matching
-            .flat_map(|r| r.derived.iter().flat_map(|d| &d.pairs))
-            .map(|p| p.to.clone()),
-    );
+    read.extend(matching.flat_map(|r| r.derived.iter().flat_map(|d| d.reads()[1].clone())));
     match t
         .fields
         .iter()
@@ -1026,8 +1382,150 @@ fn read_as_stored(o: &Ontology, t: &TypeDecl) -> Result<()> {
 pub(crate) fn unless_a_migration(e: Error) -> Result<()> {
     let said = e.case().map(|s| &s.case);
     match said {
-        Some(Case::Reshapes { .. } | Case::ReshapesLinks { .. }) => Ok(()),
+        Some(
+            Case::Reshapes { .. }
+            | Case::ReshapesLinks { .. }
+            | Case::ConstraintNeedsMigrate { .. },
+        ) => Ok(()),
         _ => Err(e),
+    }
+}
+
+/// A type's constraints, each named once and reading its record alone: its
+/// own fields as stored or computed in the lake at the write, `previous`
+/// and `changed`, and nothing that changes without a write of the record
+/// (lakelands#1119).
+fn constraints(o: &Ontology, t: &TypeDecl) -> Result<()> {
+    let mut named = BTreeSet::new();
+    for c in &t.constraints {
+        let on = [
+            of_type(&t.name),
+            Place::TypeConstraint {
+                name: c.name.clone(),
+            },
+        ];
+        let wrong = |case| Err(invalid(at(&on, case)));
+        let constraint = c.name.clone();
+        name(Naming::Constraint, constraint.as_str()).map_err(|e| e.within(on[0].clone()))?;
+        if !named.insert(&c.name) {
+            return wrong(Case::ConstraintNamedTwice { constraint });
+        }
+        let e = typed(&c.holds, Eval::Guard).map_err(|s| invalid(at(&on, s)))?;
+        let mut paths = Vec::new();
+        lakelands_api::expr::paths(&e, &mut paths);
+        let backed = |n: &str| {
+            o.functions
+                .get(n)
+                .is_some_and(|f| crate::backed::is_backed(&f.decl))
+        };
+        let beyond = if paths.iter().any(|p| p.len() > 1) {
+            Some(Beyond::Path)
+        } else if e.calls(&[Func::InSet]) {
+            Some(Beyond::InSet)
+        } else if e.calls(&[Func::Setting]) {
+            Some(Beyond::Setting)
+        } else if e.reads_clock() {
+            Some(Beyond::Clock)
+        } else if e.calls(&[Func::Exists]) {
+            Some(Beyond::Exists)
+        } else {
+            let mut fields = e.fields_read().into_iter();
+            fields.find_map(|n| {
+                let f = t.fields.iter().find(|f| &f.name == n)?;
+                let field = n.clone();
+                if f.at_read() {
+                    Some(Beyond::ComputedAtRead { field })
+                } else if f.embed.is_some() || f.function.as_deref().is_some_and(backed) {
+                    Some(Beyond::ComputedOutside { field })
+                } else {
+                    None
+                }
+            })
+        };
+        if let Some(reads) = beyond {
+            return wrong(Case::ConstraintReadsBeyond {
+                constraint,
+                reads: Box::new(reads),
+            });
+        }
+        if let Some(n) = e
+            .fields_read()
+            .into_iter()
+            .find(|n| !t.fields.iter().any(|f| &f.name == *n))
+        {
+            let (ty, field) = (t.name.clone(), n.clone());
+            return wrong(Case::UnknownField { ty, field });
+        }
+        initial_holds(o, t, c, &e)?;
+    }
+    Ok(())
+}
+
+/// A constraint reading only fields no create can send, those verbs alone
+/// write and those computed from them, is judged over what a create leaves
+/// of them (lakelands#1130, lakelands#1169): their `initial`s, which no
+/// create can replace, and a field with none is null. One an ingest admits
+/// a breach of is not: an ingest makes records of the type whatever it
+/// holds. Where it reads a field a create can send it is taken: the create
+/// must send a value, and `describe` tells it.
+fn initial_holds(
+    o: &Ontology,
+    t: &TypeDecl,
+    c: &ConstraintDecl,
+    e: &lakelands_api::expr::Expr,
+) -> Result<()> {
+    let resolved = crate::record::resolve_functions(t, o);
+    let fixed = derive::fixed(&resolved);
+    let read = e.fields_read();
+    if read.is_empty() || !read.iter().all(|n| fixed.contains(*n)) || !c.at_ingest.refuses() {
+        return Ok(());
+    }
+    let value_types: Vec<_> = o.value_types.values().map(|v| v.decl.clone()).collect();
+    let broken = derive::breaks(&resolved, &value_types);
+    let Some((_, part)) = broken.iter().find(|(b, _)| b.name == c.name) else {
+        return Ok(());
+    };
+    // The fields verbs write that the part that breaks reads, through the
+    // computed ones.
+    let leaves = derive::leaves(&resolved, part);
+    let leaves: Vec<&FieldDecl> = (t.fields.iter())
+        .filter(|f| leaves.contains(&f.name))
+        .collect();
+    let constraint = c.name.clone();
+    let (field, case) = match leaves.iter().find(|f| f.initial.is_none()) {
+        Some(f) => {
+            let field = f.name.clone();
+            (field.clone(), Case::NoInitialBreaks { constraint, field })
+        }
+        None => {
+            let field = leaves.first().map_or_else(
+                || (**read.first().expect("a field read")).clone(),
+                |f| f.name.clone(),
+            );
+            (field.clone(), Case::InitialBreaks { constraint, field })
+        }
+    };
+    Err(crate::writes::constraint(Some(field), case))
+}
+
+/// A new field may not begin with `_`: under a pattern's bound name the
+/// lake keeps such names for its own columns, `<name>._depth` (018,
+/// extended). A field the type already holds keeps its name, as a lake
+/// written before the rule holds it.
+fn kept_names(o: &Ontology, t: &TypeDecl) -> Result<()> {
+    let held = o.types.get(&t.name).map(|e| &e.decl.fields);
+    let new = |f: &&FieldDecl| held.is_none_or(|h| !h.iter().any(|g| g.name == f.name));
+    let kept = t
+        .fields
+        .iter()
+        .filter(new)
+        .find(|f| f.name.as_str().starts_with('_'));
+    match kept {
+        Some(f) => {
+            let (ty, field) = (t.name.clone(), f.name.clone());
+            Err(invalid_field(&f.name, Case::FieldNameKept { ty, field }))
+        }
+        None => Ok(()),
     }
 }
 
@@ -1046,29 +1544,65 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 return Err(crate::writes::refused(Refusal::Reserved));
             }
             type_decl(o, t)?;
+            kept_names(o, t)?;
             read_as_stored(o, t)?;
+            constraints(o, t)?;
+            // A change only a migration may make is told after every other
+            // check, on the type and on each of its link types, so that a
+            // migration meets them all; the first found, in a fixed order:
+            // the type's, each link type's as declared, the constraints'
+            // (027, lakelands#1124).
+            let mut migrates = None;
             if let Some(current) = o.types.get(&t.name)
                 && let Change::Migrate { reasons } = shape::classify(&current.decl, t)
             {
                 let ty = t.name.clone();
-                return Err(invalid(Case::Reshapes { ty, reasons }));
+                migrates = Some(invalid(Case::Reshapes { ty, reasons }));
             }
             // A relation's link type is a type like any: its fields are
             // checked as a type's, with `t` in force (its `from` points
             // there). And it is classified too: a relation dropped by a
             // migration and declared again with another target, or with a
-            // field retyped, would reshape the links it kept.
-            let mut probe = o.clone();
-            probe.put(d.clone(), 0, None);
-            for lt in links::link_types_of(t) {
+            // field retyped, would reshape the links it holds as history.
+            // A type that brings none copies nothing.
+            let lts = links::link_types_of(t);
+            let mut probe = std::borrow::Cow::Borrowed(o);
+            if !lts.is_empty() {
+                probe.to_mut().put(d.clone(), 0, None);
+            }
+            for lt in lts {
                 let name = t.name.clone();
                 type_decl(&probe, &lt).map_err(|e| e.within(Place::Links { name }))?;
                 if let Some(current) = o.types.get(&lt.name)
                     && let Change::Migrate { reasons } = shape::classify(&current.decl, &lt)
                 {
                     let (ty, links) = (t.name.clone(), lt.name.clone());
-                    return Err(invalid(Case::ReshapesLinks { ty, links, reasons }));
+                    let e = || invalid(Case::ReshapesLinks { ty, links, reasons });
+                    migrates.get_or_insert_with(e);
                 }
+            }
+            // A constraint added or tightened may be broken by stored
+            // records: a migration's preflight lists them. One restated in
+            // other words, described otherwise or moved to admit at ingest
+            // is not (lakelands#1119).
+            let parsed = |c: &ConstraintDecl| typed(&c.holds, Eval::Guard).ok();
+            let loosens = |c: &ConstraintDecl, h: &ConstraintDecl| {
+                h.name == c.name
+                    && parsed(h) == parsed(c)
+                    && (h.at_ingest == c.at_ingest || !c.at_ingest.refuses())
+            };
+            let held = o.types.get(&t.name).map(|e| &e.decl.constraints);
+            if let Some(held) = held
+                && let Some(c) =
+                    (t.constraints.iter()).find(|c| !held.iter().any(|h| loosens(c, h)))
+            {
+                let (ty, constraint) = (t.name.clone(), c.name.clone());
+                migrates.get_or_insert_with(|| {
+                    invalid(Case::ConstraintNeedsMigrate { ty, constraint })
+                });
+            }
+            if let Some(e) = migrates {
+                return Err(e);
             }
         }
         Declaration::ValueType(v) => {
@@ -1111,9 +1645,10 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             }];
             let ty = v.on.clone();
             // A verb on its type has no record: nothing for a write effect
-            // to set, nothing for `requires` to read (013, extended).
+            // to set or a retirement to retire, nothing for `requires` to
+            // read (013, extended).
             if v.scope == VerbScope::Type {
-                if matches!(v.effect, VerbEffect::Write { .. }) {
+                if !matches!(v.effect, VerbEffect::External { .. }) {
                     return Err(invalid(at(&on, Case::TypeVerbWrites { ty })));
                 }
                 if v.requires.is_some() {
@@ -1128,6 +1663,11 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             let types = o.types.values().map(|e| &e.decl);
             if links::is_link_type(&v.on) && links::relation_of(types, &v.on).is_none() {
                 return Err(invalid(at(&on, Case::Undeclared { ty })));
+            }
+            // A link is retired by `unlink`, which judges its relation; a
+            // verb does not retire one (035, lakelands#1148).
+            if links::is_link_type(&v.on) && matches!(v.effect, VerbEffect::Retire) {
+                return Err(invalid(at(&on, Case::RetireVerbLink { ty })));
             }
             // Of the system types, a verb names a relation's link type, and
             // one whose effect is external a type of the host's vocabulary:
@@ -1149,7 +1689,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 computed_here(&payload, f)?;
             }
             if let Some(r) = &v.requires {
-                condition(r, Eval::Record, &[on[0].clone(), Place::Requires])?;
+                condition(r, Eval::Verb, &[on[0].clone(), Place::Requires])?;
             }
             match &v.effect {
                 VerbEffect::Write { set } => {
@@ -1171,7 +1711,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                             let end = a.field.clone();
                             return Err(invalid(at(&on, Case::LinkEndAsField { end })));
                         }
-                        let value = condition(&a.value, Eval::Record, &on)?;
+                        let value = condition(&a.value, Eval::Verb, &on)?;
                         // A member the verb's payload does not have is never
                         // given: the value would read null at every call.
                         let (_, members) = lakelands_core::derive::verb_reads(&value);
@@ -1183,6 +1723,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     }
                 }
                 VerbEffect::External { executor } => name(Naming::Executor, executor)?,
+                _ => {}
             }
         }
         Declaration::Trigger(t) => {
@@ -1228,7 +1769,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             let on = [Place::ObjectSet {
                 name: s.name.clone(),
             }];
-            let of = declared(o, &s.of, &on)?;
+            declared(o, &s.of, &on)?;
             let ty = s.of.clone();
             // A set is of one type: declared again, it holds that type.
             if let Some(was) = o.object_sets.get(&s.name).filter(|e| e.decl.of != s.of) {
@@ -1238,13 +1779,11 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     at(&on, Case::SetRetyped { was, ty }),
                 ));
             }
-            // A set holds stored records; a view's are computed on read,
-            // and no set is evaluated over them.
-            if of.view.is_some() {
-                return Err(invalid_field(&"of".into(), at(&on, Case::SetOfView { ty })));
-            }
+            // A set of a view holds the records the lake keeps of it: whether
+            // it keeps them is a setting's, judged at the write
+            // (lakelands#1185).
             let named = |n: &str| Some(s).filter(|s| s.name == n).or_else(|| o.set(n));
-            filter(&named, &s.of, &s.filter, Eval::Record, &on)?;
+            set_filter(&named, s, &on)?;
         }
         Declaration::Function(f) => {
             name(Naming::Function, &f.name)?;
@@ -1270,8 +1809,20 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             }
             let input = [on[0].clone(), Place::Input];
             for i in &f.inputs {
-                field_type(o, &input, i, &TypeName::from(""), None)?;
-                computed_here(&input, i)?;
+                if !i.any_kind {
+                    field_type(o, &input, &i.field, &TypeName::from(""), None)?;
+                }
+                computed_here(&input, &i.field)?;
+            }
+            // Declared again, a typed input must still be held in its kind by
+            // each type that binds it; one that drops its type is always
+            // taken.
+            if let Some(case) = input_kind_broken(o, f) {
+                return Err(invalid(at(&on, case)));
+            }
+            // A call made in process has nothing to gate (064).
+            if f.backing == "expr" && !f.risk.is_low() {
+                return Err(invalid(at(&on, Case::ExprRisk)));
             }
             match (f.backing.as_str(), &f.expr) {
                 ("expr", Some(e)) => {
@@ -1279,7 +1830,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     // The expression reads only the inputs it declares, so
                     // the inputs a field is checked against are all it reads.
                     for field in derive::reads(&e) {
-                        if !f.inputs.iter().any(|i| i.name == field) {
+                        if !f.inputs.iter().any(|i| *i.name() == field) {
                             return Err(invalid(at(&on, Case::ReadsNoInput { field })));
                         }
                     }
@@ -1314,14 +1865,198 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 }
             }
         }
+        Declaration::Setting(s) => setting_decl(o, s)?,
+        Declaration::Withdraw(w) => withdrawal(o, w)?,
+        _ => {}
     }
     reads_its_type(o, d)?;
     tool_names(o, d)
 }
 
+/// The kind `t` holds the field `input` names in, when `input` states
+/// another: an input of no kind is bound by a field of any.
+fn input_kind_held(t: &TypeDecl, input: &FunctionInput) -> Option<StorageKind> {
+    let kind = input.kind()?;
+    let held = t.fields.iter().find(|d| d.name == *input.name())?.ty.kind;
+    (held != kind).then_some(held)
+}
+
+/// The first input of `f` declared in a kind that a type in `o` computing
+/// a field by it holds in another, as that type's own declare would refuse
+/// it (`function_input_kind`, naming the type).
+pub(crate) fn input_kind_broken(o: &Ontology, f: &FunctionDecl) -> Option<Case> {
+    let calls = |t: &TypeDecl| {
+        t.fields
+            .iter()
+            .any(|x| x.function.as_deref() == Some(&*f.name))
+    };
+    let types = o.types.values().map(|e| &e.decl).filter(|t| calls(t));
+    types
+        .flat_map(|t| f.inputs.iter().map(move |i| (t, i)))
+        .find_map(|(t, i)| {
+            let held = input_kind_held(t, i)?;
+            let (function, input, kind, ty) = (
+                f.name.clone(),
+                i.name().clone(),
+                i.field.ty.kind,
+                t.name.clone(),
+            );
+            Some(Case::FunctionInputKind {
+                function,
+                input,
+                kind,
+                ty,
+                held,
+            })
+        })
+}
+
+/// A withdrawal: of a trigger, a verb, an object set or a function in
+/// force, which nothing in force reads ([`reader`]).
+fn withdrawal(o: &Ontology, w: &Withdrawal) -> Result<()> {
+    use DeclarationKind::{Function, ObjectSet, Trigger, Verb};
+    let (kind, name) = (w.kind.naming(), w.name.clone());
+    if !matches!(w.kind, Trigger | Verb | ObjectSet | Function) {
+        return Err(invalid(Case::WithdrawnKind { kind }));
+    }
+    if o.held_named(w.kind, &w.name).is_none() {
+        return Err(invalid(Case::WithdrawnUndeclared { kind, name }));
+    }
+    match reader(o, w) {
+        Some(by) => Err(invalid(Case::WithdrawnInUse { kind, name, by })),
+        None => Ok(()),
+    }
+}
+
+/// The first reader in force of what `w` withdraws, as a refusal names
+/// it. Nothing reads a trigger. A function is read by each field it
+/// computes; a verb by each field of its type only verbs write that no
+/// other verb of the type sets (lakelands#1130), and the last that retires
+/// a type only its verbs retire by that type (lakelands#1239); an object
+/// set by each set and each trigger whose condition names it, itself or
+/// through the sets it names.
+pub(crate) fn reader(o: &Ontology, w: &Withdrawal) -> Option<String> {
+    match w.kind {
+        DeclarationKind::Function => function_reader(o, &w.name),
+        DeclarationKind::Verb => verb_reader(o, &VerbName::from(w.name.as_str())),
+        DeclarationKind::ObjectSet => set_reader(o, &w.name),
+        _ => None,
+    }
+}
+
+/// The first field only verbs write that `verb` alone of its type's verbs
+/// sets: the field `status` of `order`; else its type, where it is the last
+/// verb that retires a type only its verbs retire (lakelands#1239).
+fn verb_reader(o: &Ontology, verb: &VerbName) -> Option<String> {
+    let v = &o.verbs.get(verb)?.decl;
+    let t = &o.types.get(&v.on)?.decl;
+    let sets = |v: &lakelands_api::ontology::VerbDecl, f: &FieldName| matches!(&v.effect, VerbEffect::Write { set } if set.iter().any(|a| &a.field == f));
+    let others = o.verbs.values().map(|e| &e.decl);
+    let others = others.filter(|x| x.name != v.name && x.on == t.name);
+    let only = |f: &&FieldDecl| {
+        f.authority == Authority::Verb
+            && sets(v, &f.name)
+            && !others.clone().any(|x| sets(x, &f.name))
+    };
+    if let Some(f) = t.fields.iter().find(only) {
+        return Some(format!("the field `{}` of `{}`", f.name, t.name));
+    }
+    let retires = |v: &lakelands_api::ontology::VerbDecl| matches!(v.effect, VerbEffect::Retire);
+    let last = !t.retired_by.is_authors() && retires(v) && !others.clone().any(retires);
+    last.then(|| format!("the type `{}`", t.name))
+}
+
+/// The first set, then trigger, in force whose condition names the set
+/// `set`: the object set `big`, the trigger `watch`.
+fn set_reader(o: &Ontology, set: &str) -> Option<String> {
+    let names = |c: &Condition| {
+        let mut named = Vec::new();
+        lakelands_core::describe::in_sets(&c.typed().ok()?, &mut named);
+        let through = |n: &String| o.set(n).is_some_and(|s| names_set(o, s, set));
+        Some(named.iter().any(|n| n == set || through(n)))
+    };
+    let sets = o.object_sets.values().map(|e| &e.decl);
+    let mut over = sets.filter(|s| s.name != set && names_set(o, s, set));
+    if let Some(s) = over.next() {
+        return Some(format!("the object set `{}`", s.name));
+    }
+    let mut triggers = o.triggers.values().map(|e| &e.decl);
+    let watching = triggers.find(|t| t.when.as_ref().and_then(names) == Some(true));
+    watching.map(|t| format!("the trigger `{}`", t.name))
+}
+
+/// The first field in force that a function computes, as a refusal names
+/// it: the field `total` of `invoice`.
+fn function_reader(o: &Ontology, function: &str) -> Option<String> {
+    let calls = |f: &FieldDecl| f.function.as_deref() == Some(function);
+    // A link type's fields are its relation's, named at the relation; one
+    // no relation in force carries is named itself, as it stands alone.
+    let carried = |t: &TypeDecl| {
+        let (owner, relation) = links::link_type_parts(&t.name)?;
+        let owner = &o.types.get(&owner)?.decl;
+        let mut rs = owner.relations.iter();
+        rs.find(|r| r.name == relation && r.carried_by_links())
+    };
+    let alone = || {
+        let mut types = o.types.values().map(|e| &e.decl);
+        types.find_map(|t| {
+            let f = t.fields.iter().find(|f| calls(f))?;
+            let alone = links::is_link_type(&t.name) && carried(t).is_none();
+            alone.then(|| format!("the field `{}` of `{}`", f.name, t.name))
+        })
+    };
+    let mut types = o.types.values().filter(|t| !is_system(&t.decl.name));
+    let found = types.find_map(|t| {
+        let t = &t.decl;
+        let own = t.fields.iter().find(|f| calls(f));
+        let own = own.map(|f| format!("the field `{}` of `{}`", f.name, t.name));
+        own.or_else(|| {
+            t.relations.iter().find_map(|r| {
+                let f = r.fields.iter().find(|f| calls(f))?;
+                Some(format!(
+                    "the field `{}` of `{}`'s relation `{}`",
+                    f.name, t.name, r.name
+                ))
+            })
+        })
+    });
+    found.or_else(alone)
+}
+
+/// A host's setting: a key of its own, never one the store reads or one
+/// under such a key's prefix; a group of its own, never the store's; and a
+/// type a field could hold, but a reference, whose record nothing would
+/// hold to it (063, extended).
+fn setting_decl(o: &Ontology, s: &SettingDecl) -> Result<()> {
+    use lakelands_api::settings::{STORE_GROUP, lake_setting, unlisted};
+    let on = [Place::Setting { key: s.key.clone() }];
+    let store = lake_setting(&s.key)
+        .map(|(l, _)| l.key)
+        .or_else(|| unlisted(&s.key));
+    if let Some(prefix) = store {
+        let prefix = prefix.to_owned();
+        return Err(invalid(at(&on, Case::SettingStoreKey { prefix })));
+    }
+    if s.group.as_deref() == Some(STORE_GROUP) {
+        return Err(invalid(at(&on, Case::SettingStoreGroup)));
+    }
+    if s.ty.kind == StorageKind::Reference {
+        return Err(invalid(at(&on, Case::SettingReference)));
+    }
+    let value = FieldDecl {
+        ty: s.ty.clone(),
+        ..FieldDecl::of("value", s.ty.kind)
+    };
+    field_type(o, &on, &value, &TypeName::from(""), None)
+}
+
 /// Refuses `d` where the lake `o` with it declared has a problem among its
 /// tools' names.
 pub(crate) fn tool_names(o: &Ontology, d: &Declaration) -> Result<()> {
+    // Where the writer's names say so, the lake with `d` has none.
+    if o.tool_names().is_some_and(|names| names.clear(o, d)) {
+        return Ok(());
+    }
     let problems = tool_problems(o, d);
     match problems.is_empty() {
         true => Ok(()),
@@ -1430,3 +2165,6 @@ pub fn value_type_change(current: &ValueTypeDecl, new: &ValueTypeDecl) -> ValueT
         ValueTypeChange::Tightening
     }
 }
+
+#[cfg(test)]
+mod tests;

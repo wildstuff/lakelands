@@ -1,0 +1,7 @@
+name: escalate_dunning
+on: dunning
+risk: low
+description: "Retire this notice because a higher level took over; raise the next level first."
+requires: "status = 'open' or status = 'sent'"
+set:
+  status: "'escalated'"

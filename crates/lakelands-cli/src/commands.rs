@@ -1,6 +1,7 @@
 //! The commands that open a lake: `apply`, `ingest`, `feed`, `age`,
-//! `purge`, `rebuild`, `compact`, `export` and `serve`. Each calls the library
-//! in-process and prints the position of every answer that has one.
+//! `purge`, `forget`, `values remove`, `rebuild`, `compact`, `export` and
+//! `serve`. Each calls the library in-process and prints the position of
+//! every answer that has one.
 //! `import` makes a lake instead of opening one.
 //!
 //! What a command says of its operator's own files and terminal (a file it
@@ -28,7 +29,7 @@ use lakelands_api::{Catalog, LakeStore, Principal};
 use lakelands_core::{bundle, canonical, export};
 use serde::Deserialize;
 
-use crate::say::Failure;
+use crate::say::{self, Failure};
 
 type Out<'a> = &'a mut dyn Write;
 
@@ -41,7 +42,16 @@ fn read(file: &Path) -> Result<String, Failure> {
     })
 }
 
-fn put(out: Out<'_>, line: impl std::fmt::Display) -> Result<(), Failure> {
+/// The words a run line adds for moves a constraint or the set ceiling
+/// refused: none where none were.
+pub(crate) fn refused_words(count: u32) -> String {
+    match count {
+        0 => String::new(),
+        n => format!(", {n} refused"),
+    }
+}
+
+pub(crate) fn put(out: Out<'_>, line: impl std::fmt::Display) -> Result<(), Failure> {
     writeln!(out, "{line}").map_err(|e| {
         Failure::new(
             format!("could not write output: {e}"),
@@ -71,22 +81,21 @@ pub async fn apply(
     out: Out<'_>,
     catalog: &dyn Catalog,
     who: &Principal,
-    dir: &Path,
+    (dir, plan_id): (&Path, Option<&str>),
 ) -> Result<(), Failure> {
-    if !dir.is_dir() {
-        return Err(Failure::new(
-            format!("{} is not a bundle directory", dir.display()),
-            "name the directory that holds the bundle's types/, verbs/ and other lanes",
-        ));
-    }
-    let bundle = bundle::load_dir(dir).map_err(|problems| {
-        // One `error:` line per problem; Failure prints the first prefix.
-        let lines: Vec<String> = problems.iter().map(ToString::to_string).collect();
-        Failure::new(
-            lines.join("\nerror: "),
-            "correct the bundle and apply it again; nothing was applied",
-        )
-    })?;
+    is_bundle(dir)?;
+    apply_bundle(out, catalog, who, (bundle::load_dir(dir), plan_id)).await
+}
+
+/// Apply a bundle as `apply` does, from what its loader answered: a
+/// directory's, or the files of an example this binary carries.
+pub async fn apply_bundle(
+    out: Out<'_>,
+    catalog: &dyn Catalog,
+    who: &Principal,
+    (loaded, plan_id): (Loaded, Option<&str>),
+) -> Result<(), Failure> {
+    let bundle = loaded.map_err(refused)?;
     // The bundle is applied as one set: validated together, appended in
     // one append at one position, or refused whole. A bundle of aging
     // rules alone declares nothing.
@@ -94,18 +103,55 @@ pub async fn apply(
     if what.is_empty() && !bundle.aging_rules.is_empty() {
         return aging_rules(out, catalog, who, bundle.aging_rules).await;
     }
-    match catalog.apply(who, bundle.declarations).await {
+    let proposed;
+    // Against its plan, where one is named (062).
+    let applied = match plan_id {
+        Some(id) => {
+            let change = lakelands_api::write::Change::Declare {
+                declarations: bundle.declarations,
+            };
+            catalog.enact(who, change, id).await
+        }
+        None => catalog.apply(who, bundle.declarations).await,
+    };
+    match applied {
         Ok(outcome) => {
-            put(
-                out,
-                format!(
+            proposed = matches!(outcome, lakelands_api::Outcome::Proposed { .. });
+            // Each declaration as it stands: one already in force says
+            // since when, and a bundle wholly in force says it appended
+            // nothing (lakelands#1106).
+            let (declared, plan) = match &outcome {
+                lakelands_api::Outcome::Applied { declared, plan, .. } => {
+                    (declared.clone(), plan.clone())
+                }
+                lakelands_api::Outcome::Proposed { .. } => (Vec::new(), None),
+            };
+            let held = |i: usize| declared.get(i).filter(|d| !d.appended).map(|d| d.since);
+            let header = match (0..what.len()).all(|i| held(i).is_some()) {
+                true => format!(
+                    "{} declaration(s) in force already: nothing appended",
+                    what.len()
+                ),
+                false => format!(
                     "applied {} declaration(s), in force from position {}:",
                     what.len(),
                     outcome.position()
                 ),
-            )?;
-            for w in what {
-                put(out, format!("  {w}"))?;
+            };
+            put(out, header)?;
+            for (i, w) in what.into_iter().enumerate() {
+                match held(i) {
+                    Some(since) => put(out, format!("  {w}, in force since position {since}"))?,
+                    None => put(out, format!("  {w}"))?,
+                }
+            }
+            // What it did to stored records, where it did anything.
+            for line in plan
+                .iter()
+                .filter(|p| !p.types.is_empty())
+                .flat_map(|p| say::plan(p))
+            {
+                put(out, line)?;
             }
         }
         Err(e) => {
@@ -114,7 +160,156 @@ pub async fn apply(
             return Err(f);
         }
     }
-    aging_rules(out, catalog, who, bundle.aging_rules).await
+    aging_rules(out, catalog, who, bundle.aging_rules).await?;
+    if proposed {
+        // A value is judged by its declaration, which is only proposed.
+        for value in &bundle.settings {
+            let name = value.get("key").and_then(Value::as_str).unwrap_or_default();
+            put(
+                out,
+                format!(
+                    "  setting `{name}`: its first value waits until the declarations are \
+                     accepted; apply the bundle again then"
+                ),
+            )?;
+        }
+        return Ok(());
+    }
+    first_values(out, catalog, who, bundle.settings).await
+}
+
+/// Write each setting's first value the bundle gives, only where the lake
+/// never held one: a value an operator wrote since stands, and one an
+/// operator retired stays retired
+/// (`docs/decisions/063-every-setting-is-in-one-list.md`).
+async fn first_values(
+    out: Out<'_>,
+    catalog: &dyn Catalog,
+    who: &Principal,
+    values: Vec<lakelands_api::Patch>,
+) -> Result<(), Failure> {
+    let ty = TypeName::from(lakelands_api::seam::SETTING_TYPE);
+    for value in values {
+        let name = value
+            .get("key")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let key = RecordKey::from(name.as_str());
+        let get = lakelands_api::Get {
+            key: key.clone(),
+            with_meta: false,
+            at: ReadAt::default(),
+            params: Default::default(),
+        };
+        match catalog.get(who, &ty, get).await {
+            Ok(_) => {
+                put(
+                    out,
+                    format!("  setting `{name}` holds a value already, kept"),
+                )?;
+                continue;
+            }
+            Err(lakelands_api::Error::NotFound { .. }) => {}
+            Err(e) => return Err(e.into()),
+        }
+        let retired = lakelands_api::Find {
+            // A quote in the key is doubled, as a text literal holds one.
+            filter: Some(
+                format!("key = '{}'", name.replace('\'', "''"))
+                    .as_str()
+                    .into(),
+            ),
+            retired: true,
+            ..Default::default()
+        };
+        let found = catalog.find(who, &ty, retired).await?.data;
+        if matches!(found, lakelands_api::read::Found::Records { retired: Some(n), .. } if n > 0) {
+            put(
+                out,
+                format!("  setting `{name}` was unset since, kept unset"),
+            )?;
+            continue;
+        }
+        let outcome = (catalog
+            .upsert(who, &ty, &key, value, Default::default())
+            .await)
+            .map_err(|e| {
+                let mut f = Failure::from(e);
+                f.what = format!("setting `{name}`: {}", f.what);
+                f.todo =
+                    "correct its value and apply the bundle again; the declarations were applied"
+                        .to_owned();
+                f
+            })?;
+        let at = outcome.position();
+        put(
+            out,
+            format!("  setting `{name}` given its first value at position {at}"),
+        )?;
+    }
+    Ok(())
+}
+
+/// `plan`: what applying a bundle would do, changing nothing, and the
+/// plan's id to apply exactly that (`Catalog::plan`, 062).
+pub async fn plan(
+    out: Out<'_>,
+    catalog: &dyn Catalog,
+    who: &Principal,
+    dir: &Path,
+) -> Result<(), Failure> {
+    let bundle = bundle_at(dir)?;
+    let change = lakelands_api::write::Change::Declare {
+        declarations: bundle.declarations,
+    };
+    let plan = catalog.plan(who, change).await.map_err(|e| {
+        let mut f = Failure::from(e);
+        f.todo = "correct the bundle and plan it again; nothing was applied".to_owned();
+        f
+    })?;
+    for line in say::plan(&plan.data) {
+        put(out, line)?;
+    }
+    put(
+        out,
+        format!(
+            "plan {}: apply it with `lakelands apply {} --plan {}`",
+            plan.data.report_id,
+            dir.display(),
+            plan.data.report_id
+        ),
+    )
+}
+
+/// What a bundle's loader answers.
+type Loaded = Result<bundle::Bundle, Vec<bundle::BundleError>>;
+
+/// The bundle in `dir`, read whole.
+fn bundle_at(dir: &Path) -> Result<bundle::Bundle, Failure> {
+    is_bundle(dir)?;
+    bundle::load_dir(dir).map_err(refused)
+}
+
+/// Refused unless `dir` is a directory a bundle can be read from.
+fn is_bundle(dir: &Path) -> Result<(), Failure> {
+    match dir.is_dir() {
+        true => Ok(()),
+        false => Err(Failure::new(
+            format!("{} is not a bundle directory", dir.display()),
+            "name the directory that holds the bundle's types/, verbs/ and other lanes",
+        )),
+    }
+}
+
+/// A bundle its loader refused, every problem named.
+fn refused(problems: Vec<bundle::BundleError>) -> Failure {
+    // One `error:` line per problem; Failure prints the first prefix.
+    let lines: Vec<String> = problems.iter().map(ToString::to_string).collect();
+    Failure::new(
+        lines.join("\nerror: "),
+        "correct the bundle and apply it again; nothing was applied",
+    )
 }
 
 /// `recompute`: compute again what the named function or type in force
@@ -276,8 +471,11 @@ pub async fn age(out: Out<'_>, store: &Arc<dyn LakeStore>, today: &str) -> Resul
             None => put(
                 out,
                 format!(
-                    "{}: moved {}, {} guard(s) failed",
-                    r.rule, r.moved, r.failed_guards
+                    "{}: moved {}, {} guard(s) failed{}",
+                    r.rule,
+                    r.moved,
+                    r.failed_guards,
+                    refused_words(r.refused)
                 ),
             )?,
         }
@@ -305,14 +503,14 @@ struct CsvMap {
 }
 
 /// The records of an NDJSON file, one per non-blank line.
-fn ndjson(file: &Path, text: &str) -> Result<Vec<SourceRecord>, Failure> {
+fn ndjson(file: &str, text: &str) -> Result<Vec<SourceRecord>, Failure> {
     text.lines()
         .enumerate()
         .filter(|(_, l)| !l.trim().is_empty())
         .map(|(n, l)| {
             serde_json::from_str(l).map_err(|e| {
                 Failure::new(
-                    format!("line {} of {} is not a source record: {e}", n + 1, file.display()),
+                    format!("line {} of {file} is not a source record: {e}", n + 1),
                     "each line must be one JSON object with `type`, `key` and `fields`; nothing was ingested",
                 )
             })
@@ -361,13 +559,12 @@ fn csv_rows(text: &str) -> Result<Vec<Vec<String>>, String> {
 async fn csv(
     catalog: &dyn Catalog,
     who: &Principal,
-    file: &Path,
-    text: &str,
-    map_file: &Path,
+    (file, text): (&str, &str),
+    (map_file, map): (&str, &str),
 ) -> Result<Vec<SourceRecord>, Failure> {
-    let map: CsvMap = serde_json::from_str(&read(map_file)?).map_err(|e| {
+    let map: CsvMap = serde_json::from_str(map).map_err(|e| {
         Failure::new(
-            format!("{} is not a column map: {e}", map_file.display()),
+            format!("{map_file} is not a column map: {e}"),
             "a map names `type`, the `key` column, and `fields` from column to field",
         )
     })?;
@@ -385,8 +582,7 @@ async fn csv(
             "correct the file and run the command again; nothing was ingested",
         )
     };
-    let mut rows =
-        csv_rows(text).map_err(|e| bad(format!("{} is not CSV: {e}", file.display())))?;
+    let mut rows = csv_rows(text).map_err(|e| bad(format!("{file} is not CSV: {e}")))?;
     if rows.is_empty() {
         return Ok(Vec::new());
     }
@@ -394,8 +590,7 @@ async fn csv(
     let column = |name: &str| {
         header.iter().position(|h| h == name).ok_or_else(|| {
             bad(format!(
-                "{} has no column `{name}`, which the map names",
-                file.display()
+                "{file} has no column `{name}`, which the map names"
             ))
         })
     };
@@ -459,6 +654,7 @@ async fn csv(
             _ => None,
         };
         out.push(SourceRecord {
+            source: None,
             upstream: None,
             ty: map.ty.clone(),
             key: RecordKey::from(cell(key_col)),
@@ -489,9 +685,31 @@ pub async fn ingest(
     map: Option<&Path>,
 ) -> Result<(), Failure> {
     let text = read(file)?;
+    let map = match map {
+        Some(m) => Some((m.display().to_string(), read(m)?)),
+        None => None,
+    };
+    let map = map
+        .as_ref()
+        .map(|(name, text)| (name.as_str(), text.as_str()));
+    let file = (file.display().to_string(), text);
+    ingest_text(out, catalog, who, (&file.0, &file.1), source, map).await?;
+    Ok(())
+}
+
+/// Feed the lake as `ingest` does, from a file's name and text and, for
+/// CSV, its map's; answer the position the last window committed through.
+pub async fn ingest_text(
+    out: Out<'_>,
+    catalog: &dyn Catalog,
+    who: &Principal,
+    file: (&str, &str),
+    source: &str,
+    map: Option<(&str, &str)>,
+) -> Result<Option<Position>, Failure> {
     let records = match map {
-        Some(m) => csv(catalog, who, file, &text, m).await?,
-        None => ndjson(file, &text)?,
+        Some(m) => csv(catalog, who, file, m).await?,
+        None => ndjson(file.0, file.1)?,
     };
     let mut acks = catalog
         .ingest(
@@ -500,8 +718,10 @@ pub async fn ingest(
             Box::pin(Items(records.into_iter())),
         )
         .await?;
+    let mut through = None;
     while let Some(ack) = std::future::poll_fn(|cx| acks.as_mut().poll_next(cx)).await {
         let c = ack?;
+        through = Some(c.position);
         put(
             out,
             format!(
@@ -510,7 +730,7 @@ pub async fn ingest(
             ),
         )?;
     }
-    Ok(())
+    Ok(through)
 }
 
 /// `feed`: the change feed from a position, one event per line in the
@@ -613,6 +833,155 @@ pub async fn purge(
     )
 }
 
+/// `forget`: forget one source (`LakeStore::forget_source`): append the
+/// act, destroy its keys, rebuild and reclaim, and print what it erased
+/// and retired. `report` is its `--report`, the only way to act; without
+/// one (`None`), as with `--preflight`, it prints the same for an act not
+/// made, the
+/// values the log holds in plaintext that refuse it, the time it expects
+/// to hold the writer's lock, and the id to make it under
+/// (`docs/decisions/058-a-source-may-be-forgotten.md`).
+pub async fn forget(
+    out: Out<'_>,
+    store: &Arc<dyn LakeStore>,
+    source: &str,
+    report: Option<Option<&str>>,
+) -> Result<(), Failure> {
+    let id = SourceId::from(source);
+    let (report, did) = match report {
+        Some(given) => (store.forget_source(&id, given).await?, "erased"),
+        None => (store.forget_preflight(&id).await?, "would erase"),
+    };
+    for f in &report.fields {
+        put(
+            out,
+            format!("{}.{}: {did} {} value(s)", f.ty, f.field, f.values),
+        )?;
+    }
+    for t in &report.retired {
+        put(
+            out,
+            format!(
+                "{}: retires {} record(s) {source} alone brought",
+                t.ty, t.retired
+            ),
+        )?;
+    }
+    for t in &report.co_owned {
+        let first: Vec<String> = t.first.iter().map(|k| k.to_string()).collect();
+        let what = format!(
+            "{}: keeps {} record(s) another hand wrote too",
+            t.ty, t.records
+        );
+        put(out, format!("{what}, first {}", first.join(", ")))?;
+    }
+    if report.outputs > 0 {
+        put(out, format!("{did} {} recorded output(s)", report.outputs))?;
+    }
+    for f in &report.recomputed {
+        put(out, format!("{}.{}: computed again", f.ty, f.field))?;
+    }
+    for v in &report.views {
+        put(out, format!("{v}: computed again"))?;
+    }
+    if report.plaintext > 0 {
+        put(
+            out,
+            format!(
+                "{source}: the log holds {} value(s) of erasable fields in plaintext, which the act cannot reach; it is refused",
+                report.plaintext
+            ),
+        )?;
+    }
+    if !report.report_id.is_empty() {
+        let (head, id) = (report.position, &report.report_id);
+        let seconds = report.expected_ms.div_ceil(1000);
+        if let Some(why) = &report.reclaim_owed {
+            put(out, format!("{source}: {}", owed(why)))?;
+        }
+        return put(
+            out,
+            format!(
+                "{source}: preflight at position {head}; the act holds the writer about {seconds} s \
+                 ({} events); forget with --report {id}",
+                report.events
+            ),
+        );
+    }
+    let reclaimed = reclaimed(report.reclaimed.as_ref(), report.reclaim_owed.as_deref());
+    put(
+        out,
+        format!(
+            "forgot {source} through position {}{reclaimed}",
+            report.position
+        ),
+    )
+}
+
+/// What an act says of its reclaim: the projection's bytes before and
+/// after, where the engine measures them, or that the reclaim is owed
+/// and why (lakelands#1179).
+fn reclaimed(r: Option<&lakelands_api::write::CompactReport>, why: Option<&str>) -> String {
+    match (r.map(|r| (r.before, r.after)), why) {
+        (_, Some(why)) => format!("; {}", owed(why)),
+        (Some((Some(b), Some(a))), None) => format!(", the projection {b} → {a} bytes"),
+        _ => String::new(),
+    }
+}
+
+/// The line that tells a reclaim still owed, with its cause: the act
+/// answered, its values erased already (lakelands#1161).
+pub fn owed(why: &str) -> String {
+    format!("an act's reclaim is still owed, tried again at the next open or compact: {why}")
+}
+
+/// `values remove`: take back part of a source
+/// (`LakeStore::remove_values`): append the act, destroy the key versions
+/// whose values it all selects, rebuild and reclaim, and print the
+/// report's own sentences (`RemoveReport::said`). As for [`forget`],
+/// `report` is the `--report`, the only way to act; without one it
+/// prints the preflight, the time it expects to hold the writer's lock,
+/// and the id to make it under
+/// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+pub async fn values_remove(
+    out: Out<'_>,
+    store: &Arc<dyn LakeStore>,
+    (source, selection): (&str, &lakelands_api::write::Selection),
+    (shredded, report): (bool, Option<Option<&str>>),
+) -> Result<(), Failure> {
+    let id = SourceId::from(source);
+    let report = match report {
+        Some(given) => store.remove_values(&id, selection, shredded, given).await?,
+        None => store.remove_values_preflight(&id, selection).await?,
+    };
+    for line in report.said() {
+        put(out, line)?;
+    }
+    if !report.report_id.is_empty() {
+        let (head, id) = (report.position, &report.report_id);
+        let seconds = report.expected_ms.div_ceil(1000);
+        if let Some(why) = &report.reclaim_owed {
+            put(out, format!("{source}: {}", owed(why)))?;
+        }
+        return put(
+            out,
+            format!(
+                "{source}: preflight at position {head}; the act holds the writer about {seconds} s \
+                 ({} events); remove with --report {id}",
+                report.log_events
+            ),
+        );
+    }
+    let reclaimed = reclaimed(report.reclaimed.as_ref(), report.reclaim_owed.as_deref());
+    put(
+        out,
+        format!(
+            "took back from {source} through position {}{reclaimed}",
+            report.position
+        ),
+    )
+}
+
 /// `rebuild`: rebuild the projection from the log. The lake was opened
 /// for a rebuild, and that open folded the whole log again.
 pub async fn rebuild(out: Out<'_>, store: &Arc<dyn LakeStore>) -> Result<(), Failure> {
@@ -621,6 +990,111 @@ pub async fn rebuild(out: Out<'_>, store: &Arc<dyn LakeStore>) -> Result<(), Fai
         out,
         format!("rebuilt the projection from the log through position {p}"),
     )
+}
+
+/// `upgrade`: say which log format the lake is written in, as a
+/// read-only open finds it, and, where it is older than the one this
+/// release writes, open it for writing once: that open appends
+/// `lake_upgraded` and writes the new format from there; the events
+/// before stay as they were written. A lake in this release's format
+/// whose projection an older build laid out is opened for writing once
+/// too, which rebuilds the projection. `check` stops before that open.
+pub async fn upgrade(
+    out: Out<'_>,
+    location: lakelands_api::Location,
+    seams: lakelands_api::seam::Seams,
+    check: bool,
+    open: &crate::Opener<'_>,
+) -> Result<(), Failure> {
+    use lakelands_api::engine::OpenMode;
+    use lakelands_api::error::Situation;
+    use lakelands_api::event::{EventBody, LOG_FORMAT_VERSION as TO};
+    let lake = location.lake.clone();
+    // A lake already in this release's format opens to read; an older one
+    // is refused by its format, and a projection an older build laid out
+    // by its layout, which the refusal names.
+    let from = match open(location.clone(), OpenMode::Read, seams.clone()).await {
+        Ok(_) => {
+            return put(
+                out,
+                format!("{lake} is written in log format {TO}: nothing to upgrade"),
+            );
+        }
+        Err(e) => match e.situation() {
+            Some(Situation::LogUpgradeOwed { found, .. }) => *found,
+            Some(Situation::ProjectionLayout {
+                found: Some(found),
+                wanted,
+                ..
+            }) if found < wanted => {
+                let found = *found;
+                if check {
+                    let said = format!(
+                        "{lake} is written in log format {TO}, its projection in layout \
+                         {found}: an open for writing rebuilds it; nothing was opened for writing"
+                    );
+                    return put(out, said);
+                }
+                let started = std::time::Instant::now();
+                let store = open(location, OpenMode::Write, seams).await?;
+                let secs = started.elapsed().as_secs_f64();
+                // Another writer may have rebuilt it since the read-only open.
+                let said = match store.rebuilt_at_open() {
+                    Some(_) => {
+                        format!(
+                            "rebuilt the projection of {lake} from layout {found} in {secs:.1} s"
+                        )
+                    }
+                    None => format!(
+                        "{lake}'s projection: another writer rebuilt it from layout {found}"
+                    ),
+                };
+                return put(out, said);
+            }
+            _ => return Err(e.into()),
+        },
+    };
+    if check {
+        return put(
+            out,
+            format!(
+                "{lake} is written in log format {from}: an open for writing appends \
+                 `lake_upgraded` from {from} to {TO}, and rebuilds the projection where an \
+                 older build laid it out; nothing was opened for writing"
+            ),
+        );
+    }
+    let started = std::time::Instant::now();
+    let store = open(location, OpenMode::Write, seams).await?;
+    let head = store.head().await?;
+    let secs = started.elapsed().as_secs_f64();
+    // What this open appended: its own `lease_taken` is the last one in
+    // the log, and the marker, where it upgraded, is the event after it.
+    // Another writer may have upgraded the lake since the read-only open.
+    let from_tail = Position(head.0.saturating_sub(64));
+    let tail = store
+        .feed()
+        .poll(from_tail, &FeedFilter::default(), 128)
+        .await?;
+    let leased = (tail.events.iter()).rposition(|e| matches!(e.body, EventBody::LeaseTaken { .. }));
+    let marked = leased
+        .and_then(|i| tail.events.get(i + 1))
+        .and_then(|e| match e.body {
+            EventBody::LakeUpgraded { from, to } => Some((from, to)),
+            _ => None,
+        });
+    match marked {
+        Some((from, to)) => put(
+            out,
+            format!(
+                "upgraded {lake} from log format {from} to {to} through position {head} in {secs:.1} s"
+            ),
+        ),
+        None => put(
+            out,
+            format!("{lake} is written in log format {TO}: another writer upgraded it from {from}"),
+        ),
+    }
 }
 
 /// `compact`: give back the storage the projection no longer uses, and

@@ -26,7 +26,7 @@ pub enum Origin {
     /// The store itself: declarations, leases, checkpoints, triggers.
     System,
     /// The field's declared `initial` value, filled when the record came
-    /// to exist: no writer chose it.
+    /// to exist or by a migration's `fill`: no writer chose it.
     Initial,
 }
 
@@ -60,6 +60,11 @@ pub struct FieldMeta {
     /// backing failed: why (`docs/decisions/010-provenance-per-field.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// For a value its source wrote that holds none, because the source
+    /// was forgotten: it was written, and is erased for every reader
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub erased: bool,
 }
 
 /// One record, as one principal may see it.
@@ -101,6 +106,11 @@ pub struct StoredRecord {
     pub meta: BTreeMap<FieldName, FieldMeta>,
     /// The position of the last event that changed the record.
     pub position: Position,
+    /// The position of the write that made the record: its first, or its
+    /// first after a retirement. A call that waits for a decision is
+    /// digested on it, so a record made again at a key reads none of the
+    /// decisions of the one retired there.
+    pub made: Position,
     /// Retired: invisible to reads at or after `position`.
     #[serde(default)]
     pub retired: bool,
@@ -122,6 +132,7 @@ impl StoredRecord {
             fields: BTreeMap::new(),
             meta: BTreeMap::new(),
             position,
+            made: position,
             retired: true,
             restricted: false,
         }
@@ -138,8 +149,10 @@ impl StoredRecord {
 /// (`docs/decisions/012-writes-touch-only-their-fields.md`).
 pub type Patch = BTreeMap<FieldName, Value>;
 
-/// One record from a source, as `ingest` receives it.
+/// One record from a source, as `ingest` receives it. A member it does
+/// not know is refused, never taken as absent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceRecord {
     /// The record's type.
     #[serde(rename = "type")]
@@ -156,14 +169,22 @@ pub struct SourceRecord {
     /// the ingesting principal states, as `seen_at` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<Upstream>,
+    /// The source this record comes from, where it is not the call's: one
+    /// ingest may carry many sources, each record stamped with its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceId>,
 }
 
 /// Where values read from another lake's log came from: that lake, and
 /// the position of the event there whose state they are.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Upstream {
     /// The lake the values were read from.
     pub lake: crate::id::LakeId,
     /// The position of the event there whose state they are.
     pub position: crate::id::Position,
 }
+
+#[cfg(test)]
+mod tests;

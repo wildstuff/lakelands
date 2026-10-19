@@ -11,7 +11,11 @@
 //! state, with its position. A vector's list is exact: the true top `k`
 //! by cosine, ties by key.
 
-use lakelands_api::engine::{After, LakeEngine, ProjectionStore, ProjectionView, Rankings, Scan};
+use std::collections::BTreeMap;
+
+use lakelands_api::engine::{
+    After, Declared, LakeEngine, ProjectionStore, ProjectionView, Rankings, Scan,
+};
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::read::{Direction, Order, OrderBy};
@@ -70,6 +74,11 @@ engine_check!(
 );
 
 engine_check!(
+    EQUAL_ANY_IS_EACH = a_scan_with_equal_any_answers_what_one_equal_a_tuple_answers,
+    "044, seams §scan and lakelands#971: a scan's `equal_any` selects the records that hold one of its tuples exactly, what one scan with `equal` a tuple selects, together and in key order: one field and two, text and a number, `'010'` beside `'10'`, a null that selects nothing, at the head and at an earlier position, read whole and walked one record at a time from `after`"
+);
+
+engine_check!(
     FILTER_AS_EVALUATOR = scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors,
     "seams §scan: an engine selects exactly the records the one evaluator selects, comparisons across kinds included, and a filter that errors for a record does not select it"
 );
@@ -97,6 +106,11 @@ engine_check!(
 engine_check!(
     LEXICAL_NAMED_FIELDS = lexical_over_named_fields_is_the_pipelines_over_those_fields,
     "025 and seams §ranked: a search limited to named fields matches, scores and ties over the head text of the named searchable fields only, and no engine cuts its candidates at k before it narrows them: a record matching in a named field is a hit however many others match only in fields not named"
+);
+
+engine_check!(
+    LEXICAL_WEIGHTED = a_weighed_text_scores_each_token_at_its_heaviest_field_before_the_cut,
+    "025 and seams §ranked, extended (lakelands#1230): a text's list weighs each distinct query token at the heaviest searched field holding it, a field not weighed at 1, and sums them in the tokens' order, so a token in two fields counts once and an unweighed list scores the tokens' count; the list is cut at k by that score, so a candidate holding fewer tokens in a heavier field outranks one holding more in a lighter one; a weight for a field the search does not name weighs nothing"
 );
 
 engine_check!(
@@ -132,12 +146,17 @@ engine_check!(
 
 engine_check!(
     EARLIER_STATES = declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position,
-    "seams §ProjectionView: declarations, membership (a record's, and a set's members of a type), recorded outputs and applied ids are kept states too, read at a view's own position"
+    "seams §ProjectionView: declarations, membership (a record's, and a set's members of a type), recorded outputs and applied ids are kept states too, read at a view's own position, applied ids one or many in one call"
 );
 
 engine_check!(
     LATER_OUTPUT_HOLDS = a_later_output_for_the_same_call_replaces_the_earlier_from_its_position,
     "022, extended, and seams §ProjectionView: the log may hold two outputs for one seam and input (a failure, then the answer a redeclaration asked for); the later one holds from its position, the earlier one before it; an output under the store's own seam name, `sys:renames`, is kept and answered as of a position like any other (lakelands#527)"
+);
+
+engine_check!(
+    SOURCE_ROUTES = the_index_answers_a_sources_positions_in_order_to_its_through,
+    "058 and seams §ProjectionView (lakelands#1151): `of_source` answers the positions of the applied events of a source, each once however many types it is about, in order, at most `limit` with `through` the last of them, else through the range asked, nothing past a view's position, and nothing decided where a rebuild's refold has not reached the range"
 );
 
 engine_check!(
@@ -154,6 +173,11 @@ engine_check!(
     SORTED_PAGE_PINNED =
         a_page_at_an_earlier_position_reads_the_head_index_and_the_keys_changed_since,
     "041, extended: a page ordered by an indexed field at an earlier position reads the head's order index and the keys of the type changed since, with their states at the position, so it answers what one scan over the states there answers, a key changed, retired or written after the position in its place there, and reads its page, at most three rows more and two per changed key, not the type; a commit between two pages of one view changes neither"
+);
+
+engine_check!(
+    PROPOSALS_PAGED = proposals_come_newest_first_a_page_at_a_time,
+    "seams §ProjectionView (lakelands#1063): `proposals_before` answers, at the head and at earlier positions, for every state filter and pages of one, two and four, the proposals `proposals` answers whole, newest first, each page those before the last one read: a state is judged as it stood at the view, and a page holds no more than its limit"
 );
 
 engine_check!(
@@ -737,9 +761,25 @@ pub fn lexical(
     fields: Option<&[FieldName]>,
     k: u32,
 ) -> lakelands_api::Result<Vec<(RecordKey, f64)>> {
+    lexical_weighed(engine, ty, text, fields, BTreeMap::new(), k)
+}
+
+/// [`lexical`], a match in each field weighed by `text_weights`.
+pub fn lexical_weighed(
+    engine: &dyn LakeEngine,
+    ty: &TypeName,
+    text: &str,
+    fields: Option<&[FieldName]>,
+    text_weights: BTreeMap<FieldName, f64>,
+    k: u32,
+) -> lakelands_api::Result<Vec<(RecordKey, f64)>> {
     let text = Some((text.to_owned(), fields.map(<[FieldName]>::to_vec)));
-    let vectors = Vec::new();
-    one_list(engine, ty, Rankings { text, vectors }, k)
+    let asked = Rankings {
+        text,
+        text_weights,
+        ..Rankings::default()
+    };
+    one_list(engine, ty, asked, k)
 }
 
 /// The head's nearest vectors of `ty.field` to `query`.
@@ -755,8 +795,8 @@ pub fn nearest(
         engine,
         ty,
         Rankings {
-            text: None,
             vectors,
+            ..Rankings::default()
         },
         k,
     )
@@ -817,6 +857,7 @@ fn ranked_answers_every_list_from_one_state_and_says_its_position(engine: &dyn L
     let asked = Rankings {
         text: Some(("river ocean".into(), None)),
         vectors: vec![("emb".into(), vec![0.0, 1.0]), ("none".into(), vec![1.0])],
+        ..Rankings::default()
     };
     let read = || -> Result<(Option<Position>, Vec<Vec<String>>), Failure> {
         let ranked = engine.ranked(&ty, &asked, 10).must("ranking")?;
@@ -930,6 +971,68 @@ fn lexical_over_named_fields_is_the_pipelines_over_those_fields(engine: &dyn Lak
     Ok(())
 }
 
+fn a_weighed_text_scores_each_token_at_its_heaviest_field_before_the_cut(
+    engine: &dyn LakeEngine,
+) -> Held {
+    fold(engine, 1, |p| {
+        p.put_declaration(&documents(), 1, None, Position(0))?;
+        let rows = [
+            ("both", json!({"title": "river", "body": "river"})),
+            ("heavy", json!({"title": "river"})),
+            ("light-a", json!({"body": "river run"})),
+            ("light-b", json!({"body": "rivers running"})),
+            ("noted", json!({"note": "river run"})),
+        ];
+        for (key, fields) in rows {
+            p.put_record(&record("doc", key, fields, 1))?;
+        }
+        Ok(())
+    })?;
+    let ty = TypeName::from("doc");
+    let weighed = |text: &str, fields: Option<&[FieldName]>, weights: &[(&str, f64)], k| {
+        let weights = weights.iter().map(|(f, w)| (FieldName::from(*f), *w));
+        lexical_weighed(engine, &ty, text, fields, weights.collect(), k)
+    };
+    let keyed = |hits: &[(&str, f64)]| -> Vec<(RecordKey, f64)> {
+        hits.iter()
+            .map(|(k, s)| (RecordKey::from(*k), *s))
+            .collect()
+    };
+    let none = weighed("river run", None, &[], 3).must("ranking unweighed")?;
+    ensure!(
+        none == keyed(&[("light-a", 2.0), ("light-b", 2.0), ("both", 1.0)]),
+        "unweighed, `river run` answered {none:?}: the count of the distinct tokens held, \
+         `both` holding `river` in two fields counted once"
+    );
+    let title = weighed("river run", None, &[("title", 4.0)], 3).must("ranking by title")?;
+    ensure!(
+        title == keyed(&[("both", 4.0), ("heavy", 4.0), ("light-a", 2.0)]),
+        "with `title` at 4, `river run` with k = 3 answered {title:?}: `both` and `heavy` hold \
+         `river` in the title (4, not 4 + 1 for `both`), `light-a` and `light-b` hold both \
+         tokens in `body`, which weighs 1; a list cut at k before it was weighed loses `heavy`"
+    );
+    let both = [("title", 4.0), ("body", 0.25)];
+    let halved = weighed("river run", None, &both, 10).must("ranking by both fields")?;
+    let light = 0.25 + 0.25;
+    ensure!(
+        halved
+            == keyed(&[
+                ("both", 4.0),
+                ("heavy", 4.0),
+                ("light-a", light),
+                ("light-b", light)
+            ]),
+        "with `title` at 4 and `body` at 0.25, `river run` answered {halved:?}"
+    );
+    let bodied = [FieldName::from("body")];
+    let named = weighed("river", Some(&bodied), &[("title", 4.0)], 10).must("ranking `body`")?;
+    ensure!(
+        named == keyed(&[("both", 1.0), ("light-a", 1.0), ("light-b", 1.0)]),
+        "`river` in `body`, `title` at 4, answered {named:?}: a field not searched weighs nothing"
+    );
+    Ok(())
+}
+
 fn a_record_put_after_a_redeclaration_in_the_same_transaction_is_indexed_under_it(
     engine: &dyn LakeEngine,
 ) -> Held {
@@ -954,6 +1057,85 @@ fn a_record_put_after_a_redeclaration_in_the_same_transaction_is_indexed_under_i
          `river` answered {:?}, but under the declaration in force both are hits",
         hit_keys(&hits)
     );
+    Ok(())
+}
+
+engine_check!(
+    REPLACED = what_was_replaced_since_a_position_and_what_is_in_force_hold_what_was_then,
+    "seams §ProjectionView (lakelands#1064): `replaced(from, to)` answers each declaration's state that a later one replaced after `from` and by `to`, as it stood: at every position, the latest state of each name at or before it, among those in force at the head and those replaced since, is what `declarations` answers there, two ranges that meet answer what the one over both does, and a view at an earlier position answers no further than its position"
+);
+
+fn what_was_replaced_since_a_position_and_what_is_in_force_hold_what_was_then(
+    engine: &dyn LakeEngine,
+) -> Held {
+    let ty = |name: &str, fields: &[&str]| {
+        let fields: Vec<Value> = (fields.iter())
+            .map(|f| json!({"name": f, "type": {"kind": "text"}}))
+            .collect();
+        declare(json!({"declare": "type", "name": name, "fields": fields}))
+    };
+    fold(engine, 7, |p| {
+        p.put_declaration(&ty("a", &["x"]), 1, None, Position(1))?;
+        p.put_declaration(&ty("b", &["x"]), 1, None, Position(1))?;
+        p.put_declaration(&ty("a", &["x", "y"]), 2, None, Position(3))?;
+        p.put_declaration(&ty("c", &["x"]), 1, None, Position(4))?;
+        p.put_declaration(&ty("a", &["x", "y", "z"]), 3, None, Position(6))?;
+        p.put_declaration(&ty("b", &["x", "w"]), 2, None, Position(6))
+    })?;
+    let shown = |d: &[Declared]| {
+        let mut all: Vec<String> = d
+            .iter()
+            .map(|d| serde_json::to_string(d).unwrap_or_default())
+            .collect();
+        all.sort();
+        all
+    };
+    let head = view(engine, None)?;
+    let now = head
+        .declarations()
+        .must("reading the declarations at the head")?;
+    let replaced = |from: u64, to: u64| -> Result<Vec<Declared>, Failure> {
+        let got = head.replaced(Position(from), Position(to));
+        got.must(&format!("reading what was replaced in ({from}, {to}]"))?
+            .ok_or_else(|| Failure::new("the engine keeps no read of what was replaced".to_owned()))
+    };
+    for at in 1..=7 {
+        let then = view(engine, Some(Position(at)))?.declarations();
+        let then = then.must(&format!("reading the declarations at {at}"))?;
+        let since = replaced(at, 7)?;
+        let mut by: std::collections::BTreeMap<String, &Declared> = Default::default();
+        for d in now.iter().chain(&since).filter(|d| d.since.0 <= at) {
+            let k = crate::engines::declaration_key(&d.declaration);
+            if by.get(&k).is_none_or(|e| e.since < d.since) {
+                by.insert(k, d);
+            }
+        }
+        let built: Vec<Declared> = by.into_values().cloned().collect();
+        ensure!(
+            shown(&built) == shown(&then),
+            "at {at}, the head's declarations with those replaced since answer {:?}; `declarations` there answers {:?}",
+            shown(&built),
+            shown(&then)
+        );
+        // A view at `at` answers to its own position, whatever `to` asks.
+        let then = view(engine, Some(Position(at)))?;
+        let early = then.replaced(Position(1), Position(7));
+        let early = early.must(&format!("reading what was replaced as of {at}"))?;
+        ensure!(
+            early.as_ref().map(|e| shown(e)) == Some(shown(&replaced(1, at)?)),
+            "as of {at}, what was replaced in (1, 7] is {early:?}; it is what was replaced in (1, {at}]"
+        );
+        for mid in at..=7 {
+            let mut parts = replaced(at, mid)?;
+            parts.extend(replaced(mid, 7)?);
+            ensure!(
+                shown(&parts) == shown(&since),
+                "what was replaced in ({at}, {mid}] and ({mid}, 7] is {:?}; in ({at}, 7] it is {:?}",
+                shown(&parts),
+                shown(&since)
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1376,10 +1558,11 @@ fn declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position(
     }));
     let key = RecordKey::from("k");
     let ty = TypeName::from("t");
-    let seen = EventId("seen".into());
+    let (seen, early) = (EventId("seen".into()), EventId("early".into()));
     fold(engine, 1, |p| {
         p.put_declaration(&v1, 1, None, Position(1))?;
-        p.put_membership("big", &ty, &key, true, Position(1))
+        p.put_membership("big", &ty, &key, true, Position(1))?;
+        p.mark_applied(&unrouted(&early, 1))
     })?;
     fold(engine, 3, |p| {
         p.put_declaration(&v2, 2, None, Position(3))?;
@@ -1457,6 +1640,22 @@ fn declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position(
         id_then.is_none() && id_now == Some(Position(3)),
         "an id applied at 3 read {id_then:?} at 2 and {id_now:?} at the head"
     );
+    // Many ids in one call: an answer an id, in their order, twice for an
+    // id asked twice, none for an id never applied.
+    let ids = [seen.clone(), EventId("never".into()), early, seen];
+    let (many_then, many_now) = (
+        then.applied_many(&ids).must("reading many ids at 2")?,
+        now.applied_many(&ids)
+            .must("reading many ids at the head")?,
+    );
+    let (p1, p3) = (Some(Position(1)), Some(Position(3)));
+    ensure!(
+        many_then == [None, None, p1, None] && many_now == [p3, None, p1, p3],
+        "ids applied at 3, never and at 1, the first asked again, read {many_then:?} at 2 and \
+         {many_now:?} at the head"
+    );
+    let none = now.applied_many(&[]).must("reading no id")?;
+    ensure!(none.is_empty(), "no id asked answered {none:?}");
     Ok(())
 }
 
@@ -1470,6 +1669,7 @@ fn unrouted(id: &EventId, at: u64) -> lakelands_api::engine::Applied {
             ty: None,
             key: None,
         }],
+        source: None,
     }
 }
 
@@ -1520,6 +1720,7 @@ fn the_index_answers_a_filters_positions_in_order_to_its_through(engine: &dyn La
         at: Position(*at),
         kind,
         about: about.clone(),
+        source: None,
     };
     let (first, rest) = events.split_at(5);
     fold(engine, 5, |p| {
@@ -1621,6 +1822,85 @@ fn the_index_answers_a_filters_positions_in_order_to_its_through(engine: &dyn La
     Ok(())
 }
 
+fn the_index_answers_a_sources_positions_in_order_to_its_through(engine: &dyn LakeEngine) -> Held {
+    use lakelands_api::engine::{About, Applied};
+    let about = |ty: &str| About {
+        ty: Some(ty.into()),
+        key: Some("A".into()),
+    };
+    let events: [(u64, Option<&str>, Vec<About>); 6] = [
+        (1, Some("s1"), vec![about("invoice")]),
+        (2, Some("s2"), vec![about("invoice")]),
+        (3, None, vec![about("invoice")]),
+        (4, Some("s1"), vec![about("invoice"), about("memo")]),
+        (5, Some("s2"), vec![about("memo")]),
+        (6, Some("s1"), vec![about("memo")]),
+    ];
+    let applied = |(at, source, about): &(u64, Option<&str>, Vec<About>)| Applied {
+        id: EventId(format!("e{at}")),
+        at: Position(*at),
+        kind: "record_ingested",
+        about: about.clone(),
+        source: source.map(Into::into),
+    };
+    let marked = |p: &dyn lakelands_api::engine::ProjectionStore, from: usize, to: usize| {
+        events[from..to]
+            .iter()
+            .try_for_each(|e| p.mark_applied(&applied(e)))
+    };
+    fold(engine, 4, |p| marked(p, 0, 4))?;
+    fold(engine, 6, |p| marked(p, 4, 6))?;
+    let ask = |v: &dyn lakelands_api::engine::ProjectionView, source: &str, from, to, n| {
+        let m = v.of_source(&source.into(), Position(from), Position(to), n);
+        let m = m.must(&format!(
+            "asking the index for {source} from {from} through {to}"
+        ))?;
+        Ok::<_, Failure>((
+            m.positions.iter().map(|p| p.0).collect::<Vec<_>>(),
+            m.through.map(|p| p.0),
+        ))
+    };
+    let (head, then) = (view(engine, None)?, view(engine, Some(Position(4)))?);
+    let got = [
+        ask(head.as_ref(), "s1", 0, 6, 100)?,
+        ask(head.as_ref(), "s2", 0, 6, 100)?,
+        ask(head.as_ref(), "s3", 0, 6, 100)?,
+        ask(head.as_ref(), "s1", 0, 6, 2)?,
+        ask(head.as_ref(), "s1", 5, 6, 2)?,
+        ask(head.as_ref(), "s1", 2, 3, 9)?,
+        ask(then.as_ref(), "s1", 0, 6, 100)?,
+    ];
+    let want = [
+        (vec![1, 4, 6], Some(6)),
+        (vec![2, 5], Some(6)),
+        (vec![], Some(6)),
+        (vec![1, 4], Some(4)),
+        (vec![6], Some(6)),
+        (vec![], Some(3)),
+        (vec![1, 4], Some(4)),
+    ];
+    ensure!(
+        got == want,
+        "the index answered {got:?} for s1, s2 and s3 through 6, s1 with a limit of 2 from 0 \
+         and from 5, s1 from 2 through 3, and s1 at a view at 4; it answers {want:?}"
+    );
+    // A view taken before a rebuild's `clear` decides only what the refold
+    // has reached.
+    let before = view(engine, None)?;
+    (engine.projection().clear()).must("clearing the projection")?;
+    fold(engine, 2, |p| marked(p, 0, 2))?;
+    let rebuilt = [
+        ask(before.as_ref(), "s1", 0, 6, 100)?,
+        ask(before.as_ref(), "s1", 3, 6, 100)?,
+    ];
+    ensure!(
+        rebuilt == [(vec![1], Some(2)), (vec![], None)],
+        "a view at 6 taken before a clear and a refold through 2 answered {rebuilt:?} for s1 \
+         from 0 and from 3; it answers [1] through 2, and decides nothing"
+    );
+    Ok(())
+}
+
 fn the_first_applied_position_is_kept(engine: &dyn LakeEngine) -> Held {
     let id = EventId("once".into());
     fold(engine, 2, |p| p.mark_applied(&unrouted(&id, 2)))?;
@@ -1649,6 +1929,84 @@ fn proposal(id: &str, position: u64, write: ProposedWrite, state: ProposalState)
         reason: None,
         more: false,
     }
+}
+
+fn proposals_come_newest_first_a_page_at_a_time(engine: &dyn LakeEngine) -> Held {
+    use ProposalState::{Accepted, Pending, Rejected};
+    let retire = |ty: &str| ProposedWrite::Retire {
+        ty: ty.into(),
+        key: "k".into(),
+        opts: Default::default(),
+    };
+    let write = |n: u64| {
+        retire(if n.is_multiple_of(2) {
+            "invoice"
+        } else {
+            "customer"
+        })
+    };
+    fold(engine, 6, |p| {
+        for n in 1..=6 {
+            p.put_proposal(
+                &proposal(&format!("p{n}"), n, write(n), Pending),
+                Position(n),
+            )?;
+        }
+        Ok(())
+    })?;
+    fold(engine, 8, |p| {
+        p.put_proposal(&proposal("p2", 2, write(2), Accepted), Position(7))?;
+        p.put_proposal(&proposal("p5", 5, write(5), Rejected), Position(8))
+    })?;
+    for at in [None, Some(Position(6)), Some(Position(7))] {
+        let v = view(engine, at)?;
+        for state in [None, Some(Pending), Some(Accepted), Some(Rejected)] {
+            let filter = ProposalFilter {
+                state,
+                ..Default::default()
+            };
+            let ids =
+                |ps: Vec<Proposal>| ps.into_iter().map(|p| p.id.to_string()).collect::<Vec<_>>();
+            let whole = ids(v.proposals(&filter).must("listing proposals")?);
+            for size in [1, 2, 4] {
+                // At most a page more than the proposals: an engine that never
+                // ends its pages fails here, not by hanging.
+                let (mut paged, mut before, mut ended) = (Vec::new(), None, false);
+                for _ in 0..=whole.len() {
+                    let asked = ProposalFilter {
+                        limit: Some(size),
+                        ..filter.clone()
+                    };
+                    let page = v.proposals_before(&asked, before).must("reading a page")?;
+                    let Some(page) = page else {
+                        return Err(Failure::new(
+                            "the engine keeps no page of proposals".to_owned(),
+                        ));
+                    };
+                    ensure!(
+                        page.len() <= size as usize,
+                        "a page of {size} held {}",
+                        page.len()
+                    );
+                    let last = page.last().map(|p| p.position);
+                    let full = page.len() == size as usize;
+                    paged.extend(ids(page));
+                    match last {
+                        Some(last) if full => before = Some(last),
+                        _ => {
+                            ended = true;
+                            break;
+                        }
+                    }
+                }
+                ensure!(
+                    ended && paged == whole,
+                    "at {at:?}, state {state:?}, pages of {size} answered {paged:?}; the whole listing is {whole:?}"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn proposals_filter_by_state_and_type_newest_first(engine: &dyn LakeEngine) -> Held {
@@ -2480,6 +2838,91 @@ fn a_scan_with_equal_answers_exactly_the_identical_values(engine: &dyn LakeEngin
                 got == expected,
                 "a scan for exactly {value} at {at:?} selected {got:?}; identity selects \
                  {expected:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn a_scan_with_equal_any_answers_what_one_equal_a_tuple_answers(engine: &dyn LakeEngine) -> Held {
+    fold(engine, 1, |p| {
+        for (key, v, w) in [
+            ("a", json!("10"), json!("x")),
+            ("b", json!("010"), json!("x")),
+            ("c", json!(10), json!("y")),
+            ("d", json!("10.0"), json!("y")),
+            ("e", json!("20"), json!("x")),
+            ("f", json!("20"), json!("y")),
+            ("g", json!("10"), json!("y")),
+        ] {
+            p.put_record(&record("t", key, json!({"v": v, "w": w}), 1))?;
+        }
+        // More holders of two texts than one batch of a key-ordered read.
+        for i in 0..1100 {
+            let v = if i % 2 == 0 { "30" } else { "31" };
+            p.put_record(&record("t", &format!("m{i:04}"), json!({"v": v}), 1))?;
+        }
+        p.put_record(&record("t", "h", json!({"w": "x"}), 1))
+    })?;
+    // Later, `g` moves away: the head and position 1 differ.
+    fold_one(engine, 2, record("t", "g", json!({"v": "11", "w": "y"}), 2))?;
+    let ty = TypeName::from("t");
+    let one = |pairs: &[(&str, Value)]| -> Vec<(FieldName, Value)> {
+        pairs
+            .iter()
+            .map(|(f, v)| (FieldName::from(*f), v.clone()))
+            .collect()
+    };
+    let asks: Vec<Vec<Vec<(FieldName, Value)>>> = vec![
+        vec![one(&[("v", json!("10"))]), one(&[("v", json!("010"))])],
+        vec![one(&[("v", json!(10))]), one(&[("v", json!("20"))])],
+        vec![
+            one(&[("v", json!("10")), ("w", json!("x"))]),
+            one(&[("v", json!("20")), ("w", json!("y"))]),
+        ],
+        vec![one(&[("v", json!(null))]), one(&[("v", json!("11"))])],
+        vec![one(&[("v", json!("10"))])],
+        vec![one(&[("v", json!("10"))]), one(&[("v", json!(10))])],
+        vec![one(&[("v", json!("30"))]), one(&[("v", json!("31"))])],
+    ];
+    for at in [None, Some(Position(1))] {
+        let v = view(engine, at)?;
+        for any in &asks {
+            let mut each = Vec::new();
+            for t in any {
+                let scan = scan_with(|s| s.equal = t.clone());
+                each.extend(keys(&v.scan(&ty, &scan).must("scanning for one tuple")?));
+            }
+            each.sort();
+            each.dedup();
+            let whole = keys(
+                &v.scan(&ty, &scan_with(|s| s.equal_any = any.clone()))
+                    .must("scanning for any")?,
+            );
+            let counted = v.count(&ty, &scan_with(|s| s.equal_any = any.clone()));
+            let counted = counted.must("counting any")?;
+            let mut walked: Vec<String> = Vec::new();
+            loop {
+                let after = walked.last().map(|k| After {
+                    values: Vec::new(),
+                    key: RecordKey::from(k.as_str()),
+                });
+                let page = scan_with(|s| {
+                    (s.equal_any, s.after, s.limit) = (any.clone(), after.clone(), 1)
+                });
+                let got = keys(&v.scan(&ty, &page).must("walking any")?);
+                if got.is_empty() {
+                    break;
+                }
+                walked.extend(got.into_iter().map(|k| k.to_string()));
+            }
+            ensure!(
+                whole == each && walked == each && counted == each.len() as u64,
+                "at {at:?} a scan for any of {any:?} selected {} whole, {} walked and counted \
+                 {counted}; one scan a tuple selects {}",
+                whole.len(),
+                walked.len(),
+                each.len()
             );
         }
     }

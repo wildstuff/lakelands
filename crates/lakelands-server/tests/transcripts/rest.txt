@@ -52,14 +52,14 @@
 < 200
 < content-type: application/json
 < lakelands-position: 9
-< {"data":{"lake":"finance","may":{"ingest":false,"review":false,"schema":false},"types":[{"access":{"field_meta":true,"searchable":true},"description":"A bill received.","fields":[{"access":"read","authority":"source","filterable":true,"name":"amount","on_input_change":"keep","required":false,"searchable":false,"sensitive":false,"type":{"kind":"decimal"}},{"access":"write","authority":"authored","filterable":true,"name":"status","on_input_change":"keep","required":false,"searchable":true,"sensitive":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"verdict","on_input_change":"keep","required":false,"searchable":false,"sensitive":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","depends_on":["verdict"],"filterable":true,"name":"reason","on_input_change":"clear","required":false,"searchable":false,"sensitive":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"note","on_input_change":"keep","required":false,"searchable":false,"sensitive":true,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"partner","on_input_change":"keep","required":false,"searchable":false,"sensitive":false,"type":{"kind":"reference","target":"partner"}}],"lifecycle":{"schema_hash":"26519aa09c559d52e7ac1ca5b6e3dcb837c6c0af2556e6802baabce2a854b47a","version":1},"lineage":{"sourced":true},"may":{"find":true,"get":true,"retire":false,"upsert":true},"name":"invoice","relations":[{"cardinality":"many_to_one","inverse":"bills","name":"billed_by","target":"partner","via":"partner"}],"verbs":["approve","pay"]},{"access":{"field_meta":true,"searchable":true},"fields":[{"access":"read","authority":"authored","filterable":true,"name":"name","on_input_change":"keep","required":false,"searchable":true,"sensitive":false,"type":{"kind":"text"}}],"lifecycle":{"schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","version":1},"lineage":{"sourced":false},"may":{"find":true,"get":true,"retire":false,"upsert":false},"name":"partner"},{"access":{"field_meta":true,"key":["name"],"searchable":false},"description":"One aging rule: on a date, move `field` of every record of `on` from `from` to `to` when `when` holds.","fields":[{"access":"read","authority":"authored","filterable":true,"name":"name","on_input_change":"keep","required":true,"searchable":false,"sensitive":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"on","on_input_change":"keep","required":true,"searchable":false,"sensitive":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"field","on_input_change":"keep","required":true,"searchable":false,"sensitive":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":false,"name":"from","on_input_change":"keep","required":true,"searchable":false,"sensitive":false,"type":{"kind":"json"}},{"access":"read","authority":"authored","filterable":false,"name":"to","on_input_change":"keep","required":true,"searchable":false,"sensitive":false,"type":{"kind":"json"}},{"access":"read","authority":"authored","filterable":true,"name":"when","on_input_change":"keep","required":true,"searchable":false,"sensitive":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"description","on_input_change":"keep","required":false,"searchable":false,"sensitive":false,"type":{"kind":"text"}}],"lifecycle":{"schema_hash":"9db5e7a2e8b28a1714f7ef20a8e795b823134697865bf055cfdbc7d703100211","version":1},"lineage":{"sourced":false},"may":{"find":true,"get":true,"retire":false,"upsert":false},"name":"sys.aging_rule"},{"access":{"field_meta":true,"key":["key"],"searchable":false},"description":"One named setting of the lake: `setting('key')` reads its value.","fields":[{"access":"read","authority":"authored","filterable":true,"name":"key","on_input_change":"keep","required":true,"searchable":false,"sensitive":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":false,"name":"value","on_input_change":"keep","required":true,"searchable":false,"sensitive":false,"type":{"kind":"json"}}],"lifecycle":{"schema_hash":"9c9ea74b538e4165a4833ce0d88bc0d004a57969e2a04d157cf37c407c089609","version":1},"lineage":{"sourced":false},"may":{"find":true,"get":true,"retire":false,"upsert":false},"name":"sys.setting"}],"verbs":[{"external":false,"name":"approve","on":"invoice","payload":[],"risk":"low"},{"external":false,"name":"pay","on":"invoice","payload":[{"access":"write","authority":"authored","filterable":true,"name":"reference","on_input_change":"keep","required":false,"searchable":false,"sensitive":false,"type":{"kind":"text"}}],"risk":"high"}]},"position":9}
+< {"data":{"lake":"finance","may":{"ingest":false,"review":false,"schema":false},"types":[{"access":{"field_meta":true,"searchable":true},"description":"A bill received.","fields":[{"access":"read","authority":"source","filterable":true,"name":"amount","on_input_change":"keep","required":false,"searchable":false,"sensitive":false,"type":{"kind":"decimal"}},{"access":"write","authority":"authored","filterable":true,"name":"status","on_input_change":"keep","required":false,"searchable":true,"sensitive":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"verdict","on_input_change":"keep","required":false,"searchable":false,"sensitive":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","depends_on":["verdict"],"filterable":true,"name":"reason","on_input_change":"clear","required":false,"searchable":false,"sensitive":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"note","on_input_change":"keep","required":false,"searchable":false,"sensitive":true,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"partner","on_input_change":"keep","required":false,"searchable":false,"sensitive":false,"type":{"kind":"reference","target":"partner"}}],"lifecycle":{"schema_hash":"26519aa09c559d52e7ac1ca5b6e3dcb837c6c0af2556e6802baabce2a854b47a","version":1},"lineage":{"sourced":true},"may":{"create":true,"find":true,"get":true,"retire":false,"upsert":true},"name":"invoice","relations":[{"cardinality":"many_to_one","inverse":"bills","name":"billed_by","target":"partner","via":"partner"}],"verbs":["approve","pay"]},{"access":{"field_meta":true,"searchable":true},"fields":[{"access":"read","authority":"authored","filterable":true,"name":"name","on_input_change":"keep","required":false,"searchable":true,"sensitive":false,"type":{"kind":"text"}}],"lifecycle":{"schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","version":1},"lineage":{"sourced":false},"may":{"create":false,"find":true,"get":true,"retire":false,"upsert":false},"name":"partner"},{"access":{"field_meta":true,"key":["name"],"searchable":false},"description":"One aging rule: on a date, move `field` of every record of `on` from `from` to `to` when `when` holds.","fields":[{"access":"read","authority":"authored","filterable":true,"name":"name","on_input_change":"keep","required":true,"searchable":false,"sensitive":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"on","on_input_change":"keep","required":true,"searchable":false,"sensitive":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"field","on_input_change":"keep","required":true,"searchable":false,"sensitive":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":false,"name":"from","on_input_change":"keep","required":true,"searchable":false,"sensitive":false,"type":{"kind":"json"}},{"access":"read","authority":"authored","filterable":false,"name":"to","on_input_change":"keep","required":true,"searchable":false,"sensitive":false,"type":{"kind":"json"}},{"access":"read","authority":"authored","filterable":true,"name":"when","on_input_change":"keep","required":true,"searchable":false,"sensitive":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"description","on_input_change":"keep","required":false,"searchable":false,"sensitive":false,"type":{"kind":"text"}}],"lifecycle":{"schema_hash":"9db5e7a2e8b28a1714f7ef20a8e795b823134697865bf055cfdbc7d703100211","version":1},"lineage":{"sourced":false},"may":{"create":false,"find":true,"get":true,"retire":false,"upsert":false},"name":"sys.aging_rule"},{"access":{"field_meta":true,"key":["key"],"searchable":false},"description":"One named setting of the lake: `setting('key')` reads its value.","fields":[{"access":"read","authority":"authored","filterable":true,"name":"key","on_input_change":"keep","required":true,"searchable":false,"sensitive":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":false,"name":"value","on_input_change":"keep","required":true,"searchable":false,"sensitive":false,"type":{"kind":"json"}},{"access":"read","authority":"authored","filterable":true,"name":"group","on_input_change":"keep","required":false,"searchable":false,"sensitive":false,"type":{"kind":"text"}}],"lifecycle":{"schema_hash":"ef1eb61b1854cf74fe2814c91015b0b138e128aefe7a0b8d73859e5c5bdc557d","version":1},"lineage":{"sourced":false},"may":{"create":false,"find":true,"get":true,"retire":false,"upsert":false},"name":"sys.setting"}],"verbs":[{"external":false,"name":"approve","on":"invoice","payload":[],"risk":"low"},{"external":false,"name":"pay","on":"invoice","payload":[{"access":"write","authority":"authored","filterable":true,"name":"reference","on_input_change":"keep","required":false,"searchable":false,"sensitive":false,"type":{"kind":"text"}}],"risk":"high"}]},"position":9}
 
 > GET /lakes/finance/describe/partner
 > authorization: Bearer k-clerk
 < 200
 < content-type: application/json
 < lakelands-position: 9
-< {"data":{"access":{"field_meta":true,"searchable":true},"fields":[{"access":"read","authority":"authored","filterable":true,"name":"name","on_input_change":"keep","required":false,"searchable":true,"sensitive":false,"type":{"kind":"text"}}],"lifecycle":{"schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","version":1},"lineage":{"sourced":false},"may":{"find":true,"get":true,"retire":false,"upsert":false},"name":"partner"},"position":9}
+< {"data":{"access":{"field_meta":true,"searchable":true},"fields":[{"access":"read","authority":"authored","filterable":true,"name":"name","on_input_change":"keep","required":false,"searchable":true,"sensitive":false,"type":{"kind":"text"}}],"lifecycle":{"schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","version":1},"lineage":{"sourced":false},"may":{"create":false,"find":true,"get":true,"retire":false,"upsert":false},"name":"partner"},"position":9}
 
 # find: the query parameters are the find tool's arguments.
 > GET /lakes/finance/types/invoice/records?where=status%20%3D%20%27open%27&order_by=-status,known_at(status)&limit=10&with_meta=false
@@ -68,6 +68,14 @@
 < content-type: application/json
 < lakelands-position: 9
 < {"data":{"rows":[{"fields":{"status":"open"},"key":"INV-1","type":"invoice","version":1}],"shape":"records"},"position":9}
+
+# total and retired are flags: present without a value is true.
+> GET /lakes/finance/types/invoice/records?limit=1&total&retired
+> authorization: Bearer k-clerk
+< 200
+< content-type: application/json
+< lakelands-position: 9
+< {"data":{"retired":0,"rows":[{"fields":{"status":"open"},"key":"INV-1","type":"invoice","version":1}],"shape":"records","total":1},"position":9}
 
 # order_by also takes the JSON array the find tool takes.
 > GET /lakes/finance/types/invoice/records?order_by=%5B%7B%22field%22%3A%22status%22%2C%22dir%22%3A%22desc%22%7D%5D
@@ -91,7 +99,7 @@
 < 400
 < content-type: application/json
 < lakelands-position: 9
-< {"error":"refused","message":"refused: `GET …/types/<type>/records` takes no parameter `expect_version`; nothing was done; it takes `where`, `order_by`, `limit`, `cursor`, `offset`, `total`, `after`, `aggregate`, `with_meta`, `params`, `as_of`, `valid_at`","reason":{"code":"no_parameter","message":"`GET …/types/<type>/records` takes no parameter `expect_version`; nothing was done; it takes `where`, `order_by`, `limit`, `cursor`, `offset`, `total`, `after`, `aggregate`, `with_meta`, `params`, `as_of`, `valid_at`","parameter":"expect_version","refusal":"invalid","route":"GET …/types/<type>/records","takes":["where","order_by","limit","cursor","offset","total","after","aggregate","with_meta","params","as_of","valid_at"]},"todo":"use only the parameters the route takes","what":"`GET …/types/<type>/records` takes no parameter `expect_version`; nothing was done; it takes `where`, `order_by`, `limit`, `cursor`, `offset`, `total`, `after`, `aggregate`, `with_meta`, `params`, `as_of`, `valid_at`"}
+< {"error":"refused","message":"refused: `GET …/types/<type>/records` takes no parameter `expect_version`; nothing was done; it takes `where`, `order_by`, `limit`, `cursor`, `offset`, `total`, `retired`, `after`, `aggregate`, `with_meta`, `params`, `as_of`, `valid_at`","reason":{"code":"no_parameter","message":"`GET …/types/<type>/records` takes no parameter `expect_version`; nothing was done; it takes `where`, `order_by`, `limit`, `cursor`, `offset`, `total`, `retired`, `after`, `aggregate`, `with_meta`, `params`, `as_of`, `valid_at`","parameter":"expect_version","refusal":"invalid","route":"GET …/types/<type>/records","takes":["where","order_by","limit","cursor","offset","total","retired","after","aggregate","with_meta","params","as_of","valid_at"]},"todo":"use only the parameters the route takes","what":"`GET …/types/<type>/records` takes no parameter `expect_version`; nothing was done; it takes `where`, `order_by`, `limit`, `cursor`, `offset`, `total`, `retired`, `after`, `aggregate`, `with_meta`, `params`, `as_of`, `valid_at`"}
 
 > GET /lakes/finance/types/invoice/records?limit=ten
 > authorization: Bearer k-clerk
@@ -330,7 +338,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 19
-< {"data":{"rows":[{"invoice.key":"INV-2","invoice.status":"paid"}],"shape":"rows"},"position":19}
+< {"data":{"rows":[{"invoice._depth":0,"invoice._type":"invoice","invoice.key":"INV-2","invoice.status":"paid"}],"shape":"rows"},"position":19}
 
 > POST /lakes/finance/query
 > authorization: Bearer k-clerk
@@ -400,7 +408,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 21
-< {"outcome":"applied","position":21}
+< {"declared":[{"appended":true,"kind":"type","name":"vendor","since":21,"version":1}],"outcome":"applied","plan":{"at":20,"lossless":true,"report_id":"{report_id}"},"position":21,"said":["The change would leave every stored record as it is."]}
 
 > POST /lakes/finance/schema/add_field
 > authorization: Bearer k-owner
@@ -408,7 +416,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 22
-< {"outcome":"applied","position":22}
+< {"declared":[{"appended":true,"kind":"type","name":"vendor","since":22,"version":2}],"outcome":"applied","plan":{"at":21,"lossless":true,"report_id":"{report_id}"},"position":22,"said":["The change would leave every stored record as it is."]}
 
 > POST /lakes/finance/schema/migrate/apply
 > authorization: Bearer k-owner
@@ -424,7 +432,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 22
-< {"data":{"dropped":[["city",0]],"fields":[],"from_schema_hash":"090f9f437d456f2b56a86f9eb2ebc1ac05fdb615bd5448a851763fa1c739cc92","lossless":true,"records_scanned":0,"report_id":"{report_id}","to_schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","type":"vendor"},"position":22}
+< {"data":{"dropped":[["city",0]],"fields":[],"from_schema_hash":"090f9f437d456f2b56a86f9eb2ebc1ac05fdb615bd5448a851763fa1c739cc92","lossless":true,"recomputed":0,"records_scanned":0,"report_id":"{report_id}","to_schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","type":"vendor"},"position":22}
 
 > POST /lakes/finance/schema/migrate/apply
 > authorization: Bearer k-owner
@@ -432,7 +440,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 23
-< {"outcome":"applied","position":23}
+< {"outcome":"applied","plan":{"at":22,"lossless":true,"report_id":"{report_id}","types":[{"dropped":[["city",0]],"fields":[],"from_schema_hash":"090f9f437d456f2b56a86f9eb2ebc1ac05fdb615bd5448a851763fa1c739cc92","lossless":true,"recomputed":0,"records_scanned":0,"report_id":"{report_id}","to_schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","type":"vendor"}]},"position":23,"said":["The change would leave every stored record as it is."]}
 
 # ingest: NDJSON in, one line per commit window out (windows of two
 # records here). A line that is not a record ends it; what came before is
@@ -457,11 +465,25 @@
 < 200
 < content-type: application/x-ndjson
 < lakelands-position: 23
-< {"duplicates":0,"position":24,"records":1}
-< {"duplicates":0,"position":25,"records":1}
-< {"duplicates":0,"position":26,"records":1}
-< {"duplicates":0,"position":27,"records":1}
-< {"duplicates":0,"position":28,"records":1}
+< {"delivery":"d24","duplicates":0,"position":24,"records":1}
+< {"delivery":"d24","duplicates":0,"position":25,"records":1}
+< {"delivery":"d24","duplicates":0,"position":26,"records":1}
+< {"delivery":"d24","duplicates":0,"position":27,"records":1}
+< {"delivery":"d24","duplicates":0,"position":28,"records":1}
+
+# A record the store refuses ends the ingest with its refusal, its own
+# code kept, naming the record and the first record of its window: every
+# record before that one is committed, none from it on.
+> POST /lakes/finance/ingest/bank
+> authorization: Bearer k-owner
+> content-type: application/x-ndjson
+> {"type":"invoice","key":"INV-13","fields":{"amount":"6"}}
+> {"type":"invoice","key":"INV-21","fields":{"status":"open"}}
+< 200
+< content-type: application/x-ndjson
+< lakelands-position: 28
+< {"duplicates":1,"position":28,"records":0}
+< {"error":"refused","field":"status","from":1,"index":1,"message":"refused on `status`: another authority does this, through another door","reason":{"refusal":"wrong_door"},"record":{"code":"of","key":"INV-21","message":"`invoice` `INV-21`","type":"invoice"},"todo":"source fields arrive through `lakelands ingest`; authored fields through writes and verbs; then send the stream again from record 1","what":"record 1 of the stream (`invoice` `INV-21`): refused on `status`: another authority does this, through another door; nothing from record 1 on was written"}
 
 > POST /lakes/finance/ingest/bank
 > authorization: Bearer k-owner
@@ -473,7 +495,7 @@
 < content-type: application/x-ndjson
 < lakelands-position: 28
 < {"duplicates":1,"position":28,"records":0}
-< {"duplicates":0,"position":29,"records":1}
+< {"delivery":"d29","duplicates":0,"position":29,"records":1}
 < {"error":"refused","message":"refused: line 3 is not a record `ingest` takes: not JSON, at column 2","reason":{"code":"line_not_record","column":2,"fault":"syntax","line":3,"message":"line 3 is not a record `ingest` takes: not JSON, at column 2","refusal":"invalid"},"todo":"correct that line and send the body again; what came before it is committed, and sending it again appends nothing","what":"line 3 is not a record `ingest` takes: not JSON, at column 2"}
 
 # The feed is the unmasked log: the clerk may not open it. A position
@@ -514,7 +536,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 30
-< {"outcome":"applied","position":30}
+< {"declared":[{"appended":true,"kind":"type","name":"contract","since":30,"version":1}],"outcome":"applied","plan":{"at":29,"lossless":true,"report_id":"{report_id}"},"position":30,"said":["The change would leave every stored record as it is."]}
 
 > PUT /lakes/finance/types/partner/records/P-1
 > authorization: Bearer k-owner
@@ -654,7 +676,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 37
-< {"outcome":"applied","position":37}
+< {"declared":[{"appended":true,"kind":"trigger","name":"went_paid","since":37,"version":1}],"outcome":"applied","plan":{"at":36,"lossless":true,"report_id":"{report_id}"},"position":37,"said":["The change would leave every stored record as it is."]}
 
 > POST /lakes/finance/schema/declare
 > authorization: Bearer k-clerk
@@ -672,7 +694,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 39
-< {"outcome":"applied","position":39}
+< {"declared":[{"appended":true,"kind":"type","name":"memo2","since":38,"version":1},{"appended":true,"kind":"trigger","name":"memo_written","since":39,"version":1}],"outcome":"applied","plan":{"at":37,"lossless":true,"report_id":"{report_id}"},"position":39,"said":["The change would leave every stored record as it is."]}
 
 > POST /lakes/finance/schema/apply
 > authorization: Bearer k-owner
@@ -702,7 +724,7 @@
 < 200
 < content-type: application/x-ndjson
 < lakelands-position: 39
-< {"duplicates":0,"position":40,"records":1}
+< {"delivery":"d40","duplicates":0,"position":40,"records":1}
 
 > POST /lakes/finance/ingest/bank
 > authorization: Bearer k-owner
@@ -711,7 +733,7 @@
 < 200
 < content-type: application/x-ndjson
 < lakelands-position: 40
-< {"duplicates":0,"position":41,"records":1}
+< {"delivery":"d41","duplicates":0,"position":41,"records":1}
 
 > POST /lakes/finance/ingest/bank
 > authorization: Bearer k-owner
@@ -720,7 +742,7 @@
 < 200
 < content-type: application/x-ndjson
 < lakelands-position: 41
-< {"duplicates":0,"position":42,"records":1}
+< {"delivery":"d42","duplicates":0,"position":42,"records":1}
 
 # A link its relation's cardinality does not allow is a constraint on
 # `to`.
@@ -731,7 +753,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 43
-< {"outcome":"applied","position":43}
+< {"declared":[{"appended":true,"kind":"type","name":"lease","since":43,"version":1}],"outcome":"applied","plan":{"at":42,"lossless":true,"report_id":"{report_id}"},"position":43,"said":["The change would leave every stored record as it is."]}
 
 > PUT /lakes/finance/types/partner/records/P-2
 > authorization: Bearer k-owner
@@ -778,7 +800,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 48
-< {"outcome":"applied","position":48}
+< {"declared":[{"appended":true,"kind":"value_type","name":"tier","since":48,"version":1}],"outcome":"applied","plan":{"at":47,"lossless":true,"report_id":"{report_id}"},"position":48,"said":["The change would leave every stored record as it is."]}
 
 > POST /lakes/finance/schema/migrate
 > authorization: Bearer k-owner
@@ -796,7 +818,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 49
-< {"outcome":"applied","position":49}
+< {"outcome":"applied","plan":{"at":48,"lossless":true,"report_id":"{report_id}","value_types":[{"fields":[],"fits":true,"from_version":1,"misfits":0,"records_scanned":0,"report_id":"{report_id}","value_type":"tier"}]},"position":49,"said":["The change would leave every stored record as it is."]}
 
 > POST /lakes/finance/schema/migrate
 > authorization: Bearer k-owner
@@ -819,7 +841,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 50
-< {"outcome":"applied","position":50}
+< {"declared":[{"appended":true,"kind":"verb","name":"register","since":50,"version":1}],"outcome":"applied","plan":{"at":49,"lossless":true,"report_id":"{report_id}"},"position":50,"said":["The change would leave every stored record as it is."]}
 
 > POST /lakes/finance/verbs/register
 > authorization: Bearer k-owner

@@ -87,10 +87,18 @@ pub struct HttpConfig {
     /// naming it is answered as for an unknown session.
     #[serde(default = "default_idle")]
     pub session_idle_secs: u64,
-    /// How long a caught-up REST feed waits before it reads the log
-    /// again, in milliseconds.
+    /// How long a caught-up feed stream or MCP session waits for the
+    /// lake's next append before it reads the log again, in milliseconds.
     #[serde(default = "default_feed_poll")]
     pub feed_poll_millis: u64,
+    /// How often, at most, the log is read for the feed streams and MCP
+    /// sessions that follow one lake with one filter, in milliseconds:
+    /// they share one read (lakelands#1113), which, woken by an append,
+    /// reads once this has passed since the last such read ended. An
+    /// append after a quiet spell is read at once; a busy lake's appends
+    /// reach the consumers in batches (lakelands#1061).
+    #[serde(default = "default_feed_floor")]
+    pub feed_floor_millis: u64,
 }
 
 fn default_idle() -> u64 {
@@ -99,6 +107,10 @@ fn default_idle() -> u64 {
 
 fn default_feed_poll() -> u64 {
     250
+}
+
+fn default_feed_floor() -> u64 {
+    10
 }
 
 /// Opens a lake by its id, for a new session.
@@ -145,6 +157,7 @@ impl Slot {
 pub(crate) struct State {
     idle: Duration,
     pub(crate) feed_poll: Duration,
+    pub(crate) feed_floor: Duration,
     pub(crate) origins: Vec<String>,
     pub(crate) resolver: Arc<dyn PrincipalResolver>,
     pub(crate) open: Arc<LakeOpener>,
@@ -169,6 +182,7 @@ pub async fn serve_http(
         state: Arc::new(State {
             idle: Duration::from_secs(config.session_idle_secs),
             feed_poll: Duration::from_millis(config.feed_poll_millis),
+            feed_floor: Duration::from_millis(config.feed_floor_millis),
             origins: config.allowed_origins,
             resolver,
             open,
@@ -665,7 +679,7 @@ async fn post(
                 slot.end();
             }
             let (tx, outbox) = mpsc::channel(QUEUE);
-            let pump = tokio::spawn(session.pump(tx, state.feed_poll));
+            let pump = tokio::spawn(session.pump(tx, state.feed_poll, state.feed_floor));
             let watch = session.watch();
             sessions.insert(
                 sid.clone(),

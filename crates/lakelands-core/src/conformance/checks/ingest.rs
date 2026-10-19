@@ -9,12 +9,12 @@
 //! patch that crosses the line is refused whole.
 
 use lakelands_api::ontology::{StorageKind, TypeDecl};
-use lakelands_api::{Error, Refusal, TypeName, Version};
+use lakelands_api::{Error, Refusal, SourceId, SourceRecord, TypeName, Version};
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, committed, delivered, events_from, field, get_at, head_unmoved, log_events,
-    refused_on, refused_unmoved, source_record, sourced, try_upsert, type_decl, value,
+    Lake, Must, all, committed, delivered, events_from, field, get_at, head_unmoved, log_events,
+    read, refused_on, refused_unmoved, source_record, sourced, try_upsert, type_decl, value,
     windows_reach_head,
 };
 use crate::conformance::{Failure, Held, Store};
@@ -51,10 +51,82 @@ check!(
     "010, 016 and log-format §1.1: a record ingested with `upstream` names that lake and position on every field it sets, the event carries the member, and the member is not in the event's id; a later write of a field without it leaves that field without it"
 );
 
+check!(
+    DELIVERY_NAMED = an_ingests_delivery_is_the_callers_or_the_stores_own,
+    "log-format §1.1 and §3: every `record_ingested` of a call carries its delivery, the caller's id or else the store's own `d` and the position of the call's first event, and each window answers it; the id is not in the event's id, so the same values delivered again under another id append nothing; a call of several windows carries one id, and a window before its first event names none; an empty id, one holding a NUL, or one of the store's own form, is refused and appends nothing"
+);
+
+check!(
+    A_SOURCE_PER_RECORD = one_ingest_carries_a_source_per_record,
+    "016 and 039: one ingest may name a source per record, the call's where a record names none: each record's provenance holds its own, a redelivery under it is a duplicate, the same record under another source is a duplicate unchanged and a new event under it changed, and `purge_source` of one takes only its records"
+);
+
 /// `feed`: a source's `body` and an author's `verdict`.
 fn feed() -> TypeDecl {
     let body = sourced("body", StorageKind::Text);
     type_decl("feed", vec![body, field("verdict", StorageKind::Text)])
+}
+
+async fn one_ingest_carries_a_source_per_record(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(feed()).await?;
+    let sources = [("k1", None), ("k2", Some("dev-a")), ("k3", Some("dev-b"))];
+    let batch = || {
+        let own = |(key, source): (&str, Option<&str>)| SourceRecord {
+            source: source.map(SourceId::from),
+            ..source_record("feed", key, json!({"body": key}))
+        };
+        sources.into_iter().map(own).collect::<Vec<_>>()
+    };
+    let what = "ingesting three sources in one call";
+    let first = delivered(store.as_ref(), &l, "bank", batch(), what).await?;
+    ensure!(committed(&first) == (3, 0), "{what} answered {first:?}");
+    for (key, source) in sources {
+        let r = read(l.cat.as_ref(), &l.own, "feed", key).await?;
+        let got = r.meta.get("body").and_then(|m| m.source.clone());
+        let want = SourceId::from(source.unwrap_or("bank"));
+        ensure!(
+            got.as_ref() == Some(&want),
+            "`{key}`'s source is {got:?}, not {want}"
+        );
+    }
+    let again = delivered(store.as_ref(), &l, "bank", batch(), "delivering them again").await?;
+    ensure!(
+        committed(&again) == (0, 3),
+        "delivered again, they answered {again:?}"
+    );
+    // Under another source, `k1` unchanged appends nothing and keeps its
+    // source; changed, it is a new event under that source.
+    let under_c = |body: &str| {
+        vec![SourceRecord {
+            source: Some("dev-c".into()),
+            ..source_record("feed", "k1", json!({ "body": body }))
+        }]
+    };
+    for (body, want, source) in [("k1", (0, 1), "bank"), ("k1 again", (1, 0), "dev-c")] {
+        let what = format!("delivering `k1` as {body:?} under `dev-c`");
+        let got = delivered(store.as_ref(), &l, "bank", under_c(body), &what).await?;
+        let r = read(l.cat.as_ref(), &l.own, "feed", "k1").await?;
+        let held = r.meta.get("body").and_then(|m| m.source.clone());
+        ensure!(
+            committed(&got) == want && held == Some(SourceId::from(source)),
+            "{what} answered {got:?} and left `k1`'s source {held:?}, not {source}"
+        );
+    }
+    store
+        .purge_source(&"dev-a".into(), None, None)
+        .await
+        .must("purging `dev-a`")?;
+    let live: Vec<String> = all(l.cat.as_ref(), &l.own, "feed")
+        .await?
+        .into_iter()
+        .map(|r| r.key.0)
+        .collect();
+    ensure!(
+        live == ["k1", "k3"],
+        "after purging `dev-a`, `feed` holds {live:?}"
+    );
+    Ok(())
 }
 
 async fn the_same_content_ingested_twice_appends_nothing_the_second_time(store: Store) -> Held {
@@ -200,6 +272,32 @@ async fn an_ingested_record_carrying_a_field_the_source_does_not_write_is_refuse
         ),
         "a source record with an empty key that carries `verdict` is refused for its key \
          first, as invalid naming no field; it answered {err:?}"
+    );
+    // A key or a type holding NUL is refused as `upsert` refuses it, alone
+    // or among good records, never sent to the engine (lakelands#1030).
+    let good = || source_record("feed", "k3", json!({"body": "text"}));
+    let nul = || source_record("feed", "k\u{0}", json!({"body": "text"}));
+    for window in [vec![nul()], vec![good(), nul()], vec![nul(), good()]] {
+        let err = l.ingest("bank", window).await;
+        ensure!(
+            matches!(
+                &err,
+                Err(Error::Refused {
+                    reason: Refusal::Invalid(..),
+                    field: None
+                })
+            ),
+            "a window holding a key with NUL is refused for its key; it answered {err:?}"
+        );
+    }
+    let err = l.ingest(
+        "bank",
+        vec![source_record("fe\u{0}ed", "k3", json!({"body": "x"}))],
+    );
+    let err = err.await;
+    ensure!(
+        matches!(err, Err(Error::NotFound { .. })),
+        "a type holding NUL is no type; it answered {err:?}"
     );
     // The grant, then the type, then (after the key) the door before the
     // values, whatever the fields' order (016, extended).
@@ -435,5 +533,342 @@ async fn an_ingested_record_carries_its_upstream_per_field(store: Store) -> Held
         "an authored write of `verdict` must carry no upstream and leave `body`'s; they \
          carry {verdict:?} and {body:?}"
     );
+    Ok(())
+}
+
+check!(
+    REFUSAL_NAMES = an_ingest_refusal_names_its_record_and_where_its_window_began,
+    "016, extended (lakelands#1043): a record an ingest refuses is named by the refusal, by its type and key as its source sent them, with its place in the stream and the place of the first record of its window, from which nothing was written while every window before it was: for a field the source is not the authority on, an empty record on a free key, a type its writer is not shown and a link past its relation's cardinality within the window, each the refusal it is without the stream, with `index`, `from` and `record` beside it on the wire"
+);
+
+async fn an_ingest_refusal_names_its_record_and_where_its_window_began(store: Store) -> Held {
+    use crate::conformance::fixture::{limits, principal};
+    use lakelands_api::PrincipalKind;
+    let l = Lake::of(store.as_ref());
+    l.declare(feed()).await?;
+    l.declare_json(json!({"declare": "type", "name": "box", "fields": [{"name": "n", "type": {"kind": "text"}}],
+        "relations": [{"name": "in", "target": "feed", "cardinality": "many_to_one", "authority": "source"}]}))
+        .await?;
+    l.upsert("box", "b1", json!({"n": "b"})).await?;
+    let window = limits().commit_window_events as u64;
+    let kept = principal(
+        store.as_ref(),
+        PrincipalKind::Agent,
+        "kept",
+        serde_json::from_value(
+            json!({"default": "write", "ingest": true, "types": {"box": {"default": "none"}}}),
+        )
+        .unwrap(),
+    );
+    let link = |to: &str| {
+        source_record(
+            "sys.link.box.in",
+            &format!("b1:{to}"),
+            json!({"from": "b1", "to": to}),
+        )
+    };
+    // Each refused record is the third after a full window: at
+    // `window + 2`, its window begun at `window`.
+    let cases = [
+        (
+            "an authored field",
+            &l.own,
+            source_record("feed", "x3", json!({"verdict": "no"})),
+        ),
+        (
+            "an empty record on a free key",
+            &l.own,
+            source_record("feed", "x3", json!({})),
+        ),
+        (
+            "a type its writer is not shown",
+            &kept,
+            source_record("box", "x3", json!({"n": "x"})),
+        ),
+        ("a second `in` from `b1` in the window", &l.own, link("y2")),
+    ];
+    for (round, (what, who, refused)) in cases.into_iter().enumerate() {
+        let mut records: Vec<_> = (0..window)
+            .map(|i| source_record("feed", &format!("r{round}-{i}"), json!({"body": "x"})))
+            .collect();
+        records.push(source_record(
+            "feed",
+            &format!("y{round}"),
+            json!({"body": "y"}),
+        ));
+        records.push(match round {
+            3 => link(&format!("y{round}")),
+            _ => source_record("feed", &format!("z{round}"), json!({"body": "z"})),
+        });
+        let (ty, key) = (refused.ty.clone(), refused.key.clone());
+        records.push(refused);
+        let fed = lakelands_api::ingest_all(l.cat.as_ref(), who, &"wire".into(), records).await;
+        let Err(e @ Error::Ingested { index, from, .. }) = &fed else {
+            return Err(Failure::new(format!(
+                "{what}: the stream must be refused naming the record; it answered {fed:?}"
+            )));
+        };
+        let mut wire = serde_json::to_value(e).map_err(|x| Failure::new(x.to_string()))?;
+        let inner = serde_json::to_value(e.unwrapped()).map_err(|x| Failure::new(x.to_string()))?;
+        let record = json!({"type": ty.as_str(), "key": key.as_str()});
+        let places = (wire
+            .as_object_mut()
+            .map(|m| (m.remove("index"), m.remove("from"), m.remove("record"))))
+        .unwrap_or_default();
+        let named = places
+            .2
+            .as_ref()
+            .is_some_and(|r| r["type"] == record["type"] && r["key"] == record["key"]);
+        ensure!(
+            (*index, *from) == (window + 2, window)
+                && wire == inner
+                && named
+                && places.0 == Some(json!(window + 2))
+                && places.1 == Some(json!(window)),
+            "{what}: the refusal must name `{ty}` `{key}` at {} from {window}, its own code and shape kept; it answered {e:?}",
+            window + 2
+        );
+        // The window before it is written, its own window is not.
+        let first = l
+            .cat
+            .get(
+                &l.own,
+                &"feed".into(),
+                serde_json::from_value(json!({"key": format!("r{round}-0")})).unwrap(),
+            )
+            .await;
+        let mate = l
+            .cat
+            .get(
+                &l.own,
+                &"feed".into(),
+                serde_json::from_value(json!({"key": format!("y{round}")})).unwrap(),
+            )
+            .await;
+        ensure!(
+            first.is_ok() && mate.is_err(),
+            "{what}: the first window must be written and the refused one not: {first:?}, {mate:?}"
+        );
+    }
+    Ok(())
+}
+
+check!(
+    INSERT_ONLY = an_insert_only_type_is_written_once_by_its_source,
+    "016 and 027, extended (lakelands#1044): a type marked `insert_only` takes a record from its source once: the same record again is a duplicate, other values for a key that holds a record, live or retired, or that the window wrote already, are refused as `written_once`, naming the record and appending nothing, and the pair cut after its first record on a signal is refused alike at its second, the first written and `from` 1 (lakelands#886), while an author still writes its authored fields; a key held from its writer answers as on an unmarked type; `describe_type` says the mark; declared on a type that holds records it is taken with no migration, its version moving and its schema hash not, and taken off, a key moves its version again"
+);
+
+async fn an_insert_only_type_is_written_once_by_its_source(store: Store) -> Held {
+    use crate::conformance::fixture::{alike_renamed, principal, restrict};
+    use lakelands_api::error::{Case, RecordName};
+    let l = Lake::of(store.as_ref());
+    let marked = |name: &str, once: bool| TypeDecl {
+        insert_only: once,
+        ..TypeDecl {
+            name: name.into(),
+            ..feed()
+        }
+    };
+    l.declare(marked("feed", true)).await?;
+    l.declare(marked("plain", false)).await?;
+    // Each step: the records fed, and `w` written, `d` a duplicate, `x`
+    // refused as written once naming the last record, appending nothing.
+    let step = async |ty: &str, recs: &[(&str, &str)], want: char| -> Held {
+        let records = recs
+            .iter()
+            .map(|(k, b)| source_record(ty, k, json!({"body": b})))
+            .collect();
+        let before = store.head().await.must("reading the head")?;
+        let fed = lakelands_api::ingest_all(l.cat.as_ref(), &l.own, &"dev".into(), records).await;
+        let last = recs.last().map(|(k, _)| *k).unwrap_or_default();
+        let ok = match (&fed, want) {
+            (Ok(w), 'w') => committed(w) == (recs.len() as u32, 0),
+            (Ok(w), 'd') => committed(w) == (0, recs.len() as u32),
+            (
+                Err(
+                    e @ Error::Ingested {
+                        record: RecordName::Of { key, .. },
+                        ..
+                    },
+                ),
+                'x',
+            ) => {
+                key == last
+                    && matches!(e.case().map(|s| &s.case), Some(Case::WrittenOnce { .. }))
+                    && store.head().await.must("reading the head")? == before
+            }
+            _ => false,
+        };
+        ensure!(
+            ok,
+            "{ty} {recs:?} must answer `{want}`; it answered {fed:?}"
+        );
+        Ok(())
+    };
+    for (recs, want) in [
+        (&[("r1", "a")][..], 'w'),
+        (&[("r1", "a")], 'd'),
+        (&[("r1", "b")], 'x'),
+        (&[("w1", "a"), ("w1", "b")], 'x'),
+    ] {
+        step("feed", recs, want).await?;
+    }
+    // The pair cut on a signal answers alike: its second record refused,
+    // the first written, as `from` tells (lakelands#886).
+    let pair = ["a", "b"].map(|b| source_record("feed", "c1", json!({"body": b})));
+    let fed = crate::conformance::fixture::fed(l.cat.as_ref(), &l.own, "dev", pair.into(), Some(1));
+    let cut = match fed.await {
+        (
+            done,
+            Some(Error::Ingested {
+                index, from, error, ..
+            }),
+        ) => Some((
+            committed(&done),
+            index,
+            from,
+            error.case().map(|s| s.case.clone()),
+        )),
+        _ => None,
+    };
+    let once = Case::WrittenOnce {
+        ty: "feed".into(),
+        key: "c1".into(),
+    };
+    ensure!(
+        cut == Some(((1, 0), 1, 1, Some(once))),
+        "`c1` twice, cut after the first, writes the first and refuses the second as written \
+         once, from 1; it answered {cut:?}"
+    );
+    // An author still writes its fields; a retired key stays written.
+    l.upsert("feed", "r1", json!({"verdict": "fine"})).await?;
+    l.retire("feed", "r1").await?;
+    step("feed", &[("r1", "a")], 'x').await?;
+    ensure!(
+        l.describe_type("feed").await?.lineage.insert_only,
+        "`describe_type` must say `feed` is insert-only"
+    );
+    // A held key answers a writer without `restricted` as on an unmarked type.
+    let feeder = principal(
+        store.as_ref(),
+        lakelands_api::PrincipalKind::Agent,
+        "feeder",
+        serde_json::from_value(json!({"default": "write", "ingest": true})).unwrap(),
+    );
+    let mut held = Vec::new();
+    for ty in ["feed", "plain"] {
+        step(ty, &[("h1", "a")], 'w').await?;
+        restrict(store.as_ref(), ty, "h1", "held").await?;
+        let records = vec![source_record(ty, "h1", json!({"body": "b"}))];
+        held.push(
+            crate::conformance::fixture::ingest(l.cat.as_ref(), &feeder, "dev", records).await,
+        );
+    }
+    match (&held[0], &held[1]) {
+        (Err(m), Err(p)) => alike_renamed("a held key", m, p, ("feed", "plain"))?,
+        _ => {
+            return Err(Failure::new(format!(
+                "a held key must be refused alike: {held:?}"
+            )));
+        }
+    }
+    // Marked while it holds `p1`, and the mark taken off again.
+    step("plain", &[("p1", "a")], 'w').await?;
+    let was = l.describe_type("plain").await?.lifecycle;
+    l.declare(marked("plain", true)).await?;
+    let is = l.describe_type("plain").await?.lifecycle;
+    ensure!(
+        (is.version, &is.schema_hash) == (was.version + 1, &was.schema_hash),
+        "the mark must move `plain`'s version by one and not its hash: {was:?}, {is:?}"
+    );
+    step("plain", &[("p1", "b")], 'x').await?;
+    l.declare(marked("plain", false)).await?;
+    step("plain", &[("p1", "b")], 'w').await
+}
+
+async fn an_ingests_delivery_is_the_callers_or_the_stores_own(store: Store) -> Held {
+    use lakelands_api::error::Case;
+    use lakelands_api::event::EventBody;
+    use lakelands_api::{DeliveryId, IngestOpts, ingest_all_with};
+    let l = Lake::of(store.as_ref());
+    l.declare(feed()).await?;
+    let source = SourceId::from("sensor");
+    let with = |delivery: Option<&str>| IngestOpts {
+        delivery: delivery.map(DeliveryId::from),
+    };
+    let r = |key: &str, body: &str| source_record("feed", key, json!({"body": body}));
+    // Each call's events and its answer, as the log and the windows hold them.
+    let call = async |delivery: Option<&str>, records: Vec<SourceRecord>| {
+        let before = store.head().await.must("reading the head")?;
+        let said = ingest_all_with(l.cat.as_ref(), &l.own, &source, with(delivery), records).await;
+        let windows = said.must("ingesting with a delivery")?;
+        let events = events_from(store.as_ref(), before.next()).await?;
+        let ingested: Vec<_> = (events.into_iter())
+            .filter(|e| matches!(e.body, EventBody::RecordIngested { .. }))
+            .map(|e| (e.position, e.delivery))
+            .collect();
+        Ok::<_, Failure>((before, windows, ingested))
+    };
+    let (_, windows, ingested) = call(Some("batch-7"), vec![r("r1", "a"), r("r2", "b")]).await?;
+    let named = Some(DeliveryId::from("batch-7"));
+    ensure!(
+        ingested.len() == 2
+            && ingested.iter().all(|(_, d)| *d == named)
+            && windows.iter().all(|w| w.delivery == named),
+        "a call under `batch-7` carries it on each `record_ingested` and in each window; the \
+         log holds {ingested:?}, the windows {windows:?}"
+    );
+    let (before, windows, ingested) = call(None, vec![r("r3", "c")]).await?;
+    let own = Some(DeliveryId::from(format!("d{}", before.next())));
+    ensure!(
+        ingested.len() == 1
+            && ingested.iter().all(|(_, d)| *d == own)
+            && windows.iter().all(|w| w.delivery == own),
+        "a call under no id carries the store's own {own:?}, the position of its first event; \
+         the log holds {ingested:?}, the windows {windows:?}"
+    );
+    // A call of many windows, the first of them all duplicates: one id,
+    // from the first event the call appended, and none before it.
+    let bulk = |n: usize| (0..n).map(|i| r(&format!("b{i}"), "e")).collect::<Vec<_>>();
+    call(Some("bulk"), bulk(32)).await?;
+    let (before, windows, ingested) = call(None, bulk(100)).await?;
+    let own = Some(DeliveryId::from(format!("d{}", before.next())));
+    let (empty, appended): (Vec<_>, Vec<_>) = windows.iter().partition(|w| w.records == 0);
+    ensure!(
+        appended.len() >= 2
+            && ingested.len() == 68
+            && ingested.iter().all(|(_, d)| *d == own)
+            && appended.iter().all(|w| w.delivery == own)
+            && empty.iter().all(|w| w.delivery.is_none()),
+        "a call of several windows under no id carries one id, {own:?}, from its first event, \
+         and a window before that event names none; the log holds {} events, the windows \
+         {windows:?}",
+        ingested.len()
+    );
+    let (before, windows, _) = call(Some("batch-8"), vec![r("r1", "a")]).await?;
+    head_unmoved(store.as_ref(), before, "the same values under `batch-8`").await?;
+    ensure!(
+        windows.iter().map(|w| w.duplicates).sum::<u32>() == 1,
+        "the same values delivered again under another id are a duplicate: {windows:?}"
+    );
+    for id in ["", "d12", "a\0b"] {
+        let before = store.head().await.must("reading the head")?;
+        let what = format!("ingesting under the id {id:?}");
+        let said = ingest_all_with(
+            l.cat.as_ref(),
+            &l.own,
+            &source,
+            with(Some(id)),
+            vec![r("r4", "d")],
+        );
+        let e = refused_unmoved(store.as_ref(), before, &what, said.await).await?;
+        ensure!(
+            matches!(
+                crate::conformance::fixture::invalid_case(&e),
+                Some(Case::DeliveryIdForm)
+            ),
+            "{what} is refused as `delivery_id_form`: {e}"
+        );
+    }
     Ok(())
 }

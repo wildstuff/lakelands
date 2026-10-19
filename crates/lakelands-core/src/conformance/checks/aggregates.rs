@@ -109,7 +109,11 @@ async fn a_count_answers_as_many_records_as_a_full_find_walk(store: Store) -> He
     l.upsert("item", "i30", later).await?;
     let reader = reads_all(store.as_ref(), "reader");
     let mid = Timestamp::parse("2026-01-15T00:00:00Z").expect("an instant");
-    let at = |as_of, valid_at| ReadAt { as_of, valid_at };
+    let at = |as_of, valid_at| ReadAt {
+        as_of,
+        valid_at,
+        clock: None,
+    };
     let earlier = at(Some(before), None);
     let cases = [
         ("everything", "item", None, at(None, None)),
@@ -646,9 +650,11 @@ async fn a_pattern_aggregate_reads_its_rows_by_their_paths(store: Store) -> Held
         s.ty = ty.map(Into::into);
         vec![s]
     };
+    // Untyped, it is bound under its relation's name and holds no field
+    // (lakelands#990): a path that reads one is refused.
     for (start, steps, path) in [
-        ("bill", both(None), "customer.tier"),
-        ("customer", into(None), "quote.x"),
+        ("bill", both(None), "of.tier"),
+        ("customer", into(None), "of.x"),
     ] {
         let untyped = rows(start, steps.clone(), &[path], path, path).await;
         let groups = grouped(start, steps, path).await;

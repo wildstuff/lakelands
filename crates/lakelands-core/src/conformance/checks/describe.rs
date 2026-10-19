@@ -15,8 +15,8 @@ use lakelands_api::describe::{FieldDescription, LakeDescription, TypeDescription
 use lakelands_api::error::Case;
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
-    Authority, Derived, EmbedDecl, FieldDecl, FieldType, MatchPair, RelationDecl, StorageKind,
-    TriggerDecl, TypeDecl,
+    Authority, Derived, EmbedDecl, FieldDecl, FieldType, FunctionInput, MatchPair, RelationDecl,
+    StorageKind, TriggerDecl, TypeDecl,
 };
 use lakelands_api::write::{
     Declaration, FunctionDecl, Migration, ObjectSetDecl, ProposalFilter, ProposedWrite,
@@ -108,16 +108,19 @@ fn function(name: &str, input: &str, expr: &str) -> FunctionDecl {
     FunctionDecl {
         name: name.into(),
         backing: "expr".into(),
-        inputs: vec![field(input, StorageKind::Number)],
+        inputs: vec![FunctionInput::typed(field(input, StorageKind::Number))],
         expr: Some(Condition::from(expr)),
         config: serde_json::Value::Null,
         description: Some(format!("{name} of {input}")),
+        risk: Default::default(),
     }
 }
 
 fn trigger(name: &str, when: &str) -> TriggerDecl {
     TriggerDecl {
         max_depth: None,
+        when_strict: false,
+        on_changes: None,
         name: name.into(),
         on: "ledger".into(),
         when: Some(Condition::from(when)),
@@ -137,7 +140,10 @@ fn object_set(name: &str, filter: &str) -> ObjectSetDecl {
 /// A described type projected back onto the declaration it describes.
 fn projected(t: &TypeDescription) -> TypeDecl {
     TypeDecl {
+        constraints: Default::default(),
         annotations: t.annotations.clone(),
+        insert_only: false,
+        retired_by: t.lineage.retired_by,
         name: t.name.clone(),
         key: t.access.key.clone(),
         fields: t.fields.iter().map(field_projected).collect(),
@@ -167,6 +173,7 @@ fn field_projected(f: &FieldDescription) -> FieldDecl {
         initial: f.initial.clone(),
         sensitive: f.sensitive,
         searchable: f.searchable,
+        erasable: f.erasable,
         description: f.description.clone(),
         label: f.label.clone(),
         embed: f.embed.clone(),
@@ -282,6 +289,7 @@ async fn describe_answers_the_declaration_whole(store: Store) -> Held {
         ReadAt {
             as_of: Some(earlier),
             valid_at: None,
+            clock: None,
         },
         "describing as the owner as_of an earlier position",
     )
@@ -376,6 +384,11 @@ async fn describe_answers_the_declaration_whole(store: Store) -> Held {
 }
 
 check!(
+    SCHEMA_TOLD_AS_RECORDED = a_holder_of_schema_is_told_every_definition_but_a_verb,
+    "006, extended (lakelands#928): a holder of `schema` at `none` on a field, or masked on it, is described the trigger, the object set and the view whose conditions and measures name that field, whole, where a reader without `schema` is described none of them; a verb, described as a call to one that may make it, is described to neither; a field derived from one at `none` is not known to either, and one derived from a masked field is described masked to both"
+);
+
+check!(
     DESCRIBED_AS_SHOWN = a_description_says_only_what_its_reader_is_shown,
     "006 and 024, extended (lakelands#662): a type's `searchable` and `sourced` are said of the fields its reader is described, and a field it sees masked is searchable to it no more; a relation is described, listed in a proposal, named by a migration's refusal, offered to `link` and its link type shown only to a reader shown both its ends and, of a derived one, every field its match pairs, which a field it sees masked still is; a reader not shown a relation's target proposes the type as it is shown it, its declaration and its migration, and lists and rejects its own proposal (lakelands#762)"
 );
@@ -395,12 +408,16 @@ async fn a_description_says_only_what_its_reader_is_shown(store: Store) -> Held 
     invoice.relations = vec![
         RelationDecl::to("paid", "salary"),
         RelationDecl {
-            derived: Some(Derived { pairs }),
+            derived: Some(Derived {
+                pairs,
+                filter: None,
+            }),
             ..RelationDecl::to("same", "salary")
         },
     ];
     let again = ProposedWrite::Declare {
         declarations: vec![Declaration::Type(invoice.clone())],
+        plan: None,
     };
     let invoice_as_declared = invoice.clone();
     for t in [
@@ -428,13 +445,10 @@ async fn a_description_says_only_what_its_reader_is_shown(store: Store) -> Held 
     let theirs = [
         ProposedWrite::Declare {
             declarations: vec![Declaration::Type(mine)],
+            plan: None,
         },
         ProposedWrite::Migrate {
-            migration: Box::new(Migration {
-                to: wider,
-                renames: Vec::new(),
-                relation_renames: Vec::new(),
-            }),
+            migration: Box::new(Migration::to(wider)),
             report: Default::default(),
         },
     ];
@@ -510,7 +524,7 @@ async fn a_description_says_only_what_its_reader_is_shown(store: Store) -> Held 
     let listed = listed.must("listing the proposals as `far`")?.data;
     let again = listed.iter().find(|p| p.why == "again");
     let relations = again.and_then(|p| match p.write.as_ref()? {
-        ProposedWrite::Declare { declarations } => match declarations.first() {
+        ProposedWrite::Declare { declarations, .. } => match declarations.first() {
             Some(Declaration::Type(t)) => Some(t.relations.len()),
             _ => None,
         },
@@ -523,11 +537,7 @@ async fn a_description_says_only_what_its_reader_is_shown(store: Store) -> Held 
     }
     // Nor does a migration's refusal name the type of a relation not shown.
     let to = type_decl("salary", vec![field("code", StorageKind::Text)]);
-    let m = Migration {
-        to,
-        renames: Vec::new(),
-        relation_renames: Vec::new(),
-    };
+    let m = Migration::to(to);
     let dropped = l.cat.migrate(&hidden, m).await.map(drop);
     // No member of its wire form, its sentence among them, names `invoice`.
     let said = dropped.as_ref().err().map(|e| json!(e).to_string());
@@ -542,6 +552,62 @@ async fn a_description_says_only_what_its_reader_is_shown(store: Store) -> Held 
         "searchable, sourced, the relations, the link type and `may.link` as described, and \
          the relations listed and named: {}",
         red.join("; ")
+    );
+    Ok(())
+}
+
+async fn a_holder_of_schema_is_told_every_definition_but_a_verb(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let t = |n: &str| json!({"name": n, "type": {"kind": "text"}});
+    let shout = json!({"name": "shout", "type": {"kind": "text"}, "derived": "upper(sec)"});
+    let x = "sec = 'x'";
+    for d in [
+        json!({"declare": "type", "name": "vault", "fields": [t("name"), t("sec"), shout]}),
+        json!({"declare": "trigger", "name": "watch", "on": "vault", "when": x}),
+        json!({"declare": "object_set", "name": "secrets", "of": "vault", "where": x}),
+        json!({"declare": "verb", "name": "seal", "on": "vault", "risk": "high", "effect": "write",
+               "requires": "sec is not null", "set": [{"field": "sec", "value": "'y'"}]}),
+        json!({"declare": "type", "name": "byname", "key": ["name"], "fields": [t("name"),
+               {"name": "n", "type": {"kind": "number"}}], "view": {"source": "vault", "where": x,
+               "group_by": ["name"], "measures": [{"name": "n", "expr": "count(sec)"}]}}),
+    ] {
+        l.declare_json(d).await?;
+    }
+    // Per reader: trigger, set, view's definition, verb, and `shout`'s
+    // access, `-` where it is not described.
+    let mut seen = Vec::new();
+    for schema in [true, false] {
+        for sec in ["none", "masked"] {
+            let grants = json!({"default": "read", "schema": schema,
+                                "types": {"vault": {"fields": {"sec": sec}}}});
+            let who = super::only::holder(store.as_ref(), &format!("{schema}-{sec}"), grants);
+            let d = l.cat.describe(&who, Default::default()).await;
+            let d = d.must("describing")?.data;
+            let (w, s) = (Some(Condition::from(x)), Condition::from(x));
+            let view = |t: &TypeDescription| t.view.as_ref().is_some_and(|v| v.r#where == w);
+            let fields = d.types.iter().flat_map(|t| &t.fields);
+            let mut shout = fields.filter(|f| f.name.as_str() == "shout");
+            let cells = [
+                d.triggers.iter().any(|t| t.when == w),
+                d.object_sets.iter().any(|o| o.filter == s),
+                d.types.iter().any(view),
+                d.verbs.iter().any(|v| v.name.as_str() == "seal"),
+            ];
+            let cell = |(b, c): (bool, char)| if b { c } else { '-' };
+            let mut row: String = cells.into_iter().zip("TSVC".chars()).map(cell).collect();
+            row.push_str(
+                &shout
+                    .next()
+                    .map_or("-".into(), |f| format!(" {:?}", f.access)),
+            );
+            seen.push(row);
+        }
+    }
+    let want = ["TSV--", "TSV- Masked", "-----", "---- Masked"];
+    ensure!(
+        seen == want,
+        "to `schema` at `none` and masked on `sec`, then to readers without it, (trigger, set, \
+         view, verb, `shout`) are {seen:?}, where {want:?} are due"
     );
     Ok(())
 }

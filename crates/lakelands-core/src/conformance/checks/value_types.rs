@@ -11,17 +11,31 @@
 //! `scale` is neither. A migration that renames values is in
 //! `value_renames.rs`.
 
+use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind, ValueTypeDecl};
-use lakelands_api::write::{Declaration, ValueTypeReport};
-use lakelands_api::{Access, Error, Grants, LakeStore, PrincipalKind, Refusal, WriteOpts};
+use lakelands_api::write::{Declaration, ProposedWrite, ValueTypeReport};
+use lakelands_api::{
+    Access, Error, Grants, LakeStore, Principal, PrincipalKind, Refusal, WriteOpts,
+};
 use serde_json::{Value, json};
 
 use crate::conformance::fixture::{
-    Lake, Must, events_after, field, field_access, head_unmoved, invalid_like, log_events,
-    object_set_on, principal, reason, refused_on, reviewer, trigger_on, try_upsert, type_decl,
+    Lake, Must, describe_type, events_after, field, field_access, head_unmoved, invalid_case,
+    invalid_like, log_events, object_set_on, principal, reason, refused_on, reviewer, trigger_on,
+    try_upsert, type_decl,
 };
 use crate::conformance::{Failure, Held, Store};
+
+check!(
+    VERSIONS_KEY_A_TYPE = a_value_types_version_is_answered_with_the_types_that_use_it,
+    "lakelands#1058: `describe` answers each value type's version, and a type's lifecycle the version of each value type a field its reader is shown uses; a loosening and a migration of the value type move it, while the type's own `version` and `schema_hash` stay; a field its reader may not know of names no value type"
+);
+
+check!(
+    TYPE_TELLS_ITS_VALUE_TYPES = a_type_is_described_with_the_value_types_it_uses,
+    "lakelands#1060: `describe_type` answers the declaration of each value type its lifecycle's `value_types` names, once, in name order: those of the fields its reader is shown, a masked field's among them, a hidden field's not; a loosening shows the new declaration; `describe` names them once, in the lake's `value_types`, and none on a type"
+);
 
 check!(
     LOOSEN_BY_DECLARE = a_value_type_that_accepts_more_is_declared_and_no_record_changes,
@@ -50,7 +64,7 @@ check!(
 
 check!(
     STALE_REPORT = a_value_type_report_from_before_the_lake_moved_is_refused,
-    "027: a value-type migration is applied only against the report of the lake as it stands; after the lake moved it is refused as invalid"
+    "027 and 006: a value-type migration is applied only against the report of the lake as it stands; after the lake moved it is refused as invalid; and only by the id of the report its caller was shown: two readers kept from different uses of one tightening, each applying by the other's id, are refused as `migration_stale`, appending nothing, where its own applies (lakelands#935)"
 );
 
 check!(
@@ -63,6 +77,74 @@ check!(
         an_apply_that_loosens_one_value_type_and_tightens_another_is_refused_whole,
     "028 and 027: `apply` of a set that loosens one value type and tightens another is refused whole, naming `migrate`, and appends nothing"
 );
+
+async fn a_type_is_described_with_the_value_types_it_uses(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let state = |one_of: Value| vt(json!({"name": "state", "kind": "text", "one_of": one_of}));
+    let eur = vt(json!({"name": "eur", "kind": "decimal", "scale": 2, "constraint": "value >= 0"}));
+    for d in [state(json!(["open", "closed"])), eur.clone()] {
+        l.declare_as(Declaration::ValueType(d), "declaring a value type")
+            .await?;
+    }
+    l.declare_json(json!({"declare": "type", "name": "task", "fields": [
+        {"name": "state", "type": {"kind": "text", "value_type": "state"}},
+        {"name": "amount", "type": {"kind": "decimal", "value_type": "eur"}},
+        {"name": "title", "type": {"kind": "text"}}]}))
+        .await?;
+    l.declare(type_decl("note", vec![field("text", StorageKind::Text)]))
+        .await?;
+    let told = |who: &Principal| {
+        let (cat, who) = (l.cat.clone(), who.clone());
+        async move {
+            let t = describe_type(cat.as_ref(), &who, "task").await?;
+            let keyed: Vec<_> = t.lifecycle.value_types.into_keys().collect();
+            let named: Vec<_> = t.value_types.iter().map(|v| v.name.clone()).collect();
+            ensure!(
+                keyed == named,
+                "`task`'s key names {keyed:?} and it tells {named:?}"
+            );
+            Ok::<_, Failure>(t.value_types)
+        }
+    };
+    let both = told(&l.own).await?;
+    let note = l.describe_type("note").await?.value_types;
+    let lake = l.describe().await?;
+    let on_types = lake.types.iter().find(|t| !t.value_types.is_empty());
+    ensure!(
+        both == [eur.clone(), state(json!(["open", "closed"]))]
+            && note.is_empty()
+            && on_types.is_none()
+            && lake.value_types.len() == 2,
+        "`task` tells `eur` and `state` as declared, `note` none, and `describe` names them \
+         once: {both:?}, {note:?}, a type naming some: {on_types:?}"
+    );
+    // A masked field's value type is told, a hidden field's is not.
+    let masked = field_access(
+        store.as_ref(),
+        "masked",
+        "task",
+        &[("state", Access::Masked)],
+    );
+    let hid = field_access(store.as_ref(), "hid", "task", &[("state", Access::None)]);
+    let (masked, hid) = (told(&masked).await?, told(&hid).await?);
+    ensure!(
+        masked == both && hid == [eur.clone()],
+        "a reader of `task.state` masked is told {masked:?}, and one kept from it {hid:?}"
+    );
+    // A loosening is told as it stands.
+    let loosened = state(json!(["open", "closed", "overdue"]));
+    l.declare_as(
+        Declaration::ValueType(loosened.clone()),
+        "loosening `state`",
+    )
+    .await?;
+    let after = told(&l.own).await?;
+    ensure!(
+        after == [eur, loosened],
+        "after `state` is loosened, `task` tells {after:?}"
+    );
+    Ok(())
+}
 
 fn vt(value: Value) -> ValueTypeDecl {
     serde_json::from_value(value).expect("a value type")
@@ -470,7 +552,38 @@ async fn a_value_type_report_from_before_the_lake_moved_is_refused(store: Store)
         matches!(reason(&e), Some(Refusal::Invalid(..))),
         "a stale report was refused as {e:?}; invalid was expected"
     );
-    head_unmoved(store.as_ref(), before, "a stale value-type report").await
+    head_unmoved(store.as_ref(), before, "a stale value-type report").await?;
+    // An id names the report its reader was shown: two readers kept from
+    // different uses are given two, and each other's is stale.
+    let kept = |id, ty, field| {
+        let mut who = field_access(store.as_ref(), id, ty, &[(field, Access::None)]);
+        who.grants.schema = true;
+        who
+    };
+    let (ka, kb) = (
+        kept("ka", "invoice", "status"),
+        kept("kb", "ticket", "state"),
+    );
+    let to = status(&["open", "paid", "late"]);
+    let mut ids = Vec::new();
+    for who in [&ka, &kb] {
+        let r = cat.migrate_value_type(who, to.clone().into()).await;
+        ids.push(r.must("a kept reader's preflight")?.data.report_id);
+    }
+    let before = store.head().await.must("reading the head")?;
+    for (who, other) in [(&ka, &ids[1]), (&kb, &ids[0])] {
+        let said = cat.migrate_value_type_apply(who, to.clone().into(), other);
+        let said = said.await;
+        ensure!(
+            matches!(invalid_case(&said), Some(Case::MigrationStale)),
+            "`{}` applying by the other reader's id must be `migration_stale`; it answered {said:?}",
+            who.id
+        );
+    }
+    head_unmoved(store.as_ref(), before, "an apply by another's id").await?;
+    let own = cat.migrate_value_type_apply(&ka, to.into(), &ids[0]).await;
+    own.must("applying by the id of the report `ka` was shown")?;
+    Ok(())
 }
 
 async fn a_value_type_migration_needs_the_schema_grant(store: Store) -> Held {
@@ -506,11 +619,7 @@ async fn a_value_type_migration_needs_the_schema_grant(store: Store) -> Held {
         name: "not a name".into(),
         ..status(&["a"])
     });
-    let missing = lakelands_api::write::Migration {
-        to: type_decl("nothing", vec![]),
-        renames: vec![],
-        relation_renames: Vec::new(),
-    };
+    let missing = lakelands_api::write::Migration::to(type_decl("nothing", vec![]));
     let answers = [
         cat.migrate_value_type_apply(&clerk, none.into(), "r")
             .await
@@ -699,5 +808,208 @@ async fn a_trigger_or_set_on_a_value_the_type_no_longer_admits_never_holds(store
         "the trigger on `late` and the set of `late` records stay declared and never hold: \
          after the tightening, writes of paid, void and open, and a new record, made {reacted:?}"
     );
+    Ok(())
+}
+
+async fn a_value_types_version_is_answered_with_the_types_that_use_it(store: Store) -> Held {
+    use lakelands_api::write::ValueTypeMigration;
+    let l = Lake::of(store.as_ref());
+    let status = |one_of: Value| -> ValueTypeDecl {
+        let v = json!({"name": "status", "kind": "text", "one_of": one_of});
+        serde_json::from_value(v).expect("the check's value type reads")
+    };
+    l.declare_as(
+        Declaration::ValueType(status(json!(["open", "closed"]))),
+        "declaring `status`",
+    )
+    .await?;
+    l.declare_json(json!({"declare": "type", "name": "task", "fields": [
+        {"name": "status", "type": {"kind": "text", "value_type": "status"}},
+        {"name": "title", "type": {"kind": "text"}}]}))
+        .await?;
+    l.declare(type_decl("note", vec![field("text", StorageKind::Text)]))
+        .await?;
+    l.upsert("task", "t1", json!({"status": "closed"})).await?;
+    let first = l.describe_type("task").await?.lifecycle;
+    let versions = |at: u32| {
+        [("status".into(), at)]
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let held = |at: u32, what: &str| {
+        let (l, first) = (&l, &first);
+        let what = what.to_owned();
+        async move {
+            let lake = l.describe().await?.value_type_versions;
+            let task = l.describe_type("task").await?.lifecycle;
+            let note = l.describe_type("note").await?.lifecycle.value_types;
+            ensure!(
+                lake == versions(at)
+                    && task.value_types == versions(at)
+                    && note.is_empty()
+                    && (task.version, &task.schema_hash) == (first.version, &first.schema_hash),
+                "{what}: `status` is at version {at} in `describe` ({lake:?}) and in `task`'s \
+                 lifecycle ({:?}), `note` names none ({note:?}), and `task` stays at version {} \
+                 and hash {}: it is at {} and {}",
+                task.value_types,
+                first.version,
+                first.schema_hash,
+                task.version,
+                task.schema_hash
+            );
+            Ok::<_, Failure>(())
+        }
+    };
+    held(1, "declared").await?;
+    let loosened = status(json!(["open", "closed", "overdue"]));
+    l.declare_as(
+        Declaration::ValueType(loosened.clone()),
+        "loosening `status`",
+    )
+    .await?;
+    held(2, "loosened by `declare`").await?;
+    let m = ValueTypeMigration {
+        to: status(json!(["open", "done", "overdue"])),
+        renames: vec![("closed".into(), "done".into())],
+    };
+    let report = l.cat.migrate_value_type(&l.own, m.clone()).await;
+    let report = report.must("the preflight of `closed` to `done`")?.data;
+    let applied = l
+        .cat
+        .migrate_value_type_apply(&l.own, m, &report.report_id)
+        .await;
+    applied.must("migrating `closed` to `done`")?;
+    held(3, "migrated").await?;
+    // A reader kept from `task.status` is told no value type of it.
+    let hid = field_access(store.as_ref(), "hid", "task", &[("status", Access::None)]);
+    let shown = describe_type(l.cat.as_ref(), &hid, "task")
+        .await?
+        .lifecycle
+        .value_types;
+    ensure!(
+        shown.is_empty(),
+        "a reader kept from `task.status` is told its value type: {shown:?}"
+    );
+    Ok(())
+}
+
+check!(
+    VALUE_TYPES_BY_USE = a_value_type_is_listed_to_a_reader_shown_a_field_that_uses_it,
+    "024, extended (lakelands#1088): `describe` lists a value type, and its version, to a principal shown a field that uses it, a masked one too, or holding `schema`, as it lists the other declarations: a reader kept from every field that uses `band` is told neither, one that knows `employee.band` by its shape is, a holder of `schema` is told every value type, one no field uses included; a value type used only by a link field, only by a verb's payload or only by a function's input is listed to a reader shown that link field, that verb or that function, and not to one kept from the link field, from the field the verb sets or from the field the function computes; a proposed migration of `band` is listed to the first without its write and with `more`, and whole to the holder of `schema`"
+);
+
+async fn a_value_type_is_listed_to_a_reader_shown_a_field_that_uses_it(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let (cat, own) = (l.cat.as_ref(), &l.own);
+    for (name, one_of) in [
+        ("band", ["a", "b"]),
+        ("unit", ["kg", "g"]),
+        ("spare", ["x", "y"]),
+        ("grade", ["low", "high"]),
+        ("code", ["c1", "c2"]),
+        ("tone", ["warm", "cold"]),
+    ] {
+        let vt = json!({"name": name, "kind": "text", "one_of": one_of});
+        let vt = Declaration::ValueType(super::only::de(vt));
+        l.declare_as(vt, "declaring a value type").await?;
+    }
+    let typed = |vt: &str| json!({"kind": "text", "value_type": vt});
+    l.declare_json(json!({"declare": "type", "name": "employee", "fields": [
+        {"name": "name", "type": {"kind": "text"}},
+        {"name": "band", "type": typed("band")}]}))
+        .await?;
+    l.declare_json(json!({"declare": "type", "name": "item", "fields": [
+        {"name": "name", "type": {"kind": "text"}},
+        {"name": "unit", "type": typed("unit")}]}))
+        .await?;
+    // `grade` only on a link field, `code` only in a verb's payload, `tone`
+    // only as a function's input.
+    let text = json!({"kind": "text"});
+    l.declare_json(json!({"declare": "type", "name": "deal", "fields": [
+        {"name": "name", "type": text}],
+        "relations": [{"name": "with", "target": "item", "cardinality": "many_to_many",
+            "fields": [{"name": "grade", "type": typed("grade")}]}]}))
+        .await?;
+    l.declare_json(
+        json!({"declare": "verb", "name": "stamp", "on": "item", "risk": "high",
+        "payload": [{"name": "code", "type": typed("code")}],
+        "effect": "write", "set": [{"field": "name", "value": "payload.code"}]}),
+    )
+    .await?;
+    l.declare_json(
+        json!({"declare": "function", "name": "toned", "backing": "expr",
+        "inputs": [{"name": "tone", "type": typed("tone")}], "expr": "tone"}),
+    )
+    .await?;
+    l.declare_json(json!({"declare": "type", "name": "paint", "fields": [
+        {"name": "tone", "type": text},
+        {"name": "shade", "type": text, "authority": "derived", "function": "toned",
+            "depends_on": ["tone"]}]}))
+        .await?;
+    let reader = |id: &str, more: Value| {
+        // Each may write, so that it is shown the verb it may call.
+        let mut g = json!({"default": "write", "review": true});
+        if let (Some(g), Value::Object(more)) = (g.as_object_mut(), more) {
+            g.extend(more);
+        }
+        super::only::holder(s, id, g)
+    };
+    let hidden = reader(
+        "hidden",
+        json!({"types": {"employee": {"default": "none"}}}),
+    );
+    let masked = reader(
+        "masked",
+        json!({"types": {"employee": {"fields": {"band": "masked"}}}}),
+    );
+    let schema = reader("schema", json!({"schema": true}));
+    let none = json!({"default": "none"});
+    let kept = reader(
+        "kept",
+        json!({"types": {"employee": none, "sys.link.deal.with": {"fields": {"grade": "none"}},
+            "item": {"fields": {"name": "none"}}, "paint": {"fields": {"shade": "none"}}}}),
+    );
+    for (who, want) in [
+        (&hidden, vec!["code", "grade", "tone", "unit"]),
+        (&masked, vec!["band", "code", "grade", "tone", "unit"]),
+        (
+            &schema,
+            vec!["band", "code", "grade", "spare", "tone", "unit"],
+        ),
+        (&kept, vec!["unit"]),
+    ] {
+        let d = cat.describe(who, Default::default()).await;
+        let d = d.must("describing the lake")?.data;
+        let mut listed: Vec<&str> = d.value_types.iter().map(|v| v.name.as_str()).collect();
+        let versions: Vec<&str> = d.value_type_versions.keys().map(|n| n.as_str()).collect();
+        listed.sort();
+        ensure!(
+            listed == want && versions == want,
+            "`{}` is listed the value types {want:?} and their versions; it is listed {listed:?} and the versions of {versions:?}",
+            who.id
+        );
+    }
+    let to = json!({"name": "band", "kind": "text", "one_of": ["a", "b", "c"]});
+    let write = ProposedWrite::MigrateValueType {
+        to: Box::new(super::only::de(to)),
+        renames: Vec::new(),
+        report: Default::default(),
+    };
+    let id = match cat.propose(own, write, "loosen band".into()).await {
+        Ok(lakelands_api::write::Outcome::Proposed { proposal, .. }) => proposal,
+        other => return Err(Failure::new(format!("a proposal is due: {other:?}"))),
+    };
+    for (who, write, more) in [(&hidden, false, true), (&schema, true, false)] {
+        let all = cat.proposals(who, Default::default()).await;
+        let all = all.must("listing the proposals")?.data;
+        let p = all.iter().find(|p| p.id == id);
+        let seen = p.map(|p| (p.write.is_some(), p.more));
+        ensure!(
+            seen == Some((write, more)),
+            "`{}` is listed the migration of `band` with (write, more) {:?}; it is listed {seen:?}",
+            who.id,
+            (write, more)
+        );
+    }
     Ok(())
 }

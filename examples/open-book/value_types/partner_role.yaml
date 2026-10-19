@@ -1,0 +1,4 @@
+name: partner_role
+kind: text
+one_of: [debtor, creditor, both]
+description: "How a counterparty stands to the business: it owes us, we owe it, or both."

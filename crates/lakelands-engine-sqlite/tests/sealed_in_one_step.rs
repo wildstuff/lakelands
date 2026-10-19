@@ -116,8 +116,8 @@ fn verifies(dir: &Path, through: u64, when: &str) {
         Ok(through),
         "{when}"
     );
-    let script =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/verify.py");
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/log-format/vectors/17/verify.py");
     let run = std::process::Command::new("python3")
         .arg(&script)
         .arg(dir)
@@ -336,7 +336,8 @@ fn what_a_crash_before_the_rename_left_is_read_by_nobody() {
 
 /// An error after the rename says that the seal stands. Here the handle
 /// cannot read on: while the seal runs, the index of the segment it
-/// closes gains a line that is no index line. The seal answers that the
+/// closes gains a line that is no index line, and a commit line after it,
+/// which make it damage, not a crash's tear. The seal answers that the
 /// segment is sealed and the next one in the log's files, and it is: the
 /// directory lists it, with its event's line. Once the index reads again
 /// the handle reads the sealed segment and the event that begins the next.
@@ -349,7 +350,8 @@ fn an_error_after_the_rename_says_that_the_seal_stands() {
     let whole = std::fs::read(&index).unwrap();
     let next = chain(6, 1, &events[5].hash, &lease);
     let failed = writer.seal_segment(&lease, false, &mut |_| {
-        std::fs::write(&index, [&whole[..], b"no index line\n"].concat()).unwrap();
+        let damage: &[u8] = b"no index line\n[\"c\"]\n";
+        std::fs::write(&index, [&whole[..], damage].concat()).unwrap();
         Ok(next.clone())
     });
     let failed = failed.unwrap_err().to_string();

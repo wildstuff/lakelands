@@ -51,11 +51,15 @@ use lakelands_api::error::{Case, Error, Result, Situation};
 use lakelands_api::id::LakeId;
 use lakelands_api::location::{EngineConfig, Location};
 
-pub use handle::MemoryLake;
+use handle::MemoryLake;
 
 /// The name the engine answers to, in [`EngineConfig::Memory`] and in
 /// [`LakeEngine::name`].
-pub const NAME: &str = "memory";
+pub(crate) const NAME: &str = "memory";
+
+/// The events a rebuild folds a second, as measured: 50 000 events in 4.2 s, a release
+/// build on the development machine (lakelands#1042).
+pub(crate) const REBUILD_RATE: u64 = 12_000;
 
 /// Everything one lake holds: its log with the lease, its projection and
 /// its vector index.

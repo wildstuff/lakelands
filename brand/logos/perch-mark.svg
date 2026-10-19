@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="Lakelands perch mark">
+<circle cx="60" cy="60" r="58" fill="#e8dcc4"/>
+<path d="M22 60 L6 46 L10 60 L6 74 Z" fill="#e0773a"/>
+<path d="M22 60 Q36 38 70 38 Q96 40 106 60 Q96 80 70 82 Q36 82 22 60 Z" fill="#9cc9b6"/>
+<path d="M30 64 Q50 78 74 79 Q94 76 104 64 Q94 80 70 82 Q42 82 30 64 Z" fill="#f4ecdb"/>
+<path d="M44 40 L47 28 L52 40 L56 28 L61 40 L65 30 L69 40 Z" fill="#2f7f86"/>
+<circle cx="64" cy="34" r="2" fill="#0c1a21"/>
+<path d="M46 42 Q43 60 47 78 M60 40 Q57 60 61 81 M74 41 Q71 60 75 80" fill="none" stroke="#174552" stroke-width="6" stroke-linecap="round"/>
+<path d="M56 81 L60 92 L66 81 Z" fill="#e0773a"/>
+<circle cx="92" cy="56" r="7" fill="#ffffff"/>
+<circle cx="93" cy="56" r="4" fill="#0c1a21"/>
+</svg>

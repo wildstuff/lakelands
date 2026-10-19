@@ -123,6 +123,13 @@ pub enum Door {
     /// `migrate`: the preflight, or with a `report_id` argument the
     /// `migrate_apply` door.
     Migrate,
+    /// `plan`: a change's plan. Served over REST only; the tools that make
+    /// a change take `plan` and `plan_id` instead
+    /// (`docs/decisions/062-a-change-plans-before-it-acts.md`).
+    Plan,
+    /// `enact`: a change made against its plan. Served over REST only, as
+    /// `plan` is.
+    Enact,
 }
 
 /// One tool: its name, what it is for, its schemas, and its door.
@@ -146,6 +153,16 @@ const SUBSCRIBE: &str = "subscribe";
 const UNSUBSCRIBE: &str = "unsubscribe";
 const QUERY: &str = "query";
 const SEARCH: &str = "search";
+
+/// The second stage a search or a pattern's start asks for.
+fn rerank_schema() -> Value {
+    json!({"type": "object", "properties": {
+        "top": {"type": "integer", "minimum": 1,
+                "description": "How many of the first hits the lake's reranker ranks again, at most the lake's `limits.max_rerank_top`; the answer ends at this window."},
+        "text": {"type": "string",
+                 "description": "What the window is ranked against; the search's own text when left out, so a vector search must give it."}},
+        "required": ["top"]})
+}
 const PROPOSE: &str = "propose";
 const PROPOSALS: &str = "proposals";
 const ACCEPT: &str = "accept";
@@ -157,12 +174,13 @@ const MIGRATE: &str = "migrate";
 
 /// The kinds of change a session may subscribe to: the log's event kinds
 /// that change a record, or say something happened to one.
-pub const CHANGE_KINDS: [&str; 6] = [
+pub const CHANGE_KINDS: [&str; 7] = [
     "record_upserted",
     "record_ingested",
     "record_retired",
     "output_recorded",
     "trigger_fired",
+    "trigger_dropped",
     "object_set_changed",
 ];
 
@@ -207,7 +225,6 @@ const DOOR_SUFFIXES: [&str; 4] = ["find", "get", "upsert", "retire"];
 
 catalog! {
     join = " and ";
-    #[derive(Eq)]
     /// A declaration a tool name comes from.
     pub enum NameSource {
         /// A generic tool, by its name.
@@ -230,7 +247,6 @@ catalog! {
 
 catalog! {
     tag = "problem";
-    #[derive(Eq)]
     /// Why a lake's declarations cannot all become tools. The store refuses a declaration that would introduce one of these, so [`tools`] never meets them in a lake the store wrote.
     pub enum NameProblem {
         /// Two declarations produce the same tool name.
@@ -268,7 +284,7 @@ fn link_tool(ty: &TypeName, relation: &RelationName, door: &str) -> String {
 /// Every tool name the lake's declarations would produce, for any
 /// principal, with the declaration each comes from. `links` are the
 /// relations carried by link records, by their type.
-fn all_names(
+pub fn all_names(
     types: &[TypeName],
     verbs: &[VerbName],
     links: &[(TypeName, RelationName)],
@@ -411,12 +427,12 @@ fn time_axes(p: &mut Map<String, Value>) {
     p.insert(
         "as_of".into(),
         json!({"type": "integer", "minimum": 0,
-               "description": "Read the lake as it was at this position."}),
+               "description": "Read the lake as it was at this position; now() is the time it was written, unless valid_at names one."}),
     );
     p.insert(
         "valid_at".into(),
         json!({"type": "string", "format": "date-time",
-               "description": "Read what was true in the world at this instant."}),
+               "description": "Read what was true in the world at this instant; now() and today() are this instant."}),
     );
 }
 
@@ -507,6 +523,8 @@ fn one_of(values: impl Iterator<Item = String>) -> Value {
     }
 }
 
+/// The sort keys of records that each have an event and a provenance:
+/// a stored type's.
 fn order_by_schema(fields: Value) -> Value {
     json!({"type": "array", "items": {
         "type": "object",
@@ -514,6 +532,17 @@ fn order_by_schema(fields: Value) -> Value {
         "properties": {"field": fields,
                        "by": {"enum": ["value", "known_at", "seen_at", "latest"]},
                        "dir": {"enum": ["asc", "desc"]}},
+        "additionalProperties": false}})
+}
+
+/// The sort keys of what has no event or provenance of its own to order
+/// by, a view's records, a query's rows, a proposal: each by its value,
+/// so no `by` is offered that its door refuses.
+fn value_order_schema(fields: Value, what: &str) -> Value {
+    json!({"type": "array", "items": {"type": "object",
+        "description": format!("One sort key of {what}, by its value."),
+        "properties": {"field": fields, "dir": {"enum": ["asc", "desc"]}},
+        "required": ["field"],
         "additionalProperties": false}})
 }
 
@@ -546,12 +575,74 @@ fn outcome_schema() -> Value {
                        "description": "The object sets the record joined."},
             "left": {"type": "array", "items": {"type": "string"},
                      "description": "The object sets the record left."},
+            "renamed": {"type": "array",
+                        "items": {"type": "array", "items": {"type": "string"},
+                                  "minItems": 2, "maxItems": 2},
+                        "description": "For a migration: each field it renamed, old name and new."},
+            "plan": {"type": "object",
+                      "description": "For a change to the ontology: the plan that applied (see `plan`)."},
+            "declared": {"type": "array",
+                         "items": {"type": "object",
+                                   "properties": {
+                                       "kind": {"enum": crate::write::DeclarationKind::ALL
+                                           .map(crate::write::DeclarationKind::as_str)},
+                                       "name": {"type": "string"},
+                                       "version": {"type": "integer"},
+                                       "since": {"type": "integer"},
+                                       "appended": {"type": "boolean"},
+                                   },
+                                   "required": ["kind", "name", "version", "since", "appended"]},
+                         "description": "For `declare` and `apply`: each declaration sent, as it stands in force after the call, and whether this call appended it."},
             "proposal": {"type": "string"},
             "why": {"type": "string"},
         },
         "required": ["outcome", "position"],
     })
 }
+
+/// What a change's plan says, as `plan: true` answers it in a reply's
+/// `data` (062).
+fn plan_schema() -> Value {
+    let count = |what: &str| {
+        json!({"type": "array", "description": what, "items": {"type": "object",
+            "properties": {"field": {"type": "string"}, "records": {"type": "integer"},
+                           "sample_keys": {"type": "array", "items": {"type": "string"}}}}})
+    };
+    reply_schema(json!({
+        "type": "object",
+        "properties": {
+            "report_id": {"type": "string",
+                          "description": "Send it back as `plan_id` to make exactly this change."},
+            "at": {"type": "integer"},
+            "types": {"type": "array", "items": {"type": "object", "properties": {
+                "type": {"type": "string"},
+                "recomputed": {"type": "integer",
+                               "description": "Live records computed again."},
+                "unlive": count("Per reference field: the live records left naming no live record."),
+                "breaches": {"type": "array", "items": {"type": "object"},
+                             "description": "Per constraint: the live records that would break it."},
+            }}},
+            "value_types": {"type": "array", "items": {"type": "object"}},
+            "lossless": {"type": "boolean"},
+        },
+        "required": ["report_id", "at", "lossless"],
+    }))
+}
+
+/// The arguments and the answer of a tool that makes a change to the
+/// ontology: planned first with `plan`, made against its plan with
+/// `plan_id`, or made at once (062).
+fn planned(mut input: Value) -> (Value, Value) {
+    let props = &mut input["properties"];
+    props["plan"] = json!({"type": "boolean",
+        "description": "Answer the change's plan and change nothing."});
+    props["plan_id"] = json!({"type": "string",
+        "description": "Make the change only if its plan is still this one (the plan's `report_id`)."});
+    (input, json!({"anyOf": [outcome_schema(), plan_schema()]}))
+}
+
+/// The sentence a tool that makes a change to the ontology ends with.
+const PLAN_FIRST: &str = " Plan it first: with `plan: true` it answers what the change would do, the records it computes again, those it would leave naming no live record and those that would break a constraint, and changes nothing; then call it again with that plan's `report_id` as `plan_id` to make exactly that change, refused `plan_stale` if the lake moved.";
 
 fn reply_schema(data: Value) -> Value {
     json!({
@@ -610,7 +701,15 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
                 json!({"type": "string",
                        "description": "A condition in the expression grammar, e.g. status = 'open' and amount > 100."}),
             ),
-            ("order_by", order_by_schema(one_of(filterable()))),
+            (
+                "order_by",
+                match ty.lineage.view_of {
+                    Some(_) => {
+                        value_order_schema(one_of(filterable()), "the view's records: a field")
+                    }
+                    None => order_by_schema(one_of(filterable())),
+                },
+            ),
             ("limit", json!({"type": "integer", "minimum": 1})),
             ("cursor", json!({"type": "string"})),
             (
@@ -622,6 +721,11 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
                 "total",
                 json!({"type": "boolean",
                        "description": "Also answer how many records match, at the answer's position. Counted only when asked."}),
+            ),
+            (
+                "retired",
+                json!({"type": "boolean",
+                       "description": "Also answer how many retired records match, at the same position. Counted only when asked; not with aggregate."}),
             ),
             (
                 "after",
@@ -664,7 +768,8 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
                 "properties": {"shape": {"enum": ["records", "groups"]},
                                "rows": {"type": "array"},
                                "next_cursor": {"type": "string"},
-                               "total": {"type": "integer"}},
+                               "total": {"type": "integer"},
+                               "retired": {"type": "integer"}},
                 "required": ["shape", "rows"]})),
             door: Door::Find { ty: ty.name.clone() },
         });
@@ -696,20 +801,43 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
                 (f.name.to_string(), json!({"anyOf": [s, {"type": "null"}]}))
             })
             .collect();
+        // A create must send what a constraint needs of it (lakelands#1169);
+        // where none it can send is taken, the tool changes records only
+        // (lakelands#1188).
+        let needed: Vec<&str> = (ty.fields.iter())
+            .filter(|f| f.required_at_create && f.authored_writable())
+            .map(|f| f.name.as_str())
+            .collect();
+        let mut fields_note =
+            "Only the fields to change: an absent field is unchanged, null clears it.".to_owned();
+        if ty.may.create && !needed.is_empty() {
+            fields_note.push_str(&format!(
+                " To create the record, send also: {}.",
+                needed.join(", ")
+            ));
+        }
         let mut p = props([
             ("key", key_schema(ty, true)),
             (
                 "fields",
                 json!({"type": "object", "properties": writable, "additionalProperties": false,
-                       "description": "Only the fields to change: an absent field is unchanged, null clears it."}),
+                       "description": fields_note}),
             ),
         ]);
         write_opts(&mut p);
+        let what = match &ty.may.create_why {
+            Some(why) if !ty.may.create => {
+                format!(
+                    "Change a record of {}; it cannot create one: {why}.",
+                    label(ty)
+                )
+            }
+            _ => format!("Create or change a record of {}.", label(ty)),
+        };
         out.push(ToolSpec {
             name: format!("{base}_upsert"),
             description: format!(
-                "Create or change a record of {}. Answers `applied` with the new position, or `proposed` if the write waits for review.",
-                label(ty)
+                "{what} Answers `applied` with the new position, or `proposed` if the write waits for review."
             ),
             input_schema: obj(p, &["key", "fields"]),
             output_schema: outcome_schema(),
@@ -865,6 +993,7 @@ fn verb_tool(verb: &VerbDescription, lake: &LakeDescription) -> ToolSpec {
             e.name
         ),
         None if verb.external => ", through an executor the lake's host binds; where none is bound, a call is refused and writes nothing.".into(),
+        None if verb.retires => ", and retires the record; its history stays in the lake.".into(),
         None => ".".into(),
     };
     ToolSpec {
@@ -887,6 +1016,9 @@ fn verb_tool(verb: &VerbDescription, lake: &LakeDescription) -> ToolSpec {
 
 /// What a pattern's `as` says to the model that writes one.
 const BINDING: &str = "The name a row binds this record under, `<name>.<field>`; its type's name when left out. Two records of one type in a row need a name each.";
+
+/// [`BINDING`] for a step, which may reach several types.
+const STEP_BINDING: &str = "The name a row binds this step's records under, `<name>.<field>`, with `<name>.key`, `<name>._type` and `<name>._depth`; its type's name when left out, or its relation's where it reaches several types. Name a step that may reach several types: left out, its name follows the types its reader is shown.";
 
 fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
     let names = |pick: fn(&TypeDescription) -> bool| -> Value {
@@ -911,7 +1043,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
 
     out.push(ToolSpec {
         name: PIN.into(),
-        description: "Pin this session's reads to one position until cleared, so every read in a turn sees the same state: `as_of` pins that position, no argument pins the current head, `clear` removes the pin. A read's own `as_of` still wins; writes are never pinned.".into(),
+        description: "Pin this session's reads to one position until cleared, so every read in a turn sees the same state: `as_of` pins that position, no argument pins the current head, `clear` removes the pin. A read's own `as_of` still wins; writes are never pinned. A read pinned to the head reads `now()` at the instant the pin was set; one pinned to a named position, at the time its event was written; `valid_at` comes first.".into(),
         input_schema: obj(
             props([
                 (
@@ -1000,10 +1132,10 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 json!({"type": "object", "properties": {
                     "type": names(|t| t.may.find), "key": {"type": "string"},
                     "where": {"type": "string"}, "search": {"type": "object"},
+                    "rerank": rerank_schema(),
                     "params": {"type": "object",
                                "description": "The parameters of a view the pattern starts on, by name."},
-                    "as": {"type": "string", "description": BINDING}},
-                    "required": ["type"]}),
+                    "as": {"type": "string", "description": BINDING}}}),
             ),
             (
                 "steps",
@@ -1013,7 +1145,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                     "depth": {"type": "object", "properties": {
                         "min": {"type": "integer", "minimum": 0},
                         "max": {"type": "integer", "minimum": 0}}},
-                    "as": {"type": "string", "description": BINDING}},
+                    "as": {"type": "string", "description": STEP_BINDING}},
                     "required": ["relation"]}}),
             ),
             (
@@ -1025,17 +1157,13 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             (
                 "project",
                 json!({"type": "object", "properties": {
-                "as": {"enum": ["rows", "graph", "aggregate", "degree", "components"],
-                       "description": "`degree` answers rows of `type`, `key` and `degree` (links over the steps' relations), highest first; `components` answers rows of `component`, `size`, `type` and `key`, largest component first. Both take steps without `depth`, `where` or `type`; `components` walks each step `both`."},
+                "as": {"enum": ["rows", "graph", "aggregate", "degree", "components", "reach"],
+                       "description": "`degree` answers rows of `type`, `key` and `degree` (links over the steps' relations), highest first; `components` answers rows of `component`, `size`, `type` and `key`, largest component first; with no start `type` it grows from every linked record, in every type. Both take steps without `depth`, `where` or `type`; `components` walks each step `both`. `reach` answers rows of `step`, `depth`, `type` and `key`: what each step reaches from what the step before it kept, dead ends included, each record at the first step that reaches it."},
                 "fields": {"type": "array", "items": {"type": "string"}}}}),
             ),
             (
                 "order_by",
-                json!({"type": "array", "items": {"type": "object",
-                    "description": "One sort key of the rows: a path they hold, by its value.",
-                    "properties": {"field": {"type": "string"}, "dir": {"enum": ["asc", "desc"]}},
-                    "required": ["field"],
-                    "additionalProperties": false}}),
+                value_order_schema(json!({"type": "string"}), "the rows: a path they hold"),
             ),
             ("limit", json!({"type": "integer", "minimum": 1})),
             ("cursor", json!({"type": "string"})),
@@ -1064,6 +1192,11 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 json!({"type": "array", "items": {"type": "number"}}),
             ),
             (
+                "model",
+                json!({"type": "string",
+                "description": "The model that made `vector`, named only beside it; over a field that is a model's embedding, it must be that model."}),
+            ),
+            (
                 "weight",
                 json!({"type": "number", "exclusiveMinimum": 0, "maximum": 1000000,
                 "description": "The weight of `field`'s ranking against the text's (`text_weight`) or the fields' in `also`."}),
@@ -1075,20 +1208,22 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             (
                 "also",
                 json!({"type": "array", "items": {"type": "object", "required": ["field", "vector"]},
-                "description": "vector: further vector fields, each {field, vector, weight}, fused with `field` by weighted rank."}),
+                "description": "vector: further vector fields, each {field, vector, weight, model}, fused with `field` by weighted rank."}),
             ),
             ("k", json!({"type": "integer", "minimum": 1})),
             ("cursor", json!({"type": "string"})),
             ("where", json!({"type": "string"})),
+            ("rerank", rerank_schema()),
             ("with_meta", json!({"type": "boolean"})),
         ]);
         time_axes(&mut p);
         out.push(ToolSpec {
             name: SEARCH.into(),
-            description: "Ranked search over one type, lexical, by vector or both. Hits come best first, each with a score; page with `cursor`.".into(),
+            description: "Ranked search over one type, lexical, by vector or both. Hits come best first, each with a score; page with `cursor`. With `rerank` the lake's reranker ranks the first `top` hits again and the answer ends at that window.".into(),
             input_schema: obj(p, &["type", "mode"]),
             output_schema: reply_schema(json!({"type": "object", "properties": {
                 "hits": {"type": "array"}, "ranked_by": {"type": "string"},
+                "truncated": {"type": "boolean", "description": "A reranked search only: the first stage holds more hits than the window, unranked and not answered."},
                 "axes": {"type": "array"}, "next_cursor": {"type": "string"}}})),
             door: Door::Search,
         });
@@ -1157,13 +1292,14 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             ("type", names(|_| true)),
             (
                 "kind",
-                json!({"enum": ["upsert", "retire", "call", "declare", "migrate", "migrate_value_type"]}),
+                json!({"enum": ["upsert", "retire", "call", "declare", "migrate", "migrate_value_type", "compute"]}),
             ),
             (
                 "order_by",
-                order_by_schema(one_of(
-                    ["proposed_at", "position"].iter().map(|f| f.to_string()),
-                )),
+                value_order_schema(
+                    one_of(["proposed_at", "position"].iter().map(|f| f.to_string())),
+                    "the proposals: a member",
+                ),
             ),
             ("limit", json!({"type": "integer", "minimum": 1})),
             ("cursor", json!({"type": "string"})),
@@ -1178,9 +1314,12 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
         });
         out.push(ToolSpec {
             name: ACCEPT.into(),
-            description: "Accept a proposal: its write is applied.".into(),
+            description: "Accept a proposal: its write is applied. For a change to the ontology, `plan_id` accepts it only if the plan of its change made now has that id: call the change's own tool with `plan: true` for it. The plan `proposals` lists was made when it was proposed, and its id is not one to send.".into(),
             input_schema: obj(
-                props([("proposal", json!({"type": "string"}))]),
+                props([
+                    ("proposal", json!({"type": "string"})),
+                    ("plan_id", json!({"type": "string"})),
+                ]),
                 &["proposal"],
             ),
             output_schema: outcome_schema(),
@@ -1202,37 +1341,43 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
     }
 
     if lake.may.schema {
+        let (input_schema, output_schema) =
+            planned(obj(props([("type", json!({"type": "object"}))]), &["type"]));
         out.push(ToolSpec {
             name: DECLARE_TYPE.into(),
-            description: "Declare a new type, or revise one without reshaping its records.".into(),
-            input_schema: obj(props([("type", json!({"type": "object"}))]), &["type"]),
-            output_schema: outcome_schema(),
+            description: format!(
+                "Declare a new type, or revise one without reshaping its records.{PLAN_FIRST}"
+            ),
+            input_schema,
+            output_schema,
             door: Door::DeclareType,
         });
+        let (input_schema, output_schema) = planned(obj(
+            props([
+                ("type", names(|_| true)),
+                ("field", json!({"type": "object"})),
+            ]),
+            &["type", "field"],
+        ));
         out.push(ToolSpec {
             name: ADD_FIELD.into(),
-            description: "Add one field to a type.".into(),
-            input_schema: obj(
-                props([
-                    ("type", names(|_| true)),
-                    ("field", json!({"type": "object"})),
-                ]),
-                &["type", "field"],
-            ),
-            output_schema: outcome_schema(),
+            description: format!("Add one field to a type.{PLAN_FIRST}"),
+            input_schema,
+            output_schema,
             door: Door::AddField,
         });
+        let (input_schema, output_schema) = planned(obj(
+            props([
+                ("function", json!({"type": "string"})),
+                ("type", names(|_| true)),
+            ]),
+            &[],
+        ));
         out.push(ToolSpec {
             name: RECOMPUTE.into(),
-            description: "Compute again what a declaration in force computes: name a `function`, or a `type` with a field computed outside the lake. Retries a failed call and makes a field that waits.".into(),
-            input_schema: obj(
-                props([
-                    ("function", json!({"type": "string"})),
-                    ("type", names(|_| true)),
-                ]),
-                &[],
-            ),
-            output_schema: outcome_schema(),
+            description: format!("Compute again what a declaration in force computes: name a `function`, or a `type` with a field computed outside the lake. Retries a failed call and makes a field that waits.{PLAN_FIRST}"),
+            input_schema,
+            output_schema,
             door: Door::Recompute,
         });
         // Old name and new name, for a field or a relation.
@@ -1247,6 +1392,8 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                     ("value_type", json!({"type": "object"})),
                     ("renames", pairs.clone()),
                     ("relation_renames", pairs),
+                    ("fill", json!({"type": "array", "items": {"type": "string"},
+                        "description": "Fields of `to` whose `initial` each live record that holds no value takes; the report counts them (`filled`)."})),
                     ("report_id", json!({"type": "string"})),
                 ]),
                 &[],

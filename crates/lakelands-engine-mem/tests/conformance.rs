@@ -16,8 +16,8 @@ use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::checks::ALL;
 use lakelands_core::conformance::{
-    Continue, Continued, FreshLake, Harness, Import, ImportedLake, LARGE_LAKE, Meter, Relimit,
-    Reopen, below, continue_below, run_all, run_one,
+    Continue, Continued, Fault, FreshLake, Harness, Import, ImportedLake, LARGE_LAKE, Meter,
+    Relimit, Reopen, Twin, below, continue_below, run_all, run_one,
 };
 use lakelands_engine_mem::MemoryOpener;
 use peak_alloc::PeakAlloc;
@@ -56,6 +56,24 @@ impl Harness for Memory {
                 store.close().await?;
                 let seams = Seams {
                     engines: vec![Arc::new(opener)],
+                    ..host
+                };
+                let store: Arc<dyn LakeStore> =
+                    lakelands_store::open(Location::memory(lake), seams, OpenMode::Write).await?;
+                Ok(store)
+            })
+        })
+    }
+
+    fn faulter(&self) -> Fault {
+        let opener = self.opener.clone();
+        Arc::new(move |store, host, wrap| {
+            let opener = opener.clone();
+            Box::pin(async move {
+                let lake = store.lake().to_string();
+                store.close().await?;
+                let seams = Seams {
+                    engines: vec![wrap(Arc::new(opener))],
                     ..host
                 };
                 let store: Arc<dyn LakeStore> =
@@ -126,6 +144,21 @@ impl Harness for Memory {
     fn scratch(&self) -> PathBuf {
         PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
             .join(format!("memory-conformance-{}", std::process::id()))
+    }
+
+    fn twinner(&self) -> Twin {
+        Arc::new(|lake, host| {
+            Box::pin(async move {
+                // Under an opener of its own: the harness's holds the lake
+                // that bears the id already.
+                let seams = Seams {
+                    engines: vec![Arc::new(MemoryOpener::new())],
+                    ..host
+                };
+                let location = Location::memory(lake.to_string());
+                lakelands_store::open(location, seams, OpenMode::Create).await
+            })
+        })
     }
 
     fn importer(&self) -> Import {

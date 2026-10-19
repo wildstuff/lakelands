@@ -25,14 +25,14 @@
 //!   supersedes. A view at an earlier position is a filter over kept
 //!   states, not a replay, so "what did the agent see" is a cheap read.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::event::{Digest, EventId, SegmentDigest};
 use crate::expr::Expr;
-use crate::id::{FieldName, LakeId, Position, RecordKey, RelationName, TypeName};
+use crate::id::{FieldName, LakeId, Position, RecordKey, RelationName, SourceId, TypeName};
 use crate::location::Location;
 use crate::query::{Edge, Walk};
 use crate::read::Order;
@@ -95,6 +95,14 @@ pub enum OpenMode {
 pub trait LakeEngine: Send + Sync {
     /// The engine's name (`sqlite`, `memory`).
     fn name(&self) -> &str;
+
+    /// The events a rebuild folds a second on this engine, as measured: a
+    /// host is told from it how long an act that rebuilds holds the
+    /// writer's lock. An engine that states none is taken as slow as the
+    /// slowest measured here (PostgreSQL's).
+    fn rebuild_rate(&self) -> u64 {
+        2_500
+    }
 
     /// The lake it keeps.
     fn lake(&self) -> &LakeId;
@@ -279,8 +287,9 @@ impl Reclaimed {
 }
 
 /// An event the fold applied, as the projection remembers it: its id,
-/// and the kind and the types and keys the change feed's filter reads it
-/// by (`docs/seams.md` §`ChangeFeed`).
+/// the kind and the types and keys the change feed's filter reads it by
+/// (`docs/seams.md` §`ChangeFeed`), and the source it is of, which
+/// forgetting a source reads it by.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Applied {
     /// The event's identifier.
@@ -292,6 +301,10 @@ pub struct Applied {
     /// What it is about, one entry a type it concerns; never empty, so an
     /// event about nothing is one entry with neither.
     pub about: Vec<About>,
+    /// The source it is of: a `record_ingested`'s is its envelope's; any
+    /// other event's is the one its seal names, as a recorded output
+    /// computed from a source's values does, else its envelope's.
+    pub source: Option<SourceId>,
 }
 
 /// A type and a key an event is about, as a feed filter reads them: the
@@ -362,6 +375,11 @@ pub struct Scan {
     /// pair: identity of the stored value, not the expression's `=`. A
     /// derived relation's walk asks for its matches this way.
     pub equal: Vec<(FieldName, Value)>,
+    /// Only records that hold one of these tuples, each exactly as
+    /// `equal` holds its pairs; none, no such bound. A derived relation's
+    /// walk asks for the matches of a page of records in one scan this
+    /// way (lakelands#971).
+    pub equal_any: Vec<Vec<(FieldName, Value)>>,
 }
 
 /// The rankings one pull of a search asks an engine for.
@@ -372,6 +390,9 @@ pub struct Rankings {
     pub text: Option<(String, Option<Vec<FieldName>>)>,
     /// Each vector field asked, with its query vector.
     pub vectors: Vec<(String, Vec<f32>)>,
+    /// The weight of a match of the text in each of these fields, under
+    /// their names at the head; a field not named weighs 1.
+    pub text_weights: BTreeMap<FieldName, f64>,
 }
 
 /// What [`LakeEngine::ranked`] answers.
@@ -395,6 +416,16 @@ pub trait ProjectionView {
 
     /// Every declaration in force.
     fn declarations(&self) -> Result<Vec<Declared>>;
+
+    /// Every state of a declaration that a later one replaced after
+    /// `from` and by `to`, as it stood before. With those in force at
+    /// `to`, they hold what was in force at every position from `from` on,
+    /// one read for many (lakelands#1064). `None` from an engine that keeps
+    /// no such read: the store then reads each position's declarations.
+    fn replaced(&self, from: Position, to: Position) -> Result<Option<Vec<Declared>>> {
+        let _ = (from, to);
+        Ok(None)
+    }
 
     /// One record, retired and restricted ones included.
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>>;
@@ -426,6 +457,18 @@ pub trait ProjectionView {
     /// Proposals.
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>>;
 
+    /// A page of proposals newest first (lakelands#1063): of `filter`'s
+    /// state alone, proposed before `before`, at most `filter.limit`; a
+    /// proposal's position is its own. `None` where the engine keeps no
+    /// such read, and the store reads [`Self::proposals`] whole.
+    fn proposals_before(
+        &self,
+        _: &ProposalFilter,
+        _: Option<Position>,
+    ) -> Result<Option<Vec<Proposal>>> {
+        Ok(None)
+    }
+
     /// Whether a record is a member of an object set.
     fn is_member(&self, set: &str, ty: &TypeName, key: &RecordKey) -> Result<bool>;
 
@@ -435,6 +478,12 @@ pub trait ProjectionView {
 
     /// The position an event id was applied at, if it was.
     fn applied(&self, id: &EventId) -> Result<Option<Position>>;
+
+    /// [`ProjectionView::applied`] for many ids, one answer an id in their
+    /// order: an ingest window asks its ids in one call.
+    fn applied_many(&self, ids: &[EventId]) -> Result<Vec<Option<Position>>> {
+        ids.iter().map(|id| self.applied(id)).collect()
+    }
 
     /// A seam's recorded output for this input, if recorded, with the
     /// position it was recorded at.
@@ -460,6 +509,25 @@ pub trait ProjectionView {
         through: Position,
         limit: u32,
     ) -> Result<Matched>;
+
+    /// The positions from `from` through `through` whose events are of
+    /// `source`, by what [`ProjectionStore::mark_applied`] kept of them, in
+    /// order and at most `limit` (0 is read as 1), decided as
+    /// [`Self::matching`] decides them. An engine that keeps no source in
+    /// its index answers that it decides nothing, and the store reads the
+    /// log.
+    fn of_source(
+        &self,
+        _source: &SourceId,
+        _from: Position,
+        _through: Position,
+        _limit: u32,
+    ) -> Result<Matched> {
+        Ok(Matched {
+            positions: Vec::new(),
+            through: None,
+        })
+    }
 }
 
 /// The engine's vector index, beside the projection: its write side and
@@ -492,8 +560,10 @@ pub trait EngineOpener: Send + Sync {
     /// asks this before every [`open`] and before an import, and opens
     /// only a lake written in the format it reads
     /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
-    /// A tip that moves between the two calls is harmless: its writer
-    /// passed the same judgement, so it wrote the same format.
+    /// A tip that moves between the two calls was written by a writer
+    /// that passed the same judgement, in a format the store reads; what
+    /// a writer appends for its own open, an upgrade's marker among it,
+    /// is decided from the tip it reads under its lease.
     ///
     /// [`open`]: EngineOpener::open
     fn log_ends(&self, location: &Location) -> Result<Option<(CanonicalEvent, CanonicalEvent)>>;

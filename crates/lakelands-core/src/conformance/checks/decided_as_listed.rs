@@ -12,7 +12,12 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     DECIDED_AS_LISTED = an_entry_is_decided_as_its_reviewer_is_listed_it,
-    "006 and 013, extended (lakelands#791): the listing, `accept` and `reject` ask one judgement of an entry, so over a grid of proposed writes (an upsert, a retirement, a call, a migration, a bundle, one decided, and an id that was never proposed) and reviewers (kept from a type, holding `only`, kept from a field, masked on one, shown three types, shown all) an entry that is not listed is to its accept and its reject an id that does not exist, word for word, appending nothing: a write to a type its reader is not shown, a call whose verb reads a field it may not read, as it is declared or as it was where the call was proposed, a migration to a holder of `only`, one that keys its type by a field its reader may not know of, one of a type declared again since that its reader was not shown where it was proposed, and a bundle that brings a type its reader would not be shown, which its proposer of that kind is not listed either; one listed without its write, and a declaration listed whole to a holder of `only`, is not granted to accept or to reject; a migration of a type a field of which was renamed since is judged, for a reader kept from that field, on the type as it was proposed against; a call's payload is listed only to one who reads each field its verb sets, as it is declared and as it was where the call was proposed; and, as it stands, a call whose verb would take the record out of its reviewer's `only` is listed whole to it, its accept not granted and its reject taken, the listing not judging the record as the call would leave it"
+    "006 and 013, extended (lakelands#791): the listing, `accept` and `reject` ask one judgement of an entry, so over a grid of proposed writes (an upsert, a retirement, a call, a migration, a bundle, one decided, and an id that was never proposed) and reviewers (kept from a type, holding `only`, kept from a field, masked on one, shown three types, shown all) an entry that is not listed is to its accept and its reject an id that does not exist, word for word, appending nothing: a write to a type its reader is not shown, a call whose verb reads a field it may not read, as it is declared or as it was where the call was proposed, a migration to a holder of `only`, one that keys its type by a field its reader may not know of, one of a type declared again since that its reader was not shown where it was proposed, and a bundle that brings a type its reader would not be shown, which its proposer of that kind is not listed either; a write onto another's record is not listed to a holder of `only` (lakelands#1016), and a declaration listed whole to it is not granted to accept or to reject; one listed with `more` to a reviewer kept from a field or masked on one is not granted to accept (lakelands#867); a migration of a type a field of which was renamed since is judged, for a reader kept from that field, on the type as it was proposed against; a call's payload is listed only to one who reads each field its verb sets, as it is declared and as it was where the call was proposed; and a call whose verb would take the record out of its reviewer's `only` is listed to it without its write, its accept and its reject not granted, the listing judging the record as the call would leave it (lakelands#914)"
+);
+
+check!(
+    SHOWN_SINCE_A_REKEY = an_entry_proposed_before_its_type_was_shown_is_not_there,
+    "006 and 013, extended (lakelands#913): an entry is judged as it was proposed against too where a type its type rests on was re-keyed since: `xx` keyed by a reference to `hh`, keyed by a field its reviewer may not know of, is shown to it once `hh` is re-keyed to a field it knows, and an upsert, a retirement, a call and a migration of `xx` proposed before, whose key is that field's value, are not there to it: not listed, and accepted or rejected answered as an id never proposed is, word for word, appending nothing; an upsert of `yy`, which it was shown, whose reference to `hh` holds the old key, is listed to it without that reference and is not granted to accept; the owner and a reviewer that reads every field are listed all five; only a re-key moves an old key, so only a re-key asks the past"
 );
 
 /// The entries, in the grid's order.
@@ -39,11 +44,10 @@ const ENTRIES: [&str; 18] = [
 
 /// Each reviewer with what its grants add to `read`, `review` and
 /// `schema`, and, for each entry, how it is listed it (`H` not at all, `N`
-/// without its write, `T` with `more`, `W` whole) and what its accept
-/// answers, the reviewers asked in this order (`-` as an id that does not
-/// exist, `g` not granted, `r` not granted and its reject taken, `a`
-/// applied, `d` decided, `c` changed since it was proposed, `v` its verb
-/// declared again).
+/// without its write, `T` with `more`, so not its to accept, `W` whole)
+/// and what its accept answers, the reviewers asked in this order (`-` as
+/// an id that does not exist, `g` not granted, `a` applied, `d` decided,
+/// `c` changed since it was proposed, `v` its verb declared again).
 const GRID: [(&str, &str, &str); 6] = [
     (
         "far",
@@ -53,18 +57,18 @@ const GRID: [(&str, &str, &str); 6] = [
     (
         "only",
         r#"{"types": {"doc": {"only": {"owner": "me"}}}}"#,
-        "Wa Ng Wa Wa Wa Wv H- H- H- Wg Wg Wd Wv Wv H- H- Wv Wr",
+        "Wa H- Wa Wa Wa Wv H- H- H- Wg Wg Wd Wv Wv H- H- Wv Ng",
     ),
     (
         "kept",
         r#"{"types": {"doc": {"fields": {"secret": "none"}}, "memo": {"fields": {"a": "none"}},
                       "note": {"fields": {"code": "none"}}, "slip": {"fields": {"code": "none"}}}}"#,
-        "Td Wa Wd Wd H- H- Ta Tc H- Wa Wa Wd H- Tv H- H- Tv Wd",
+        "Tg Wa Wd Wd H- H- Tg Tg H- Wa Wa Wd H- Tg H- H- Tg Wa",
     ),
     (
         "masked",
         r#"{"types": {"doc": {"fields": {"secret": "masked"}}}}"#,
-        "Td Wd Wd Wd H- H- Wd Wc Wc Wd Wd Wd H- Tv Wc H- Tv Wd",
+        "Tg Wd Wd Wd H- H- Wa Wc Wc Wd Wd Wd H- Tg Wc H- Tg Wd",
     ),
     (
         "typed",
@@ -244,23 +248,20 @@ async fn an_entry_is_decided_as_its_reviewer_is_listed_it(store: Store) -> Held 
                 Some(_) => 'W',
             };
             let before = s.head().await.must("the head")?;
-            let mut accept = said(l.cat.accept(&who, id).await, id);
+            let accept = said(l.cat.accept(&who, id).await, id);
             // One not listed, or not its reviewer's to decide, is refused
-            // its reject in the accept's words, and nothing is appended;
-            // a reject taken there is the grid's `r`.
-            if cell == 'H' || accept == "g" {
-                let reject = l.cat.reject(&who, id, "no".into()).await;
-                if accept == "g" && reject.is_ok() {
-                    accept = "r".to_owned();
-                } else {
-                    let reject = said(reject, id);
-                    if reject != accept {
-                        apart.push(format!(
-                            "`{name}` and {entry}: its reject answered {reject}"
-                        ));
-                    }
-                    head_unmoved(s, before, "the accept and the reject of such an entry").await?;
+            // its reject in the accept's words, and nothing is appended.
+            // One listed with `more` is its reviewer's to reject, which is
+            // left to `a_reviewer_accepts_only_what_it_is_listed_whole`, so
+            // that the entry waits for the rows below.
+            if cell == 'H' || (accept == "g" && cell != 'T') {
+                let reject = said(l.cat.reject(&who, id, "no".into()).await, id);
+                if reject != accept {
+                    apart.push(format!(
+                        "`{name}` and {entry}: its reject answered {reject}"
+                    ));
                 }
+                head_unmoved(s, before, "the accept and the reject of such an entry").await?;
             }
             row.push(format!("{cell}{accept}"));
         }
@@ -297,4 +298,111 @@ async fn an_entry_is_decided_as_its_reviewer_is_listed_it(store: Store) -> Held 
          not listed it; it is listed {listed:?}"
     );
     Ok(())
+}
+
+async fn an_entry_proposed_before_its_type_was_shown_is_not_there(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let text = |n: &str| json!({"name": n, "type": {"kind": "text"}, "required": matches!(n, "secret" | "open")});
+    let hh =
+        |key: &str| json!({"name": "hh", "key": [key], "fields": [text("secret"), text("open")]});
+    let h = json!({"name": "h", "type": {"kind": "reference", "target": "hh"}});
+    let xx = |fields: Value| json!({"name": "xx", "key": ["h"], "fields": fields});
+    let declared = |mut t: Value| {
+        t["declare"] = json!("type");
+        t
+    };
+    l.declare_json(declared(hh("secret"))).await?;
+    l.declare_json(declared(xx(json!([h, text("note")]))))
+        .await?;
+    // `yy` is keyed by its own `k` and refers to `hh` by `h`.
+    let yy = json!({"name": "yy", "key": ["k"], "fields": [text("k"), h.clone(), text("note")]});
+    l.declare_json(declared(yy)).await?;
+    l.declare_json(
+        json!({"declare": "verb", "name": "stamp", "on": "xx", "risk": "high",
+                          "effect": "write", "set": [{"field": "note", "value": "'x'"}]}),
+    )
+    .await?;
+    for (ty, fields) in [
+        ("hh", json!({"secret": "s1", "open": "o1"})),
+        ("xx", json!({"h": "s1"})),
+    ] {
+        l.upsert(ty, "s1", fields).await?;
+    }
+    // The owner proposes four writes of `xx`, keyed by `hh.secret`'s value.
+    let propose = async |w: Value| id(l.cat.propose(&l.own, de(w), "mine".into()).await, "mine");
+    let to = xx(json!([h, text("note"), text("more")]));
+    let (key, none, opts) = (Some("s1".into()), Default::default(), Default::default());
+    let call = l
+        .cat
+        .call(&l.own, &"stamp".into(), key.as_ref(), none, opts)
+        .await;
+    let mut entries = vec![id(call, "the call")?];
+    for w in [
+        json!({"write": "upsert", "type": "xx", "key": "s1", "patch": {"note": "u"}}),
+        json!({"write": "retire", "type": "xx", "key": "s1"}),
+        json!({"write": "migrate", "migration": {"to": to}}),
+        json!({"write": "upsert", "type": "yy", "key": "a", "patch": {"h": "s1"}}),
+    ] {
+        entries.push(propose(w).await?);
+    }
+    l.migrate(de(hh("open"))).await?;
+    let reviewer = |name: &str, more: Value| {
+        let grants = json!({"default": "read", "review": true, "schema": true, "types": more});
+        holder(s, name, grants)
+    };
+    let kept = reviewer("kept", json!({"hh": {"fields": {"secret": "none"}}}));
+    let shown = l
+        .cat
+        .describe_type(&kept, &"xx".into(), Default::default())
+        .await;
+    shown.must("`kept` describing `xx` once `hh` is keyed by `open`")?;
+    for (who, name) in [
+        (&l.own, "the owner"),
+        (&reviewer("all", json!({})), "`all`"),
+    ] {
+        let listed = l.cat.proposals(who, ProposalFilter::default()).await;
+        let listed = listed.must("listing the proposals")?.data;
+        let all = entries.iter().all(|id| listed.iter().any(|p| &p.id == id));
+        ensure!(all, "{name} is listed every entry: {listed:?}");
+    }
+    // `yy`'s upsert is listed without `h`, whose value is `hh`'s old key,
+    // and so is not `kept`'s to accept: the refusal names nothing.
+    let listed = l.cat.proposals(&kept, ProposalFilter::default()).await;
+    let listed = listed.must("`kept` listing the proposals")?.data;
+    let refers = entries[4].clone();
+    let without = |p: &&lakelands_api::write::Proposal| {
+        let patch = json!({"write": "upsert", "type": "yy", "key": "a", "patch": {"k": "a"}});
+        p.id == refers && p.more && p.write == Some(de(patch))
+    };
+    let accepted = l.cat.accept(&kept, &refers).await;
+    let refused = Err(lakelands_api::Error::Refused {
+        reason: lakelands_api::Refusal::NotGranted,
+        field: None,
+    });
+    ensure!(
+        listed.len() == 1 && listed.iter().all(|p| without(&p)) && accepted == refused,
+        "`kept` was not shown `xx` where its entries were proposed, and is listed none of them, \
+         and `yy`'s without `h`, not granted to accept ({accepted:?}); it is listed {listed:?}"
+    );
+    let unknown = ProposalId::from("none");
+    let said = |r: lakelands_api::Result<Outcome>, id: &ProposalId| {
+        format!("{:?}", r.map(|_| ())).replace(id.as_str(), "none")
+    };
+    let before = s.head().await.must("the head")?;
+    let never = (
+        said(l.cat.accept(&kept, &unknown).await, &unknown),
+        said(l.cat.reject(&kept, &unknown, "no".into()).await, &unknown),
+    );
+    for id in &entries[..4] {
+        let decided = (
+            said(l.cat.accept(&kept, id).await, id),
+            said(l.cat.reject(&kept, id, "no".into()).await, id),
+        );
+        ensure!(
+            decided == never,
+            "`kept`'s accept and reject of {id} answer as of an id never proposed, {never:?}; \
+             they answered {decided:?}"
+        );
+    }
+    head_unmoved(s, before, "`kept`'s accepts and rejects").await
 }

@@ -57,7 +57,8 @@ Every failure is one of five errors, and the set is closed:
 
 - `refused`: the store would not do it, with the field it concerns and a
   reason from a closed list (no grant, another authority writes the
-  field, a reserved name, a request that does not fit the lake's map, a
+  field, only the type's verbs write the field (naming those its writer
+  may call), a reserved name, a request that does not fit the lake's map, a
   broken constraint or precondition, a reaction chain too deep, a
   request that would reach, skip or change more than the lake allows, a
   migration that would lose information, a proposal already decided, a
@@ -70,6 +71,13 @@ Every failure is one of five errors, and the set is closed:
 - `unavailable`: the lake cannot answer now (another writer holds it, it
   is read-only here, its storage failed), with a message for the
   operator.
+
+A record an ingest refuses is no kind of its own: its refusal is one of
+these, with where the record stood beside it (`index`, `from`,
+`record`, `docs/decisions/016-two-write-doors-by-origin.md`). On the
+wire it keeps its kind's code and shape, so a reader that keys on the
+kind is answered as before; in Rust the refusal is wrapped once, and
+`Error::unwrapped` answers it (lakelands#1043).
 
 Each error has a sentence for a reader who is not an engineer. No error
 carries an engine's own code or a free-form error string as its type.
@@ -132,7 +140,7 @@ which remote end failed and in what exchange, which seam and which name.
 ### A refusal says a case
 
 As `unavailable` and `unbound` do, every refusal of `invalid`,
-`constraint`, `precondition` and `unanswered` says a case: it carries a
+`constraint`, `precondition`, `declined` and `unanswered` says a case: it carries a
 `Said`, a case and the places it is said at, instead of a sentence. On
 the wire a refusal's `reason` carries `code`, `at` when it has places,
 its parameters and `message`.
@@ -256,3 +264,6 @@ engine will never produce.
   the request too large, and what is not found names a function; the
   contract's `Refusal` and `Missing` hold both, and the lists left them
   out.
+- A refusal's reason gained `verbs_only`, naming the verbs that alone write a field (lakelands#1130).
+- A refusal's reason gained `declined`, with the case `call_declined`, for a call a host's executor declines by policy (lakelands#812).
+- `verbs_only` also answers a retirement of a type only its verbs retire, with no field, and its sentence and `wrong_door`'s no longer say "field" (lakelands#1148).

@@ -59,12 +59,12 @@ check!(
 
 check!(
     NOT_SHOWN_NOT_DECIDED = a_proposal_on_a_type_its_reviewer_is_not_shown_is_not_there,
-    "006 and 013, extended (lakelands#762): to a reviewer not shown a type a proposal names, or for a link type either end type, the proposal is not there: `proposals` does not list it, and `accept` and `reject` answer as for a proposal id that does not exist, word for word, before anything else of it is told: an upsert, a call on a link, a pinned one whose hidden end moved since, a migration, a bundle that redeclares the type, puts a verb on it, or relates or refers a new type to it, and a migration that drops a relation to it, pending or decided; a restatement of a type related to it through a computed link field, as a bundle and as a migration, is listed and decided; nothing is appended; every other proposal is listed as to a reviewer shown everything, and decided; a reviewer shown the type decides it"
+    "006 and 013, extended (lakelands#762): to a reviewer not shown a type a proposal names, or for a link type either end type, the proposal is not there: `proposals` does not list it, and `accept` and `reject` answer as for a proposal id that does not exist, word for word, before anything else of it is told: an upsert, a call on a link, a pinned one whose hidden end moved since, a migration, a bundle that redeclares the type, puts a verb on it, or relates or refers a new type to it, and a migration that drops a relation to it, pending or decided; a restatement of a type related to it through a computed link field, as a bundle and as a migration, is listed and decided; nothing is appended; every other proposal is listed as to a reviewer shown everything, and decided, a page of any size being the listing's first entries past the hidden ones (lakelands#888); a reviewer shown the type decides it"
 );
 
 check!(
     TOLD_AS_LISTED = an_accepts_refusal_names_what_its_reviewers_listing_shows,
-    "006 and 013, extended (lakelands#780): a refusal of the proposer's write at its accept is judged by the reviewer's view, as its listing is: whole to a reviewer shown each field, type, key and value it names, and to one kept from any of them as a write changed since it was proposed, naming only the type and key written: a reference to a record retired since, to its proposer too once its grants keep it from the field (lakelands#791), a value its field no longer takes, a field required since that it leaves out, which names that field alone; a call whose `requires` no longer holds is whole to a reviewer who reads what it reads, and not there to one kept from it (lakelands#779); a conflict names versions only and is whole to each, and so is a retirement's refusal, of a record gone or changed since, which names its type and key alone; nothing is appended and the proposal stays pending"
+    "006 and 013, extended (lakelands#780): a refusal of the proposer's write at its accept is judged by the reviewer's view, as its listing is: whole to a reviewer shown each field, type, key and value it names: a reference to a record retired since, a value its field no longer takes, a field required since that it leaves out, which names that field alone; a reviewer listed the write in part, by a field or a type it is kept from, is refused the accept as not granted before the write is judged (lakelands#867), its proposer too once its grants keep it from the field (lakelands#791); one listed it whole and kept from a field required since that the write leaves out is told the write changed since it was proposed, naming only the type and key written; a call whose `requires` no longer holds is whole to a reviewer who reads what it reads, and not there to one kept from it (lakelands#779); a conflict names versions only and is whole to each, and so is a retirement's refusal, of a record gone or changed since, which names its type and key alone; nothing is appended and the proposal stays pending"
 );
 
 check!(
@@ -810,6 +810,25 @@ async fn a_proposal_on_a_type_its_reviewer_is_not_shown_is_not_there(store: Stor
         json!(got),
         json!(want)
     );
+    // A page of any size is the listing's first entries, the hidden ones
+    // among the newest passed over, not counted (lakelands#888): the
+    // newest is one more upsert of `trip`.
+    propose(json!({"write": "upsert", "type": "trip", "key": "t2", "patch": {"name": "rome"}}))
+        .await?;
+    for limit in 1..=got.len() {
+        let filter = ProposalFilter {
+            limit: Some(limit as u32),
+            ..ProposalFilter::default()
+        };
+        let page = l.cat.proposals(&kept, filter).await;
+        let page = page.must("a page of proposals")?.data;
+        ensure!(
+            ids(&page) == ids(&got[..limit]),
+            "a page of {limit} lists the first {limit} of {:?}; it lists {:?}",
+            ids(&got),
+            ids(&page)
+        );
+    }
     let absent = |id: &ProposalId| -> lakelands_api::Result<()> {
         let missing = Missing::Proposal { id: id.clone() };
         Err(Error::NotFound { missing })
@@ -896,7 +915,7 @@ async fn a_verbs_write_carries_the_verbs_procedure_version(store: Store) -> Held
 check!(
     EXECUTOR_RECORDED =
         an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position,
-    "seams, VerbExecutor, and 013: `describe` says the bound executor is bound; the executor's answer is recorded as output_recorded caused by the event that made the verb due and returned in the outcome's output; a failure is recorded as {\"error\": …} at a real position; a retry of the same call answers the first outcome, its position and output, `null` included, and like a rebuild runs nothing again"
+    "seams, VerbExecutor, and 013: `describe` says the bound executor is bound; the executor's answer is recorded as output_recorded caused by the event that made the verb due and returned in the outcome's output; a failure is recorded in the error's wire form at a real position; a retry of the same call answers the first outcome, its position and output, `null` included, and like a rebuild runs nothing again"
 );
 
 async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position(
@@ -1000,17 +1019,17 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
     ensure!(
         matches!(&failed, Outcome::Applied { position, output: Some(o), .. }
             if *position <= head
-                && o.as_object().is_some_and(|m| m.len() == 1 && m["error"].is_string())),
+                && o["error"] == "unavailable"),
         "an executor that fails does not undo the verb: the outcome is `applied` at a real \
-         position with {{\"error\": …}} as its output; it answered {failed:?}"
+         position with the error's wire form as its output; it answered {failed:?}"
     );
     let failed_at = failed.position();
     let recorded = outputs_from(store.as_ref(), failed_at).await?;
     ensure!(
         recorded.iter().any(|e| e.cause == Some(failed_at)
             && matches!(&e.body, lakelands_api::event::EventBody::OutputRecorded { output: Some(o), .. }
-                if o.as_object().is_some_and(|m| m.len() == 1 && m["error"].is_string()))),
-        "the executor's failure is recorded as `output_recorded` {{\"error\": …}}, caused by \
+                if o["error"] == "unavailable")),
+        "the executor's failure is recorded as `output_recorded` in the error's wire form, caused by \
          the event at {failed_at}; the log holds {recorded:?}"
     );
 
@@ -1021,6 +1040,173 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
         "a rebuild reads the recorded outputs and runs no verb again; the executor ran {} \
          times, {runs} before the rebuild",
         executed(key)
+    );
+    Ok(())
+}
+
+check!(
+    EXECUTOR_DECLINES = an_executors_error_is_recorded_in_its_wire_form_and_a_declined_call_says_so,
+    "013, extended (lakelands#812): an executor's error is recorded as the wire carries it, `error`, its `reason` where it is a refusal, and `message`; one whose wire form holds an integer beyond ±(2^53 − 1) is recorded as its sentence, `{\"error\": …}`, and a retry answers it; a call the executor declines by `Error::declined` is recorded as `refused` / `declined` with the case `call_declined` naming the verb, said at the verb, and one it answers `not_granted` or an outage is recorded as that, each telling what it is; a retry under the call's key answers the same and runs nothing; so is the acceptance of a proposed external call its executor declines"
+);
+
+async fn an_executors_error_is_recorded_in_its_wire_form_and_a_declined_call_says_so(
+    store: Store,
+) -> Held {
+    use crate::conformance::backing::executed;
+    use lakelands_api::IdempotencyKey;
+    use lakelands_api::error::{Place, Said};
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl(
+        "ruling",
+        vec![field("status", StorageKind::Text)],
+    ))
+    .await?;
+    let flags = ["decline", "ungrant", "fail", "vast_error"];
+    let payload: Vec<Value> = flags
+        .iter()
+        .map(|f| json!({"name": f, "type": {"kind": "boolean"}}))
+        .collect();
+    for (verb, risk) in [("judge", "low"), ("judge_later", "medium")] {
+        l.declare_json(json!({
+            "declare": "verb", "name": verb, "on": "ruling", "risk": risk,
+            "payload": payload, "effect": "external", "executor": EXECUTOR}))
+            .await?;
+    }
+    let key = "ruling-r";
+    l.upsert("ruling", key, json!({"status": "open"})).await?;
+    let call = |flag: &'static str, once: &'static str| {
+        let (cat, own) = (cat.clone(), own.clone());
+        async move {
+            let opts = WriteOpts {
+                idempotency_key: Some(IdempotencyKey::from(once)),
+                ..WriteOpts::default()
+            };
+            let (verb, key) = ("judge".into(), key.into());
+            cat.call(&own, &verb, Some(&key), patch(json!({flag: true})), opts)
+                .await
+        }
+    };
+    let verb = |name: &str| Place::Verb { name: name.into() };
+    let declined = |name: &str| Error::Refused {
+        field: None,
+        reason: Refusal::Declined(Box::new(
+            Said::from(Case::CallDeclined { verb: name.into() }).within(verb(name)),
+        )),
+    };
+    ensure!(
+        Error::declined(&"judge".into()) == declined("judge"),
+        "`Error::declined` says `declined` with `call_declined` naming the verb, at the verb; \
+         it made {:?}",
+        Error::declined(&"judge".into())
+    );
+    let ungranted = Error::Refused {
+        field: None,
+        reason: Refusal::NotGranted,
+    };
+    for (flag, once, expected) in [
+        ("decline", "judge-declined", Some(declined("judge"))),
+        ("ungrant", "judge-ungranted", Some(ungranted)),
+        ("fail", "judge-outage", None),
+    ] {
+        let first = call(flag, once)
+            .await
+            .must("calling `judge` so that its executor errs")?;
+        let Outcome::Applied {
+            position,
+            output: Some(output),
+            ..
+        } = &first
+        else {
+            return Err(Failure::new(format!(
+                "an external verb whose executor errs answers `applied` with its output; \
+                 `judge` answered {first:?} for `{flag}`"
+            )));
+        };
+        let wire = serde_json::from_value::<Error>(output.clone());
+        let tells = match &expected {
+            Some(error) => wire.as_ref().is_ok_and(|e| e == error),
+            None => matches!(wire, Ok(Error::Unavailable { .. })),
+        };
+        ensure!(
+            tells && output["message"].is_string(),
+            "an executor that errs with `{flag}` is recorded as its error's wire form, which \
+             decodes as {expected:?} and has a `message`; the output is {output}"
+        );
+        let recorded = outputs_from(store.as_ref(), *position).await?;
+        ensure!(
+            recorded.iter().any(|e| e.cause == Some(*position)
+                && matches!(&e.body, EventBody::OutputRecorded { output: Some(o), .. }
+                    if o == output)),
+            "the error of `{flag}` is recorded as `output_recorded`, the output {output}; the \
+             log holds {recorded:?}"
+        );
+        let ran = executed(key);
+        let again = call(flag, once)
+            .await
+            .must("retrying `judge` so that its executor errs")?;
+        ensure!(
+            again == first && executed(key) == ran,
+            "a retry under the key answers the same, {first:?}, and runs nothing: it answered \
+             {again:?}, and the executor ran {} times, {ran} before",
+            executed(key)
+        );
+    }
+
+    // An error whose wire form holds an integer the log does not write is
+    // recorded as its sentence, and a retry answers it.
+    let first = call("vast_error", "judge-vast-error").await;
+    let first = first.must("calling `judge` so that its executor errs with a vast number")?;
+    let sentence = match &first {
+        Outcome::Applied {
+            output: Some(o), ..
+        } => o
+            .as_object()
+            .filter(|m| m.len() == 1)
+            .and_then(|m| m["error"].as_str()),
+        _ => None,
+    };
+    ensure!(
+        sentence.is_some_and(|s| s.contains("9223372036854775807")),
+        "an executor's error that holds an integer beyond ±(2^53 − 1) is recorded as its \
+         sentence, `{{\"error\": …}}`, never lost; `judge` answered {first:?}"
+    );
+    let ran = executed(key);
+    let again = call("vast_error", "judge-vast-error").await;
+    let again = again.must("retrying `judge` whose executor erred with a vast number")?;
+    ensure!(
+        again == first && executed(key) == ran,
+        "a retry answers the recorded sentence, {first:?}, and runs nothing: it answered \
+         {again:?}"
+    );
+
+    // The acceptance of a proposed call is recorded alike.
+    let proposed = ProposedWrite::Call {
+        verb: "judge_later".into(),
+        key: Some(key.into()),
+        payload: patch(json!({"decline": true})),
+        opts: WriteOpts::default(),
+    };
+    let proposed = cat.propose(own, proposed, "ruling".into()).await;
+    let (_, id) = proposal(&proposed.must("proposing `judge_later`")?)?;
+    let review = reviewer(store.as_ref(), false);
+    let accepted = cat.accept(&review, &id).await;
+    let accepted = accepted.must("accepting `judge_later`")?;
+    let Outcome::Applied {
+        output: Some(output),
+        ..
+    } = &accepted
+    else {
+        return Err(Failure::new(format!(
+            "the acceptance of an external call answers `applied` with its output; it \
+             answered {accepted:?}"
+        )));
+    };
+    let read = serde_json::from_value::<Error>(output.clone());
+    ensure!(
+        read.as_ref().is_ok_and(|e| *e == declined("judge_later")),
+        "an accepted call its executor declines is recorded as `declined` with `call_declined` \
+         naming `judge_later`; the output is {output}"
     );
     Ok(())
 }
@@ -1505,13 +1691,15 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
         json!(Error::invalid(Case::WriteChangedSinceProposed { ty, key }))
     };
     let head = s.head().await.must("reading the head")?;
-    // The proposal, its key, the reviewers answered it as stale and those
-    // answered as `all`, which is shown everything, and what `all` is told.
+    // The proposal, its key, the reviewers listed it in part, those
+    // answered it as stale and those answered as `all`, which is shown
+    // everything, and what `all` is told.
     let rows = [
         (
             &retired,
             "i1",
             vec![&field, &typed],
+            vec![],
             vec![&shown],
             "not_live",
         ),
@@ -1519,6 +1707,7 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
             &narrowed,
             "i5",
             vec![&field, &typed],
+            vec![],
             vec![&shown],
             "not_live",
         ),
@@ -1526,6 +1715,7 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
             &retyped,
             "i4",
             vec![&field],
+            vec![],
             vec![&typed, &shown],
             "not_one_of",
         ),
@@ -1533,12 +1723,14 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
             &moved,
             "i2",
             vec![],
+            vec![],
             vec![&field, &typed, &shown],
             "conflict",
         ),
         (
             &lacking,
             "i7",
+            vec![],
             vec![&field],
             vec![&typed, &shown],
             "required",
@@ -1547,12 +1739,14 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
             &refiled,
             "i2",
             vec![&field, &typed],
+            vec![],
             vec![&shown],
             "not_live",
         ),
         (
             &closed,
             "i6",
+            vec![],
             vec![],
             vec![&typed, &shown],
             "requires_unmet",
@@ -1561,6 +1755,7 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
             &gone,
             "i3",
             vec![],
+            vec![],
             vec![&field, &typed, &shown],
             "not_found",
         ),
@@ -1568,18 +1763,24 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
             &outrun,
             "i2",
             vec![],
+            vec![],
             vec![&field, &typed, &shown],
             "conflict",
         ),
     ];
+    let not_granted = json!(Error::Refused {
+        field: None,
+        reason: Refusal::NotGranted,
+    });
     let told = async |who: &Principal, id| json!(l.cat.accept(who, id).await.err());
     let mut wrong = Vec::new();
-    for (id, key, hidden, whole, said) in rows {
+    for (id, key, partial, hidden, whole, said) in rows {
         let to_all = told(&all, id).await;
         if !to_all.to_string().contains(&format!("\"{said}\"")) {
             wrong.push(format!("`{key}` to `all`: {to_all}, not {said}"));
         }
-        for (who, expected) in (hidden.iter().map(|w| (w, stale(key))))
+        for (who, expected) in (partial.iter().map(|w| (w, not_granted.clone())))
+            .chain(hidden.iter().map(|w| (w, stale(key))))
             .chain(whole.iter().map(|w| (w, to_all.clone())))
         {
             let got = told(who, id).await;
@@ -1604,9 +1805,10 @@ async fn an_accepts_refusal_names_what_its_reviewers_listing_shows(store: Store)
     let pending = listed.iter().all(|p| p.state == ProposalState::Pending);
     ensure!(
         wrong.is_empty() && !moved_head && pending,
-        "an accept's refusal must name to its reviewer only what its listing shows it, \
-         else answer a write changed since it was proposed, append nothing (the head \
-         moved: {moved_head}) and leave each pending ({pending}): {wrong:#?}"
+        "an accept's refusal must name to its reviewer only what its listing shows it, be \
+         not granted to one listed the write in part, else answer a write changed since it \
+         was proposed, append nothing (the head moved: {moved_head}) and leave each pending \
+         ({pending}): {wrong:#?}"
     );
     Ok(())
 }

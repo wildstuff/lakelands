@@ -1,7 +1,42 @@
 # Lakelands
 
-**The ground that AI agents work on.** A landscape of typed, auditable
-lakes — not a data lake. Every lake has a map (its ontology), keeps its
+**The open ontology store. Every value typed, traced and verifiable.**
+
+An ontology types every write, every field keeps its source and its
+time, and the log is hash-chained, so anyone can check what was known,
+since when, and who changed it — without us. Files, streams, REST and
+agents over MCP all write into the same lake under the same rules. It
+runs on your machine; engine and on-disk format are Apache-2.0.
+
+Lakelands is the engine [The Wild](https://github.com/wildstuff/wild)
+is built on. Use it on its own as a store, or take The Wild for the
+whole thing: connectors, agents that build their own tools, and live
+apps on top.
+
+## The problem
+
+Whatever writes into a store — an import, a person, an agent — most
+stores keep the value and lose how it got there. Ask the questions
+that matter and they cannot answer them:
+
+- **Where did this value come from?** An import, a person, or an
+  agent's guess?
+- **Since when has it held — and what did we know when we decided?**
+  A store that updates in place has already forgotten.
+- **Who changed it, and was it allowed to?** A second writer quietly
+  overwrites the first; a re-import erases a verdict a human wrote.
+- **Has anything been rewritten since?** You are asked to trust the
+  system that holds it.
+
+Once agents act on these values — file an invoice, mark a contract as
+reviewed, chase a payment — a value nobody can trace is no longer an
+inconvenience; it is a decision made on a guess. Lakelands keeps every
+value together with how it got there, and lets anyone check both.
+
+## What it is
+
+A landscape of typed, auditable lakes — not a data lake.
+Every lake has a map (its ontology), keeps its
 whole history in layers (its event log), is fed and drained by streams
 (its changes), and can be searched from any point on the map. Agents get
 typed tools to read and write it; every value they see says where it came
@@ -76,56 +111,119 @@ of changes without polling, `propose`, `proposals`, `accept` and
 (stdio and HTTP) and REST from one catalog. Agents never write a query
 language.
 
-> **Status: `0.13.1`.** Lakelands `0.13.1` is the `lakelands` CLI, its
+## Verify it
+
+A value you are asked to trust is a value nobody can check. Every
+claim Lakelands makes about its data is one you can recompute:
+
+- **What was known, and when.** Every reply — to a person or an agent —
+  carries the position it was read at. Pin an earlier position and the
+  lake answers as it did then.
+- **Where a value came from.** Every field records who wrote it, when
+  the lake learned it and when its source saw it — per field, not per
+  record.
+- **That nothing was rewritten.** Each event carries the hash of the
+  one before it. The format is published byte for byte in
+  [`docs/log-format.md`](docs/log-format.md), with test vectors and a
+  `verify.py` beside them that shares no code with Lakelands: point it
+  at a lake's directory and it checks the chain from the segment files
+  alone. An import checks an export's chain before it opens.
+- **That an engine keeps its word.** An engine is a port, not a
+  re-implementation, and proves itself against the open conformance
+  suite ([`docs/conformance.md`](docs/conformance.md)) — SQLite,
+  PostgreSQL and in-memory pass all of it.
+
+## Where Lakelands fits
+
+Other open stores for agents are good at other things. This is the
+terrain Lakelands is built for, and where it is not the right tool.
+
+| You need … | What usually fills it | What Lakelands adds, or leaves to them |
+|---|---|---|
+| graph and vector search in one fast engine, at scale | graph-vector databases | Lakelands searches (full-text, vectors, typed filters, walks over relations), but its terrain is what a value *means* and *where it came from*, not traversal speed. It runs no speed contest; its load run and its 24-hour soak ([`docs/soak.md`](docs/soak.md)) test that every acknowledged write survives a killed process. |
+| the history of every row, in SQL | bitemporal SQL databases | Lakelands is bitemporal too, and adds the ontology, provenance and write rights per field, a hash-chained log and agent tools generated from the types. |
+| memory for an agent, as a service | hosted memory layers | Lakelands is not a service. The parts that make memory trustworthy — history, provenance, the verifier — run on your machine, under Apache-2.0. |
+| raw files now, meaning later | data lakes | The opposite: schema first, every write governed by its declared authority. |
+| notes your agent reads and greps | a Markdown vault | Typed records with a source and a time on every field, and tools instead of grep. |
+
+**Choose something else when:**
+
+- **many writers hammer one dataset at once.** A lake has one writer;
+  throughput comes from many lakes, not from one.
+- **you need queries across tenants.** There is no query across lakes;
+  data crosses only as a mirror that carries its provenance.
+- **the work is heavy graph analytics.** Walks have ceilings, and a walk
+  past its ceiling is refused, not run.
+- **you want a managed service.** There is none; you run it, on SQLite or
+  your own PostgreSQL.
+- **you want to store first and model later.** Lakelands asks for the
+  map first. An agent can draw it over MCP (`declare_type`, `add_field`),
+  but there is always a map.
+
+> **Status: `0.16.0`.** Lakelands `0.16.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
-> SQLite, in-memory and PostgreSQL engines, all three passing the
-> whole conformance suite (533 checks through the doors and 67 through
-> the engine seam), with 54 decision records and the event log at
-> format version 14, installable from the release. Its budgets: the
-> store facade and engine traits hold 59 of 110 methods, the core
-> crates' product code 52 930 of 53 000 lines and their specification
-> 74 753 of 75 000, and 2 of 20 `cfg(feature)` sites. A ceiling rises
-> only by a recorded rule (decision 047): for this round the operator
-> set both as a reserve, to 52 500 and 69 000, and the round's rights
-> and integrity fixes raised the specification's ten times, to 75 000,
-> and the product's once, to 53 000, row by row. Beside what `0.12.0`
-> held, a lake is written in one log format a release: every event
-> carries it, a lake or an export of another release is refused by
-> name before anything of it is read, and there is no upgrade path
-> until the first release with real installations. The log holds only
-> numbers every reader reads exactly: a value is judged in the form it
-> is written in at every door, and what is computed, declared, landed
-> by a view's measure or verified is held to the same bound. Part of a
-> lake without its events is damage, and a projection is read only by
-> the layout that made it. Every door asks one judgement of what a
-> principal is shown: a record is judged once, by what its grant
-> admits and by its ends as deep as they go, and a proposal is decided
-> as it is listed. A reference a record computes names a live record;
-> a report names what its reader is answered, in the order of the new
-> key; a name its author is not shown is not granted, and no door
-> leaves a lake with a problem among its tools' names. A row binds each
-> record under a name of its own, every path a pattern names is one
-> its rows hold, an order reads no provenance where no record stands,
-> and a walk or a view at a valid time probes every type it can meet.
-> A search as of a position ranks by the head's declaration, and a
-> migration keeps the vector index under the head's names and keys. A
-> verb names no system type but a link type, or with an external
-> effect a type of the host's vocabulary, a view's key is its
-> `group_by`, and a derived relation has no link door. A filtered poll
-> reads only what it answers, and a client reads an ingest's answer as
-> it uploads. The in-memory mock is retired and the door crates test
-> against the store; every decision record says what holds and how it
-> came to be, and one record holds what a principal is shown.
+> SQLite, in-memory and PostgreSQL engines, all three passing the whole
+> conformance suite (716 checks through the doors and 72 through the
+> engine seam), with 67 decision records and the event log at format
+> version 17, installable from the release. Its budgets: the store
+> facade and engine traits hold 71 of 110 methods, the core crates'
+> product code 72 241 of 74 000 lines and their specification 107 360 of
+> 108 000, and 6 of 20 `cfg(feature)` sites. A ceiling rises only by a
+> recorded rule (decision 047): the operator set the round's ceilings at
+> 68 000 and 98 000 and raised them twice, measured, to 74 000 and
+> 108 000. Beside what `0.15.1` held, part of a source may be taken
+> back, what it wrote before a time or one delivery, from records
+> another hand also writes: its values read as erased, and a key version
+> whose values are all taken is destroyed (decision 065). A change to
+> the ontology tells its plan before it lands, and a proposal carries it
+> (decision 062). A field may be one only declared verbs write, and a
+> type's records ones only its verbs retire. A trigger, a verb, an
+> object set or a function may be withdrawn; a trigger past its depth
+> drops instead of firing, says what kind of change fired it, and may
+> fail closed on a field the record does not hold. A function that
+> reaches outside the lake runs by its declared risk (decision 064).
+> Every setting is in one list, with its kind, meaning and group
+> (decision 063); a set may hold a kept view (decision 066); a search
+> may take a second stage (decision 067), and a lexical search may weigh
+> one field above another (decision 025). A query vector names the model
+> that made it, a host's executor may decline a call by policy and say
+> so, and forgetting a source walks the log once. A reaction set off by
+> a value an act erased since is marked overruled on the feed, and not
+> told again. The projection's commit on PostgreSQL waits for no flush
+> of its own (decision 061). `lakelands verify` checks a lake's log, and
+> `lakelands init` makes a first lake and an agent's MCP configuration
+> in one command. A writer's open upgrades a lake of format 14, 15 or 16
+> to 17 by appending, and the lake this release writes, a part of a
+> source taken back and a destroyed key version among it, is kept beside
+> those of the releases before.
 
 ## Try it
 
-This follows the first walk (`docs/walks/walk-1.md`), whose example
-lake ships in `examples/liquidity/`. It runs on the SQLite engine, the
-default: a lake kept in memory lives only as long as its process, so a
-sequence of commands cannot walk one.
+With the `lakelands` binary from a release (or `cargo install --path
+crates/lakelands-cli`), one command makes the first walk's lake and
+connects Claude Code to it:
 
 ```sh
-cargo install --path crates/lakelands-cli    # or the binary from the release
+lakelands init walk --example liquidity
+cd walk && claude    # approve the server `lakelands` when it asks
+```
+
+Ask it: *which debtors are over their credit limit and more than 30 days
+overdue?* The agent finds the answer with the lake's generated tools
+(`invoice_find` with an aggregate, `partner_get` with provenance), and
+can pin an earlier position to ask what the lake knew last month. The
+command prints the walk's answers and that position.
+
+The example (`examples/liquidity/`) is inside the binary, so nothing is
+fetched. `init` writes `walk/.mcp.json`, Claude Code's project
+configuration, whose server is the binary that ran it; a `.mcp.json`
+that is there already is left as it is, and the command prints the entry
+to add. For any other MCP client it prints the server's command line.
+
+What it does, as the seven commands of the first walk
+(`docs/walks/walk-1.md`) on the SQLite engine, from a checkout:
+
+```sh
 lakelands init walk && cd walk
 lakelands lake new liquidity
 lakelands apply ../examples/liquidity
@@ -134,13 +232,19 @@ lakelands ingest $d/partners.csv --source crm --map $d/partners.map.json
 lakelands ingest $d/invoices-august.csv --source erp --map $d/invoices.map.json
 lakelands ingest $d/invoices-september.csv --source erp --map $d/invoices.map.json
 lakelands serve --mcp                        # point an MCP client at this command
-# Ask it: which debtors are over their credit limit and more than 30 days overdue?
+lakelands verify                             # every event's hash and every checkpoint, beside the serve
 ```
 
-The agent finds the answer with the lake's generated tools
-(`invoice_find` with an aggregate, `partner_get` with provenance), and
-can pin an earlier position to ask what the lake knew last month. The
-walk's page lists every call and the answer it must give.
+`lakelands verify` reads the whole log and says whether it holds, or
+the first position where it does not, where the log lets it name one.
+Its exit status is 0 when the log holds, 1 when it is damaged, 2 for a
+command line it does not understand or a range outside the log, and 3
+when it could not check (no lake yet, no projection, a memory lake, the
+database unreachable). A lake's open does not read the whole chain: a
+line of the log changed by hand at its own length, before its last
+append, opens and is written on, and only `verify` finds it.
+
+The walk's page lists every call and the answer it must give.
 
 ## Read further
 
@@ -177,6 +281,10 @@ walk's page lists every call and the answer it must give.
 - **Not a data lake.** A data lake stores raw files and lets meaning
   arrive later. Lakelands is the opposite: schema-first, every write
   governed by declared authority, every value traceable to its event.
+- **Not memory you rent.** There is no hosted tier holding the parts
+  that make it trustworthy: the ontology, the history, the provenance
+  and the verifier are all in this repository, under the same licence,
+  and a lake lives on your machine or in your own PostgreSQL.
 - **Not autonomous.** Lakelands detects when something is due — a
   trigger matched, an object set changed, a verb was called — and records it
   durably. Executing it is behind a seam: an HTTP endpoint, a local
@@ -205,12 +313,9 @@ walk's page lists every call and the answer it must give.
 
 `0.1.0` holds what is on disk, in every reply, or in a trait: the log
 format, per-field provenance, positions on every answer, the engine
-contract and the seams. What came right after arrived through those
-seams without changing them: the PostgreSQL engine, the REST door, the
-OpenAI-compatible embedding client and webhook delivery of fired
-triggers and set changes, MCP notifications and a client for a lake
-served over REST, all in `0.2.0`. The repository goes public once The
-Wild runs on a tagged Lakelands.
+contract and the seams. Each later release built on them; what it adds
+is in its notes on the releases page, and what comes next is on the
+milestones.
 
 ## Licence
 

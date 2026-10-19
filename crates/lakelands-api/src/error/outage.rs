@@ -18,7 +18,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 
 use super::{Error, Param, catalog, render};
-use crate::id::{Position, ProposalId, RecordKey, TypeName};
+use crate::id::{KeyId, Position, ProposalId, RecordKey, SourceId, TypeName};
 use crate::time::Timestamp;
 use crate::tools::NameProblem;
 
@@ -350,6 +350,12 @@ catalog! {
         } => "the embedding model `{model}` with {dimensions} dimensions, for `{ty}.{field}` [(the bound one is {bound})|(none is bound)]",
         /// A function backing of a kind.
         FunctionBacking { kind: String } => "the `{kind}` function backing (the host bound none of that kind)",
+        /// A key store, which seals a source's values of an erasable field.
+        KeyStore => "a key store, which seals a source's values of an erasable field (the host bound none)",
+        /// A key store that destroys a version of a source's key with those before it.
+        KeyVersions => "a key store that destroys a version of a source's key with every older one (the bound one destroys only a whole source's)",
+        /// A reranker, the second stage of a search.
+        Rerank => "a reranker, the second stage of a search (the host bound none)",
         /// A vector index, which this engine keeps none of.
         VectorIndex => "a vector index (this engine keeps none)",
         /// An engine, whose opener was not passed in.
@@ -531,11 +537,12 @@ named! {
 }
 
 catalog! {
-    #[derive(Eq)]
     /// A remote end a call reaches: an embedding backend, a function's backing, a REST door.
     pub enum Remote {
         /// The embedding backend of a model.
         Embedding { model: String } => "the embedding backend `{model}`",
+        /// The reranker of a lake.
+        Reranker { model: String } => "the reranker `{model}`",
         /// A verb's executor.
         Executor { name: String } => "the verb executor `{name}`",
         /// A function's backing.
@@ -593,6 +600,10 @@ catalog! {
         NotSent => "cannot be sent this request",
         /// It answered other vectors than texts asked.
         Vectors { answered: u64, asked: u64 } => "answered {answered} vectors for {asked} texts",
+        /// It answered other scores than candidates asked.
+        Scores { answered: u64, asked: u64 } => "answered {answered} scores for {asked} candidates",
+        /// It answered a score that is not a number.
+        ScoreNotFinite => "answered a score that is not a finite number",
         /// It answered a vector with no direction to rank along.
         NoDirection { why: Aimless } => "answered a vector that {why}",
         /// It answered what is not JSON.
@@ -658,13 +669,31 @@ catalog! {
         /// A member is not in its one written form.
         NotOneForm => "a member is not in its one written form",
         /// It is written in a log format this release does not read.
-        FormatOther { v: u64, reads: u64 } => "written in log format {v}, and this release reads and writes format {reads} alone",
-        /// Its `lake_created` says another log format than the release's.
-        CreatedInAnother { format: u64, reads: u64 } => "its `lake_created` says log format {format}, and this release reads and writes format {reads} alone",
+        FormatOther { v: u64, reads: u64 } => "written in log format {v}, which this release does not read; it writes format {reads}",
+        /// Its `lake_created` says another log format than its own line, or one the release does not read.
+        CreatedInAnother { format: u64, reads: u64 } => "its `lake_created` says log format {format}, another than its own line's or one this release does not read; it writes format {reads}",
+        /// Its fence is below the fence of the event before it.
+        FenceBelow { fence: u64, floor: u64 } => "it carries fence {fence}, below the fence {floor} of the event before it: fences never fall",
+        /// Its log format differs from the event's before it where no new writer upgraded the lake.
+        FormatStep { v: u64, before: u64 } => "written in log format {v} after an event in format {before}: a lake's format rises only at a new writer's `lease_taken`, whose next event is the `lake_upgraded` from the one to the other",
         /// `context` carries `cause`, which the envelope carries.
         CauseInContext => "`context` carries `cause`, which the envelope carries",
         /// The envelope carries the origin `initial`, a field's alone.
         InitialOrigin => "the envelope carries the origin `initial`, a field's alone",
+        /// An event other than `record_ingested` and `output_recorded` carries `sealed`.
+        SealedOn { kind: String } => "a `{kind}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries",
+        /// An event of a format before 16 carries `sealed`.
+        SealedBefore { v: u32 } => "an event of format {v} carries `sealed`, which format 16 added",
+        /// A `source_forgotten` in a format before the one that added it.
+        ForgottenBefore { v: u32 } => "an event of format {v} is a `source_forgotten`, which format 16 added",
+        /// A `trigger_fired` before format 17 carries `change` or `created`.
+        ChangeBefore { v: u32 } => "a `trigger_fired` of format {v} carries `change` or `created`, which format 17 added",
+        /// A `trigger_dropped` in a format before the one that added it.
+        DroppedBefore { v: u32 } => "an event of format {v} is a `trigger_dropped`, which format 17 added",
+        /// An event other than a `record_ingested` of format 17 on carries `delivery`.
+        DeliveryOn { kind: String, v: u32 } => "a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries",
+        /// A `values_removed` event in a format before the one that added it.
+        RemovedBefore { v: u32 } => "an event of format {v} is a `values_removed`, which format 17 added",
         /// An event other than `record_ingested` carries `upstream`.
         UpstreamOn { kind: String } => "a `{kind}` event carries `upstream`, which only a `record_ingested` event carries",
         /// The hash does not match the event.
@@ -857,7 +886,9 @@ catalog! {
             wanted: u64,
         } => "lake `{lake}`'s projection [has layout {found}|has no layout number], and this build reads layout {wanted}; nothing was read from it: rebuild it from the log with `lakelands rebuild`",
         /// The lake's log is written in the format of another release: nothing reads it and nothing is appended.
-        LogFormat { lake: String, found: u64, reads: u64 } => "lake `{lake}` is written in log format {found}, and this release reads and writes format {reads} alone; nothing was read from it and nothing appended",
+        LogFormat { lake: String, found: u64, reads: u64, oldest: Option<u64> } => "lake `{lake}` is written in log format {found}, and this release reads log format[s {oldest} to] {reads} and writes {reads}; nothing was read from it and nothing appended",
+        /// The lake's log is written in an older format this release reads, and only a writer's open upgrades it.
+        LogUpgradeOwed { lake: String, found: u64, reads: u64 } => "lake `{lake}` is written in log format {found}, and this release writes format {reads}: a writer's open upgrades it, so open it once for writing or run `lakelands upgrade {lake}`, and it is read; nothing was read from it",
         /// The lake could not be compacted while a reader holds a snapshot.
         Busy { lake: String } => "lake `{lake}` could not be compacted: a reader holds a snapshot of its projection; nothing a read answers has changed, so compact again when the reader is done",
         /// The projection is behind the log and could not catch up; nothing was appended.
@@ -865,6 +896,10 @@ catalog! {
             #[serde(default, skip_serializing_if = "Option::is_none")]
             cause: Option<Box<Error>>,
         } => "the lake's projection is behind its log and could not catch up; nothing was appended[ ({cause})]",
+        /// A key of a source that the key store does not give, with no act that forgot the source.
+        KeyMissing { source: SourceId, key: KeyId } => "the key store does not give the key `{key}` of the source `{source}`, and no act forgot that source; a lost key is never read as an erasure",
+        /// A sealed value that does not open under the key its event names.
+        Unsealable { position: Position } => "a sealed value of the event at position {position} does not open under the key it names: the key store gives another key under that id, or the event was changed",
         /// The write was decided while the projection was behind the log; nothing was appended.
         DecidedBehind => "this write was decided while the lake's projection was behind its log; nothing was appended",
         /// What was appended from a position is in the log and not folded yet.
@@ -903,6 +938,8 @@ catalog! {
             #[serde(default, skip_serializing_if = "Option::is_none")]
             cut: Option<Box<Error>>,
         } => "appending to the log failed: {detail}[; {left}][ ({cut})]",
+        /// A sync of the log failed on this handle, and writing and syncing its group again failed too: it appends, seals and takes the lease no more until the lake is opened again, whose open checks the group it left.
+        Unsynced => "a sync of the log failed on this handle and writing it again failed too, so it writes nothing more: open the lake again, and its open checks what the last append left",
         /// A seal's step was taken and syncing its directory failed: the next segment is in the log's files, and the outcome is not known.
         SealUnsure { detail: Detail } => "syncing the log's directory failed: {detail}; the next segment is in the log's files and its name's sync failed: every handle reads it, and the outcome is not known",
         /// A segment was sealed through a position, and this handle then failed to read on.

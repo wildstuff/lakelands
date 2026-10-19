@@ -18,8 +18,8 @@ use lakelands_api::write::Declaration;
 pub const WINDOW: u64 = 65_536;
 
 /// What `body` is about, one entry a type it concerns, never empty:
-/// - a `record_*`, `trigger_fired` or `object_set_changed` event: its type
-///   and its record's key;
+/// - a `record_*`, `trigger_fired`, `trigger_dropped` or
+///   `object_set_changed` event: its type and its record's key;
 /// - a type's `declared`: the type;
 /// - a `migrated`: its type, and each link type its renamed relations move
 ///   records between, old and new, so a consumer that follows either hears
@@ -39,6 +39,7 @@ pub fn about(body: &EventBody) -> Vec<About> {
         | EventBody::RecordRestricted { ty, key, .. }
         | EventBody::RecordUnrestricted { ty, key, .. }
         | EventBody::TriggerFired { ty, key, .. }
+        | EventBody::TriggerDropped { ty, key, .. }
         | EventBody::ObjectSetChanged { ty, key, .. } => vec![About {
             ty: Some(ty.clone()),
             key: Some(key.clone()),

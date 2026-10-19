@@ -31,6 +31,27 @@ impl FunctionBacking for Slow {
     }
 }
 
+/// Tells when its call is under way, and answers only when the test
+/// releases it: a write's order against the call is set by the signal,
+/// never by a clock (lakelands#1051).
+struct Held {
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl FunctionBacking for Held {
+    fn kind(&self) -> &str {
+        "held"
+    }
+
+    async fn call(&self, call: &FunctionCall) -> Result<Value> {
+        self.started.notify_one();
+        self.release.notified().await;
+        Ok(call.inputs["code"].clone())
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_racing_writes_each_answer_a_position_their_fill_is_visible_from() {
     let seams = Seams {
@@ -100,6 +121,7 @@ async fn two_racing_writes_each_answer_a_position_their_fill_is_visible_from() {
                     at: ReadAt {
                         as_of: Some(at),
                         valid_at: None,
+                        clock: None,
                     },
                     params: Default::default(),
                 },
@@ -118,9 +140,14 @@ async fn two_racing_writes_each_answer_a_position_their_fill_is_visible_from() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_write_with_nothing_due_does_not_wait_behind_a_call_under_way() {
+    let (started, release) = (Arc::default(), Arc::default());
+    let held = Held {
+        started: Arc::clone(&started),
+        release: Arc::clone(&release),
+    };
     let seams = Seams {
         engines: vec![Arc::new(MemoryOpener::new())],
-        backings: vec![Arc::new(Slow)],
+        backings: vec![Arc::new(held)],
         ..Seams::default()
     };
     let store: Arc<dyn LakeStore> =
@@ -136,7 +163,7 @@ async fn a_write_with_nothing_due_does_not_wait_behind_a_call_under_way() {
     let cat = store.catalog(WriteContext::default());
     let declare = |v: Value| serde_json::from_value::<Declaration>(v).unwrap();
     for d in [
-        json!({"declare": "function", "name": "lookup", "backing": "slow",
+        json!({"declare": "function", "name": "lookup", "backing": "held",
                "inputs": [{"name": "code", "type": {"kind": "text"}}]}),
         json!({"declare": "type", "name": "place", "fields": [
             {"name": "code", "type": {"kind": "text"}},
@@ -147,42 +174,32 @@ async fn a_write_with_nothing_due_does_not_wait_behind_a_call_under_way() {
     ] {
         cat.declare(&owner, declare(d)).await.unwrap();
     }
+    // The write whose call is held, under way before the other starts.
     let slow = {
         let (cat, owner) = (cat.clone(), owner.clone());
-        async move {
+        tokio::spawn(async move {
             let patch = serde_json::from_value(json!({"code": "AT"})).unwrap();
-            cat.upsert(
-                &owner,
-                &"place".into(),
-                &"p1".into(),
-                patch,
-                Default::default(),
-            )
-            .await
-            .unwrap();
-        }
+            let (ty, key) = ("place".into(), "p1".into());
+            cat.upsert(&owner, &ty, &key, patch, Default::default())
+                .await
+                .unwrap();
+        })
     };
-    let quick = {
-        let (cat, owner) = (cat.clone(), owner.clone());
-        async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let started = std::time::Instant::now();
-            let patch = serde_json::from_value(json!({"text": "hi"})).unwrap();
-            cat.upsert(
-                &owner,
-                &"note".into(),
-                &"n1".into(),
-                patch,
-                Default::default(),
-            )
-            .await
-            .unwrap();
-            started.elapsed()
-        }
-    };
-    let ((), took) = tokio::join!(slow, quick);
+    started.notified().await;
+    // A write with nothing due answers while that call is still held. The
+    // bound only keeps a write that waits behind it from hanging the test.
+    let patch = serde_json::from_value(json!({"text": "hi"})).unwrap();
+    let (ty, key) = ("note".into(), "n1".into());
+    let quick = cat.upsert(&owner, &ty, &key, patch, Default::default());
+    let answered = tokio::time::timeout(Duration::from_secs(30), quick).await;
     assert!(
-        took < Duration::from_millis(120),
-        "a write with nothing due answered after {took:?}, behind the 200 ms call"
+        matches!(answered, Ok(Ok(_))),
+        "a write with nothing due answered {answered:?} while a call was held: it waited behind it"
     );
+    assert!(
+        !slow.is_finished(),
+        "the held call's write answered before it was released"
+    );
+    release.notify_one();
+    slow.await.unwrap();
 }

@@ -1,0 +1,19 @@
+# The changes the host surface takes against the release below, each a
+# change the next release's notes name: `<crate>`, the lint and the item
+# as `cargo semver-checks` names it (a constant with its file), apart by
+# tabs. scripts/release/surface-held.sh refuses
+# any other, and any line here that no change answers. At a release the
+# baseline becomes the new tag and the list empties
+# (docs/decisions/056-the-host-surface-changes-by-one-release-of-deprecation.md).
+baseline v0.15.0
+lakelands-api	derive_trait_impl_removed	type Committed no longer derives Copy
+lakelands-api	enum_marked_non_exhaustive	enum Authority
+lakelands-api	enum_marked_non_exhaustive	enum Declaration
+lakelands-api	enum_marked_non_exhaustive	enum VerbEffect
+lakelands-api	enum_variant_missing	variant Case::WindowLinksAlready
+lakelands-api	struct_field_type_changed	field FunctionDecl.inputs
+lakelands-api	trait_method_added	trait method Catalog::accept_planned
+lakelands-api	trait_method_added	trait method Catalog::enact
+lakelands-api	trait_method_added	trait method Catalog::plan
+lakelands-api	trait_method_added	trait method LakeStore::remove_values
+lakelands-api	trait_method_added	trait method LakeStore::remove_values_preflight

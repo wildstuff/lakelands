@@ -104,6 +104,7 @@ impl Kept {
     /// key, its site and its value.
     async fn feed(&self, records: Vec<(String, String, &str)>) {
         let reading = |(key, site, value): (String, String, &str)| lakelands_api::SourceRecord {
+            source: None,
             upstream: None,
             ty: "reading".into(),
             key: key.as_str().into(),
@@ -160,6 +161,7 @@ impl Kept {
                 rows,
                 next_cursor,
                 total,
+                ..
             } = found.expect("a page").data
             else {
                 panic!("a page of records");
@@ -788,19 +790,19 @@ async fn an_output_under_a_seam_of_the_stores_own_is_not_folded() {
     not_folded(&[(renames, &r), (output(KEPT, book, state), &k)]).await;
 }
 
-/// A record event, or a set's member, under a view's name is not folded:
-/// a view's records are computed and no door writes one. Under a kept
-/// inner view the record would reach the outer view as a member; under a
-/// view not kept it would wait for the view to be declared a stored type.
+/// A record event under a view's name is not folded: a view's records
+/// are computed and no door writes one. Under a kept inner view the record
+/// would reach the outer view as a member; under a view not kept it would
+/// wait for the view to be declared a stored type. A set's member under a
+/// view's name is folded: a set of a kept view holds its groups (066).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_record_of_a_view_is_not_folded() {
     let said = |ty| format!("writes a record of `{ty}`, a view, whose records are computed");
     let write = |kind, ty, patch| json!({"kind": kind, "type": ty, "key": "j", "version": 1, "patch": patch, "made": true});
-    let set = json!({"kind": "object_set_changed", "set": "s", "type": "book", "key": "j", "joined": true});
     let upserted = write("record_upserted", "book", json!({"total": "40"}));
     let ingested = write("record_ingested", "loose", json!({"n": "7"}));
     let (book, loose) = (said("book"), said("loose"));
-    not_folded(&[(upserted, &book), (ingested, &loose), (set, &book)]).await;
+    not_folded(&[(upserted, &book), (ingested, &loose)]).await;
 }
 
 /// A view without group fields is one record, kept over no member too.

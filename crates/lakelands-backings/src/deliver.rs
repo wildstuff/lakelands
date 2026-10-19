@@ -20,6 +20,12 @@
 //! followed, TLS trusting the configured bundle or the system's, a timeout
 //! over each whole request, and a reply limit.
 //!
+//! **An overruled reaction is not posted.** One the feed names overruled,
+//! decided over a value an act erased since, is journaled `overruled` and
+//! passed by: a receiver would act on it again when the deliverer reads
+//! from a position before the act
+//! (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+//!
 //! **Delivery is at least once, in order.** The position is written after
 //! each event the deliverer is done with, so a crash between a `POST` and
 //! that write sends the event again, and the receiver deduplicates by lake
@@ -245,6 +251,8 @@ pub struct Deliverer {
     // endpoint and lake is refused at start.
     _lock: crate::lock::FileLock,
     poll: Duration,
+    // The lake's head the last round read up to, where it caught up.
+    caught: Option<Position>,
     batch: u32,
     retry_first: Duration,
     retry_max: Duration,
@@ -358,6 +366,7 @@ pub fn deliverers(
             journal,
             _lock: lock,
             poll: Duration::from_millis(config.poll_millis),
+            caught: None,
             batch: config.batch,
             retry_first: Duration::from_secs(config.retry_first_secs),
             retry_max: Duration::from_secs(config.retry_max_secs),
@@ -386,13 +395,22 @@ impl Deliverer {
     }
 
     /// Deliver from the lake's feed until the process ends: poll, send
-    /// what came, and wait `poll_millis` once caught up. A feed that fails
-    /// is polled again after the same wait.
+    /// what came, and once caught up wait for the lake's next append,
+    /// `poll_millis` at most (lakelands#1061). A feed that fails is polled
+    /// again after `poll_millis`, and so is one whose wait fails.
     pub async fn run(mut self, store: Arc<dyn LakeStore>) {
         loop {
             match self.round(store.as_ref()).await {
                 Ok(true) => {}
-                Ok(false) => (self.sleep)(self.poll).await,
+                Ok(false) => {
+                    let waited = match self.caught {
+                        Some(head) => store.feed().wait(head, self.poll).await.is_ok(),
+                        None => false,
+                    };
+                    if !waited {
+                        (self.sleep)(self.poll).await;
+                    }
+                }
                 Err(why) => {
                     self.say(&why);
                     (self.sleep)(self.poll).await;
@@ -406,6 +424,7 @@ impl Deliverer {
     /// they pass. Answers whether the round stopped short of the head,
     /// so more may be waiting.
     pub async fn round(&mut self, store: &dyn LakeStore) -> Result<bool, String> {
+        self.caught = None;
         let feed = store.feed();
         let filter = FeedFilter {
             kinds: self.kinds.clone(),
@@ -434,9 +453,13 @@ impl Deliverer {
         // A poll may stop short of the head with no events: read on, unless
         // it did not move.
         let more = batch.next <= batch.head && batch.next > from;
+        self.caught = (batch.next > batch.head).then_some(batch.head);
         for event in &batch.events {
-            if self.wanted(event) {
-                self.deliver(event).await;
+            let overruled = batch.overruled.binary_search(&event.position).is_ok();
+            match (self.wanted(event), overruled) {
+                (true, false) => self.deliver(event).await,
+                (true, true) => self.journal(event, 0, json!({ "outcome": "overruled" })),
+                (false, _) => {}
             }
             self.keep(event.position.next())?;
         }

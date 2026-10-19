@@ -31,7 +31,7 @@ check!(
 
 check!(
     REFUSED = a_set_that_cannot_be_named_and_a_path_that_cannot_be_walked_are_refused,
-    "028, extended (lakelands#552): in_set of a set that is not declared, of a set of another type and of a set that names it in turn is refused as invalid, and in_set outside a set's where, a trigger's when and a read's where; a path that steps into a field that is no json is refused at the declaration of a set, a trigger and a derived field and at a read, saying what to write, while a path into a json field is read; a set declared again for another type is refused on `of`; none appends; past max_set_changes over a declared set and the sets built on it the declaration is refused too_large, naming the set whose change passed it",
+    "028, extended (lakelands#552): in_set of a set that is not declared, of a set of another type and of a set that names it in turn is refused as invalid, and in_set outside a set's where, a trigger's when and a read's where; a path that steps into a field that is no json is refused at the declaration of a set and at a read, and one through a reference at a derived field's and at a read, saying what to write, where a set and a trigger read across it (055, lakelands#567), while a path into a json field is read; a set declared again for another type is refused on `of`; none appends; past max_set_changes over a declared set and the sets built on it the declaration is refused too_large, naming the set whose change passed it",
     given
 );
 
@@ -188,7 +188,6 @@ async fn a_set_that_cannot_be_named_and_a_path_that_cannot_be_walked_are_refused
     let walk = json!({"code": "steps_into_reference", "field": "partner"});
     let undeclared = json!({"code": "set_undeclared", "set": "ghost"});
     let ghost = json!({"code": "unknown_field", "field": "ghost"});
-    let through = trigger_on("t", TYPE, Some("partner.name = 'x'"));
     let other = json!({"code": "set_of_other_type", "set": "named", "of": "partner", "type": TYPE});
     let cycle = json!({"code": "set_cycle", "set": "both"});
     let quoted = json!({"code": "call_takes_quoted", "name": "in_set"});
@@ -199,9 +198,6 @@ async fn a_set_that_cannot_be_named_and_a_path_that_cannot_be_walked_are_refused
         (set("s", "in_set('named')"), &other),
         (set("open", "in_set('both')"), &cycle),
         (set("s", "in_set(open)"), &quoted),
-        (set("s", "partner.name = 'x'"), &walk),
-        (set("s", "partner.name is null"), &walk),
-        (through, &walk),
         (set("s", "ghost = 1 and in_set('big')"), &ghost),
         (guard, &ghost),
         (set("s", "status.x = 'open'"), &scalar),
@@ -351,6 +347,7 @@ async fn a_named_set_is_read_by_the_right_to_read_what_its_filter_reads(store: S
         };
         let write = lakelands_api::write::ProposedWrite::Declare {
             declarations: vec![d],
+            plan: None,
         };
         l.cat.propose(&kept, write, "mine".into())
     };
@@ -385,7 +382,10 @@ async fn a_named_set_is_read_by_the_right_to_read_what_its_filter_reads(store: S
     // it, is told that the name is taken by a set of `invoice`.
     let again = |who: &Principal, of: &str, name: &str| {
         let declarations = vec![object_set_on(name, of, "true")];
-        let write = lakelands_api::write::ProposedWrite::Declare { declarations };
+        let write = lakelands_api::write::ProposedWrite::Declare {
+            declarations,
+            plan: None,
+        };
         let (who, cat) = (who.clone(), &l.cat);
         async move { cat.propose(&who, write, "mine".into()).await }
     };
@@ -427,6 +427,7 @@ async fn a_named_set_is_read_by_the_right_to_read_what_its_filter_reads(store: S
         let d = trigger_on("mine", TYPE, Some(&format!("in_set('{n}')")));
         let write = lakelands_api::write::ProposedWrite::Declare {
             declarations: vec![d],
+            plan: None,
         };
         l.cat.propose(&nok, write, "mine".into())
     };

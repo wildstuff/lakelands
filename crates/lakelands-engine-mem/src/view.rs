@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use lakelands_api::engine::{Declared, Matched, ProjectionView, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
+use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, TypeName};
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::FeedFilter;
@@ -44,14 +44,13 @@ impl MemView {
 }
 
 /// The type a verb acts on, as declared at `at`.
-fn verb_on(proj: &Projection, at: Option<Position>, verb: &VerbName) -> Option<TypeName> {
-    match &proj
-        .declarations
-        .get(&format!("verb {verb}"))?
-        .at(at)?
-        .declaration
-    {
-        lakelands_api::write::Declaration::Verb(v) => Some(v.on.clone()),
+/// The type the verb, trigger or set in force under `ident` stands on.
+fn stands(proj: &Projection, at: Option<Position>, ident: &str) -> Option<TypeName> {
+    use lakelands_api::write::Declaration;
+    match &proj.declarations.get(ident)?.at(at)?.declaration {
+        Declaration::Verb(v) => Some(v.on.clone()),
+        Declaration::Trigger(t) => Some(t.on.clone()),
+        Declaration::ObjectSet(s) => Some(s.of.clone()),
         _ => None,
     }
 }
@@ -63,6 +62,12 @@ impl ProjectionView for MemView {
 
     fn declarations(&self) -> Result<Vec<Declared>> {
         Ok(self.read(|p, at| p.declarations_at(at)))
+    }
+
+    fn replaced(&self, from: Position, to: Position) -> Result<Option<Vec<Declared>>> {
+        Ok(Some(self.read(|p, at| {
+            p.replaced(from, at.map_or(to, |a| a.min(to)))
+        })))
     }
 
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
@@ -264,10 +269,27 @@ impl ProjectionView for MemView {
         }))
     }
 
+    fn proposals_before(
+        &self,
+        filter: &ProposalFilter,
+        before: Option<Position>,
+    ) -> Result<Option<Vec<Proposal>>> {
+        let limit = filter.limit.map_or(usize::MAX, |l| l as usize);
+        Ok(Some(self.read(|p, at| {
+            let ids = p
+                .by_position
+                .range(..before.unwrap_or(Position(u64::MAX)))
+                .rev();
+            let states = ids.filter_map(|(_, id)| p.proposals.get(id)?.at(at));
+            let kept = states.filter(|q| filter.state.is_none_or(|s| q.state == s));
+            kept.take(limit).cloned().collect()
+        })))
+    }
+
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
         Ok(self.read(|p, at| {
-            engines::proposals(p.proposals.values().filter_map(|h| h.at(at)), filter, |v| {
-                verb_on(p, at, v)
+            engines::proposals(p.proposals.values().filter_map(|h| h.at(at)), filter, |i| {
+                stands(p, at, i)
             })
         }))
     }
@@ -295,11 +317,15 @@ impl ProjectionView for MemView {
     }
 
     fn applied(&self, id: &EventId) -> Result<Option<Position>> {
+        Ok(self.applied_many(std::slice::from_ref(id))?.remove(0))
+    }
+
+    fn applied_many(&self, ids: &[EventId]) -> Result<Vec<Option<Position>>> {
         Ok(self.read(|p, at| {
-            p.applied
-                .get(id)
-                .copied()
-                .filter(|applied| at.is_some_and(|at| *applied <= at))
+            let at = |applied: &Position| at.is_some_and(|at| *applied <= at);
+            (ids.iter())
+                .map(|id| p.applied.get(id).copied().filter(at))
+                .collect()
         }))
     }
 
@@ -361,6 +387,24 @@ impl ProjectionView for MemView {
                 }
             };
             feed::merged(lists, limit, last)
+        }))
+    }
+
+    fn of_source(
+        &self,
+        source: &SourceId,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<Matched> {
+        Ok(self.read(|p, at| {
+            let Some(last) = at.and_then(|at| feed::last_decided(from, at.min(through), p.folded))
+            else {
+                return feed::undecided();
+            };
+            let set = p.routes.sources.get(source).into_iter();
+            let positions = set.flat_map(|s| s.range(from..=last).take(limit.max(1) as usize));
+            feed::merged([positions.copied().collect()], limit, last)
         }))
     }
 }

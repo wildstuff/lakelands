@@ -20,9 +20,9 @@ use lakelands_api::seam::{
     ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter, Seams, VerbInvocation,
 };
 use lakelands_api::write::{
-    AgeReport, CompactReport, Declaration, Migration, MigrationReport, Outcome, Proposal,
-    ProposalFilter, ProposedWrite, PurgeReport, Recompute, ValueTypeMigration, ValueTypeReport,
-    WriteOpts,
+    AgeReport, Change, CompactReport, Declaration, ForgetReport, IngestOpts, Migration,
+    MigrationReport, Outcome, Plan, Proposal, ProposalFilter, ProposedWrite, PurgeReport,
+    Recompute, RemoveReport, Selection, ValueTypeMigration, ValueTypeReport, WriteOpts,
 };
 use lakelands_api::{
     Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
@@ -39,6 +39,10 @@ use crate::lake::{Lake, owing};
 use crate::reads::{Judged, Pulled, Reader};
 use crate::writes::{self, Call, External, MadeDue};
 
+/// When a read reads: its axes, and the clock a cursor carries from its
+/// first page where it continues one.
+type Clocked = (ReadAt, Option<Timestamp>);
+
 /// Open a lake at a location. The host passes the engines it compiled in
 /// (and any seams it binds) in `seams`; the store depends on no engine.
 pub async fn open(location: Location, seams: Seams, mode: OpenMode) -> Result<Arc<dyn LakeStore>> {
@@ -46,6 +50,20 @@ pub async fn open(location: Location, seams: Seams, mode: OpenMode) -> Result<Ar
     Ok(Arc::new(Store {
         lake: Arc::new(lake),
     }))
+}
+
+/// The log format the newest event of the lake at `location` is written
+/// in, read from the log's ends alone, nothing opened or folded; `None`
+/// where there is no lake. A lake of a format this release does not read
+/// is refused as an open refuses it. Below the format the release writes,
+/// a writer's open upgrades it (`docs/log-format.md` §6).
+pub async fn written_in(location: Location, seams: Seams) -> Result<Option<u32>> {
+    exec::run(move || {
+        let ends = crate::lake::opener(&location, &seams)?.log_ends(&location)?;
+        let Some(ends) = ends else { return Ok(None) };
+        crate::log::one_format(&location.lake, Some(&ends)).map(Some)
+    })
+    .await
 }
 
 /// Import the export in `dir` as a new lake at `location`, on any engine
@@ -61,7 +79,13 @@ pub async fn import(
 }
 
 fn same_lake(lake: &Lake, who: &Principal) -> Result<()> {
-    writes::granted(who.lake == lake.id)
+    writes::granted(who.lake == lake.id)?;
+    // The writer is a part of an authored event's id, whose parts NUL
+    // separates.
+    if who.id.contains('\0') {
+        return Err(invalid(Case::WriterNul));
+    }
+    Ok(())
 }
 
 /// The store facade of one lake.
@@ -76,13 +100,13 @@ pub struct Doors {
     context: WriteContext,
 }
 
-/// One read of `lake` by `who` at `at`, answered by `f`. One that ranks is
-/// given the head (025): as it stands, or at exactly the position `ranks`
-/// names.
+/// One read of `lake` by `who` at `at`, under the clock a cursor carries
+/// where it continues one, answered by `f`. One that ranks is given the
+/// head (025): as it stands, or at exactly the position `ranks` names.
 fn reading<T>(
     lake: &Lake,
     who: Principal,
-    at: ReadAt,
+    (at, clock): Clocked,
     ranks: Option<Option<Position>>,
     f: impl FnOnce(&Reader<'_>) -> Result<T>,
 ) -> Result<Reply<T>> {
@@ -110,7 +134,7 @@ fn reading<T>(
     // A reference to a type it is not shown is a field it may not know of,
     // by the types the read reads (024, extended).
     let (sight, _) = lake.sight(who, at.as_of, renames, shape.as_ref())?;
-    let mut r = Reader::open(lake, &sight, at, view, shape.clone())?;
+    let mut r = Reader::open(lake, &sight, (at, clock), view, shape.clone())?;
     (r.head, r.held_now) = (at_head, held_now);
     let data = f(&r)?;
     Ok(Reply {
@@ -120,7 +144,61 @@ fn reading<T>(
 }
 
 impl Doors {
-    async fn read<T, F>(&self, who: &Principal, at: ReadAt, f: F) -> Result<Reply<T>>
+    /// What the bound reranker scores a window at, by key. A read: nothing
+    /// is recorded, and a window with no candidate asks nothing. A failure,
+    /// or other scores than candidates, is `Unavailable`; the stage is
+    /// never skipped for the first stage's order (067). With the order the
+    /// scores give, the read that answers it: at the window's position and
+    /// on its clock, where the scored keys are the window's records.
+    async fn rerank(
+        &self,
+        at: Clocked,
+        window: Reply<crate::reads::Window>,
+    ) -> Result<(crate::reads::Staged, Clocked)> {
+        let Some(stage) = self.lake.rerank() else {
+            return Err(Error::unbound(Seam::Rerank));
+        };
+        let (position, window) = (window.position, window.data);
+        let pinned = (
+            ReadAt {
+                as_of: Some(position),
+                ..at.0
+            },
+            Some(window.now),
+        );
+        let scored = |scores: &[f64]| crate::reads::Staged::scored(&window, scores, stage.model());
+        if window.candidates.is_empty() {
+            return Ok((scored(&[]), pinned));
+        }
+        let call = lakelands_api::seam::RerankCall {
+            lake: self.lake.id.clone(),
+            ty: window.ty.clone(),
+            query: window.query.clone(),
+            candidates: window.candidates.clone(),
+        };
+        let failed = |exchange| {
+            let remote = Remote::Reranker {
+                model: stage.model().to_owned(),
+            };
+            Error::unavailable(Situation::Remote { remote, exchange })
+        };
+        let scores = (stage.rerank(&call).await).map_err(|e| match e {
+            e @ Error::Unavailable { .. } => e,
+            other => failed(Exchange::Failed {
+                cause: Box::new(other),
+            }),
+        })?;
+        if scores.len() != call.candidates.len() {
+            let (answered, asked) = (scores.len() as u64, call.candidates.len() as u64);
+            return Err(failed(Exchange::Scores { answered, asked }));
+        }
+        if scores.iter().any(|s| !s.is_finite()) {
+            return Err(failed(Exchange::ScoreNotFinite));
+        }
+        Ok((scored(&scores), pinned))
+    }
+
+    async fn read<T, F>(&self, who: &Principal, at: Clocked, f: F) -> Result<Reply<T>>
     where
         T: Send + 'static,
         F: FnOnce(&Reader<'_>) -> Result<T> + Send + 'static,
@@ -141,7 +219,7 @@ impl Doors {
     async fn read_to<T, F>(
         &self,
         who: &Principal,
-        at: ReadAt,
+        at: Clocked,
         ranks: bool,
         f: F,
     ) -> Result<Reply<T>>
@@ -276,7 +354,7 @@ impl Doors {
     }
 
     /// Hand an external verb to its executor and record the answer; the
-    /// recorded output is returned, `{"error": …}` when the executor failed.
+    /// recorded output is returned, the error's wire form when the executor failed.
     /// A failure before the hand-out is [`writes::not_handed`]'s.
     async fn execute(&self, ext: External, by: MadeDue) -> Result<(Position, serde_json::Value)> {
         let not_handed = |e| writes::not_handed(e, true, by);
@@ -296,6 +374,7 @@ impl Doors {
                     at: ReadAt {
                         as_of: Some(ext.position),
                         valid_at: None,
+                        clock: None,
                     },
                     params: Default::default(),
                 };
@@ -322,7 +401,15 @@ impl Doors {
         });
         let output = match executor.execute(&invocation).await {
             Ok(v) => v,
-            Err(e) => serde_json::json!({ "error": e.to_string() }),
+            // The error as the wire carries it: a refusal keeps its case. One
+            // whose wire form cannot be written, or holds an integer beyond
+            // ±(2^53 − 1) the log does not write, is recorded as its sentence,
+            // the one-member form, which loses nothing: an error is always
+            // recorded, and a retry answers it.
+            Err(e) => serde_json::to_value(&e)
+                .ok()
+                .filter(|wire| lakelands_core::canonical::integer_too_large(wire).is_none())
+                .unwrap_or_else(|| serde_json::json!({ "error": e.to_string() })),
         };
         // An answer is recorded as the executor gave it, and the log writes
         // no integer beyond ±(2^53 − 1) (the log format §1.2): one that
@@ -368,7 +455,7 @@ impl Catalog for Doors {
     }
 
     async fn describe(&self, who: &Principal, at: ReadAt) -> Result<Reply<LakeDescription>> {
-        self.read(who, at, |r| Ok(r.describe())).await
+        self.read(who, (at, None), |r| Ok(r.describe())).await
     }
 
     async fn describe_type(
@@ -378,7 +465,8 @@ impl Catalog for Doors {
         at: ReadAt,
     ) -> Result<Reply<TypeDescription>> {
         let ty = ty.clone();
-        self.read(who, at, move |r| r.describe_type(&ty)).await
+        self.read(who, (at, None), move |r| r.describe_type(&ty))
+            .await
     }
 
     async fn find(&self, who: &Principal, ty: &TypeName, find: Find) -> Result<Reply<Found>> {
@@ -389,7 +477,8 @@ impl Catalog for Doors {
 
     async fn get(&self, who: &Principal, ty: &TypeName, get: Get) -> Result<Reply<Record>> {
         let ty = ty.clone();
-        self.read(who, get.at, move |r| r.get(&ty, &get)).await
+        self.read(who, (get.at, None), move |r| r.get(&ty, &get))
+            .await
     }
 
     async fn upsert(
@@ -467,9 +556,26 @@ impl Catalog for Doors {
     async fn query(&self, who: &Principal, pattern: Pattern) -> Result<Reply<QueryResult>> {
         let at = cursor_at(pattern.at, pattern.cursor.as_ref())?;
         // A start by search ranks as `search` does (025).
-        let ranks = pattern.start.search.is_some();
-        self.read_to(who, at, ranks, move |r, pulled| r.query(&pattern, pulled))
-            .await
+        // A start with a second stage ranks nothing once its window is
+        // read: its keys are read where the window was, and judged there
+        // (067), not at the head.
+        let ranks = pattern.start.search.is_some() && pattern.start.rerank.is_none();
+        // A start with a second stage ranks its window through the bound
+        // reranker on a first page, as `search` does (067).
+        let (mut at, mut scores) = (at, None);
+        if pattern.start.rerank.is_some() && pattern.cursor.is_none() {
+            let p = pattern.clone();
+            let window = self.read_to(who, at, true, move |r, pulled| r.query_window(&p, pulled));
+            let (scored, pinned) = self.rerank(at, window.await?).await?;
+            (scores, at) = (Some(scored), pinned);
+        }
+        self.read_to(who, at, ranks, move |r, pulled| {
+            if let Some(staged) = &scores {
+                r.stage(staged.clone());
+            }
+            r.query(&pattern, pulled)
+        })
+        .await
     }
 
     async fn search(&self, who: &Principal, mut search: Search) -> Result<Reply<Hits>> {
@@ -478,9 +584,12 @@ impl Catalog for Doors {
         // the bound embedding backend, if the host bound one. This is a
         // read: nothing is recorded. It is judged for its caller first, by
         // the read's shape, as the read below judges it again: one refused
-        // calls nothing and names no model.
+        // calls nothing and names no model. A later page of a second stage
+        // answers the keys its cursor carries and embeds nothing (067).
+        let staged = search.rerank.is_some() && search.cursor.is_some();
         let unvectored = matches!(search.mode, SearchMode::Hybrid { vector: None, .. });
-        let (embed, mut judged) = (self.lake.embed().filter(|_| unvectored), None);
+        let (embed, mut judged) = (self.lake.embed().filter(|_| unvectored && !staged), None);
+        let sent = search.rerank.is_some().then(|| search.mode.clone());
         if embed.is_some() {
             let s = search.clone();
             // The engines index the head's vectors only, so a search at any
@@ -555,8 +664,30 @@ impl Catalog for Doors {
             }
             *vector = vectors.pop();
         }
-        self.read_to(who, at, true, move |r, pulled| r.search(&search, pulled))
-            .await
+        // The second stage ranks a window of the first on a first page, and
+        // a cursor carries its order after (067).
+        let (mut at, mut scores) = (at, None);
+        if search.rerank.is_some() && search.cursor.is_none() {
+            let s = search.clone();
+            let window = self.read_to(who, at, true, move |r, pulled| r.rerank_window(&s, pulled));
+            let (scored, pinned) = self.rerank(at, window.await?).await?;
+            (scores, at) = (Some(scored), pinned);
+        }
+        // The read that answers a second stage's keys ranks nothing: they
+        // are read and judged at the window's or the cursor's position, not
+        // at the head (067). Its cursor digests the mode as its caller sent
+        // it, which a later page, embedding nothing, sends again.
+        if let Some(sent) = sent {
+            search.mode = sent;
+        }
+        let ranks = search.rerank.is_none();
+        self.read_to(who, at, ranks, move |r, pulled| {
+            if let Some(staged) = &scores {
+                r.stage(staged.clone());
+            }
+            r.search(&search, pulled)
+        })
+        .await
     }
 
     async fn propose(&self, who: &Principal, write: ProposedWrite, why: String) -> Result<Outcome> {
@@ -565,7 +696,18 @@ impl Catalog for Doors {
 
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome> {
         let (p, asked) = (proposal.clone(), who.clone());
-        let accept = move |c: &Call<'_>| c.accept(&p, &asked);
+        let accept = move |c: &Call<'_>| c.accept(&p, &asked, None);
+        self.detached(who, MadeDue::Accepted, accept).await
+    }
+
+    async fn accept_planned(
+        &self,
+        who: &Principal,
+        proposal: &ProposalId,
+        plan_id: &str,
+    ) -> Result<Outcome> {
+        let (p, asked, id) = (proposal.clone(), who.clone(), plan_id.to_owned());
+        let accept = move |c: &Call<'_>| c.accept(&p, &asked, Some(&id));
         self.detached(who, MadeDue::Accepted, accept).await
     }
 
@@ -575,8 +717,10 @@ impl Catalog for Doors {
         proposal: &ProposalId,
         reason: String,
     ) -> Result<Outcome> {
+        // A rejected call is recorded as its output, after the append (064).
         let (p, asked) = (proposal.clone(), who.clone());
-        self.write(who, move |c| c.reject(&p, &asked, reason)).await
+        self.write_settled(who, move |c| c.reject(&p, &asked, reason))
+            .await
     }
 
     async fn proposals(
@@ -587,8 +731,10 @@ impl Catalog for Doors {
         // A proposed migration is judged with the grants as they stood
         // where it was proposed: the listing follows them there.
         let asked = who.clone();
-        self.read(who, filter.at, move |r| r.proposals(&filter, &asked))
-            .await
+        self.read(who, (filter.at, None), move |r| {
+            r.proposals(&filter, &asked)
+        })
+        .await
     }
 
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome> {
@@ -657,6 +803,15 @@ impl Catalog for Doors {
         .await
     }
 
+    async fn plan(&self, who: &Principal, change: Change) -> Result<Reply<Plan>> {
+        self.write(who, move |c| c.plan(change)).await
+    }
+
+    async fn enact(&self, who: &Principal, change: Change, plan_id: &str) -> Result<Outcome> {
+        let id = plan_id.to_owned();
+        self.write_settled(who, move |c| c.enact(change, &id)).await
+    }
+
     async fn migrate_value_type_apply(
         &self,
         who: &Principal,
@@ -674,29 +829,48 @@ impl Catalog for Doors {
         source: &SourceId,
         records: SourceStream,
     ) -> Result<CommitStream> {
+        self.ingest_with(who, source, IngestOpts::default(), records)
+            .await
+    }
+
+    async fn ingest_with(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        opts: IngestOpts,
+        records: SourceStream,
+    ) -> Result<CommitStream> {
         same_lake(&self.lake, who)?;
         // The context first, as on every write door, and before the stream
         // is taken.
         writes::check_context(&self.lake, &self.context)?;
         writes::granted(who.grants.ingest)?;
+        writes::check_source(source)?;
+        if let Some(d) = &opts.delivery {
+            writes::check_delivery(d)?;
+        }
         Ok(ingest::run(
             self.lake.clone(),
             who.clone(),
             self.context,
             source.clone(),
+            opts.delivery,
             records,
         ))
     }
 }
 
-/// `at`, moved to the position a cursor names when there is one.
-fn cursor_at(mut at: ReadAt, cursor: Option<&lakelands_api::Cursor>) -> Result<ReadAt> {
+/// `at`, moved to the position a cursor names when there is one, with the
+/// clock it carries.
+fn cursor_at(mut at: ReadAt, cursor: Option<&lakelands_api::Cursor>) -> Result<Clocked> {
     let Some(c) = cursor else {
-        return Ok(at);
+        return Ok((at, None));
     };
     #[derive(serde::Deserialize)]
     struct At {
         at: Position,
+        #[serde(default)]
+        now: Option<Timestamp>,
     }
     let bytes: Option<Vec<u8>> = (0..c.0.len())
         .step_by(2)
@@ -706,11 +880,9 @@ fn cursor_at(mut at: ReadAt, cursor: Option<&lakelands_api::Cursor>) -> Result<R
         })
         .collect();
     let a = bytes.and_then(|b| serde_json::from_slice::<At>(&b).ok());
-    at.as_of = Some(
-        a.ok_or_else(|| invalid(lakelands_api::error::Case::CursorForeign))?
-            .at,
-    );
-    Ok(at)
+    let a = a.ok_or_else(|| invalid(lakelands_api::error::Case::CursorForeign))?;
+    at.as_of = Some(a.at);
+    Ok((at, a.now))
 }
 
 #[async_trait]
@@ -758,6 +930,14 @@ impl LakeStore for Store {
         exec::run(move || lake.rebuild()).await
     }
 
+    fn reclaim_owed(&self) -> Option<String> {
+        self.lake.reclaim_owed()
+    }
+
+    fn rebuilt_at_open(&self) -> Option<String> {
+        self.lake.rebuilt_at_open()
+    }
+
     async fn restrict(&self, ty: &TypeName, key: &RecordKey, reason: String) -> Result<Position> {
         let (lake, ty, key) = (self.lake.clone(), ty.clone(), key.clone());
         exec::run(move || writes::restrict(&lake, &ty, &key, Some(reason))).await
@@ -785,6 +965,7 @@ impl LakeStore for Store {
         source: &SourceId,
         ty: Option<&TypeName>,
     ) -> Result<PurgeReport> {
+        writes::check_source(source)?;
         let (lake, source, ty) = (self.lake.clone(), source.clone(), ty.cloned());
         exec::run(move || crate::purge::preflight(&lake, &source, ty.as_ref())).await
     }
@@ -795,6 +976,7 @@ impl LakeStore for Store {
         ty: Option<&TypeName>,
         id: Option<&str>,
     ) -> Result<PurgeReport> {
+        writes::check_source(source)?;
         let (lake, source, id) = (self.lake.clone(), source.clone(), id.map(str::to_owned));
         let ty = ty.cloned();
         let purge = move || crate::purge::run(&lake, &source, ty.as_ref(), id.as_deref());
@@ -804,6 +986,43 @@ impl LakeStore for Store {
             report.position = report.position.max(last);
         }
         Ok(report)
+    }
+
+    async fn forget_source(&self, source: &SourceId, id: Option<&str>) -> Result<ForgetReport> {
+        writes::check_source(source)?;
+        let (lake, source, id) = (self.lake.clone(), source.clone(), id.map(str::to_owned));
+        exec::run(move || crate::forget::run(&lake, &source, id.as_deref())).await
+    }
+
+    async fn forget_preflight(&self, source: &SourceId) -> Result<ForgetReport> {
+        writes::check_source(source)?;
+        let (lake, source) = (self.lake.clone(), source.clone());
+        exec::run(move || crate::forget::preflight(&lake, &source)).await
+    }
+
+    async fn remove_values(
+        &self,
+        source: &SourceId,
+        selection: &Selection,
+        shredded: bool,
+        id: Option<&str>,
+    ) -> Result<RemoveReport> {
+        writes::check_source(source)?;
+        let (lake, source, id) = (self.lake.clone(), source.clone(), id.map(str::to_owned));
+        let selection = selection.clone();
+        let remove =
+            move || crate::remove::run(&lake, &source, &selection, (shredded, id.as_deref()));
+        exec::run(remove).await
+    }
+
+    async fn remove_values_preflight(
+        &self,
+        source: &SourceId,
+        selection: &Selection,
+    ) -> Result<RemoveReport> {
+        writes::check_source(source)?;
+        let (lake, source, selection) = (self.lake.clone(), source.clone(), selection.clone());
+        exec::run(move || crate::remove::preflight(&lake, &source, &selection)).await
     }
 
     async fn position_at(&self, known_at: Timestamp) -> Result<Option<Position>> {
@@ -829,6 +1048,11 @@ impl LakeStore for Store {
         Ok(())
     }
 
+    fn bind_rerank(&self, backend: Arc<dyn lakelands_api::seam::Reranker>) -> Result<()> {
+        self.lake.bind_rerank(backend);
+        Ok(())
+    }
+
     async fn checkpoint(&self) -> Result<Position> {
         let lake = self.lake.clone();
         exec::run(move || lake.checkpoint()).await
@@ -841,7 +1065,8 @@ impl LakeStore for Store {
 }
 
 /// The change feed: the log, filtered by kind and type, read from a
-/// position (`docs/decisions/004-the-change-feed-is-the-log.md`).
+/// position (`docs/decisions/004-the-change-feed-is-the-log.md`), each
+/// batch naming the reactions in it an act overruled (065).
 pub struct Feed {
     lake: Arc<Lake>,
 }
@@ -851,65 +1076,20 @@ impl ChangeFeed for Feed {
     async fn poll(&self, from: Position, filter: &FeedFilter, limit: u32) -> Result<FeedBatch> {
         let (lake, filter) = (self.lake.clone(), filter.clone());
         exec::run(move || {
-            let head = lake.head();
-            let want = limit.max(1) as usize;
-            let (mut read, mut events, mut next) = (0, Vec::new(), from);
-            // Up to the view's position the projection's index names the
-            // events the filter admits, and only those are read and opened,
-            // in one ask: where the index stops short of the view, so does
-            // the poll. One that decides nothing, as while the projection
-            // is rebuilt, leaves the poll to the log. A filter that names
-            // nothing admits every event.
-            let view = feed::seek(&filter)
-                .map(|_| lake.engine.view(None))
-                .transpose()?;
-            let indexed = view
-                .as_ref()
-                .and_then(|v| v.position())
-                .map(|p| p.min(head));
-            let mut decided = false;
-            if let (Some(view), Some(p)) = (&view, indexed.filter(|p| next <= *p)) {
-                let room = want.min(FEED_EXAMINED as usize) as u32;
-                let m = view.matching(&filter, next, p, room)?;
-                read = m.positions.len();
-                for e in lake.read_these(&m.positions)? {
-                    if feed::admits(&filter, e.body.kind(), &feed::about(&e.body)) {
-                        events.push(e);
-                    }
-                }
-                if let Some(through) = m.through {
-                    (decided, next) = (true, through.next());
-                }
+            let (mut events, mut next, head) = polled(&lake, from, &filter, limit)?;
+            // A reaction the projection cannot decide yet, while a rebuild
+            // runs, is left to the next poll with what follows it.
+            let (overruled, cut) = crate::writes::overruled(&lake, &events)?;
+            if let Some(cut) = cut {
+                events.retain(|e| e.position < cut);
+                next = cut;
             }
-            drop(view);
-            if decided && indexed.is_some_and(|p| next <= p) {
-                return Ok(FeedBatch { events, next, head });
-            }
-            // Past it, as while the projection is rebuilt, every event is
-            // read, to `limit` matches or to `last`, the head or the bound:
-            // nothing past the last position examined is read or verified.
-            let bound = (FEED_EXAMINED as usize - read) as u64;
-            let last = Position(next.0.saturating_add(bound).saturating_sub(1)).min(head);
-            'read: while bound > 0 && next <= last && events.len() < want {
-                let room = (last.0 - next.0 + 1).min(want.clamp(64, 1024) as u64);
-                let batch = lake.read_events(next, room as u32)?;
-                if batch.is_empty() {
-                    break;
-                }
-                for e in batch {
-                    if e.position > last {
-                        break 'read;
-                    }
-                    next = e.position.next();
-                    if feed::admits(&filter, e.body.kind(), &feed::about(&e.body)) {
-                        events.push(e);
-                        if events.len() >= want {
-                            break 'read;
-                        }
-                    }
-                }
-            }
-            Ok(FeedBatch { events, next, head })
+            Ok(FeedBatch {
+                events,
+                next,
+                head,
+                overruled,
+            })
         })
         .await
     }
@@ -919,6 +1099,79 @@ impl ChangeFeed for Feed {
         // position.
         Ok(())
     }
+
+    async fn wait(&self, after: Position, within: std::time::Duration) -> Result<Position> {
+        Ok(self.lake.wait_past(after, within).await)
+    }
+}
+
+/// The events of one poll from `from` that `filter` admits, the position
+/// to poll from next and the head.
+fn polled(
+    lake: &Lake,
+    from: Position,
+    filter: &FeedFilter,
+    limit: u32,
+) -> Result<(Vec<lakelands_api::event::Event>, Position, Position)> {
+    let head = lake.head();
+    let want = limit.max(1) as usize;
+    let (mut read, mut events, mut next) = (0, Vec::new(), from);
+    // Up to the view's position the projection's index names the
+    // events the filter admits, and only those are read and opened,
+    // in one ask: where the index stops short of the view, so does
+    // the poll. One that decides nothing, as while the projection
+    // is rebuilt, leaves the poll to the log. A filter that names
+    // nothing admits every event.
+    let view = feed::seek(filter)
+        .map(|_| lake.engine.view(None))
+        .transpose()?;
+    let indexed = view
+        .as_ref()
+        .and_then(|v| v.position())
+        .map(|p| p.min(head));
+    let mut decided = false;
+    if let (Some(view), Some(p)) = (&view, indexed.filter(|p| next <= *p)) {
+        let room = want.min(FEED_EXAMINED as usize) as u32;
+        let m = view.matching(filter, next, p, room)?;
+        read = m.positions.len();
+        for e in lake.read_these(&m.positions)? {
+            if feed::admits(filter, e.body.kind(), &feed::about(&e.body)) {
+                events.push(e);
+            }
+        }
+        if let Some(through) = m.through {
+            (decided, next) = (true, through.next());
+        }
+    }
+    drop(view);
+    if decided && indexed.is_some_and(|p| next <= p) {
+        return Ok((events, next, head));
+    }
+    // Past it, as while the projection is rebuilt, every event is
+    // read, to `limit` matches or to `last`, the head or the bound:
+    // nothing past the last position examined is read or verified.
+    let bound = (FEED_EXAMINED as usize - read) as u64;
+    let last = Position(next.0.saturating_add(bound).saturating_sub(1)).min(head);
+    'read: while bound > 0 && next <= last && events.len() < want {
+        let room = (last.0 - next.0 + 1).min(want.clamp(64, 1024) as u64);
+        let batch = lake.read_events(next, room as u32)?;
+        if batch.is_empty() {
+            break;
+        }
+        for e in batch {
+            if e.position > last {
+                break 'read;
+            }
+            next = e.position.next();
+            if feed::admits(filter, e.body.kind(), &feed::about(&e.body)) {
+                events.push(e);
+                if events.len() >= want {
+                    break 'read;
+                }
+            }
+        }
+    }
+    Ok((events, next, head))
 }
 
 #[cfg(test)]

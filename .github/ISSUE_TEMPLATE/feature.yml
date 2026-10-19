@@ -1,0 +1,27 @@
+name: Feature
+description: Something the store should hold or answer that it does not.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Lakelands does not add a query language of its own, does not call a
+        model from inside the store, and does not reach the network unless its
+        caller configured it. A request that needs one of these is better
+        served behind a seam (`docs/seams.md`).
+  - type: textarea
+    id: use
+    attributes:
+      label: The use
+      description: What you are doing, and where Lakelands falls short today.
+    validations:
+      required: true
+  - type: textarea
+    id: hold
+    attributes:
+      label: What the store would hold
+      description: >-
+        What would be written, read or answered, and by which door. Name the
+        events or the reply if you can.
+    validations:
+      required: true

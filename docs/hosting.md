@@ -9,7 +9,7 @@ contract is right and this page is wrong.
 
 ## What a host implements
 
-Lakelands has seven seams. A host implements the ones it needs and
+Lakelands has nine seams. A host implements the ones it needs and
 passes them in `Seams`; every one but the engine has a default, and for
 the engine a host passes Lakelands' own openers. A host that passes
 those and nothing else has a working store. Two seams point the other
@@ -24,8 +24,11 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   accepted when it
   passes the conformance suite.
 
-  A PostgreSQL lake's location file (`lakes/<id>.json` in a root; `lake
-  new` does not write one for PostgreSQL yet):
+  A PostgreSQL lake's location file (`lakes/<id>.json` in a root;
+  `lakelands lake new <id> --engine postgres --url <URL>` writes it,
+  with `--schema`, `--no-tls` and `--ca-file` for the members below, and
+  holds the URL, a password in it too, as plain text, so keep `lakes/`
+  to the operator; the first open tells whether the URL connects):
 
   ```json
   {
@@ -45,6 +48,19 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `ca_file`, the engine looks for the system's certificate bundle at the
   well-known Unix paths; on Windows there is none, so opening the lake
   fails as `unavailable` until `ca_file` names one.
+
+  PostgreSQL in a container wants a `shm_size` of at least 256 MB:
+  a parallel index build, pgvector's HNSW during a rebuild for one,
+  takes shared memory of `maintenance_work_mem`'s size and more from
+  `/dev/shm`, which Docker's default 64 MB cannot give, and the
+  statement then fails as unavailable ("could not resize shared memory
+  segment") (lakelands#1161, lakelands#1179).
+
+  The engine sets `synchronous_commit` itself: `on` for the log's
+  appends and seals, so a server or role set to `off` loses no answered
+  append, and `off` for the projection's commits, which a crash can lose
+  and a writer's open folds again from the log
+  (`docs/decisions/061-a-projection-commit-waits-for-no-flush.md`).
 
   A process serving a SQLite lake shows up to the tuning's `mmap_mb`
   (256 MiB unless set; `0` turns it off) more resident memory once it
@@ -66,7 +82,13 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   kind the host did not bind is refused as `Unbound`, naming the kind,
   when it is declared. The store calls a backing after the write that
   made a field due, and records each output in the log
-  (`output_recorded`). A replay reads it back and never calls again. See
+  (`output_recorded`). A replay reads it back and never calls again. A
+  function declared above `low` risk is called only once its proposed
+  call is accepted, and every call names the write that set it off
+  (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`). A
+  host whose functions carry input names but no kinds declares an input
+  with no `type`: a type binds it as a field of any kind, where a typed
+  input is bound by its kind alone. See
   `docs/decisions/022-functions-are-declarations.md` and
   `docs/seams.md` §`FunctionBacking`.
 - **`EmbedBackend`.** A host may pass vectors in with its writes or
@@ -88,6 +110,21 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   declaring the type again. Every live record is then embedded again, and
   a declaration also retries recorded failures. See `docs/seams.md`
   §`EmbedBackend`.
+- **`Reranker`.** A host may plug in a scorer of (query, text) pairs, a
+  cross-encoder, as the second stage of a search. A search or a pattern's
+  start that takes `rerank: { top, text? }` has the first `top` hits of
+  its ranking scored by the bound reranker and answers them in that
+  order, ending at the window; the cursor carries the order, so a page
+  after the first asks nothing, neither the reranker nor the embedding
+  backend. The reranker is handed the key and the
+  searchable text its reader reads, and nothing it may not; its call is a
+  read and records nothing. Without one such a search is refused as
+  `Unbound`, and a reranker that fails makes it `Unavailable`; neither
+  falls back to the first stage. `limits.max_rerank_top` (100) bounds
+  `top`. Bind it at open in `Seams::rerank` or later with
+  `LakeStore::bind_rerank`. A stock `lakelands serve` binds none, so
+  there `rerank` is refused as `unbound` until a host binds one. See
+  `docs/seams.md` §`Reranker`.
 - **`VerbExecutor`.** A verb declared `low` runs at once; any other
   lands as `WriteProposed`, and the store records `accept` and `reject`
   as events. A verb that writes authored fields runs in the store; a
@@ -95,17 +132,26 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   bound for it, with the lake and the position that made it due as the
   dedup key. The executor gets the record unmasked, as it stood at that
   position, where the call was judged; a host that wants it
-  to see only what the caller may see applies the caller's grants there. The executor's answer is recorded in the log; a failure is
-  recorded as `{"error": …}`, the write that made the verb due stands,
-  and the caller gets the recorded answer either way. Without a bound
+  to see only what the caller may see applies the caller's grants there. The executor's answer is recorded in the log; an error is
+  recorded as the wire carries it (`{"error": "refused", "reason": {…},
+  "message": "…"}` for a refusal, the same for every other kind, where
+  it was `{"error": "<sentence>"}` before, and is still where the wire
+  form holds an integer beyond ±(2^53 − 1) or cannot be written), the write that made the verb
+  due stands, and the caller gets the recorded answer either way. To
+  decline a call by the host's policy, answer `Error::declined(verb)`,
+  never `not_granted` nor `unavailable`: the record then says `declined`,
+  the call did not run, and a retry under the same idempotency key answers the same. The host's reason
+  goes in its own trail, under the dedup key; the case carries none. Without a bound
   executor such a verb is refused as `Unbound`, not faked. See
   `docs/decisions/013-verbs-run-by-declared-risk.md`.
 - **`ChangeFeed`.** The host reads the store's feed: the log, filtered
   by kind and type, from a position; each poll answers at once with the
   position to poll from next. A poll examines at most `FEED_EXAMINED`
   (4 096) events, so it may answer none short of the head: the host is
-  caught up when `next` is past `head`, not when a batch is empty. It
-  acknowledges on its own side. The host keeps the
+  caught up when `next` is past `head`, not when a batch is empty. A
+  caught-up host calls `wait(next - 1, within)`, which ends at the
+  lake's next append, instead of sleeping and polling (lakelands#1061).
+  It acknowledges on its own side. The host keeps the
   position it has read up to; the store keeps no consumer state. A relay onto a message bus is the
   host's code, never Lakelands'; the dedup key of a change is
   `{lake}:{position}`. For webhooks, `lakelands serve` has a consumer of
@@ -121,7 +167,27 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   position in the target's `sys.mirror` records, which its principal
   needs the write grant on; `find sys.mirror` shows where every
   connection stands and why a type stopped (`docs/seams.md`, the
-  mirror). An agent on MCP is told of changes without polling:
+  mirror). The store's own consumers wait for the next append once
+  caught up, so a change reaches them at once, and each setting bounds
+  only that wait (lakelands#1061):
+  - the `mirror` section's `poll_millis` (1 000 ms), for its source's
+    next append;
+  - the `deliver` section's `poll_millis` (1 000 ms), for the lake's;
+  - the `server` section's `feed_poll_millis` (250 ms), for a feed
+    stream's or an MCP session's, beside its `feed_floor_millis` (10 ms):
+    the most often the log is read for such consumers, counted from the
+    end of the last read an append woke. The streams and sessions that
+    follow one lake with the same kinds and types share one read of the
+    log, and each applies its own keys and its own principal's view to
+    it (lakelands#1113), so a thousand of them cost the writer what one
+    does: 300 upserts took 1.5–1.7 s on SQLite and 1.6–2.0 s on
+    PostgreSQL beside 1 000 streams, as beside none, where a read per
+    stream had taken 8 s and 51 s at a floor of 250 ms. A stream whose
+    client falls behind reads on alone from its own position until it
+    is caught up again; it never holds the others.
+
+  An in-process host that calls `wait` paces its own reads the same way.
+  An agent on MCP is told of changes without polling:
   every session receives `notifications/tools/list_changed` when the
   lake's declarations change. Until the session lists its tools again,
   each stream it opens begins with that notification, so one taken by a
@@ -157,13 +223,25 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   withdrawn. See `docs/decisions/004-the-change-feed-is-the-log.md`.
 - **`SystemVocabulary`.** The host registers its own `sys.*` types and
   says which lakes may hold them; each time a writer opens a lake, the
-  store declares the allowed types it does not hold yet.
+  store declares the allowed types it does not hold yet, and its own
+  `sys.*` types again where the lake holds an older form of them.
   Lakelands reserves only the types its own fold reads; today those are
   `sys.setting` and `sys.aging_rule`, and the other two are reserved
   ahead of their readers. See `docs/decisions/003-reservation-by-namespace.md`.
   A value that must be kept from a reader is not put into a setting:
   any reader's expression reads `setting('<key>')`, whatever its grant
   on `sys.setting` and whether or not the setting is restricted.
+  The settings the store itself reads, with those of a lake's location
+  and of the root's `lakelands.json`, are listed in `docs/settings.md`
+  with what each changes, its default and where it is kept, and the
+  bindings apart; `lakelands settings` shows
+  their values for a lake. A key under the prefix of one of the store's
+  own settings that names none of them is refused, naming the prefix
+  (`docs/decisions/063-every-setting-is-in-one-list.md`). A host
+  declares its own settings in the lake (`{"declare": "setting", ...}`,
+  or a bundle's `settings/` lane): each write of one is judged by its
+  declared kind, and the store stamps its `group`, which a grant's
+  `only` on `sys.setting` names to say who writes it.
   The aging rules run when the host calls `LakeStore::age(today)`, once
   a day, with the date (`docs/decisions/036-aging-runs-by-date-once.md`);
   `lakelands age --today <YYYY-MM-DD>` is the same call from the CLI, and
@@ -175,7 +253,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   record whose field is null holds no `from`, so no rule moves it and the
   report does not count it. A host that wants such records aged gives the
   field a value: a declared `initial` at the write, or a verb that sets
-  it.
+  it. A move a constraint or the lake's `max_set_changes` refuses is
+  counted in `refused`, apart from `failed_guards`, and a rule's run
+  lists the first 16 with the record's key and the refusal: the list is
+  the host's, restricted records included, never relayed to a principal.
   A source that should be taken back is purged with
   `LakeStore::purge_source(source, None, None)`
   (`lakelands purge --source <id>`):
@@ -194,6 +275,147 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   report names the source's records in other types that still refer
   into what went, and the id is of that purge alone. A view, and a type
   that keeps no per-field provenance, are refused there.
+  A purge retires and does not erase: `as_of` still reads what the
+  source wrote. **Forgetting a source** erases it
+  (`docs/decisions/058-a-source-may-be-forgotten.md`). A source's values
+  of a field declared `erasable` enter the log sealed under a key of its
+  own, which the host's key store keeps outside the lake; the CLI and
+  `serve` bind `lakelands-backings`' file keyring where the root's
+  `lakelands.json` names one, `"keys": {"keyring": "<directory>"}`,
+  relative to the root, and refuse a keyring inside a lake's directory.
+  Without one a value that would be sealed is refused.
+  - **The act:** `LakeStore::forget_source(source, None)`
+    (`lakelands forget --source <id> --report <id>`) appends `source_forgotten`,
+    retires what the source alone brought, has the key store destroy its
+    keys, rebuilds the projection and reclaims the storage, all under the
+    writer's lock. Its preflight, `forget_preflight` (`--preflight`),
+    says what it erases and retires, what is computed again, and how
+    long it expects to hold the lock (the log's events at the engine's
+    measured rate: about 2 500 a second on PostgreSQL, 17 000 on
+    SQLite). The CLI acts only with `--report <id>`, the preflight's,
+    and only if the lake has not moved since; without it, it answers the
+    preflight.
+    Choose a moment when waiting writes can wait.
+  - **What it cannot reach** refuses it: a value the log holds in
+    plaintext, written before its field was erasable or by a release
+    before 0.15.0. Such a lake is exported, the source left out, and
+    imported as a new lake.
+  - **After a crash** between the act's steps, open a writer: the next
+    writer's open, or the act repeated, finishes what is owed. A
+    handle that only reads answers what the projection held until then.
+  - **A reclaim that fails** is owed, never a lock-out: the values are
+    erased already, so the act answers its report with the cause in
+    `reclaim_owed` (`LakeStore::reclaim_owed` holds it too, and a
+    preflight names it), the writer opens without it, says why on the
+    CLI and in `serve`'s log, and tries it again at each open until it
+    runs (lakelands#1161). `rebuild()` answers in the same way, and an
+    import answers and leaves the cause to the writer's next open;
+    `lakelands compact` that runs clears it (lakelands#1179). On SQLite
+    a reader holding a snapshot is enough to make it fail. A rebuild
+    still owed refuses the writer's open while it fails, since the
+    projection is not whole without it.
+  - **Keep backups honest:** a key restored from a backup restores what
+    it sealed. The key store's backups must follow its destroys, and the
+    keyring stays out of the lake's backup set: a backup that carries
+    both carries what forgetting destroys. A disk snapshot, a PostgreSQL
+    WAL archive or a copy outside the lake is out of the act's reach. An
+    import finishes a forgetting its export holds, so a key store
+    restored beside it has that source's keys destroyed again.
+  - **Backups under key periods:** back the key directory up at least
+    once a period. A backup older than the newest version the log used
+    leaves the lake refusing a source's writes, `key_missing`, since the
+    key store is behind the log. A backup taken before a version was
+    destroyed brings it back, so destroy the same prefix again after any
+    restore.
+  - **Key periods:** `lakelands settings set key_period week` (or
+    `key_period.<source>`, `day`, `week` or `month`, in UTC) seals each
+    period's values of a source under a version of its key of their
+    own, made at the period's first value: one key a period, made by the
+    key store. A version is destroyed only with every older one
+    (`KeyStore::destroy_version`), and a host's KMS that destroys only
+    whole sources leaves that call refused. The act that destroys
+    versions is `remove_values` (below), which names them in the log and
+    drops them from the open lake's memory. A version destroyed any
+    other way, by calling `KeyStore::destroy_version` or by editing the
+    file keyring, is a lost key, since no act in the log names it: an
+    open lake keeps the keys it holds in memory and goes on sealing with
+    them, and at the next open the values and the outputs it sealed fail
+    closed, `key_missing`, at a rebuild or a re-plan.
+  - **An export** holds sealed values as ciphertext, and no key. It
+    imports with the key store bound, or with none where the export
+    holds the source's forgetting, whose values then arrive erased; any
+    other sealed value refuses an import with no key store, as unbound.
+  - **A mirror** reads the source through the doors, which answer
+    plaintext. At a `source_forgotten`, each mapped type whose source
+    type has an erasable field stops past it, naming the source: its
+    copies may hold that source's values under the mirror's own source.
+    Copy the type again, or forget `mirror:<lake>:<type>` in the target,
+    then restart.
+  **Taking part of a source back**
+  (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`):
+  `LakeStore::remove_values(source, selection, require_shredded,
+  report_id)` takes what a
+  source wrote before a time (`Selection::WrittenBefore`, the log's
+  clock) or in one delivery (`Selection::Delivery`, the id `ingest`
+  answered), and nothing another hand wrote. It appends
+  `values_removed`, retires each record left holding nothing of another
+  hand, rebuilds and reclaims, all under the writer's lock, as
+  forgetting does; its preflight, `remove_values_preflight`, says what
+  it takes, keeps and retires, what is computed again, the constraints
+  and references it leaves broken, the required fields it leaves empty
+  (a breach of `required` naming the field), and how long it expects to
+  hold the lock. `RemoveReport::said` says it in sentences. The CLI's
+  `lakelands values remove --source <id> (--before <instant> |
+  --delivery <id>) [--require-shredded]` prints those sentences, and acts
+  only with `--report <id>`, the preflight's, as `forget` does. What the
+  host is told:
+  - **a redacted value** is read by no door at any position, `as_of`
+    included, but it is still in the log, every export and every
+    backup: in plaintext for a field that is not erasable, sealed under
+    a live key otherwise;
+  - **a shredded value** is in them only as ciphertext whose key version
+    is gone, so far as the key store's backups follow its destroys, as
+    for forgetting;
+  - **key periods** are how a retention cut shreds: each period's values
+    seal under a version of their own, and a cut destroys the versions
+    of the periods wholly before it. One delivery taken back is
+    redacted, and shredded only once such a cut covers it;
+  - **`require_shredded`** refuses the act, `remove_not_shredded`,
+    while a value of an erasable field it takes would be redacted only;
+    a key store that destroys a source's key only whole
+    (`KeyStore::destroys_versions` false) shreds nothing;
+  - **the feed** still delivers each event as the log holds it, a
+    redacted value of a field that is not erasable in plaintext, as for
+    forgetting: a host that relays the feed relays it;
+  - **after a crash** between its steps, open a writer, or repeat the
+    act: either finishes it and appends nothing again; a reclaim that
+    fails is owed and told as for forgetting;
+  - **a mirror** stops at `values_removed` of any source, past it, for
+    each mapped type with a field its reader reads that a removal may
+    take, erasable or not (a source's field, or one derived from it,
+    neither a key nor a reference), since the target holds those copies
+    in plaintext; a type of key and reference fields goes on. Copy the
+    type again, or run `lakelands values remove` on
+    `mirror:<lake>:<type>` in the target, then restart;
+  - **an export** carries the act: an import folds it again, so the
+    values arrive redacted, and needs no key for a version it destroyed,
+    while a value under a version it left needs the key store as
+    before;
+  - **its cost** grows with the log, not with the selection: the act
+    is a rebuild. Taking back half of a lake of one event a record, in
+    a release build, held the writer 9.3 s at 100 000 records and
+    149 s at 1 000 000 on SQLite, and 77 s and 891 s (14.8 min) on
+    PostgreSQL, about 1.4 times a plain rebuild after it (644 s); that
+    PostgreSQL database was 3.1 GB. The preflight's `expected_ms`
+    under-reads the act on both: 59 s at 1 000 000 on SQLite and 402 s
+    on PostgreSQL, 2.5 and 2.2 times too low. Plan the act's window by
+    the measured times.
+  Source ids and record keys stay plaintext in the log, so a lake is
+  ready to forget when:
+  - **a source id names no person:** an opaque id for a device or a feed,
+    the person kept in the host's own mapping;
+  - **a type that holds personal data is keyed by a surrogate:** a minted
+    id, never an e-mail address or a name.
   Rows that one act should remove, such as samples seeded beside a
   lake's own data, are written through `ingest` under a source id of
   their own, into fields declared `shared` (lakelands#611). An authored
@@ -219,7 +441,16 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   more for each `checkpoint` that sealed one, not the events the lake
   holds, so a host may open every lake at its start. A damaged index line
   is therefore not found at the open; `verify`, which reads the log,
-  finds it, as does the read that meets it. `index/` is part of the
+  finds it, as does the read that meets it. Neither is a line of the
+  log changed at its own length before the last append, on any engine:
+  the lake opens and is written on (one inside the last append is
+  refused at the open). `lakelands verify` runs it from the command
+  line, beside a `serve`, read-only; for a scheduled check its exit
+  status is 0 when the log holds, 1 when it is damaged (the line names
+  the position where the log lets it), 2 for a command line it does not
+  understand or a range outside the log, and 3 when it could not check
+  (no lake yet, no projection, a memory lake, the database
+  unreachable). `index/` is part of the
   log, not derived data: back it up and restore it with `log/`. A
   segment without its index file, a `projection.db` with no segment
   beside it, and a log whose segments do not follow each other (a
@@ -258,6 +489,19 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   the seal answers its own. Then the host opens the lake again and sends
   nothing again: the handle opened then reads the checkpoint where it is
   in the log (lakelands#623).
+  A write answered `unsynced` has met a second failed sync: the handle
+  is done, and refuses appends, seals and taking the lease until the
+  lake is opened again
+  (`docs/decisions/060-an-append-syncs-its-two-files-at-once.md`). The
+  host closes the handle (`LakeStore::close()`, or drops it) and then
+  opens the lake again. In that order: the writer's lease is an OS lock,
+  held by the old handle until it is closed, in this process too, and an
+  open made while it is held is refused the lease. The open checks the
+  last group and writes it again, that group alone: an `unsure` append
+  that came before may or may not be in the log, so the host reads it
+  back by its id, or sends it again under its idempotency key, before it
+  counts it lost. A pool that keeps one open lake per tenant closes the
+  refusing handle before it opens the next.
   In a quiet hour the host can call `LakeStore::compact()` (`lakelands
   compact`) to give back the storage the projection no longer uses; it
   changes no answer and appends nothing, and writes wait while it runs
@@ -343,7 +587,7 @@ into a second root and compares the two feeds. From the CLI:
 ```sh
 lakelands --root old export --to /tmp/finance
 lakelands init new
-# write new/lakes/finance.json: the PostgreSQL location shown above
+lakelands --root new lake new finance --engine postgres --url postgres://...
 lakelands --root new import /tmp/finance
 ```
 
@@ -351,8 +595,8 @@ lakelands --root new import /tmp/finance
 read from the export's first event: a lake's name is inside every hash,
 so an import cannot rename it, and `--lake`, when given, must name the
 same lake. The lake's location must exist and the lake must hold
-nothing: `lakelands lake new <id>` writes a SQLite location and opens
-nothing, and a PostgreSQL location is written by hand. A lake kept in
+nothing: `lakelands lake new <id>` writes a SQLite location, and with
+`--engine postgres --url <URL>` a PostgreSQL one, and opens nothing. A lake kept in
 memory is refused, since it would end with the command's process. The
 command prints the lake, how many events and files it imported, the
 head and the head's hash, which is the last line of the old lake's
@@ -369,38 +613,71 @@ of heap, on a 12-core machine at a load of 17 to 31.
 
 **A projection is read only by the layout that made it.** A SQLite or
 PostgreSQL projection is marked with its engine's layout number when it
-is made, and a build whose engine lays the projection out otherwise
-refuses to open it, for reading or writing, naming the number found, the
-number wanted and `lakelands rebuild` (`projection_layout` in
-`docs/refusals.md`). A SQLite `projection.db` that holds no table yet is
+is made, and a build whose engine lays the projection out otherwise does
+not read it. A SQLite `projection.db` that holds no table yet is
 none of that: its maker has connected and not made the tables, and a
 reader that comes in that moment is answered `no_projection`, as the
-moment before, and opens a moment later. Nothing repairs a projection
-of another layout in place. `lakelands rebuild`, or
-a host's own open with `OpenMode::Rebuild`, opens it, drops the
-projection under the lease, makes it anew and folds the whole log; the
-open is the rebuild. `LakeStore::rebuild` on an open lake does the same
-for a lake that opened.
+moment before, and opens a moment later.
+- **An older build's projection is rebuilt by the first writer's open.**
+  The open takes the lease, drops the projection, makes it anew and
+  folds the whole log, and holds the writer that long; the CLI says so
+  (`the projection was rebuilt from the log at this open`), and a host
+  reads why from `LakeStore::rebuilt_at_open`. 0.16.0 is such a step
+  for both engines: the first open of 0.16.0 rebuilds the projection,
+  about 8 s per 100 000 records on SQLite and 47 s on
+  PostgreSQL (at 1 000 000 records 80 s and 7.5 min; one event a
+  record, a release build). `lakelands upgrade` runs that open at a moment
+  the operator picks, also for a lake already in this release's log
+  format, and `lakelands upgrade --check` names the layout it found.
+- **A reader waits for the writer.** A read-only open of it is refused
+  before anything is read, naming the number found, the number wanted
+  and `lakelands rebuild` (`projection_layout` in `docs/refusals.md`).
+- **A newer build's projection, or one with no mark, is refused** at
+  every open, as above. `lakelands rebuild`, or a host's own open with
+  `OpenMode::Rebuild`, opens it, drops the projection under the lease,
+  makes it anew and folds the whole log; the open is the rebuild.
+  `LakeStore::rebuild` on an open lake does the same for a lake that
+  opened.
 
-**A lake is read only by a release of its log format.** A release reads
-and writes one log format, and a lake that was created in another or
-whose newest event is in another, older or newer, is refused at its
-open in every mode, naming the lake and both numbers (`log_format` in
-`docs/refusals.md`;
-`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`). The
-store reads the two ends of the log before it opens the lake's engine,
-so such a lake is left as it stands: its projection is not judged, and
-nothing of it is made, folded or changed. An import asks the same
-before it opens its target: onto such a lake it is refused the same
-way, and onto a lake of the release's format as `import_not_empty`,
-with no lease taken and nothing changed. The
-number steps only in a release that changes the format, and the
-release's notes say so. There is no upgrade path yet: a host that moves
-its pin across such a step starts the new release on fresh lakes. An
-export the older release wrote is not imported, and a connection whose
-source lake is in another format does not start. From the first release
-with real installations on, a change of the format carries its upgrade
-path.
+**A lake outlives a release from log format 14 on.** A release writes
+one log format and reads every one from 14, the format of the first
+release with real installations, to it (`docs/log-format.md` §6;
+`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+- **An older lake is upgraded by its first writer's open.** The open
+  appends one `lake_upgraded` after its `lease_taken` and writes the new
+  format from there; the events before stay as they were written, so
+  every export and checkpoint the host holds stays true. Where the step
+  changes how events fold, the same open rebuilds the projection, and
+  holds the writer that long: at 100 000 events about 7 s on SQLite and
+  35 s on PostgreSQL; a step that changes no fold, as 14 to 15, costs
+  one append. `lakelands upgrade` runs that open by itself at a moment
+  the operator picks, and `lakelands upgrade --check` says what it would
+  do and opens nothing.
+- **Take a backup before, and stop every older process first.** There is
+  no downgrade: a lake a release upgraded is not opened by the release
+  before. A writer of the release before that still holds the lake is
+  refused at its next append once the upgrade's lease is taken (its
+  fence is below it), so stop every older process before the first
+  writer of the new release opens the lake.
+- **A reader waits for the writer.** A read-only open of a lake not yet
+  upgraded is refused before anything is read, naming the way
+  (`log_upgrade_owed` in `docs/refusals.md`); so is a mirror of such a
+  source, whose open is a reader's.
+- **An export of an older release imports**, and the import upgrades
+  the new lake the same way, by a writer's open after the events are in.
+  Should that open fail, the events stay and a second import is refused
+  as `import_not_empty`: the lake is whole, and the next writer's open,
+  or `lakelands upgrade`, finishes the upgrade.
+- **A format this release does not read**, older than 14 or newer than
+  the release, is refused at the open in every mode, naming the lake,
+  the formats read and the one written (`log_format`). The store reads
+  the two ends of the log before it opens the lake's engine, so such a
+  lake is left as it stands: its projection is not judged, and nothing
+  of it is made, folded or changed. An import asks the same before it
+  opens its target: onto such a lake it is refused the same way, and
+  onto a lake it reads as `import_not_empty`, with no lease taken and
+  nothing changed. The number steps only in a release that changes the
+  format, and the release's notes say so.
 
 **Configuration is not a seam.** Engine configuration, tuning, limits
 and an optional key handle reach a lake through `Location`, and a
@@ -490,12 +767,14 @@ A host that already has a store of its own moves in four steps.
   is fixed. See `docs/decisions/051-a-grant-may-admit-only-some-records.md`.
 - **What a host reads before it applies a migration.** The preflight's
   report says, each in one member: whether the apply is admitted
-  (`lossless`: every value the migration keeps converts, and every
-  record a re-key moves takes a key of its own; it says nothing of what
-  the migration removes); what goes (`dropped`: each removed field with
+  (`lossless`: every value the migration keeps converts, every record a
+  re-key moves takes a key of its own, and no live record breaks a
+  constraint that refuses at ingest; it says nothing of what the
+  migration removes); what goes (`dropped`: each removed field with
   the records that hold a value, each removed relation with its live
-  links; the apply discards them, so a host that asks "is anything
-  lost?" sums the counts, `MigrationReport::discards()` in Rust); what
+  links; the apply discards the values and retires the links, each by
+  an event of its own, so a host that asks "is anything lost?" sums
+  the counts, `MigrationReport::discards()` in Rust); what
   moves (`rekeyed`, `references`, `sample_collisions`); a relation's
   rename (`relations`, `carried`, the entry below); and every other
   member `to` states otherwise (`restated`, the entry after it). A
@@ -576,6 +855,22 @@ A host that already has a store of its own moves in four steps.
   measure's `limit` may go up to the lake's `max_graph_nodes` (100 000
   unless the location sets it), where every other read stops at
   `max_limit`. See `docs/decisions/026-the-store-walks-the-graph.md`.
+- **A pattern's rows cost the starts they walk, not the type.** Rows in
+  the starts' order, or ordered by the start's own stored fields, are
+  walked a page of 256 starts at a time and stop at the page and one row
+  more, and a cursor goes on from the start the page ended in, so a
+  first page, a middle page and an ordered page each cost about a page
+  of starts. A step `where` that keeps few records of the far type is
+  walked from the starts until the page is full, and its last page walks
+  to the end of them to know that nothing follows: a host that filters
+  by the far record starts from the far type, filters there, and walks
+  back (a relation's inverse). Rows ordered by a record a step reaches,
+  and an aggregate over rows, are read whole, at most `max_graph_nodes`
+  rows, and past it refused `too_large`. A chain's graph walks its starts
+  a page of 256 at a time too, each step's records together, walks the
+  whole chain again for each page of its answer, and past
+  `max_graph_nodes` records is refused `too_large`; a neighbourhood
+  reads only the starts its page reaches (lakelands#1027, lakelands#963).
 - **A migration of a large type is a step for a quiet moment.** Applying
   one reads, converts and writes again every record of the type under
   the writer; other writes wait. The check before the append and the fold
@@ -584,7 +879,9 @@ A host that already has a store of its own moves in four steps.
   fields the old and the new key of every record; for a re-key its moves,
   in the report's id, the event and the fold, and one membership for each
   moved record and set; the ends of the live links of a relation it
-  narrows; a set's members and its changes up to `max_set_changes`.
+  narrows; the live links of a relation it removes, whole, as a purge
+  holds what it retires; a set's members and its changes up to
+  `max_set_changes`.
   PostgreSQL writes a transaction's puts a page of 1 024 at a time inside
   its transaction, so its engine holds a page of them too. At 100 000 records of four small fields, measured under some
   load from other processes (`tests/set_migrated.rs` in the SQLite and
@@ -601,7 +898,12 @@ A host that already has a store of its own moves in four steps.
   and 40 to 55 MB. Before that single read (lakelands#477) each set added a lookup
   for each record: 41 s with one set and 74 to 79 s with three on
   PostgreSQL, 9 to 15 s on SQLite. Bringing the migration's own cost
-  down further is lakelands#480.
+  down further is lakelands#480. A migration that removes a relation
+  retires its live links in the same append, one event each, as a purge
+  retires what it takes, and no limit bounds either: at 100 000 links,
+  measured the same way, the apply holds the writer about 11 s on SQLite
+  and 36 s on PostgreSQL, where the same migration with no link takes 3
+  s and 5.5 s, and a purge of those links 10 s and 39 s.
 - **A value is renamed by its value type's migration (lakelands#553).**
   `migrate_value_type` takes a `ValueTypeMigration`: the new declaration
   and `renames`, old and new text values (a bare declaration converts with
@@ -624,13 +926,51 @@ A host that already has a store of its own moves in four steps.
   (`tests/value_renamed.rs` in both engines, by hand); widening, writing
   the 50 000 records again and tightening took 17.1 s and 49.1 s, at
   39 MB.
+- **A migration may fill a field's `initial` (lakelands#1023).** Each
+  field named in `fill`, declared by `to` with an `initial`, takes that
+  value in every live record that holds none, at the `migrated` event,
+  of origin `initial`; the preflight counts them (`filled`). A type that
+  held records before its field had an `initial` gets the value this way
+  alone, and an aging rule reaches those records only after it. Like a
+  value's rename the fill writes no record event and fires no trigger: a
+  host that kept its own copy reads the feed's `migrated` (its `fill`),
+  and a mirror copies the type again.
+- **A rule over a record is a constraint the store holds
+  (lakelands#1119).** A type's `constraints` are judged at every write
+  door, an import, a source and a reactive write included, so a host
+  drops its own check of the same rule. A write that would break one is
+  refused `constraint_broken`, naming the constraint, the type and the
+  key and never a value; the host shows its user the constraint's
+  `description`. A constraint reads its record alone, and a comparison
+  with an absent value is false, so a rule over an optional field says
+  what it holds when the field is absent (`paid is null or paid <=
+  amount`). A constraint is added or changed by a migration: its
+  preflight lists in `breaches` each constraint live records would
+  break, with their count and first keys. One that refuses at ingest
+  makes the migration lossy, so the host fixes those records first; one
+  declared `at_ingest: admit` applies, and lets a source go on writing
+  what it states. A principal kept from a field a constraint reads is
+  refused `not_granted` for every write the constraint judges, so a host
+  grants a writer what the rule reads or keeps those fields out of its
+  writes. A declaration that computes records again, a value type's
+  migration and a re-key are refused `constraint_left_broken` where they
+  would leave records breaking a constraint that refuses, naming it and
+  the count, so the host fixes those records first. A constraint that
+  admits is named in the value type's or the migration's report, in
+  `breaches`, with its type. See
+  `docs/decisions/059-a-type-declares-its-constraints.md`.
 - **A host may state its declarations at every start.** A declaration
   that is the one in force is answered `applied` at the head and appends
   nothing, by `declare` and by `apply`: a type, a value type, a function,
   a verb, a trigger, an object set. A computed field may be stated with
   the inputs `describe` shows or without them, and a grouped view with
   its `key` or without it. A declaration's version counts its changes.
-  See
+  The answer's `declared` names each declaration sent, with its
+  `version`, the position it stands from (`since`) and whether this call
+  `appended` it, so a host drops what it cached only for what changed
+  (lakelands#1059). `lakelands apply` prints it: each declaration already
+  in force says since which position, and a bundle wholly in force says
+  that nothing was appended (lakelands#1106). See
   `docs/decisions/027-shape-changes-are-declared-or-migrated.md`.
 - **A read costs the same however much the lake declares
   (lakelands#557).** A handle builds what the lake declares once for a
@@ -784,10 +1124,26 @@ A host that already has a store of its own moves in four steps.
   writer which cannot catch up cannot append, is held by the handle that
   ran it and recorded by its next write; the call's answer says so, and
   the retry under its key answers it. It is lost when the handle is
-  closed or dropped before a write records it (the server ends so), and
-  on PostgreSQL when a lost connection loses the lease: a retry is then
-  `unanswered`, and the first answer carried the output. A host that
-  needs more gives the executor its own record of what it did, keyed by
+  closed or dropped before a write records it (the server ends so): a
+  retry is then `unanswered`, and the first answer carried the output.
+  **A dropped connection on PostgreSQL** (a restart of the server, a
+  failover, a pooler's or a firewall's cut, an operator's
+  `pg_terminate_backend`) costs a read one reconnect: the read opens its
+  connection again, once, and runs again (about 15 ms on a local
+  server). The writer's lease lived in the session that ended, so the
+  first write that finds it gone is answered `unavailable`, the lease not
+  held, nothing appended, and a host sends it again once. A write
+  answered `unavailable` without "nothing appended" lost its connection
+  after its `COMMIT` was sent: it may have landed, and the host reads it
+  back from the log (or sends it again under its idempotency key) before
+  writing it anew. The next write takes the lease again as an open does:
+  a greater fence, what another writer appended meanwhile folded, then a
+  `lease_taken` in the log. An executor's answer the handle held
+  survives this and is recorded by that write. While another writer
+  holds the lease, every write, rebuild and compaction is refused with
+  the lease's situation and appends nothing, and the handle reads on.
+  The lake's connections carry `application_name` `lakelands <schema>`
+  in `pg_stat_activity`. A host that needs more gives the executor its own record of what it did, keyed by
   the call's position (`VerbInvocation.position`). See
   `docs/decisions/013-verbs-run-by-declared-risk.md`, extended.
 - **An outage and a missing seam are cases, not sentences
@@ -811,7 +1167,7 @@ A host that already has a store of its own moves in four steps.
   `docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
   extended.
 - **A refusal is a case too (lakelands#650).** A refusal of `invalid`,
-  `constraint`, `precondition` or `unanswered` carries its case as data:
+  `constraint`, `precondition`, `declined` or `unanswered` carries its case as data:
   `code`, its parameters, `at` (the places it is said at, outermost
   first: a type, a field, a verb, …) and `message`. The catalog of every
   code, its parameters and its English sentence is
@@ -866,6 +1222,29 @@ A host that already has a store of its own moves in four steps.
   embedding or a field of a function computed outside the lake is never
   such a type: the store walks its records at every declaration of it,
   whatever changed.
+- **An order index is the host's to ask for, from what was ordered
+  (lakelands#1029).** A page ordered by a field `sort_index.<type>` does
+  not name sorts the type, on every page: 0.6 s on SQLite and 1.0 s on
+  PostgreSQL at 100 000 records, and far more for a deep page by offset.
+  Naming a field costs every write about 4 % and one rebuild, about a
+  second at that size. The lake does not choose: `describe_type` tells a
+  holder of `schema`, in `sorted_whole`, each field it reads that was
+  ordered by a whole sort since the lake was opened, with its pages and
+  their time, and `lakelands serve`
+  prints a line when one grows. A host's rule, run as often as it likes,
+  names a field when it was ordered by on a few pages of a large type,
+  and keeps a type's list short:
+
+  ```text
+  for each type with at least 2 000 records:
+    for each field in sorted_whole with pages >= 3 and millis >= 100,
+      while sort_index.<type> names fewer than 4 fields:
+        add it to sort_index.<type>
+  ```
+
+  Write the setting in a quiet moment: its fold rebuilds the type's
+  rows under the writer. See
+  `docs/decisions/041-a-sorted-page-reads-its-page.md`.
 - **A view that is read often may be kept.** A view's read walks its
   source: seconds at a hundred thousand records. The setting
   `view_kept.<type>` asks the fold to keep the view's records in the
@@ -980,8 +1359,10 @@ them:
   StorageKind::Text) }`, `TypeDecl { fields, ..TypeDecl::named("invoice") }`,
   `RelationDecl::to("partner", "partner")`, and `SearchMode::lexical(text)`,
   `::vector` and `::hybrid` (0.9.0 added `weight` and `also` to a vector
-  search and `weight` and `text_weight` to a hybrid one; a mode built by
-  its constructor leaves them out). `TypeDecl`, `FieldDecl`, `RelationDecl`,
+  search and `weight` and `text_weight` to a hybrid one, and 0.16.0
+  `model` to both and to a vector term, and to `Axis`; a mode built by
+  its constructor leaves them out, and a `VectorTerm` written as a
+  struct literal names `model`). `TypeDecl`, `FieldDecl`, `RelationDecl`,
   `TypeDescription`, `FieldDescription`, `LakeDescription` and
   `TypeLifecycle` all implement `Default`. A name left at its default is
   empty, and the store refuses it at declare. A field's kind defaults to

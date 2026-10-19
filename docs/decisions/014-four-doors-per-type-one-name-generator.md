@@ -49,6 +49,15 @@ collide with another tool, run past 64 characters or come out empty is
 refused when declared, and the generator itself refuses to produce such
 a set rather than emit a duplicate.
 
+A schema offers no argument its door refuses for being given. A sort
+key is the case that has come up: a stored type's `<type>_find` offers
+an order by a field's value, its `known_at` or `seen_at`, or by
+`latest`; a view's records, a query's rows and a proposal have no
+change or provenance of their own to order by, so a view's
+`<type>_find`, `query` and `proposals` offer a field and a direction,
+by its value. A row of the suite calls every order every tool of the
+catalog offers through its door, so a tool added later is asked too.
+
 ## Why
 
 A model chooses reliably among a few dozen tools, not among hundreds.
@@ -89,3 +98,7 @@ second rule to keep in step.
   six, with `apply` and the two of a value type's migration, and
   `declare` has a tool for a type only. The value-type migrations have
   doors of their own on the `Catalog` and no tool of their own.
+- Corrected at lakelands#924: a view's `<type>_find` and `proposals`
+  offered orders by `latest`, `known_at` and `seen_at` that their
+  doors refuse every time; their schemas offer the value alone, as
+  `query`'s does since lakelands#901.

@@ -155,11 +155,13 @@ pub fn mirror_type() -> TypeDecl {
         initial: None,
         sensitive: false,
         searchable: false,
+        erasable: false,
         description: None,
         label: None,
         embed: None,
     };
     TypeDecl {
+        constraints: Default::default(),
         annotations: Default::default(),
         name: MIRROR_TYPE.into(),
         key: vec!["connection".into(), "source_type".into()],
@@ -177,6 +179,8 @@ pub fn mirror_type() -> TypeDecl {
         valid_from: None,
         valid_to: None,
         field_meta: true,
+        insert_only: false,
+        retired_by: Default::default(),
         language: None,
         description: Some(
             "Where one mirror connection stands for one source type: the next source position \
@@ -421,6 +425,8 @@ pub struct Mirror {
     start: Start,
     batch: u32,
     poll: Duration,
+    // The source's head the last round read up to, where it caught up.
+    caught: Option<Position>,
     journal: File,
     // Held for the mirror's life: a second mirror of the same connection
     // is refused at start.
@@ -511,6 +517,7 @@ fn at(p: Position) -> ReadAt {
     ReadAt {
         as_of: Some(p),
         valid_at: None,
+        clock: None,
     }
 }
 
@@ -828,6 +835,7 @@ impl Mirror {
             start: connection.start,
             batch: config.batch,
             poll: Duration::from_millis(config.poll_millis),
+            caught: None,
             journal,
             _lock: lock,
         };
@@ -931,14 +939,15 @@ impl Mirror {
         &self.kept
     }
 
-    /// Mirror until the process ends: poll, ingest what came, and wait
-    /// `poll_millis` once caught up. A round that fails is tried again
-    /// after the same wait, from the position kept.
+    /// Mirror until the process ends: poll, ingest what came, and once
+    /// caught up wait for the source's next append, `poll_millis` at most.
+    /// A round that fails is tried again after `poll_millis`, from the
+    /// position kept.
     pub async fn run(mut self) {
         loop {
             match self.round().await {
                 Ok(true) => {}
-                Ok(false) => tokio::time::sleep(self.poll).await,
+                Ok(false) => self.caught_up().await,
                 Err(why) => {
                     self.say(&why);
                     tokio::time::sleep(self.poll).await;
@@ -947,10 +956,26 @@ impl Mirror {
         }
     }
 
+    /// Wait for the source's next append past the head its last round
+    /// read up to, `poll_millis` at most (lakelands#1061): an append that
+    /// landed while the round wrote to the target ends it at once. A round
+    /// that stopped short of the head without moving, and a wait that
+    /// fails, wait `poll_millis` out.
+    async fn caught_up(&self) {
+        let waited = match self.caught {
+            Some(head) => self.source.feed().wait(head, self.poll).await.is_ok(),
+            None => false,
+        };
+        if !waited {
+            tokio::time::sleep(self.poll).await;
+        }
+    }
+
     /// One round: copy the types still to be copied, or read the feed from
     /// the lowest position of the running types and bring each change
     /// across, in order. Answers whether more may be waiting.
     pub async fn round(&mut self) -> Result<bool, String> {
+        self.caught = None;
         let unsettled: Vec<TypeName> = self
             .map
             .keys()
@@ -981,11 +1006,36 @@ impl Mirror {
             .poll(Position(from), &filter, self.batch)
             .await
             .map_err(|e| format!("the source's feed failed: {e}"))?;
+        // A forgetting and a removal are about no type: they are asked of
+        // the feed apart, over the batch's range, and met in the log's order
+        // (058, 065).
+        let forgot = FeedFilter {
+            kinds: vec!["source_forgotten".to_owned(), "values_removed".to_owned()],
+            ..FeedFilter::default()
+        };
+        let acts = feed
+            .poll(Position(from), &forgot, self.batch)
+            .await
+            .map_err(|e| format!("the source's feed failed: {e}"))?;
+        let mut events: Vec<&Event> = batch.events.iter().collect();
+        events.extend(acts.events.iter().filter(|e| e.position < batch.next));
+        events.sort_by_key(|e| e.position);
         // A poll may stop short of the head with no events: read on, unless
         // it did not move.
         let more = batch.next <= batch.head && batch.next.0 > from;
+        self.caught = (batch.next > batch.head).then_some(batch.head);
         let mut run = Run::default();
-        for e in &batch.events {
+        for e in events {
+            if let EventBody::SourceForgotten { source, .. } = &e.body {
+                self.flush(&mut run).await?;
+                self.taken(source, e.position, false).await?;
+                continue;
+            }
+            if let EventBody::ValuesRemoved { source, .. } = &e.body {
+                self.flush(&mut run).await?;
+                self.taken(source, e.position, true).await?;
+                continue;
+            }
             if let EventBody::ValueTypeMigrated { types, .. } = &e.body {
                 self.flush(&mut run).await?;
                 self.revalued(types, e.position).await?;
@@ -1044,10 +1094,11 @@ impl Mirror {
         self.copied(types, head).await
     }
 
-    /// At a `value_type_migrated` at `p`: each running type it rewrites is
-    /// checked again, as at a declaration, and, still admitted, copied
-    /// again whole, whatever the connection started from: the source
-    /// renamed stored values and wrote no record event for them.
+    /// At a `value_type_migrated` at `p`, or a migration that fills: each
+    /// running type it rewrites is checked again, as at a declaration, and,
+    /// still admitted, copied again whole, whatever the connection started
+    /// from: the source rewrote stored values and wrote no record event
+    /// for them.
     async fn revalued(&mut self, types: &[TypeName], p: Position) -> Result<(), String> {
         let running = |m: &Self, t: &TypeName| {
             let state = m.kept.types.get(t);
@@ -1104,6 +1155,7 @@ impl Mirror {
                     records.push((
                         s.clone(),
                         SourceRecord {
+                            source: None,
                             upstream: Some(Upstream {
                                 lake: self.source.lake().clone(),
                                 position: head,
@@ -1210,6 +1262,7 @@ impl Mirror {
             records.push((
                 s.clone(),
                 SourceRecord {
+                    source: None,
                     upstream: Some(Upstream {
                         lake: self.source.lake().clone(),
                         position,
@@ -1290,7 +1343,13 @@ impl Mirror {
                 let Some(s) = type_of(&e.body) else {
                     return Ok(());
                 };
-                self.redeclared(s, e.position).await
+                match &e.body {
+                    // A fill writes values and no record event for them.
+                    EventBody::Migrated { migration, .. } if !migration.fill.is_empty() => {
+                        self.revalued(std::slice::from_ref(s), e.position).await
+                    }
+                    _ => self.redeclared(s, e.position).await,
+                }
             }
             _ => Ok(()),
         }
@@ -1548,6 +1607,59 @@ impl Mirror {
             Err(Error::NotFound { .. }) => Ok(Some(true)),
             Err(e) => Err(format!("`{t}` `{key}` cannot be read from the target: {e}")),
         }
+    }
+
+    /// At the source's forgetting of `source` at `p`, or at its act of
+    /// removal (`removal`): each running type whose copies may hold that
+    /// source's values the act erased, under the mirror's own source and
+    /// out of the act's reach, stops past the act, saying so; a restart
+    /// goes on once the host has copied it again or taken those values
+    /// back in the target. A forgetting reaches the erasable fields
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`); a removal every
+    /// field it may take that the reader reads, erasable or not, decided
+    /// by the type as the reader sees it, never by the values the act
+    /// reached, so that a field kept from the reader changes nothing
+    /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+    async fn taken(&mut self, source: &SourceId, p: Position, removal: bool) -> Result<(), String> {
+        let running: Vec<TypeName> = (self.kept.types.iter())
+            .filter(|(t, s)| s.stopped.is_none() && p.0 >= s.next && self.map.contains_key(*t))
+            .map(|(t, _)| t.clone())
+            .collect();
+        for s in running {
+            let before = Position(p.0.saturating_sub(1));
+            let t = self.describe_source(&s, Some(before)).await?;
+            // A field a removal may take: neither a key field nor a
+            // reference, and one a source writes or derived from one.
+            let takeable = |f: &&lakelands_api::describe::FieldDescription| {
+                let by = matches!(
+                    f.authority,
+                    Authority::Source | Authority::Shared | Authority::Derived
+                );
+                f.access.reads() && by && !t.access.key.contains(&f.name) && f.ty.target.is_none()
+            };
+            let reached = match removal {
+                false => t.fields.iter().any(|f| f.erasable),
+                true => t.fields.iter().any(|f| takeable(&f)),
+            };
+            if reached {
+                let (target, lake) = (&self.map[&s].target, self.source.lake());
+                let (did, held, undo) = match removal {
+                    false => ("forgot", "values of its erasable fields", "forget"),
+                    true => (
+                        "took back part of",
+                        "values",
+                        "run `lakelands values remove` on",
+                    ),
+                };
+                let why = format!(
+                    "the source {did} `{source}`, whose {held} `{s}`'s copies may hold in \
+                     `{target}` under `mirror:{lake}:{s}`: copy the type again, or {undo} \
+                     `mirror:{lake}:{s}` in the target, then restart"
+                );
+                self.stop(&[s], p.next(), why).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Stop `types` at `p` for `why`: each keeps `p` as the position to

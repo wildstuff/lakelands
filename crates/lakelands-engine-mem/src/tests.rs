@@ -72,6 +72,7 @@ fn record(ty: &str, key: &str, fields: Value, position: u64) -> StoredRecord {
         fields: serde_json::from_value(fields).unwrap(),
         meta: BTreeMap::new(),
         position: Position(position),
+        made: Position(position),
         retired: false,
         restricted: false,
     }
@@ -348,6 +349,7 @@ fn declarations_memberships_proposals_outputs_and_applied_ids_keep_history() {
                 ty: None,
                 key: None,
             }],
+            source: None,
         })
         .unwrap();
     });
@@ -535,6 +537,7 @@ fn a_scan_orders_by_when_a_field_was_learned() {
         source: None,
         procedure_version: None,
         error: None,
+        erased: false,
     };
     fold(e.as_ref(), 0, |p| {
         for (key, t) in [("a", 300), ("b", 100), ("c", 200)] {

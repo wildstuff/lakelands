@@ -69,6 +69,34 @@ is full. A field not asked for is ordered by sorting the type.
   (`sorted`), so an agent can see which orders are cheap. The seams page
   gives the numbers, and what an index costs a write.
 
+### The lake tells what it sorted the type for; the host chooses
+
+The lake does not choose an order index itself (lakelands#1029): one it
+chose would be a write to its own log decided by how it is read, which a
+host's feed, its mirrors and its exports would carry as no caller's. The
+host chooses, and the lake tells it what to choose from:
+
+- **What is counted.** Each `find` page ordered first, by value, by a
+  scalar field of the type that `sort_index.<type>` does not name, is
+  counted for that field with the time the read took, since the lake was
+  opened in the process that answers. An order by key, by `known_at` or
+  `seen_at`, a page of a view and an aggregate are not counted, and
+  neither is a page the index answered.
+- **Where it is told.** `describe_type`'s lifecycle names each counted
+  field in `sorted_whole`, with its pages and their time in
+  milliseconds, to a holder of `schema` who reads the field, the one who
+  can weigh `sort_index.<type>`, and never one it indexes. No other reader
+  is told it: the pages count every principal's reads, and the time grows
+  with the whole type, records held from a reader included. It reads no
+  value: a count of reads says what was asked, not what is stored. `lakelands serve` prints a line for each field whose count
+  grew, every ten minutes.
+- **What a host does with it.** `docs/hosting.md` gives a rule: name in
+  `sort_index.<type>` a field ordered by often enough, on a type large
+  enough, that a sort of every page costs more than a row more per
+  write. Each indexed field costs a write about 4 % on SQLite; at
+  100 000 records an unindexed page costs 0.6 s on SQLite and 1.0 s on
+  PostgreSQL, and the setting's rebuild about one to three such pages.
+
 ### An earlier position reads the head index and the keys changed since
 
 A page at a position `p` before the head, ordered first by a field the
@@ -213,7 +241,7 @@ admits each.
 under a text, then a walk of every holder by cursor, 1 000 a page. The
 first page's median of five, then the walk. Before, the page read every
 holder and sorted them, as it still does where the field is not
-indexed. The other slots were building on the same machine (load about
+indexed. Other worktrees were building on the same machine (load about
 5).
 
 | SQLite, text held by | way | before | after |
@@ -335,7 +363,7 @@ built against the same tree with the engines' sources before it, in
 release builds: both builds' binaries ran in turn against the same
 lakes, with no build between. A figure is the median of ten rounds, in
 milliseconds, with the fastest and the slowest round; a round is the
-median of five pages, a fresh view a page. The other slots were
+median of five pages, a fresh view a page. Other worktrees were
 building on the same machine throughout (load 9 to 25), so the rounds
 spread widely, and the fastest round is the least disturbed one.
 

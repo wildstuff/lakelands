@@ -242,6 +242,7 @@ async fn a_declaration_that_holds_an_integer_no_reader_reads_exactly_is_refused_
         let declared = l.cat.declare(&l.own, d.clone()).await;
         let write = ProposedWrite::Declare {
             declarations: vec![d],
+            plan: None,
         };
         let proposed = l.cat.propose(&l.own, write, "later".into()).await;
         let at = [place.clone(), member(path)];

@@ -229,3 +229,50 @@ fn a_walk_reads_a_page_of_its_frontier_at_a_time() {
     assert_eq!(g.edges_asked.get(), 3, "the start, then two pages of 256");
     assert_eq!(g.visible_asked.get(), 4, "two pages of far ends per hop");
 }
+
+/// A reach hands out each step's new records, each at the fewest hops
+/// from any record the step walks from; it stops where `each` says to,
+/// walking no step past it, and refuses past `max_nodes`.
+#[test]
+fn a_reach_walks_a_step_at_a_time_and_stops_where_it_is_told() {
+    // a → b → c → d and a → c: from a, `next` 1..2 reaches b and c at 1,
+    // d at 2; from those, one more `next` reaches c and d again and d.
+    let g = Graph::new(vec![
+        e("a", "next", "b"),
+        e("b", "next", "c"),
+        e("a", "next", "c"),
+        e("c", "next", "d"),
+    ]);
+    let steps = [next(Walk::Out, 1, 2), next(Walk::Out, 1, 1)];
+    let mut got = Vec::new();
+    reach(&g, &[n("a")], &steps, (5, 10), all, |i, first| {
+        got.push((i, nodes(&first).join(""), depths(&first)));
+        Ok(true)
+    })
+    .unwrap();
+    assert_eq!(
+        got,
+        [(1, "bcd".into(), vec![1, 1, 2]), (2, String::new(), vec![])]
+    );
+    assert_eq!(
+        g.edges_asked.get(),
+        3,
+        "two hops of the first step, one of the second"
+    );
+    reach(&g, &[n("a")], &steps, (5, 10), all, |_, _| Ok(false)).unwrap();
+    assert_eq!(g.edges_asked.get(), 5, "the second step is not walked");
+    let refused = reach(&g, &[n("a")], &steps, (5, 2), all, |_, _| Ok(true));
+    assert!(
+        matches!(refused, Err(lakelands_api::Error::Refused { .. })),
+        "{refused:?}"
+    );
+    // From a and b at once the first step reaches b, c and d, 3 records,
+    // but its two walks hold 5 apart: over a bound of 4 as they grow.
+    let both = reach(&g, &[n("a"), n("b")], &steps[..1], (5, 4), all, |_, _| {
+        Ok(true)
+    });
+    assert!(
+        matches!(both, Err(lakelands_api::Error::Refused { .. })),
+        "{both:?}"
+    );
+}

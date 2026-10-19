@@ -7,18 +7,21 @@
 
 use lakelands_api::error::Case;
 use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl};
+use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl, ValueTypeDecl};
+use lakelands_api::seam::Seams;
 use lakelands_api::tools::{Door, GENERIC_TOOLS, MAX_TOOL_NAME, ToolSpec, tools};
-use lakelands_api::write::{Declaration, Outcome, ProposedWrite, Recompute};
+use lakelands_api::write::{
+    Declaration, DeclarationKind, InForce, Outcome, ProposedWrite, Recompute, ValueTypeMigration,
+};
 use lakelands_api::{Error, Grants, LakeStore, PrincipalKind, ReadAt, Refusal, TypeName};
 use serde_json::{Value, json};
 
 use crate::conformance::fixture::{
-    Lake, Must, computed_by, dec, decimal, events_after, field, head_unmoved, invalid_case,
-    is_invalid, migration, object_set_on, principal, reason, refused_unmoved, reviewer, trigger_on,
-    type_decl, value, value_type, view_of, write_verb,
+    Lake, Must, computed_by, count_view, dec, decimal, events_after, field, head_unmoved,
+    invalid_case, is_invalid, migration, object_set_on, principal, reason, refused_unmoved,
+    reviewer, trigger_on, type_decl, value, value_type, view_of, write_verb,
 };
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::{Failure, Given, Held, Store};
 
 check!(
     ADD_FIELD_GRANT_FIRST =
@@ -51,7 +54,7 @@ check!(
     "003: every type name starting `sys.` is reserved; an ordinary principal, even the owner, is refused declaring one and nothing is appended"
 );
 
-const VECTOR: &str = include_str!("../../../../../docs/log-format/vectors/schema-hash.json");
+const VECTOR: &str = include_str!("../../../../../docs/log-format/vectors/17/schema-hash.json");
 
 async fn the_schema_hash_of_the_log_formats_vector_is_the_one_it_pins(store: Store) -> Held {
     let vector: Value = serde_json::from_str(VECTOR)
@@ -314,6 +317,82 @@ async fn a_derived_relation_takes_no_tool_name(store: Store) -> Held {
     Ok(())
 }
 
+check!(
+    OFFERED_ORDERS_ANSWER = every_order_a_tool_offers_its_door_answers,
+    "014, extended (lakelands#924): a tool offers no sort key its door refuses: for each tool of the catalog whose schema takes an `order_by`, each `by` it offers (the value where it offers none) on each field it offers, called through the tool's door, is answered: a stored type's `find`, a view's, `query` and `proposals`; a tool that offers an order through a door the row does not call fails it, so a tool added later is asked too"
+);
+
+/// `args` as a door reads them off the wire, or why they do not read.
+fn wire<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, String> {
+    serde_json::from_value(args).map_err(|e| format!("its arguments do not read: {e}"))
+}
+
+async fn every_order_a_tool_offers_its_door_answers(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let fields = vec![
+        field("status", StorageKind::Text),
+        field("n", StorageKind::Number),
+    ];
+    l.declare(type_decl("job", fields)).await?;
+    l.declare(count_view("tally", "job", "status")).await?;
+    l.upsert("job", "j1", json!({"status": "open", "n": 1}))
+        .await?;
+    let offered = tools(&l.describe().await?)
+        .map_err(|p| Failure::new(format!("the lake's names cannot become tools: {p:?}")))?;
+    let (mut asked, mut wrong) = (Vec::new(), Vec::new());
+    for t in &offered {
+        let Some(key) = t.input_schema.pointer("/properties/order_by/items") else {
+            continue;
+        };
+        let offers = |at: &str| key.pointer(at).and_then(Value::as_array).cloned();
+        // A field the schema leaves free is a path of `query`'s rows.
+        let fields = offers("/properties/field/enum").unwrap_or_else(|| vec![json!("job.n")]);
+        let bys = offers("/properties/by/enum").unwrap_or_else(|| vec![json!("value")]);
+        asked.push(t.door.clone());
+        let keys: Vec<(Value, Value)> = (fields.iter())
+            .flat_map(|f| bys.iter().map(|b| (f.clone(), b.clone())))
+            .collect();
+        for (field, by) in keys {
+            let order = match by.as_str() {
+                Some("latest") => json!({"by": by}),
+                _ => json!({"field": field, "by": by}),
+            };
+            let mut args = json!({"order_by": [order]});
+            let said: Result<(), String> = async {
+                let e = |e: Error| format!("{e:?}");
+                match &t.door {
+                    Door::Find { ty } => l.cat.find(&l.own, ty, wire(args)?).await.map(drop),
+                    Door::Query => {
+                        args["start"] = json!({"type": "job"});
+                        l.cat.query(&l.own, wire(args)?).await.map(drop)
+                    }
+                    Door::Proposals => l.cat.proposals(&l.own, wire(args)?).await.map(drop),
+                    door => return Err(format!("the row does not call {door:?}: ask it here")),
+                }
+                .map_err(e)
+            }
+            .await;
+            if let Err(why) = said {
+                wrong.push(format!("`{}` ordered by {order}: {why}", t.name));
+            }
+        }
+    }
+    // The row is blind if it asked none of the four.
+    let four = [
+        Door::Find { ty: "job".into() },
+        Door::Find { ty: "tally".into() },
+        Door::Query,
+        Door::Proposals,
+    ];
+    let missed: Vec<_> = four.iter().filter(|d| !asked.contains(d)).collect();
+    ensure!(
+        wrong.is_empty() && missed.is_empty(),
+        "every sort key a tool offers is answered by its door; refused:\n{}\nnot offered an order: {missed:?}",
+        wrong.join("\n")
+    );
+    Ok(())
+}
+
 async fn an_ordinary_principal_cannot_declare_a_sys_type(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -431,7 +510,10 @@ async fn a_declaration_that_is_the_one_in_force_appends_nothing(store: Store) ->
     );
     // An accepted proposal of declarations in force: its acceptance alone.
     let declarations = vec![scaled(3), bill(&["net"])];
-    let proposed = ProposedWrite::Declare { declarations };
+    let proposed = ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     let proposed = l.cat.propose(&l.own, proposed, "again".into()).await;
     let Outcome::Proposed { proposal, .. } = proposed.must("proposing")? else {
         return Err(Failure::new("a proposed set is not answered as proposed"));
@@ -448,8 +530,126 @@ async fn a_declaration_that_is_the_one_in_force_appends_nothing(store: Store) ->
 }
 
 check!(
+    IN_FORCE_ANSWERED = a_declaration_answers_how_it_stands_in_force,
+    "027, extended (lakelands#1059): `declare` and `apply` answer each declaration sent, in the order sent, as it stands in force after the call: its kind, its name, its version, the position it has stood from (its `declared`, or the `migrated` or `value_type_migrated` that put it in force, which a read `as_of` it sees) and whether this call appended it; one in force appended nothing and names where it was declared, while the call's position stays the head; of a set only what differs is appended; each stands from the same position live, after a reopen and after a rebuild; any other write names no declaration",
+    given
+);
+
+async fn a_declaration_answers_how_it_stands_in_force(store: Store, given: Given) -> Held {
+    let state = |choices: &[&str]| ValueTypeDecl {
+        one_of: choices.iter().map(|c| (*c).to_owned()).collect(),
+        ..value_type("state", StorageKind::Text)
+    };
+    let opened = || Declaration::ValueType(state(&["open", "shut"]));
+    let bill = |noted: bool| {
+        let mut fields = vec![field("net", StorageKind::Decimal)];
+        fields.extend(noted.then(|| field("note", StorageKind::Text)));
+        Declaration::Type(type_decl("bill", fields))
+    };
+    let stands = |kind, name: &str, version, since, appended| InForce {
+        kind,
+        name: name.into(),
+        version,
+        since,
+        appended,
+    };
+    let declared = |o: &Outcome| match o {
+        Outcome::Applied { declared, .. } => declared.clone(),
+        Outcome::Proposed { .. } => Vec::new(),
+    };
+    let (ty, vt) = (DeclarationKind::Type, DeclarationKind::ValueType);
+    let l = Lake::of(store.as_ref());
+    // New, then the same again after a record's write.
+    let first = l.declare_as(bill(false), "declaring `bill`").await?;
+    let p1 = first.position();
+    let written = l.upsert("bill", "b", json!({"net": "3"})).await?;
+    let again = l.declare_as(bill(false), "declaring `bill` again").await?;
+    let head = store.head().await.must("reading the head")?;
+    ensure!(
+        declared(&first) == [stands(ty, "bill", 1, p1, true)]
+            && declared(&again) == [stands(ty, "bill", 1, p1, false)]
+            && again.position() == head
+            && declared(&written).is_empty(),
+        "`bill` declared answers {first:?}, at its `declared`, appended; declared again it \
+         answers {again:?}, standing from {p1}, not appended, at the head {head}; an upsert \
+         names no declaration: {written:?}"
+    );
+    // A set: what differs is appended, what is in force is not, in the order sent.
+    let set = l.cat.apply(&l.own, vec![opened(), bill(false)]).await;
+    let set = set.must("applying `state` and `bill`")?;
+    let p2 = set.position();
+    let changed = l.cat.apply(&l.own, vec![bill(true), opened()]).await;
+    let changed = changed.must("applying `bill` changed and `state`")?;
+    let p3 = changed.position();
+    ensure!(
+        declared(&set)
+            == [
+                stands(vt, "state", 1, p2, true),
+                stands(ty, "bill", 1, p1, false)
+            ]
+            && declared(&changed)
+                == [
+                    stands(ty, "bill", 2, p3, true),
+                    stands(vt, "state", 1, p2, false)
+                ],
+        "a set answers each member, appended where it differs: {set:?}, then {changed:?}"
+    );
+    // A migration of each: each stands from its own event.
+    let memo = vec![
+        field("net", StorageKind::Decimal),
+        field("memo", StorageKind::Text),
+    ];
+    let memo = type_decl("bill", memo);
+    let mut renamed = migration(memo.clone());
+    renamed.renames = vec![("note".into(), "memo".into())];
+    let report = l.cat.migrate(&l.own, renamed.clone()).await;
+    let report = report.must("previewing `bill`'s rename")?.data.report_id;
+    let migrated = l.cat.migrate_apply(&l.own, renamed, &report).await;
+    let pm = migrated.must("migrating `bill`")?.position();
+    let closed = ValueTypeMigration {
+        to: state(&["open", "closed"]),
+        renames: vec![("shut".into(), "closed".into())],
+    };
+    let report = l.cat.migrate_value_type(&l.own, closed.clone()).await;
+    let report = report.must("previewing `state`'s rename")?.data.report_id;
+    let migrated = l
+        .cat
+        .migrate_value_type_apply(&l.own, closed, &report)
+        .await;
+    let pv = migrated.must("migrating `state`")?.position();
+    // Stated again: live, after a reopen, and after a rebuild alike.
+    let both = vec![
+        Declaration::ValueType(state(&["open", "closed"])),
+        Declaration::Type(memo),
+    ];
+    let held = [
+        stands(vt, "state", 2, pv, false),
+        stands(ty, "bill", 3, pm, false),
+    ];
+    let mut store = store;
+    for step in ["live", "reopened", "rebuilt"] {
+        if step == "reopened" {
+            let reopened = (given.reopen)(store, Seams::default()).await;
+            store = reopened
+                .map_err(|e| Failure::new(format!("opening the lake again failed: {e}")))?;
+        }
+        if step == "rebuilt" {
+            store.rebuild().await.must("rebuilding")?;
+        }
+        let l = Lake::of(store.as_ref());
+        let after = l.cat.apply(&l.own, both.clone()).await;
+        let after = after.must("applying both again")?;
+        ensure!(
+            declared(&after) == held,
+            "{step}, each stands from its migration ({pm}, {pv}): {after:?}"
+        );
+    }
+    Ok(())
+}
+
+check!(
     MIGRATION_IN_FORCE = a_migration_to_what_is_in_force_appends_nothing,
-    "027, extended (lakelands#577): a migration whose `to` is the type in force and that renames nothing is answered `applied` at the head and appends nothing; a stale report is refused first; an accepted proposal of it appends its acceptance alone; a value type's migration to itself is refused as before, there being nothing to migrate"
+    "027, extended (lakelands#577): a migration whose `to` is the type in force and that renames nothing is answered `applied` at the head and appends nothing only where it fills no record (050); a stale report is refused first; an accepted proposal of it appends its acceptance alone; a value type's migration to itself is refused as before, there being nothing to migrate"
 );
 
 async fn a_migration_to_what_is_in_force_appends_nothing(store: Store) -> Held {

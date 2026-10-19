@@ -36,6 +36,7 @@ hyper = { version = "1", default-features = false, features = ["client", "http1"
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 lakelands-client = { path = "../lakelands-client" }
 postgres = "0.19"
+rusqlite.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util", "process", "io-util"] }
 
 [features]

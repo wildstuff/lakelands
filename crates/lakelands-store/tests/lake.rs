@@ -76,6 +76,7 @@ fn field(name: &str, kind: StorageKind) -> FieldDecl {
         initial: None,
         sensitive: false,
         searchable: false,
+        erasable: false,
         description: None,
         label: None,
         embed: None,
@@ -84,7 +85,10 @@ fn field(name: &str, kind: StorageKind) -> FieldDecl {
 
 fn ty(name: &str, fields: Vec<FieldDecl>) -> TypeDecl {
     TypeDecl {
+        constraints: Default::default(),
         annotations: Default::default(),
+        insert_only: false,
+        retired_by: Default::default(),
         name: name.into(),
         key: vec![],
         fields,
@@ -383,6 +387,8 @@ async fn a_low_verb_runs_a_high_one_waits_for_acceptance_and_an_unbound_one_is_r
             output: None,
             set_off: Default::default(),
             renamed: Vec::new(),
+            declared: Vec::new(),
+            plan: None,
         },
         "accepting a verb answers the write it made, not the verb's call"
     );
@@ -419,6 +425,7 @@ async fn ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert() {
         .await
         .unwrap();
     let rec = |v: &str| SourceRecord {
+        source: None,
         upstream: None,
         ty: "tx".into(),
         key: "t1".into(),
@@ -472,6 +479,7 @@ async fn a_second_write_to_a_record_in_one_window_is_folded_over_the_first() {
         .await
         .unwrap();
     let rec = |fields: serde_json::Value| SourceRecord {
+        source: None,
         upstream: None,
         ty: "acct".into(),
         key: "a1".into(),
@@ -586,6 +594,7 @@ async fn the_door_refuses_what_this_release_does_not_hold() {
                 expr: None,
                 config: json!({"url": "x"}),
                 description: None,
+                risk: Default::default(),
             }),
         )
         .await;
@@ -643,11 +652,7 @@ async fn a_migration_covers_retired_records_and_keeps_the_key() {
 
     let mut to = m.clone();
     to.fields[1] = field("n", StorageKind::Number);
-    let retyped = Migration {
-        to,
-        renames: vec![],
-        relation_renames: Vec::new(),
-    };
+    let retyped = Migration::to(to);
     let report = cat.migrate(&o, retyped.clone()).await.unwrap().data;
     assert!(
         !report.lossless,
@@ -670,16 +675,7 @@ async fn a_migration_covers_retired_records_and_keeps_the_key() {
 
     let mut rekeyed = m.clone();
     rekeyed.key = vec!["n".into()];
-    let r = cat
-        .migrate(
-            &o,
-            Migration {
-                to: rekeyed,
-                renames: vec![],
-                relation_renames: Vec::new(),
-            },
-        )
-        .await;
+    let r = cat.migrate(&o, Migration::to(rekeyed)).await;
     assert!(
         matches!(
             &r,
@@ -889,6 +885,257 @@ async fn lake_continued_in(formats: &[u32]) -> (String, (Position, Digest)) {
     (lake, (at, prev))
 }
 
+/// A lake the release before wrote whole, in format 14, written below the
+/// store: its first event says that format, and so do its lease's.
+fn lake_of_format_14() -> String {
+    lake_of_format_14_at(&opener(), 1)
+}
+
+/// [`lake_of_format_14`] through `opener`, its lease at fence `fence`: the
+/// release before's writers took the leases before it.
+fn lake_of_format_14_at(opener: &MemoryOpener, fence: u64) -> String {
+    use lakelands_api::event::OLDEST_LOG_FORMAT as OLD;
+    let lake = name();
+    let engine = opener
+        .open(&Location::memory(lake.as_str()), OpenMode::Create)
+        .unwrap();
+    let mut lease = engine.take_lease("the release before").unwrap();
+    while lease.fence < fence {
+        engine.release_lease(&lease).unwrap();
+        lease = engine.take_lease("the release before").unwrap();
+    }
+    let id = &lake.as_str().into();
+    let made = lakelands_store::log::Draft::system(
+        lakelands_api::Timestamp(1),
+        EventBody::LakeCreated { format: OLD },
+    );
+    let (_, made) = lakelands_store::log::seal(id, Position(0), &Digest::zero(), 0, made);
+    let mut value: serde_json::Value = serde_json::from_slice(&made.bytes).unwrap();
+    value["body"]["format"] = json!(OLD);
+    let made = in_format(
+        lakelands_api::engine::CanonicalEvent {
+            bytes: lakelands_core::canonical::to_vec(&value),
+            ..made
+        },
+        OLD,
+    );
+    let taken = lakelands_store::log::Draft::system(
+        lakelands_api::Timestamp(2),
+        EventBody::LeaseTaken {
+            fence: lease.fence,
+            holder: "the release before".into(),
+        },
+    );
+    let (_, taken) = lakelands_store::log::seal(id, Position(1), &made.hash, lease.fence, taken);
+    engine
+        .append(&lease, &[made, in_format(taken, OLD)])
+        .unwrap();
+    engine.release_lease(&lease).unwrap();
+    lake
+}
+
+/// A lake of format 14, which this release reads, is not read as it is: a
+/// reader's open is refused, naming the lake, its format, the one this
+/// release writes and the way. A writer's open upgrades it: after the
+/// events as they were written come its `lease_taken` and one
+/// `lake_upgraded` from 14 to the format this release writes, both in it;
+/// the lake verifies, a reader then opens it, and another writer's open
+/// appends no second marker (`docs/log-format.md` §6).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lake_of_the_format_before_is_upgraded_by_a_writer_and_refused_to_a_reader() {
+    use lakelands_api::error::Situation;
+    use lakelands_api::event::{LOG_FORMAT_VERSION as NEW, OLDEST_LOG_FORMAT as OLD};
+    let lake = lake_of_format_14();
+    let at = Location::memory(lake.as_str());
+    let written = lakelands_store::written_in(at.clone(), seams())
+        .await
+        .unwrap();
+    assert_eq!(written, Some(OLD));
+    let Err(e) = open(&lake, OpenMode::Read).await else {
+        panic!("a lake of format {OLD} opened read-only as it is");
+    };
+    assert!(
+        matches!(e.situation(), Some(Situation::LogUpgradeOwed { lake: l, found, reads })
+            if *l == lake && *found == u64::from(OLD) && *reads == u64::from(NEW)),
+        "{e:?}"
+    );
+    let said = format!(
+        "lake `{lake}` is written in log format {OLD}, and this release writes format {NEW}: \
+         a writer's open upgrades it, so open it once for writing or run `lakelands upgrade \
+         {lake}`, and it is read; nothing was read from it"
+    );
+    assert!(e.to_string().contains(&said), "{e}");
+    let store = open(&lake, OpenMode::Write).await.unwrap();
+    let log = lakelands_core::conformance::fixture::log_events(store.as_ref())
+        .await
+        .unwrap();
+    let said: Vec<_> = log
+        .iter()
+        .map(|e| (e.v, e.body.kind().to_string()))
+        .collect();
+    let want: Vec<(u32, String)> = vec![
+        (OLD, "lake_created".into()),
+        (OLD, "lease_taken".into()),
+        (NEW, "lease_taken".into()),
+        (NEW, "lake_upgraded".into()),
+    ];
+    assert_eq!(said[..4], want[..], "{said:?}");
+    assert!(matches!(
+        log[3].body,
+        EventBody::LakeUpgraded { from: OLD, to: NEW }
+    ));
+    assert!(log[4..].iter().all(|e| e.v == NEW), "{said:?}");
+    store.verify(None, None).await.unwrap();
+    store.close().await.unwrap();
+    drop(store);
+    assert_eq!(
+        lakelands_store::written_in(at, seams()).await.unwrap(),
+        Some(NEW)
+    );
+    let reader = open(&lake, OpenMode::Read).await.unwrap();
+    reader.close().await.unwrap();
+    drop(reader);
+    let again = open(&lake, OpenMode::Write).await.unwrap();
+    let log = lakelands_core::conformance::fixture::log_events(again.as_ref())
+        .await
+        .unwrap();
+    let markers = log
+        .iter()
+        .filter(|e| matches!(e.body, EventBody::LakeUpgraded { .. }));
+    assert_eq!(markers.count(), 1);
+}
+
+/// An opener over the tests' own that, the first time the store asks a
+/// log's ends, answers them and then lets a whole writer's open of the
+/// same lake run before the asking open goes on: another process that
+/// upgrades the lake between the ends and the lease.
+struct Racing {
+    raced: std::sync::atomic::AtomicBool,
+}
+
+impl lakelands_api::engine::EngineOpener for Racing {
+    fn name(&self) -> &str {
+        "memory"
+    }
+
+    fn log_ends(
+        &self,
+        location: &Location,
+    ) -> lakelands_api::Result<
+        Option<(
+            lakelands_api::engine::CanonicalEvent,
+            lakelands_api::engine::CanonicalEvent,
+        )>,
+    > {
+        let ends = opener().log_ends(location)?;
+        if !self.raced.swap(true, Ordering::SeqCst) {
+            let other = lakelands_store::lake::Lake::open(location, seams(), OpenMode::Write)?;
+            other.close()?;
+        }
+        Ok(ends)
+    }
+
+    fn open(
+        &self,
+        location: &Location,
+        mode: OpenMode,
+    ) -> lakelands_api::Result<Box<dyn lakelands_api::engine::LakeEngine>> {
+        opener().open(location, mode)
+    }
+}
+
+/// A lake's log, as an export holds it, written from its engine below the
+/// store into `dir`.
+fn export_below(opener: &MemoryOpener, lake: &str, dir: &std::path::Path) {
+    let engine = opener
+        .open(&Location::memory(lake), OpenMode::Read)
+        .unwrap();
+    let lines = engine.read(Position(0), 1_000).unwrap();
+    std::fs::create_dir_all(dir.join("log")).unwrap();
+    let mut file = Vec::new();
+    for e in lines {
+        file.extend_from_slice(&e.bytes);
+        file.push(b'\n');
+    }
+    std::fs::write(dir.join("log").join(format!("{:020}.jsonl", 0)), file).unwrap();
+}
+
+/// An export of the format before whose lease is at fence 3, as every
+/// real lake's is above 1, is imported and upgraded by a writer's open
+/// whose lease is above every fence it holds: the fences never fall, the
+/// lake verifies, and its own export imports again and verifies.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_export_with_fences_above_one_imports_and_imports_again() {
+    let before = MemoryOpener::new();
+    let lake = lake_of_format_14_at(&before, 3);
+    let root = std::env::temp_dir().join(format!("lakelands-{lake}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    export_below(&before, &lake, &root.join("first"));
+    let mut dir = root.join("first");
+    for round in 0..2 {
+        let seams = Seams {
+            engines: vec![Arc::new(MemoryOpener::new())],
+            ..Seams::default()
+        };
+        let at = Location::memory(lake.as_str());
+        lakelands_store::import(at.clone(), seams.clone(), dir.clone())
+            .await
+            .unwrap_or_else(|e| panic!("import {round}: {e}"));
+        let store = lakelands_store::open(at, seams, OpenMode::Read)
+            .await
+            .unwrap();
+        let log = lakelands_core::conformance::fixture::log_events(store.as_ref())
+            .await
+            .unwrap();
+        let fences: Vec<_> = log.iter().map(|e| e.fence).collect();
+        assert!(
+            fences.windows(2).all(|w| w[0] <= w[1]),
+            "round {round}: fences {fences:?}"
+        );
+        let markers = log
+            .iter()
+            .filter(|e| matches!(e.body, EventBody::LakeUpgraded { .. }));
+        assert_eq!(markers.count(), 1, "round {round}");
+        store.verify(None, None).await.unwrap();
+        dir = root.join(format!("again-{round}"));
+        lakelands_core::export::write(store.as_ref(), &dir)
+            .await
+            .unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Two writers' opens of a lake of the format before, one of which
+/// upgrades it between the other's reading of the log's ends and its
+/// lease: the lake holds one `lake_upgraded`, and verifies, from position
+/// 0 and from every position on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lake_upgraded_between_an_open_s_ends_and_its_lease_is_marked_once() {
+    let lake = lake_of_format_14();
+    let racing = Seams {
+        engines: vec![Arc::new(Racing {
+            raced: false.into(),
+        })],
+        ..Seams::default()
+    };
+    let store = lakelands_store::open(Location::memory(lake.as_str()), racing, OpenMode::Write)
+        .await
+        .unwrap();
+    let log = lakelands_core::conformance::fixture::log_events(store.as_ref())
+        .await
+        .unwrap();
+    let kinds: Vec<_> = log.iter().map(|e| e.body.kind().to_string()).collect();
+    let markers = kinds.iter().filter(|k| *k == "lake_upgraded").count();
+    assert_eq!(markers, 1, "{kinds:?}");
+    for from in 0..=log.len() as u64 - 1 {
+        let verified = store.verify(Some(Position(from)), None).await;
+        assert!(
+            verified.is_ok(),
+            "verify from {from}: {verified:?} over {kinds:?}"
+        );
+    }
+}
+
 /// A lake whose newest event another release wrote, in an older format or
 /// a newer one, is refused at an open in every mode, by its name and both
 /// formats, before anything is done to it: its tip stands, its projection
@@ -898,7 +1145,7 @@ async fn lake_continued_in(formats: &[u32]) -> (String, (Position, Digest)) {
 async fn a_lake_of_another_format_is_refused_at_an_open_and_left_as_it_was() {
     use lakelands_api::error::Situation;
     let reads = lakelands_api::event::LOG_FORMAT_VERSION;
-    for other in [reads - 1, reads + 1] {
+    for other in [lakelands_api::event::OLDEST_LOG_FORMAT - 1, reads + 1] {
         let (lake, tip) = lake_continued_in(&[other]).await;
         let state = || {
             let engine = opener()
@@ -922,7 +1169,7 @@ async fn a_lake_of_another_format_is_refused_at_an_open_and_left_as_it_was() {
                 panic!("a lake in format {other} opened for {mode:?}");
             };
             assert!(
-                matches!(e.situation(), Some(Situation::LogFormat { lake: l, found, reads: r })
+                matches!(e.situation(), Some(Situation::LogFormat { lake: l, found, reads: r, .. })
                     if *l == lake && *found == u64::from(other) && *r == u64::from(reads)),
                 "{mode:?}: {e:?}"
             );
@@ -1009,7 +1256,7 @@ async fn a_lake_of_another_format_is_judged_before_its_engine_is_opened() {
         })],
         ..Seams::default()
     };
-    for other in [reads - 1, reads + 1] {
+    for other in [lakelands_api::event::OLDEST_LOG_FORMAT - 1, reads + 1] {
         for (first, created, tip) in [
             (other, reads, reads),
             (reads, other, reads),
@@ -1027,7 +1274,7 @@ async fn a_lake_of_another_format_is_judged_before_its_engine_is_opened() {
                     panic!("a lake written as {first}, {created}, {tip} opened for {mode:?}");
                 };
                 assert!(
-                    matches!(e.situation(), Some(Situation::LogFormat { lake: l, found, reads: r })
+                    matches!(e.situation(), Some(Situation::LogFormat { lake: l, found, reads: r, .. })
                         if *l == lake && *found == u64::from(other) && *r == u64::from(reads)),
                     "{first}, {created}, {tip}, {mode:?}: {e:?}"
                 );
@@ -1075,7 +1322,7 @@ async fn an_import_judges_the_lake_it_finds_before_its_engine_is_opened() {
         written.await.unwrap();
         dir
     };
-    for other in [reads - 1, reads + 1] {
+    for other in [lakelands_api::event::OLDEST_LOG_FORMAT - 1, reads + 1] {
         for (first, created, tip) in [
             (other, reads, reads),
             (reads, other, reads),
@@ -1088,7 +1335,7 @@ async fn an_import_judges_the_lake_it_finds_before_its_engine_is_opened() {
                 panic!("an import onto a lake written as {first}, {created}, {tip} was taken");
             };
             assert!(
-                matches!(e.situation(), Some(Situation::LogFormat { lake: l, found, reads: r })
+                matches!(e.situation(), Some(Situation::LogFormat { lake: l, found, reads: r, .. })
                     if *l == lake && *found == u64::from(other) && *r == u64::from(reads)),
                 "{first}, {created}, {tip}: {e:?}"
             );
@@ -1108,6 +1355,78 @@ async fn an_import_judges_the_lake_it_finds_before_its_engine_is_opened() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A location whose `limits.max_rerank_top` is 0 lets no search take a
+/// second stage: an import there is refused as an open is, before the
+/// target's engine is opened, so no lake is left that no open would take
+/// (067).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_import_at_a_location_of_no_rerank_window_is_refused_before_its_engine_is_opened() {
+    let lake = name();
+    let source = Seams {
+        engines: vec![Arc::new(MemoryOpener::new())],
+        ..Seams::default()
+    };
+    let made = lakelands_store::open(Location::memory(lake.as_str()), source, OpenMode::Create);
+    let store = made.await.unwrap();
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("import-no-window-{lake}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    lakelands_core::export::write(store.as_ref(), &dir)
+        .await
+        .unwrap();
+    let opened = Arc::new(AtomicU64::new(0));
+    let watched = Seams {
+        engines: vec![Arc::new(Watched {
+            inner: opener(),
+            opened: opened.clone(),
+        })],
+        ..Seams::default()
+    };
+    let mut onto = Location::memory(lake.as_str());
+    onto.limits.max_rerank_top = 0;
+    let e = lakelands_store::import(onto, watched, dir.clone()).await;
+    let e = e.expect_err("an import at a location of no rerank window was taken");
+    assert!(
+        matches!(&e, Error::Refused { field: Some(f), .. } if f == "limits.max_rerank_top")
+            && invalid_case(&e) == Some(&Case::RerankNoWindow),
+        "{e:?}"
+    );
+    assert_eq!(opened.load(Ordering::Relaxed), 0, "the engine was opened");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A format-14 event between two of a later format is a fall: a lake's
+/// format never falls, so it is refused at its position as `format_step`
+/// where the events are read in order, by `verify`, by a writer's fold and
+/// by a rebuild, as an event of a format not read is.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_event_whose_format_falls_is_refused_where_it_is_read() {
+    use lakelands_api::error::{Flaw, Situation};
+    let reads = lakelands_api::event::LOG_FORMAT_VERSION;
+    let old = lakelands_api::event::OLDEST_LOG_FORMAT;
+    let (lake, (tip, _)) = lake_continued_in(&[old, reads]).await;
+    let fell = Position(tip.0 - 1);
+    let refused = |e: &Error| {
+        matches!(e.situation(), Some(Situation::Damaged {
+            position: Some(p),
+            flaw: Flaw::FormatStep { v, before },
+            ..
+        }) if *p == fell && *v == u64::from(old) && *before == u64::from(reads))
+    };
+    let reader = open(&lake, OpenMode::Read).await.unwrap();
+    let r = reader.verify(None, None).await;
+    assert!(matches!(&r, Err(e) if refused(e)), "{r:?}");
+    drop(reader);
+    for mode in [OpenMode::Write, OpenMode::Rebuild] {
+        let r = open(&lake, mode).await;
+        assert!(
+            matches!(&r, Err(e) if refused(e)),
+            "{mode:?}: {:?}",
+            r.err()
+        );
+    }
+}
+
 /// An event of another format below the tip is refused where it is read:
 /// by `verify`, naming its position and both formats, and by a writer's
 /// open and a rebuild, whose fold reads it. Every read of the log opens
@@ -1116,14 +1435,15 @@ async fn an_import_judges_the_lake_it_finds_before_its_engine_is_opened() {
 async fn an_event_of_another_format_below_the_tip_is_refused_where_it_is_read() {
     use lakelands_api::error::{Flaw, Situation};
     let reads = lakelands_api::event::LOG_FORMAT_VERSION;
-    let (lake, (tip, _)) = lake_continued_in(&[reads - 1, reads]).await;
+    let unread = lakelands_api::event::OLDEST_LOG_FORMAT - 1;
+    let (lake, (tip, _)) = lake_continued_in(&[unread, reads]).await;
     let other = Position(tip.0 - 1);
     let refused = |e: &Error| {
         matches!(e.situation(), Some(Situation::Damaged {
             position: Some(p),
             flaw: Flaw::FormatOther { v, reads: r },
             ..
-        }) if *p == other && *v == u64::from(reads - 1) && *r == u64::from(reads))
+        }) if *p == other && *v == u64::from(unread) && *r == u64::from(reads))
     };
     let reader = open(&lake, OpenMode::Read).await.unwrap();
     let r = reader.verify(None, None).await;
@@ -1236,6 +1556,7 @@ async fn an_ingest_that_carries_an_authored_field_is_refused_even_unchanged() {
     .unwrap();
     let s: lakelands_api::SourceStream = Box::pin(Stream(
         vec![SourceRecord {
+            source: None,
             upstream: None,
             ty: "tx".into(),
             key: "t1".into(),
@@ -1249,7 +1570,10 @@ async fn an_ingest_that_carries_an_authored_field_is_refused_even_unchanged() {
         .await
         .expect("an answer");
     assert!(
-        matches!(first, Err(Error::Refused { .. })),
+        matches!(
+            first.as_ref().map_err(Error::unwrapped),
+            Err(Error::Refused { .. })
+        ),
         "the source is not the authority on `note`: {first:?}"
     );
 }
@@ -1290,6 +1614,7 @@ async fn a_filtered_search_pulls_until_its_page_is_full() {
         filter: Some(Condition::from("n >= 295")),
         with_meta: false,
         at: ReadAt::default(),
+        rerank: None,
     };
     let first = cat.search(&o, search(None)).await.unwrap().data;
     assert_eq!(
@@ -1373,12 +1698,14 @@ async fn a_hybrid_search_embeds_its_text_through_the_bound_backend() {
                     fields: None,
                     weight: None,
                     text_weight: None,
+                    model: None,
                 },
                 k: 5,
                 cursor: None,
                 filter: None,
                 with_meta: false,
                 at: ReadAt::default(),
+                rerank: None,
             },
         )
         .await
@@ -1412,10 +1739,11 @@ async fn declare_refuses_unkeyable_keys_and_unchecked_functions() {
         Declaration::Function(FunctionDecl {
             name: name.into(),
             backing: "expr".into(),
-            inputs: vec![input],
+            inputs: vec![lakelands_api::ontology::FunctionInput::typed(input)],
             expr: Some(Condition::from(expr)),
             config: serde_json::Value::Null,
             description: None,
+            risk: Default::default(),
         })
     };
     let r = cat
@@ -1611,7 +1939,7 @@ async fn an_external_verb_answers_its_executors_output_or_its_failure() {
     };
     let error = output.expect("a failure is the recorded output");
     assert!(
-        error["error"]
+        error["message"]
             .as_str()
             .is_some_and(|e| e.contains("closed")),
         "{error}"
@@ -2021,6 +2349,7 @@ async fn a_reference_must_name_a_live_record_or_one_earlier_in_the_window() {
     assert_eq!(store.head().await.unwrap(), head);
     let records = vec![
         SourceRecord {
+            source: None,
             upstream: None,
             ty: "partner".into(),
             key: "acme".into(),
@@ -2028,6 +2357,7 @@ async fn a_reference_must_name_a_live_record_or_one_earlier_in_the_window() {
             seen_at: None,
         },
         SourceRecord {
+            source: None,
             upstream: None,
             ty: "invoice".into(),
             key: "i".into(),
@@ -2060,10 +2390,14 @@ async fn a_redeclared_function_recomputes_its_fields_naming_its_version() {
         Declaration::Function(FunctionDecl {
             name: "scaled".into(),
             backing: "expr".into(),
-            inputs: vec![field("net", StorageKind::Decimal)],
+            inputs: vec![lakelands_api::ontology::FunctionInput::typed(field(
+                "net",
+                StorageKind::Decimal,
+            ))],
             expr: Some(Condition::from(expr)),
             config: serde_json::Value::Null,
             description: None,
+            risk: Default::default(),
         })
     };
     cat.declare(&o, function("net * 2")).await.unwrap();
@@ -2265,6 +2599,7 @@ async fn search_finds_a_restricted_record_only_with_the_grant() {
         filter: None,
         with_meta: false,
         at: ReadAt::default(),
+        rerank: None,
     };
     let with = cat.search(&o, search()).await.unwrap().data;
     assert_eq!(with.hits.len(), 1, "the restricted grant finds it");
@@ -2518,12 +2853,14 @@ async fn another_model_bound_later_is_unbound_for_search_and_makes_no_embedding(
                     fields: None,
                     weight: None,
                     text_weight: None,
+                    model: None,
                 },
                 k: 5,
                 cursor: None,
                 filter: None,
                 with_meta: false,
                 at: ReadAt::default(),
+                rerank: None,
             },
         )
         .await;
@@ -2557,12 +2894,14 @@ async fn another_model_bound_later_is_unbound_for_search_and_makes_no_embedding(
                     fields: None,
                     weight: None,
                     text_weight: None,
+                    model: None,
                 },
                 k: 5,
                 cursor: None,
                 filter: None,
                 with_meta: false,
                 at: ReadAt::default(),
+                rerank: None,
             },
         )
         .await;
@@ -2872,7 +3211,7 @@ async fn verify_refuses_a_known_at_that_goes_back_naming_its_position() {
     use lakelands_api::event::{Digest, EventId};
 
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/negative/known-at-goes-back/log")
+        .join("../../docs/log-format/vectors/17/negative/known-at-goes-back/log")
         .join(format!("{:020}.jsonl", 0));
     let text = std::fs::read_to_string(&path).unwrap();
     let events: Vec<CanonicalEvent> = text

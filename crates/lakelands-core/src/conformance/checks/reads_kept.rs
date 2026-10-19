@@ -78,9 +78,10 @@ async fn a_migration_keeps_the_fields_a_declaration_reads(store: Store) -> Held 
         refused_like(&what, preflight, &case)?;
     }
     let renamed = Migration {
-        to: item(&["a", "b2", "c", "d", "e", "f", "g", "payload", "free"]),
         renames: vec![("b".into(), "b2".into())],
-        relation_renames: Vec::new(),
+        ..Migration::to(item(&[
+            "a", "b2", "c", "d", "e", "f", "g", "payload", "free",
+        ]))
     };
     let case = json!({"code": "migration_takes_read", "field": "b", "renamed": "b2",
                       "at": at("object_set", "s")});
@@ -155,7 +156,7 @@ async fn a_migration_keeps_the_fields_a_declaration_reads(store: Store) -> Held 
 
 check!(
     RELATION_KEPT_FOR_A_VERB = a_relation_stays_while_a_verb_is_declared_on_its_link_type,
-    "027 and 035, extended: a migration that removes a relation carried by link records is refused as invalid while a verb in force is declared on the relation's link type, by the preflight, by the apply and by the accept of a removal proposed before the verb, with the head unmoved, while one that keeps the relation is applied, naming a verb to an author `describe` shows it to, one who may call it, whichever of several that is, and telling another only that a declaration is declared there, with no name and no verb's place: one who writes nothing at a proposal, and one kept from the link type at the preflight, the apply, a proposal and, as its reviewer, the accept; the verb's call is still answered; once every such verb is declared again on another type the removal is applied, a `link` sent again under its key finds no relation, and a verb declared on the link type it leaves is refused as on a type that is not declared"
+    "027 and 035, extended: a migration that removes a relation carried by link records is refused as invalid while a verb in force is declared on the relation's link type, by the preflight, by the apply and by the accept of a removal proposed before the verb, with the head unmoved, while one that keeps the relation is applied, naming a verb to an author `describe` shows it to, one who may call it, whichever of several that is, and telling another only that a declaration is declared there, with no name and no verb's place: one who writes nothing at a proposal, and one kept from the link type at the preflight, the apply and a proposal, while as a reviewer, listed the removal in part, it is refused the accept as not granted (lakelands#867); the verb's call is still answered; once every such verb is declared again on another type the removal is applied, a `link` sent again under its key finds no relation, and a verb declared on the link type it leaves is refused as on a type that is not declared"
 );
 
 async fn a_relation_stays_while_a_verb_is_declared_on_its_link_type(store: Store) -> Held {
@@ -231,8 +232,16 @@ async fn a_relation_stays_while_a_verb_is_declared_on_its_link_type(store: Store
     let before = store.head().await.must("reading the head")?;
     let accepted = cat.accept(own, &proposal).await;
     refused_like("the accept of the removal proposed early", accepted, &first)?;
-    let what = "the accept by a reviewer kept from the link type";
-    untold(what, cat.accept(&kept, &proposal).await)?;
+    let accepted = cat.accept(&kept, &proposal).await.map(|_| ());
+    let not_granted = Err(lakelands_api::Error::Refused {
+        field: None,
+        reason: lakelands_api::Refusal::NotGranted,
+    });
+    ensure!(
+        accepted == not_granted,
+        "the accept by a reviewer kept from the link type, listed the removal in part, must be \
+         refused as not granted, naming nothing; it answered {accepted:?}"
+    );
     head_unmoved(store.as_ref(), before, "a refused accept of the removal").await?;
     // A migration that keeps the relation is not the verb's to refuse.
     l.migrate(doc(&["n"], &["signed_by"])).await?;
@@ -301,6 +310,210 @@ async fn a_relation_stays_while_a_verb_is_declared_on_its_link_type(store: Store
         late,
         &undeclared,
     )?;
+    Ok(())
+}
+
+check!(
+    RELATION_KEPT_FOR_A_TARGET = a_relation_stays_while_another_relation_targets_its_link_type,
+    "027 and 035, extended (lakelands#920): a migration that removes a relation carried by link records is refused as invalid while a relation or a reference field that stands after it refers to the relation's link type, a relation of another type or of its own, or a field of a type or of another relation's link records, by the preflight, by the apply, by a proposal and by the accept of a removal proposed before that relation, with the head unmoved, while one that keeps the relation is applied; the relation or the field that refers is named with its type to an author `describe` shows it to, whichever of several that is, and another, kept from its type or from the link type, is told only that a declaration refers to the link type; a migration that removes the relation and the one of its own type that targets it together is applied once nothing else refers, lists both under `dropped` and retires the links of both"
+);
+
+async fn a_relation_stays_while_another_relation_targets_its_link_type(store: Store) -> Held {
+    use crate::conformance::fixture::get_at;
+    const LT: &str = "sys.link.doc.signed_by";
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("signer", vec![field("name", Text)]))
+        .await?;
+    // `doc` with `signed_by`, to a signer, and `cites`, to a link of it.
+    let relations = |names: &[&str]| {
+        let to = |r: &&str| RelationDecl::to(*r, if *r == "signed_by" { "signer" } else { LT });
+        names.iter().map(to).collect::<Vec<_>>()
+    };
+    let doc = |names: &[&str]| {
+        let mut t = type_decl("doc", vec![field("n", Text)]);
+        t.relations = relations(names);
+        t
+    };
+    l.declare(doc(&["signed_by"])).await?;
+    let why = || "no signers".to_owned();
+    let removing = |names: &[&str]| ProposedWrite::Migrate {
+        migration: Box::new(migration(doc(names))),
+        report: Default::default(),
+    };
+    // Proposed while no relation targets the link type, accepted after.
+    let early = cat.propose(own, removing(&[]), why()).await;
+    let Outcome::Proposed { proposal, .. } = early.must("proposing the removal early")? else {
+        return Err(Failure::new("a proposal answers `proposed`"));
+    };
+    let minute = |names: &[&str]| {
+        let mut t = type_decl("minute", vec![field("t", Text)]);
+        t.relations = relations(names);
+        t
+    };
+    l.declare(minute(&["recorded_in"])).await?;
+    l.upsert("signer", "s1", json!({"name": "s"})).await?;
+    l.upsert("doc", "d1", json!({"n": "1"})).await?;
+    l.upsert("minute", "m1", json!({"t": "1"})).await?;
+    let signed = crate::links::link_key(&"d1".into(), &"s1".into());
+    let link = |ty: &'static str, from: &'static str, rel: &'static str, to: &str| {
+        let (ty, from, rel, to) = (ty.into(), from.into(), rel.into(), to.into());
+        let (cat, own) = (cat.clone(), own.clone());
+        async move {
+            let linked = cat.link(
+                &own,
+                &ty,
+                &from,
+                &rel,
+                &to,
+                Default::default(),
+                Default::default(),
+            );
+            linked.await.must("linking").map(drop)
+        }
+    };
+    link("doc", "d1", "signed_by", "s1").await?;
+    link("minute", "m1", "recorded_in", signed.as_str()).await?;
+    let named = |ty: &str, relation: &str| {
+        json!({"code": "migration_takes_target", "unnamed": false, "relation": "signed_by",
+               "type": LT,
+               "at": [{"code": "type", "name": ty}, {"code": "relation", "name": relation}]})
+    };
+    let first = named("minute", "recorded_in");
+    // `kept` is not shown `minute`; `apart` is shown it without the
+    // relation, whose target it is kept from. Each is told that a
+    // relation targets the link type, and not which, at every door.
+    let schema = |name: &str, none: &str| {
+        let grants = json!({"default": "write", "schema": true, "review": true,
+            "types": {none: {"default": "none"}}});
+        let grants = serde_json::from_value(grants).expect("grants read");
+        principal(store.as_ref(), PrincipalKind::Agent, name, grants)
+    };
+    let (kept, apart) = (schema("kept", "minute"), schema("apart", LT));
+    fn untold<T: std::fmt::Debug>(what: &str, a: lakelands_api::Result<T>) -> Held {
+        let unnamed = json!({"code": "migration_takes_target", "unnamed": true,
+            "relation": "signed_by", "type": LT});
+        let said = ["minute", "recorded_in", "cites", "memo", "about"];
+        let told = |e: &lakelands_api::Error| said.iter().any(|n| names(e, n));
+        let told = a.as_ref().is_err_and(told);
+        let wire = a.as_ref().err().map(|e| json!(e).to_string());
+        refused_like(what, a, &unnamed)?;
+        ensure!(
+            !told,
+            "{what}, must name no relation and place it at none; it said {wire:?}"
+        );
+        Ok(())
+    }
+    let before = store.head().await.must("reading the head")?;
+    let accepted = cat.accept(own, &proposal).await;
+    refused_like("the accept of the removal proposed early", accepted, &first)?;
+    let what = "the accept by a reviewer kept from the type that targets the link type";
+    untold(what, cat.accept(&kept, &proposal).await)?;
+    let removal = migration(doc(&[]));
+    let preflight = cat.migrate(own, removal.clone()).await;
+    refused_like("the preflight of the removal", preflight, &first)?;
+    let applied = cat.migrate_apply(own, removal.clone(), "none").await;
+    refused_like("the apply of the removal", applied, &first)?;
+    let proposed = cat.propose(own, removing(&[]), why()).await;
+    refused_like("the removal proposed", proposed, &first)?;
+    for who in [&kept, &apart] {
+        let id = who.id.as_str();
+        let preflight = cat.migrate(who, removal.clone()).await;
+        untold(&format!("the preflight by `{id}`"), preflight)?;
+        let applied = cat.migrate_apply(who, removal.clone(), "none").await;
+        untold(&format!("the apply by `{id}`"), applied)?;
+        let proposed = cat.propose(who, removing(&[]), why()).await;
+        untold(&format!("the removal proposed by `{id}`"), proposed)?;
+    }
+    head_unmoved(store.as_ref(), before, "a refused removal of a relation").await?;
+    // A migration that keeps the relation is not refused: `cites`, of
+    // `doc` itself, targets the link type too, and is the one named now,
+    // to `kept` as well, who is shown it.
+    l.migrate(doc(&["signed_by", "cites"])).await?;
+    link("doc", "d1", "cites", signed.as_str()).await?;
+    let own_type = named("doc", "cites");
+    let removal = migration(doc(&["cites"]));
+    for who in [own, &kept] {
+        let preflight = cat.migrate(who, removal.clone()).await;
+        let what = format!("the removal that keeps `cites`, by `{}`", who.id.as_str());
+        refused_like(&what, preflight, &own_type)?;
+    }
+    // Removed together with `cites`, `minute`'s relation still refuses it.
+    let both = migration(doc(&[]));
+    let preflight = cat.migrate(own, both.clone()).await;
+    refused_like(
+        "the removal of both while `minute` targets",
+        preflight,
+        &first,
+    )?;
+    l.migrate(minute(&[])).await?;
+    // A reference field into the link type refuses it as a relation does:
+    // named to the owner, unnamed to one kept from the link type.
+    let memo = |fields: Vec<_>| type_decl("memo", fields);
+    let about = crate::conformance::fixture::reference("about", LT);
+    l.declare(memo(vec![field("t", Text), about])).await?;
+    let at_field = json!({"code": "migration_takes_target", "unnamed": false,
+        "relation": "signed_by", "type": LT,
+        "at": [{"code": "type", "name": "memo"}, {"code": "field", "name": "about"}]});
+    let preflight = cat.migrate(own, both.clone()).await;
+    refused_like(
+        "the removal while `memo.about` refers",
+        preflight,
+        &at_field,
+    )?;
+    let preflight = cat.migrate(&apart, both.clone()).await;
+    untold("the same removal, by `apart`", preflight)?;
+    l.migrate(memo(vec![field("t", Text)])).await?;
+    // So does one on another relation's link records: `minute`'s `seen`,
+    // whose link to `s1` names the link `d1:s1` in `pref`.
+    let pref = crate::conformance::fixture::reference("pref", LT);
+    let seen = |fields: Vec<_>| {
+        let mut t = minute(&[]);
+        t.relations = vec![RelationDecl {
+            fields,
+            ..RelationDecl::to("seen", "signer")
+        }];
+        t
+    };
+    l.migrate(seen(vec![pref])).await?;
+    let (ty, from, rel, to) = ("minute".into(), "m1".into(), "seen".into(), "s1".into());
+    let pref = crate::conformance::fixture::patch(json!({"pref": signed.as_str()}));
+    let linked = cat.link(own, &ty, &from, &rel, &to, pref, Default::default());
+    linked
+        .await
+        .must("linking m1 to s1, naming the link d1:s1")?;
+    let at_link_field = json!({"code": "migration_takes_target", "unnamed": false,
+        "relation": "signed_by", "type": LT,
+        "at": [{"code": "type", "name": "sys.link.minute.seen"},
+               {"code": "field", "name": "pref"}]});
+    let preflight = cat.migrate(own, both.clone()).await;
+    refused_like(
+        "the removal while a link field of `seen` refers",
+        preflight,
+        &at_link_field,
+    )?;
+    l.migrate(seen(vec![])).await?;
+    let preflight = cat.migrate(own, removal).await;
+    refused_like("the removal that keeps `cites`", preflight, &own_type)?;
+    let report = cat.migrate(own, both.clone()).await;
+    let report = report.must("the preflight of removing both")?.data;
+    let dropped = report.dropped;
+    cat.migrate_apply(own, both, &report.report_id)
+        .await
+        .must("removing `signed_by` and `cites` together")?;
+    let cited = crate::links::link_key(&"d1".into(), &signed);
+    let lt = |r: &str| crate::links::link_type_name(&"doc".into(), &r.into());
+    let gone = |r: &'static str, key: &lakelands_api::RecordKey| {
+        let (cat, own, get) = (cat.clone(), own.clone(), get_at(key.as_str(), None));
+        async move { cat.get(&own, &lt(r), get).await.is_err() }
+    };
+    let retired = gone("signed_by", &signed).await && gone("cites", &cited).await;
+    ensure!(
+        dropped == [("signed_by".into(), 1), ("cites".into(), 1)] && retired,
+        "with no other relation targeting `{LT}`, the migration that removes `signed_by` and \
+         `cites` together lists each under `dropped` with its one link and retires both; it \
+         listed {dropped:?}, and both are gone: {retired}"
+    );
     Ok(())
 }
 

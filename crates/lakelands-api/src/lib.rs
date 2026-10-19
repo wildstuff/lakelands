@@ -33,20 +33,24 @@ pub mod query;
 pub mod read;
 pub mod record;
 pub mod seam;
+pub mod settings;
 pub mod shape;
 pub mod time;
 pub mod tools;
 pub mod write;
 
-pub use catalog::{Catalog, CommitStream, LakeStore, SourceStream, Verification, ingest_all};
+pub use catalog::{
+    Catalog, CommitStream, LakeStore, SourceStream, Verification, ingest_all, ingest_all_with,
+};
 pub use error::{Error, Missing, Refusal, Result};
 pub use id::{
-    Cursor, FieldName, IdempotencyKey, LakeId, ParamName, Position, ProposalId, RecordKey,
-    RelationName, SourceId, TriggerName, TypeName, ValueTypeName, VerbName, Version,
+    ConstraintName, Cursor, DeliveryId, FieldName, IdempotencyKey, LakeId, ParamName, Position,
+    ProposalId, RecordKey, RelationName, SourceId, TriggerName, TypeName, ValueTypeName, VerbName,
+    Version,
 };
 pub use location::{EngineConfig, Location, SqliteTuning};
 pub use principal::{Access, Grants, Principal, PrincipalKind, WriteContext, WriteOrigin};
 pub use read::{After, Find, Found, Get, Params, ReadAt, Reply};
 pub use record::{FieldMeta, Origin, Patch, Record, SourceRecord, Upstream, Value};
 pub use time::Timestamp;
-pub use write::{Committed, Outcome, SetOff, WriteOpts};
+pub use write::{Committed, IngestOpts, Outcome, SetOff, WriteOpts};

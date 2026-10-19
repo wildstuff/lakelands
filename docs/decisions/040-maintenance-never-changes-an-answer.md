@@ -35,7 +35,10 @@ A compact changes nothing a caller can observe:
 **A compact that fails leaves every answer as it was**, on every engine.
 On SQLite, `VACUUM` is one transaction: a reader in another process that
 holds a snapshot past the busy timeout makes it fail as unavailable,
-naming the reason, and the projection is as it was. PostgreSQL's
+naming the reason, and the projection is as it was. One that holds it
+after the rewrite keeps the journal, and the freed pages in it, from
+being truncated: the compact answers busy too, the rewrite stands, and
+the next compact truncates (lakelands#1042). PostgreSQL's
 `VACUUM` cannot be rolled back, but at no point does it change a row a
 read sees. So "nothing changes" is a sentence about answers, not about
 pages on disk.

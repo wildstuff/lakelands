@@ -36,6 +36,7 @@ fn asked() -> Rankings {
     Rankings {
         text: Some(("quay".into(), None)),
         vectors: vec![("e".into(), vec![1.0, 0.0])],
+        ..Rankings::default()
     }
 }
 
@@ -55,6 +56,7 @@ fn lake(url: &str, schema: &str) -> Box<dyn LakeEngine> {
         fields: serde_json::from_value(json!({"body": "quay", "e": [1.0, 0.0]})).unwrap(),
         meta: Default::default(),
         position: Position(1),
+        made: Position(1),
         retired: false,
         restricted: false,
     })

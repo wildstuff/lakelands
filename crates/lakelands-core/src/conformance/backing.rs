@@ -14,7 +14,8 @@
 //! - after [`unplug`] of `t`, every call fails, until [`plug`].
 //!
 //! It counts the calls made with each token, so a check can tell a value
-//! read back from a recorded output from one computed by calling again.
+//! read back from a recorded output from one computed by calling again,
+//! and keeps the cause each call named ([`causes`]).
 //! The token is the check's own, so checks never count each other's
 //! calls.
 //!
@@ -38,7 +39,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use async_trait::async_trait;
 use lakelands_api::error::{Case, Exchange, Remote, Situation};
-use lakelands_api::seam::{EmbedBackend, FunctionBacking, FunctionCall};
+use lakelands_api::seam::{
+    CallCause, EmbedBackend, FunctionBacking, FunctionCall, RerankCall, Reranker,
+};
 use lakelands_api::{Error, Result, Value};
 
 /// The backing kind the suite's functions name.
@@ -48,6 +51,7 @@ pub const KIND: &str = "conformance";
 struct Calls {
     made: BTreeMap<String, usize>,
     unplugged: BTreeSet<String>,
+    causes: BTreeMap<String, Vec<Option<CallCause>>>,
 }
 
 /// The guard of `m`, also when a check that panicked poisoned it.
@@ -80,6 +84,8 @@ impl FunctionBacking for Scripted {
         {
             let mut c = lock(calls());
             *c.made.entry(token.clone()).or_default() += 1;
+            let cause = call.cause.clone();
+            c.causes.entry(token.clone()).or_default().push(cause);
             if c.unplugged.contains(&token) {
                 let function = call.function.clone();
                 return Err(fail(Remote::Function { function }));
@@ -106,6 +112,11 @@ pub fn backings() -> Vec<Arc<dyn FunctionBacking>> {
 /// How many calls were made with a token.
 pub fn made(token: &str) -> usize {
     lock(calls()).made.get(token).copied().unwrap_or(0)
+}
+
+/// The cause each call made with a token named, in the order made.
+pub fn causes(token: &str) -> Vec<Option<CallCause>> {
+    lock(calls()).causes.get(token).cloned().unwrap_or_default()
 }
 
 /// Make every later call with a token fail.
@@ -246,6 +257,85 @@ pub fn plug_text(text: &str) {
     lock(embeds()).unplugged.remove(text);
 }
 
+/// The model the suite's reranker names.
+pub const RERANK_MODEL: &str = "conformance-rerank";
+
+/// A query the suite's reranker fails on, as weather.
+pub const RERANK_BROKEN: &str = "broken";
+
+/// A query it refuses with an error that is not `Unavailable`, as a
+/// reranker that turns a request down does.
+pub const RERANK_REFUSED: &str = "refused";
+
+/// A query it answers one score too few for.
+pub const RERANK_SHORT: &str = "short";
+
+/// A query it answers a score that is not a number for.
+pub const RERANK_NAN: &str = "nan";
+
+fn reranks() -> &'static Mutex<Vec<RerankCall>> {
+    static RERANKS: OnceLock<Mutex<Vec<RerankCall>>> = OnceLock::new();
+    RERANKS.get_or_init(Mutex::default)
+}
+
+/// The scripted reranker: a text scores twice its count of `overdue`
+/// words and once its count of `reminder` words. It records every call.
+struct Scorer;
+
+#[async_trait]
+impl Reranker for Scorer {
+    fn model(&self) -> &str {
+        RERANK_MODEL
+    }
+
+    async fn rerank(&self, call: &RerankCall) -> Result<Vec<f64>> {
+        lock(reranks()).push(call.clone());
+        let model = RERANK_MODEL.to_owned();
+        if call.query.starts_with(RERANK_BROKEN) {
+            return Err(fail(Remote::Reranker { model }));
+        }
+        if call.query.starts_with(RERANK_REFUSED) {
+            let reason = lakelands_api::Refusal::NotGranted;
+            return Err(Error::Refused {
+                field: None,
+                reason,
+            });
+        }
+        let mut scores: Vec<f64> = call
+            .candidates
+            .iter()
+            .map(|c| rerank_score(&c.text))
+            .collect();
+        if call.query.starts_with(RERANK_SHORT) {
+            scores.pop();
+        }
+        if call.query.starts_with(RERANK_NAN) {
+            scores.iter_mut().for_each(|s| *s = f64::NAN);
+        }
+        Ok(scores)
+    }
+}
+
+/// What the suite's reranker scores a text: twice its count of the word
+/// `overdue` and once its count of `reminder`.
+pub fn rerank_score(text: &str) -> f64 {
+    let words = || text.split(|c: char| !c.is_alphanumeric());
+    let count = |word: &str| words().filter(|w| *w == word).count();
+    (2 * count("overdue") + count("reminder")) as f64
+}
+
+/// The reranker the checks that ask for one bind.
+pub fn reranker() -> Arc<dyn Reranker> {
+    Arc::new(Scorer)
+}
+
+/// Every call the suite's reranker has received, in this process, oldest
+/// first. The suite runs its checks one at a time, so a check reads its
+/// own calls as those past the count it started with.
+pub fn rerank_calls() -> Vec<RerankCall> {
+    lock(reranks()).clone()
+}
+
 /// A host's system vocabulary, as a check scripts it: it adds `types` and
 /// allows every `sys.` type in every lake except those named in
 /// `withheld`. Lakelands' own types are never withheld by it.
@@ -285,8 +375,11 @@ fn executions() -> &'static Mutex<BTreeMap<String, usize>> {
 
 /// The scripted executor: it answers `{"done": <verb>, "record": <key>}`,
 /// the key null for a verb called on its type, `null` when the payload's
-/// `null` is `true`, `{"paid": 1e16}` when its `vast` is `true`, or fails
-/// when its `fail` is `true`. It counts its
+/// `null` is `true`, `{"paid": 1e16}` when its `vast` is `true`, fails
+/// when its `fail` is `true`, declines the call when its `decline` is
+/// `true`, answers `not_granted` when its `ungrant` is `true`, or a refusal
+/// whose case holds an integer beyond ±(2^53 − 1) when its `vast_error` is
+/// `true`. It counts its
 /// runs per record key, and per verb for a verb called on its type, so a
 /// check uses keys and such verbs of its own. A call on a record whose key
 /// begins with `held-` is counted and held until [`release`] of that key,
@@ -339,6 +432,19 @@ impl lakelands_api::seam::VerbExecutor for Executor {
         }
         if invocation.payload.get("vast") == Some(&Value::Bool(true)) {
             return Ok(serde_json::json!({"paid": 1e16}));
+        }
+        if invocation.payload.get("decline") == Some(&Value::Bool(true)) {
+            return Err(Error::declined(&invocation.verb));
+        }
+        if invocation.payload.get("vast_error") == Some(&Value::Bool(true)) {
+            let n = serde_json::Number::from(i64::MAX);
+            return Err(Error::invalid(Case::IntegerTooLarge { n }));
+        }
+        if invocation.payload.get("ungrant") == Some(&Value::Bool(true)) {
+            return Err(Error::Refused {
+                field: None,
+                reason: lakelands_api::Refusal::NotGranted,
+            });
         }
         if invocation.payload.get("fail") == Some(&Value::Bool(true)) {
             let name = invocation.verb.to_string();

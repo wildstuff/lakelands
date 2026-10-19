@@ -171,12 +171,13 @@ impl Ticker {
         loop {
             match self.tick().await {
                 Some(Ok(r)) => eprintln!(
-                    "lakelands: aged lake `{}` for {}: {} rule(s), {} moved, {} guard(s) failed",
+                    "lakelands: aged lake `{}` for {}: {} rule(s), {} moved, {} guard(s) failed{}",
                     self.store.lake(),
                     date(r.date),
                     r.rules.len(),
                     r.transitions,
-                    r.failed_guards
+                    r.failed_guards,
+                    crate::commands::refused_words(r.refused)
                 ),
                 Some(Err(e)) => eprintln!(
                     "lakelands: aging lake `{}` for {} failed, trying again at the next check: {e}",
@@ -392,6 +393,37 @@ mod tests {
             ty: Option<&lakelands_api::TypeName>,
         ) -> lakelands_api::Result<lakelands_api::write::PurgeReport> {
             self.inner.purge_preflight(source, ty).await
+        }
+        async fn forget_source(
+            &self,
+            source: &lakelands_api::SourceId,
+            id: Option<&str>,
+        ) -> lakelands_api::Result<lakelands_api::write::ForgetReport> {
+            self.inner.forget_source(source, id).await
+        }
+        async fn forget_preflight(
+            &self,
+            source: &lakelands_api::SourceId,
+        ) -> lakelands_api::Result<lakelands_api::write::ForgetReport> {
+            self.inner.forget_preflight(source).await
+        }
+        async fn remove_values(
+            &self,
+            source: &lakelands_api::SourceId,
+            selection: &lakelands_api::write::Selection,
+            shredded: bool,
+            id: Option<&str>,
+        ) -> lakelands_api::Result<lakelands_api::write::RemoveReport> {
+            self.inner
+                .remove_values(source, selection, shredded, id)
+                .await
+        }
+        async fn remove_values_preflight(
+            &self,
+            source: &lakelands_api::SourceId,
+            selection: &lakelands_api::write::Selection,
+        ) -> lakelands_api::Result<lakelands_api::write::RemoveReport> {
+            self.inner.remove_values_preflight(source, selection).await
         }
         async fn compact(&self) -> lakelands_api::Result<lakelands_api::write::CompactReport> {
             self.inner.compact().await

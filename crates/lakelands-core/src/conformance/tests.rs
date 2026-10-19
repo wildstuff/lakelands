@@ -25,7 +25,7 @@ use lakelands_api::{
 
 use super::fixture::Must;
 use super::{
-    Check, Failure, FreshLake, Harness, Held, Relimit, Reopen, Report, Store, Tally, checks,
+    Check, Failure, Fault, FreshLake, Harness, Held, Relimit, Reopen, Report, Store, Tally, checks,
     run_all, run_checks, run_one,
 };
 
@@ -134,6 +134,15 @@ impl Catalog for DownCatalog {
     refuse!(migrate_value_type_apply<'life1, 'life2>(
         who: &'life1 Principal, to: lakelands_api::write::ValueTypeMigration, report_id: &'life2 str
     ) -> Outcome);
+    refuse!(accept_planned<'life1, 'life2, 'life3>(
+        who: &'life1 Principal, proposal: &'life2 ProposalId, plan_id: &'life3 str
+    ) -> Outcome);
+    refuse!(plan<'life1>(
+        who: &'life1 Principal, change: lakelands_api::write::Change
+    ) -> Reply<lakelands_api::write::Plan>);
+    refuse!(enact<'life1, 'life2>(
+        who: &'life1 Principal, change: lakelands_api::write::Change, plan_id: &'life2 str
+    ) -> Outcome);
     refuse!(ingest<'life1, 'life2>(
         who: &'life1 Principal, source: &'life2 SourceId, records: SourceStream
     ) -> CommitStream);
@@ -177,6 +186,10 @@ impl LakeStore for DownStore {
     refuse!(age<>(today: lakelands_api::Timestamp) -> lakelands_api::write::AgeReport);
     refuse!(purge_source<'life1, 'life2, 'life3>(source: &'life1 lakelands_api::SourceId, ty: Option<&'life2 TypeName>, id: Option<&'life3 str>) -> lakelands_api::write::PurgeReport);
     refuse!(purge_preflight<'life1, 'life2>(source: &'life1 lakelands_api::SourceId, ty: Option<&'life2 TypeName>) -> lakelands_api::write::PurgeReport);
+    refuse!(forget_source<'life1, 'life2>(source: &'life1 lakelands_api::SourceId, id: Option<&'life2 str>) -> lakelands_api::write::ForgetReport);
+    refuse!(forget_preflight<'life1>(source: &'life1 lakelands_api::SourceId) -> lakelands_api::write::ForgetReport);
+    refuse!(remove_values<'life1, 'life2, 'life3>(source: &'life1 lakelands_api::SourceId, selection: &'life2 lakelands_api::write::Selection, shredded: bool, id: Option<&'life3 str>) -> lakelands_api::write::RemoveReport);
+    refuse!(remove_values_preflight<'life1, 'life2>(source: &'life1 lakelands_api::SourceId, selection: &'life2 lakelands_api::write::Selection) -> lakelands_api::write::RemoveReport);
     refuse!(compact<>() -> lakelands_api::write::CompactReport);
     refuse!(position_at<>(known_at: lakelands_api::Timestamp) -> Option<Position>);
     refuse!(vector_coverage<'life1>(ty: &'life1 TypeName) -> Vec<lakelands_api::read::VectorCoverage>);
@@ -201,6 +214,9 @@ impl Harness for DownHarness {
         Arc::new(|_, _| Box::pin(async { Err(down()) }))
     }
     fn relimiter(&self) -> Relimit {
+        Arc::new(|_, _, _| Box::pin(async { Err(down()) }))
+    }
+    fn faulter(&self) -> Fault {
         Arc::new(|_, _, _| Box::pin(async { Err(down()) }))
     }
     fn scratch(&self) -> std::path::PathBuf {
@@ -380,4 +396,36 @@ fn next_drains_a_stream_in_order_and_then_ends() {
         keys
     });
     assert_eq!(keys, ["a", "b"]);
+}
+
+/// A catalog that carries no delivery id to the store refuses one, rather
+/// than drop it; with none, its `ingest_with` is its `ingest`.
+#[test]
+fn a_catalog_that_carries_no_delivery_refuses_one() {
+    use lakelands_api::error::Case;
+    use lakelands_api::write::IngestOpts;
+    let cat = DownCatalog(LakeId::from("l"));
+    let who = Principal {
+        kind: lakelands_api::PrincipalKind::Human,
+        id: "owner".into(),
+        lake: LakeId::from("l"),
+        grants: lakelands_api::Grants::owner(),
+    };
+    let src = SourceId::from("crm");
+    let with = |delivery: Option<&str>| IngestOpts {
+        delivery: delivery.map(Into::into),
+    };
+    let named = block_on(cat.ingest_with(
+        &who,
+        &src,
+        with(Some("batch-7")),
+        super::fixture::stream(vec![]),
+    ));
+    let case = named.err().and_then(|e| e.case().map(|s| s.case.clone()));
+    assert_eq!(case, Some(Case::DeliveryNotCarried));
+    let none = block_on(cat.ingest_with(&who, &src, with(None), super::fixture::stream(vec![])));
+    assert!(
+        matches!(&none, Err(e) if e.situation() == down().situation()),
+        "with no delivery it ingests, and this catalog's ingest is down"
+    );
 }

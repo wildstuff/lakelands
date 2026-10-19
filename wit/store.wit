@@ -1,4 +1,4 @@
-package lakelands:data@0.13.1;
+package lakelands:data@0.16.0;
 
 /// One open lake and its data doors: the store facade (`LakeStore`),
 /// the per-type doors, proposals and ingest of the catalog (`Catalog`),
@@ -14,9 +14,9 @@ interface store {
     use types.{
         lake-id, type-name, record-key, relation-name, verb-name, proposal-id, source-id, position,
         principal, write-context, limits, verification, error, timestamp, age-report, purge-report,
-        compact-report, vector-coverage,
+        compact-report, vector-coverage, forget-report, selection, remove-report,
         find, found-reply, get, record-reply, patch, write-opts, outcome,
-        proposed-write, proposal-filter, proposals-reply, source-record, committed,
+        proposed-write, proposal-filter, proposals-reply, source-record, committed, ingest-error, ingest-opts,
         feed-filter, feed-batch,
     };
 
@@ -29,6 +29,12 @@ interface store {
         lake: func() -> lake-id;
         /// Whether this handle holds the lake's writer lease.
         is-writer: func() -> bool;
+        /// Why a forgetting's reclaim is still owed, where the last one
+        /// tried failed: the writer opened without it.
+        reclaim-owed: func() -> option<string>;
+        /// Why the writer's open rebuilt the projection, where it did: an
+        /// older build laid it out.
+        rebuilt-at-open: func() -> option<string>;
         limits: func() -> limits;
         /// The lake's last position.
         head: func() -> result<position, error>;
@@ -55,6 +61,26 @@ interface store {
         purge-source: func(source: source-id, %type: option<type-name>, report-id: option<string>) -> result<purge-report, error>;
         /// What `purge-source` would do, appending nothing.
         purge-preflight: func(source: source-id, %type: option<type-name>) -> result<purge-report, error>;
+        /// Forget a source: its keys destroyed, every value it sealed
+        /// erased at every position, the storage reclaimed, in one act
+        /// under the writer's lock. With a preflight's id, refused unless
+        /// that report is of this source at this head.
+        forget-source: func(source: source-id, report-id: option<string>) -> result<forget-report, error>;
+        /// What `forget-source` would do, appending nothing, with the time
+        /// it is expected to hold the writer's lock.
+        forget-preflight: func(source: source-id) -> result<forget-report, error>;
+        /// Take back part of a source: each value a selected event of it
+        /// wrote erased at every position, the records left holding
+        /// nothing of another hand retired, the storage reclaimed, in one
+        /// act under the writer's lock; the versions of its key whose
+        /// values it all selects are destroyed. With `require-shredded`,
+        /// refused while a value of an erasable field would be redacted
+        /// only. With a preflight's id, refused unless that report is of
+        /// this removal at this head.
+        remove-values: func(source: source-id, selection: selection, require-shredded: bool, report-id: option<string>) -> result<remove-report, error>;
+        /// What `remove-values` would do, appending nothing, with the time
+        /// it is expected to hold the writer's lock.
+        remove-values-preflight: func(source: source-id, selection: selection) -> result<remove-report, error>;
         /// Give back the storage the projection no longer uses; appends
         /// nothing and changes no answer.
         compact: func() -> result<compact-report, error>;
@@ -89,12 +115,17 @@ interface store {
         call: func(who: principal, verb: verb-name, key: option<record-key>, payload: patch, opts: write-opts) -> result<outcome, error>;
         propose: func(who: principal, write: proposed-write, why: string) -> result<outcome, error>;
         accept: func(who: principal, proposal: proposal-id) -> result<outcome, error>;
+        /// Accept a proposed change to the ontology against the plan of
+        /// its change made now.
+        accept-planned: func(who: principal, proposal: proposal-id, plan-id: string) -> result<outcome, error>;
         reject: func(who: principal, proposal: proposal-id, reason: string) -> result<outcome, error>;
         proposals: func(who: principal, filter: proposal-filter) -> result<proposals-reply, error>;
         /// Feed the lake the records of one delivery from a source. The
         /// crate takes a stream; here the delivery is a list, and the
         /// answer lists every commit window it was written in.
-        ingest: func(who: principal, source: source-id, records: list<source-record>) -> result<list<committed>, error>;
+        ingest: func(who: principal, source: source-id, records: list<source-record>) -> result<list<committed>, ingest-error>;
+        /// `ingest` in the delivery `opts` names.
+        ingest-with: func(who: principal, source: source-id, opts: ingest-opts, records: list<source-record>) -> result<list<committed>, ingest-error>;
     }
 
     /// The change feed (`ChangeFeed`): the consumer keeps its own
@@ -102,5 +133,8 @@ interface store {
     resource change-feed {
         poll: func(%from: position, filter: feed-filter, limit: u32) -> result<feed-batch, error>;
         ack: func(consumer: string, through: position) -> result<_, error>;
+        /// The head once the log is past `after`, or once `within-millis`
+        /// have passed; never past the head `poll` reads.
+        wait: func(after: position, within-millis: u64) -> result<position, error>;
     }
 }

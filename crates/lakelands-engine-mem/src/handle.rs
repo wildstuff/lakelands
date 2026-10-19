@@ -22,7 +22,7 @@ use lakelands_api::write::{Declaration, Proposal};
 use crate::projection::Put;
 use crate::vectors::Indexed;
 use crate::view::MemView;
-use crate::{Lake, NAME, invalid, lock};
+use crate::{Lake, NAME, REBUILD_RATE, invalid, lock};
 
 /// One handle onto a lake held in memory.
 pub struct MemoryLake {
@@ -101,6 +101,10 @@ impl LakeEngine for MemoryLake {
         NAME
     }
 
+    fn rebuild_rate(&self) -> u64 {
+        REBUILD_RATE
+    }
+
     fn lake(&self) -> &LakeId {
         &self.lake
     }
@@ -175,7 +179,8 @@ impl LakeEngine for MemoryLake {
         if let Some((text, fields)) = &asked.text {
             let head = p.records_at(ty, p.folded);
             lists.push(p.type_at(ty, p.folded).map_or_else(Vec::new, |decl| {
-                lakelands_core::engines::lexical(decl, head, text, fields.as_deref(), k)
+                let weights = &asked.text_weights;
+                lakelands_core::engines::lexical(decl, head, text, fields.as_deref(), weights, k)
             }));
         }
         for (field, query) in &asked.vectors {

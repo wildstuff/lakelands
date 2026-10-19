@@ -16,7 +16,8 @@ use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::{
-    Annotations, Authority, Cardinality, ComputedAt, OnInputChange, Risk, StorageKind, VerbScope,
+    Annotations, Authority, Cardinality, ComputedAt, OnInputChange, RetiredBy, Risk, StorageKind,
+    VerbScope,
 };
 
 /// `value_types/<name>.yaml`.
@@ -31,6 +32,8 @@ pub(super) struct ValueTypeDoc {
     pub format: Option<String>,
     pub scale: Option<u32>,
     pub description: Option<String>,
+    #[serde(default)]
+    pub annotations: Annotations,
 }
 
 /// `types/<name>.yaml`.
@@ -50,6 +53,10 @@ pub(super) struct TypeDoc {
     #[serde(default = "yes")]
     pub field_meta: bool,
     pub language: Option<String>,
+    #[serde(default)]
+    pub insert_only: bool,
+    #[serde(default)]
+    pub retired_by: RetiredBy,
     pub description: Option<String>,
     pub label: Option<String>,
     #[serde(default)]
@@ -85,6 +92,8 @@ pub(super) struct FieldBody {
     pub sensitive: bool,
     #[serde(default)]
     pub searchable: bool,
+    #[serde(default)]
+    pub erasable: bool,
     pub description: Option<String>,
     pub label: Option<String>,
     pub embed: Option<EmbedDoc>,
@@ -181,6 +190,8 @@ pub(super) struct VerbDoc {
     pub requires: Option<Cond>,
     pub set: Option<Named<Cond>>,
     pub executor: Option<String>,
+    #[serde(default)]
+    pub retire: bool,
     pub description: Option<String>,
 }
 
@@ -193,6 +204,9 @@ pub(super) struct TriggerDoc {
     pub when: Option<Cond>,
     pub description: Option<String>,
     pub max_depth: Option<u32>,
+    #[serde(default)]
+    pub when_strict: bool,
+    pub on_changes: Option<Vec<lakelands_api::event::ChangeKind>>,
 }
 
 /// `object_sets/<name>.yaml`.
@@ -219,17 +233,34 @@ pub(super) struct AgingRuleDoc {
     pub description: Option<String>,
 }
 
+/// `settings/<key>.yaml`: a host's setting, and the value it is first
+/// given.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SettingDoc {
+    pub key: String,
+    #[serde(rename = "type")]
+    pub ty: TypeSpec,
+    pub unit: Option<String>,
+    pub description: Option<String>,
+    pub group: Option<String>,
+    pub value: Option<serde_json::Value>,
+}
+
 /// `functions/<name>.yaml`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct FunctionDoc {
     pub name: String,
     pub backing: Option<String>,
+    /// An input written with no value (`qty:`) is of any kind.
     #[serde(default)]
-    pub inputs: Named<FieldDoc>,
+    pub inputs: Named<Option<FieldDoc>>,
     pub expr: Option<Cond>,
     pub config: Option<serde_json::Value>,
     pub description: Option<String>,
+    #[serde(default)]
+    pub risk: Risk,
 }
 
 /// A string, or a mapping read as `T`. Errors inside the mapping keep

@@ -109,7 +109,10 @@ async fn a_type_made_of_another_is_shown_only_with_it(store: Store) -> Held {
         .await?;
     l.upsert("note", "n1", json!({"about": "p1"})).await?;
     let declarations = vec![trigger_on("countersigned", LINKS, None)];
-    let proposed = ProposedWrite::Declare { declarations };
+    let proposed = ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     let proposed = l.cat.propose(&l.own, proposed, "a trigger".into()).await;
     proposed.must("proposing a trigger on the link type")?;
     let none = Some(Access::None);
@@ -151,6 +154,7 @@ async fn a_type_made_of_another_is_shown_only_with_it(store: Store) -> Held {
             filter: None,
             with_meta: false,
             at: Default::default(),
+            rerank: None,
         };
         // A walk's answer; "no relation" where it is the answer for none, alike.
         let walk = |from: &'static str, key: &'static str, by: &'static str| async move {
@@ -840,12 +844,15 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
     let mut again = view("kn_view", "pub", "name", &f("name", "text"), false);
     again["description"] = json!("again");
     let declarations = vec![serde_json::from_value(again).expect("a declaration reads")];
-    let bundle = ProposedWrite::Declare { declarations };
+    let bundle = ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     let proposed = l.cat.propose(&l.own, bundle, "why".into()).await;
     proposed.must("proposing `kn_view` again")?;
     let listed = l.cat.proposals(&eve, ProposalFilter::default()).await;
     for p in listed.must("listing")?.data {
-        let Some(ProposedWrite::Declare { declarations }) = p.write else {
+        let Some(ProposedWrite::Declare { declarations, .. }) = p.write else {
             continue;
         };
         for d in declarations {
@@ -931,6 +938,7 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
     });
     let bundle = ProposedWrite::Declare {
         declarations: again.collect(),
+        plan: None,
     };
     let proposed = l.cat.propose(&l.own, bundle, "why".into()).await;
     proposed.must("proposing the measured views again")?;
@@ -942,7 +950,7 @@ async fn a_view_keyed_by_a_field_its_reader_may_not_know_of_at_its_sources_is_no
             .must("listing")?
             .data
         {
-            let Some(ProposedWrite::Declare { declarations }) = p.write else {
+            let Some(ProposedWrite::Declare { declarations, .. }) = p.write else {
                 continue;
             };
             for d in declarations {
@@ -1216,11 +1224,7 @@ async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_kno
         f("cat", "text"), f("memo", "text")]});
     let to_ticket = serde_json::from_value(to_ticket).expect("a type");
     let migrate = ProposedWrite::Migrate {
-        migration: Box::new(lakelands_api::write::Migration {
-            to: to_ticket,
-            renames: Vec::new(),
-            relation_renames: Vec::new(),
-        }),
+        migration: Box::new(lakelands_api::write::Migration::to(to_ticket)),
         report: Default::default(),
     };
     for (write, why) in [
@@ -1228,6 +1232,7 @@ async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_kno
         (
             ProposedWrite::Declare {
                 declarations: vec![bundle],
+                plan: None,
             },
             "a bundle",
         ),
@@ -1394,6 +1399,7 @@ async fn a_reference_to_a_type_its_reader_is_not_shown_is_a_field_it_may_not_kno
         let at = lakelands_api::ReadAt {
             as_of: at,
             valid_at: None,
+            clock: None,
         };
         let d = l
             .cat

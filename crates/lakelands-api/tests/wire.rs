@@ -25,6 +25,7 @@ fn find_takes_where_as_text_and_the_time_axes_flat() {
         ReadAt {
             as_of: Some(Position(42)),
             valid_at: Some(Timestamp::parse("2026-09-01").unwrap()),
+            clock: None,
         }
     );
     assert!(find.with_meta);
@@ -55,6 +56,8 @@ fn a_write_answers_applied_or_proposed_and_both_carry_a_position() {
         output: None,
         set_off: Default::default(),
         renamed: Vec::new(),
+        declared: Vec::new(),
+        plan: None,
     };
     assert_eq!(
         serde_json::to_value(&applied).unwrap(),
@@ -76,11 +79,11 @@ fn errors_are_a_closed_tagged_set_with_a_sentence_for_people() {
     assert_eq!(
         serde_json::to_value(&e).unwrap(),
         json!({"error": "refused", "field": "amount", "reason": {"refusal": "wrong_door"},
-            "message": "refused on `amount`: another authority writes this field"})
+            "message": "refused on `amount`: another authority does this, through another door"})
     );
     assert_eq!(
         e.to_string(),
-        "refused on `amount`: another authority writes this field"
+        "refused on `amount`: another authority does this, through another door"
     );
 }
 
@@ -547,4 +550,13 @@ fn an_annotation_is_refused_naming_the_declaration_the_key_and_where_it_sits() {
         said.to_string(),
         "type `t`, annotation `lakelands.x`: the namespace `lakelands.` is reserved"
     );
+}
+
+/// A type's rights from an older server, which says nothing of `create`,
+/// read as a create its `upsert` speaks for (lakelands#1188).
+#[test]
+fn rights_without_create_read_as_open() {
+    let old = json!({"find": true, "get": true, "upsert": true, "retire": false});
+    let may: lakelands_api::describe::TypeRights = serde_json::from_value(old).unwrap();
+    assert!(may.create && may.create_why.is_none(), "{may:?}");
 }

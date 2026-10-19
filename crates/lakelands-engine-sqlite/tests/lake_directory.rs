@@ -59,6 +59,7 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
         initial: None,
         sensitive: false,
         searchable: true,
+        erasable: false,
         description: None,
         label: None,
         embed: None,
@@ -66,7 +67,10 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
     cat.declare(
         &owner,
         Declaration::Type(TypeDecl {
+            constraints: Default::default(),
             annotations: Default::default(),
+            insert_only: false,
+            retired_by: Default::default(),
             name: "entry".into(),
             key: vec![],
             fields: vec![note],
@@ -161,8 +165,8 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
         (files_say.through.0, files_say.hash.0.as_str()),
         (next - 1, prev.as_str())
     );
-    let script =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/verify.py");
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/log-format/vectors/17/verify.py");
     let run = match std::process::Command::new("python3")
         .arg(&script)
         .arg(&dir)

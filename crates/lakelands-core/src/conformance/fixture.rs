@@ -677,6 +677,8 @@ pub fn aggregate(measures: Vec<AggMeasure>) -> Find {
 pub fn trigger_on(name: &str, on: &str, when: Option<&str>) -> Declaration {
     Declaration::Trigger(lakelands_api::ontology::TriggerDecl {
         max_depth: None,
+        when_strict: false,
+        on_changes: None,
         name: name.into(),
         on: on.into(),
         when: when.map(Into::into),
@@ -731,12 +733,13 @@ pub fn step(relation: &str, walk: Walk) -> Step {
 pub fn pattern(ty: &str, key: Option<&str>, steps: Vec<Step>, project: Projection) -> Pattern {
     Pattern {
         start: Start {
-            ty: ty.into(),
+            ty: Some(ty.into()),
             key: key.map(Into::into),
             filter: None,
             search: None,
             params: Default::default(),
             named: None,
+            rerank: None,
         },
         steps,
         to: None,
@@ -752,6 +755,70 @@ pub fn pattern(ty: &str, key: Option<&str>, steps: Vec<Step>, project: Projectio
 pub async fn declare(cat: &dyn Catalog, who: &Principal, ty: TypeDecl) -> Result<Outcome, Failure> {
     let what = format!("declaring type `{}`", ty.name);
     cat.declare(who, Declaration::Type(ty)).await.must(&what)
+}
+
+/// Declares `declared` below the store, as a log another writer made
+/// holds them, each a `declared` event after the last, and opens the
+/// lake again through the store for writing.
+pub async fn declared_below(
+    store: super::Store,
+    given: &super::Given,
+    declared: Vec<Declaration>,
+) -> Result<super::Store, Failure> {
+    use lakelands_api::engine::OpenMode;
+    use lakelands_api::event::{Event, EventBody, EventId};
+    let template = log_events(store.as_ref()).await?.pop();
+    let template = template.ok_or_else(|| Failure::new("the lake holds a log"))?;
+    let lines: super::Lines = Box::new(move |(mut tip, mut prev), fence| {
+        let mut lines = Vec::new();
+        for declaration in declared {
+            let position = tip.next();
+            let body = EventBody::Declared {
+                declaration,
+                schema_hash: None,
+                version: 1,
+                with_the_set: false,
+            };
+            let line = canonical_line(Event {
+                position,
+                id: EventId(format!("{:032x}", position.0)),
+                prev: prev.clone(),
+                fence,
+                body,
+                delivery: None,
+                ..template.clone()
+            });
+            (tip, prev) = (position, line.hash.clone());
+            lines.push(line);
+        }
+        (lines, 0)
+    });
+    let lake = store.lake().clone();
+    let seams = lakelands_api::seam::Seams::default();
+    let c = (given.continued)(Some(store), lake, lines, OpenMode::Write, seams);
+    let c = c
+        .await
+        .map_err(|e| Failure::new(format!("continuing the lake below the store: {e}")))?;
+    c.opened
+        .map_err(|e| Failure::new(format!("opening the lake again: {e}")))
+}
+
+/// `event` as a line of its log, its hash made over the rest.
+pub fn canonical_line(event: lakelands_api::event::Event) -> lakelands_api::engine::CanonicalEvent {
+    let mut value = serde_json::json!(event);
+    value.as_object_mut().map(|m| m.remove("hash"));
+    let hash = lakelands_api::event::Digest(crate::canonical::sha256_hex(&value));
+    value["hash"] = serde_json::json!(hash);
+    let bytes = crate::canonical::to_vec(&value);
+    let (position, id, prev, fence) = (event.position, event.id, event.prev, event.fence);
+    lakelands_api::engine::CanonicalEvent {
+        position,
+        id,
+        prev,
+        hash,
+        fence,
+        bytes,
+    }
 }
 
 /// The lake's log, oldest first: up to 10 000 events.
@@ -807,11 +874,7 @@ pub fn reactive(depth: u32, cause: Option<Position>) -> WriteContext {
 
 /// A migration of a type to `to`, with no field renamed.
 pub fn migration(to: TypeDecl) -> lakelands_api::write::Migration {
-    lakelands_api::write::Migration {
-        to,
-        renames: Vec::new(),
-        relation_renames: Vec::new(),
-    }
+    lakelands_api::write::Migration::to(to)
 }
 
 /// A value type `name` of `kind`, with no constraint, choices, format or
@@ -820,11 +883,7 @@ pub fn value_type(name: &str, kind: StorageKind) -> lakelands_api::ontology::Val
     lakelands_api::ontology::ValueTypeDecl {
         name: name.into(),
         kind,
-        constraint: None,
-        one_of: Vec::new(),
-        format: None,
-        scale: None,
-        description: None,
+        ..Default::default()
     }
 }
 
@@ -945,6 +1004,7 @@ pub fn read_at(as_of: Option<Position>) -> ReadAt {
     ReadAt {
         as_of,
         valid_at: None,
+        clock: None,
     }
 }
 
@@ -1034,6 +1094,7 @@ pub fn dec(s: &str) -> Decimal {
 /// One record from a source.
 pub fn source_record(ty: &str, key: &str, fields: Value) -> SourceRecord {
     SourceRecord {
+        source: None,
         upstream: None,
         ty: TypeName::from(ty),
         key: RecordKey::from(key),
@@ -1057,16 +1118,73 @@ impl Stream for Records {
     }
 }
 
+/// Feeds `records` from `source` as `who`: as one ready stream, or with
+/// those from `cut` on held back until the first window has answered, so
+/// the store cuts there on a signal, not a clock (lakelands#886). Answers
+/// the windows committed and the error that ended the stream, as is.
+pub async fn fed(
+    cat: &dyn Catalog,
+    who: &Principal,
+    source: &str,
+    records: Vec<SourceRecord>,
+    cut: Option<usize>,
+) -> (Vec<Committed>, Option<lakelands_api::Error>) {
+    let held = Arc::new(std::sync::Mutex::new((records.into_iter(), cut, None)));
+    let stream = Box::pin(Cut(held.clone()));
+    let mut commits = match cat.ingest(who, &SourceId::from(source), stream).await {
+        Ok(c) => c,
+        Err(e) => return (Vec::new(), Some(e)),
+    };
+    let mut out = Vec::new();
+    while let Some(window) = std::future::poll_fn(|cx| commits.as_mut().poll_next(cx)).await {
+        match window {
+            Ok(c) => out.push(c),
+            Err(e) => return (out, Some(e)),
+        }
+        let (_, cut, waker) = &mut *held.lock().expect("the cut");
+        cut.take();
+        if let Some(waker) = waker.take() {
+            waker.wake();
+        }
+    }
+    (out, None)
+}
+
+type Holding = (
+    std::vec::IntoIter<SourceRecord>,
+    Option<usize>,
+    Option<std::task::Waker>,
+);
+
+/// Records in hand, all but the first `cut` held until it is released.
+struct Cut(Arc<std::sync::Mutex<Holding>>);
+
+impl Stream for Cut {
+    type Item = SourceRecord;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<SourceRecord>> {
+        let (records, cut, waker) = &mut *self.0.lock().expect("the cut");
+        if *cut == Some(0) {
+            *waker = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
+        *cut = cut.map(|n| n - 1);
+        Poll::Ready(records.next())
+    }
+}
+
 /// Feeds `records` from `source` and drains the answer: every window's
 /// acknowledgement, or the first error, whether `ingest` refused the
-/// call or a window failed.
+/// call or a window failed; a refused record's refusal, which the checks
+/// judge, as [`lakelands_api::Error::unwrapped`] answers it (lakelands#1043).
 pub async fn ingest(
     cat: &dyn Catalog,
     who: &Principal,
     source: &str,
     records: Vec<SourceRecord>,
 ) -> lakelands_api::Result<Vec<Committed>> {
-    lakelands_api::ingest_all(cat, who, &SourceId::from(source), records).await
+    let fed = lakelands_api::ingest_all(cat, who, &SourceId::from(source), records).await;
+    fed.map_err(|e| e.unwrapped().clone())
 }
 
 /// Fail unless the lake's head is still `before`: a refused write must

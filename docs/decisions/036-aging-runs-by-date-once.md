@@ -63,8 +63,29 @@ can change after a rule is written: its type or field gone, the field
 no longer written by `upsert`, `from` no longer a value of it. Such a
 rule moves nothing, the report names it with the reason, and the other
 rules run, so one stale rule neither stops the day nor goes unnoticed.
-A move the store would refuse for one record is counted with the failed
-guards and leaves that record, for the reason a failed guard does.
+A move the store would refuse for one record leaves that record and is
+counted with the failed guards, for the reason a failed guard does,
+except two refusals, which are counted as refused (below): a constraint
+the move would break, and one that sets off more across an edge than the
+lake's `max_set_changes`
+(`docs/decisions/055-a-path-steps-through-a-reference.md`), which no run
+could narrow.
+
+### A refused move is told apart from a failed guard
+
+A condition that holds and a move a constraint refuses are not a guard
+that failed: the rule of the type did not hold, not the rule of the
+aging. `RuleRun` and `AgeReport` count such moves in `refused`, apart
+from `failed_guards`, and a rule's run lists the first
+`AGE_REFUSALS_SHOWN` (16) of them in scan order, each with the record's
+key and the refusal as the wire carries it: `constraint` with the case
+`constraint_broken`, which names the constraint, the type and the key
+and never a value (059), or `too_large` with the ceiling. `refused`
+counts them all past the bound. A host shows its operator which records
+stayed where they were and why. The list is the host's, as the run is:
+it names restricted records too, since a run reads them, and is not
+relayed to the rule's author or any other principal. Every other refusal of a move stays in
+`failed_guards`.
 
 ### The run holds the writer
 
@@ -120,3 +141,6 @@ shape, and every change is a version with its writer.
   gain "no second date type". Since lakelands#702 it holds a `date`
   storage kind for a field's values; `age` still takes a `Timestamp`,
   and `today()` still gives one.
+- A move a constraint or the set ceiling refuses is counted as refused,
+  and listed with its record's key and the refusal, not as a failed
+  guard (lakelands#1182).

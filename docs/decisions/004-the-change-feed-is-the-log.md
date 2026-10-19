@@ -83,15 +83,20 @@ one call, and a `limit` without a filter held every event it asked for.
   not fail: a filtered poll over it would find nothing, and a consumer
   would skip events without being told. So the SQLite and PostgreSQL
   engines mark a projection with their layout number in `meta` when they
-  make it, and a writer's, a creator's or a reader's open of one marked
-  otherwise, or not at all, is refused before any of its tables is read
-  or made (`projection_layout`, naming the number found, the number
-  wanted and `lakelands rebuild`). An engine raises its number whenever
-  a table changes so that an older projection would answer wrongly. A
-  lake is opened `OpenMode::Rebuild` to rebuild it: the store takes the
-  lease, `clear` drops the projection and makes it at the engine's
-  layout, and the whole log is folded. Nothing repairs a projection at an
-  open the host did not ask to rebuild.
+  make it, and the engine refuses an open of one marked otherwise, or
+  not at all, before any of its tables is read or made
+  (`projection_layout`, naming the number found, the number wanted and
+  `lakelands rebuild`). An engine raises its number whenever a table
+  changes so that an older projection would answer wrongly. A lake is
+  opened `OpenMode::Rebuild` to rebuild it: the store takes the lease,
+  `clear` drops the projection and makes it at the engine's layout, and
+  the whole log is folded. A writer's open of a projection an **older**
+  build laid out is that rebuild: the store opens the lake so, says why
+  (`LakeStore::rebuilt_at_open`), and holds the writer that long, as an
+  upgrade's open is where a release pays for its steps. A reader's open
+  of it, and any open of one a newer build laid out or that carries no
+  mark, stays refused: nothing is rebuilt that the host's release did
+  not lay out.
 
 **Why.** Before, a poll with a filter read and verified every event from
 its position to the head, whatever matched: about 24 µs an event, 2.4 s
@@ -123,6 +128,31 @@ delivery would then make more of the log that consumers read. It would
 also make one consumer's progress part of every other reader's lake,
 which is the coupling this record keeps out.
 
+### A batch names the reactions an act overruled
+
+A batch carries `overruled`: the positions of its `trigger_fired`,
+`trigger_dropped` and `object_set_changed` events that were decided over
+a value an act erased since, and that the history without the value
+does not make (065). The events stay as the log holds them, so an export
+and its hashes read them unchanged, and the log format does not change.
+- **The MCP pump** tells none of them, as it tells nothing its principal
+  may not see: a gap in the positions it tells already says that
+  something is not told.
+- **The deliverer** posts none of them, and journals each `overruled`. A
+  receiver would otherwise act again, on a firing over an erased value,
+  when the deliverer reads from a position before the act. So a
+  deliverer reading from an old position after an act posts fewer
+  events than before (056).
+- **The feed over the network door** (037) carries the mark as the
+  comment `: overruled` in the event's frame, since its reader reads
+  everything; `lakelands-client` reads it back into `overruled`.
+- **The raw feed for the host** keeps every event, with the list beside
+  it.
+
+**Why beside the events.** Dropping them from the batch would break the
+rule that the feed is the log: an export would miss bytes its hashes
+chain over, and a relay could not tell a gap from a loss.
+
 ### A trigger fires on every write of its type whose guard holds
 
 A trigger fires on every write of its type — `upsert`, `ingest`, a verb's
@@ -141,8 +171,9 @@ the write creates (or revives from retirement). A transition is a guard,
 transition only. A guard reads no other record. A trigger may also cap
 the depth of the reactions that name its firing as their cause
 (`docs/decisions/021-the-write-context-belongs-to-the-host.md`, extended).
-The firing is appended whatever the depth, since it is the durable fact a
-host reacts to.
+Past that depth, or the lake's, the write appends `trigger_dropped` in
+place of the firing: what would have fired stays a durable fact, and no
+host reacts to a firing whose reaction could write nothing.
 
 ### A guard reads the provenance its write leaves
 
@@ -193,6 +224,50 @@ format (`docs/log-format.md` §6), so a release that does not know it
 refuses the lake instead of keeping a trigger it cannot evaluate, which
 would never fire.
 
+### A firing says what kind of change fired it
+
+A `trigger_fired` carries `change`, the kind of the write that fired it:
+`upserted` (an authored write, a verb's, an accepted one, an aging
+move), `ingested`, `retired`, `forgotten` and `purged` (a record a
+forgotten or a purged source brought in, retired), and `recomputed` (a
+field filled from a recorded output). It carries `created` too: whether
+that write found no live record under the key. A create and a revival
+of a retired record are `created: true`; an update, a retirement and a
+fill are not. A host that reacts to authored and ingested writes and not to a
+source's purge reads it on the firing, not at its `cause`. A firing of
+a record across an edge carries the kind of the far write, and is never
+`created`: that write made another record.
+
+A guard reads `created()` beside `retired()`, in a trigger's guard
+alone. A trigger may name the kinds that fire it, `on_changes`; with
+none, every kind fires, as before. `on_changes: [upserted, ingested]`
+stays silent when a source is forgotten or purged and when a field is
+filled. Firing on every kind by default keeps the firings this record
+promises to triggers whose declarations did not change.
+
+### A strict guard fails where a field it reads has no value
+
+A guard reads an absent field as null, and a comparison with null is
+false: a record without `status` makes `status = 'paid'` false, so
+`not (status = 'paid')` holds and the trigger fires. A trigger that
+declares `when_strict: true` fires only where every field its `when`
+reads, and every `previous(f)`, has a value: a read of one absent or
+null fails the guard as a whole, through `not`, `and`, `or` and
+`changed`, as a guard that cannot be evaluated does. So
+`not (status = 'paid')` does not fire on a record without `status`, and
+a guard that reads `previous(f)` does not fire on a create. A strict
+guard `f is null` fails where `f` is absent too: it reads `f`, which has
+no value. A strict
+guard reads every operand of an `and`, an `or`, an `in`, an `if` and a
+`coalesce`, where a guard otherwise stops at the first that decides, so
+what fails it does not hang on the order its operands are written in:
+`amount > 100 or status = 'x'` and `status = 'x' or amount > 100` both
+fail on a record without `status`. Without it, a guard reads as before.
+
+A host whose own guards fail closed moves them onto the lake with the
+flag, without changing what fires. Making strict the default would
+change what fires for triggers whose declarations did not change.
+
 ### A set's declaration decides the records already there
 
 A set's declaration decides the records already there. In the
@@ -235,6 +310,30 @@ declared again with another filter, left them as they were. A consumer
 of the feed never learned of those memberships, and the lake's
 membership disagreed with the filter until each record was written
 again.
+
+### A type's declaration decides the sets of what it computes again
+
+A type declared again with other computed fields, a derived expression
+or a function they name, or a function declared again, has its records
+computed again by the fold. The sets whose filter reads such a field,
+and so a set that names one, are decided in the declaration's own
+append (lakelands#941): one walk of the type's live records, each
+computed as the bundle leaves the lake, appends an `object_set_changed`
+for each membership that moves, caused by the last `declared` of the
+bundle, within the same `max_set_changes`. Past it the declaration is
+refused `too_large`, naming the set. A set the bundle declares, or
+declares again, of such a type is decided in that walk too, by its new
+filter over the records as the bundle computes them. A migration that
+changes what its type computes does the same (lakelands#1070): the fold
+computes its records again, so a record reads the new value as soon as
+the migration is applied, and the migration's own append decides the
+sets over the records as converted and computed again. Before, the leaves landed at each
+record's next write, caused by a write that did not move them, and the
+feed and the filter disagreed until then.
+
+A field computed outside the lake, by a backing, comes out of that walk
+as it was: its value lands with its output, and its sets are decided
+where the output lands, as before.
 
 ### A set names a set
 
@@ -304,6 +403,20 @@ the same as a set's declaration; past it the migration is refused
 migration that changes nothing a filter reads appends no
 `object_set_changed`.
 
+**A set whose `where` reads across an edge** is decided again at every
+write of the far record that moves what it reads there, in that write's
+own append and caused by its event, and so is a trigger whose `when`
+reads so (`docs/decisions/055-a-path-steps-through-a-reference.md`):
+a write of one record can move many memberships. What far writes set
+off across an edge in one append counts against the same
+`max_set_changes`, at every door that writes a record; past it the write
+is refused `too_large` naming the set or the trigger, to a caller shown
+it and naming nothing to another, a purge whole, and an aging move is
+counted as refused (lakelands#1182). The ceiling counts the append, records held from the
+writer among them: a refusal for size tells that much and no more. A migration, a re-key, a value type's
+rename and a `declared` of a far type decide the referring sets in their
+own walk, under the same ceiling.
+
 The ceiling is the last of a migration's refusals. One applied with a
 stale report is refused for that, and one that is not lossless is refused
 with its report, whether or not it is also past the ceiling: the walk
@@ -332,6 +445,18 @@ set again with the new key; that declaration decides the records
 **Why.** Before, the membership of a migrated type's records in the
 type's object sets was carried as it stood, so a set whose filter reads
 a converted field kept members its filter no longer holds for.
+
+### A consumer waits on the feed
+
+A consumer that has caught up waits for the next append with
+`wait(after, within)`, instead of sleeping and polling again. The wait
+answers the head once the log is past `after`, or once `within` has
+passed. It never answers past the head a poll reads, so a poll after it
+answers what woke it. The lake knows the moment it appends, and every
+consumer that slept found that moment again at its own pace, a quarter
+of a second late by default and four times a second while the lake was
+idle. Positions and acknowledgements stay the consumer's; only the
+waiting moved into the lake (lakelands#1061).
 
 ## Why
 
@@ -371,6 +496,13 @@ own pace, and adding one changes nothing in the lake.
   depth of the reactions to it (lakelands#244).
 - A guard tells a retirement from an update through `retired()`
   (lakelands#271).
+- A trigger fired whatever the write's depth; past its ceiling it drops,
+  as `trigger_dropped` (lakelands#1216).
+- A guard may be strict: a field it reads without a value fails it
+  (lakelands#1215).
+- A firing says what kind of change fired it and whether the write made
+  the record, a guard reads `created()`, and a trigger may name the
+  kinds that fire it (lakelands#1217).
 - A set's declaration decides the records already there, where a set's
   membership was decided only when a record was written; the log format
   did not change. A set declared again over another type let go of the
@@ -378,6 +510,12 @@ own pace, and adding one changes nothing in the lake.
 - A migration decides the membership of its type's records again, where
   it carried it as it stood, and its ceiling is the last of its refusals
   (lakelands#457).
+- A type declared again with other computed fields decides the sets of
+  what it computes again in its own append, where the leaves landed at
+  each record's next write (lakelands#941).
+- A migration that changes what its type computes computes its records
+  again, where they kept the old values until each was written again, and
+  decides their sets in its own append (lakelands#1070).
 - A migration decides every record it changes: also a record of another
   type that holds a reference to a moved key, and a link of a relation
   whose fields it converts. Until then the decision concerned only what
@@ -409,3 +547,12 @@ own pace, and adding one changes nothing in the lake.
   nothing more is caught up in one poll" was said of every filter; the
   engines decide one that names types and kinds and no key 65 536
   positions a poll.
+- A consumer may wait on the feed: `wait(after, within)` answers the
+  head once the log is past `after`, never past what a poll reads, and
+  the store's own consumers wait so instead of sleeping. Positions and
+  acknowledgements stay the consumer's (lakelands#1061).
+- The index keeps each event's source, and a writer's open of a
+  projection an older build laid out rebuilds it, where every open
+  refused it until the host ran `lakelands rebuild`; the first layout
+  step after real installations would otherwise have kept every lake
+  closed until its operator acted (lakelands#1151).

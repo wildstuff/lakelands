@@ -97,6 +97,7 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
     };
     let said = || Box::new(Said::from(case.clone()).within(place.clone()));
     let report = MigrationReport {
+        breaches: Default::default(),
         ty: "invoice".into(),
         from_schema_hash: "a".into(),
         to_schema_hash: "b".into(),
@@ -107,11 +108,14 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
         references: Vec::new(),
         sample_collisions: Vec::new(),
         restated: Vec::new(),
+        filled: Vec::new(),
         lossless: false,
         report_id: "r".into(),
         more: true,
         relations: Vec::new(),
         carried: Vec::new(),
+        recomputed: None,
+        unlive: Vec::new(),
     };
     let errors = [
         (401, refused(None, Refusal::NotGranted)),
@@ -252,6 +256,7 @@ async fn ingest_answers_each_window_and_ends_on_a_refused_record() {
     assert_ne!(remote.limits(), store.limits());
     let f = setup(remote.clone()).await;
     let record = |ty: &str, k: &str, amount: &str| SourceRecord {
+        source: None,
         upstream: None,
         ty: ty.into(),
         key: k.into(),
@@ -294,12 +299,22 @@ async fn ingest_answers_each_window_and_ends_on_a_refused_record() {
     for window in &out[..2] {
         assert_eq!(window.as_ref().map(|c| c.records), Ok(1));
     }
+    // The lake's own answer, not a failure of the wire: the refusal,
+    // naming the record and where its window began (lakelands#1043).
     assert_eq!(
         out[2],
-        Err(Error::NotFound {
-            missing: Missing::Type {
-                name: "nowhere".into()
-            }
+        Err(Error::Ingested {
+            index: 2,
+            from: 2,
+            record: lakelands_api::error::RecordName::Of {
+                ty: "nowhere".into(),
+                key: "N-1".into(),
+            },
+            error: Box::new(Error::NotFound {
+                missing: Missing::Type {
+                    name: "nowhere".into()
+                }
+            }),
         }),
         "the lake's own answer, not a failure of the wire"
     );
@@ -384,6 +399,39 @@ async fn poll_reads_what_the_stores_own_feed_reads() {
     assert_eq!(remote.head().await.unwrap(), written.position());
 }
 
+/// A wait over the wire holds the feed's stream until the lake's next
+/// append, which the server's tail waits for: it ends at the append,
+/// whatever the server's pause, and one that nothing moves ends at its
+/// bound, answering the head (lakelands#1061).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wait_over_the_wire_ends_at_the_next_append() {
+    use std::time::{Duration, Instant};
+    let store = common::memory_lake("finance", Limits::default()).await;
+    let (addr, keys) = common::serve_pausing(store.clone(), 10_000).await;
+    let remote = common::remote(addr, store.lake(), keys);
+    let f = setup(store.clone()).await;
+    let (head, feed) = (store.head().await.unwrap(), remote.feed());
+    let (t, bound) = (Instant::now(), Duration::from_millis(300));
+    let idle = feed.wait(head, bound).await.unwrap();
+    let idled = t.elapsed();
+    assert!(idle == head && idled >= bound, "{idle} after {idled:?}");
+    let t = Instant::now();
+    let write = async {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let status = patch(&[("status", json!("open"))]);
+        let at = (&f.cast.owner, &"invoice".into(), &"INV-9".into());
+        f.catalog
+            .upsert(at.0, at.1, at.2, status, WriteOpts::default())
+            .await
+    };
+    let (woke, written) = tokio::join!(feed.wait(head, Duration::from_secs(30)), write);
+    let (woke, written, after) = (woke.unwrap(), written.unwrap().position(), t.elapsed());
+    assert!(
+        woke == written && after < Duration::from_secs(2),
+        "the append at {written} ended the wait at {woke} after {after:?}, the pause 10 s"
+    );
+}
+
 /// A poll over the wire whose filter matches nothing reaches the head and
 /// ends: the server reads the log a bounded poll at a time
 /// (lakelands#558). No `limit` answers more than the bound, as on the
@@ -395,6 +443,7 @@ async fn a_poll_over_the_wire_that_matches_nothing_reaches_the_head() {
     let remote: Arc<dyn LakeStore> = Arc::new(common::remote(addr, store.lake(), keys));
     let f = setup(store.clone()).await;
     let records = (0..4200).map(|i| SourceRecord {
+        source: None,
         upstream: None,
         ty: "invoice".into(),
         key: RecordKey::from(format!("B-{i}").as_str()),
@@ -515,6 +564,20 @@ async fn every_host_operation_is_unbound_naming_it() {
             "purge_source",
             remote
                 .purge_source(&SourceId::from("bank"), None, None)
+                .await
+                .map(|_| ()),
+        ),
+        (
+            "forget_source",
+            remote
+                .forget_source(&SourceId::from("bank"), None)
+                .await
+                .map(|_| ()),
+        ),
+        (
+            "forget_preflight",
+            remote
+                .forget_preflight(&SourceId::from("bank"))
                 .await
                 .map(|_| ()),
         ),
@@ -951,4 +1014,47 @@ async fn an_answer_of_null_comes_back_and_a_call_still_running_is_409() {
     );
     assert_eq!(call().await.unwrap(), first, "the retry answers the first");
     assert_eq!(null.ran.load(Ordering::SeqCst), 1, "run once");
+}
+
+/// An ingest's delivery id goes over the wire and comes back in each
+/// window's answer; an empty one is refused as the store refuses it
+/// (lakelands#1153).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ingests_delivery_id_goes_over_the_wire() {
+    use lakelands_api::write::IngestOpts;
+    let store = common::memory_lake("finance", Limits::default()).await;
+    let (addr, keys) = common::serve(store.clone()).await;
+    let remote: Arc<dyn LakeStore> = Arc::new(common::remote(addr, store.lake(), keys));
+    let f = setup(store.clone()).await;
+    let record = |key: &str| SourceRecord {
+        source: None,
+        upstream: None,
+        ty: "invoice".into(),
+        key: RecordKey::from(key),
+        fields: patch(&[("amount", json!("1.00"))]),
+        seen_at: None,
+    };
+    let (bank, who) = (SourceId::from("bank"), &f.cast.importer);
+    let remote = remote.catalog(WriteContext::default());
+    let opts = |d: &str| IngestOpts {
+        delivery: Some(d.into()),
+    };
+    let said = lakelands_api::ingest_all_with(
+        remote.as_ref(),
+        who,
+        &bank,
+        opts("batch-7"),
+        vec![record("D-1")],
+    );
+    let windows = said.await.unwrap();
+    assert!(
+        windows
+            .iter()
+            .all(|w| w.delivery.as_ref().map(|d| d.as_str()) == Some("batch-7")),
+        "{windows:?}"
+    );
+    let said =
+        lakelands_api::ingest_all_with(remote.as_ref(), who, &bank, opts(""), vec![record("D-2")]);
+    let refused = said.await.unwrap_err();
+    assert!(refused.to_string().contains("delivery id"), "{refused}");
 }

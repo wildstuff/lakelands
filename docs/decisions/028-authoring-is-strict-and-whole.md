@@ -214,15 +214,19 @@ a set declared with it would have no member, a trigger would never fire
 and a read would answer nothing, each with nothing said.
 
 A path of more than one name is a walk into a `json` or `geo` value's
-members. Into a field of any other kind it is refused as `invalid`,
-where what can never be evaluated is refused: at the declaration of a
-set, a trigger, a verb and a derived field, and at a read, once the
-reader is known to read the field. The refusal of a step through a
-reference says what to write: a condition reads the record's own fields;
-compare the reference's key, or walk to the record it names in a
-pattern. Reading through a reference in a condition is not built
-(lakelands#567). A declaration in force that holds such a path stays in
-force until it is declared again.
+members, and in a verb's `requires` and set values, a set's `where` and
+a trigger's `when` also a step through a reference to the record it
+names, or from a relation carried by link records to the one link the
+record holds under it
+(`docs/decisions/055-a-path-steps-through-a-reference.md`). Into a
+field of any other kind it is refused as `invalid`, where what can never
+be evaluated is refused: at the declaration of a set, a trigger, a verb
+and a derived field, and at a read, once the reader is known to read the
+field. Elsewhere the refusal of a step through a reference says what to
+write: a condition reads the record's own fields; compare the
+reference's key, or walk to the record it names in a pattern. A
+declaration in force that holds such a path stays in force until it is
+declared again.
 
 ### A valid time is a `date_time` or a `date` field
 
@@ -247,6 +251,22 @@ instant at its UTC midnight, so a booking valid from `2026-07-01` to
 declaration in force is not checked again until it is declared again,
 and then it is checked as any other is.
 
+A valid time has a start (lakelands#909). A `valid_to` with no
+`valid_from` is refused as `invalid` on it (`valid_to_alone`) by the
+same doors: a read at `valid_at` keeps a record from its start up to
+its end, and with no start there is nothing to keep it by, so such an
+end would filter nothing while it looked like a filter. A type in force
+that holds one alone, as a lake written before this rule may, keeps
+one: declared again, as it is or with its end on another field, it is
+not refused, and a read at `valid_at` reads it as a type with no valid
+time, filtering by nothing and probing nothing (006). The type is judged
+as its author is shown it, before what it is not shown is put back: to
+an author not shown its start a type that has both reads as one with an
+end alone, whose end it may move, and to one shown neither bound it
+reads as a type with none, where an end sent alone is refused as on any
+such type, so the answer does not tell that a bound it is not shown
+stands.
+
 ### The schema doors refuse in one order
 
 The schema doors refuse in this order, in the frame every write door
@@ -254,7 +274,9 @@ shares (016, extended): the lake, the context, the door's own checks,
 the append.
 
 **`declare`**: the `schema` grant (`not_granted`); the declaration's
-own checks, strict and whole as above; then what it needs bound: a
+own checks, strict and whole as above, on the type and on each of its
+link types, a change only a migration may make told last (027,
+lakelands#1124); then what it needs bound: a
 trigger's `max_depth` within the lake's (`invalid`), a backed
 function's backing (`unbound`), each embedding's model (`unbound`).
 
@@ -343,3 +365,14 @@ rather than one error at a time.
   the order of the value, over a view's records and a stored type's
   alike. They are refused, as an order of them by `latest` is
   (lakelands#901).
+- A verb's `requires` and set values step through a reference to the
+  record it names, where a step through a reference was refused at
+  every declaration (lakelands#567).
+- A set's `where` and a trigger's `when` step through a reference, read
+  a relation's link and a derived relation's match, and ask `exists`, as
+  a verb's condition does, where a step through a reference was refused
+  there; a path into a far field computed outside the lake is refused
+  `set_reads_computed` (lakelands#567).
+- A verb's `requires` and set values read the link a relation holds,
+  `<relation>.<link field>`, where a relation's name was an unknown
+  field in a condition (lakelands#567).

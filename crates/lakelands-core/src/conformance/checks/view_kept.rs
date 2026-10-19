@@ -883,7 +883,11 @@ impl Twin {
         let valid = self.valid_at.as_ref().filter(|_| as_of.is_none());
         for valid in [None].into_iter().chain(valid.map(Some)) {
             let valid_at = valid.map(|v| v.0);
-            let at = ReadAt { as_of, valid_at };
+            let at = ReadAt {
+                as_of,
+                valid_at,
+                clock: None,
+            };
             let read = |p: &&Pair| valid.is_none_or(|v| v.1 == p.name);
             for ((reader, who), deep) in readers.iter().zip(depth).filter(|r| r.1 > 0) {
                 let deep = deep == 2;

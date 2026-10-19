@@ -14,6 +14,11 @@
 //! what its fields are compared with and a function's inputs say what is
 //! computed from them; a principal who may not read those fields learns
 //! neither. A field's own `function` still names its function.
+//!
+//! A value type is answered whole, and only to a principal shown a field
+//! that uses it, where `describe` shows that field (a masked one too, whose
+//! shape names it), or who holds `schema` (lakelands#1088). Its `one_of`
+//! and `constraint` say what those fields' values may be.
 
 use lakelands_api::describe::{
     ExecutorDescription, FieldDescription, LakeDescription, LakeRights, TypeAccess,
@@ -22,11 +27,15 @@ use lakelands_api::describe::{
 use lakelands_api::engine::Declared;
 use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::{
-    Authority, RelationDecl, Risk, TypeDecl, VerbDecl, VerbEffect, ViewDecl,
+    Authority, ConstraintDecl, Derived, FieldDecl, RelationDecl, Risk, TypeDecl, ValueTypeDecl,
+    VerbDecl, VerbEffect, ViewDecl,
 };
-use lakelands_api::write::{Declaration, FunctionDecl};
-use lakelands_api::{Access, FieldName, LakeId, Principal, TypeName};
+use lakelands_api::write::{Declaration, FunctionDecl, SettingDecl};
+use lakelands_api::{Access, FieldName, LakeId, Principal, TypeName, ValueTypeName};
 
+use std::collections::BTreeSet;
+
+use crate::derive;
 use crate::rights::{field_access, granted_access, only_holder, pinnable, type_access};
 use crate::sight::Sight;
 
@@ -43,9 +52,13 @@ impl Sight<'_> {
             _ => None,
         });
         let value_types = each(&declared, |d| match &d.declaration {
-            Declaration::ValueType(v) => Some(v.clone()),
+            Declaration::ValueType(v) if self.uses_shown(&v.name, &declared) => Some(v.clone()),
             _ => None,
         });
+        let value_type_versions = value_types
+            .iter()
+            .filter_map(|v| Some((v.name.clone(), version_of(&declared, &v.name)?)))
+            .collect();
         let listed = |d: &Declared| self.listed(&d.declaration, &declared);
         let functions = each(&declared, |d| match &d.declaration {
             Declaration::Function(f) if listed(d) => Some(f.clone()),
@@ -64,9 +77,11 @@ impl Sight<'_> {
             types,
             verbs,
             value_types,
+            value_type_versions,
             functions,
             triggers,
             object_sets,
+            settings: Default::default(),
             may: LakeRights {
                 review: who.grants.review,
                 schema: who.grants.schema,
@@ -79,16 +94,50 @@ impl Sight<'_> {
     /// of it.
     pub fn describe_type(&self, ty: &TypeName) -> Option<TypeDescription> {
         let declared = self.force.declared();
-        declared.iter().find_map(|d| match &d.declaration {
+        let mut t = declared.iter().find_map(|d| match &d.declaration {
             Declaration::Type(t) if &t.name == ty => self.type_description(t, d, &declared),
             _ => None,
-        })
+        })?;
+        // The declarations its key names: those of the fields as shown
+        // (lakelands#1060).
+        let named = t.lifecycle.value_types.keys();
+        let declaration = |n| {
+            declared.iter().find_map(|d| match &d.declaration {
+                Declaration::ValueType(v) if &v.name == n => Some(v.clone()),
+                _ => None,
+            })
+        };
+        t.value_types = named.filter_map(declaration).collect();
+        Some(t)
     }
 
     /// Whether its principal reads every one of `names` on type `ty`.
     fn reads_all<'a>(&self, names: impl IntoIterator<Item = &'a FieldName>, ty: &TypeName) -> bool {
-        self.force.ty(ty).is_some() && names.into_iter().all(|n| self.reads(ty, n))
+        self.force.ty(ty).is_some() && names.into_iter().all(|n| self.reads_from(ty, n))
     }
+
+    /// Whether its principal reads where a verb's path begins at `n` on
+    /// `ty`: the field, or, where `ty` has none of that name, the relation,
+    /// which it is shown (055, extended).
+    pub fn reads_from(&self, ty: &TypeName, n: &FieldName) -> bool {
+        let t = self
+            .force
+            .ty(ty)
+            .filter(|t| !t.fields.iter().any(|f| &f.name == n));
+        let mut named = t
+            .into_iter()
+            .flat_map(|t| t.relations.iter().map(move |r| (t, r)));
+        self.reads(ty, n)
+            || named.any(|(t, r)| r.name.as_str() == n.as_str() && self.relation(t, r))
+    }
+}
+
+/// The version of the value type `name` among `declared`.
+fn version_of(declared: &[Declared], name: &ValueTypeName) -> Option<u32> {
+    declared.iter().find_map(|d| match &d.declaration {
+        Declaration::ValueType(v) if &v.name == name => Some(d.version),
+        _ => None,
+    })
 }
 
 /// An object set's filter by the set's name, as a caller holds the sets.
@@ -109,32 +158,51 @@ fn sets_of(declared: &[Declared]) -> impl Fn(&str) -> Option<Condition> + '_ {
 /// reads what its sets read. `None` when it does not parse, or names a set
 /// `sets` does not answer.
 fn named(c: &Condition, sets: Sets<'_>) -> Option<std::collections::BTreeSet<FieldName>> {
-    fn gather(
-        c: &Condition,
-        sets: Sets<'_>,
-        seen: &mut Vec<String>,
-        out: &mut std::collections::BTreeSet<FieldName>,
-    ) -> Option<()> {
-        let e = parsed(c)?;
-        out.extend(crate::derive::reads(&e));
-        let mut names = Vec::new();
-        in_sets(&e, &mut names);
-        for n in names
-            .into_iter()
-            .filter(|n| !seen.contains(n))
-            .collect::<Vec<_>>()
-        {
-            seen.push(n.clone());
-            gather(&sets(&n)?, sets, seen, out)?;
-        }
-        Some(())
+    let mut out = std::collections::BTreeSet::new();
+    gather(c, sets, &mut Vec::new(), &mut |e| {
+        out.extend(crate::derive::reads(e))
+    })?;
+    Some(out)
+}
+
+/// The paths a condition reads, and those of the sets it names, as
+/// [`named`] gathers them.
+fn paths_named(c: &Condition, sets: Sets<'_>) -> Option<Vec<Vec<FieldName>>> {
+    let mut out = Vec::new();
+    gather(c, sets, &mut Vec::new(), &mut |e| {
+        let mut paths = Vec::new();
+        lakelands_api::expr::paths(e, &mut paths);
+        out.extend(paths.into_iter().map(<[FieldName]>::to_vec));
+    })?;
+    Some(out)
+}
+
+/// `each` over a condition and the sets it names, through the sets those
+/// name, each once.
+fn gather(
+    c: &Condition,
+    sets: Sets<'_>,
+    seen: &mut Vec<String>,
+    each: &mut dyn FnMut(&Expr),
+) -> Option<()> {
+    let e = parsed(c)?;
+    each(&e);
+    let mut names = Vec::new();
+    in_sets(&e, &mut names);
+    for n in names
+        .into_iter()
+        .filter(|n| !seen.contains(n))
+        .collect::<Vec<_>>()
+    {
+        seen.push(n.clone());
+        gather(&sets(&n)?, sets, seen, each)?;
     }
-    let mut out = Default::default();
-    gather(c, sets, &mut Vec::new(), &mut out).map(|()| out)
+    Some(())
 }
 
 /// The sets an expression names with `in_set`.
-fn in_sets(e: &Expr, out: &mut Vec<String>) {
+#[doc(hidden)]
+pub fn in_sets(e: &Expr, out: &mut Vec<String>) {
     use lakelands_api::expr::{Func, Literal};
     if let Expr::Call {
         func: Func::InSet,
@@ -161,7 +229,6 @@ impl Sight<'_> {
             Declaration::Type(t) => self.ty(&t.name).is_ok_and(|s| {
                 t.view.is_none() || s.view.as_deref().is_some_and(|v| self.view_visible(v))
             }),
-            Declaration::ValueType(_) => true,
             _ => {
                 let declared = self.force.declared();
                 let mut named = declared.iter().map(|x| &x.declaration);
@@ -213,10 +280,31 @@ impl Sight<'_> {
             Declaration::Type(t) => {
                 described(&t.name) && (t.view.as_deref()).is_none_or(|v| self.view_visible(v))
             }
-            Declaration::Trigger(t) => described(&t.on) && holds(t.when.as_ref(), &t.on),
-            Declaration::ObjectSet(s) => described(&s.of) && holds(Some(&s.filter), &s.of),
+            Declaration::Trigger(t) => {
+                described(&t.on)
+                    && holds(t.when.as_ref(), &t.on)
+                    && self.across_unheld(t.when.as_ref(), &t.on, declared)
+            }
+            Declaration::ObjectSet(s) => {
+                described(&s.of)
+                    && holds(Some(&s.filter), &s.of)
+                    && self.across_unheld(Some(&s.filter), &s.of, declared)
+            }
             // It names the fields it sets and says something of those it reads.
             Declaration::Verb(v) => {
+                // And what its paths read of other records, from a relation
+                // it is shown, of a holder of `schema` too, as `describe`
+                // asks it of a verb in force (055).
+                let on = self.force.ty(&v.on);
+                let far = on.and_then(|on| v.reads_across(on, &|n| self.force.ty(n)));
+                let far =
+                    far.is_some_and(|f| f.iter().all(|(t, f)| field_access(who, t, f).reads()));
+                let field =
+                    |n: &FieldName| on.is_some_and(|t| t.fields.iter().any(|f| &f.name == n));
+                let from = |p: &Vec<FieldName>| field(&p[0]) || self.reads_from(&v.on, &p[0]);
+                if !far || !v.record_paths().is_some_and(|p| p.iter().all(from)) {
+                    return false;
+                }
                 let VerbEffect::Write { set } = &v.effect else {
                     return described(&v.on) && holds(v.requires.as_ref(), &v.on);
                 };
@@ -237,8 +325,113 @@ impl Sight<'_> {
                     && (who.grants.schema || set.iter().all(all))
             }
             Declaration::Function(f) => self.function_visible(f),
-            Declaration::ValueType(_) => true,
+            Declaration::ValueType(v) => self.uses_shown(&v.name, declared),
+            Declaration::Setting(s) => self.setting_visible(s),
+            // A withdrawal tells its kind and name alone. The store hands
+            // one only to a reader it judged by what it withdraws, as the
+            // lake held that (lakelands#1219).
+            Declaration::Withdraw(_) => true,
+            _ => false,
         }
+    }
+
+    /// Whether its principal holds `schema`, or is shown, in `declared`
+    /// (the sight's declarations), a field whose value type is `vt`: a
+    /// field of a type it is shown, a link type's among them, a verb's
+    /// payload field or a function's input, each where `describe`
+    /// shows it (lakelands#1088). The uses are found in one pass a sight.
+    fn uses_shown(&self, vt: &ValueTypeName, declared: &[Declared]) -> bool {
+        let who = self.who();
+        who.grants.schema
+            || self
+                .used
+                .get_or_init(|| self.used_in(declared))
+                .contains(vt)
+    }
+
+    /// The value types of the uses [`Self::uses_shown`] counts.
+    fn used_in(&self, declared: &[Declared]) -> std::collections::BTreeSet<ValueTypeName> {
+        type Field = lakelands_api::ontology::FieldDecl;
+        let who = self.who();
+        let of = |fs: &mut dyn Iterator<Item = &Field>| -> Vec<ValueTypeName> {
+            fs.filter_map(|f| f.ty.value_type.clone()).collect()
+        };
+        let known = |t: &TypeDecl| {
+            let mut fs = t
+                .fields
+                .iter()
+                .filter(|f| field_access(who, t, f) != Access::None);
+            of(&mut fs)
+        };
+        let mut used = std::collections::BTreeSet::new();
+        for d in declared {
+            match &d.declaration {
+                // A link type is declared as its own: its fields are judged
+                // as a link row is, on it (lakelands#1092).
+                Declaration::Type(t) if self.ty(&t.name).is_ok() => used.extend(known(t)),
+                Declaration::Verb(v) if self.verb_description(v).is_some() => {
+                    used.extend(of(&mut v.payload.iter()))
+                }
+                Declaration::Function(f) if self.function_visible(f) => {
+                    used.extend(of(&mut f.inputs.iter().map(|i| &i.field)))
+                }
+                _ => {}
+            }
+        }
+        used
+    }
+
+    /// Whether nothing a set's `where` or a trigger's `when` over `ty`
+    /// reads across an edge, with the sets it names, is held from its
+    /// principal: decided for no reader, what such a condition holds for a
+    /// record tells what it reads there (055, extended).
+    fn across_unheld(&self, c: Option<&Condition>, ty: &TypeName, all: &[Declared]) -> bool {
+        let Some(on) = self.force.ty(ty) else {
+            return true;
+        };
+        if on
+            .view
+            .as_deref()
+            .is_some_and(|v| !self.unheld_under(v, &mut Vec::new()))
+        {
+            return false;
+        }
+        let Some(c) = c else {
+            return true;
+        };
+        let paths = paths_named(c, &sets_of(all));
+        let ty = |n: &TypeName| self.force.ty(n);
+        paths.is_some_and(|p| crate::rights::holds_nothing_across(self.who(), on, &p, &ty))
+    }
+
+    /// Whether nothing of the records the view `v` reads is held from its
+    /// principal: decided for no reader, a membership over the view's
+    /// whole face tells what each of them adds (lakelands#1185). It holds
+    /// `restricted`, no `only` on a source at any depth nor, of a link
+    /// type, on its ends, and reads every field a source's `where`,
+    /// grouping and measures read. `inside` are the views judged so far.
+    fn unheld_under<'v>(&'v self, v: &'v ViewDecl, inside: &mut Vec<&'v ViewDecl>) -> bool {
+        let who = self.who();
+        let ty = |n: &TypeName| self.force.ty(n);
+        inside.push(v);
+        who.grants.restricted
+            && view_reads(v).is_some_and(|reads| {
+                reads.iter().all(|(from, names)| {
+                    let Some(t) = ty(from) else { return false };
+                    let inner = t.view.as_deref();
+                    let inner = inner.filter(|i| !inside.iter().any(|v| std::ptr::eq(*v, *i)));
+                    crate::rights::own_only(who, from).is_empty()
+                        && crate::rights::held_ends(who, t, &ty).is_empty()
+                        && self.reads_all(names, from)
+                        && inner.is_none_or(|i| self.unheld_under(i, inside))
+                })
+            })
+    }
+
+    /// [`Self::across_unheld`] of a set's `where`, over the declarations
+    /// in force.
+    pub fn set_across_unheld(&self, s: &lakelands_api::write::ObjectSetDecl) -> bool {
+        self.across_unheld(Some(&s.filter), &s.of, &self.force.declared())
     }
 
     /// Whether a condition over type `ty` may be shown to its principal.
@@ -325,6 +518,26 @@ pub fn declaration_reads(
     names
 }
 
+/// The types `d` names, the only ones [`declaration_probes`] answers
+/// anything for.
+pub fn probed_types(d: &Declaration) -> std::collections::BTreeSet<TypeName> {
+    match d {
+        Declaration::Type(t) => {
+            let views = t
+                .view
+                .iter()
+                .flat_map(|v| view_reads(v).unwrap_or_default());
+            let targets = t.relations.iter().map(|r| r.target.clone());
+            let named = [t.name.clone()].into_iter().chain(targets);
+            named.chain(views.map(|(source, _)| source)).collect()
+        }
+        Declaration::ObjectSet(s) => [s.of.clone()].into(),
+        Declaration::Trigger(t) => [t.on.clone()].into(),
+        Declaration::Verb(v) => [v.on.clone()].into(),
+        _ => Default::default(),
+    }
+}
+
 /// The fields of `ty` whose values a declaration reads: a derived field's
 /// expression on `ty` itself, the fields a derived relation matches, its
 /// own and those of `ty` as its target, what a view reads of `ty` as a
@@ -344,17 +557,22 @@ pub fn declaration_probes(
     match d {
         Declaration::Type(t) => {
             let own = t.fields.iter().filter(|_| &t.name == ty);
-            let pairs = |r: &RelationDecl| r.derived.clone().map(|m| m.pairs).unwrap_or_default();
-            let matching = (t.relations.iter().filter(|_| &t.name == ty)).flat_map(pairs);
-            let matched = (t.relations.iter().filter(|r| &r.target == ty)).flat_map(pairs);
+            let side = |r: &RelationDecl, i: usize| {
+                r.derived
+                    .as_ref()
+                    .map(|d| d.reads()[i].clone())
+                    .unwrap_or_default()
+            };
+            let matching = (t.relations.iter().filter(|_| &t.name == ty)).flat_map(|r| side(r, 0));
+            let matched = (t.relations.iter().filter(|r| &r.target == ty)).flat_map(|r| side(r, 1));
             let view = t
                 .view
                 .iter()
                 .flat_map(|v| view_reads(v).unwrap_or_default());
             own.filter_map(|f| f.derived.as_ref())
                 .flat_map(of)
-                .chain(matching.map(|p| p.from))
-                .chain(matched.map(|p| p.to))
+                .chain(matching)
+                .chain(matched)
                 .chain(view.filter(|(source, _)| source == ty).flat_map(|v| v.1))
                 .collect()
         }
@@ -435,6 +653,29 @@ pub(crate) fn parsed(c: &Condition) -> Option<Expr> {
 }
 
 impl Sight<'_> {
+    /// Whether its principal is told a host's setting declaration: a
+    /// holder of `schema`, or one who may write the setting, writing
+    /// `value` of `sys.setting` under a grant whose `only` there admits
+    /// the setting's key and group (063, extended).
+    pub fn setting_visible(&self, s: &SettingDecl) -> bool {
+        let who = self.who();
+        if who.grants.schema {
+            return true;
+        }
+        let ty = TypeName::from(lakelands_api::seam::SETTING_TYPE);
+        let Some(t) = self.force.ty(&ty) else {
+            return false;
+        };
+        let value = t.fields.iter().find(|f| f.name.as_str() == "value");
+        let writes = value.is_some_and(|f| field_access(who, t, f).writes());
+        let admits = |(f, v): &(FieldName, lakelands_api::Value)| match f.as_str() {
+            "key" => v.as_str() == Some(s.key.as_str()),
+            "group" => v.as_str().is_some() && v.as_str() == s.group.as_deref(),
+            _ => false,
+        };
+        writes && crate::rights::own_only(who, &ty).iter().all(admits)
+    }
+
     /// Whether a function may be shown to its principal: it computes at
     /// least one field, and every type where it does is shown to it,
     /// which reads that field and every input, which the function reads
@@ -452,7 +693,7 @@ impl Sight<'_> {
             .peekable();
         uses.peek().is_some()
             && uses.all(|(t, x)| {
-                let read = std::iter::once(&x.name).chain(f.inputs.iter().map(|i| &i.name));
+                let read = std::iter::once(&x.name).chain(f.inputs.iter().map(|i| i.name()));
                 self.ty(&t.name).is_ok() && self.reads_all(read, &t.name)
             })
     }
@@ -520,6 +761,36 @@ pub(crate) fn type_shown<'a>(
     own(t)
 }
 
+/// The types `t`'s sight and its fields' rest on, `t` first: what
+/// [`type_shown`] judges it by, what it is made of, and the target of
+/// every reference it holds, its own and its relations' link fields, as
+/// `rights::hide_unshown_references` hides one to a type its
+/// reader is not shown. One of them re-keyed may show a value of a field
+/// that reader may not know of as a key (lakelands#913).
+pub fn shown_by<'a>(
+    t: &'a TypeDecl,
+    find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
+) -> Vec<&'a TypeName> {
+    let (mut asked, mut next) = (vec![&t.name], vec![t]);
+    while let Some(t) = next.pop() {
+        let owner = crate::links::link_type_parts(&t.name).map(|p| p.0);
+        let links = t.relations.iter().flat_map(|r| &r.fields);
+        let targets = t
+            .fields
+            .iter()
+            .chain(links)
+            .filter_map(|f| f.ty.target.as_ref());
+        let sources = t.key_sources().into_iter().map(|(s, _)| s);
+        for o in owner.iter().chain(targets).chain(sources).filter_map(find) {
+            if !asked.contains(&&o.name) {
+                asked.push(&o.name);
+                next.push(o);
+            }
+        }
+    }
+    asked
+}
+
 /// Whether `who` is shown relation `r` of `owner` (006, extended): it is
 /// shown both ends, it may know of the reference field that carries it,
 /// and of a derived relation it may know of every field the match pairs,
@@ -539,13 +810,80 @@ pub(crate) fn relation_shown<'a>(
         let f = t.fields.iter().find(|f| &f.name == n);
         f.is_some_and(|f| field_access(who, t, f) != Access::None)
     };
-    let pairs = r.derived.iter().flat_map(|d| &d.pairs);
+    let [from, to] = r.derived.as_ref().map(Derived::reads).unwrap_or_default();
     type_shown(owner, &|n| find(n), who)
         && type_shown(target, find, who)
         && r.via.iter().all(|v| known(owner, v))
-        && pairs
-            .into_iter()
-            .all(|p| known(owner, &p.from) && known(target, &p.to))
+        && from.iter().all(|n| known(owner, n))
+        && to.iter().all(|n| known(target, n))
+}
+
+/// Why a principal who may write a type is told it may make no record of it.
+const CREATE_CLOSED: &str = "a create needs a value you may not send";
+
+/// `t` with each `expr` function's expression in place of its name, and the
+/// value types its fields name: what the record a create leaves is
+/// computed from.
+fn bare_inputs(t: &TypeDecl, declared: &[Declared]) -> (TypeDecl, Vec<ValueTypeDecl>) {
+    let mut out = t.clone();
+    for f in &mut out.fields {
+        let function = declared.iter().find_map(|d| match &d.declaration {
+            Declaration::Function(g) if Some(&g.name) == f.function.as_ref() => Some(g),
+            _ => None,
+        });
+        if let Some(g) = function {
+            f.derived = g.expr.clone();
+        }
+    }
+    let named = |v: &&ValueTypeDecl| {
+        t.fields
+            .iter()
+            .any(|f| f.ty.value_type.as_ref() == Some(&v.name))
+    };
+    let types = declared.iter().filter_map(|d| match &d.declaration {
+        Declaration::ValueType(v) => Some(v),
+        _ => None,
+    });
+    (out, types.filter(named).cloned().collect())
+}
+
+/// Whether no create `who` can send is taken (lakelands#1188), as far as
+/// the declaration shows it: a constraint the record a create leaves
+/// breaks is one no fields it may send can make hold ([`derive::stuck`]),
+/// those it is granted of the authored ones; a field the create needs,
+/// required with no `initial`, or a field of the key, which a create fills
+/// from its key, is not one it may send; or a constraint
+/// reads a field it may not read, which the write refuses whatever the
+/// create holds. A create it cannot rule out leaves it open: the write is
+/// the judge. `t` and `broken` are as [`derive::breaks`] takes and answers
+/// them.
+fn create_closed(
+    who: &Principal,
+    t: &TypeDecl,
+    value_types: &[ValueTypeDecl],
+    broken: &[(&ConstraintDecl, BTreeSet<FieldName>)],
+) -> bool {
+    let field = |n: &FieldName| t.fields.iter().find(|f| &f.name == n);
+    let sends = |f: &FieldDecl| {
+        matches!(f.authority, Authority::Authored | Authority::Shared)
+            && field_access(who, t, f).writes()
+    };
+    let sendable = |n: &FieldName| field(n).is_some_and(sends);
+    let unreadable = |n: &FieldName| field(n).is_some_and(|f| !field_access(who, t, f).reads());
+    let hidden = t.constraints.iter().any(|c| {
+        let e = c.holds.typed().ok();
+        e.is_some_and(|e| derive::reads(&e).iter().any(unreadable))
+    });
+    let computed = |f: &FieldDecl| f.derived.is_some() || f.function.is_some();
+    let needed = |f: &&FieldDecl| f.required && f.initial.is_none() && !computed(f);
+    let unsent = t.fields.iter().filter(needed).any(|f| !sends(f));
+    // A create fills the key's fields from its key, as a write of them.
+    let unkeyed = t.key.iter().any(|k| !sendable(k));
+    let stuck = |(c, _): &&(&ConstraintDecl, BTreeSet<FieldName>)| {
+        let e = c.holds.typed().ok();
+        e.is_some_and(|e| derive::stuck(t, value_types, &e, &sendable))
+    };
+    hidden || unsent || unkeyed || broken.iter().any(|b| stuck(&b))
 }
 
 impl Sight<'_> {
@@ -557,12 +895,41 @@ impl Sight<'_> {
     ) -> Option<TypeDescription> {
         let (who, find) = (self.who(), &|n: &TypeName| self.force.ty(n));
         self.ty(&t.name).ok()?;
+        // What a create that sends nothing but the key breaks (lakelands#1169):
+        // told of a field to a reader shown the constraint too.
+        let (resolved, value_types) = bare_inputs(t, declared);
+        let broken = match t.view {
+            None => derive::breaks(&resolved, &value_types),
+            Some(_) => Vec::new(),
+        };
+        let told = |(c, _): &&(&ConstraintDecl, BTreeSet<FieldName>)| {
+            let e = c.holds.typed().ok();
+            e.is_some_and(|e| self.reads_all(e.fields_read(), &t.name))
+        };
+        // Told of the fields that feed a broken constraint through the
+        // derived ones, those a create may send, and one only verbs write
+        // with no `initial`: one with an `initial` is a choice no create
+        // changes, and the field asked for is another.
+        let fed: BTreeSet<FieldName> = (broken.iter().filter(told))
+            .flat_map(|(_, reads)| derive::leaves(&resolved, reads))
+            .collect();
+        let required = |f: &FieldDecl| {
+            let asked = match f.authority {
+                Authority::Authored | Authority::Shared => true,
+                Authority::Verb => f.initial.is_none(),
+                _ => false,
+            };
+            asked && fed.contains(&f.name)
+        };
         let fields: Vec<FieldDescription> = t
             .fields
             .iter()
             .map(|f| (f, field_access(who, t, f)))
             .filter(|(_, a)| *a != Access::None)
-            .map(|(f, a)| FieldDescription::of(f, a))
+            .map(|(f, a)| FieldDescription {
+                required_at_create: a.reads() && required(f),
+                ..FieldDescription::of(f, a)
+            })
             .collect();
         let is_view = t.view.is_some();
         // A link type's records are written through its relation's link
@@ -571,14 +938,19 @@ impl Sight<'_> {
         // A holder of `only` writes its own records, and makes one only where
         // it writes every field its `only` names (051).
         let held = only_holder(who, t, self.force);
+        let upsert = crate::rights::creates(who, t)
+            && !is_view
+            && !is_link
+            && fields.iter().any(FieldDescription::authored_writable);
+        let closed = create_closed(who, &resolved, &value_types, &broken);
         let may = TypeRights {
             find: true,
             get: true,
-            upsert: crate::rights::creates(who, t)
-                && !is_view
-                && !is_link
-                && fields.iter().any(FieldDescription::authored_writable),
-            retire: !is_link && crate::rights::may_retire(who, t),
+            upsert,
+            create: upsert && !closed,
+            create_why: (upsert && closed).then(|| CREATE_CLOSED.to_owned()),
+            // A type only its verbs retire is retired by calling one.
+            retire: !is_link && t.retired_by.is_authors() && crate::rights::may_retire(who, t),
             link: t
                 .relations
                 .iter()
@@ -621,7 +993,18 @@ impl Sight<'_> {
         let whole = d.schema_hash.as_deref().unwrap_or_default();
         let schema_hash = crate::rights::shown_hash(who, t, view.is_some(), whole, find);
         Some(TypeDescription {
+            // Told to one who reads every field it reads, as a set's
+            // condition is (lakelands#1119).
+            constraints: (t.constraints.iter())
+                .filter(|c| {
+                    let e = c.holds.typed().ok();
+                    e.is_some_and(|e| self.reads_all(e.fields_read(), &t.name))
+                })
+                .cloned()
+                .collect(),
             name: t.name.clone(),
+            // `describe_type` fills them; `describe` names them once.
+            value_types: Vec::new(),
             description: t.description.clone(),
             label: t.label.clone(),
             language: t.language.clone(),
@@ -653,17 +1036,31 @@ impl Sight<'_> {
             lineage: TypeLineage {
                 sourced: (fields.iter())
                     .any(|f| matches!(f.authority, Authority::Source | Authority::Shared)),
+                insert_only: t.insert_only,
+                retired_by: t.retired_by,
                 view_of: t.view.as_ref().map(|v| v.source.clone()),
             },
             lifecycle: TypeLifecycle {
                 version: d.version,
                 schema_hash,
                 sorted: vec![],
+                sorted_whole: vec![],
                 indexed: vec![],
                 kept: None,
+                // Of the fields as shown, as the hash is (024, extended).
+                value_types: (fields.iter())
+                    .filter_map(|f| f.ty.value_type.as_ref())
+                    .filter_map(|n| Some((n.clone(), version_of(declared, n)?)))
+                    .collect(),
             },
             fields,
         })
+    }
+
+    /// Whether its principal is shown `v` and may call it: `describe`
+    /// lists it.
+    pub fn verb_shown(&self, v: &VerbDecl) -> bool {
+        self.verb_description(v).is_some()
     }
 
     fn verb_description(&self, v: &VerbDecl) -> Option<VerbDescription> {
@@ -688,13 +1085,14 @@ impl Sight<'_> {
                 .collect(),
             risk: v.risk,
             external: matches!(v.effect, VerbEffect::External { .. }),
+            retires: matches!(v.effect, VerbEffect::Retire),
             // Whether the host binds it is the store's to say.
             executor: match &v.effect {
                 VerbEffect::External { executor } => Some(ExecutorDescription {
                     name: executor.clone(),
                     bound: false,
                 }),
-                VerbEffect::Write { .. } => None,
+                _ => None,
             },
             description: v.description.clone(),
         })

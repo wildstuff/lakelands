@@ -56,16 +56,28 @@ logged, and a rejected proposal leaves it as it was
 
 ### A host's annotations are meaning
 
-A type, a field and a relation may carry `annotations`, the host's own
-marks by namespaced key (`acme.icon`, `acme.package`): presentation,
-policy flags the host enforces itself, provenance. They are meaning,
+A type, a field, a relation and a value type may carry `annotations`,
+the host's own marks by namespaced key (`acme.icon`, `acme.package`):
+presentation, policy flags the host enforces itself, provenance, the
+unit a value type's values are in (`acme.unit: EUR`), which the host
+then reads once for every field that names it (lakelands#1025). They are meaning,
 never shape. The hash is an allowlist of shape members, so annotations
 stay out of it without a rule of their own. A suite check holds this
 byte for byte, so that a member added to the allowlist later cannot
 pull them in unnoticed. A type whose annotations alone change keeps its
 schema hash, and its version counts the change like a changed
-description. Carrying annotations in the log is a new member, so it
+description. A value type has no hash of its own, and a type's hash
+names its fields' value type alone, so a value type's annotations move
+no hash either; its version counts their change. Carrying annotations in the log is a new member, so it
 came with a step of the log format (`docs/log-format.md` §6).
+
+### Being written once is not shape
+
+A type marked `insert_only` stores its records as an unmarked one does;
+the mark says how its source may write them, not what they hold. It is
+not a shape member, so the hash leaves it out without a rule of its
+own: a type marked or unmarked keeps its schema hash, and its version
+counts the change (lakelands#1044).
 
 ### A field's initial value is not shape
 
@@ -138,3 +150,11 @@ change when and only when the shape does.
   migration" was said of every change of shape; 027 declares the ones
   no stored record can stop fitting, an added optional field among
   them, and the hash covers the fields.
+- A value type's change moves neither a type's version nor its hash,
+  yet changes what the type accepts: `describe` answers each value
+  type's version, and a type's lifecycle the versions of the value
+  types its shown fields use, so a cache of what a type accepts keys on
+  the three (lakelands#1058).
+- `describe_type` answers the declarations of the value types its key
+  names, so one type is rendered from one read, and `describe` keeps
+  naming them once, for the lake (lakelands#1060).

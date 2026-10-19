@@ -27,6 +27,7 @@
 
 pub(crate) mod doors;
 pub mod http;
+pub(crate) mod hub;
 pub mod resolver;
 pub mod rest;
 pub mod say;

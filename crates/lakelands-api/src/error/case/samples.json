@@ -104,6 +104,17 @@
    "field": "f"
   },
   {
+   "code": "constraint_named_twice",
+   "constraint": "c"
+  },
+  {
+   "code": "constraint_reads_beyond",
+   "constraint": "c",
+   "reads": {
+    "kind": "path"
+   }
+  },
+  {
    "code": "declared_twice",
    "name": "s",
    "what": "type"
@@ -123,6 +134,10 @@
   {
    "code": "derived_reads_itself",
    "field": "f"
+  },
+  {
+   "code": "derived_where_path",
+   "path": "s"
   },
   {
    "code": "derived_stores_edge"
@@ -164,7 +179,44 @@
    "code": "embed_not_vector"
   },
   {
+   "code": "erasable_authored"
+  },
+  {
+   "code": "erasable_dropped"
+  },
+  {
+   "code": "erasable_not_of_type"
+  },
+  {
+   "code": "erasable_key"
+  },
+  {
+   "code": "erasable_reference"
+  },
+  {
+   "code": "verb_required"
+  },
+  {
+   "code": "verb_computed"
+  },
+  {
+   "code": "initial_breaks",
+   "constraint": "c",
+   "field": "f"
+  },
+  {
+   "code": "no_initial_breaks",
+   "constraint": "c",
+   "field": "f"
+  },
+  {
+   "code": "verb_key"
+  },
+  {
    "code": "expr_no_expression"
+  },
+  {
+   "code": "expr_risk"
   },
   {
    "backing": "s",
@@ -184,6 +236,21 @@
   {
    "code": "function_undeclared",
    "name": "s"
+  },
+  {
+   "by": "s",
+   "code": "withdrawn_in_use",
+   "kind": "type",
+   "name": "s"
+  },
+  {
+   "code": "withdrawn_undeclared",
+   "kind": "type",
+   "name": "s"
+  },
+  {
+   "code": "withdrawn_kind",
+   "kind": "type"
   },
   {
    "code": "group_unkeyable",
@@ -231,6 +298,17 @@
   {
    "code": "link_field_is_end",
    "field": "f"
+  },
+  {
+   "code": "link_type_ring",
+   "ring": [
+    "a"
+   ]
+  },
+  {
+   "code": "match_not_key",
+   "relation": "r",
+   "target": "t"
   },
   {
    "code": "measure_twice",
@@ -332,6 +410,11 @@
    "type": "t"
   },
   {
+   "code": "set_reads_computed",
+   "field": "f",
+   "type": "t"
+  },
+  {
    "code": "reads_no_input",
    "field": "f"
   },
@@ -342,6 +425,13 @@
   },
   {
    "code": "reference_no_target"
+  },
+  {
+   "code": "retire_verb_link",
+   "type": "t"
+  },
+  {
+   "code": "retired_by_view"
   },
   {
    "code": "scale_not_decimal"
@@ -404,6 +494,10 @@
    "code": "valid_time_stands"
   },
   {
+   "code": "valid_to_alone",
+   "field": "f"
+  },
+  {
    "code": "value_type_format",
    "format": "s",
    "value_type": "vt"
@@ -434,6 +528,15 @@
   {
    "code": "view_field_unfilled",
    "field": "f"
+  },
+  {
+   "code": "view_kept_for_set",
+   "type": "t"
+  },
+  {
+   "code": "view_source_stepped",
+   "source": "t",
+   "type": "t"
   },
   {
    "code": "view_key",
@@ -513,6 +616,9 @@
   },
   {
    "code": "in_empty"
+  },
+  {
+   "code": "exists_here"
   },
   {
    "code": "in_set_here"
@@ -708,7 +814,20 @@
    "pattern": "s"
   },
   {
+   "cardinality": "one_to_one",
+   "code": "relation_holds_many",
+   "relation": "r"
+  },
+  {
+   "code": "relation_via_field",
+   "field": "f",
+   "relation": "r"
+  },
+  {
    "code": "retired_only_in_guard"
+  },
+  {
+   "code": "created_only_in_guard"
   },
   {
    "code": "set_cycle",
@@ -747,6 +866,15 @@
    "code": "sum_not_number",
    "value": {
     "kind": "null"
+   }
+  },
+  {
+   "code": "measure_fails",
+   "group": "k",
+   "why": {
+    "code": "unknown_field",
+    "field": "f",
+    "type": "t"
    }
   },
   {
@@ -910,6 +1038,29 @@
    "measure": "s"
   },
   {
+   "code": "model_without_vector"
+  },
+  {
+   "code": "rerank_top_zero"
+  },
+  {
+   "code": "rerank_no_window"
+  },
+  {
+   "code": "rerank_top_above",
+   "max": 1
+  },
+  {
+   "code": "rerank_needs_text"
+  },
+  {
+   "code": "rerank_without_search"
+  },
+  {
+   "code": "no_relation_anywhere",
+   "relation": "r"
+  },
+  {
    "code": "no_relation_to_walk",
    "relation": "r",
    "type": "t",
@@ -999,6 +1150,14 @@
    "query": 1
   },
   {
+   "code": "query_model",
+   "held": "s",
+   "query": "s"
+  },
+  {
+   "code": "retired_with_aggregate"
+  },
+  {
    "code": "search_fields_empty"
   },
   {
@@ -1011,6 +1170,10 @@
    "kind": "text"
   },
   {
+   "asks": "s",
+   "code": "start_no_type"
+  },
+  {
    "also": [
     "a"
    ],
@@ -1019,7 +1182,11 @@
    "type": "t"
   },
   {
-   "code": "step_several_types"
+   "also": [
+    "a"
+   ],
+   "code": "step_several_types",
+   "reached": "t"
   },
   {
    "asked": 1,
@@ -1060,6 +1227,10 @@
    "field": "f"
   },
   {
+   "code": "call_declined",
+   "verb": "v"
+  },
+  {
    "cause": 1,
    "code": "cause_past_head",
    "head": 1
@@ -1069,7 +1240,17 @@
    "type": "t"
   },
   {
+   "code": "declared_since_proposed",
+   "name": "s",
+   "what": "type"
+  },
+  {
    "code": "field_exists",
+   "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "field_name_kept",
    "field": "f",
    "type": "t"
   },
@@ -1077,6 +1258,17 @@
    "code": "field_read_elsewhere",
    "field": "f",
    "type": "t"
+  },
+  {
+   "code": "forget_plaintext",
+   "count": 1,
+   "source": "src"
+  },
+  {
+   "code": "forget_report_stale"
+  },
+  {
+   "code": "idempotency_key_nul"
   },
   {
    "code": "is_a_view",
@@ -1149,6 +1341,13 @@
    "verb": "v"
   },
   {
+   "code": "plan_stale"
+  },
+  {
+   "code": "proposal_plans_nothing",
+   "proposal": "p-1"
+  },
+  {
    "code": "purge_report_stale"
   },
   {
@@ -1165,8 +1364,28 @@
    "type": "t"
   },
   {
+   "code": "remove_not_shredded",
+   "count": 1,
+   "source": "src"
+  },
+  {
+   "code": "remove_report_stale"
+  },
+  {
    "code": "required",
    "field": "f",
+   "type": "t"
+  },
+  {
+   "code": "constraint_broken",
+   "constraint": "c",
+   "key": "k",
+   "type": "t"
+  },
+  {
+   "code": "constraint_left_broken",
+   "constraint": "c",
+   "records": 1,
    "type": "t"
   },
   {
@@ -1198,6 +1417,28 @@
      }
     }
    ]
+  },
+  {
+   "code": "source_forgotten",
+   "source": "src"
+  },
+  {
+   "code": "key_destroyed",
+   "source": "src"
+  },
+  {
+   "code": "key_version_not_held",
+   "key": "1",
+   "source": "src"
+  },
+  {
+   "code": "source_id_form"
+  },
+  {
+   "code": "delivery_id_form"
+  },
+  {
+   "code": "delivery_not_carried"
   },
   {
    "code": "trigger_too_deep",
@@ -1252,16 +1493,17 @@
    "verb": "v"
   },
   {
-   "cardinality": "one_to_one",
-   "code": "window_links_already",
-   "from": "k",
-   "relation": "r",
-   "to": "k"
+   "code": "written_once",
+   "key": "k",
+   "type": "t"
   },
   {
    "code": "write_changed_since_proposed",
    "key": "k",
    "type": "t"
+  },
+  {
+   "code": "writer_nul"
   },
   {
    "code": "aging_authority",
@@ -1304,6 +1546,15 @@
    "type": "t"
   },
   {
+   "code": "lookup_index_at_read",
+   "field": "f"
+  },
+  {
+   "code": "lookup_index_kind",
+   "field": "f",
+   "kind": "text"
+  },
+  {
    "code": "no_stored_type",
    "type": "t"
   },
@@ -1340,6 +1591,26 @@
    "code": "setting_kept_holds"
   },
   {
+   "code": "setting_key_period"
+  },
+  {
+   "code": "setting_unlisted",
+   "prefix": "s"
+  },
+  {
+   "code": "setting_store_key",
+   "prefix": "s"
+  },
+  {
+   "code": "setting_group_stamped"
+  },
+  {
+   "code": "setting_store_group"
+  },
+  {
+   "code": "setting_reference"
+  },
+  {
    "code": "setting_weights_shape"
   },
   {
@@ -1353,6 +1624,11 @@
   },
   {
    "code": "view_not_keepable",
+   "type": "t"
+  },
+  {
+   "code": "constraint_needs_migrate",
+   "constraint": "c",
    "type": "t"
   },
   {
@@ -1387,6 +1663,12 @@
   },
   {
    "code": "migration_takes_link_type",
+   "relation": "r",
+   "type": "t",
+   "unnamed": true
+  },
+  {
+   "code": "migration_takes_target",
    "relation": "r",
    "type": "t",
    "unnamed": true
@@ -1466,11 +1748,31 @@
    "field": "f"
   },
   {
+   "code": "fill_unknown",
+   "field": "f"
+  },
+  {
+   "code": "fill_no_initial",
+   "field": "f"
+  },
+  {
+   "code": "fill_repeated",
+   "field": "f"
+  },
+  {
+   "code": "fill_renamed",
+   "field": "f",
+   "to": "f"
+  },
+  {
    "code": "rename_to_unknown",
    "to": "f"
   },
   {
    "code": "rename_while_rekeying"
+  },
+  {
+   "code": "remove_while_rekeying"
   },
   {
    "code": "reshapes",
@@ -1568,6 +1870,9 @@
   },
   {
    "code": "not_base64"
+  },
+  {
+   "code": "nul_in_text"
   },
   {
    "code": "not_date_time",
@@ -1967,6 +2272,10 @@
    "name": "g"
   },
   {
+   "code": "type_constraint",
+   "name": "c"
+  },
+  {
    "code": "object_set",
    "name": "s"
   },
@@ -2025,6 +2334,12 @@
   },
   {
    "code": "initial"
+  },
+  {
+   "code": "erasable"
+  },
+  {
+   "code": "authority"
   },
   {
    "code": "links",

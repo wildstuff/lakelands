@@ -23,7 +23,7 @@ this page says only how a request reaches it.
   once a key is presented, a lake segment holding a `/` answers `404`
   before that key is resolved. There is no session and no pin: a read that must see one state
   names `as_of` itself, and a page's `cursor` already carries the position
-  its first page was read at. Over REST the principal is what the server
+  its first page was read at and the clock that page read. Over REST the principal is what the server
   resolves from the key: nothing a client says about who it is or what
   it may do is taken.
 - **The position.** Every reply to a caller whose key resolved carries
@@ -47,7 +47,7 @@ this page says only how a request reaches it.
 
   | Error | Status |
   |---|---|
-  | `refused`: `not_granted`, `wrong_door`, `reserved` | 403 (401 for a missing or unknown key) |
+  | `refused`: `not_granted`, `wrong_door`, `verbs_only`, `reserved`, `declined` | 403 (401 for a missing or unknown key) |
   | `refused`: `invalid`, `constraint`, `precondition`, `too_deep`, `too_large`, `migration`, `out_of_range` | 422 (400 for a request the server cannot read, 404 for no route, 405 for a method the route does not take, 413 for a body over 4 MiB, 415 for a body of another media type) |
   | `refused`: `decided`, `unanswered` | 409 |
   | `not_found` | 404 |
@@ -67,7 +67,7 @@ key may hold any character.
 
 | Route | Door | Arguments from |
 |---|---|---|
-| `GET …/types/<type>/records` | find | query: `where`, `order_by`, `limit`, `cursor`, `offset`, `total`, `after`, `aggregate`, `with_meta`, `params`, `as_of`, `valid_at` |
+| `GET …/types/<type>/records` | find | query: `where`, `order_by`, `limit`, `cursor`, `offset`, `total`, `retired`, `after`, `aggregate`, `with_meta`, `params`, `as_of`, `valid_at` |
 | `GET …/types/<type>/records/<key>` | get | query: `with_meta`, `params`, `as_of`, `valid_at` |
 | `PUT …/types/<type>/records/<key>` | upsert | body: the fields to change; `If-Match`, `If-None-Match`, `Idempotency-Key` |
 | `DELETE …/types/<type>/records/<key>` | retire | `If-Match`, `Idempotency-Key` |
@@ -82,6 +82,7 @@ key may hold any character.
 | `GET …/proposals` | proposals | query: `state`, `type`, `kind`, `limit`, `order_by`, `cursor`, `as_of`, `valid_at` |
 | `POST …/proposals` | propose | body: `write` (`upsert`, `retire`, `call`, `declare` with `declarations`, or `migrate` with `migration`), `why` |
 | `POST …/proposals/<id>/accept` | accept | — |
+| `POST …/proposals/<id>/accept_planned` | accept a proposed change to the ontology against the plan of its change at the head | body: `plan_id` |
 | `POST …/proposals/<id>/reject` | reject | body: `reason` (optional) |
 | `POST …/schema/declare_type` | declare a type | body: `type` |
 | `POST …/schema/declare` | declare anything that does not reshape stored records | body: `declaration` |
@@ -90,7 +91,9 @@ key may hold any character.
 | `POST …/schema/recompute` | compute again what a declaration in force computes | body: `function` or `type` |
 | `POST …/schema/migrate` | a migration's preflight | body: `to`, `renames` and `relation_renames`, or `value_type` |
 | `POST …/schema/migrate/apply` | apply a migration | body: `to`, `renames` and `relation_renames`, or `value_type`; and `report_id` |
-| `POST …/ingest/<source>` | ingest | body: NDJSON, one record per line |
+| `POST …/schema/plan` | a change's plan: what it would do, changing nothing | body: `change` (`declare` with `declarations`, `add_field` with `type` and `field`, `recompute` with `what`, `migrate` or `migrate_value_type` with `migration`) and its members |
+| `POST …/schema/enact` | make a change against its plan | body: as `…/schema/plan`, and `plan_id` |
+| `POST …/ingest/<source>` | ingest | body: NDJSON, one record per line; query: `delivery` |
 | `GET …/feed` | the change feed | query: `from`, `kinds`, `types`, `key` (repeated); `Last-Event-ID` |
 
 A parameter or a body member the door does not take is refused before
@@ -127,8 +130,8 @@ of the link type, so the version `If-Match` names is the link's.
   `GET …/types/sys.link.<type>.<relation>/records`.
 
 `describe` answers a type as the principal may see it. A host's
-`annotations` on a type, a field and a relation come back as they were
-declared, in canonical form. A field the principal may not read, a
+`annotations` on a type, a field, a relation and a value type come back
+as they were declared, in canonical form. A field the principal may not read, a
 relation's link field included, is described by its shape alone, without
 its annotations. An annotation grants nothing and restricts nothing:
 what a principal may read is decided by its grants alone
@@ -141,6 +144,12 @@ one in `sys.` or `lakelands.` as `reserved` (403), naming the key.
 declare verbs, triggers, object sets and the rest. Each body member is
 the declaration as the contract writes it, and a member the route does
 not take is refused.
+
+`schema/plan` and `schema/enact` are REST's too; MCP's tools that change
+the ontology take `plan` and `plan_id` instead. A plan, and an answer
+that carries one (a change's outcome, a proposal's, a listed proposal),
+comes with `said`: a sentence per finding, for the person who decides
+on it (`docs/decisions/062-a-change-plans-before-it-acts.md`).
 
 A trigger's `max_depth` caps the reactions to its firings: writes a
 host makes naming a firing as their cause
@@ -156,8 +165,8 @@ numbers.
 
 A query parameter carries the value the door's argument of that name
 takes. `limit`, `offset`, `as_of` and `from` are whole numbers;
-`with_meta` and `total` are `true`, `false`, or present without a value
-for `true`; `aggregate` is
+`with_meta`, `total` and `retired` are `true`, `false`, or present
+without a value for `true`; `aggregate` is
 JSON, and so is `after`, the sort position a page resumes strictly after
 without a cursor: `after={"values":["2026-10-01"],"key":"inv-7"}`,
 URL-encoded like `where` and every other query value, and read at
@@ -201,24 +210,37 @@ for review.
 `POST …/ingest/<source>` takes `application/x-ndjson` (or
 `application/jsonl`, `application/json`, or no `Content-Type`), one
 source record per line (`{"type":…,"key":…,"fields":{…},"seen_at":…}`),
-and is read as it arrives. The answer is NDJSON too: one line per commit
+and is read as it arrives. A line may name its own `"source"`; one that
+does not is the path's. One call so carries the batches of many sources,
+each record's event stamped with its own. The answer is NDJSON too: one line per commit
 window as it becomes durable,
-`{"position":…,"records":…,"duplicates":…}`. Where a window is cut is
-the store's: a client cannot make two records share one, so what is
-judged over a window (a relation's cardinality among the links that
-arrive together) is judged over whatever the store took as one. Two
-links that break a cardinality together are refused as one window, or
-the first is committed and the second refused; a host takes both
-answers. While a window takes
+`{"position":…,"records":…,"duplicates":…,"delivery":…}`. `?delivery=`
+names the call's delivery, which every record's event carries; without
+it the store names its own, `d` and the position of the call's first
+event, and a window before any event of the call names none
+(`docs/log-format.md` §1.1). Where a window is cut is
+the store's, and no answer turns on it: a record is judged over the
+lake and the records before it, and a refused one is refused alike
+wherever the cut fell. What the cut decides is only the refusal's
+`from`, whether the records of its window before it were written; a
+host resumes there. While a window takes
 longer than fifteen seconds to commit, the answer carries an empty line
 every fifteen seconds, so a client that holds the answer to a silence
 bound knows the server is working; a client skips it. The reply's
 `Lakelands-Position` is the head before the ingest began; each window's
 own position is in its line. A line is at most 4 MiB before its line
 feed, however the body is cut into reads. A line that is longer, or is
-not a record, ends the ingest with a last line naming it (`invalid`);
-what came before it is committed, and since ingest is content-addressed,
-sending the whole body again appends nothing twice. A refused ingest is
+not a record (a member a source record does not have included, so a
+misspelled `"source"` is never read as the path's), ends the ingest
+with a last line naming it (`invalid`); what came before it is
+committed, and since ingest is content-addressed, sending the whole
+body again appends nothing twice. A record the store
+refuses ends the ingest with a last line that is its refusal, its own
+`error` code and shape kept, with `index` (its place among the body's
+records, from 0), `from` (the first record of its window: every record
+before it is committed, none from it on) and `record` (its `type` and
+`key`) beside it; send the body again from record `from`, the refused
+one left out or mended. A refused ingest is
 answered even while the body is still arriving: the server reads the
 rest of the body and drops it, for at most fifteen seconds, before it
 closes, so a client that sends on past the refused line still reads
@@ -235,14 +257,24 @@ answers those records' events (`types=invoice&key=INV-1` is one
 record's history), without them a key in any type (`docs/seams.md`
 §`ChangeFeed`). Each event's `id` is
 its position, its `event` its kind, its `data` the event as JSON; a
+reaction the batch names `overruled` carries the comment `: overruled`
+in its frame, after its `id`, which a reader that does not know the
+mark skips as it skips every comment
+(`docs/decisions/004-the-change-feed-is-the-log.md`). A
 reconnecting client sends `Last-Event-ID` and resumes after it. Each
 time the stream catches up at a position it has not named before, it
 sends the comment `: next <position>`: the first position not yet
 examined, the `next` a poll of the change feed would answer, so a client
 that reads what is there and stops knows where to stop. A quiet stream
-sends the comment `: keep-alive` every fifteen seconds. How long a
-caught-up stream waits before it reads the log again is the
-configuration's `feed_poll_millis` (250 unless stated).
+sends the comment `: keep-alive` every fifteen seconds. A caught-up
+stream waits for the lake's next append and sends it at once; the
+configuration's `feed_poll_millis` (250 unless stated) bounds that wait,
+after which it reads the log again, and `feed_floor_millis` (10 unless
+stated) is the most often the log is read for it, counted from the end
+of the last such read, so a busy lake's appends reach it in batches
+(lakelands#1061). The streams and MCP sessions that follow one lake with
+the same kinds and types share one read of the log; a stream's `key`s
+are applied to it by the stream (lakelands#1113).
 
 The feed is the log itself, unmasked, so only a principal that reads
 every field of every record, withheld records included

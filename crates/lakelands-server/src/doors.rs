@@ -16,10 +16,10 @@ use lakelands_api::read::{Find, Get, ReadAt};
 use lakelands_api::record::Patch;
 use lakelands_api::tools::{Door, ToolSpec};
 use lakelands_api::write::{
-    Declaration, FunctionDecl, Migration, ObjectSetDecl, ProposalFilter, ProposedWrite,
-    ValueTypeMigration, WriteOpts,
+    Change, Declaration, FunctionDecl, Migration, ObjectSetDecl, ProposalFilter, ProposedWrite,
+    SettingDecl, ValueTypeMigration, Withdrawal, WriteOpts,
 };
-use lakelands_api::{Catalog, Principal};
+use lakelands_api::{Catalog, Principal, Timestamp};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde::de::value::StringDeserializer;
@@ -123,7 +123,9 @@ fn in_declaration(v: &Value, at: String) -> Option<(String, Said)> {
             if let Some(Value::String(kind)) = m.get("declare") {
                 let mut members = m.clone();
                 members.remove("declare");
-                let name = m.get("name").and_then(Value::as_str).map(str::to_owned);
+                // A setting is named by its key.
+                let named = if kind == "setting" { "key" } else { "name" };
+                let name = m.get(named).and_then(Value::as_str).map(str::to_owned);
                 let (what, said) = declared(kind, Value::Object(members))?;
                 return Some((at, said.within(Place::Declaration { what, name })));
             }
@@ -160,6 +162,8 @@ fn declared(kind: &str, members: Value) -> Option<(Naming, Said)> {
         "trigger" => (Naming::Trigger, one::<TriggerDecl>(members)),
         "object_set" => (Naming::ObjectSet, one::<ObjectSetDecl>(members)),
         "function" => (Naming::Function, one::<FunctionDecl>(members)),
+        "setting" => (Naming::Setting, one::<SettingDecl>(members)),
+        "withdraw" => (Naming::Withdrawal, one::<Withdrawal>(members)),
         _ => return None,
     };
     Some((what, said?))
@@ -406,6 +410,74 @@ fn catalog_answers(door: &Door, argument: &str) -> bool {
     )
 }
 
+/// A plan, or an outcome that carries one, with what it says beside it
+/// as `said`, for a person who decides on it (062).
+fn said(answer: &mut Value) {
+    // Each proposal of a listing that keeps its plan.
+    if let Some(listed) = answer.get_mut("data").and_then(Value::as_array_mut) {
+        for p in listed
+            .iter_mut()
+            .filter(|p| p["write"].get("plan").is_some())
+        {
+            let plan = serde_json::from_value(p["write"]["plan"].clone());
+            if let Ok(plan) = plan {
+                p["said"] = Value::from(crate::say::plan(&plan));
+            }
+        }
+        return;
+    }
+    let plan = match answer.get("plan") {
+        Some(plan) => plan,
+        None if answer
+            .get("data")
+            .is_some_and(|d| d.get("at").is_some() && d.get("lossless").is_some()) =>
+        {
+            &answer["data"]
+        }
+        None => return,
+    };
+    if let Ok(plan) = serde_json::from_value::<lakelands_api::write::Plan>(plan.clone()) {
+        answer["said"] = Value::from(crate::say::plan(&plan));
+    }
+}
+
+/// A change tool's `plan` and `plan_id`
+/// (`docs/decisions/062-a-change-plans-before-it-acts.md`).
+#[derive(Deserialize)]
+struct Planned {
+    #[serde(default)]
+    plan: bool,
+    #[serde(default)]
+    plan_id: Option<String>,
+}
+
+impl Planned {
+    /// The change planned, or made against its plan; given back where the
+    /// tool makes it at once.
+    fn change(self, change: Change) -> Result<Planning, Change> {
+        match (self.plan, self.plan_id) {
+            (true, _) => Ok(Planning::Plan(change)),
+            (false, Some(id)) => Ok(Planning::Enact(change, id)),
+            (false, None) => Err(change),
+        }
+    }
+}
+
+/// A change a tool plans, or makes against its plan.
+enum Planning {
+    Plan(Change),
+    Enact(Change, String),
+}
+
+impl Planning {
+    async fn run(self, c: &dyn Catalog, who: &Principal) -> Result<Value, Fault> {
+        Ok(match self {
+            Planning::Plan(change) => to_json(&c.plan(who, change).await?),
+            Planning::Enact(change, id) => to_json(&c.enact(who, change, &id).await?),
+        })
+    }
+}
+
 pub(crate) fn to_json<T: serde::Serialize>(v: &T) -> Value {
     serde_json::to_value(v).expect("contract types serialise")
 }
@@ -428,13 +500,14 @@ pub(crate) fn unknown_argument(spec: &ToolSpec, arguments: &Map<String, Value>) 
 /// Run one catalog door with its arguments, as `who`. `label` names the
 /// door in a refusal of the arguments. [`Door::Pin`], [`Door::Subscribe`] and
 /// [`Door::Unsubscribe`] belong to the MCP session, which answers them
-/// itself; here they are refused.
+/// itself; here they are refused. A read is clocked by `clock` where the
+/// session keeps one (`ReadAt::clock`, a pin of the head).
 pub(crate) async fn run(
     c: &dyn Catalog,
     who: &Principal,
     door: &Door,
     label: &str,
-    a: Map<String, Value>,
+    (a, clock): (Map<String, Value>, Option<Timestamp>),
 ) -> Result<Value, Fault> {
     #[derive(Deserialize)]
     struct Write {
@@ -463,9 +536,17 @@ pub(crate) async fn run(
         #[serde(flatten)]
         opts: WriteOpts,
     }
-    Ok(match door {
-        Door::Find { ty } => to_json(&c.find(who, ty, args::<Find>(label, &a)?).await?),
-        Door::Get { ty } => to_json(&c.get(who, ty, args::<Get>(label, &a)?).await?),
+    let mut answer = match door {
+        Door::Find { ty } => {
+            let mut f: Find = args(label, &a)?;
+            f.at.clock = clock;
+            to_json(&c.find(who, ty, f).await?)
+        }
+        Door::Get { ty } => {
+            let mut g: Get = args(label, &a)?;
+            g.at.clock = clock;
+            to_json(&c.get(who, ty, g).await?)
+        }
         Door::Upsert { ty } => {
             let w: Write = args(label, &a)?;
             to_json(&c.upsert(who, ty, &w.key, w.fields, w.opts).await?)
@@ -497,7 +578,8 @@ pub(crate) async fn run(
                 #[serde(flatten)]
                 at: ReadAt,
             }
-            let d: D = args(label, &a)?;
+            let mut d: D = args(label, &a)?;
+            d.at.clock = clock;
             match d.ty {
                 Some(ty) => to_json(&c.describe_type(who, &ty, d.at).await?),
                 None => to_json(&c.describe(who, d.at).await?),
@@ -511,8 +593,16 @@ pub(crate) async fn run(
             let tool = label.into();
             return Err(Fault::arguments(Case::NoSession { tool }));
         }
-        Door::Query => to_json(&c.query(who, args::<Pattern>(label, &a)?).await?),
-        Door::Search => to_json(&c.search(who, args::<Search>(label, &a)?).await?),
+        Door::Query => {
+            let mut p: Pattern = args(label, &a)?;
+            p.at.clock = clock;
+            to_json(&c.query(who, p).await?)
+        }
+        Door::Search => {
+            let mut s: Search = args(label, &a)?;
+            s.at.clock = clock;
+            to_json(&c.search(who, s).await?)
+        }
         Door::Propose => {
             #[derive(Deserialize)]
             struct P {
@@ -522,19 +612,35 @@ pub(crate) async fn run(
             let p: P = args(label, &a)?;
             to_json(&c.propose(who, p.write, p.why).await?)
         }
-        Door::Proposals => to_json(&c.proposals(who, args::<ProposalFilter>(label, &a)?).await?),
+        Door::Proposals => {
+            let mut f: ProposalFilter = args(label, &a)?;
+            f.at.clock = clock;
+            to_json(&c.proposals(who, f).await?)
+        }
         Door::Accept | Door::Reject => {
             #[derive(Deserialize)]
             struct D {
                 proposal: ProposalId,
                 #[serde(default)]
                 reason: String,
+                #[serde(default)]
+                plan_id: Option<String>,
             }
             let d: D = args(label, &a)?;
-            if *door == Door::Accept {
-                to_json(&c.accept(who, &d.proposal).await?)
-            } else {
-                to_json(&c.reject(who, &d.proposal, d.reason).await?)
+            // The route that accepts against a plan takes no accept without
+            // one (062).
+            if label.ends_with("accept_planned") && d.plan_id.is_none() {
+                #[derive(Deserialize)]
+                struct Planned {
+                    #[allow(dead_code)]
+                    plan_id: String,
+                }
+                args::<Planned>(label, &a)?;
+            }
+            match (*door == Door::Accept, d.plan_id) {
+                (true, Some(id)) => to_json(&c.accept_planned(who, &d.proposal, &id).await?),
+                (true, None) => to_json(&c.accept(who, &d.proposal).await?),
+                (false, _) => to_json(&c.reject(who, &d.proposal, d.reason).await?),
             }
         }
         Door::DeclareType => {
@@ -542,9 +648,33 @@ pub(crate) async fn run(
             struct D {
                 #[serde(rename = "type")]
                 ty: TypeDecl,
+                #[serde(flatten)]
+                planned: Planned,
             }
             let d: D = args(label, &a)?;
-            to_json(&c.declare(who, Declaration::Type(d.ty)).await?)
+            let declarations = vec![Declaration::Type(d.ty)];
+            match d.planned.change(Change::Declare { declarations }) {
+                Ok(planning) => planning.run(c, who).await?,
+                Err(Change::Declare { mut declarations }) => {
+                    let declaration = declarations.remove(0);
+                    to_json(&c.declare(who, declaration).await?)
+                }
+                Err(_) => unreachable!("declare_type plans a declaration"),
+            }
+        }
+        Door::Plan => to_json(&c.plan(who, args::<Change>(label, &a)?).await?),
+        Door::Enact => {
+            #[derive(Deserialize)]
+            struct I {
+                plan_id: String,
+            }
+            let (mut change, mut id) = (a.clone(), Map::new());
+            id.extend(change.remove("plan_id").map(|v| ("plan_id".to_owned(), v)));
+            let i: I = args(label, &id)?;
+            to_json(
+                &c.enact(who, args::<Change>(label, &change)?, &i.plan_id)
+                    .await?,
+            )
         }
         Door::Declare => {
             // No tool's schema checks these routes' members, so the
@@ -569,8 +699,19 @@ pub(crate) async fn run(
             to_json(&c.apply(who, d.declarations).await?)
         }
         Door::Recompute => {
-            let what: lakelands_api::write::Recompute = args(label, &a)?;
-            to_json(&c.recompute(who, what).await?)
+            #[derive(Deserialize)]
+            struct D {
+                #[serde(flatten)]
+                what: lakelands_api::write::Recompute,
+                #[serde(flatten)]
+                planned: Planned,
+            }
+            let d: D = args(label, &a)?;
+            match d.planned.change(Change::Recompute { what: d.what }) {
+                Ok(planning) => planning.run(c, who).await?,
+                Err(Change::Recompute { what }) => to_json(&c.recompute(who, what).await?),
+                Err(_) => unreachable!("recompute plans a recompute"),
+            }
         }
         Door::AddField => {
             #[derive(Deserialize)]
@@ -578,9 +719,18 @@ pub(crate) async fn run(
                 #[serde(rename = "type")]
                 ty: TypeName,
                 field: FieldDecl,
+                #[serde(flatten)]
+                planned: Planned,
             }
             let d: D = args(label, &a)?;
-            to_json(&c.add_field(who, &d.ty, d.field).await?)
+            let field = Box::new(d.field);
+            match d.planned.change(Change::AddField { ty: d.ty, field }) {
+                Ok(planning) => planning.run(c, who).await?,
+                Err(Change::AddField { ty, field }) => {
+                    to_json(&c.add_field(who, &ty, *field).await?)
+                }
+                Err(_) => unreachable!("add_field plans a field added"),
+            }
         }
         Door::Migrate => {
             #[derive(Deserialize)]
@@ -595,6 +745,8 @@ pub(crate) async fn run(
                 #[serde(default)]
                 relation_renames: Vec<(RelationName, RelationName)>,
                 #[serde(default)]
+                fill: Vec<lakelands_api::FieldName>,
+                #[serde(default)]
                 report_id: Option<String>,
             }
             let m: M = args(label, &a)?;
@@ -608,9 +760,10 @@ pub(crate) async fn run(
                 (Some(to), None) => {
                     let renames = m.renames.into_iter();
                     let migration = Migration {
-                        to,
                         renames: renames.map(|(a, b)| (a.into(), b.into())).collect(),
                         relation_renames: m.relation_renames,
+                        fill: m.fill,
+                        ..Migration::to(to)
                     };
                     match m.report_id {
                         Some(r) => to_json(&c.migrate_apply(who, migration, &r).await?),
@@ -620,6 +773,9 @@ pub(crate) async fn run(
                 (None, Some(vt)) => {
                     if !m.relation_renames.is_empty() {
                         return Err(wrong("relation_renames", Case::ValueTypeNoRelations));
+                    }
+                    if let Some(field) = m.fill.first().cloned() {
+                        return Err(wrong("fill", Case::FillUnknown { field }));
                     }
                     let vm = ValueTypeMigration {
                         to: vt,
@@ -638,7 +794,9 @@ pub(crate) async fn run(
                 }
             }
         }
-    })
+    };
+    said(&mut answer);
+    Ok(answer)
 }
 
 #[cfg(test)]
@@ -707,7 +865,7 @@ mod tests {
                 let (cat, who) = (cat.clone(), who.clone());
                 async move {
                     let a = a.as_object().cloned().unwrap_or_default();
-                    run(cat.as_ref(), &who, &Door::Migrate, "migrate", a).await
+                    run(cat.as_ref(), &who, &Door::Migrate, "migrate", (a, None)).await
                 }
             };
             for (args, field) in [

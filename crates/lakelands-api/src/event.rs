@@ -18,13 +18,19 @@ use crate::record::{Origin, Patch, Value};
 use crate::time::Timestamp;
 use crate::write::{Declaration, Migration, ProposedWrite};
 
-/// The one log format version this release reads and writes. Every event
-/// of a lake carries it as `v`, from position 0, and `lake_created.format`
-/// says the same number. A lake written in another format is refused by
-/// name, with both numbers, and nothing of it is read
+/// The log format version this release writes. Every event carries the
+/// version it was written in as `v`, and `lake_created.format` says the
+/// one the lake was made in. A lake written in a format from
+/// [`OLDEST_LOG_FORMAT`] up to this one is read, each older event through
+/// its format's converter, and a writer's open upgrades it; one in another
+/// format is refused by name, with both numbers, and nothing of it is read
 /// (`docs/log-format.md` §6,
 /// `docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
-pub const LOG_FORMAT_VERSION: u32 = 14;
+pub const LOG_FORMAT_VERSION: u32 = 17;
+
+/// The oldest log format this release reads: 14, the format of the first
+/// release with real installations (054).
+pub const OLDEST_LOG_FORMAT: u32 = 14;
 
 /// A SHA-256 digest, as 64 lower-case hexadecimal digits.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -101,10 +107,36 @@ pub struct Event {
     /// The caller's idempotency key, for an authored write that gave one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<IdempotencyKey>,
+    /// The delivery a source's record came in, on a `record_ingested`
+    /// from format 17 on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<crate::id::DeliveryId>,
+    /// Which members of the body's `patch`, or its `output`, are sealed
+    /// under the source's key, from format 16 on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed: Option<Sealed>,
     /// The kind and its payload.
     pub body: EventBody,
     /// SHA-256 over the event's canonical bytes without this field.
     pub hash: Digest,
+}
+
+/// The members of an event a source's key seals: the patch members it
+/// names, or the recorded output where `fields` is empty. Each holds the
+/// base64 of AES-256-GCM-SIV's output over the value's canonical bytes
+/// (`docs/log-format.md` §1.4).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sealed {
+    /// The version of the source's key that sealed them.
+    pub key: crate::id::KeyId,
+    /// The source whose key it is, for an event whose envelope names none:
+    /// a recorded output computed from that source's values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::id::SourceId>,
+    /// The patch members sealed, in name order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<FieldName>,
 }
 
 /// Every kind of event, and its payload. The set is closed per format
@@ -116,6 +148,16 @@ pub enum EventBody {
     LakeCreated {
         /// The log format version the lake was created with.
         format: u32,
+    },
+    /// A writer's open upgraded a lake written in an older format: from
+    /// this event on the lake is written in `to`. The events before it
+    /// stay as they were written, and are read through their format's
+    /// converter.
+    LakeUpgraded {
+        /// The format the lake was written in before.
+        from: u32,
+        /// The format it is written in from here on.
+        to: u32,
     },
     /// A writer took the lake's lease.
     LeaseTaken {
@@ -203,6 +245,32 @@ pub enum EventBody {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         made: bool,
     },
+    /// A host forgot a source: its keys are destroyed, and every value it
+    /// sealed reads as erased, at every position
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
+    SourceForgotten {
+        /// The source.
+        source: SourceId,
+        /// The versions of its key the act destroys.
+        keys: Vec<crate::id::KeyId>,
+    },
+    /// A host took back part of a source's values: each one a selected
+    /// `record_ingested` of the source before this event carries reads as
+    /// erased, at every position
+    /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
+    ValuesRemoved {
+        /// The source.
+        source: SourceId,
+        /// The selection, as asked.
+        selection: crate::write::Selection,
+        /// For a time, the first position it does not reach.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<Position>,
+        /// The versions of the source's key it destroys, oldest first: the
+        /// longest prefix whose values it all selects.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keys: Vec<crate::id::KeyId>,
+    },
     /// A record was retired.
     RecordRetired {
         /// The record's type.
@@ -283,6 +351,35 @@ pub enum EventBody {
         ty: TypeName,
         /// The record's key.
         key: RecordKey,
+        /// What kind of change fired it: the write at its `cause`. The
+        /// store writes it on every firing from format 17 on; a firing of
+        /// a format before carries none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        change: Option<ChangeKind>,
+        /// Whether that write made the record: it found no live record
+        /// under the key. Carried with `change`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        created: Option<bool>,
+    },
+    /// A write would have made a trigger's condition hold, at a depth where
+    /// a reaction to it could write nothing: the write's own depth is at
+    /// or above the bound that applies, so no `trigger_fired` is appended
+    /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`).
+    /// Added in format 17.
+    TriggerDropped {
+        /// The trigger.
+        trigger: TriggerName,
+        /// The record's type.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// The record's key.
+        key: RecordKey,
+        /// The depth of the write that would have fired it.
+        depth: u32,
+        /// The bound that applied.
+        max_depth: u32,
+        /// Whose bound it is.
+        bound: DepthBound,
     },
     /// A write moved a record into or out of an object set.
     ObjectSetChanged {
@@ -358,12 +455,15 @@ macro_rules! kinds {
 
 kinds! {
     LakeCreated => "lake_created",
+    LakeUpgraded => "lake_upgraded",
     LeaseTaken => "lease_taken",
     Declared => "declared",
     Migrated => "migrated",
     ValueTypeMigrated => "value_type_migrated",
     RecordUpserted => "record_upserted",
     RecordIngested => "record_ingested",
+    SourceForgotten => "source_forgotten",
+    ValuesRemoved => "values_removed",
     RecordRetired => "record_retired",
     RecordRestricted => "record_restricted",
     RecordUnrestricted => "record_unrestricted",
@@ -372,9 +472,41 @@ kinds! {
     WriteAccepted => "write_accepted",
     WriteRejected => "write_rejected",
     TriggerFired => "trigger_fired",
+    TriggerDropped => "trigger_dropped",
     ObjectSetChanged => "object_set_changed",
     OutputRecorded => "output_recorded",
     Checkpoint => "checkpoint",
+}
+
+/// What kind of change fired a trigger (lakelands#1217): the write at the
+/// firing's `cause`, by the door it came through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeKind {
+    /// An authored write: an upsert, a verb's write, an accepted one, an
+    /// aging move.
+    Upserted,
+    /// A source's record, ingested.
+    Ingested,
+    /// A retirement, asked for or accepted, or a migration's of a link.
+    Retired,
+    /// A retirement of a record a forgotten source alone brought in.
+    Forgotten,
+    /// A retirement of a record a purged source brought in.
+    Purged,
+    /// A field filled from a recorded output, computed outside the lake.
+    Recomputed,
+}
+
+/// Whose depth bound dropped a trigger's firing: the trigger's own
+/// `max_depth`, or the lake's `max_reactive_depth`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DepthBound {
+    /// The trigger's `max_depth`.
+    Trigger,
+    /// The lake's `max_reactive_depth`.
+    Lake,
 }
 
 /// A sealed segment, as a checkpoint lists it.

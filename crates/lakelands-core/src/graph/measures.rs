@@ -16,7 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::query::Walk;
-use lakelands_api::{Error, Refusal, RelationName, Result};
+use lakelands_api::{RelationName, Result};
 
 use super::{EdgeId, EdgeSource, Links, Node, PAGE, edge_id};
 
@@ -47,6 +47,11 @@ pub type Component = Vec<Node>;
 /// The weak components of the records added to it, grown over the given
 /// relations with every link taken both ways.
 ///
+/// Seeds come a page at a time, and the walk reads the links of a page of
+/// records at once, whichever seed reached them, so a page of seeds costs
+/// one read of links per relation and hop, not one per seed. Two seeds of a
+/// page may reach each other; their components are then joined.
+///
 /// What it holds is bounded by `max_nodes` for the records reached, plus
 /// one entry per hidden far end of those records (retired, missing or not
 /// visible to the caller), each asked about once: a record is reached when
@@ -59,25 +64,30 @@ pub struct Components<'a, S: EdgeSource + ?Sized> {
     source: &'a S,
     relations: Vec<RelationName>,
     max_nodes: u32,
-    /// Every record reached, with the component it belongs to.
+    /// Whether a seed with no link it may see is a component of one, or
+    /// no component at all and never counted.
+    alone: bool,
+    /// Every record reached, with the component it was reached in.
     member_of: BTreeMap<Node, usize>,
+    /// For each component started, the one it was joined to, or itself.
+    joined: Vec<usize>,
     /// Far ends asked about that may not appear.
     hidden: BTreeSet<Node>,
-    /// How many components have been started.
-    started: usize,
 }
 
 impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
     /// An empty set of components over `relations`, holding at most
-    /// `max_nodes` records.
-    pub fn new(source: &'a S, relations: Vec<RelationName>, max_nodes: u32) -> Self {
+    /// `max_nodes` records; `alone` says whether a seed that reaches
+    /// nothing is a component of one.
+    pub fn new(source: &'a S, relations: Vec<RelationName>, max_nodes: u32, alone: bool) -> Self {
         Components {
             source,
             relations,
             max_nodes,
+            alone,
             member_of: BTreeMap::new(),
+            joined: Vec::new(),
             hidden: BTreeSet::new(),
-            started: 0,
         }
     }
 
@@ -86,51 +96,91 @@ impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
     fn reach(&mut self, node: Node, index: usize) -> Result<()> {
         self.member_of.insert(node, index);
         if self.member_of.len() > self.max_nodes as usize {
-            return Err(Error::Refused {
-                field: None,
-                reason: Refusal::TooLarge {
-                    max: self.max_nodes,
-                },
-            });
+            return Err(super::too_large(self.max_nodes));
         }
         Ok(())
     }
 
-    /// Adds a record and everything linked to it, reading the links of a
-    /// page of the frontier at a time. A record already reached adds
-    /// nothing. Refused `too_large` as soon as more than `max_nodes`
-    /// records are reached.
-    pub fn add(&mut self, seed: Node) -> Result<()> {
-        if self.member_of.contains_key(&seed) {
-            return Ok(());
+    /// Reaches `node` in a component of its own.
+    fn start(&mut self, node: Node) -> Result<usize> {
+        let index = self.joined.len();
+        self.joined.push(index);
+        self.reach(node, index)?;
+        Ok(index)
+    }
+
+    /// The component `index` was joined into.
+    fn root(&mut self, mut index: usize) -> usize {
+        while self.joined[index] != index {
+            self.joined[index] = self.joined[self.joined[index]];
+            index = self.joined[index];
         }
-        let index = self.started;
-        self.started += 1;
-        self.reach(seed.clone(), index)?;
-        let mut frontier = vec![seed];
+        index
+    }
+
+    /// Adds a page of seeds and everything linked to them, reading the
+    /// links of a page of the frontier at a time. A record already reached
+    /// adds nothing. Refused `too_large` as soon as more than `max_nodes`
+    /// records are reached.
+    pub fn add(&mut self, seeds: &[Node]) -> Result<()> {
+        let fresh: BTreeSet<Node> = seeds
+            .iter()
+            .filter(|s| !self.member_of.contains_key(*s))
+            .cloned()
+            .collect();
+        let mut frontier: Vec<Node> = fresh.iter().cloned().collect();
+        if self.alone {
+            for seed in &frontier {
+                self.start(seed.clone())?;
+            }
+        }
         while !frontier.is_empty() {
             let nears = frontier.split_off(frontier.len().saturating_sub(PAGE));
-            let mut found: BTreeSet<Node> = BTreeSet::new();
+            let mut pairs: Vec<(&Node, Node)> = Vec::new();
             for (i, relation) in self.relations.iter().enumerate() {
                 let edges =
                     super::edges_of(self.source, &nears, Some(relation), Walk::Both, Some(i))?;
                 for (near, edges) in nears.iter().zip(edges) {
                     for edge in edges {
                         let other = super::far(&edge, near);
-                        if !self.member_of.contains_key(&other) && !self.hidden.contains(&other) {
-                            found.insert(other);
+                        if !self.hidden.contains(&other) {
+                            pairs.push((near, other));
                         }
                     }
                 }
             }
-            let found: Vec<Node> = found.into_iter().collect();
-            for page in found.chunks(PAGE) {
+            // A seed is shown, and its links are read as a seed's.
+            let asked: BTreeSet<&Node> = (pairs.iter().map(|(_, o)| o))
+                .filter(|o| !self.member_of.contains_key(*o) && !fresh.contains(*o))
+                .collect();
+            let asked: Vec<Node> = asked.into_iter().cloned().collect();
+            for page in asked.chunks(PAGE) {
                 for (other, visible) in page.iter().zip(self.source.visible(page)?) {
-                    if visible {
-                        self.reach(other.clone(), index)?;
-                        frontier.push(other.clone());
-                    } else {
+                    if !visible {
                         self.hidden.insert(other.clone());
+                    }
+                }
+            }
+            for (near, other) in pairs {
+                if self.hidden.contains(&other) {
+                    continue;
+                }
+                // A seed that reaches nothing it may see is started only
+                // here, where it may not stand alone.
+                let here = match self.member_of.get(near) {
+                    Some(&i) => i,
+                    None => self.start(near.clone())?,
+                };
+                match self.member_of.get(&other) {
+                    Some(&there) => {
+                        let (a, b) = (self.root(here), self.root(there));
+                        self.joined[a.max(b)] = a.min(b);
+                    }
+                    None => {
+                        self.reach(other.clone(), here)?;
+                        if !fresh.contains(&other) {
+                            frontier.push(other);
+                        }
                     }
                 }
             }
@@ -140,13 +190,16 @@ impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
 
     /// The components, largest first, then by their least `(type, key)`;
     /// each one's records by `(type, key)`.
-    pub fn finish(self) -> Vec<Component> {
-        let mut all: Vec<Component> = vec![Vec::new(); self.started];
+    pub fn finish(mut self) -> Vec<Component> {
+        let mut all: Vec<Component> = vec![Vec::new(); self.joined.len()];
         // The map is ordered by `(type, key)`, so each component's records
         // come out in that order.
-        for (node, index) in self.member_of {
-            all[index].push(node);
+        for (node, index) in std::mem::take(&mut self.member_of) {
+            let root = self.root(index);
+            all[root].push(node);
         }
+        // A component joined into another holds nothing of its own.
+        all.retain(|c| !c.is_empty());
         all.sort_by(|a, b| (b.len(), a.first()).cmp(&(a.len(), b.first())));
         all
     }

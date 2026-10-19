@@ -83,7 +83,9 @@
 //! must reproduce on replay (`docs/decisions/002-determinism-is-the-boundary.md`).
 //! In them, `now()` and `today()` mean the `known_at` of the event being
 //! folded, never the clock of the process replaying it. In a read, they
-//! mean the time of the read.
+//! mean the read's clock: the instant `valid_at` names, else as of a
+//! position the `known_at` of its event, else the time of the read
+//! (`docs/decisions/052-a-field-may-be-computed-at-the-read.md`).
 
 use serde::{Deserialize, Serialize};
 
@@ -96,7 +98,7 @@ pub mod kind;
 mod rewrite;
 pub use kept::keepable;
 pub use parse::{ParseError, arity, func_name, parse, print};
-pub use rewrite::{expand, rewrite};
+pub use rewrite::{expand, expand_kept, rewrite};
 
 /// An expression in the one grammar, typed. A member this form does not
 /// know is refused, never ignored.
@@ -247,6 +249,12 @@ pub enum Func {
     /// `param('name')`: the value a read binds to the view's parameter of
     /// that name. Only a view's `where` and `measures` may call it.
     Param,
+    /// `exists(relation)`: in a verb's `requires` and set values, whether
+    /// the path that begins at the relation reaches a record: the one link
+    /// a to-one relation carried by links holds from the record, or the
+    /// one record a derived relation onto its target's key matches and
+    /// whose `where` holds.
+    Exists,
     /// `in_set('name')`: whether the named object set's filter holds for
     /// the record: the filter in the call's place, bound when the
     /// condition is read, never stored membership. In an object set's
@@ -257,6 +265,9 @@ pub enum Func {
     /// `retired()`: in a trigger's guard, whether the write retires the
     /// record (live before it, retired after it).
     Retired,
+    /// `created()`: in a trigger's guard, whether the write found no live
+    /// record under the key: a create or a revival.
+    Created,
     /// `coalesce(a, b, …)`: the first operand that is not null.
     Coalesce,
     /// `if(cond, then, else)`.
@@ -322,6 +333,14 @@ pub fn children(e: &Expr) -> impl Iterator<Item = &Expr> {
     pair.into_iter().flatten().chain(list)
 }
 
+/// Every path in `e`, left to right.
+pub fn paths<'e>(e: &'e Expr, out: &mut Vec<&'e [FieldName]>) {
+    if let Expr::Path { path } = e {
+        out.push(path);
+    }
+    children(e).for_each(|c| paths(c, out));
+}
+
 impl Expr {
     /// Whether it calls one of `funcs`, anywhere in it.
     pub fn calls(&self, funcs: &[Func]) -> bool {
@@ -342,20 +361,6 @@ impl Expr {
         };
         (here.into_iter())
             .chain(children(self).flat_map(Expr::fields_read))
-            .collect()
-    }
-
-    /// The record's fields a verb's value reads: as [`Expr::fields_read`],
-    /// but for `payload.<name>`, which reads the call's payload.
-    pub fn record_fields_read(&self) -> std::collections::BTreeSet<&FieldName> {
-        let here = match self {
-            Expr::Path { path } if !matches!(&path[..], [p, _] if p.as_str() == "payload") => {
-                path.first()
-            }
-            _ => None,
-        };
-        (here.into_iter())
-            .chain(children(self).flat_map(Expr::record_fields_read))
             .collect()
     }
 

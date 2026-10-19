@@ -62,11 +62,10 @@ fn item(key: &str, [n, flag, rank]: [&str; 3], peer: &str) -> serde_json::Value 
 
 fn migration(to: serde_json::Value, renames: &[(&str, &str)]) -> Migration {
     Migration {
-        to: serde_json::from_value(to).expect("a type"),
         renames: (renames.iter())
             .map(|(from, to)| ((*from).into(), (*to).into()))
             .collect(),
-        relation_renames: Vec::new(),
+        ..Migration::to(serde_json::from_value(to).expect("a type"))
     }
 }
 
@@ -208,10 +207,11 @@ async fn the_report_and_its_id_are_what_a_whole_read_made() {
          name a moved key"
     );
     assert_eq!(
-        report.report_id, "6aa87d12811bb2564762646d5d64bb910de4b7c3b108e714d00bca55f4ed1d27",
+        report.report_id, "11d47a126582a92d2af82d8d5418836c5982200f2cf243b9a1ce161533622e82",
         "the report's id, as the preflight that read the type whole made it, of the report \
          with what the migration restates (lakelands#554), of it and the head alone \
-         (lakelands#644), and with `more` beside a count larger than its keys (lakelands#875)"
+         (lakelands#644), with `more` beside a count larger than its keys (lakelands#875), \
+         and with the records it computes again counted, none (lakelands#1141)"
     );
 }
 

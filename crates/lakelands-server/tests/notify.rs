@@ -404,6 +404,264 @@ async fn a_subscription_with_keys_is_told_those_records_only() {
     }
 }
 
+/// Twins that differ only in a record the watcher may not read: through
+/// the hub it is told the same of each, so nothing of the hub's raw events
+/// reaches it (lakelands#1113).
+#[tokio::test]
+async fn through_the_hub_a_pump_tells_what_its_principal_may_see_alike_of_twins() {
+    let mut told = Vec::new();
+    for hidden in ["P-1", "P-2"] {
+        let store = common::lake_on(Backend::Memory).await;
+        let mut s = Stdio::open(store.clone(), watcher()).await;
+        // A second session on the lake shares the pump's hub.
+        let mut other = Stdio::open(store.clone(), common::owner()).await;
+        s.call("subscribe", json!({})).await;
+        other.call("subscribe", json!({})).await;
+        write(
+            store.as_ref(),
+            "invoice",
+            "INV-1",
+            json!({"status": "open"}),
+        )
+        .await;
+        write(store.as_ref(), "partner", hidden, json!({"name": "Acme"})).await;
+        write(store.as_ref(), "invoice", "INV-1", json!({"secret": "s1"})).await;
+        let last = write(
+            store.as_ref(),
+            "invoice",
+            "INV-2",
+            json!({"status": "paid"}),
+        )
+        .await;
+        let mut changes = Vec::new();
+        while changes
+            .last()
+            .is_none_or(|m: &Value| m["params"]["position"] != json!(last))
+        {
+            changes.push(s.change().await);
+        }
+        let mut owner_saw = Vec::new();
+        while owner_saw
+            .last()
+            .is_none_or(|m: &Value| m["params"]["position"] != json!(last))
+        {
+            owner_saw.push(other.change().await);
+        }
+        assert!(
+            owner_saw
+                .iter()
+                .any(|m| m["params"]["key"] == json!(hidden)),
+            "the owner, on the same hub, is told the partner's change"
+        );
+        told.push(changes);
+    }
+    assert_eq!(told[0], told[1], "the watcher is told alike of the twins");
+    assert_eq!(told[0].len(), 2, "of INV-1 and INV-2 only: {:?}", told[0]);
+}
+
+/// A setting naming `secret`, which the watcher may not read, is told it
+/// as in a twin lake whose setting never named it (lakelands#1198): a
+/// change of `secret` alone is not told, a record left naming only
+/// `secret` is told as retired, one that comes to name more as made, and
+/// the retire of a record it is not told not at all; a subscription to
+/// retirements alone is told that retirement, and a set over the settings
+/// is never told it.
+#[tokio::test]
+async fn a_setting_s_changes_are_told_as_of_its_twin_without_what_is_not_told() {
+    let k = "sort_index.invoice";
+    let set = |v: Value| json!({"key": k, "value": v});
+    // The owner's writes, and those of the twin that never named `secret`:
+    // `None` writes nothing there, and `Some(None)` retires.
+    let steps = [
+        (Some(json!(["secret"])), None),
+        (
+            Some(json!(["status", "secret"])),
+            Some(Some(json!(["status"]))),
+        ),
+        (Some(json!(["secret", "status"])), None),
+        (Some(json!(["secret"])), Some(None)),
+        (None, None),
+    ];
+    let mut told = Vec::new();
+    for twin in [false, true] {
+        let store = common::lake_on(Backend::Memory).await;
+        declare(
+            store.as_ref(),
+            json!({"declare": "object_set", "name": "indexes", "of": "sys.setting",
+                   "where": format!("key = '{k}'")}),
+        )
+        .await;
+        let mut all = Stdio::open(store.clone(), watcher()).await;
+        let mut retired = Stdio::open(store.clone(), watcher()).await;
+        all.call("subscribe", json!({})).await;
+        retired
+            .call("subscribe", json!({"kinds": ["record_retired"]}))
+            .await;
+        for (hidden, bare) in &steps {
+            let step = match (twin, hidden, bare) {
+                (false, Some(v), _) => Some(Some(v.clone())),
+                (false, None, _) => Some(None),
+                (true, _, step) => step.clone(),
+            };
+            match step {
+                Some(Some(v)) => {
+                    write(store.as_ref(), "sys.setting", k, set(v)).await;
+                }
+                Some(None) => {
+                    let (c, ty) = (store.catalog(WriteContext::default()), "sys.setting".into());
+                    let opts = WriteOpts::default();
+                    c.retire(&common::owner(), &ty, &k.into(), opts)
+                        .await
+                        .unwrap();
+                }
+                None => {}
+            }
+        }
+        let last = write(
+            store.as_ref(),
+            "invoice",
+            "INV-1",
+            json!({"status": "paid"}),
+        )
+        .await;
+        let mut changes = Vec::new();
+        while changes
+            .last()
+            .is_none_or(|m: &Value| m["params"]["position"] != json!(last))
+        {
+            changes.push(all.change().await);
+        }
+        // The retirement is the first change of its kind either twin has.
+        let retirement = retired.change().await;
+        // Positions differ between the twins: what each change says.
+        let said = |m: &Value| {
+            let mut p = m["params"].clone();
+            p.as_object_mut().unwrap().remove("position");
+            p
+        };
+        told.push((
+            changes.iter().map(said).collect::<Vec<_>>(),
+            said(&retirement),
+        ));
+    }
+    assert_eq!(told[0], told[1], "the watcher is told alike of the twins");
+    let kinds: Vec<_> = (told[0].0.iter()).map(|p| p["kind"].clone()).collect();
+    assert_eq!(
+        kinds,
+        [
+            json!("record_upserted"),
+            json!("record_retired"),
+            json!("record_upserted")
+        ],
+        "the setting made, retired, and the invoice: {:?}",
+        told[0]
+    );
+}
+
+/// A source's key period is told only to one from whom nothing is held
+/// (058, 063), so a set over the settings whose condition reads it is
+/// told only to such a one: the owner is told that `threshold` joined a
+/// set that holds while crm's period is `day`, and one who reads every
+/// field without `restricted` is told the write alone.
+#[tokio::test]
+async fn a_set_over_the_settings_is_told_only_to_one_from_whom_nothing_is_held() {
+    let store = common::lake_on(Backend::Memory).await;
+    declare(
+        store.as_ref(),
+        json!({"declare": "object_set", "name": "daily", "of": "sys.setting",
+               "where": "key = 'threshold' and setting('key_period.crm') = 'day'"}),
+    )
+    .await;
+    let period = json!({"key": "key_period.crm", "value": "day"});
+    write(store.as_ref(), "sys.setting", "key_period.crm", period).await;
+    let mut open = common::owner();
+    open.grants.restricted = false;
+    let kinds = json!({"kinds": ["object_set_changed", "record_upserted"]});
+    let mut told = Vec::new();
+    for who in [common::owner(), open] {
+        let mut s = Stdio::open(store.clone(), who).await;
+        s.call("subscribe", kinds.clone()).await;
+        told.push(s);
+    }
+    let threshold = json!({"key": "threshold", "value": 1});
+    write(store.as_ref(), "sys.setting", "threshold", threshold).await;
+    let last = write(
+        store.as_ref(),
+        "invoice",
+        "INV-1",
+        json!({"status": "paid"}),
+    )
+    .await;
+    let mut kinds = Vec::new();
+    for s in &mut told {
+        let mut seen = Vec::new();
+        loop {
+            let m = s.change().await;
+            seen.push(m["params"]["kind"].as_str().unwrap().to_owned());
+            if m["params"]["position"] == json!(last) {
+                break;
+            }
+        }
+        seen.sort();
+        kinds.push(seen);
+    }
+    assert_eq!(
+        kinds,
+        [
+            vec!["object_set_changed", "record_upserted", "record_upserted"],
+            vec!["record_upserted", "record_upserted"]
+        ],
+        "the owner, then the reader without `restricted`"
+    );
+}
+
+/// A subscription to other kinds leaves the pump's hub for the hub of its
+/// new kinds: what the new kinds name is told, what only the old ones
+/// named is not.
+#[tokio::test]
+async fn a_new_subscription_follows_the_hub_of_its_kinds() {
+    let store = common::lake_on(Backend::Memory).await;
+    let mut s = Stdio::open(store.clone(), common::owner()).await;
+    s.call("subscribe", json!({"kinds": ["record_upserted"]}))
+        .await;
+    let p = write(
+        store.as_ref(),
+        "invoice",
+        "INV-1",
+        json!({"status": "open"}),
+    )
+    .await;
+    assert_eq!(s.change().await["params"]["position"], json!(p));
+    s.call("subscribe", json!({"kinds": ["record_retired"]}))
+        .await;
+    s.seen.clear();
+    write(
+        store.as_ref(),
+        "invoice",
+        "INV-1",
+        json!({"status": "paid"}),
+    )
+    .await;
+    let retired = store
+        .catalog(WriteContext::default())
+        .retire(
+            &common::owner(),
+            &"invoice".into(),
+            &"INV-1".into(),
+            WriteOpts::default(),
+        )
+        .await
+        .unwrap()
+        .position()
+        .0;
+    let m = s.change().await;
+    assert_eq!(
+        (&m["params"]["position"], &m["params"]["kind"]),
+        (&json!(retired), &json!("record_retired")),
+        "the retirement, of the new kinds, and not the write before it: {m}"
+    );
+}
+
 // ---------------------------------------------------------------- HTTP
 
 async fn serve(store: Arc<dyn LakeStore>) -> (SocketAddr, tokio::task::JoinHandle<()>) {
@@ -417,6 +675,7 @@ async fn serve(store: Arc<dyn LakeStore>) -> (SocketAddr, tokio::task::JoinHandl
         allowed_origins: Vec::new(),
         session_idle_secs: 1800,
         feed_poll_millis: 50,
+        feed_floor_millis: 25,
     };
     let server = serve_http(config, common::resolver(), open).await.unwrap();
     let addr = server.local_addr().unwrap();
@@ -742,7 +1001,9 @@ async fn declare(store: &dyn LakeStore, d: Value) {
 
 /// A trigger or an object set says a condition held, and a condition may
 /// read any field of its type: a principal who does not read every field
-/// in full is never told of one (024). The owner, who does, is.
+/// in full is never told of one (024), nor of a firing dropped past its
+/// depth (lakelands#1216), and one not shown the type is told of neither.
+/// The owner, who reads it all, is.
 #[tokio::test]
 async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_whole_type() {
     for backend in [Backend::Memory, Backend::Sqlite] {
@@ -755,16 +1016,31 @@ async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_who
         .await;
         declare(
             store.as_ref(),
+            json!({"declare": "trigger", "name": "no_reaction", "on": "invoice",
+                   "when": "secret = 's3'", "max_depth": 0}),
+        )
+        .await;
+        declare(
+            store.as_ref(),
             json!({"declare": "object_set", "name": "secretive", "of": "invoice",
                    "where": "secret = 's3'"}),
         )
         .await;
+        for (name, depth) in [("partnered", json!(null)), ("partner_dropped", json!(0))] {
+            declare(
+                store.as_ref(),
+                json!({"declare": "trigger", "name": name, "on": "partner",
+                       "max_depth": depth}),
+            )
+            .await;
+        }
         let mut owner = Stdio::open(store.clone(), common::owner()).await;
         let mut watcher = Stdio::open(store.clone(), watcher()).await;
         for s in [&mut owner, &mut watcher] {
             s.call(
                 "subscribe",
-                json!({"kinds": ["trigger_fired", "object_set_changed", "record_upserted"]}),
+                json!({"kinds": ["trigger_fired", "trigger_dropped", "object_set_changed",
+                    "record_upserted"]}),
             )
             .await;
         }
@@ -775,7 +1051,154 @@ async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_who
             json!({"status": "paid", "secret": "s3"}),
         )
         .await;
-        // The owner is told of the write, the firing and the set change.
+        // The owner is told of the write, the firing, the firing dropped
+        // and the set change.
+        let mut told = Vec::new();
+        while told.len() < 4 {
+            let m = owner.change().await;
+            told.push(m["params"]["kind"].as_str().unwrap().to_owned());
+        }
+        told.sort();
+        assert_eq!(
+            told,
+            [
+                "object_set_changed",
+                "record_upserted",
+                "trigger_dropped",
+                "trigger_fired"
+            ],
+            "{backend:?}"
+        );
+        // The watcher, who may not read `secret`, is told of the write's
+        // `status` only; of a partner, which it is not shown, it is told
+        // neither the firing nor the drop; the next thing it is told is a
+        // later write.
+        let m = watcher.change().await;
+        assert_eq!(
+            (&m["params"]["kind"], &m["params"]["position"]),
+            (&json!("record_upserted"), &json!(p)),
+            "{backend:?}: {m}"
+        );
+        write(store.as_ref(), "partner", "P-1", json!({"name": "Acme"})).await;
+        let mut partner = Vec::new();
+        while partner.len() < 3 {
+            let m = owner.change().await;
+            partner.push(m["params"]["kind"].as_str().unwrap().to_owned());
+        }
+        partner.sort();
+        assert_eq!(
+            partner,
+            ["record_upserted", "trigger_dropped", "trigger_fired"],
+            "{backend:?}: the owner is told of the partner's firing and drop"
+        );
+        let later = write(
+            store.as_ref(),
+            "invoice",
+            "INV-2",
+            json!({"status": "open"}),
+        )
+        .await;
+        let m = watcher.change().await;
+        assert_eq!(m["params"]["position"], json!(later), "{backend:?}: {m}");
+    }
+}
+
+/// A firing decided over a value an act took back since is overruled, and
+/// told to no one: a session subscribed from before it is told the firing
+/// that stands, never the one the feed names overruled (065).
+#[tokio::test]
+async fn a_firing_an_act_overruled_is_not_told() {
+    use lakelands_api::write::Selection;
+    let store = common::lake_on(Backend::Memory).await;
+    let place = json!({"name": "place", "type": {"kind": "text"}, "authority": "source"});
+    let stop = json!({"declare": "type", "name": "stop", "fields": [place]});
+    declare(store.as_ref(), stop).await;
+    for (name, when) in [("in_rome", json!("place = 'Rome'")), ("wrote", json!(null))] {
+        let t = json!({"declare": "trigger", "name": name, "on": "stop", "when": when});
+        declare(store.as_ref(), t).await;
+    }
+    let from = store.head().await.unwrap().next();
+    let s1 = lakelands_api::SourceRecord {
+        source: None,
+        upstream: None,
+        ty: "stop".into(),
+        key: "s1".into(),
+        fields: serde_json::from_value(json!({"place": "Rome"})).unwrap(),
+        seen_at: None,
+    };
+    let (cat, tracker) = (store.catalog(WriteContext::default()), "tracker".into());
+    let own = common::owner();
+    let fed = lakelands_api::ingest_all(cat.as_ref(), &own, &tracker, vec![s1]);
+    fed.await.unwrap();
+    let all = Selection::WrittenBefore(lakelands_api::Timestamp::from_date(9999, 1, 1).unwrap());
+    let act = store.remove_values(&tracker, &all, false, None);
+    act.await.unwrap();
+    let fired = lakelands_api::seam::FeedFilter {
+        kinds: vec!["trigger_fired".into()],
+        ..Default::default()
+    };
+    let b = store.feed().poll(from, &fired, 16).await.unwrap();
+    // `tracker`'s write fired both, and so did the act's retirement of
+    // `s1`, decided over the place it takes.
+    let at: Vec<u64> = b.events.iter().map(|e| e.position.0).collect();
+    let overruled: Vec<u64> = b.overruled.iter().map(|p| p.0).collect();
+    assert_eq!(
+        overruled,
+        [at[0], at[2]],
+        "the feed names `in_rome` overruled: {b:?}"
+    );
+    let mut s = Stdio::open(store.clone(), common::owner()).await;
+    let asked = json!({"from": from.0, "kinds": ["trigger_fired"]});
+    s.call("subscribe", asked).await;
+    let m = s.change().await;
+    assert_eq!(
+        m["params"]["position"],
+        json!(at[1]),
+        "the session is told `wrote`, not the overruled `in_rome`: {m}"
+    );
+}
+
+/// A set or a trigger whose condition reads across an edge tells what it
+/// reads there, so it is a principal's only where nothing of the far type
+/// is held from it (055, extended): one who reads every field but holds no
+/// `restricted` is told of the far write, never of the set change or the
+/// firing it sets off. The owner is told of all three.
+#[tokio::test]
+async fn a_condition_across_an_edge_is_not_told_to_one_a_far_record_may_be_held_from() {
+    for backend in [Backend::Memory, Backend::Sqlite] {
+        let store = common::lake_on(backend).await;
+        for d in [
+            json!({"declare": "type", "name": "firm",
+                   "fields": [{"name": "grade", "type": {"kind": "text"}}]}),
+            json!({"declare": "type", "name": "bill", "fields": [
+                {"name": "firm", "type": {"kind": "reference", "target": "firm"}}]}),
+            json!({"declare": "object_set", "name": "graded", "of": "bill",
+                   "where": "firm.grade = 'x'"}),
+            json!({"declare": "trigger", "name": "hot", "on": "bill", "when": "firm.grade = 'x'"}),
+        ] {
+            declare(store.as_ref(), d).await;
+        }
+        write(store.as_ref(), "firm", "f1", json!({"grade": "y"})).await;
+        write(store.as_ref(), "bill", "b1", json!({"firm": "f1"})).await;
+        let reader = Principal {
+            kind: PrincipalKind::Agent,
+            id: "reader".into(),
+            lake: "finance".into(),
+            grants: Grants {
+                default: Access::Read,
+                ..Grants::default()
+            },
+        };
+        let mut owner = Stdio::open(store.clone(), common::owner()).await;
+        let mut reader = Stdio::open(store.clone(), reader).await;
+        for s in [&mut owner, &mut reader] {
+            s.call(
+                "subscribe",
+                json!({"kinds": ["trigger_fired", "object_set_changed", "record_upserted"]}),
+            )
+            .await;
+        }
+        let p = write(store.as_ref(), "firm", "f1", json!({"grade": "x"})).await;
         let mut told = Vec::new();
         while told.len() < 3 {
             let m = owner.change().await;
@@ -787,22 +1210,14 @@ async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_who
             ["object_set_changed", "record_upserted", "trigger_fired"],
             "{backend:?}"
         );
-        // The watcher, who may not read `secret`, is told of the write's
-        // `status` only; the next thing it is told is a later write.
-        let m = watcher.change().await;
+        let m = reader.change().await;
         assert_eq!(
             (&m["params"]["kind"], &m["params"]["position"]),
             (&json!("record_upserted"), &json!(p)),
             "{backend:?}: {m}"
         );
-        let later = write(
-            store.as_ref(),
-            "invoice",
-            "INV-2",
-            json!({"status": "open"}),
-        )
-        .await;
-        let m = watcher.change().await;
+        let later = write(store.as_ref(), "firm", "f2", json!({"grade": "y"})).await;
+        let m = reader.change().await;
         assert_eq!(m["params"]["position"], json!(later), "{backend:?}: {m}");
     }
 }

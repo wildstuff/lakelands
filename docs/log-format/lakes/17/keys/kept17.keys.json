@@ -1,0 +1,24 @@
+{
+  "sources": {
+    "crm": {
+      "keys": [
+        [
+          "91efae7b451cfc941d33a427d9281d6b",
+          "55c5865385d3499e2184396c09dbd0b86f53752e9b1b0ad0774e81c9d2ca0d84"
+        ]
+      ]
+    },
+    "ledger": {
+      "keys": [
+        [
+          "9fc1a0c4187b51680327b7c30a40e4b9",
+          "8cf763a421e5f7c90efb58ce2e1baebbbc8472fde64abd0729ff2284aa85b38e"
+        ]
+      ]
+    },
+    "web": {
+      "keys": [],
+      "destroyed": true
+    }
+  }
+}

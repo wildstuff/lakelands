@@ -1,0 +1,220 @@
+{
+  "about": "The lake's events after position 7 of `log/`, each following the one before it without a gap, in the one format like every other line. `shows` names what a line is there to show, and each verifier holds one check for each name. `misplaced` holds lines that are not of the lake: each stands at its position after the event before it, its hash made right, and breaks one rule for where a member sits, so a reader refuses it for that alone.",
+  "events": [
+    {
+      "shows": "rekeyed",
+      "about": "A `migrated` event that re-keys `account` from `number` to `iban`, moving key `7` to `DE%3A01`: a `:` in the new key is percent-encoded (§2.3).",
+      "line": "{\"body\":{\"kind\":\"migrated\",\"migration\":{\"to\":{\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"iban\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"key\":[\"iban\"],\"name\":\"account\"}},\"rekeyed\":[{\"from\":\"7\",\"to\":\"DE%3A01\",\"type\":\"account\"}],\"report_id\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"schema_hash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"a431272d392c7c10fb42b528a5f827567d9cb6ca2663c516ba6b419172dbe1fc\",\"id\":\"e2a5c0f1b7d94a36a8c1f0e3b2d4c5a6\",\"known_at\":\"2026-09-25T08:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":8,\"prev\":\"05b84236b4b2985a28bb92559f077304003a060f144c3c96731b60bd09b88232\",\"v\":15,\"writer\":\"human:owner\"}",
+      "hash": "a431272d392c7c10fb42b528a5f827567d9cb6ca2663c516ba6b419172dbe1fc"
+    },
+    {
+      "shows": "upstream",
+      "about": "A record ingested with `upstream`, the lake and position its values were read from (§1.1). The member is not in the event's id (§3).",
+      "line": "{\"body\":{\"key\":\"r1\",\"kind\":\"record_ingested\",\"patch\":{\"body\":\"warm\"},\"type\":\"reading\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"773facd080d70955135299872f46be4640225b2cc8e28ff0d9474bcdf0d7ab01\",\"id\":\"d6ef5716acb6d366cff5aa00a6bc4d59\",\"known_at\":\"2026-09-25T08:00:01.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":9,\"prev\":\"a431272d392c7c10fb42b528a5f827567d9cb6ca2663c516ba6b419172dbe1fc\",\"source\":\"mirror\",\"upstream\":{\"lake\":\"upstream-lake\",\"position\":42},\"v\":15,\"writer\":\"service:mirror\"}",
+      "hash": "773facd080d70955135299872f46be4640225b2cc8e28ff0d9474bcdf0d7ab01"
+    },
+    {
+      "shows": "date_bucket",
+      "about": "A `declared` type whose derived field calls `date_bucket` (Appendix B).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"at\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"derived\",\"depends_on\":[\"at\"],\"derived\":\"date_bucket(at, 'month')\",\"name\":\"month\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}}],\"name\":\"stamp\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"1e5455910cbcf3d82b9198a11b9da62f5f9d47f86aa9b110b4539c1d3b5f2514\",\"id\":\"d93e81e87a30570987e8efd6dfdd0441\",\"known_at\":\"2026-09-25T08:00:02.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":10,\"prev\":\"773facd080d70955135299872f46be4640225b2cc8e28ff0d9474bcdf0d7ab01\",\"v\":15,\"writer\":\"human:owner\"}",
+      "hash": "1e5455910cbcf3d82b9198a11b9da62f5f9d47f86aa9b110b4539c1d3b5f2514"
+    },
+    {
+      "shows": "proposed_declare",
+      "about": "A `write_proposed` whose write is `declare`, a set of declarations (§2.4).",
+      "line": "{\"body\":{\"kind\":\"write_proposed\",\"proposal\":\"p-declare\",\"why\":\"a place for tickets\",\"write\":{\"declarations\":[{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"title\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"name\":\"ticket\"}],\"write\":\"declare\"}},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"aad15b22eee3a158e960cf436f1b60e6d5e9290f64892e872298993f314ee6e4\",\"id\":\"710183001aa81e61bd20094ab98d5da5\",\"known_at\":\"2026-09-25T08:00:04.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":11,\"prev\":\"1e5455910cbcf3d82b9198a11b9da62f5f9d47f86aa9b110b4539c1d3b5f2514\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "aad15b22eee3a158e960cf436f1b60e6d5e9290f64892e872298993f314ee6e4"
+    },
+    {
+      "shows": "proposed_migrate",
+      "about": "A `write_proposed` whose write is `migrate`, a migration with the report its preflight answered (§2.4).",
+      "line": "{\"body\":{\"kind\":\"write_proposed\",\"proposal\":\"p-migrate\",\"why\":\"a text body\",\"write\":{\"migration\":{\"to\":{\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"body\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"name\":\"reading\"}},\"report\":{\"fields\":[],\"from_schema_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lossless\":true,\"records_scanned\":1,\"report_id\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\",\"to_schema_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"type\":\"reading\"},\"write\":\"migrate\"}},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"fa69e73baa367fc821d89e68cebb531230a2074579677da96e5e8ece53bc13b7\",\"id\":\"c649be135b07d0bb87c366689583eade\",\"known_at\":\"2026-09-25T08:00:05.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":12,\"prev\":\"aad15b22eee3a158e960cf436f1b60e6d5e9290f64892e872298993f314ee6e4\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "fa69e73baa367fc821d89e68cebb531230a2074579677da96e5e8ece53bc13b7"
+    },
+    {
+      "shows": "annotations",
+      "about": "A `declared` type carrying `annotations` on the type, on two fields and on a relation. Its schema hash is the one the same type without them hashes to: annotations are not shape.",
+      "line": "{\"body\":{\"declaration\":{\"annotations\":{\"acme.icon\":\"books\",\"acme.package\":{\"name\":\"library\",\"version\":\"2.1.0\"}},\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"annotations\":{\"acme.format\":\"shelf-code\"},\"authority\":\"authored\",\"name\":\"code\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"annotations\":{\"acme.unit\":\"books\",\"acme.weight\":1.5},\"authority\":\"authored\",\"name\":\"capacity\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"key\":[\"code\"],\"name\":\"shelf\",\"relations\":[{\"annotations\":{\"acme.plural\":\"rooms\"},\"cardinality\":\"many_to_one\",\"name\":\"room\",\"target\":\"room\",\"via\":\"code\"}]},\"kind\":\"declared\",\"schema_hash\":\"55aad88dd83990a5fabb528707e4ae79b3484b583b81af53fc6a60f76591fc15\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"44e6aecc903e3c5cfc8fc3a80b8c14045cdd80b6f350b7239ea5ee799d0ac77d\",\"id\":\"5a0e7d1c3b9f4e2a8c6d0b1f7e3a9c54\",\"known_at\":\"2026-09-29T08:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":13,\"prev\":\"fa69e73baa367fc821d89e68cebb531230a2074579677da96e5e8ece53bc13b7\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "44e6aecc903e3c5cfc8fc3a80b8c14045cdd80b6f350b7239ea5ee799d0ac77d"
+    },
+    {
+      "shows": "derived_relation",
+      "about": "A `declared` type whose relation `shelf` is derived from its `shelf_code` matching the target's `code`. Its schema hash is the one the same type with the relation carried by link records hashes to: `derived` is not shape.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"number\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"authored\",\"name\":\"shelf_code\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"key\":[\"number\"],\"name\":\"slip\",\"relations\":[{\"cardinality\":\"many_to_one\",\"derived\":{\"match\":[{\"from\":\"shelf_code\",\"to\":\"code\"}]},\"inverse\":\"slips\",\"name\":\"shelf\",\"target\":\"shelf\"}]},\"kind\":\"declared\",\"schema_hash\":\"70337c133317f99137404cda85ec3d35abd3640342cc47657abd085ee7a13c1f\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"eee7aad449f1c6c284a8dda0cdc9d7962cde5329265df244158ac751d2d05f16\",\"id\":\"6b1f8e2d4c0a9f3e7d5b1a2c8e4f6d09\",\"known_at\":\"2026-10-01T08:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":14,\"prev\":\"44e6aecc903e3c5cfc8fc3a80b8c14045cdd80b6f350b7239ea5ee799d0ac77d\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "eee7aad449f1c6c284a8dda0cdc9d7962cde5329265df244158ac751d2d05f16"
+    },
+    {
+      "shows": "max_depth",
+      "about": "A `declared` trigger with `max_depth` 1.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"trigger\",\"max_depth\":1,\"name\":\"shelved\",\"on\":\"slip\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"56ea4107952321d0a02c52e05f96ecfb2f5151fdd360cabbdd25ac5d5702f6bd\",\"id\":\"7c2a9e4f1b8d3c6a0e5f2b9d4a7c1e83\",\"known_at\":\"2026-10-01T08:00:01.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":15,\"prev\":\"eee7aad449f1c6c284a8dda0cdc9d7962cde5329265df244158ac751d2d05f16\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "56ea4107952321d0a02c52e05f96ecfb2f5151fdd360cabbdd25ac5d5702f6bd"
+    },
+    {
+      "shows": "retired_guard",
+      "about": "A `declared` trigger on `slip` whose guard is `retired()`, so it fires only when a write retires a slip (Appendix B).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"trigger\",\"name\":\"slip_retired\",\"on\":\"slip\",\"when\":\"retired()\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"21163531cc77f2abc0b4acf59802707296c1e540b5089ad23fc1b0c336773c5b\",\"id\":\"8d3b0f5a2c9e4d7b1f6a3c0e9b5d2f74\",\"known_at\":\"2026-10-01T08:00:02.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":16,\"prev\":\"56ea4107952321d0a02c52e05f96ecfb2f5151fdd360cabbdd25ac5d5702f6bd\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "21163531cc77f2abc0b4acf59802707296c1e540b5089ad23fc1b0c336773c5b"
+    },
+    {
+      "shows": "view_params",
+      "about": "A `declared` view over `slip` that counts the slips on one shelf, the shelf a read binds as `shelf`: a view's `params` and a call of `param` (Appendix A, Appendix B).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"shelf_code\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"authored\",\"name\":\"slips\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"key\":[\"shelf_code\"],\"name\":\"slips_on_shelf\",\"view\":{\"group_by\":[\"shelf_code\"],\"measures\":[{\"expr\":\"count()\",\"name\":\"slips\"}],\"params\":[{\"kind\":\"text\",\"name\":\"shelf\"}],\"source\":\"slip\",\"where\":\"shelf_code = param('shelf')\"}},\"kind\":\"declared\",\"schema_hash\":\"8767c83c571e9dd36cc09b5021ae2e0e5b3bebcb6e00a4d9aa61fdb4771a0ff3\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"de0915fba58a857dcc9586b0aadb913249ef3a8516c4a3c2e252485cd693f464\",\"id\":\"2c7e9a4f1b8d3e6a0f5c9b2d7e4a1f83\",\"known_at\":\"2026-10-01T08:00:03.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":17,\"prev\":\"21163531cc77f2abc0b4acf59802707296c1e540b5089ad23fc1b0c336773c5b\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "de0915fba58a857dcc9586b0aadb913249ef3a8516c4a3c2e252485cd693f464"
+    },
+    {
+      "shows": "verb_on_type",
+      "about": "A `declared` verb `print_slip` on the type `slip` (`scope: type`).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"verb\",\"effect\":\"external\",\"executor\":\"printer\",\"name\":\"print_slip\",\"on\":\"slip\",\"risk\":\"low\",\"scope\":\"type\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"b6ab8143efa2d1891f045b030d429e909cf3be44b0dbeb3c717760f4cd80088a\",\"id\":\"9e4c1a7b3d5f2e8a6c0b4d9f1a3e5c72\",\"known_at\":\"2026-10-01T08:00:04.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":18,\"prev\":\"de0915fba58a857dcc9586b0aadb913249ef3a8516c4a3c2e252485cd693f464\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "b6ab8143efa2d1891f045b030d429e909cf3be44b0dbeb3c717760f4cd80088a"
+    },
+    {
+      "shows": "verb_called_on_type",
+      "about": "The `verb_called` of `print_slip`, which carries no `key`.",
+      "line": "{\"body\":{\"kind\":\"verb_called\",\"payload\":{},\"verb\":\"print_slip\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"431268362a8ce96c7eca4dd76f642b985377e1df3956dabd0f194bc51047de1f\",\"id\":\"a5f3c8e1b7d9024f6e2a8c4b1d7f3e96\",\"known_at\":\"2026-10-01T08:00:05.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":19,\"prev\":\"b6ab8143efa2d1891f045b030d429e909cf3be44b0dbeb3c717760f4cd80088a\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "431268362a8ce96c7eca4dd76f642b985377e1df3956dabd0f194bc51047de1f"
+    },
+    {
+      "shows": "view_merge",
+      "about": "A `declared` view `shelf_load` that counts the slips on each shelf and merges `shelf`, counted by its `code`, on the same key (Appendix A).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"shelf_code\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"authored\",\"name\":\"slips\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}},{\"authority\":\"authored\",\"name\":\"shelves\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"key\":[\"shelf_code\"],\"name\":\"shelf_load\",\"view\":{\"group_by\":[\"shelf_code\"],\"measures\":[{\"expr\":\"count()\",\"name\":\"slips\"}],\"merge\":[{\"group_by\":[\"code\"],\"measures\":[{\"expr\":\"count()\",\"name\":\"shelves\"}],\"source\":\"shelf\"}],\"source\":\"slip\"}},\"kind\":\"declared\",\"schema_hash\":\"8ad6949d4e314cef5a6fbf5a696348c7a75dd20942b688d1e757b663086aea2c\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"ffce07b315b3e227dd17876d3786e19f12e0a19390a92ae22150f86ffc30c4d8\",\"id\":\"4e1a7c9b2d6f0a3e8c5b1d7f9a2e6c40\",\"known_at\":\"2026-10-02T08:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":20,\"prev\":\"431268362a8ce96c7eca4dd76f642b985377e1df3956dabd0f194bc51047de1f\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "ffce07b315b3e227dd17876d3786e19f12e0a19390a92ae22150f86ffc30c4d8"
+    },
+    {
+      "shows": "value_type",
+      "about": "A `declared` value type `slip_state` over three states (Appendix A).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"value_type\",\"kind\":\"text\",\"name\":\"slip_state\",\"one_of\":[\"open\",\"filed\",\"void\"]},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"02e187a70373777ee4222d48d5c5e2f9d50913aaa2e4ba85d6d3f7ae3cb23920\",\"id\":\"5f2b8d0c3e7a1b4f9d6c2e8a0b3f7d51\",\"known_at\":\"2026-10-03T08:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":21,\"prev\":\"ffce07b315b3e227dd17876d3786e19f12e0a19390a92ae22150f86ffc30c4d8\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "02e187a70373777ee4222d48d5c5e2f9d50913aaa2e4ba85d6d3f7ae3cb23920"
+    },
+    {
+      "shows": "proposed_tightening",
+      "about": "A `write_proposed` whose write is `migrate_value_type`: `slip_state` over two of its states, with the report its preflight answered.",
+      "line": "{\"body\":{\"kind\":\"write_proposed\",\"proposal\":\"p-fewer-states\",\"why\":\"no slip is void\",\"write\":{\"report\":{\"fields\":[],\"fits\":true,\"from_version\":1,\"misfits\":0,\"records_scanned\":0,\"report_id\":\"aae9d1fe02acd002151ccd3968dd93dd27a19c51b1f024ea8c27123cd10c152a\",\"value_type\":\"slip_state\"},\"to\":{\"kind\":\"text\",\"name\":\"slip_state\",\"one_of\":[\"open\",\"filed\"]},\"write\":\"migrate_value_type\"}},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"d3a2103e43a5ef545199adb77a317ac55561f3fd1acb5c026b4d7106e634698c\",\"id\":\"6a3c9e1d4f8b2c5a0e7d3f9b1c4a8e62\",\"known_at\":\"2026-10-03T08:00:01.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":22,\"prev\":\"02e187a70373777ee4222d48d5c5e2f9d50913aaa2e4ba85d6d3f7ae3cb23920\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "d3a2103e43a5ef545199adb77a317ac55561f3fd1acb5c026b4d7106e634698c"
+    },
+    {
+      "shows": "floor",
+      "about": "A `declared` type `loan` whose derived field `days` is `floor((back_on - out_on) / 1d)`, the whole days between two instants: a call of `floor` (Appendix B).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"out_on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"authored\",\"name\":\"back_on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"derived\",\"depends_on\":[\"out_on\",\"back_on\"],\"derived\":\"floor((back_on - out_on) / 1d)\",\"name\":\"days\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"name\":\"loan\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"897554916dd3f3305c6519b85ecefe7b83ab22ec2393b4528cbf4f399b70f672\",\"id\":\"7b4d0f2e5a9c3d6b1f8e4a0c2d5b9f73\",\"known_at\":\"2026-10-04T08:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":23,\"prev\":\"d3a2103e43a5ef545199adb77a317ac55561f3fd1acb5c026b4d7106e634698c\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "897554916dd3f3305c6519b85ecefe7b83ab22ec2393b4528cbf4f399b70f672"
+    },
+    {
+      "shows": "date_bucket_by_width",
+      "about": "A `declared` type `shift` whose derived field `week` is `date_bucket(on, 7d, '2026-01-05T00:00:00Z')`, the start of the window of seven days from a Monday: a call of `date_bucket` by a width (Appendix B).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"derived\",\"depends_on\":[\"on\"],\"derived\":\"date_bucket(on, 7d, '2026-01-05T00:00:00Z')\",\"name\":\"week\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}}],\"name\":\"shift\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"79c0fa1d433469b0ceaf78fac75031102244fd269af46ada50b687aaf6dc1ac2\",\"id\":\"8c5e1a3f6b0d4e7c2a9f5b1d3e6c0a84\",\"known_at\":\"2026-10-04T08:00:01.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":24,\"prev\":\"897554916dd3f3305c6519b85ecefe7b83ab22ec2393b4528cbf4f399b70f672\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "79c0fa1d433469b0ceaf78fac75031102244fd269af46ada50b687aaf6dc1ac2"
+    },
+    {
+      "shows": "in_set",
+      "about": "A `declared` object set `long_loans` whose `where` is `in_set('lent') and days > 30`: a call of `in_set` (Appendix B). The vector holds the line, not a lake that declares `lent`.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"object_set\",\"name\":\"long_loans\",\"of\":\"loan\",\"where\":\"in_set('lent') and days > 30\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"eacd3ffb0dc166432bc3770670275d5fbb6da518e7ebc5ace2e3fffc78316b86\",\"id\":\"9d6f2b4a7c1e5f8d3b0a6c2e4f7d1b95\",\"known_at\":\"2026-10-04T08:00:02.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":25,\"prev\":\"79c0fa1d433469b0ceaf78fac75031102244fd269af46ada50b687aaf6dc1ac2\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "eacd3ffb0dc166432bc3770670275d5fbb6da518e7ebc5ace2e3fffc78316b86"
+    },
+    {
+      "shows": "relation_renames",
+      "about": "A `migrated` event of `loan` whose migration names a relation's rename, `relation_renames`, from `lent_to` to `borrower`: the relation keeps its edges (§2.3).",
+      "line": "{\"body\":{\"kind\":\"migrated\",\"migration\":{\"relation_renames\":[[\"lent_to\",\"borrower\"]],\"to\":{\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"out_on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"authored\",\"name\":\"back_on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"derived\",\"depends_on\":[\"out_on\",\"back_on\"],\"derived\":\"floor((back_on - out_on) / 1d)\",\"name\":\"days\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"name\":\"loan\",\"relations\":[{\"cardinality\":\"many_to_one\",\"name\":\"borrower\",\"target\":\"loan\"}]}},\"report_id\":\"4f1d0c9b7a6e5d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c\",\"schema_hash\":\"ef357c24258676b46f36e03e65d41c127d312174b77c6e32b9645e5e3032874e\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"891f2ed1ce8931acd3d2617e0b41dd49036f4292b1ca59ed370ac6682f36cf0b\",\"id\":\"2c8e5a1f7d3b4096a1e5c7d9f0b2a468\",\"known_at\":\"2026-10-04T08:00:03.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":26,\"prev\":\"eacd3ffb0dc166432bc3770670275d5fbb6da518e7ebc5ace2e3fffc78316b86\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "891f2ed1ce8931acd3d2617e0b41dd49036f4292b1ca59ed370ac6682f36cf0b"
+    },
+    {
+      "shows": "view_kept",
+      "about": "A `record_upserted` of the `sys.setting` `view_kept.loan_days`, which asks for the view `loan_days` to be kept. It is the setting's first version, so it carries `made`. The vector holds the line, not a lake that declares the view.",
+      "line": "{\"body\":{\"key\":\"view_kept.loan_days\",\"kind\":\"record_upserted\",\"made\":true,\"patch\":{\"key\":\"view_kept.loan_days\",\"value\":true},\"type\":\"sys.setting\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"53ef15cceace2873c5e8998b528367a768a6eb41b093e5e6125bd0a2654a4eff\",\"id\":\"7b1f4e9a2c6d4835b0a7e3c1d5f29b64\",\"known_at\":\"2026-10-05T08:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":27,\"prev\":\"891f2ed1ce8931acd3d2617e0b41dd49036f4292b1ca59ed370ac6682f36cf0b\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "53ef15cceace2873c5e8998b528367a768a6eb41b093e5e6125bd0a2654a4eff"
+    },
+    {
+      "shows": "made_again",
+      "about": "A `record_upserted` of the `loan` `l1` at `version` 4 that carries `made`: the write found no live record under the key, and a version above 1 says the record was retired before and is made again (§2.3). The vector holds the line, not the three events before it.",
+      "line": "{\"body\":{\"key\":\"l1\",\"kind\":\"record_upserted\",\"made\":true,\"patch\":{\"out_on\":\"2026-10-05T09:00:00.000000Z\"},\"type\":\"loan\",\"version\":4},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"5750332081ba50402eb808dbb723167dc5b3c0e2ffca35ceac73c4144664bfb1\",\"id\":\"2e8c5a1f9b3d47c6a0f4d7b1c9e35a82\",\"known_at\":\"2026-10-05T09:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":28,\"prev\":\"53ef15cceace2873c5e8998b528367a768a6eb41b093e5e6125bd0a2654a4eff\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "5750332081ba50402eb808dbb723167dc5b3c0e2ffca35ceac73c4144664bfb1"
+    },
+    {
+      "shows": "restated",
+      "about": "A `write_proposed` whose write is a migration of `loan` that declares `out_on` `sensitive` and changes no stored value: its preflight's report holds `restated`, what `to` states otherwise than the declaration in force (§2.4).",
+      "line": "{\"body\":{\"kind\":\"write_proposed\",\"proposal\":\"p-out-on-masked\",\"why\":\"who borrowed when is not for every reader\",\"write\":{\"migration\":{\"to\":{\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"out_on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":true,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"authored\",\"name\":\"back_on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"derived\",\"depends_on\":[\"out_on\",\"back_on\"],\"derived\":\"floor((back_on - out_on) / 1d)\",\"name\":\"days\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"name\":\"loan\",\"relations\":[{\"cardinality\":\"many_to_one\",\"name\":\"borrower\",\"target\":\"loan\"}]}},\"report\":{\"fields\":[],\"from_schema_hash\":\"ef357c24258676b46f36e03e65d41c127d312174b77c6e32b9645e5e3032874e\",\"lossless\":true,\"records_scanned\":1,\"report_id\":\"7c0e9d8b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d\",\"restated\":[{\"field\":\"out_on\",\"member\":\"sensitive\",\"to\":true,\"was\":false}],\"to_schema_hash\":\"ef357c24258676b46f36e03e65d41c127d312174b77c6e32b9645e5e3032874e\",\"type\":\"loan\"},\"write\":\"migrate\"}},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"9c6828693bf82bfec88e876e02a8d24ce3258ff1438b2039b4c8e158c240b23f\",\"id\":\"4d9a2f7c1e6b4380a5c8f1d3b7e09a26\",\"known_at\":\"2026-10-05T09:00:01.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":29,\"prev\":\"5750332081ba50402eb808dbb723167dc5b3c0e2ffca35ceac73c4144664bfb1\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "9c6828693bf82bfec88e876e02a8d24ce3258ff1438b2039b4c8e158c240b23f"
+    },
+    {
+      "shows": "initial",
+      "about": "A `declared` type `ticket` whose required field `state` declares `initial` `new`, the value the fold fills where a write makes a record and gives the field none (§2.2, §2.3).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"title\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"authored\",\"initial\":\"new\",\"name\":\"state\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"name\":\"ticket\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"c8f74cdc714e071227bc3a3a24f8153b665ee960f46dbd85e8254e951aaa5ef5\",\"id\":\"4b7e2c9a1d5f8e3b6c0a2d4f7e1b9c36\",\"known_at\":\"2026-10-05T09:00:02.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":30,\"prev\":\"9c6828693bf82bfec88e876e02a8d24ce3258ff1438b2039b4c8e158c240b23f\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "c8f74cdc714e071227bc3a3a24f8153b665ee960f46dbd85e8254e951aaa5ef5"
+    },
+    {
+      "shows": "with_the_set",
+      "about": "A `declared` function `loan_days` that carries `with_the_set`: another declaration of the same set follows in its append, and the records the set computes again are computed once, at its last declaration (§2.3). The vector holds the line, not the set's last declaration, so these are lines and not a log a fold accepts: a log that ends inside a set is damaged.",
+      "line": "{\"body\":{\"declaration\":{\"backing\":\"expr\",\"declare\":\"function\",\"expr\":\"floor((back - out) / 1d)\",\"inputs\":[{\"authority\":\"authored\",\"name\":\"out\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}},{\"authority\":\"authored\",\"name\":\"back\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date_time\"}}],\"name\":\"loan_days\"},\"kind\":\"declared\",\"version\":1,\"with_the_set\":true},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"2f5f995ae6267fc4e724616ebac29ca1d076745c8e8215999a52f8758931736c\",\"id\":\"0000000000000000000000000000001f\",\"known_at\":\"2026-10-05T09:00:02.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":31,\"prev\":\"c8f74cdc714e071227bc3a3a24f8153b665ee960f46dbd85e8254e951aaa5ef5\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "2f5f995ae6267fc4e724616ebac29ca1d076745c8e8215999a52f8758931736c"
+    },
+    {
+      "shows": "value_type_migrated",
+      "about": "A `value_type_migrated` that renames `lent` to `out` in the records of `loan` (§2.2).",
+      "line": "{\"body\":{\"declaration\":{\"kind\":\"text\",\"name\":\"loan_state\",\"one_of\":[\"out\",\"back\"]},\"kind\":\"value_type_migrated\",\"renames\":[[\"lent\",\"out\"]],\"report_id\":\"9b0c\",\"types\":[\"loan\"],\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"f6d36cf262469d606497f5c7cf845edb6024fa80a6bad3c561c966a1999513b7\",\"id\":\"00000000000000000000000000000020\",\"known_at\":\"2026-10-05T09:00:03.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":32,\"prev\":\"2f5f995ae6267fc4e724616ebac29ca1d076745c8e8215999a52f8758931736c\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "f6d36cf262469d606497f5c7cf845edb6024fa80a6bad3c561c966a1999513b7"
+    },
+    {
+      "shows": "proposed_renames",
+      "about": "A `write_proposed` of a `migrate_value_type` that carries `renames`, with its report's `renamed` counts (Appendix A).",
+      "line": "{\"body\":{\"kind\":\"write_proposed\",\"proposal\":\"p553\",\"why\":\"lent again\",\"write\":{\"renames\":[[\"out\",\"lent\"]],\"report\":{\"fields\":[{\"field\":\"state\",\"misfits\":0,\"renamed\":[{\"from\":\"out\",\"records\":1,\"to\":\"lent\"}],\"type\":\"loan\",\"values_scanned\":1}],\"fits\":true,\"from_version\":2,\"misfits\":0,\"records_scanned\":1,\"report_id\":\"7e1d\",\"value_type\":\"loan_state\"},\"to\":{\"kind\":\"text\",\"name\":\"loan_state\",\"one_of\":[\"lent\",\"back\"]},\"write\":\"migrate_value_type\"}},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"8ab8f6d1495daf691d8b076468a9fe4ee96606125fbd660eabba0c283e27cd41\",\"id\":\"00000000000000000000000000000021\",\"known_at\":\"2026-10-05T09:00:04.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":33,\"prev\":\"f6d36cf262469d606497f5c7cf845edb6024fa80a6bad3c561c966a1999513b7\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "8ab8f6d1495daf691d8b076468a9fe4ee96606125fbd660eabba0c283e27cd41"
+    },
+    {
+      "shows": "pinned",
+      "about": "A `write_proposed` of an upsert, `pinned`: its proposer's grant admits only some records of `claim`, so its accept is refused once the record or the type changed after it (§2.4).",
+      "line": "{\"body\":{\"kind\":\"write_proposed\",\"pinned\":true,\"proposal\":\"p-own-claim\",\"why\":\"my own claim, paid\",\"write\":{\"key\":\"c1\",\"opts\":{},\"patch\":{\"note\":\"paid\"},\"type\":\"claim\",\"write\":\"upsert\"}},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"9111f8c64493161dd35af60dd866d057b0c7c5674a296ad196bb883f48d18c79\",\"id\":\"00000000000000000000000000000022\",\"known_at\":\"2026-10-05T09:00:05.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":34,\"prev\":\"8ab8f6d1495daf691d8b076468a9fe4ee96606125fbd660eabba0c283e27cd41\",\"v\":15,\"writer\":\"agent:alice\"}",
+      "hash": "9111f8c64493161dd35af60dd866d057b0c7c5674a296ad196bb883f48d18c79"
+    },
+    {
+      "shows": "date_field",
+      "about": "A `declared` type `due` whose field `on` is of the kind `date` (§1.3, §5).",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"authority\":\"authored\",\"name\":\"no\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"authored\",\"name\":\"on\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"date\"}}],\"name\":\"due\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"c6e189f9575777aefefa3872b4fe1ef4a2319328e48278e289efe6892912c48f\",\"id\":\"00000000000000000000000000000023\",\"known_at\":\"2026-10-05T09:00:06.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":35,\"prev\":\"9111f8c64493161dd35af60dd866d057b0c7c5674a296ad196bb883f48d18c79\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "c6e189f9575777aefefa3872b4fe1ef4a2319328e48278e289efe6892912c48f"
+    },
+    {
+      "shows": "date_value_type",
+      "about": "A `declared` value type `pay_day` over the kind `date`.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"value_type\",\"kind\":\"date\",\"name\":\"pay_day\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"06911a4edf8c9a48a9379155c0302d0b4369323cae6ec9e50b979917b01e94fd\",\"id\":\"00000000000000000000000000000024\",\"known_at\":\"2026-10-05T09:00:07.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":36,\"prev\":\"c6e189f9575777aefefa3872b4fe1ef4a2319328e48278e289efe6892912c48f\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "06911a4edf8c9a48a9379155c0302d0b4369323cae6ec9e50b979917b01e94fd"
+    },
+    {
+      "shows": "date_value",
+      "about": "A `record_upserted` of `due` holding the date `2026-07-05`: a value is a string.",
+      "line": "{\"body\":{\"key\":\"d1\",\"kind\":\"record_upserted\",\"made\":true,\"patch\":{\"no\":\"1\",\"on\":\"2026-07-05\"},\"type\":\"due\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"ebfa7ae585bc7affd78b16bec981326125b27129517851d4fa34be28fbbcad33\",\"id\":\"00000000000000000000000000000025\",\"known_at\":\"2026-10-05T09:00:08.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":37,\"prev\":\"06911a4edf8c9a48a9379155c0302d0b4369323cae6ec9e50b979917b01e94fd\",\"v\":15,\"writer\":\"agent:agent\"}",
+      "hash": "ebfa7ae585bc7affd78b16bec981326125b27129517851d4fa34be28fbbcad33"
+    },
+    {
+      "shows": "output_carried",
+      "about": "An `output_recorded` of a function backing that carries its `output` and fills `due` `d1`'s `day` (§2.5). The records and the function are not declared in the vectors: a reader of the format checks members and hashes here, not the fold.",
+      "line": "{\"body\":{\"field\":[\"due\",\"d1\",\"day\"],\"input\":\"bbbfae40a0d202fc24345d252fdc472570c51bda8c8aded3c9ce5ffd4512e14c\",\"kind\":\"output_recorded\",\"output\":\"Sunday\",\"seam\":\"function:http:label\"},\"cause\":37,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"0b4e66549c94859d539ade8cc7f6c7053a87483de00f067522bfb3da49375b65\",\"id\":\"00000000000000000000000000000026\",\"known_at\":\"2026-10-05T09:00:09.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":38,\"prev\":\"ebfa7ae585bc7affd78b16bec981326125b27129517851d4fa34be28fbbcad33\",\"procedure\":{\"name\":\"http\",\"version\":\"1\"},\"v\":15,\"writer\":\"system:lakelands\"}",
+      "hash": "0b4e66549c94859d539ade8cc7f6c7053a87483de00f067522bfb3da49375b65"
+    },
+    {
+      "shows": "output_named",
+      "about": "A fill of the same call (the same `seam` and `input`) for `due` `d2`, which names that output by `output_at` and carries none (§2.5).",
+      "line": "{\"body\":{\"field\":[\"due\",\"d2\",\"day\"],\"input\":\"bbbfae40a0d202fc24345d252fdc472570c51bda8c8aded3c9ce5ffd4512e14c\",\"kind\":\"output_recorded\",\"output_at\":38,\"seam\":\"function:http:label\"},\"cause\":37,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"ce26a63646547a682f7eb0d997d0978eb679c8d5248820078606b9ba4a66bc8e\",\"id\":\"00000000000000000000000000000027\",\"known_at\":\"2026-10-05T09:00:10.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":39,\"prev\":\"0b4e66549c94859d539ade8cc7f6c7053a87483de00f067522bfb3da49375b65\",\"procedure\":{\"name\":\"http\",\"version\":\"1\"},\"v\":15,\"writer\":\"system:lakelands\"}",
+      "hash": "ce26a63646547a682f7eb0d997d0978eb679c8d5248820078606b9ba4a66bc8e"
+    },
+    {
+      "shows": "lake_upgraded",
+      "about": "A `lake_upgraded` from format 14 to 15 (§6), as a writer's open appends it right after its `lease_taken` where the lake's newest event was in 14. It stands here to show its members alone: in a whole lake it follows events of the format before, which this lake of one format does not hold.",
+      "line": "{\"body\":{\"from\":14,\"kind\":\"lake_upgraded\",\"to\":15},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"4ae98f4af94e91cd46c4b2554c6aeb7c0d062a58c5f0ddfc650bbf03efe07953\",\"id\":\"00000000000000000000000000000028\",\"known_at\":\"2026-10-05T09:00:11.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":40,\"prev\":\"ce26a63646547a682f7eb0d997d0978eb679c8d5248820078606b9ba4a66bc8e\",\"v\":15,\"writer\":\"system:lakelands\"}",
+      "hash": "4ae98f4af94e91cd46c4b2554c6aeb7c0d062a58c5f0ddfc650bbf03efe07953"
+    }
+  ],
+  "misplaced": [
+    {
+      "shows": "upstream_on_another_kind",
+      "about": "A `record_retired` carrying `upstream`: a reader refuses it, since only a `record_ingested` event carries the member (§1.1).",
+      "line": "{\"body\":{\"key\":\"r1\",\"kind\":\"record_retired\",\"type\":\"reading\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"6b8ddd60befbdfd32a68adc0c34638fa195d81b07eaa8d53727824dcd12fb719\",\"id\":\"710183001aa81e61bd20094ab98d5da5\",\"known_at\":\"2026-09-25T08:00:03.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":11,\"prev\":\"1e5455910cbcf3d82b9198a11b9da62f5f9d47f86aa9b110b4539c1d3b5f2514\",\"upstream\":{\"lake\":\"upstream-lake\",\"position\":43},\"v\":15,\"writer\":\"human:owner\"}"
+    },
+    {
+      "shows": "cause_in_context",
+      "about": "Position 13 with `cause` written inside `context`: a reader refuses it, since a host's cause is the envelope's (§1.1).",
+      "line": "{\"body\":{\"declaration\":{\"annotations\":{\"acme.icon\":\"books\",\"acme.package\":{\"name\":\"library\",\"version\":\"2.1.0\"}},\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"annotations\":{\"acme.format\":\"shelf-code\"},\"authority\":\"authored\",\"name\":\"code\",\"on_input_change\":\"keep\",\"required\":true,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"annotations\":{\"acme.unit\":\"books\",\"acme.weight\":1.5},\"authority\":\"authored\",\"name\":\"capacity\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"key\":[\"code\"],\"name\":\"shelf\",\"relations\":[{\"annotations\":{\"acme.plural\":\"rooms\"},\"cardinality\":\"many_to_one\",\"name\":\"room\",\"target\":\"room\",\"via\":\"code\"}]},\"kind\":\"declared\",\"schema_hash\":\"55aad88dd83990a5fabb528707e4ae79b3484b583b81af53fc6a60f76591fc15\",\"version\":1},\"context\":{\"cause\":0,\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"f007708059d172646522e1fbd8fe0d50c13f979ff2254e714acb0815ef459dd6\",\"id\":\"5a0e7d1c3b9f4e2a8c6d0b1f7e3a9c54\",\"known_at\":\"2026-09-29T08:00:00.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":13,\"prev\":\"fa69e73baa367fc821d89e68cebb531230a2074579677da96e5e8ece53bc13b7\",\"v\":15,\"writer\":\"agent:agent\"}"
+    },
+    {
+      "shows": "output_twice",
+      "about": "Position 39 carrying both `output` and `output_at`: a reader refuses it, since a fill carries its output or names it, never both (§2.5).",
+      "line": "{\"body\":{\"field\":[\"due\",\"d2\",\"day\"],\"input\":\"bbbfae40a0d202fc24345d252fdc472570c51bda8c8aded3c9ce5ffd4512e14c\",\"kind\":\"output_recorded\",\"output\":\"Sunday\",\"output_at\":38,\"seam\":\"function:http:label\"},\"cause\":37,\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"0b5e557cbd71a1bf55cb825c3169520bf106f367bfc1d8e4395400c646e48945\",\"id\":\"00000000000000000000000000000027\",\"known_at\":\"2026-10-05T09:00:10.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":39,\"prev\":\"0b4e66549c94859d539ade8cc7f6c7053a87483de00f067522bfb3da49375b65\",\"procedure\":{\"name\":\"http\",\"version\":\"1\"},\"v\":15,\"writer\":\"system:lakelands\"}"
+    }
+  ]
+}

@@ -16,7 +16,11 @@
 //! append. A move whose id is already in the lake is not made again, so
 //! aging a date twice writes it once. A condition that cannot be evaluated
 //! for a record, or a move the store would refuse for it, leaves the record
-//! as it is and is counted as a failed guard.
+//! as it is. A move a constraint refuses, or one that sets off more across
+//! an edge than the lake's `max_set_changes`, is counted as refused and
+//! listed with the record's key and the refusal ([`refuse`]); a condition
+//! that cannot be evaluated, and every other refused move, is counted as a
+//! failed guard.
 
 use std::collections::BTreeMap;
 
@@ -26,8 +30,11 @@ use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::Authority;
 use lakelands_api::principal::{WriteContext, WriteOrigin};
 use lakelands_api::record::Origin;
-use lakelands_api::write::{AgeReport, RuleRun};
-use lakelands_api::{FieldName, Patch, Position, Principal, Result, Timestamp, TypeName, Value};
+use lakelands_api::write::{AGE_REFUSALS_SHOWN, AgeReport, RefusedMove, RuleRun};
+use lakelands_api::{
+    Error, FieldName, Patch, Position, Principal, RecordKey, Refusal, Result, Timestamp, TypeName,
+    Value,
+};
 use lakelands_core::derive;
 use lakelands_core::expr::{self, Place, RecordScope};
 use lakelands_core::rights::{self, Door};
@@ -94,7 +101,10 @@ pub fn check(
     let Some(f) = decl.fields.iter().find(|f| f.name == field) else {
         return Err(wrong("field", Case::UnknownField { ty, field }));
     };
-    if !matches!(f.authority, Authority::Authored | Authority::Shared) {
+    if !matches!(
+        f.authority,
+        Authority::Authored | Authority::Shared | Authority::Verb
+    ) {
         return Err(wrong("field", Case::AgingAuthority { ty, field }));
     }
     if decl.key.contains(&field) {
@@ -146,8 +156,18 @@ pub fn check_authority(who: &Principal, ontology: &Ontology, rule: &Rule) -> Res
     // A rule moves every owner's records: never one a holder of `only` writes (051).
     crate::writes::granted(!rights::only_holder(who, decl, ontology))?;
     let patch: Patch = [(rule.field.clone(), rule.to.clone())].into();
-    rights::check_write(who, decl, Door::Authored, &patch)?;
+    rights::check_write(who, decl, Door::Verb, &patch)?;
     rights::check_probe(who, decl, derive::reads(&rule.when).iter())
+}
+
+/// Counts a move the lake refused in `ran`, and lists it while the list
+/// is short of [`AGE_REFUSALS_SHOWN`].
+fn refuse(ran: &mut RuleRun, key: &RecordKey, why: Refusal) {
+    ran.refused += 1;
+    if ran.refusals.len() < AGE_REFUSALS_SHOWN {
+        let key = key.clone();
+        ran.refusals.push(RefusedMove { key, why });
+    }
 }
 
 /// Run every live rule once for `today`, in rule-name order, one append
@@ -182,6 +202,7 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
         rules: Vec::new(),
         transitions: 0,
         failed_guards: 0,
+        refused: 0,
         position: Position::GENESIS,
     };
     for r in rules {
@@ -190,6 +211,8 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
             version: r.version,
             moved: 0,
             failed_guards: 0,
+            refused: 0,
+            refusals: Vec::new(),
             skipped: None,
         };
         let rule = match check(&w.ontology, &r.fields) {
@@ -209,6 +232,8 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
         let now = lake.clock(&mut w);
         let from = canonical::to_vec(&rule.from);
         let mut d = call.decide(&w, view.as_ref(), now, 0);
+        // A rule writes as declared: a `verb` field too (lakelands#1130).
+        d.door = Door::Verb;
         d.envelope = Envelope {
             procedure: Some(procedure),
             ..Envelope::of(Origin::System)
@@ -238,11 +263,42 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
             }
             d.envelope.id = Some(id);
             let patch: Patch = [(rule.field.clone(), rule.to.clone())].into();
-            let Ok(plan) = d.record(&rule.on, &record.key, &patch, None, None) else {
-                ran.failed_guards += 1;
-                continue;
+            // An outage is never a guard that failed: it ends the run, as
+            // any read's outage does (lakelands#927, lakelands#950).
+            let plan = match d.record(&rule.on, &record.key, &patch, None, None) {
+                Ok(plan) => plan,
+                Err(e @ Error::Unavailable { .. }) => return Err(e),
+                // A constraint the move breaks: the condition held, the
+                // rule of the type did not (lakelands#1182).
+                Err(Error::Refused {
+                    reason: why @ Refusal::Constraint(_),
+                    ..
+                }) if matches!(
+                    why.said().map(|s| &s.case),
+                    Some(Case::ConstraintBroken { .. })
+                ) =>
+                {
+                    refuse(&mut ran, &record.key, why);
+                    continue;
+                }
+                Err(_) => {
+                    ran.failed_guards += 1;
+                    continue;
+                }
             };
-            drafts.extend(d.planned(plan)?.drafts);
+            // A move that sets off more across an edge than the lake's
+            // `max_set_changes` is one the store refuses (055, extended).
+            match d.planned(plan) {
+                Ok(plan) => drafts.extend(plan.drafts),
+                Err(Error::Refused {
+                    reason: why @ Refusal::TooLarge { .. },
+                    ..
+                }) => {
+                    refuse(&mut ran, &record.key, why);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
             ran.moved += 1;
         }
         drop(view);
@@ -251,6 +307,7 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
         }
         report.transitions += ran.moved;
         report.failed_guards += ran.failed_guards;
+        report.refused += ran.refused;
         report.rules.push(ran);
     }
     report.position = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);

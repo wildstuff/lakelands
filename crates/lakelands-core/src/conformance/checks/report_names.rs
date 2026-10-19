@@ -55,7 +55,7 @@ async fn the_keys_a_report_names_stand_in_the_order_of_the_new_key(store: Store)
 
 check!(
     REPORT_AS_ITS_READERS_VIEW = a_migrations_report_is_answered_as_its_reader_may_know_it,
-    "013, 024 and 027, extended (lakelands#531): a migration's report names a conversion, a dropped field, a re-keyed type, a rewritten reference and a colliding key only where its reader may see the type and know of the field, and a sample key only of a record it is answered, a link's with its ends and where it is shown the link type (lakelands#871), beside a count that stays whole; a colliding key only where it is answered two or more of the records that would take it, a held one beside them or not, and reads every field of the new key, a link's key with its ends, and the keys a report names are the first among those its reader may be named (lakelands#875), in the refusal of an accept, of `migrate_apply` and of `propose` and in a preview, an author's own too; `more` says that an entry was left out or that a count is larger than the keys named beside it, to one who may see everything too, and nothing else; the id is made over what the reader is shown, so a preview read trimmed is applied by it (lakelands#644); a relation the migration removes is listed as dropped to one who sees the type and is shown the relation (lakelands#662); to an accepter who may not see the type the proposal is one that does not exist (lakelands#762)"
+    "013, 024 and 027, extended (lakelands#531): a migration's report names a conversion, a dropped field, a re-keyed type, a rewritten reference and a colliding key only where its reader may see the type and know of the field, and a sample key only of a record it is answered, a link's with its ends and where it is shown the link type (lakelands#871), beside a count that stays whole; a colliding key only where it is answered two or more of the records that would take it, a held one beside them or not, and reads every field of the new key, a link's key with its ends, and the keys a report names are the first among those its reader may be named (lakelands#875), in the refusal of an accept, of `migrate_apply` and of `propose` and in a preview, an author's own too, while a reviewer listed the migration in part is refused its accept as not granted, before any report (lakelands#867); `more` says that an entry was left out or that a count is larger than the keys named beside it, to one who may see everything too, and nothing else; the id is made over what the reader is shown, so a preview read trimmed is applied by it (lakelands#644); a relation the migration removes is listed as dropped to one who sees the type and is shown the relation (lakelands#662); to an accepter who may not see the type the proposal is one that does not exist (lakelands#762)"
 );
 
 /// `account` keyed by `key`, with `holder` and, when given, `score` of
@@ -82,11 +82,7 @@ fn boxed(key: &str, since: &str) -> Value {
 
 fn migrate_to(to: Value) -> Migration {
     let to = serde_json::from_value(to).expect("a type");
-    Migration {
-        to,
-        renames: vec![],
-        relation_renames: Vec::new(),
-    }
+    Migration::to(to)
 }
 
 fn text(n: &str) -> Value {
@@ -261,10 +257,21 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(store: Store)
     let boolean = json!(boolean).to_string();
     let (migration, report) = (Box::new(view.clone()), Default::default());
     let again = ProposedWrite::Migrate { migration, report };
-    let scored = refused(l.cat.accept(&hid, &ids[0]).await)?;
-    let held = refused(l.cat.accept(&hid, &ids[1]).await)?;
+    // Kept from `score`, `hid` is listed the migrations of `account` in
+    // part: their accept is not its (lakelands#867).
+    let not_granted = Err(Error::Refused {
+        field: None,
+        reason: Refusal::NotGranted,
+    });
+    for id in &ids[..3] {
+        let accepted = l.cat.accept(&hid, id).await.map(|_| ());
+        ensure!(
+            accepted == not_granted,
+            "a reviewer listed a migration in part must be refused its accept as not granted, \
+             naming nothing; it answered {accepted:?}"
+        );
+    }
     let held_whole = refused(l.cat.accept(&l.own, &ids[1]).await)?;
-    let rekeyed = refused(l.cat.accept(&hid, &ids[2]).await)?;
     let rekeyed_whole = refused(l.cat.accept(&l.own, &ids[2]).await)?;
     let applied = refused(l.cat.migrate_apply(&hid, view, &read.report_id).await)?;
     let proposed = refused(l.cat.propose(&hid, again, "again".into()).await)?;
@@ -278,12 +285,24 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(store: Store)
         ..Default::default()
     };
     far.grants.types.insert("sys.link.box.kept_by".into(), link);
-    let far = preview(&l, &far, migrate_to(boxed("code", "number"))).await?;
-    let far = json!(far).to_string();
+    // Its migration gives the link type's field a kind: to a link type
+    // its author is not shown, not granted (lakelands#965).
+    let far = l
+        .cat
+        .migrate(&far, migrate_to(boxed("code", "number")))
+        .await;
+    let ng = lakelands_api::Error::Refused {
+        reason: lakelands_api::Refusal::NotGranted,
+        field: None,
+    };
+    ensure!(
+        far.as_ref().err() == Some(&ng),
+        "one not shown the link type previews: {far:?}"
+    );
     let read = json!(read).to_string();
     // Per row: the report, the names it must show and those it must not.
     let (more, id, owners) = ("\"more\":true", id.as_str(), owners.as_str());
-    let (one, both) = ("\"sample_keys\":[\"2\"]", "\"sample_keys\":[\"2\",\"4\"]");
+    let both = "\"sample_keys\":[\"2\",\"4\"]";
     let collision = "{\"key\":\"DE1\",\"type\":\"account\"}";
     // `DE4` is the `iban` of one account its reader is answered and of a
     // restricted one, `DE1` of two it is answered and of a restricted
@@ -293,28 +312,21 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(store: Store)
     // A count stays whole: of what is there, not of what its reader is answered.
     let (kept, two) = ("kept_by.since", "\"not_convertible\":7");
     let what = [
-        "the accept of a hidden field's conversion",
-        "the accept of `holder` as a number",
-        "the same, to one who sees everything",
-        "the accept of the re-key",
-        "the same, to one who sees everything",
+        "the accept of `holder` as a number, to one who sees everything",
+        "the accept of the re-key, to one who sees everything",
         "an author's preview of the re-key",
         "its apply by the preview's id",
         "its proposal",
         "an author's preview of a boolean",
         "the accept of a link field as a number",
         "the same, to one who sees everything",
-        "its preview by one not shown the link type",
         "the preview of the re-key by one masked on the new key",
         "the preview of a re-key whose colliding link has an end held from its reader",
         "the same, to one who sees everything",
     ];
     let visible = "[\"1\",\"2\",\"5\",\"6\"]";
-    let rows: [Row; 15] = [
-        (&scored, &[more], &["score", "keys"]),
-        (&held, &[more, "holder", one], &["\"4\""]),
+    let rows: [Row; 11] = [
         (&held_whole, &[both], &["more"]),
-        (&rekeyed, &[more, collision, counts], &["entry", held_key]),
         (&rekeyed_whole, &[more, "entry", "DE1:1", held_key], &[]),
         (
             &read,
@@ -330,7 +342,6 @@ async fn a_migrations_report_is_answered_as_its_reader_may_know_it(store: Store)
         (&boolean, &[more, visible], &["\"4\""]),
         (&since, &[more, kept, two, five], &["b1:x", "b2:x"]),
         (&since_whole, &[more, kept, two, "b1:x", "b2:x"], &[]),
-        (&far, &[more, kept, two], &["b1:x", "b2:x"]),
         (
             &masked,
             &[more, counts, "\"collisions\":2"],

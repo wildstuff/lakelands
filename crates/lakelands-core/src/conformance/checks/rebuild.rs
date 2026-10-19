@@ -154,11 +154,7 @@ async fn migrations(store: &dyn LakeStore) -> Result<Vec<Position>, Failure> {
             f.ty = FieldType::kind(StorageKind::Text);
         }
     }
-    let m = Migration {
-        to,
-        renames: Vec::new(),
-        relation_renames: Vec::new(),
-    };
+    let m = Migration::to(to);
     let report = cat.migrate(own, m.clone());
     let report = report.await.must("the preflight of retyping `pages`")?.data;
     let retyped = cat
@@ -404,6 +400,7 @@ async fn after_a_rebuild_every_index_answers_as_before(store: Store) -> Held {
             filter: None,
             with_meta: false,
             at: ReadAt::default(),
+            rerank: None,
         };
         let lexical = cat.search(&own, search(SearchMode::lexical("harbour")));
         let lexical = lexical.await.must("searching \"harbour\"")?.data;

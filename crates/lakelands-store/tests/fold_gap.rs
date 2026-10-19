@@ -19,6 +19,7 @@ use lakelands_api::engine::{
     CanonicalEvent, EngineOpener, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
     Ranked, Rankings, VectorIndex,
 };
+use lakelands_api::error::{Flaw, Part, Situation};
 use lakelands_api::event::{Digest, EventBody, SegmentDigest};
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl};
 use lakelands_api::record::{StoredRecord, Value};
@@ -47,11 +48,19 @@ struct Failing {
     /// Refuse every read of the log from this position on (`u64::MAX`:
     /// none).
     read_fail_from: Arc<AtomicU64>,
+    /// Leave the event at this position out of every read of the log
+    /// (`u64::MAX`: none): a log that lost it.
+    dropped: Arc<AtomicU64>,
+    /// Refuse this many compactions, and count those done.
+    compact: (Arc<AtomicU32>, Arc<AtomicU32>),
 }
 
 impl LakeEngine for Failing {
     fn name(&self) -> &str {
         self.inner.name()
+    }
+    fn rebuild_rate(&self) -> u64 {
+        self.inner.rebuild_rate()
     }
     fn lake(&self) -> &LakeId {
         self.inner.lake()
@@ -83,7 +92,10 @@ impl LakeEngine for Failing {
                 },
             ));
         }
-        self.inner.read(from, limit)
+        let dropped = self.dropped.load(Ordering::SeqCst);
+        let mut events = self.inner.read(from, limit)?;
+        events.retain(|e| e.position.0 != dropped);
+        Ok(events)
     }
     fn seal_segment(
         &self,
@@ -198,6 +210,15 @@ impl ProjectionStore for Failing {
         self.inner.projection().clear()
     }
     fn compact(&self) -> Result<lakelands_api::engine::Reclaimed> {
+        let (fails, done) = &self.compact;
+        if fails.load(Ordering::SeqCst) > 0 {
+            fails.fetch_sub(1, Ordering::SeqCst);
+            let lake = self.lake().to_string();
+            return Err(Error::unavailable(lakelands_api::error::Situation::Busy {
+                lake,
+            }));
+        }
+        done.fetch_add(1, Ordering::SeqCst);
         self.inner.projection().compact()
     }
 }
@@ -209,6 +230,8 @@ struct FailingOpener {
     sealed: Arc<AtomicU32>,
     fail_from: Arc<AtomicU64>,
     read_fail_from: Arc<AtomicU64>,
+    dropped: Arc<AtomicU64>,
+    compact: (Arc<AtomicU32>, Arc<AtomicU32>),
 }
 
 impl EngineOpener for FailingOpener {
@@ -226,6 +249,8 @@ impl EngineOpener for FailingOpener {
             sealed: self.sealed.clone(),
             fail_from: self.fail_from.clone(),
             read_fail_from: self.read_fail_from.clone(),
+            dropped: self.dropped.clone(),
+            compact: self.compact.clone(),
         }))
     }
 }
@@ -247,6 +272,8 @@ struct Lake {
     sealed: Arc<AtomicU32>,
     fail_from: Arc<AtomicU64>,
     read_fail_from: Arc<AtomicU64>,
+    dropped: Arc<AtomicU64>,
+    compact: (Arc<AtomicU32>, Arc<AtomicU32>),
 }
 
 /// A lake with the type `note`, and the switch that makes its folds fail.
@@ -270,6 +297,8 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
     let sealed = Arc::new(AtomicU32::new(0));
     let fail_from = Arc::new(AtomicU64::new(u64::MAX));
     let read_fail_from = Arc::new(AtomicU64::new(u64::MAX));
+    let dropped = Arc::new(AtomicU64::new(u64::MAX));
+    let compact = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
     let seams = Seams {
         engines: vec![Arc::new(FailingOpener {
             inner: MemoryOpener::new(),
@@ -278,6 +307,8 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
             sealed: sealed.clone(),
             fail_from: fail_from.clone(),
             read_fail_from: read_fail_from.clone(),
+            dropped: dropped.clone(),
+            compact: compact.clone(),
         })],
         ..Seams::default()
     };
@@ -304,6 +335,7 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
         initial: None,
         sensitive: false,
         searchable: false,
+        erasable: false,
         description: None,
         label: None,
         embed: None,
@@ -311,7 +343,10 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
     cat.declare(
         &who,
         Declaration::Type(TypeDecl {
+            constraints: Default::default(),
             annotations: Default::default(),
+            insert_only: false,
+            retired_by: Default::default(),
             name: "note".into(),
             key: vec![],
             fields: vec![text],
@@ -339,6 +374,8 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
             sealed,
             fail_from,
             read_fail_from,
+            dropped,
+            compact,
         },
     )
 }
@@ -516,22 +553,56 @@ async fn close_keeps_the_head_at_the_last_folded_position() {
     );
 }
 
+/// A read as of a position takes its clock from the event there
+/// (lakelands#571); a log that holds no event at a folded position is
+/// damaged, and the read is refused, naming it, never answered under the
+/// wall clock.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_as_of_a_position_the_log_lost_is_refused_as_damaged() {
+    let (_store, cat, who, l) = lake_with_switches().await;
+    let at = write(cat.as_ref(), &who, "a").await.unwrap().position();
+    write(cat.as_ref(), &who, "b").await.unwrap();
+    l.dropped.store(at.0, Ordering::SeqCst);
+    let e = notes_at(cat.as_ref(), &who, Some(at)).await.unwrap_err();
+    let lost = matches!(e.situation(), Some(Situation::Damaged {
+        part: Part::Log,
+        position: Some(p),
+        flaw: Flaw::NoEvent { position },
+    }) if *p == at && *position == at);
+    assert!(lost, "{e:?}");
+    notes_at(cat.as_ref(), &who, None).await.unwrap();
+}
+
 /// A page of the log, as the store folds it (lakelands#130).
 const PAGE: u64 = 1024;
 
 /// The first `limit` notes as of `as_of` (the head when `None`), as the
-/// reply serialises, or the refusal it is.
+/// reply serialises with its cursor's clock left out, or the refusal it
+/// is.
 async fn notes_at(cat: &dyn Catalog, who: &Principal, as_of: Option<Position>) -> Result<String> {
     let find = Find {
         limit: Some(50),
         at: ReadAt {
             as_of,
             valid_at: None,
+            clock: None,
         },
         ..Find::default()
     };
-    let reply = cat.find(who, &"note".into(), find).await?;
-    Ok(serde_json::to_string(&reply).unwrap())
+    let mut reply = serde_json::to_value(cat.find(who, &"note".into(), find).await?).unwrap();
+    // The page and its cursor's place, without the clock the cursor carries:
+    // a read at the head and one as of its position read two clocks
+    // (lakelands#571).
+    if let Some(c) = reply["data"]["next_cursor"].as_str() {
+        let bytes: Vec<u8> = (0..c.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&c[i..i + 2], 16).unwrap())
+            .collect();
+        let mut state: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        state.as_object_mut().unwrap().remove("now");
+        reply["data"]["next_cursor"] = state;
+    }
+    Ok(reply.to_string())
 }
 
 /// A rebuild folds the log a page at a time, each page committed. One that
@@ -667,5 +738,77 @@ async fn a_rebuild_whose_log_read_fails_leaves_the_lake_behind_until_a_fold_catc
         notes_at(cat.as_ref(), &who, Some(head)).await.unwrap(),
         at_head,
         "every event the rebuild could not read is folded"
+    );
+}
+
+/// A forgetting stopped between its rebuild and its reclaim
+/// (`docs/decisions/058-a-source-may-be-forgotten.md`) is reclaimed by the
+/// act's repeat, which appends nothing, or by the next writer's open, and
+/// an open after that reclaims nothing again: only
+/// an engine's fault can stop the reclaim, so the suite holds the other
+/// stops and this one stands here.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_forgetting_stopped_before_its_reclaim_is_reclaimed_by_the_next_open() {
+    let (store, cat, who, l) = lake_with_switches().await;
+    write(cat.as_ref(), &who, "n1").await.unwrap();
+    let (fails, done) = &l.compact;
+    fails.store(1, Ordering::SeqCst);
+    let stopped = store.forget_source(&"crm".into(), None).await;
+    assert!(
+        stopped.is_ok_and(|r| r.reclaim_owed.is_some() && r.reclaimed.is_none()),
+        "the act stopped at its reclaim answers, owing it (lakelands#1179)"
+    );
+    let before = done.load(Ordering::SeqCst);
+    // The act's repeat finishes what is owed, and appends nothing again.
+    let head = store.head().await.unwrap();
+    let finished = store.forget_source(&"crm".into(), None).await.unwrap();
+    assert!(
+        finished.reclaimed.is_some(),
+        "the repeat reclaims: {finished:?}"
+    );
+    assert_eq!(
+        store.head().await.unwrap(),
+        head,
+        "the repeat appends nothing"
+    );
+    assert_eq!(
+        done.load(Ordering::SeqCst),
+        before + 1,
+        "the repeat reclaims once"
+    );
+    let again = store.forget_source(&"crm".into(), None).await.unwrap();
+    assert!(
+        again.reclaimed.is_none(),
+        "a repeat of the done act reclaims nothing: {again:?}"
+    );
+    // A stop the open finishes.
+    fails.store(1, Ordering::SeqCst);
+    let owed = store.forget_source(&"erp".into(), None).await.unwrap();
+    assert!(owed.reclaim_owed.is_some(), "{owed:?}");
+    let before = done.load(Ordering::SeqCst);
+    let reopen = || async {
+        lakelands_store::open(
+            Location::memory(l.name.as_str()),
+            l.seams.clone(),
+            OpenMode::Write,
+        )
+        .await
+        .unwrap()
+    };
+    store.close().await.unwrap();
+    drop((store, cat));
+    let store = reopen().await;
+    assert_eq!(
+        done.load(Ordering::SeqCst),
+        before + 1,
+        "the open reclaims what the act owed"
+    );
+    store.close().await.unwrap();
+    drop(store);
+    let _store = reopen().await;
+    assert_eq!(
+        done.load(Ordering::SeqCst),
+        before + 1,
+        "the next open owes nothing"
     );
 }

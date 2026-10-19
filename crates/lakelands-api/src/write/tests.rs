@@ -11,6 +11,8 @@ fn an_outcome_carries_what_it_set_off_flat_and_only_when_there_is_some() {
         output: None,
         set_off: SetOff::default(),
         renamed: Vec::new(),
+        declared: Vec::new(),
+        plan: None,
     };
     let today = r#"{"outcome":"applied","position":21,"version":3}"#;
     assert_eq!(serde_json::to_string(&plain).unwrap(), today);
@@ -26,10 +28,20 @@ fn an_outcome_carries_what_it_set_off_flat_and_only_when_there_is_some() {
             left: vec!["open".into()],
         },
         renamed: vec![("holder".into(), "keeper".into())],
+        declared: vec![InForce {
+            kind: DeclarationKind::ValueType,
+            name: "status".into(),
+            version: 2,
+            since: Position(19),
+            appended: false,
+        }],
+        plan: None,
     };
     let wire = json!({"outcome": "applied", "position": 21, "version": 3, "through": 23,
                       "fired": ["order_settled"], "joined": ["paid"], "left": ["open"],
-                      "renamed": [["holder", "keeper"]]});
+                      "renamed": [["holder", "keeper"]],
+                      "declared": [{"kind": "value_type", "name": "status", "version": 2,
+                                    "since": 19, "appended": false}]});
     assert_eq!(serde_json::to_value(&fired).unwrap(), wire);
     assert_eq!(serde_json::from_value::<Outcome>(wire).unwrap(), fired);
 }

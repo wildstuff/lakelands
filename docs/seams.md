@@ -21,7 +21,7 @@ enforce them.
 
 ## The roster
 
-Seven seams, this roster and no other. Adding one is a change to the
+Nine seams, this roster and no other. Adding one is a change to the
 contract and to this page.
 
 | Seam | Trait(s) | Default in Lakelands | A host plugs in |
@@ -30,9 +30,11 @@ contract and to this page.
 | Principal resolution | `PrincipalResolver` | API key or static entry → one principal | Its identities, roles and policies, compiled to grants |
 | Function backings | `FunctionBacking` | `expr`, evaluated in the store | Its own backing kinds; `http` and `exec` ship in `lakelands-backings` |
 | Embeddings | `EmbedBackend` | None: lexical search and caller vectors | An embedding client; `lakelands-backings` ships one for `/v1/embeddings` endpoints |
+| Reranking | `Reranker` | None: a search that asks for the second stage is refused as `Unbound` | A cross-encoder or any scorer of (query, text) pairs |
 | Verb execution | `VerbExecutor` | None: external verbs are refused as `Unbound` | What its external verbs do |
 | Change feed | `ChangeFeed` | The log, read by kind from a position | A relay of the feed onto its own bus, as its own code |
 | System vocabulary | `SystemVocabulary` | Lakelands' four `sys.` types, allowed in every lake | Its own `sys.` types and which lakes may hold them |
+| Keys | `KeyStore` | None: a source's value of an erasable field is refused as `Unbound` | Its KMS; `lakelands-backings` ships `FileKeyring`, a key file per lake |
 
 `Location` is not a seam. It is the configuration every seam and every
 engine is configured through, passed at the call site; Lakelands reads no
@@ -41,8 +43,8 @@ environment (`docs/decisions/005-no-environment-reads.md`).
 The seams do not all point the same way:
 
 - **A host implements and passes in** the engines (`Seams::engines`),
-  function backings, an embedding backend, verb executors and a system
-  vocabulary. Every slot but `engines` may stay empty and has a default;
+  function backings, an embedding backend, verb executors, a system
+  vocabulary and a key store. Every slot but `engines` may stay empty and has a default;
   `engines` needs at least the opener of the engine a lake's `Location`
   names, and Lakelands' own openers are what a host usually passes.
 - **The doors hold** the `PrincipalResolver`: the CLI and the server
@@ -76,13 +78,15 @@ Two rules shape the engine seam:
   fresh replay to that position.
 
 The traits are synchronous and `dyn`-compatible: storage work blocks, and
-the store runs an engine off its async callers. An engine may build on
-`lakelands-core`, and is expected to where this page names one of its
-functions as the definition of a behaviour. Every promise below is
-checked on every engine on the roster, either by an engine check through
-the seam or through the doors' suite; "Where each promise is checked"
-at the end of this section says which, and names the promises that have
-no check yet.
+the store runs an engine off its async callers. Where this page names a
+function of `lakelands-core` as the definition of a behaviour, the
+engines in this repository build on it. Those functions are
+`#[doc(hidden)]`, and no release promises them. An engine outside the
+repository holds to this seam and the conformance suite. Every promise
+below is checked on every engine on the roster, either by an engine
+check through the seam or through the doors' suite; "Where each promise
+is checked" at the end of this section says which, and names the
+promises that have no check yet.
 
 **Errors.** An engine answers with three kinds of error and no other:
 
@@ -101,6 +105,7 @@ no check yet.
 | Method | Contract |
 |---|---|
 | `name` | The engine's name, as `EngineConfig` selects it. |
+| `rebuild_rate` | The events a rebuild folds a second on this engine, as measured: the store tells a host from it how long an act that rebuilds holds the writer's lock (`forget_preflight`, `docs/decisions/058-a-source-may-be-forgotten.md`). A constant of the engine, never a promise. |
 | `lake` | The lake this handle keeps. |
 | `take_lease(holder)` | Take the writer lease with a fencing token greater than every token this lake ever handed out. **Fails at once** while the lease is held — by another process, another handle, or this one — with `Unavailable` whose message names the holder; never waits. `Unavailable` on a handle opened read-only. |
 | `release_lease(lease)` | Give the lease up; the next taker gets a greater token. The lease is always released; an engine that also records the holder in storage reports a failure to clear that record as `Unavailable`, after releasing. Releasing a lease that is no longer the current one does nothing, so a writer that lost the lease cannot release its successor's. A handle that is dropped releases the lease it took and still holds, so a writer that ends without closing does not keep the lake from every later writer. |
@@ -159,7 +164,9 @@ is short, unreadable or not the position expected is refused as a
 damaged index, never read as another event. **A damaged line is found
 by the read that meets it,** and so by `verify`, which reads the log
 from the first position it is asked for; an open reads the index's end
-alone and does not find it. **An append that fails after it wrote,**
+and the active segment's last group, and finds there a line that names
+another position; a line that is no JSON there, or past what is
+committed with no commit line after it, is a crash's tear. **An append that fails after it wrote,**
 as on a disk that fills, reads what is committed and cuts the index and
 then the segment back to it before it answers its error, and every
 append and every seal begins the same way, whoever left bytes there: no
@@ -167,13 +174,20 @@ event is written behind bytes that are none, and a sealed file holds
 its events' lines and nothing else (lakelands#618). The cut is the
 writer's: the lease's check and what follows it are one step under the
 handle's own lock, and the lease file's lock lets no other handle take
-the lease meanwhile. It never takes a commit line that is whole, which
-another handle may have read, so one outcome is not known: where the
-sync after the commit line fails, the group is in the log for every
-handle, the writer's too, and may not outlast a crash; its append
-answers `unavailable` and says so. A segment that ends before what its
-index commits is damage no cut mends: the append, the seal and the next
-writer's lease are refused, naming the file. **A seal is one rename.**
+the lease meanwhile. An append writes both files, then syncs them at
+once, so a crash can leave the last commit line ahead of its group's
+bytes: every handle checks that group against its hashes as it first
+reads the active segment, reads the log as ending before one that is not
+whole, and the writer cuts it off
+(`docs/decisions/060-an-append-syncs-its-two-files-at-once.md`). Any
+other commit line that is whole is never cut, since another handle may
+have read its group, so one outcome is not known: where a sync after the
+commit line fails, the group is in the log for every handle, the
+writer's too, and may not outlast a crash; its append answers
+`unavailable` and says so. A segment that ends before an earlier group
+its index commits is damage no cut mends: the append, the seal and the
+next writer's lease are refused, naming the file, before either file is
+cut. **A seal is one rename.**
 It writes the next segment's index whole (its event lines and their
 commit line) and syncs it and its name, then the segment's lines as
 `log/<first>.jsonl.partial`, synced, and renames that to
@@ -337,8 +351,8 @@ state again); it never adds a second one.
 | `end_head_only(name, at)` | Every key of a head-only name (`put_record`, above) ends at once, at `at`: whatever the keys held, put before the transaction or earlier in it, is deleted, and a key put after it in the same transaction is kept. A disk engine deletes them in one statement, whatever their number. The fold calls it where a kept view ends, so ending a view writes nothing for each entry of its order. A rollback leaves what the keys held. |
 | `put_proposal(proposal, at)` | A proposal's state from `at`, the position of its latest event; earlier states kept. A view at a position inside a multi-event append sees each state from its own event, not from the commit. |
 | `put_membership(…, at)` | Whether a record is in an object set from a position on; earlier membership kept. |
-| `put_output(…, at)` | A seam's recorded output, by seam and input digest, valid from `at`, the position of the event that recorded it. A later output for the same seam and input replaces the earlier one from its position on (022, extended: a redeclaration retries a failure). One seam name is the store's own, `sys:renames`: under it the fold keeps the lake's list of field renames, as one output, put at the position of each `migrated` event that renames. No seam records under it and no event holds it; an engine keeps it as any other (`docs/decisions/006-grants-not-roles.md`, extended). A read of an output takes the latest state of its seam and input at or before the view's position and reads none of their other states, so an output recorded often is read as one recorded once. |
-| `mark_applied(applied)` | Remember an applied event's id at its position, so a redelivery is recognised (the first position marked for an id is kept), and keep the feed's index of it: its kind and what it is about (`lakelands_core::feed::about`), one entry a type it concerns. `clear` takes the index with the rest; `compact` keeps it. |
+| `put_output(…, at)` | A seam's recorded output, by seam and input digest, valid from `at`, the position of the event that recorded it. A later output for the same seam and input replaces the earlier one from its position on (022, extended: a redeclaration retries a failure). Two seam names are the store's own. Under `sys:renames` the fold keeps the lake's list of field renames, as one output, put at the position of each `migrated` event that renames. Under `sys:sealed` it keeps, for each source (its input the SHA-256 of the source id's canonical bytes), the versions of its key the log sealed with, in the order first used, put at the first `record_ingested` sealed under each (`docs/decisions/058-a-source-may-be-forgotten.md`). No seam records under either and no event holds them; an engine keeps them as any other (`docs/decisions/006-grants-not-roles.md`, extended). A read of an output takes the latest state of its seam and input at or before the view's position and reads none of their other states, so an output recorded often is read as one recorded once. |
+| `mark_applied(applied)` | Remember an applied event's id at its position, so a redelivery is recognised (the first position marked for an id is kept), and keep the feed's index of it: its kind, what it is about (`lakelands_core::feed::about`), one entry a type it concerns, and the source it is of: a `record_ingested`'s is its envelope's, and any other event's the one its seal names, as a recorded output's does, else its envelope's. `clear` takes the index with the rest; `compact` keeps it. |
 | `clear` | Delete everything, kept history and the vector index included, for a rebuild; `folded_through` is none afterwards. |
 | `compact` | Give back the storage the projection no longer uses, outside a transaction (`Invalid` inside one), and answer its size in bytes before and after as the engine measures it, or none. No view answers otherwise afterwards: no state, kept history included, no applied id and no recorded output goes. A compact that fails leaves every answer as it was (`docs/decisions/040-maintenance-never-changes-an-answer.md`). |
 
@@ -358,16 +372,20 @@ indexes describe the head, and `ranked` reads them (below).
 |---|---|
 | `position` | The position the view reflects. |
 | `declarations` | Every declaration in force: for each `declare` and name, the latest put at or before the position, with the position it is in force `since`. No order is promised. |
+| `replaced(from, to)` | Every state of a declaration that a later one replaced after `from` and by `to` (at most the view's position), as it was put, with its `since`. With those in force at `to`, the latest of each name at or before any position from `from` on is what `declarations` answers there: a read that judges many entries at their own positions asks once a range instead of once a position (lakelands#1064). No order is promised. An engine that keeps no such read answers `None` (the default), and the store reads each position's declarations. |
 | `get(type, key)` | One record's latest state at or before the position, retired and restricted included; none if it had none by then. |
 | `get_many(type, keys)` | What `get` answers for each of the keys, in one read: each record once, in key order, a key with no record left out. The store's walks read the far ends of a page of links through it (lakelands#227). |
 | `scan(type, scan)` | The records of `type` whose latest state at the position qualifies, as below. |
 | `count(type, scan)` | How many records `scan(type, scan)` would answer with its order, `after` and `limit` ignored: the flags, `valid_at`, `equal` and `filter` qualify them as below. Its cost is in **The ceiling of a count**, below. |
 | `edges(type, keys, relation, walk)` | The links of some records of one type, one list per key in the keys' order, each what the key alone answers; a link between two of the keys is in both lists. An engine answers them in one read, not one per key: the store's walks ask a page of records at a time (`lakelands_core::graph::PAGE`, 256), and PostgreSQL reads each page in a fixed number of statements (lakelands#227). For each record, its links over one relation or all: `Out` those it declares, `In` those that point at it, `Both` their union with each link once (a link from a record to itself included). Links to a retired or missing record are returned as they are; hiding that end is the store's (`docs/decisions/026-the-store-walks-the-graph.md`). No order is promised; the store's walks order their own answers. A relation with `via` is carried by that reference field: a record links to the target whose key is the field's text value, and `Edge.fields` is empty. A relation with neither `via` nor `derived` is carried by the live records of its link type `sys.link.<type>.<relation>` at the position (`docs/log-format.md` §2.3): `Out` gives the links whose `from` is the record, `In` those whose `to` is, and `Edge.fields` holds each link's own fields, `from` and `to` left out. A removed (retired) link is no edge. The rule is `lakelands_core::links::link_edges`: at the head an engine may find a link type's candidates through its own index (SQLite and PostgreSQL look `from` and `to` up in their exact-text index), and at an earlier position it reads the link type's records there. |
 | `proposals(filter)` | Every proposal whose latest state at the position matches `filter.state`, `filter.kind` (`upsert`, `retire`, `call`, `declare` or `migrate`) and `filter.type` (a `call`'s type is its verb's `on` type in force at the position; a `declare` touches every type it declares or a declaration of it acts on, a `migrate` its type), newest first — by the position of that latest state, descending, then by id — and at most `filter.limit`. `order_by`, `cursor` and the read position in the filter are the store's and the engine ignores them: the store applies the caller's `order_by` to the engine's answer, and refuses as `Invalid` an `order_by` naming a member a proposal does not have. |
+| `proposals_before(filter, before)` | The proposals `proposals` answers, newest first, a page at a time (lakelands#1063): those whose latest state at the position matches `filter.state`, proposed before `before` (every one where none), at most `filter.limit`. A proposal's position is its own event's, so no two share one, and the last of a page continues the next. `filter.kind`, `filter.type`, `order_by` and `cursor` are not asked here: the store judges the kind and the type on the entry as its reader is shown it. SQLite and PostgreSQL read it on an index of the state's `position`, which the schema makes at a writer's open, so no projection is rebuilt for it. An engine that keeps no such read answers `None` (the default), and the store reads `proposals` whole. |
 | `is_member(set, type, key)` | Whether the record is in the object set at the position; false if never put. |
 | `members(set, type)` | The keys of the type's records that are in the object set at the position; empty for a set never put. One read: the store asks it once for a set before it walks a type (a set declared again, a migration, a re-key), where `is_member` for each record would be a statement each on PostgreSQL (lakelands#477). |
 | `applied(id)` | The position `id` was applied at, if that is at or before the view's position. |
+| `applied_many(ids)` | `applied` for many ids: one answer an id, in their order, an id asked twice answered twice. Provided, its default asks `applied` once an id; an engine answers them in one read, PostgreSQL in one statement, since an ingest window asks every id it judges in one call (lakelands#1036). |
 | `matching(filter, from, through, limit)` | The positions in `[from, through]`, none past the view's position, whose applied events `filter` admits by the index `mark_applied` kept (`lakelands_core::feed::admits`), in order, each once, at most `limit`, and the last position decided: the last answered when `limit` is reached, else `through` or the view's position, or earlier where the engine bounds its work, and never past what the projection had folded where the index is read, in the same snapshot: a view taken before a rebuild's `clear` decides only what the refold has reached, and nothing (`through` none) where it has not reached `from`. An engine seeks a filter by its keys, else its types, else its kinds (`lakelands_core::feed::seek`), one ordered range a value, and checks the rest on each entry; one that checks a kind on every entry of a type decides at most `lakelands_core::feed::WINDOW` (65 536) positions at a time. |
+| `of_source(source, from, through, limit)` | The positions in `[from, through]` whose applied events are of `source`, by the same index, decided as `matching` decides them: in order, each once, at most `limit`, never past the view's position nor past what the projection had folded where the index is read. Forgetting a source reads its events by it, and walks the log from where it decides nothing (`docs/decisions/058-a-source-may-be-forgotten.md`). |
 | `output(seam, input)` | The recorded output valid at the position, if any, with the position it was recorded at: the latest recorded for that seam and input at or before it. The fold checks a fill that names an output by `output_at` against that position (`docs/decisions/053-a-recorded-output-is-recorded-once.md`). |
 
 **`scan`.** A record qualifies when all of these hold:
@@ -383,7 +401,11 @@ indexes describe the head, and `ranked` reads them (below).
   way (`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`).
   At the head an engine may look a string value up in its exact-text
   index (`lakelands_core::engines::text_lookup`): the index names
-  candidates, and this rule still decides each;
+  candidates, and this rule still decides each. The index keeps rows
+  only for the fields `lakelands_core::engines::looked_up` names, decided
+  from the declarations and the `lookup_index.<type>` setting at the
+  head, never from which rows exist; a string of any other field is
+  read by narrowing the type's states in storage, not by a lookup;
 - `scan.filter` holds for it, exactly as the one evaluator
   (`lakelands_core::expr::holds`) decides over the record's own fields,
   with no settings, no clock and no provenance. A filter the evaluator cannot evaluate
@@ -391,15 +413,16 @@ indexes describe the head, and `ranked` reads them (below).
   translates a filter into its own query language must select exactly
   the same records; where it cannot, it evaluates that part with the
   evaluator. The store hands an engine only filters that need neither
-  the clock, the lake's settings, per-field provenance nor a pattern
-  match (`now`, `today`, `setting`, `known_at`, `seen_at`, `matches`);
-  it evaluates any other filter itself. When the filter is, or has as
+  the clock, the lake's settings, per-field provenance, a pattern
+  match nor a set's kept membership (`now`, `today`, `setting`,
+  `known_at`, `seen_at`, `matches`, `in_set`); it evaluates any other
+  filter itself. When the filter is, or has as
   one of its `and` terms, `field = 'text'` with a text that reads neither
   as a number nor as an instant
-  (`lakelands_core::engines::exact_text_term`), only records holding
+  (`lakelands_core::engines::exact_text_terms`), only records holding
   exactly that string can qualify, and at the head an engine may look
-  them up in its exact-text index as it does for `equal`; it still
-  evaluates the whole filter on each.
+  them up in its exact-text index as it does for `equal`, by a field
+  the index keeps; it still evaluates the whole filter on each.
 
 The qualifying records come ordered by `scan.order_by` — each key the
 field's value, or its `known_at` or `seen_at`, or, with no field,
@@ -692,8 +715,9 @@ The full-text and vector indexes describe the head only, so they are not
 read through a view. `LakeEngine::ranked(type, asked, k)` reads them:
 
 - `asked` is every ranking of one pull of a search: a text, with the
-  searchable fields it is matched in if it names any, and each vector
-  field with its query vector. The answer holds one list for each, the
+  searchable fields it is matched in if it names any and the weight of
+  a match in each field the store weighs, and each vector field with
+  its query vector. The answer holds one list for each, the
   text's first, each cut at `k`.
 - **One state.** The engine reads the lists and the position the
   projection is folded through in one transaction (one lock on the
@@ -729,8 +753,12 @@ for it), applied the same way to the query and to the
 fields (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
 The set of hits, their order and their scores are the same on every
 engine: one function ranks (`lakelands_core::engines::lexical`). A hit
-scores the number of distinct query tokens it holds; hits come best
-first, equal scores ordered by key ascending; at most `k`. A later
+scores each distinct query token it holds at the weight of the heaviest
+field holding it, summed in the tokens' order: `asked`'s `text_weights`
+give a field's weight under its name at the head, and a field they do
+not name weighs 1, so with none the score is the number of distinct
+query tokens the hit holds. Hits come best first, equal scores ordered
+by key ascending; at most `k`, cut by that score. A later
 release may score otherwise, on every engine at once, so a caller
 compares scores within one answer.
 With fields named, a record's text is only that of the named fields that are
@@ -878,9 +906,12 @@ holds it to.
 | a fold that commits between two statements of one `ranked` call is in none of its lists; on PostgreSQL the call holds every table it reads from its first statement, and a `clear` queued ahead of it is in its position | SQLite: `src/tests.rs`, `a_fold_committed_inside_one_ranked_call_is_in_none_of_its_lists` (the reader's statement trace commits the fold); PostgreSQL: `tests/ranked.rs`, `a_fold_committed_inside_one_call_is_in_none_of_its_lists`, `a_call_holds_every_table_it_reads_from_its_first_statement`, `a_clear_queued_ahead_of_a_call_is_in_its_position` |
 | A search's candidates are judged at the position they were read at: a re-key, a hold placed or lifted, a write between two pulls, a field or a link type renamed in between, a searchable field the reader may not read declared in between; a hold placed in between keeps its record out of a pattern started by a search and out of a fused search, and a record given to another is no hit of a holder of `only` | store: `tests/search_position.rs` (the memory engine, a write planted before `ranked` answers), the ten rows of the file |
 | `ranked`'s vector lists: the exact top `k` by cosine, ties, a zero vector, a wrong length; `put` replaces; `clear` empties the index | engine: `nearest_ranks_by_cosine_with_ties_by_key`, `a_zero_vector_scores_zero_and_a_wrong_length_is_invalid`, `put_replaces_a_vector_and_remove_forgets_it`, `clear_empties_the_projection_and_the_vector_index` |
-| `declarations`, `is_member`, `members`, `output` and `applied` at an earlier position; `mark_applied` keeps the first position | engine: `declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position`, `the_first_applied_position_is_kept` |
+| `declarations`, `is_member`, `members`, `output`, `applied` and `applied_many` at an earlier position; `mark_applied` keeps the first position | engine: `declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position`, `the_first_applied_position_is_kept` |
+| `replaced` with the head's declarations answers `declarations` at every earlier position, and two ranges that meet answer the one over both | engine: `what_was_replaced_since_a_position_and_what_is_in_force_hold_what_was_then` |
+| `of_source` answers a source's positions as `matching` answers a filter's | engine: `the_index_answers_a_sources_positions_in_order_to_its_through`; store: `forget_index`'s `a_preflight_reads_the_sources_events_as_a_walk_does`; suite: every row of 058 |
 | `matching` answers a filter's positions in order, each once, to its `through`, and nothing past the view or past what the projection has folded | engine: `the_index_answers_a_filters_positions_in_order_to_its_through`; store: `read_through`'s `past_the_views_position_a_poll_reads_the_log`; suite: `a_filtered_poll_answers_the_log_unmasked` and every row that follows the log through `the_index_answers_the_log` |
 | `proposals`' filters, a `call`'s type, and its order | engine: `proposals_filter_by_state_and_type_newest_first` |
+| `proposals_before`, at the head and earlier, for every state and pages of one, two and four, answers what `proposals` answers whole | engine: `proposals_come_newest_first_a_page_at_a_time`; store: `tests/find_pages.rs`, `a_listing_of_proposals_judges_its_page_and_no_more` (one page of the engine's for a page of the listing's) |
 
 ## `PrincipalResolver`
 
@@ -897,6 +928,11 @@ resolver belongs to the doors (the CLI, the server), not to the store.
 
 `kind()` names the backing kind, an open token; `call(function call) ->
 value` computes one output from `{ lake, function, inputs, config }`.
+The call also carries `cause`, the write that made it due (its position,
+writer, record, source and context, and an accept where the call was
+proposed), which is no part of the call's digest; a function declared
+above `low` risk is called only once its proposed call is accepted
+(`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`).
 
 The default is `expr`, evaluated inside the store in the one expression
 grammar. Because it is deterministic, its results are recomputed on
@@ -1057,11 +1093,14 @@ may make has its field's model compared and its text embedded, so a search
 refused for its caller calls nothing and names no model. The model is the
 head's declaration even for a search as of an earlier position, since the
 engines index the head's vectors. A vector search, and a hybrid search
-that brings its own vector, never call the backend. A hybrid search
-without a vector embeds only over a field declared with `embed`: over a
-vector field its writers fill, whose space the lake does not know, it is
-refused as invalid on the field, with a backend bound or not, and over
-a field that holds no vectors as any vector ranking is
+that brings its own vector, never call the backend; a vector the caller
+says another model made than the field's is refused as `query_model`
+(`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
+A hybrid search without a vector embeds only over a field declared
+with `embed`: over a vector field its writers fill, whose space the
+lake does not know, it is refused as invalid on the field, with a
+backend bound or not, and over a field that holds no vectors as any
+vector ranking is
 (lakelands#743). Either refusal is made before any call.
 
 **A search that fuses rankings** weighs each as it asks
@@ -1207,6 +1246,26 @@ bound.
   client's requests of a batch that had already succeeded.
 - Embedding no text makes no request.
 
+## `Reranker`
+
+`model()`, `rerank(call) -> scores`. A call holds the lake, the searched
+type, the query text and the candidates in the first stage's order, each
+a key and a text: its searchable fields the reader reads, in declared
+order, joined by a blank line. A reranker answers one score per
+candidate, in order, and higher ranks first. A failure, a count of scores
+other than the candidates' and a score that is no number are all
+`Unavailable` to the caller of the search, whatever error the reranker
+answered, and the store never falls back to the first stage's order
+(`docs/decisions/067-a-search-may-take-a-second-stage.md`).
+
+A lake reads the reranker `Seams::rerank` brings at open, or the one a
+host binds later on the open lake with `LakeStore::bind_rerank`, which
+replaces it. `bind_rerank` is the host's alone: a remote handle answers
+it `Unbound` as a host operation, no tool names it, and the WIT does not
+carry it. A call is a read, as the query embedding of a hybrid search
+is: nothing is recorded, and a replay of the log never makes one. A
+window with no candidate asks nothing.
+
 ## `VerbExecutor`
 
 `name()`, `execute(invocation) -> value`. A verb whose declared effect
@@ -1231,7 +1290,10 @@ by the store's own test, on the memory engine.
 
 An executor that fails does not undo the verb: the event that made it
 due is in the log, and its position is real. The failure is the recorded
-output — `{"error": "<the executor's error text>"}`. The caller's outcome
+output — the error as the wire carries it (`{"error": "refused",
+"reason": {…}, "message": "…"}` for a refusal; lakelands#812; before, `{"error": "<its text>"}`). A
+call the host declines by policy is answered `Error::declined(verb)`
+(`docs/hosting.md`). The caller's outcome
 is `applied` at the position that made the verb due, and carries the
 recorded output in its `output` member, the error form included, so an
 agent that called an external verb has the answer in the reply. Its
@@ -1300,10 +1362,18 @@ extended).
 
 ## `ChangeFeed`
 
-`poll(from, filter, limit) -> batch` and `ack(consumer, through)`. The
-feed is the log filtered by kind and type, read from a position
+`poll(from, filter, limit) -> batch`, `ack(consumer, through)` and
+`wait(after, within) -> head`. The feed is the log filtered by kind and
+type, read from a position
 (`docs/decisions/004-the-change-feed-is-the-log.md`). `poll` answers at
-once, possibly empty, never waiting for new events. A filter that names
+once, possibly empty, never waiting for new events. `wait` is how a
+consumer waits for them: it answers the head once the log is past
+`after` or once `within` has passed, never past the head a `poll`
+reads, so a consumer caught up at `next` waits on `next - 1` and polls
+again (lakelands#1061). The store's feed wakes at the append its handle
+publishes. A read-only handle's head moves only when it opens again, so
+its wait ends at `within`, as its poll answers nothing new. The trait's
+own `wait` answers at once, so a feed written elsewhere keeps working. A filter that names
 something is answered from the projection's index of the log up to the
 view's position (`ProjectionView::matching`): only the events it names
 are read from the log, each opened, verified and checked again by the
@@ -1383,6 +1453,16 @@ matches nothing, one record's history and its checkpoints):
   little may examine up to the head on the server. The stream's
   `: next` keeps its meaning: caught up.
 - `head`: the lake's last position when the poll began.
+- `overruled`: the positions of the batch's `trigger_fired`,
+  `trigger_dropped` and `object_set_changed` events that an act overruled:
+  decided over a value it erased since, which the history without the
+  value does not make
+  (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). The
+  events stay in `events` as the log holds them. Empty, and left out of
+  the wire form, on a lake that never erased anything. The MCP pump
+  tells none of them, the deliverer posts none, and the REST feed marks
+  each with the comment `: overruled` (`docs/rest.md`)
+  (suite: `REMOVED_FIRED`, `FORGOTTEN_FIRED`).
 
 The consumer keeps the position it has read up to. The store's own feed
 keeps no consumer state, and its `ack` is accepted and does nothing; `ack` exists for feeds
@@ -1423,7 +1503,9 @@ writer.
 
 - **What it sends.** Only `trigger_fired` and `object_set_changed`
   events, by default both. `kinds`, `triggers` and `sets` narrow them;
-  any other kind is refused when the configuration loads. Both carry
+  any other kind is refused when the configuration loads. One the batch
+  names `overruled` is not sent: it is journaled, and the deliverer
+  moves on. Both carry
   keys only, so no field value leaves the lake this way: a receiver
   reads the record through a door, under its own grants.
 - **The request.** One `POST` per event, in log order. The body is the
@@ -1470,8 +1552,9 @@ writer.
     process refuses to start rather than send everything twice.
   - `<endpoint>.ndjson` is the journal, one line per outcome:
     `position`, `id`, `attempt`, `at` (the host's clock), and `outcome`,
-    which is `delivered`, `retrying` (with `why` and `retry_in_secs`) or
-    `refused` (with `status`). It is only ever appended to, and opened
+    which is `delivered`, `retrying` (with `why` and `retry_in_secs`),
+    `refused` (with `status`) or `overruled` (at `attempt` 0: nothing was
+    sent). It is only ever appended to, and opened
     for appending, so the operator rotates it by renaming.
 - **What it says.** A message names the endpoint by its `name` and by
   host, port and path, never the URL as written, the secret or a body.
@@ -1770,6 +1853,20 @@ puts each kept record, and rebuilds them when the setting is written
 (lakelands#668). A view that is computed has no records to index. It
 changes no answer, only the price of an ordered page.
 
+Another is **`lookup_index.<type>`**: a JSON array of text fields of
+`<type>` whose exact texts a `where` or a derived relation's match finds
+by the engine's exact-text index, besides those the declarations look up
+by: the type's key and references, the fields a derived relation matches
+at either end, and those a set's condition or a view's `where` over it
+compares to a text at the top level (`lakelands_core::engines::looked_up`;
+`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`).
+A text of any other field is found by a scan of the type, narrowed in
+storage. A write of it is refused as `sort_index.<type>`'s is, naming a
+field that is no text (`lookup_index_kind`) or computed at the read. The
+fold that puts it, or a declaration that changes the fields looked up,
+fills or drops that type's rows in the same transaction. It changes no
+answer, only the price of a `where` on that field.
+
 Another is **`view_kept.<type>`**: it holds `true` and asks for the
 records of the view `<type>` to be kept as its sources are written, so
 that a read of the view reads its records where it would compute them.
@@ -1788,21 +1885,34 @@ an `if` with `null` for one branch stands for its other branch
 nothing. A view declared again so that it can no longer be kept is not
 refused under a standing setting: the setting stays, and `describe_type`
 says why the view computes. It changes no answer, only where a read of
-the view gets it.
+the view gets it. While an object set holds the view, or a view that
+reads it, the setting written `false` or retired and a declaration
+under which the view cannot be kept are refused `view_kept_for_set`,
+naming the set (`docs/decisions/066-a-set-holds-a-kept-view.md`).
 
 Another is **`search_weights.<type>`**: it holds an object of `fields`,
-vector fields of `<type>` with their weights, and `text_weight`, each
-optional and one at least, and weighs each ranking a fused search of
-`<type>` gives no weight, as the read finds it at its position. A write
-of it is refused as invalid when `<type>` is no declared stored type
-(`key`), when it names a field the type does not declare or declares
-with a kind other than vector, or a weight a search could not give
-(above 0, at most 1 000 000; the member named), and when its value is no
-such object or names nothing (`value`). A field a migration removed
-stays named and weighs nothing; declared again, it takes its weight
-again. The judge of all four settings is the contract's
+vector fields of `<type>` with their weights, `text_fields`, searchable
+fields of `<type>` with theirs, and `text_weight`, each optional and one
+at least. `fields` and `text_weight` weigh each ranking a fused search
+of `<type>` gives no weight; `text_fields` weighs a match of the text by
+the field it is in, in every ranking of text: a lexical search's, a
+hybrid search's lexical half before the fusion, and its fallback to the
+text (§`ranked`, lakelands#1230). Each is read as the read finds it at
+its position. A write of it is refused as invalid when `<type>` is no
+declared stored type (`key`), when it names a field the type does not
+declare, in `fields` one it declares with a kind other than vector, in
+`text_fields` one it does not declare searchable, or a weight a search
+could not give (above 0, at most 1 000 000; the member named), and when
+its value is no such object or names nothing (`value`). A weight it
+holds that a search could not give, as a log the store did not write
+may hold, weighs nothing. A field a migration removed stays named and
+weighs nothing; declared again, it takes its weight again. A rename is
+not followed: the field is weighed by its old name at a position before
+it, and at the head by its new one, which the setting does not name
+until a host writes it again. The judge of
+all four settings is the contract's
 (`lakelands_api::seam::check_setting`). It changes no answer's members,
-only the order a fused search ranks them in.
+only the order a search ranks them in.
 
 **A setting the store reads is judged by what its writer is shown,**
 after the writer's grant on `sys.setting`
@@ -1860,7 +1970,7 @@ created before it the next time a writer opens that lake. Its key is
 |---|---|---|
 | `name` | text, required | the rule's name, an identifier |
 | `on` | text, required | the type it ages |
-| `field` | text, required | the field it moves; `authored` or `shared`, never derived |
+| `field` | text, required | the field it moves; `authored`, `shared` or `verb`, never derived |
 | `from` | json, required | the value that ages |
 | `to` | json, required | the value it becomes |
 | `when` | text, required | a condition in the one grammar, over the record's fields |
@@ -1871,7 +1981,7 @@ grants, and checked when it is written: `on` names a type that is
 neither a `sys.` type nor a view, `field` one of its fields of the
 authority above and not part of its key, `from` and `to` are values of
 that field's type and differ, and `when` parses and uses none of `changed`,
-`previous` and `retired`. A rule that fails a check is refused as invalid, naming the
+`previous`, `retired` and `created`. A rule that fails a check is refused as invalid, naming the
 rule field at fault. A rule's authority is checked when it is written,
 and the run carries it: its author must hold write on `field` of `on`
 and read on every field `when` reads
@@ -1959,9 +2069,69 @@ the `aging` section of the root's `lakelands.json`:
 
 Without an `aging` section `serve` ages nothing: a host, or
 `lakelands age --today <YYYY-MM-DD>`, calls `age`; the command prints one
-line per rule (`<rule>: moved N, M guard(s) failed`, or `<rule>:
+line per rule (`<rule>: moved N, M guard(s) failed`, then `, K refused` where a
+constraint or the set ceiling refused K moves, or `<rule>:
 skipped, <why>`) and `aged <date> through position P`. No MCP tool calls `age`:
 like `rebuild` and `checkpoint`, it is the host's.
+
+## `KeyStore`
+
+A source's values of a field declared `erasable` are kept in the log
+sealed under that source's data key, so destroying the key forgets them
+without touching a byte of the log
+(`docs/decisions/058-a-source-may-be-forgotten.md`). The keys are the
+host's, never in the lake: not in its log, its projection or its export.
+
+| Method | Contract |
+|---|---|
+| `create(lake, source)` | Make a new version of the source's key and answer its id. A source whose keys were destroyed is never given one again (`key_destroyed`). |
+| `key(lake, source, id)` | The key of that version: 32 bytes, or none once destroyed. |
+| `destroy(lake, source)` | Destroy every version of the source's key. |
+| `destroy_version(lake, source, id)` | Destroy that version and every older one, never one alone; a version it does not hold is refused (`key_version_not_held`). The default refuses as `Unbound` (`key_versions`), for a store that destroys only whole sources. |
+| `ids(lake, source)` | The versions the store holds, oldest first; none once destroyed. |
+
+The calls are synchronous: the writer makes them on the store's blocking
+threads, at a source's first sealed value of an open lake, and at a read
+that computes a call through a kept step. The lake keeps each key in
+memory while it is open, wiped when dropped, and seals a source's new
+values with the newest version. Under a key period (`key_period`, by
+the lake or by the source: `day`, `week` or `month`, in UTC) a source's
+first value past the start of a later period than its newest version's
+first use asks the store for a new version, so each period's values are
+sealed apart and a cut at a period's end can destroy the versions
+before it. A version is destroyed only with every older one: an output
+is sealed under the oldest version its call reads, so it goes with the
+first of them to go, and never outlives a value it was computed from. A
+key the store does not give where the log holds a value it sealed fails
+the fold closed, `unavailable` (`key_missing`), naming the source and
+the version: a lost key is never read as an erasure. Nor is a new key
+made for a source whose sealed values the log holds while the store
+lacks the version it last sealed with: its next write is refused
+`key_missing`, so a wrong path, a fresh machine or an old backup fails
+at once, unless an act of removal in the log destroyed that version
+(`docs/decisions/065-part-of-a-source-may-be-taken-back.md`), when the
+source is given a new one. `KeyStore::destroys_versions` says whether
+`destroy_version` destroys; where it does not, as by default, such an act
+destroys no version and redacts what it takes. `destroy` accepts a
+source whose versions are all destroyed, or that has none, and marks it
+so. A version's id is the store's and is never given twice:
+`FileKeyring` makes it at random. Without a key store, a value that
+would be sealed is refused as `Unbound`, and a lake whose log holds one
+is folded only by a writer that holds the key.
+
+`lakelands_backings::FileKeyring::new(dir)` keeps one file per lake,
+`<lake>.keys.json`, in a directory the operator keeps outside every lake
+directory, readable by its owner alone and written whole. Its backups are
+the operator's to keep honest: a key restored from a backup restores what
+it sealed. The CLI and `serve` bind it where the root's `lakelands.json`
+names its directory, `"keys": {"keyring": "<dir>"}`, relative to the
+root, and refuse one inside a lake's directory.
+
+An import (`lakelands_store::import`) opens a sealed value with the key
+store bound. With none bound, it reads the export first: a source whose
+values are sealed and whose `source_forgotten` the export holds arrives
+erased, and any other refuses the import as `Unbound` before anything
+is written.
 
 ## The facade and the doors
 
@@ -2106,6 +2276,36 @@ log₂ N reads; it relies on `known_at` never decreasing along the log,
 which the verifiers check (`docs/log-format.md` §1.3). It is no door's
 yet, only the host's: `lakelands-client` answers it `unbound`, naming it
 (client test: `every_host_operation_is_unbound_naming_it`).
+
+`LakeStore::forget_source(source, report_id)` forgets a source whose
+values of erasable fields the log holds sealed
+(`docs/decisions/058-a-source-may-be-forgotten.md`): under the writer's
+lock it appends `source_forgotten` with the retirements of the records
+the source alone brought, has the key store destroy the source's keys,
+rebuilds the projection and reclaims the storage. `forget_preflight`
+answers the same report, appending nothing, with the time the act is
+expected to hold the lock (`events` at the engine's `rebuild_rate`).
+The act is refused while the log holds a value of the source in an
+erasable field in plaintext, and a forgotten source's ingest is
+refused. It is no door's; `lakelands-client` answers it `unbound`. The
+CLI's `lakelands forget --source <id> [--preflight | --report <id>]` runs
+it. A mirror that meets `source_forgotten` in its source's feed stops each
+mapped type whose source type has an erasable field, past the act. A
+reclaim that fails is not a failure of the act: the report answers it in
+`reclaim_owed`, the cause alone, as `LakeStore::reclaim_owed` does, and
+the writer's next open, a repeat or a `compact` that runs clears it
+(lakelands#1179).
+
+`LakeStore::remove_values(source, selection, require_shredded,
+report_id)` takes back what a source wrote before a time or in one
+delivery (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`),
+in the same steps and with the same answer of an owed reclaim;
+`remove_values_preflight` answers its report, appending nothing. It is
+no door's either. The CLI's `lakelands values remove --source <id>
+(--before <instant> | --delivery <id>) [--require-shredded]
+[--preflight | --report <id>]` runs it. A mirror that meets
+`values_removed` stops each mapped type with a field its reader reads
+that a removal may take, past the act.
 
 `LakeStore::purge_source(source, None, None)` retires every live record
 one source brought in, across every type it reached, restricted records and the

@@ -6,7 +6,8 @@
 //! `min` is 0; otherwise it is reported only if the walk comes back to
 //! it through a cycle, at the depth it comes back. `neighbors` is the
 //! one-hop step; `traverse` chains steps, each walked from every record
-//! the previous one kept, and `spanned` answers the graph a chain walks.
+//! the previous one kept, `spanned` answers the graph a chain walks, and
+//! `reach` what each step of a chain reaches, each record once.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::slice;
@@ -15,7 +16,7 @@ use lakelands_api::query::{Depth, Edge, Step, Walk};
 use lakelands_api::{RelationName, Result};
 
 use super::subgraph::page;
-use super::{EdgeId, EdgeSource, Links, Node, Subgraph, check_depth, edge_id};
+use super::{EdgeId, EdgeSource, Links, Node, PAGE, Subgraph, check_depth, edge_id, too_large};
 
 /// Each record a walk reached, but its start, with the record it was
 /// reached from and the link it came by.
@@ -50,15 +51,15 @@ pub fn neighbors<S: EdgeSource + ?Sized>(
     walk: Walk,
 ) -> Result<Vec<Reached>> {
     let one = Depth { min: 1, max: 1 };
-    walk_step(
+    let walked = walk_step(
         &mut Links::new(source),
-        from,
-        relation,
-        walk,
-        one,
+        slice::from_ref(from),
+        (relation, walk, one),
         None,
         None,
-    )
+        None,
+    );
+    Ok(walked?.remove(0))
 }
 
 /// The records one step reaches from `from`, walking `step.relation` in
@@ -75,15 +76,16 @@ pub fn step<S: EdgeSource + ?Sized>(
     max_depth: u32,
 ) -> Result<Vec<Reached>> {
     check_depth(step.depth, max_depth)?;
-    walk_step(
+    let walk = (&step.relation, step.walk, step.depth);
+    Ok(walk_step(
         &mut Links::new(source),
-        from,
-        &step.relation,
-        step.walk,
-        step.depth,
+        slice::from_ref(from),
+        walk,
         None,
         None,
-    )
+        None,
+    )?
+    .remove(0))
 }
 
 /// Walk a chain of steps from `from`: each step is walked from every
@@ -112,26 +114,67 @@ where
     K: FnMut(usize, &Node) -> Result<bool>,
 {
     let mut chain = Chain::new(source, steps, max_depth, max_bindings, keep, None)?;
-    chain.extend(0, from, &mut Vec::new())?;
+    chain.prime(slice::from_ref(from))?;
+    chain.extend(0, from, &mut Vec::new());
     Ok(chain.out)
 }
 
-/// The graph a chain of steps walks from each of `starts`, walked as
-/// [`traverse`] walks it: the starts, whether or not a match begins
-/// there, every record a match binds, the
-/// records each was walked through from the record before it (below its
-/// step's `min`, or dropped by `keep`), and the links walked between
-/// them. Each record is at the fewest hops any match reaches it in.
-///
-/// One page of it, as [`subgraph`](super::subgraph()) pages: the
-/// records at `offset..offset + limit` of the order `(depth, type, key)`
-/// and the links between a record of the page and one of this or an
-/// earlier page. The whole chain is walked for every page.
-pub fn spanned<S, K>(
+/// Walk a chain of steps from each of `starts`, as [`traverse`] walks it
+/// from one, and hand each binding to `each(start, binding)`: the starts
+/// in their order, each one's bindings in [`traverse`]'s. A [`PAGE`] of
+/// starts is walked together, each hop of each step asked for every
+/// record of the page that takes it at once, so a page of starts costs a
+/// few questions of the source, not a few a start. `each` answers
+/// whether to go on; the walk stops where it says not to, with the rest
+/// of that page walked and not handed out.
+pub fn traverse_each<S, K, E>(
     source: &S,
     starts: &[Node],
     steps: &[Step],
     max_depth: u32,
+    keep: K,
+    mut each: E,
+) -> Result<()>
+where
+    S: EdgeSource + ?Sized,
+    K: FnMut(usize, &Node) -> Result<bool>,
+    E: FnMut(&Node, &[Reached]) -> Result<bool>,
+{
+    let mut chain = Chain::new(source, steps, max_depth, usize::MAX, keep, None)?;
+    for page in starts.chunks(PAGE) {
+        chain.prime(page)?;
+        for start in page {
+            chain.extend(0, start, &mut Vec::new());
+            for binding in std::mem::take(&mut chain.out.bindings) {
+                if !each(start, &binding)? {
+                    return Ok(());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The graph a chain of steps walks from each of `starts`: the starts,
+/// whether or not a match begins there, every record a match binds, the
+/// records each was walked through from the record before it (below its
+/// step's `min`, or dropped by `keep`), and the links walked between
+/// them. Each record is at the fewest hops any match reaches it in. It is
+/// walked as [`traverse_each`] walks a chain, a [`PAGE`] of starts
+/// together.
+///
+/// One page of it, as [`subgraph`](super::subgraph()) pages: the
+/// records at `offset..offset + limit` of the order `(depth, type, key)`
+/// and the links between a record of the page and one of this or an
+/// earlier page. The whole chain is walked for every page: a record's
+/// depth is the fewest hops of any match, from any start. Refused
+/// `too_large` once what it holds (the starts, and every record each
+/// walk reaches, counted as it grows) numbers more than `max_nodes`.
+pub fn spanned<S, K>(
+    source: &S,
+    starts: &[Node],
+    steps: &[Step],
+    (max_depth, max_nodes): (u32, u32),
     offset: usize,
     limit: usize,
     keep: K,
@@ -140,16 +183,23 @@ where
     S: EdgeSource + ?Sized,
     K: FnMut(usize, &Node) -> Result<bool>,
 {
-    let span = Span::default();
-    let mut chain = Chain::new(source, steps, max_depth, usize::MAX, keep, Some(span))?;
-    for start in starts {
-        chain.from = start.clone();
-        chain.extend(0, start, &mut Vec::new())?;
-    }
-    let mut span = chain.span.take().expect("a span was asked for");
+    let mut span = Span::default();
     for start in starts {
         span.reach(start, 0);
     }
+    if starts.len() > max_nodes as usize {
+        return Err(too_large(max_nodes));
+    }
+    let mut chain = Chain::new(source, steps, max_depth, usize::MAX, keep, Some(span))?;
+    chain.held = Some((starts.len(), max_nodes));
+    for page in starts.chunks(PAGE) {
+        chain.prime(page)?;
+        for start in page {
+            chain.from = start.clone();
+            chain.extend(0, start, &mut Vec::new());
+        }
+    }
+    let span = chain.span.take().expect("a span was asked for");
     let mut nodes: Vec<Reached> = span
         .depth_of
         .into_iter()
@@ -157,6 +207,78 @@ where
         .collect();
     nodes.sort_by(|a, b| (a.depth, &a.node).cmp(&(b.depth, &b.node)));
     Ok(page(nodes, span.edges, offset, limit))
+}
+
+/// What each step of a chain reaches from `starts`, a step at a time
+/// (lakelands#991): step `i` walks from every record step `i - 1` kept,
+/// the starts for the first, a dead end included; `keep` is applied as
+/// [`traverse`] applies it. Each record is handed to `each(step, ..)`
+/// once, at the first step that kept it (counted from 1), with that
+/// step's fewest hops from any record it walked from; a step's records
+/// come together in `(depth, type, key)` order. A start is handed out
+/// only where a step keeps it. `each` answers whether to go on, and the
+/// steps after the one it stops at are not walked. Refused `too_large`
+/// once what it holds (the records listed, a step's records so far, and
+/// each walk from a page of sources apart, counted as it grows) number
+/// more than `max_nodes`, so a walk stopped earlier is not; refused as
+/// invalid,
+/// before any walking, when a step's depth range is empty or goes past
+/// `max_depth`.
+pub fn reach<S, K, E>(
+    source: &S,
+    starts: &[Node],
+    steps: &[Step],
+    (max_depth, max_nodes): (u32, u32),
+    mut keep: K,
+    mut each: E,
+) -> Result<()>
+where
+    S: EdgeSource + ?Sized,
+    K: FnMut(usize, &Node) -> Result<bool>,
+    E: FnMut(usize, Vec<Reached>) -> Result<bool>,
+{
+    for s in steps {
+        check_depth(s.depth, max_depth)?;
+    }
+    let mut links = Links::new(source);
+    let (mut at, mut listed) = (starts.to_vec(), BTreeSet::new());
+    for (i, s) in steps.iter().enumerate() {
+        if at.is_empty() {
+            break;
+        }
+        // Each record at the fewest hops any record walked from reaches it
+        // in its step's range, as a chain finds it; a page of them at once.
+        let mut best: BTreeMap<Node, u32> = BTreeMap::new();
+        for page in at.chunks(PAGE) {
+            let walk = (&s.relation, s.walk, s.depth);
+            let bound = Some((best.len() + listed.len(), max_nodes));
+            for r in walk_step(&mut links, page, walk, Some(i), None, bound)?
+                .into_iter()
+                .flatten()
+            {
+                let d = best.entry(r.node).or_insert(r.depth);
+                *d = (*d).min(r.depth);
+            }
+        }
+        let mut walked: Vec<Reached> = (best.into_iter())
+            .map(|(node, depth)| Reached { node, depth })
+            .collect();
+        walked.sort_by(|a, b| (a.depth, &a.node).cmp(&(b.depth, &b.node)));
+        let mut kept = Vec::new();
+        for reached in walked {
+            if keep(i, &reached.node)? {
+                kept.push(reached);
+            }
+        }
+        at = kept.iter().map(|r| r.node.clone()).collect();
+        let first: Vec<Reached> = (kept.into_iter())
+            .filter(|r| listed.insert(r.node.clone()))
+            .collect();
+        if !each(i + 1, first)? {
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// What [`spanned`] gathers from each match.
@@ -201,8 +323,9 @@ struct Chain<'a, S: EdgeSource + ?Sized, K> {
     links: Links<'a, S>,
     steps: &'a [Step],
     keep: K,
-    /// What step `i` kept from a record, so a record reached along
-    /// several bindings is walked from once.
+    /// What step `i` kept from a record, filled by [`Self::prime`] before
+    /// a binding is made, so a record reached along several bindings is
+    /// walked from once.
     memo: BTreeMap<(usize, Node), Vec<Reached>>,
     max_bindings: usize,
     out: Traversal,
@@ -210,6 +333,8 @@ struct Chain<'a, S: EdgeSource + ?Sized, K> {
     /// matches span instead of the bindings.
     from: Node,
     span: Option<Span>,
+    /// For [`spanned`], what its walks hold so far and the most they may.
+    held: Option<(usize, u32)>,
 }
 
 impl<'a, S, K> Chain<'a, S, K>
@@ -240,115 +365,140 @@ where
             },
             from: (Default::default(), Default::default()),
             span,
+            held: None,
         })
     }
 
     /// Extend `prefix` (a binding of steps `0..i`, ending at `at`) with
-    /// every record step `i` keeps. Returns false once the cap is hit.
-    fn extend(&mut self, i: usize, at: &Node, prefix: &mut Vec<Reached>) -> Result<bool> {
+    /// every record step `i` keeps, as primed. Returns false once the cap
+    /// is hit.
+    fn extend(&mut self, i: usize, at: &Node, prefix: &mut Vec<Reached>) -> bool {
         if i == self.steps.len() {
             if let Some(span) = &mut self.span {
                 span.add(&self.from, prefix);
-                return Ok(true);
+                return true;
             }
             if self.out.bindings.len() >= self.max_bindings {
                 self.out.truncated = true;
-                return Ok(false);
+                return false;
             }
             self.out.bindings.push(prefix.clone());
-            return Ok(true);
+            return true;
         }
-        for reached in self.kept(i, at)? {
+        for reached in self.memo[&(i, at.clone())].clone() {
             let next = reached.node.clone();
             prefix.push(reached);
-            let more = self.extend(i + 1, &next, prefix)?;
+            let more = self.extend(i + 1, &next, prefix);
             prefix.pop();
             if !more {
-                return Ok(false);
+                return false;
             }
         }
-        Ok(true)
+        true
     }
 
-    fn kept(&mut self, i: usize, at: &Node) -> Result<Vec<Reached>> {
-        let memo_key = (i, at.clone());
-        if let Some(known) = self.memo.get(&memo_key) {
-            return Ok(known.clone());
-        }
-        let s = &self.steps[i];
-        let mut routes = self.span.as_ref().map(|_| Routes::new());
-        let walked = walk_step(
-            &mut self.links,
-            at,
-            &s.relation,
-            s.walk,
-            s.depth,
-            Some(i),
-            routes.as_mut(),
-        )?;
-        if let (Some(span), Some(routes)) = (&mut self.span, routes) {
-            span.routes.insert(memo_key.clone(), routes);
-        }
-        let mut kept = Vec::new();
-        for reached in walked {
-            if (self.keep)(i, &reached.node)? {
-                kept.push(reached);
+    /// Walk every step for `nodes` and what each step keeps of them, a
+    /// step's records together a hop at a time, into the memo that
+    /// [`Self::extend`] reads, with each walk's routes for a span: so the
+    /// starts of a page ask the source together.
+    fn prime(&mut self, nodes: &[Node]) -> Result<()> {
+        let mut at: BTreeSet<Node> = nodes.iter().cloned().collect();
+        for (i, s) in self.steps.iter().enumerate() {
+            let todo: Vec<Node> = (at.iter())
+                .filter(|n| !self.memo.contains_key(&(i, (*n).clone())))
+                .cloned()
+                .collect();
+            let walk = (&s.relation, s.walk, s.depth);
+            let mut routes = self.span.as_ref().map(|_| vec![Routes::new(); todo.len()]);
+            let (links, r) = (&mut self.links, routes.as_deref_mut());
+            let walked = walk_step(links, &todo, walk, Some(i), r, self.held)?;
+            // Every record a walk reaches has a route; each walk counted apart.
+            if let (Some((held, _)), Some(r)) = (&mut self.held, &routes) {
+                *held += r.iter().map(Routes::len).sum::<usize>();
             }
+            let mut routes = routes.into_iter().flatten();
+            for (node, walked) in todo.into_iter().zip(walked) {
+                if let (Some(span), Some(routes)) = (&mut self.span, routes.next()) {
+                    span.routes.insert((i, node.clone()), routes);
+                }
+                let mut kept = Vec::new();
+                for reached in walked {
+                    if (self.keep)(i, &reached.node)? {
+                        kept.push(reached);
+                    }
+                }
+                self.memo.insert((i, node), kept);
+            }
+            let next = at.iter().flat_map(|n| &self.memo[&(i, n.clone())]);
+            at = next.map(|r| r.node.clone()).collect();
         }
-        self.memo.insert(memo_key, kept.clone());
-        Ok(kept)
+        Ok(())
     }
 }
 
-/// Breadth-first over one relation, one level at a time, each level's
-/// links read together. Each record is recorded at the first level that
+/// Breadth-first over one relation from each of `froms` at once, one
+/// level at a time, each level's links read together for every walk
+/// that reaches it. Each record is recorded at the first level that
 /// reaches it, so its depth is the fewest hops; each level is a sorted
 /// set, so nothing depends on the order the source answers in. With
-/// `routes`, each record reached is kept there with the first record and
-/// link, in that order, it was reached by.
+/// `routes`, one map for each walk, each record a walk reaches is kept in
+/// its map with the first record and link, in that order, it was reached by.
 fn walk_step<S: EdgeSource + ?Sized>(
     links: &mut Links<'_, S>,
-    from: &Node,
-    relation: &RelationName,
-    walk: Walk,
-    depth: Depth,
+    froms: &[Node],
+    (relation, walk, depth): (&RelationName, Walk, Depth),
     step: Option<usize>,
-    mut routes: Option<&mut Routes>,
-) -> Result<Vec<Reached>> {
-    // The start is not marked reached: a cycle back to it is reported at
+    mut routes: Option<&mut [Routes]>,
+    bound: Option<(usize, u32)>,
+) -> Result<Vec<Vec<Reached>>> {
+    // A start is not marked reached: a cycle back to it is reported at
     // the depth it closes, which is what a range starting at 1 asks for.
-    let mut best: BTreeMap<Node, u32> = BTreeMap::new();
-    let mut frontier: BTreeSet<Node> = BTreeSet::from([from.clone()]);
+    let mut best: Vec<BTreeMap<Node, u32>> = vec![BTreeMap::new(); froms.len()];
+    let mut frontier: Vec<BTreeSet<Node>> =
+        froms.iter().map(|f| BTreeSet::from([f.clone()])).collect();
     for hop in 1..=depth.max {
-        let nears: Vec<Node> = frontier.iter().cloned().collect();
-        let mut next = BTreeSet::new();
-        let around = links.around(&nears, slice::from_ref(relation), walk, step)?;
-        for (near, around) in nears.iter().zip(around) {
-            for (other, edge) in around {
-                if !best.contains_key(&other) {
-                    if let Some(routes) = routes.as_deref_mut() {
-                        routes.insert(other.clone(), (near.clone(), edge));
-                    }
-                    best.insert(other.clone(), hop);
-                    next.insert(other);
-                }
-            }
-        }
-        if next.is_empty() {
+        let nears: BTreeSet<&Node> = frontier.iter().flatten().collect();
+        if nears.is_empty() {
             break;
         }
-        frontier = next;
+        let nears: Vec<Node> = nears.into_iter().cloned().collect();
+        let around = links.around(&nears, slice::from_ref(relation), walk, step)?;
+        let around: BTreeMap<&Node, Vec<(Node, Edge)>> = nears.iter().zip(around).collect();
+        for (w, (best, frontier)) in best.iter_mut().zip(frontier.iter_mut()).enumerate() {
+            let mut next = BTreeSet::new();
+            for near in frontier.iter() {
+                for (other, edge) in &around[near] {
+                    if !best.contains_key(other) {
+                        if let Some(routes) = routes.as_deref_mut() {
+                            routes[w].insert(other.clone(), (near.clone(), edge.clone()));
+                        }
+                        best.insert(other.clone(), hop);
+                        next.insert(other.clone());
+                    }
+                }
+            }
+            *frontier = next;
+        }
+        // With a bound, what the walks hold beside `held` records already
+        // held is counted as it grows, every source's map apart.
+        if let Some((held, max)) = bound
+            && held + best.iter().map(BTreeMap::len).sum::<usize>() > max as usize
+        {
+            return Err(too_large(max));
+        }
     }
-    if depth.min == 0 {
-        best.insert(from.clone(), 0);
-    }
-    let mut out: Vec<Reached> = best
-        .into_iter()
-        .filter(|(_, d)| *d >= depth.min)
-        .map(|(node, depth)| Reached { node, depth })
-        .collect();
-    out.sort_by(|a, b| (a.depth, &a.node).cmp(&(b.depth, &b.node)));
-    Ok(out)
+    let ends = froms.iter().zip(best).map(|(from, mut best)| {
+        if depth.min == 0 {
+            best.insert(from.clone(), 0);
+        }
+        let mut out: Vec<Reached> = (best.into_iter())
+            .filter(|(_, d)| *d >= depth.min)
+            .map(|(node, depth)| Reached { node, depth })
+            .collect();
+        out.sort_by(|a, b| (a.depth, &a.node).cmp(&(b.depth, &b.node)));
+        out
+    });
+    Ok(ends.collect())
 }
 
 #[cfg(test)]

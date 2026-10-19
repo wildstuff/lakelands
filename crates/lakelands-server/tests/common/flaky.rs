@@ -20,20 +20,21 @@ use lakelands_api::principal::{Principal, WriteContext};
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
 use lakelands_api::read::{Find, Found, Get, ReadAt, Reply};
 use lakelands_api::record::{Patch, Record};
-use lakelands_api::seam::ChangeFeed;
+use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter};
 use lakelands_api::write::{
     AgeReport, Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter,
     ProposedWrite, WriteOpts,
 };
 use lakelands_api::{Catalog, LakeStore};
 
-/// How many more times `head` and `get` fail, how many more times `get`
-/// answers that its reads have not reached the position yet, how many
-/// milliseconds an ingest's first window takes to commit, and how many
-/// reads were made.
+/// How many more times `head`, `get` and a feed's `poll` fail, how many
+/// more times `get` answers that its reads have not reached the position
+/// yet, how many milliseconds an ingest's first window takes to commit,
+/// and how many reads were made.
 #[derive(Default)]
 pub struct Faults {
     pub head: AtomicUsize,
+    pub poll: AtomicUsize,
     pub get: AtomicUsize,
     pub behind: AtomicUsize,
     pub first_window_millis: AtomicU64,
@@ -104,6 +105,26 @@ pub struct Store {
     pub faults: Arc<Faults>,
 }
 
+/// The lake's feed, its `poll` failing while `Faults::poll` says so.
+struct Feed {
+    inner: Arc<dyn ChangeFeed>,
+    faults: Arc<Faults>,
+}
+
+#[async_trait]
+impl ChangeFeed for Feed {
+    async fn poll(&self, from: Position, filter: &FeedFilter, limit: u32) -> Result<FeedBatch> {
+        fail(&self.faults.poll)?;
+        self.inner.poll(from, filter, limit).await
+    }
+    async fn ack(&self, consumer: &str, through: Position) -> Result<()> {
+        self.inner.ack(consumer, through).await
+    }
+    async fn wait(&self, after: Position, within: Duration) -> Result<Position> {
+        self.inner.wait(after, within).await
+    }
+}
+
 struct Doors {
     inner: Arc<dyn Catalog>,
     faults: Arc<Faults>,
@@ -131,7 +152,10 @@ impl LakeStore for Store {
         })
     }
     fn feed(&self) -> Arc<dyn ChangeFeed> {
-        self.inner.feed()
+        Arc::new(Feed {
+            inner: self.inner.feed(),
+            faults: self.faults.clone(),
+        })
     }
     async fn verify(
         &self,
@@ -169,6 +193,37 @@ impl LakeStore for Store {
         ty: Option<&lakelands_api::TypeName>,
     ) -> Result<lakelands_api::write::PurgeReport> {
         self.inner.purge_preflight(source, ty).await
+    }
+    async fn forget_source(
+        &self,
+        source: &lakelands_api::SourceId,
+        id: Option<&str>,
+    ) -> lakelands_api::Result<lakelands_api::write::ForgetReport> {
+        self.inner.forget_source(source, id).await
+    }
+    async fn forget_preflight(
+        &self,
+        source: &lakelands_api::SourceId,
+    ) -> lakelands_api::Result<lakelands_api::write::ForgetReport> {
+        self.inner.forget_preflight(source).await
+    }
+    async fn remove_values(
+        &self,
+        source: &lakelands_api::SourceId,
+        selection: &lakelands_api::write::Selection,
+        shredded: bool,
+        id: Option<&str>,
+    ) -> lakelands_api::Result<lakelands_api::write::RemoveReport> {
+        self.inner
+            .remove_values(source, selection, shredded, id)
+            .await
+    }
+    async fn remove_values_preflight(
+        &self,
+        source: &lakelands_api::SourceId,
+        selection: &lakelands_api::write::Selection,
+    ) -> lakelands_api::Result<lakelands_api::write::RemoveReport> {
+        self.inner.remove_values_preflight(source, selection).await
     }
     async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
         self.inner.compact().await
@@ -331,6 +386,29 @@ impl Catalog for Doors {
     ) -> Result<Outcome> {
         self.inner.migrate_apply(who, migration, report_id).await
     }
+    async fn accept_planned(
+        &self,
+        who: &Principal,
+        proposal: &ProposalId,
+        plan_id: &str,
+    ) -> Result<Outcome> {
+        self.inner.accept_planned(who, proposal, plan_id).await
+    }
+    async fn plan(
+        &self,
+        who: &Principal,
+        change: lakelands_api::write::Change,
+    ) -> Result<Reply<lakelands_api::write::Plan>> {
+        self.inner.plan(who, change).await
+    }
+    async fn enact(
+        &self,
+        who: &Principal,
+        change: lakelands_api::write::Change,
+        plan_id: &str,
+    ) -> Result<Outcome> {
+        self.inner.enact(who, change, plan_id).await
+    }
     async fn migrate_value_type(
         &self,
         who: &Principal,
@@ -347,6 +425,18 @@ impl Catalog for Doors {
         self.inner
             .migrate_value_type_apply(who, to, report_id)
             .await
+    }
+    async fn ingest_with(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        opts: lakelands_api::IngestOpts,
+        records: SourceStream,
+    ) -> Result<CommitStream> {
+        match opts.delivery {
+            None => self.ingest(who, source, records).await,
+            Some(_) => self.inner.ingest_with(who, source, opts, records).await,
+        }
     }
     async fn ingest(
         &self,

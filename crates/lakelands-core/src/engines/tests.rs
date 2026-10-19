@@ -110,6 +110,7 @@ fn a_scan_sorted_by_keys_answers_what_cmp_places_orders() {
             fields: [(FieldName::from("v"), v)].into_iter().collect(),
             meta: BTreeMap::new(),
             position: lakelands_api::Position(1),
+            made: lakelands_api::Position(1),
             retired: false,
             restricted: false,
         })
@@ -246,6 +247,7 @@ fn a_walk_in_index_order_answers_what_a_whole_sort_answers() {
                 fields,
                 meta: BTreeMap::new(),
                 position: lakelands_api::Position(1),
+                made: lakelands_api::Position(1),
                 retired: i % 11 == 0,
                 restricted: false,
             }
@@ -309,6 +311,7 @@ fn a_walk_at_an_earlier_position_answers_what_a_whole_sort_there_answers() {
             fields,
             meta: BTreeMap::new(),
             position: lakelands_api::Position(1),
+            made: lakelands_api::Position(1),
             retired,
             restricted: false,
         }
@@ -438,5 +441,163 @@ fn top_k_answers_what_rank_answers() {
             };
             assert_eq!(bits(&got), bits(&reference), "k = {k} over {corpus:?}");
         }
+    }
+}
+
+/// A record's state keeps one block for the fields that share it, and
+/// reads back every field's: all one block, a tie, a block with no value,
+/// a value with no block beside a base, an authored field among source
+/// ones, no meta at all; a state of the form before it reads the same.
+#[test]
+fn a_state_keeps_shared_provenance_once_and_reads_every_fields_back() {
+    let record = |fields: serde_json::Value, meta: serde_json::Value| -> StoredRecord {
+        let r = json!({"type": "t", "key": "k", "version": 1, "fields": fields, "meta": meta, "position": 9, "made": 3});
+        serde_json::from_value(r).unwrap()
+    };
+    let block = |at: u64, origin: &str| json!({"origin": origin, "known_at": format!("2026-01-01T00:00:0{at}Z"), "position": at, "writer": "w"});
+    let (a, b) = (block(1, "source"), block(2, "authored"));
+    let failed = json!({"error": "down", "origin": "derived", "known_at": "2026-01-01T00:00:03Z", "position": 3, "writer": "w"});
+    let (xy, xyz) = (json!({"x": 1, "y": 1}), json!({"x": 1, "y": 1, "z": 1}));
+    let cases = [
+        record(xyz.clone(), json!({"x": a, "y": a, "z": a})),
+        record(xy.clone(), json!({"x": a, "y": b})),
+        record(xy.clone(), json!({"x": a, "y": a, "c": failed})),
+        record(xy.clone(), json!({"x": a, "y": a, "c": a})),
+        record(json!({"x": 1, "y": 1, "bare": 1}), json!({"x": a, "y": a})),
+        record(xyz.clone(), json!({"x": a, "y": b, "z": a})),
+        record(json!({"x": 1}), json!({})),
+    ];
+    for r in &cases {
+        let state = record_state(r);
+        assert_eq!(&decode_record(&state).unwrap(), r, "{state}");
+        assert_eq!(
+            &decode_record(&serde_json::to_string(r).unwrap()).unwrap(),
+            r
+        );
+    }
+    let shared = record_state(&cases[0]);
+    assert_eq!(
+        shared.matches("\"origin\"").count(),
+        1,
+        "one block for three fields: {shared}"
+    );
+}
+
+#[test]
+fn a_commit_decides_again_only_the_types_its_puts_move_and_as_the_whole_decides() {
+    let text = |n: &str| json!({"name": n, "type": {"kind": "text"}});
+    let decl = |v: serde_json::Value| -> Declaration { serde_json::from_value(v).unwrap() };
+    let ty = |n: &str, fields: &[&str]| {
+        let fields: Vec<_> = fields.iter().map(|f| text(f)).collect();
+        decl(json!({"declare": "type", "name": n, "fields": fields}))
+    };
+    let lake = [
+        ty("t", &["a", "b"]),
+        ty("u", &["c", "d"]),
+        ty("w", &["e", "f"]),
+    ];
+    let set = |of: &str, filter: &str| {
+        decl(json!({"declare": "object_set", "name": "s", "of": of, "where": filter}))
+    };
+    let setting = StoredRecord {
+        ty: lakelands_api::seam::SETTING_TYPE.into(),
+        key: "lookup_index.w".into(),
+        version: lakelands_api::id::Version(1),
+        fields: serde_json::from_value(json!({"key": "lookup_index.w", "value": ["f"]})).unwrap(),
+        meta: Default::default(),
+        position: Position(1),
+        made: Position(1),
+        retired: false,
+        restricted: false,
+    };
+    // Each moves the index of a type other than the one it declares, or,
+    // declared again, of the one its last declaration named.
+    let steps: Vec<(&str, Vec<Declaration>, bool)> = vec![
+        ("a set's type", vec![set("t", "a = 'x'")], false),
+        (
+            "the set declared again over another type",
+            vec![set("w", "e = 'x'")],
+            false,
+        ),
+        (
+            "a derived relation's target",
+            vec![decl(json!({
+            "declare": "type", "name": "p", "fields": [text("k")],
+            "relations": [{"name": "hits", "target": "u", "cardinality": "many_to_many",
+                           "derived": {"match": [{"from": "k", "to": "c"}]}}]}))],
+            false,
+        ),
+        (
+            "a view's source and its merge's",
+            vec![decl(json!({
+            "declare": "type", "name": "v", "key": ["d"], "fields": [text("d")],
+            "view": {"source": "u", "where": "d = 'y'", "group_by": ["d"], "measures": [],
+                     "merge": [{"source": "t", "where": "b = 'z'", "group_by": ["b"],
+                                "measures": []}]}}))],
+            false,
+        ),
+        ("a setting", vec![], true),
+        (
+            "a value type",
+            vec![decl(
+                json!({"declare": "value_type", "name": "x", "kind": "text"}),
+            )],
+            false,
+        ),
+    ];
+    let mut decls: Vec<Declaration> = lake.to_vec();
+    let mut heads: Heads = (decls.iter())
+        .map(|d| (declaration_key(d), d.clone()))
+        .collect();
+    let looked = |decls: &[Declaration], asked: bool| -> BTreeSet<(String, String)> {
+        let types = decls.iter().filter_map(|d| match d {
+            Declaration::Type(t) => Some(t.name.clone()),
+            _ => None,
+        });
+        let ours = |t: &TypeName| asked && t.as_str() == "w";
+        let value = setting_value(&setting);
+        (types.flat_map(|t| {
+            let fields = looked_up(&t, decls, value.filter(|_| ours(&t)));
+            fields
+                .into_iter()
+                .flatten()
+                .map(move |f| (t.to_string(), f.to_string()))
+        }))
+        .collect()
+    };
+    let mut asked = false;
+    for (what, put, ask) in steps {
+        // What the engine keeps: the whole decision before this commit.
+        let was = looked(&decls, asked);
+        asked |= ask;
+        let answers = |key: &str| {
+            let ours = asked && key == "lookup_index.w";
+            Ok(ours.then(|| setting.clone()))
+        };
+        let mut relook = Relook::default();
+        put.iter().for_each(|d| relook.declared(d));
+        if ask {
+            relook.record(&setting);
+        }
+        for d in &put {
+            decls.retain(|x| declaration_key(x) != declaration_key(d));
+            decls.push(d.clone());
+        }
+        let (after, moved) = relook.heads(Some(heads), || unreachable!()).unwrap();
+        // The engine reads what it keeps of the moved types alone.
+        let of_moved = |(t, _): &&(String, String)| moved.iter().flatten().any(|m| m.as_str() == t);
+        let kept = was.iter().filter(of_moved).cloned().collect();
+        let narrow = relooked(&after, moved.as_ref(), &kept, answers).unwrap();
+        let whole = relooked(&after, None, &was, answers).unwrap();
+        assert_eq!(narrow, whole, "{what}: the moved types {moved:?}");
+        // Each but the value type moves something, so a type left out of
+        // what it moves would show here.
+        let moves = put.iter().all(|d| !matches!(d, Declaration::ValueType(_)));
+        assert_eq!(
+            !whole.is_empty(),
+            moves,
+            "{what} moves the index: {whole:?}"
+        );
+        heads = after;
     }
 }

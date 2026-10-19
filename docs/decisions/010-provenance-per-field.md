@@ -37,6 +37,9 @@ it, with `error` set to the reason. A read with `with_meta` returns
 that metadata for the field even though the field has no value, so a
 caller can tell "not computed yet" (no metadata) from "computed and
 failed" (`error`). A field that holds a value never carries `error`.
+A value a forgotten source wrote is cleared the same way, its provenance
+kept with `erased: true`: it was written, and no reader is answered it
+(`docs/decisions/058-a-source-may-be-forgotten.md`).
 
 ### A value read from another lake carries `upstream`
 

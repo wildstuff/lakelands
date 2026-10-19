@@ -111,6 +111,17 @@ pub trait Scope {
         false
     }
 
+    /// Whether every operand is read where the first that decides would
+    /// stop the evaluation: a strict guard's (lakelands#1215).
+    fn eager(&self) -> bool {
+        false
+    }
+
+    /// In a guard: whether the write found no live record under its key.
+    fn creating(&self) -> bool {
+        false
+    }
+
     /// The provenance of a field, when the scope carries it.
     fn meta(&self, _field: &FieldName) -> Option<FieldMeta> {
         None
@@ -129,6 +140,18 @@ pub trait Scope {
 
     /// The clock `now()` and `today()` read.
     fn now(&self) -> Timestamp;
+
+    /// In a verb: whether the path that begins at `relation` reaches a
+    /// record. `None` outside a verb.
+    fn exists(&self, _relation: &FieldName) -> Option<bool> {
+        None
+    }
+
+    /// In a read: whether the record is a member of the set `set` as it
+    /// is kept, where its `where` reads across an edge. `None` elsewhere.
+    fn in_set(&self, _set: &str) -> Option<bool> {
+        None
+    }
 
     /// An aggregate function over the set of records in scope. `None` where
     /// no set is in scope: over one record an aggregate has no meaning.
@@ -206,6 +229,10 @@ impl Scope for WriteScope<'_> {
         self.retiring
     }
 
+    fn creating(&self) -> bool {
+        self.before.is_none()
+    }
+
     fn meta(&self, field: &FieldName) -> Option<FieldMeta> {
         self.meta.and_then(|m| m.get(field)).cloned()
     }
@@ -221,7 +248,7 @@ impl Scope for WriteScope<'_> {
 
 /// A one-segment path reads a field; a longer path reads into a JSON
 /// object stored in that field.
-fn lookup(fields: &BTreeMap<FieldName, Value>, path: &[FieldName]) -> Option<Value> {
+pub fn lookup(fields: &BTreeMap<FieldName, Value>, path: &[FieldName]) -> Option<Value> {
     let (first, rest) = path.split_first()?;
     let mut v = fields.get(first)?;
     for seg in rest {
@@ -274,22 +301,26 @@ pub fn eval(e: &Expr, scope: &dyn Scope) -> Result<Val> {
         // The first operand that decides stops the evaluation.
         Expr::And { args } | Expr::Or { args } => {
             let or = matches!(e, Expr::Or { .. });
+            let mut decided = false;
             for a in args {
-                if truthy(&eval(a, scope)?) == or {
-                    return Ok(Val::Bool(or));
+                decided |= truthy(&eval(a, scope)?) == or;
+                if decided && !scope.eager() {
+                    break;
                 }
             }
-            Ok(Val::Bool(!or))
+            Ok(Val::Bool(decided == or))
         }
         Expr::Not { arg } => Ok(Val::Bool(!truthy(&eval(arg, scope)?))),
         Expr::In { arg, list } => {
             let v = eval(arg, scope)?;
+            let mut found = false;
             for item in list {
-                if compare(CmpOp::Eq, &v, &eval(item, scope)?)? {
-                    return Ok(Val::Bool(true));
+                found |= compare(CmpOp::Eq, &v, &eval(item, scope)?)?;
+                if found && !scope.eager() {
+                    break;
                 }
             }
-            Ok(Val::Bool(false))
+            Ok(Val::Bool(found))
         }
         Expr::IsNull { arg } => Ok(Val::Bool(eval(arg, scope)? == Val::Null)),
         Expr::Call { func, args } => call(*func, args, scope),
@@ -297,8 +328,9 @@ pub fn eval(e: &Expr, scope: &dyn Scope) -> Result<Val> {
 }
 
 /// Where an expression is evaluated, which decides the functions it may
-/// use.
+/// use. A host names a place; it does not match on all of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Place {
     /// Over one record, outside a write: a filter, a constraint.
     Record,
@@ -313,6 +345,9 @@ pub enum Place {
     /// Over one source record of a view: its `where`, or an aggregate's
     /// argument in a measure. Like `Record`, and `param` has meaning.
     View,
+    /// A verb's `requires` and set values, and an object set's `where`:
+    /// like `Record`, and `exists` has meaning.
+    Verb,
 }
 
 /// The units `date_bucket` knows.
@@ -398,6 +433,14 @@ pub fn check(e: &Expr, place: Place) -> Result<()> {
                     return err(Case::OnlyInWrite { name });
                 }
                 Func::Retired if place != Place::Guard => return err(Case::RetiredOnlyInGuard),
+                Func::Created if place != Place::Guard => return err(Case::CreatedOnlyInGuard),
+                Func::Exists if !matches!(place, Place::Verb | Place::Guard) => {
+                    return err(Case::ExistsHere);
+                }
+                Func::Exists if !matches!(args.first(), Some(Expr::Path { path }) if path.len() == 1) =>
+                {
+                    return err(Case::CallTakesField { name });
+                }
                 f if f.is_aggregate() && place != Place::Group => {
                     return err(Case::AggregateHere { name });
                 }
@@ -462,6 +505,76 @@ fn quoted(e: Option<&Expr>) -> Option<&String> {
 /// null or a non-boolean does not hold.
 pub fn holds(e: &Expr, scope: &dyn Scope) -> Result<bool> {
     Ok(truthy(&eval(e, scope)?))
+}
+
+/// Whether a condition holds where every field it reads, and every
+/// `previous(f)`, has a value: a read of one absent or null fails it as a
+/// whole, whatever `not`, `and`, `or` or `changed` around it would make of
+/// a null. A trigger's `when_strict` (lakelands#1215).
+pub fn holds_strict(e: &Expr, scope: &dyn Scope) -> Result<bool> {
+    let strict = Strict {
+        inner: scope,
+        absent: std::cell::Cell::new(false),
+    };
+    let held = holds(e, &strict)?;
+    Ok(held && !strict.absent.get())
+}
+
+/// A scope that notes a read of a field, or of its value before the
+/// write, that has none.
+struct Strict<'a> {
+    inner: &'a dyn Scope,
+    absent: std::cell::Cell<bool>,
+}
+
+impl Strict<'_> {
+    fn noted(&self, v: Option<Value>) -> Option<Value> {
+        let v = v.filter(|v| !v.is_null());
+        self.absent.set(self.absent.get() || v.is_none());
+        v
+    }
+}
+
+impl Scope for Strict<'_> {
+    fn value(&self, path: &[FieldName]) -> Option<Value> {
+        self.noted(self.inner.value(path))
+    }
+    fn previous(&self, field: &FieldName) -> Option<Value> {
+        self.noted(self.inner.previous(field))
+    }
+    fn in_write(&self) -> bool {
+        self.inner.in_write()
+    }
+    fn retiring(&self) -> bool {
+        self.inner.retiring()
+    }
+    fn eager(&self) -> bool {
+        true
+    }
+    fn creating(&self) -> bool {
+        self.inner.creating()
+    }
+    fn meta(&self, field: &FieldName) -> Option<FieldMeta> {
+        self.inner.meta(field)
+    }
+    fn setting(&self, key: &str) -> Option<Value> {
+        self.inner.setting(key)
+    }
+    fn param(&self, name: &str) -> Option<Value> {
+        self.inner.param(name)
+    }
+    fn now(&self) -> Timestamp {
+        self.inner.now()
+    }
+    fn exists(&self, relation: &FieldName) -> Option<bool> {
+        self.inner.exists(relation)
+    }
+    fn in_set(&self, set: &str) -> Option<bool> {
+        self.inner.in_set(set)
+    }
+    fn aggregate(&self, func: Func, args: &[Expr]) -> Option<Result<Val>> {
+        self.inner.aggregate(func, args)
+    }
 }
 
 fn truthy(v: &Val) -> bool {
@@ -698,20 +811,29 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
     // field's name rather than its value.
     match func {
         Func::If => {
+            let (then, other) = (&args[1], &args[2]);
+            if scope.eager() {
+                let (then, other) = (eval(then, scope)?, eval(other, scope)?);
+                return Ok(if holds(&args[0], scope)? { then } else { other });
+            }
             return if holds(&args[0], scope)? {
-                eval(&args[1], scope)
+                eval(then, scope)
             } else {
-                eval(&args[2], scope)
+                eval(other, scope)
             };
         }
         Func::Coalesce => {
+            let mut first = None;
             for a in args {
                 let v = eval(a, scope)?;
                 if v != Val::Null {
-                    return Ok(v);
+                    first.get_or_insert(v);
+                    if !scope.eager() {
+                        break;
+                    }
                 }
             }
-            return Ok(Val::Null);
+            return Ok(first.unwrap_or(Val::Null));
         }
         Func::KnownAt | Func::SeenAt => {
             let meta = scope.meta(field_arg(name, args)?);
@@ -746,6 +868,24 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
             }
             return Ok(Val::Bool(scope.retiring()));
         }
+        Func::Created => {
+            if !scope.in_write() {
+                return err(Case::CreatedOnlyInGuard);
+            }
+            return Ok(Val::Bool(scope.creating()));
+        }
+        Func::Exists => {
+            let relation = field_arg(name, args)?;
+            return scope
+                .exists(relation)
+                .map_or(err(Case::ExistsHere), |b| Ok(Val::Bool(b)));
+        }
+        Func::InSet => {
+            let Some(set) = quoted(args.first()) else {
+                return err(Case::CallTakesQuoted { name: name.into() });
+            };
+            return (scope.in_set(set)).map_or(err(Case::InSetHere), |b| Ok(Val::Bool(b)));
+        }
         Func::Count | Func::Sum | Func::Min | Func::Max | Func::Avg => {
             if let Some(v) = scope.aggregate(func, args) {
                 return v;
@@ -776,11 +916,11 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
                 });
             }
         },
-        // A set's filter stands in the call's place before a condition is
-        // evaluated ([`expand`]); a call that is left names no place for it.
-        Func::InSet => {
-            return err(Case::InSetHere);
-        }
+        // Answered above, from the scope, where the set's filter did not
+        // stand in the call's place before ([`expand`]).
+        Func::InSet => return err(Case::InSetHere),
+        // Answered above, from the scope.
+        Func::Exists => return err(Case::ExistsHere),
         Func::Param => match &vals[0] {
             Val::Text(name) => scope.param(name).map_or(Val::Null, |v| from_json(&v)),
             other => {
@@ -853,6 +993,7 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         | Func::Previous
         | Func::Changed
         | Func::Retired
+        | Func::Created
         | Func::Count
         | Func::Sum
         | Func::Min

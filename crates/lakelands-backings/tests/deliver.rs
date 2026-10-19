@@ -14,7 +14,9 @@ use lakelands_api::seam::{FeedFilter, Seams};
 use lakelands_api::write::Declaration;
 use lakelands_api::{LakeId, LakeStore, Location, Position};
 use lakelands_backings::deliver::{DeliverConfig, deliverers, sign};
-use lakelands_core::conformance::fixture::{declare, doors, field, owner, type_decl, upsert};
+use lakelands_core::conformance::fixture::{
+    declare, doors, field, ingest, owner, source_record, sourced, trigger_on, type_decl, upsert,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -138,6 +140,8 @@ async fn lake() -> Arc<dyn LakeStore> {
             &own,
             Declaration::Trigger(TriggerDecl {
                 max_depth: None,
+                when_strict: false,
+                on_changes: None,
                 name: name.into(),
                 on: "invoice".into(),
                 when: Some(Condition::from(format!("status = '{value}'").as_str())),
@@ -275,6 +279,53 @@ async fn fired_triggers_go_in_log_order_as_the_feed_holds_them_signed_over_the_r
         )
         .unwrap()
         .contains("s3cret")
+    );
+}
+
+/// A firing decided over a value an act took back since is overruled: it
+/// is journaled `overruled` and not posted, while the firing beside it
+/// that stands is (065).
+#[tokio::test]
+async fn a_firing_an_act_overruled_is_journaled_and_not_posted() {
+    use lakelands_api::write::Selection;
+    let store = lake().await;
+    let (cat, own) = (doors(store.as_ref()), owner(store.as_ref()));
+    let stop = type_decl("stop", vec![sourced("place", StorageKind::Text)]);
+    declare(cat.as_ref(), &own, stop).await.unwrap();
+    for (name, when) in [("in_rome", Some("place = 'Rome'")), ("wrote", None)] {
+        cat.declare(&own, trigger_on(name, "stop", when))
+            .await
+            .unwrap();
+    }
+    let s1 = source_record("stop", "s1", json!({"place": "Rome"}));
+    ingest(cat.as_ref(), &own, "tracker", vec![s1])
+        .await
+        .unwrap();
+    let all = Selection::WrittenBefore(lakelands_api::Timestamp::from_date(9999, 1, 1).unwrap());
+    let tracker = "tracker".into();
+    let act = store.remove_values(&tracker, &all, false, None);
+    act.await.unwrap();
+    let f = fake(&[]).await;
+    let dir = root();
+    let lake = lake_id(store.as_ref());
+    let c = config(json!({"url": f.url(), "lakes": [lake.as_str()]}));
+    let mut d = deliverers(&c, &dir, &lake).unwrap().pop().unwrap();
+    d.round(store.as_ref()).await.unwrap();
+    // `tracker`'s write fired both, and so did the act's retirement of
+    // `s1`, decided over the place it takes.
+    let bodies = f.bodies();
+    let wrote = |b: &String| b.contains("\"trigger\":\"wrote\"");
+    assert!(
+        bodies.len() == 2 && bodies.iter().all(wrote),
+        "only `wrote` is posted: {bodies:?}"
+    );
+    let outcomes: Vec<String> = journal(&dir, &lake)
+        .iter()
+        .map(|l| l["outcome"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(
+        outcomes,
+        ["overruled", "delivered", "overruled", "delivered"]
     );
 }
 

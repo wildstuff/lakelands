@@ -18,7 +18,7 @@ use lakelands_api::engine::{
 };
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, SegmentDigest};
-use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
+use lakelands_api::id::{LakeId, Position, RecordKey, SourceId, TypeName};
 use lakelands_api::location::SqliteTuning;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
@@ -31,7 +31,7 @@ use crate::projection::{self, MEMBERS, OUTPUTS, PROPOSALS};
 use crate::view::SqliteView;
 use lakelands_api::error::{Case, Detail, Doing, Error, Part, Situation};
 
-use crate::{NAME, invalid, io_error, lock, sql};
+use crate::{NAME, REBUILD_RATE, invalid, io_error, lock, sql};
 
 /// The open transaction of the fold: the latest position a put in it
 /// names, which the commit must reach.
@@ -45,6 +45,9 @@ struct Transaction {
     /// the transaction, and all forgotten when a declaration or a
     /// `sort_index.<type>` setting is put, which may change one.
     kept: projection::Kept,
+    /// The declarations and the `lookup_index.<type>` settings it put: the
+    /// commit decides the exact-text index's fields again for what they move.
+    relook: engines::Relook,
 }
 
 /// One handle onto a lake kept by the SQLite engine.
@@ -58,6 +61,9 @@ pub struct SqliteLake {
     writer: Mutex<Option<Connection>>,
     pub(crate) reader: Mutex<Connection>,
     transaction: Mutex<Option<Transaction>>,
+    /// The head's declarations as the last commit left them, and the
+    /// position it folded through, for the next one's relook.
+    heads: Mutex<Option<(Position, engines::Heads)>>,
 }
 
 /// How long a statement waits for another connection's lock.
@@ -173,6 +179,7 @@ impl SqliteLake {
             writer: Mutex::new(writer),
             reader: Mutex::new(reader),
             transaction: Mutex::new(None),
+            heads: Mutex::new(None),
         })
     }
 
@@ -316,6 +323,10 @@ impl LakeEngine for SqliteLake {
         NAME
     }
 
+    fn rebuild_rate(&self) -> u64 {
+        REBUILD_RATE
+    }
+
     fn lake(&self) -> &LakeId {
         &self.lake
     }
@@ -328,9 +339,10 @@ impl LakeEngine for SqliteLake {
         }
         let taken = self.lease_file.take(holder)?;
         // What a writer that ended mid-append left uncommitted is cut off
-        // before this one appends.
+        // before this one appends, and its last group is written again.
         let mut log = lock(&self.log);
         log.recover()?;
+        log.settle()?;
         log.sweep()?;
         let lease = taken.lease.clone();
         *held = Some(taken);
@@ -420,7 +432,8 @@ impl LakeEngine for SqliteLake {
         let ranked = projection::folded(&conn).and_then(|position| {
             let mut lists = Vec::new();
             if let Some((text, fields)) = &asked.text {
-                lists.push(crate::view::lexical(&conn, ty, text, fields.as_deref(), k)?);
+                let (fields, weights) = (fields.as_deref(), &asked.text_weights);
+                lists.push(crate::view::lexical(&conn, ty, text, fields, weights, k)?);
             }
             for (field, query) in &asked.vectors {
                 lists.push(nearest(&conn, ty, field, query, k)?);
@@ -454,19 +467,31 @@ impl ProjectionStore for SqliteLake {
         let t = transaction
             .take()
             .ok_or_else(|| invalid(Case::CommitUnbegun))?;
-        self.write(|conn| {
+        let kept = lock(&self.heads).take();
+        let heads = self.write(|conn| {
             let folded = projection::folded(conn)?;
             if let Some(refused) = engines::commit_refusal(folded, t.latest, through) {
                 let _ = conn.execute_batch("ROLLBACK");
                 return Err(refused);
+            }
+            let held = |(at, _): &(Position, _)| Some(*at) == folded;
+            let mut heads = kept.filter(held).map(|(_, heads)| heads);
+            if t.relook.any() {
+                let read = || projection::head_declarations(conn);
+                let (after, moved) = t.relook.heads(heads, read)?;
+                projection::relook(conn, &after, moved.as_ref())?;
+                heads = Some(after);
             }
             for (ty, at) in &t.redeclared {
                 projection::index_older(conn, ty, *at)?;
             }
             projection::set_folded(conn, through)?;
             projection::mark_sorted(conn, through)?;
-            conn.execute_batch("COMMIT").map_err(sql)
-        })
+            conn.execute_batch("COMMIT").map_err(sql)?;
+            Ok(heads)
+        })?;
+        *lock(&self.heads) = heads.map(|heads| (through, heads));
+        Ok(())
     }
 
     fn rollback(&self) {
@@ -493,6 +518,7 @@ impl ProjectionStore for SqliteLake {
         };
         self.stage(at, |conn, t| {
             t.kept.clear();
+            t.relook.declared(&d.declaration);
             let redeclared = projection::put_declaration(conn, &d)?;
             t.redeclared.extend(redeclared.map(|ty| (ty, at)));
             Ok(())
@@ -501,6 +527,7 @@ impl ProjectionStore for SqliteLake {
 
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
         self.stage(record.position, |conn, t| {
+            t.relook.record(record);
             projection::put_record(conn, &mut t.kept, record)
         })
     }
@@ -516,7 +543,9 @@ impl ProjectionStore for SqliteLake {
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         let state = serde_json::to_string(proposal).expect("a proposal serialises");
         self.stage(at, |conn, _| {
-            PROPOSALS.put(conn, &[&proposal.id.as_str()], at, &state)
+            PROPOSALS
+                .put(conn, &[&proposal.id.as_str()], at, &state)
+                .map(drop)
         })
     }
 
@@ -529,14 +558,18 @@ impl ProjectionStore for SqliteLake {
         at: Position,
     ) -> Result<()> {
         self.stage(at, |conn, _| {
-            MEMBERS.put(conn, &[&set, &ty.as_str(), &key.as_str()], at, &member)
+            MEMBERS
+                .put(conn, &[&set, &ty.as_str(), &key.as_str()], at, &member)
+                .map(drop)
         })
     }
 
     fn put_output(&self, seam: &str, input: &Digest, output: &Value, at: Position) -> Result<()> {
         let state = serde_json::to_string(output).expect("a value serialises");
         self.stage(at, |conn, _| {
-            OUTPUTS.put(conn, &[&seam, &input.0.as_str()], at, &state)
+            OUTPUTS
+                .put(conn, &[&seam, &input.0.as_str()], at, &state)
+                .map(drop)
         })
     }
 
@@ -547,13 +580,16 @@ impl ProjectionStore for SqliteLake {
                 .and_then(|mut s| s.execute(params![applied.id.0, at]))
                 .map_err(sql)?;
             let mut route = conn
-                .prepare_cached("INSERT INTO routes (at, kind, ty, key) VALUES (?1, ?2, ?3, ?4)")
+                .prepare_cached(
+                    "INSERT INTO routes (at, kind, ty, key, source) VALUES (?1, ?2, ?3, ?4, ?5)",
+                )
                 .map_err(sql)?;
+            let source = applied.source.as_ref().map(SourceId::as_str);
             for a in &applied.about {
                 let (ty, key) = (a.ty.as_ref().map(TypeName::as_str), a.key.as_ref());
                 let key = key.map(RecordKey::as_str);
                 route
-                    .execute(params![at, applied.kind, ty, key])
+                    .execute(params![at, applied.kind, ty, key, source])
                     .map_err(sql)?;
             }
             Ok(())
@@ -603,9 +639,14 @@ impl ProjectionStore for SqliteLake {
                 Error::unavailable(Situation::CompactFailed { lake, detail })
             })?;
             // The rewrite is committed. A reader that holds a snapshot now
-            // keeps the journal from being truncated: the compact is done
-            // all the same, and `after` counts the journal it left.
-            truncate_journal(conn)?;
+            // keeps the journal from being truncated, and the journal still
+            // holds the pages the rewrite freed: the compact answers busy,
+            // so what is owed of it (058) stays owed, and the next one
+            // truncates. No answer has changed.
+            if !truncate_journal(conn)? {
+                let lake = self.lake.to_string();
+                return Err(Error::unavailable(Situation::Busy { lake }));
+            }
             Ok(Reclaimed {
                 before: Some(before),
                 after: Some(self.size()?),

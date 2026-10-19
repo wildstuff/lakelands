@@ -24,6 +24,7 @@ fn two_types_put_in_turn_are_each_read_once() {
             fields: Default::default(),
             meta: Default::default(),
             position: Position(at),
+            made: Position(at),
             retired: false,
             restricted: false,
         };

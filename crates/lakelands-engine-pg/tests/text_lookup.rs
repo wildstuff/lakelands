@@ -59,6 +59,7 @@ fn walked() -> Vec<StoredRecord> {
                 fields: serde_json::from_value(fields).unwrap(),
                 meta: Default::default(),
                 position: Position(1),
+                made: Position(1),
                 retired: false,
                 restricted: i % 13 == 4,
             }
@@ -89,6 +90,7 @@ fn a_count_and_a_page_under_an_exact_text_are_handed_the_records_holding_it() {
             fields: serde_json::from_value(json!({"v": v})).unwrap(),
             meta: Default::default(),
             position: Position(1),
+            made: Position(1),
             retired: false,
             restricted: false,
         })
@@ -153,15 +155,21 @@ fn walk_under_each_text(engine: &dyn LakeEngine, planned: impl FnOnce()) {
     p.begin().unwrap();
     p.put_declaration(&decl, 1, None, Position(0)).unwrap();
     states.iter().for_each(|r| p.put_record(r).unwrap());
-    p.put_record(&StoredRecord {
-        ty: lakelands_api::seam::SETTING_TYPE.into(),
-        key: "sort_index.t".into(),
-        fields: serde_json::from_value(json!({"key": "sort_index.t", "value": ["w", "x"]}))
-            .unwrap(),
-        restricted: false,
-        ..states[0].clone()
-    })
-    .unwrap();
+    // The order index on `w` and `x`, and the exact-text index on `v`,
+    // which no declaration looks records up by (057).
+    for (key, value) in [
+        ("sort_index.t", json!(["w", "x"])),
+        ("lookup_index.t", json!(["v"])),
+    ] {
+        p.put_record(&StoredRecord {
+            ty: lakelands_api::seam::SETTING_TYPE.into(),
+            key: key.into(),
+            fields: serde_json::from_value(json!({"key": key, "value": value})).unwrap(),
+            restricted: false,
+            ..states[0].clone()
+        })
+        .unwrap();
+    }
     p.commit(Position(1)).unwrap();
     let scan = |filter: &str, order: &[(&str, Direction)]| Scan {
         filter: Some(lakelands_core::expr::parse(filter).unwrap()),

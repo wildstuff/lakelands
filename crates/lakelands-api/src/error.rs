@@ -21,8 +21,8 @@ mod case;
 mod outage;
 
 pub use case::{
-    Case, Form, JsonFault, Named, Names, Naming, Operand, Place, RecordName, Regexp, Revision,
-    Said, Segment, Shape,
+    Beyond, Case, Form, JsonFault, Named, Names, Naming, Operand, Place, RecordName, Regexp,
+    Revision, Said, Segment, Shape,
 };
 pub(crate) use case::{Param, catalog, render};
 pub use outage::{
@@ -31,7 +31,7 @@ pub use outage::{
 };
 
 /// What went wrong.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", tag = "error", rename_all = "snake_case")]
 pub enum Error {
     /// The store would not do it: a right is missing, a declaration
@@ -73,6 +73,23 @@ pub enum Error {
         #[serde(with = "closed")]
         situation: Box<Situation>,
     },
+    /// A record of an ingest's stream was refused (lakelands#1043): its
+    /// place in the stream, counted from 0; the place of the first record
+    /// of its window, from which nothing was written; the record, by the
+    /// type and key its source sent; and the refusal. On the wire it is
+    /// the refusal, its code and shape kept, with `index`, `from` and
+    /// `record` beside it; [`Error::unwrapped`] answers the refusal.
+    #[serde(skip)]
+    Ingested {
+        /// The record's place in the stream.
+        index: u64,
+        /// The place of the first record of its window.
+        from: u64,
+        /// The record, as its source named it.
+        record: RecordName,
+        /// The refusal.
+        error: Box<Error>,
+    },
     /// An error of a kind this build does not know: a newer lake's.
     #[serde(skip)]
     Unknown(Unknown),
@@ -93,10 +110,30 @@ impl Serialize for Plain {
     }
 }
 
-/// Its data, and `message`, its sentence.
+/// Its data, and `message`, its sentence; a refused record of an ingest
+/// as its refusal, with where it stood in the stream beside it.
 impl Serialize for Error {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        closed::serialize(&Plain(self.clone()), s)
+        let Error::Ingested {
+            index,
+            from,
+            record,
+            error,
+        } = self
+        else {
+            return closed::serialize(&Plain(self.clone()), s);
+        };
+        let custom = <S::Error as serde::ser::Error>::custom::<String>;
+        let mut map = match serde_json::to_value(error).map_err(|e| custom(e.to_string()))? {
+            Value::Object(map) => map,
+            other => return Err(custom(format!("{other} is no error"))),
+        };
+        let record = closed::serialize(record, serde_json::value::Serializer);
+        let record = record.map_err(|e| custom(e.to_string()))?;
+        map.insert("index".into(), Value::from(*index));
+        map.insert("from".into(), Value::from(*from));
+        map.insert("record".into(), record);
+        map.serialize(s)
     }
 }
 
@@ -105,7 +142,29 @@ impl Serialize for Error {
 /// said by the error's `message`.
 impl<'de> Deserialize<'de> for Error {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Error, D::Error> {
-        let map = Map::<String, Value>::deserialize(d)?;
+        let mut map = Map::<String, Value>::deserialize(d)?;
+        // A refused record of an ingest: its refusal, with its place beside.
+        if ["index", "from", "record"]
+            .iter()
+            .all(|k| map.contains_key(*k))
+        {
+            let custom = <D::Error as serde::de::Error>::custom::<String>;
+            let place = |v: Option<Value>| {
+                v.and_then(|v| v.as_u64())
+                    .ok_or_else(|| custom("a place is a number".into()))
+            };
+            let (index, from) = (place(map.remove("index"))?, place(map.remove("from"))?);
+            let record = closed::deserialize(map.remove("record").unwrap_or_default());
+            let record = record.map_err(|e: serde_json::Error| custom(e.to_string()))?;
+            let error = Error::deserialize(Value::Object(map));
+            let error = Box::new(error.map_err(|e| custom(e.to_string()))?);
+            return Ok(Error::Ingested {
+                index,
+                from,
+                record,
+                error,
+            });
+        }
         let message = map
             .get("message")
             .and_then(Value::as_str)
@@ -158,10 +217,19 @@ impl Error {
         }
     }
 
-    /// What a refusal of `invalid`, `constraint`, `precondition` or
-    /// `unanswered` says, if this is one.
-    pub fn case(&self) -> Option<&Said> {
+    /// The error itself; of a refused record of an ingest, its refusal
+    /// (lakelands#1043).
+    pub fn unwrapped(&self) -> &Error {
         match self {
+            Error::Ingested { error, .. } => error.unwrapped(),
+            e => e,
+        }
+    }
+
+    /// What a refusal of `invalid`, `constraint`, `precondition`,
+    /// `declined` or `unanswered` says, if this is one.
+    pub fn case(&self) -> Option<&Said> {
+        match self.unwrapped() {
             Error::Refused { reason, .. } => reason.said(),
             _ => None,
         }
@@ -177,6 +245,19 @@ impl Error {
             said.at.insert(0, place);
         }
         self
+    }
+
+    /// A verb's executor declines the call by the host's policy: it did
+    /// not run, and a retry under the same idempotency key answers the same. The host's reason is not
+    /// carried; it belongs in the host's own trail, under the invocation's
+    /// dedup key.
+    pub fn declined(verb: &VerbName) -> Error {
+        let case = Case::CallDeclined { verb: verb.clone() };
+        let said = Said::from(case).within(Place::Verb { name: verb.clone() });
+        Error::Refused {
+            field: None,
+            reason: Refusal::Declined(Box::new(said)),
+        }
     }
 
     /// The lake cannot answer now, for this reason.
@@ -249,14 +330,22 @@ impl Error {
 }
 
 /// Why a call was refused.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "refusal", rename_all = "snake_case")]
 pub enum Refusal {
     /// The principal holds no grant for it.
     NotGranted,
     /// The field is written by another authority, through another door
-    /// (a source field through `upsert`, a derived field by anyone).
+    /// (a source field through `upsert`, a derived field by anyone), or
+    /// `retire` is used where only its type's verbs retire the record.
     WrongDoor,
+    /// Only its type's verbs write the field, or retire the record
+    /// (lakelands#1148): these, which its writer may call; shown none, it
+    /// is `wrong_door` (lakelands#1130).
+    VerbsOnly {
+        /// The verbs that write the field or retire the record, by name.
+        verbs: Vec<crate::id::VerbName>,
+    },
     /// The name is in a reserved namespace: `sys.` for a type,
     /// `sys.` and `lakelands.` for an annotation key; or a verb is
     /// declared on a system type that is not a relation's link type.
@@ -277,7 +366,9 @@ pub enum Refusal {
     },
     /// A whole-graph measure would reach more records than the lake
     /// allows, a `find` would skip more rows than it allows (the refusal
-    /// then names `offset`), or a set's declaration or a migration would
+    /// then names `offset`), a pattern's rows read whole for an order over
+    /// a record a step reaches or for an aggregate would be more than it
+    /// allows (`order_by`, `project`), or a set's declaration or a migration would
     /// change more memberships than it allows (the refusal names the set);
     /// nothing partial is answered or appended.
     TooLarge {
@@ -296,6 +387,10 @@ pub enum Refusal {
     /// is in the log, and a retry runs nothing. The case names its
     /// position.
     Unanswered(Box<Said>),
+    /// The host declined the call by its own policy: its verb's executor
+    /// did not run it, and a retry under the same idempotency key answers the same. The host keeps its
+    /// reason in its own trail, under the call's dedup key.
+    Declined(Box<Said>),
     /// The position asked for is not in the lake's log.
     OutOfRange {
         /// The head of the log.
@@ -313,6 +408,7 @@ impl Refusal {
             Refusal::Invalid(said)
             | Refusal::Constraint(said)
             | Refusal::Precondition(said)
+            | Refusal::Declined(said)
             | Refusal::Unanswered(said) => Some(said),
             _ => None,
         }
@@ -323,6 +419,7 @@ impl Refusal {
             Refusal::Invalid(said)
             | Refusal::Constraint(said)
             | Refusal::Precondition(said)
+            | Refusal::Declined(said)
             | Refusal::Unanswered(said) => Some(said),
             _ => None,
         }
@@ -351,11 +448,16 @@ impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Refusal::NotGranted => write!(f, "you hold no grant for this"),
-            Refusal::WrongDoor => write!(f, "another authority writes this field"),
+            Refusal::WrongDoor => write!(f, "another authority does this, through another door"),
+            Refusal::VerbsOnly { verbs } => {
+                let named: Vec<String> = verbs.iter().map(|v| format!("`{v}`")).collect();
+                write!(f, "only the type's verbs do this: {}", named.join(", "))
+            }
             Refusal::Reserved => write!(f, "the name is in a reserved namespace"),
             Refusal::Invalid(said)
             | Refusal::Constraint(said)
             | Refusal::Precondition(said)
+            | Refusal::Declined(said)
             | Refusal::Unanswered(said) => write!(f, "{said}"),
             Refusal::TooDeep { max } => write!(f, "reactions may go {max} levels deep, no deeper"),
             Refusal::TooLarge { max } => {
@@ -445,6 +547,15 @@ impl fmt::Display for Missing {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Error::Ingested {
+                index,
+                from,
+                record,
+                error,
+            } => write!(
+                f,
+                "record {index} of the stream ({record}): {error}; nothing from record {from} on was written"
+            ),
             // A refusal of a kind this build does not know is its sentence.
             Error::Refused {
                 reason: reason @ Refusal::Unknown(_),
@@ -458,6 +569,20 @@ impl fmt::Display for Error {
                 match reason {
                     Refusal::TooLarge { max } if field.as_ref().is_some_and(|f| f == "offset") => {
                         write!(f, ": a page may skip {max} rows, no more")
+                    }
+                    Refusal::TooLarge { max }
+                        if field.as_ref().is_some_and(|f| f == "order_by") =>
+                    {
+                        write!(
+                            f,
+                            ": rows ordered by a record a step reaches are read whole, and there may be {max}, no more; order by the start's own fields, or start from that record's type and walk back"
+                        )
+                    }
+                    Refusal::TooLarge { max } if field.as_ref().is_some_and(|f| f == "project") => {
+                        write!(
+                            f,
+                            ": an aggregate over rows reads them whole, and there may be {max}, no more; narrow the start, or start from a step's type and walk back"
+                        )
                     }
                     Refusal::TooLarge { max } if field.is_some() => {
                         write!(f, ": more than {max} of the set's memberships would change")

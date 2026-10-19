@@ -9,28 +9,37 @@
 //! the same bytes with an implementation that shares no code with this
 //! one.
 //!
-//! The vectors are one lake's log in the one format version this release
-//! reads and writes, `LOG_FORMAT_VERSION`
+//! The vectors are one lake's log in the format version this release
+//! writes, `LOG_FORMAT_VERSION`, kept in `vectors/<N>/`
 //! (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`):
 //! the two segments, then the events of `further.json`, each following the
-//! one before it and each named for what it shows. `verify.py --stamp N`
-//! writes them in another.
+//! one before it and each named for what it shows. A format step copies
+//! the directory to the next number and stamps the copy
+//! (`verify.py --stamp N`); the directory of every format a release
+//! shipped stays as its tag holds it, and its own `verify.py` is run here.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
 use lakelands_api::error::{Flaw, Situation};
-use lakelands_api::event::{Event, EventBody, LOG_FORMAT_VERSION};
-use lakelands_api::ontology::{TypeDecl, VerbScope};
+use lakelands_api::event::{
+    ChangeKind, DepthBound, Event, EventBody, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT,
+};
+use lakelands_api::ontology::{AtIngest, TypeDecl, VerbScope};
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, ProposedWrite};
 use lakelands_core::{canonical, log, shape};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-fn vectors() -> PathBuf {
+/// The vector directories, one a format, by number.
+fn every_format() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors")
+}
+
+fn vectors() -> PathBuf {
+    every_format().join(LOG_FORMAT_VERSION.to_string())
 }
 
 fn read_json(name: &str) -> Value {
@@ -128,7 +137,7 @@ fn every_line_of_the_lake_is_in_the_one_format_this_release_writes() {
 /// with `**Format version N.**`, and N is `LOG_FORMAT_VERSION`.
 #[test]
 fn the_page_names_the_format_this_release_writes() {
-    let page = fs::read_to_string(vectors().join("../../log-format.md")).unwrap();
+    let page = fs::read_to_string(vectors().join("../../../log-format.md")).unwrap();
     let named = page
         .lines()
         .find_map(|l| l.strip_prefix("**Format version "))
@@ -183,7 +192,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 304, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 538, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -385,7 +394,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 32] = [
+const SHOWN: [&str; 64] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -418,17 +427,51 @@ const SHOWN: [&str; 32] = [
     "date_value",
     "output_carried",
     "output_named",
+    "lake_upgraded",
+    "erasable",
+    "sealed_ingest",
+    "sealed_output",
+    "set_across",
+    "trigger_across",
+    "constraints",
+    "source_forgotten",
+    "verb_authority",
+    "setting_declared",
+    "setting_group",
+    "proposed_plan",
+    "delivery",
+    "function_risk",
+    "computed_by_function",
+    "computed_write",
+    "proposed_compute",
+    "withdrawn",
+    "retired_by_verbs",
+    "retire_effect",
+    "trigger_change_guard",
+    "slip_write",
+    "fired_change",
+    "reaction_write",
+    "trigger_dropped",
+    "untyped_input",
+    "values_removed",
+    "removal_retires",
+    "delivery_own",
+    "removed_before",
+    "removal_by_time_retires",
+    "proposed_migrate_recomputed",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 39;
+const LAST: u64 = 71;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
-const MISPLACED: [&str; 3] = [
+const MISPLACED: [&str; 5] = [
     "upstream_on_another_kind",
     "cause_in_context",
     "output_twice",
+    "sealed_on_another_kind",
+    "delivery_on_another_kind",
 ];
 
 /// Whether the event is what its entry of `further.json` says it shows,
@@ -479,11 +522,18 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
             _ => false,
         },
         "date_bucket" => ty.is_some() && line.contains("date_bucket("),
-        "proposed_declare" => matches!(proposed, Some(ProposedWrite::Declare { declarations })
+        "proposed_declare" => matches!(proposed, Some(ProposedWrite::Declare { declarations, .. })
             if !declarations.is_empty()),
         "proposed_migrate" => {
             matches!(proposed, Some(ProposedWrite::Migrate { report, .. }) if report.lossless)
         }
+        // A kept plan carries its own id: the plan's, at its head (062).
+        "proposed_plan" => matches!(proposed, Some(ProposedWrite::Declare { plan: Some(p), .. })
+        if p.types.iter().any(|t| t.recomputed.is_some_and(|n| n > 0) && !t.unlive.is_empty())
+            && p.report_id == lakelands_core::canonical::sha256_hex(&serde_json::json!({
+                "plan": lakelands_api::write::Plan { report_id: String::new(), ..(**p).clone() },
+                "head": p.at.0,
+            }))),
         // Annotations are not shape.
         "annotations" => ty.is_some_and(|t| {
             let mut bare = t.clone();
@@ -570,6 +620,138 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
                 ..
             }
         ),
+        "lake_upgraded" => matches!(
+            &event.body,
+            B::LakeUpgraded { from, to } if *to == event.v && *from + 1 == *to
+        ),
+        "constraints" => matches!(declared, Some(D::Type(t)) if {
+            let at: Vec<_> = t.constraints.iter().map(|c| c.at_ingest).collect();
+            at == [AtIngest::Admit, AtIngest::Refuse] && line.contains("previous(status)")
+        }),
+        "erasable" => {
+            matches!(declared, Some(D::Type(t)) if t.fields.iter().any(|f| f.erasable))
+        }
+        "sealed_ingest" => {
+            let sealed = event.sealed.as_ref().map(|s| s.fields.as_slice());
+            matches!(&event.body, B::RecordIngested { .. }) && sealed == Some(&["email".into()])
+        }
+        "sealed_output" => {
+            let source = event.sealed.as_ref().and_then(|s| s.source.as_ref());
+            matches!(
+                &event.body,
+                B::OutputRecorded {
+                    output: Some(_),
+                    ..
+                }
+            ) && source.is_some()
+        }
+        "set_across" => {
+            matches!(declared, Some(D::ObjectSet(_))) && line.contains("shelf.capacity")
+        }
+        "trigger_across" => {
+            matches!(declared, Some(D::Trigger(_)))
+                && line.contains("exists(shelf)")
+                && line.contains("shelf.capacity")
+        }
+        "source_forgotten" => matches!(
+            &event.body,
+            B::SourceForgotten { source, keys }
+                if source == "crm" && keys.len() == 1 && keys[0].as_str() == "1"
+        ),
+        "verb_authority" => matches!(declared, Some(D::Type(t))
+            if t.fields.iter().any(|f| f.authority == lakelands_api::ontology::Authority::Verb)),
+        "retired_by_verbs" => matches!(declared, Some(D::Type(t))
+            if t.retired_by == lakelands_api::ontology::RetiredBy::Verbs),
+        "retire_effect" => matches!(declared, Some(D::Verb(v))
+            if v.effect == lakelands_api::ontology::VerbEffect::Retire),
+        "setting_declared" => matches!(declared, Some(D::Setting(s))
+            if s.key == "vat_rate" && s.group.as_deref() == Some("operator")),
+        "setting_group" => matches!(&event.body, B::RecordUpserted { ty, patch, .. }
+            if ty.as_str() == lakelands_api::seam::SETTING_TYPE
+                && patch.get("group").and_then(|g| g.as_str()) == Some("operator")),
+        "delivery" => {
+            matches!(&event.body, B::RecordIngested { .. })
+                && event.delivery.as_ref().is_some_and(|d| d == "batch-7")
+        }
+        "function_risk" => matches!(declared, Some(D::Function(f))
+            if f.backing != "expr" && f.risk != lakelands_api::ontology::Risk::Low),
+        "computed_by_function" => matches!(declared, Some(D::Type(t))
+            if t.fields.iter().any(|f| f.function.is_some())),
+        "computed_write" => {
+            matches!(&event.body, B::RecordUpserted { ty, .. } if ty.as_str() == "alert")
+        }
+        // The call's digest on its record, as the write at 55 made it.
+        "proposed_compute" => {
+            let sha = |v: &Value| lakelands_core::canonical::sha256_hex(v);
+            let call = sha(&serde_json::json!({ "function": "notify",
+                "inputs": { "subject": "disk full" },
+                "config": { "url": "https://notify.example/send" } }));
+            let input =
+                sha(&serde_json::json!({ "call": call, "record": ["alert", "a1"], "made": 55 }));
+            matches!(proposed, Some(ProposedWrite::Compute { inputs: None, input: i, .. }) if i.0 == input)
+                && event.cause == Some(lakelands_api::Position(55))
+        }
+        "withdrawn" => matches!(declared, Some(D::Withdraw(w))
+            if w.kind == lakelands_api::write::DeclarationKind::Trigger && w.name == "shelved"),
+        "trigger_change_guard" => matches!(declared, Some(D::Trigger(t))
+            if t.when_strict && t.max_depth == Some(1)
+                && t.on_changes == Some(vec![ChangeKind::Upserted, ChangeKind::Ingested])
+                && t.when.as_ref().is_some_and(|w| matches!(w, lakelands_api::expr::Condition::Text(c) if c == "created()"))),
+        "slip_write" => {
+            matches!(&event.body, B::RecordUpserted { ty, made: true, .. } if ty.as_str() == "slip")
+        }
+        "fired_change" => {
+            matches!(&event.body, B::TriggerFired { trigger, change: Some(ChangeKind::Upserted), created: Some(true), .. }
+                if trigger.as_str() == "slip_made")
+                && event.cause == Some(lakelands_api::Position(61))
+        }
+        "reaction_write" => {
+            matches!(&event.body, B::RecordUpserted { made: true, .. })
+                && event.context.depth == 1
+                && event.cause == Some(lakelands_api::Position(62))
+        }
+        "trigger_dropped" => {
+            matches!(
+                &event.body,
+                B::TriggerDropped {
+                    trigger,
+                    depth: 1,
+                    max_depth: 1,
+                    bound: DepthBound::Trigger,
+                    ..
+                } if trigger.as_str() == "slip_made"
+            ) && event.cause == Some(lakelands_api::Position(63))
+        }
+        "untyped_input" => matches!(declared, Some(D::Function(f))
+            if !f.inputs.is_empty() && f.inputs.iter().all(|i| i.any_kind)),
+        "values_removed" => {
+            matches!(&event.body, B::ValuesRemoved { source, selection, before, keys }
+            if source == "erp" && before.is_none() && keys.is_empty()
+                && *selection == lakelands_api::write::Selection::Delivery("batch-7".into()))
+        }
+        "removal_retires" => matches!(&event.body, B::RecordRetired { key, .. } if key == "INV-2"),
+        "delivery_own" => {
+            matches!(&event.body, B::RecordIngested { key, .. } if key == "INV-3")
+                && event.delivery.as_ref().map(|d| d.as_str()) == Some("d68")
+        }
+        "removed_before" => {
+            matches!(&event.body, B::ValuesRemoved { source, selection, before, keys }
+            if source == "erp" && *before == Some(lakelands_api::Position(69)) && keys.is_empty()
+                && matches!(selection, lakelands_api::write::Selection::WrittenBefore(_)))
+        }
+        "removal_by_time_retires" => {
+            matches!(&event.body, B::RecordRetired { key, .. } if key == "INV-3")
+        }
+        // A report of format 17 counts what it computes again, under its
+        // own id at the head it was made at (062).
+        "proposed_migrate_recomputed" => {
+            matches!(proposed, Some(ProposedWrite::Migrate { report, .. })
+            if report.recomputed == Some(1)
+                && report.report_id == lakelands_core::canonical::sha256_hex(&serde_json::json!({
+                    "report": lakelands_api::write::MigrationReport { report_id: String::new(), ..(**report).clone() },
+                    "head": 70,
+                })))
+        }
         other => panic!("`further.json` shows `{other}`, which this test has no check for"),
     }
 }
@@ -655,9 +837,25 @@ fn every_misplaced_line_is_refused_for_the_member_it_misplaces() {
             "upstream_on_another_kind" => assert!(why.contains("`record_retired`"), "{why}"),
             "cause_in_context" => assert!(why.contains("`context` carries `cause`"), "{why}"),
             "output_twice" => assert_eq!(flaw, Flaw::OutputOnce),
+            "sealed_on_another_kind" => assert!(why.contains("carries `sealed`"), "{why}"),
+            "delivery_on_another_kind" => assert!(why.contains("carries `delivery`"), "{why}"),
             other => panic!("`further.json` misplaces `{other}`, which this test has no check for"),
         }
     }
+}
+
+/// `delivery` on a `record_ingested` of a format before 17, which has no
+/// such member: the vectors' delivery line, its format set back, is
+/// refused naming its format.
+#[test]
+fn a_delivery_before_format_17_is_misplaced() {
+    let line = further("events")
+        .into_iter()
+        .find(|e| e.shows == "delivery");
+    let mut event: Event = serde_json::from_str(&line.expect("a delivery line").line).unwrap();
+    event.v = 16;
+    let flaw = log::misplaced(&event).expect("refused");
+    assert!(matches!(flaw, Flaw::DeliveryOn { v: 16, .. }), "{flaw}");
 }
 
 /// The negative vector `negative/known-at-goes-back`: the first segment
@@ -693,9 +891,9 @@ fn the_negative_vector_whose_known_at_goes_back_is_refused_at_its_position() {
 /// The negative vector `negative/another-format`: the first segment of
 /// the vectors with the last event written in the format before this
 /// release's, its hash made right. `export::verify` refuses it at that
-/// position by both numbers
+/// position by both numbers: a lake's format never falls
 /// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`),
-/// as `verify.py` does.
+/// and `verify.py`, which reads the one format, refuses it there too.
 #[test]
 fn the_negative_vector_in_another_format_is_refused_at_its_position() {
     let dir = vectors().join("negative/another-format");
@@ -720,8 +918,8 @@ fn the_negative_vector_in_another_format_is_refused_at_its_position() {
         Err(lakelands_api::Error::Unavailable { situation }) => assert!(
             matches!(
                 &*situation,
-                Situation::Damaged { position: Some(at), flaw: Flaw::FormatOther { v, reads: r }, .. }
-                    if at.0 == 6 && *v == reads - 1 && *r == reads
+                Situation::Damaged { position: Some(at), flaw: Flaw::FormatStep { v, before }, .. }
+                    if at.0 == 6 && *v == reads - 1 && *before == reads
             ),
             "{situation}"
         ),
@@ -729,4 +927,152 @@ fn the_negative_vector_in_another_format_is_refused_at_its_position() {
             panic!("an event in another format is refused at position 6, and it answered {other:?}")
         }
     }
+}
+
+/// The vectors are kept for every format from 14, the first a release
+/// with real installations wrote, to the one this release writes, with no
+/// gap; and each directory's own `verify.py`, which reads that format
+/// alone, passes over its own log. `scripts/gates/vectors-kept.sh` holds
+/// that a shipped one is as its tag holds it.
+#[test]
+fn the_vectors_of_every_format_a_release_reads_are_kept_and_verify() {
+    let mut formats: Vec<u32> = fs::read_dir(every_format())
+        .unwrap()
+        .filter_map(|e| e.unwrap().file_name().to_str()?.parse().ok())
+        .collect();
+    formats.sort_unstable();
+    let want: Vec<u32> = (14..=LOG_FORMAT_VERSION).collect();
+    assert_eq!(formats, want, "the vector directories by format");
+    for n in formats {
+        let dir = every_format().join(n.to_string());
+        let run = std::process::Command::new("python3")
+            .arg("verify.py")
+            .current_dir(&dir)
+            .output()
+            .unwrap_or_else(|e| {
+                panic!("this test runs `python3 verify.py` and needs python3: {e}")
+            });
+        assert!(
+            run.status.success(),
+            "format {n}'s verify.py over its own vectors: {}{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+/// Every line of a kept format's vectors, its log and `further.json`'s,
+/// as JSON.
+fn lines_of(n: u32) -> Vec<Value> {
+    let dir = every_format().join(n.to_string());
+    let mut lines = Vec::new();
+    for seg in ["00000000000000000000.jsonl", "00000000000000000007.jsonl"] {
+        let text = fs::read_to_string(dir.join("log").join(seg)).unwrap();
+        lines.extend(
+            text.lines()
+                .map(|l| serde_json::from_str::<Value>(l).unwrap()),
+        );
+    }
+    let further: Value =
+        serde_json::from_slice(&fs::read(dir.join("further.json")).unwrap()).unwrap();
+    for e in further["events"].as_array().unwrap() {
+        lines.push(serde_json::from_str(str_of(e, "line")).unwrap());
+    }
+    lines
+}
+
+/// The steps from each older format to this release's change no event:
+/// 14 → 15 lets a verb's path read across a reference or a relation's
+/// link (055), which a log of format 14 never declares, and 15 → 16 and
+/// 16 → 17 add forms a log of the format before never holds. So every
+/// line of each older format's vectors, of every kind they hold, is read
+/// as it was written, `v` included, and decodes into this release's
+/// structs; the kinds each holds are named, so a kind the vectors miss is
+/// seen.
+#[test]
+fn the_steps_from_every_older_format_change_no_event_of_any_kind() {
+    for n in OLDEST_LOG_FORMAT..LOG_FORMAT_VERSION {
+        the_step_from(n);
+    }
+}
+
+fn the_step_from(n: u32) {
+    let mut kinds = std::collections::BTreeSet::new();
+    for line in lines_of(n) {
+        let v = line["v"].as_u64().unwrap();
+        assert_eq!(v, u64::from(n));
+        let read = log::converted(v, line.clone());
+        assert_eq!(read, line, "the step from {n} changed {line}");
+        let event: Event = serde_json::from_value(read).unwrap();
+        assert_eq!(canonical::of(&event), canonical::to_vec(&line));
+        kinds.insert(event.body.kind());
+    }
+    let held: Vec<_> = kinds.iter().map(|k| k.to_string()).collect();
+    assert_eq!(held.len(), kinds.len());
+    let some = [
+        "lake_created",
+        "lease_taken",
+        "declared",
+        "migrated",
+        "record_ingested",
+        "record_upserted",
+        "checkpoint",
+        "write_proposed",
+    ];
+    for kind in some {
+        assert!(
+            held.iter().any(|k| k == kind),
+            "format {n}'s vectors hold no `{kind}`: {held:?}"
+        );
+    }
+}
+
+/// Each older format's vectors verify as an export does, through the
+/// converter: the chain, every hash over the bytes as written, and every
+/// rule of the format, by the same verifier an import runs.
+#[test]
+fn the_vectors_of_every_older_format_verify_as_an_export_of_that_format() {
+    for n in OLDEST_LOG_FORMAT..LOG_FORMAT_VERSION {
+        let dir = every_format().join(n.to_string());
+        let verified = lakelands_core::export::verify(&dir).unwrap();
+        assert_eq!(
+            verified.through.0, 7,
+            "format {n}: the two segments run through position 7"
+        );
+    }
+}
+
+/// Fences never fall: the vectors' first segment with the event at
+/// position 6 carried under fence 0, below position 1's lease of fence 1,
+/// its hash made right, is refused at 6 by `export::verify`.
+#[test]
+fn a_fence_that_falls_is_refused_where_it_falls() {
+    let dir = std::env::temp_dir().join(format!("lakelands-fence-falls-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("log")).unwrap();
+    let text = fs::read_to_string(vectors().join("log").join(format!("{:020}.jsonl", 0))).unwrap();
+    let mut lines: Vec<Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let six = &mut lines[6];
+    six["fence"] = serde_json::json!(0);
+    six.as_object_mut().unwrap().remove("hash");
+    let hash = sha(&canonical::to_vec(six));
+    six["hash"] = serde_json::json!(hash);
+    let mut file = Vec::new();
+    for l in &lines {
+        file.extend(canonical::to_vec(l));
+        file.push(b'\n');
+    }
+    fs::write(dir.join("log").join(format!("{:020}.jsonl", 0)), file).unwrap();
+    let verified = lakelands_core::export::verify(&dir);
+    let _ = fs::remove_dir_all(&dir);
+    assert!(
+        matches!(&verified, Err(lakelands_api::Error::Unavailable { situation })
+            if matches!(&**situation, Situation::Damaged {
+                position: Some(at), flaw: Flaw::FenceBelow { fence: 0, floor: 1 }, ..
+            } if at.0 == 6)),
+        "{verified:?}"
+    );
 }

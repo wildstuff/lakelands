@@ -1,0 +1,10 @@
+name: mark_dunning_sent
+on: dunning
+risk: low
+description: "Record that the notice went out, and on which day."
+requires: "status = 'open'"
+payload:
+  sent_on: { type: date, required: true }
+set:
+  status: "'sent'"
+  sent_on: payload.sent_on

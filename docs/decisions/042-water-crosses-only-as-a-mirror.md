@@ -40,7 +40,9 @@ target, so grants decide what crosses on both sides.
    the position reached and why it stopped, is a `sys.mirror` record in
    the target, one per connection and source type, readable through the
    catalog. Nothing is dropped silently; a new source field crosses only
-   once the target declares it.
+   once the target declares it. The source's forgetting of a source stops
+   each mapped type whose source type has an erasable field, past the act
+   (`docs/decisions/058-a-source-may-be-forgotten.md`).
 5. **One home lake per field.** A field is a source field in one
    direction only. A connection whose target type is the source type of
    a connection the other way is refused, naming both.
@@ -61,6 +63,13 @@ Two further rules follow from the tree:
   state. A held record's copy is held, so a mirror whose source principal
   holds `restricted` is refused at the start unless its target writer
   holds it too (lakelands#772): it writes with the grants it is given.
+  A target type marked `retired_by: verbs` refuses the crossing of a
+  retirement as it refuses any `retire` (016): the mirror stops that
+  type there and journals the refusal, and the copy stays live. Since
+  the refusal comes before the record is looked for, this holds for a
+  key that never crossed too, whose retirement the mirror otherwise
+  passes over as nothing to retire. The operator takes the mark off the
+  target type, or mirrors into one that is not marked (lakelands#1148).
 
 The mirror reads the feed for order and position only. The feed is the
 log unmasked, not filtered per principal
@@ -141,3 +150,5 @@ resumes from the position it stopped at once the target admits it.
   writer does not is refused at the start (lakelands#772).
 - A mirrored type may declare a derived relation: it was refused as one
   whose links are authored (lakelands#902).
+- A target type only its verbs retire stops the crossing of a
+  retirement, as it refuses `retire` (lakelands#1148).

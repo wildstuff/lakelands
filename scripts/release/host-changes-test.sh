@@ -10,7 +10,15 @@
 # changes, which are, in a struct and a variant each written on one line
 # too; a renamed parameter and a private field, which are not; and
 # `Self::Out` becoming `Out`, which the rule reads as one and the
-# script's head names as a miss.
+# script's head names as a miss. Below them, a trait, a function, a
+# struct and a method under `#[doc(hidden)]` whose types change, which
+# are not reported: they are no host's.
+#
+# Then `reach` over a small tree (tree/src): an item of a hidden `pub mod`
+# that a visible `pub use` re-exports reaches a host by the parent's path,
+# one only a hidden re-export names or none names does not, an item of a
+# public module does, and one of a hidden module that re-exports nothing
+# does not. The item that bears its module's name is among them.
 # Usage: scripts/release/host-changes-test.sh
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -21,5 +29,14 @@ if diff <(printf '%s\n' "$got") "$dir/expected.txt"; then
     echo "host-changes-test: the report is the fixture's ($(wc -l < "$dir/expected.txt" | tr -d ' ') lines)"
 else
     echo "host-changes-test: the report differs from $dir/expected.txt (<: reported, >: expected)" >&2
+    exit 1
+fi
+reached="$(while read -r file item; do
+    printf '%s %s: %s\n' "$file" "$item" "$(scripts/release/host-changes.sh --reach "$dir/tree/src/$file" "$item")"
+done < <(sed 's/: .*//' "$dir/reach-expected.txt"))"
+if diff <(printf '%s\n' "$reached") "$dir/reach-expected.txt"; then
+    echo "host-changes-test: reach is the fixture's ($(wc -l < "$dir/reach-expected.txt" | tr -d ' ') items)"
+else
+    echo "host-changes-test: reach differs from $dir/reach-expected.txt (<: reached, >: expected)" >&2
     exit 1
 fi

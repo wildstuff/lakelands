@@ -18,7 +18,7 @@ use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::{VIEW_KEPT_SETTING as SETTING, kept_name, order_name};
 use lakelands_api::write::Declaration;
 use lakelands_api::{FieldName, Position, RecordKey, Result, Timestamp, TypeName};
-use lakelands_core::expr::aggregate::{Entry, Keeping, KeptFolds, Row};
+use lakelands_core::expr::aggregate::{Entry, Folds, Grouping, Keeping, KeptFolds, Row};
 use lakelands_core::expr::{self, Place};
 use serde::{Deserialize, Serialize};
 
@@ -204,8 +204,20 @@ impl Kept {
     }
 }
 
+/// Whether the computation of the view `decl` names a setting, kept as
+/// the fold would keep it.
+pub(crate) fn names_settings(o: &Ontology, decl: &TypeDecl) -> bool {
+    Kept::of(o, decl).is_some_and(|k| !k.settings.is_empty())
+}
+
+/// The settings the computation of the view `decl` names, kept as the
+/// fold would keep it.
+pub(crate) fn settings_read(o: &Ontology, decl: &TypeDecl) -> BTreeSet<String> {
+    Kept::of(o, decl).map(|k| k.settings).unwrap_or_default()
+}
+
 /// The settings `e` names.
-fn settings_named(e: &Expr, named: &mut BTreeSet<String>) {
+pub(crate) fn settings_named(e: &Expr, named: &mut BTreeSet<String>) {
     if let Expr::Call {
         func: Func::Setting,
         args,
@@ -282,13 +294,102 @@ pub(crate) struct Views {
     /// Views whose state says whole and that the lake would not keep as
     /// it stands: ended by the first event the transaction settles.
     orphans: Vec<TypeName>,
+    /// The groups put or ended, where the write path asks ([`step`]).
+    moved: Option<Moved>,
+}
+
+/// The groups of kept views a run of the hooks put or ended, by view.
+pub(crate) type Moved = BTreeSet<(TypeName, RecordKey)>;
+
+/// What a run of the hooks in the write path overwrote in its [`Staged`],
+/// oldest first: put back where its write is refused, so that the next
+/// write runs over the writes accepted before it (lakelands#1185).
+#[derive(Default)]
+pub(crate) struct Undo(Vec<Undone>);
+
+/// One thing overwritten, as it was: none where there was nothing.
+enum Undone {
+    Record((TypeName, RecordKey), Option<StoredRecord>),
+    Output(
+        (String, lakelands_api::event::Digest),
+        Option<Vec<(Position, Value)>>,
+    ),
+    Orders(TypeName, Option<Orders>),
+    Entry(TypeName, Box<str>, Option<Option<Box<str>>>),
+}
+
+impl Undo {
+    /// The record at `at` was `was` before the run put one there.
+    pub(crate) fn record(&mut self, at: (TypeName, RecordKey), was: Option<StoredRecord>) {
+        self.0.push(Undone::Record(at, was));
+    }
+}
+
+/// Whether the group at `key` of `view` was flagged, or is flagged, as not
+/// exact on the whole face (049), where a measure that fails is among it,
+/// after the run since `staged`'s undo began. A flag that stays says not
+/// whether the failure it stands for cleared, which a read of the face
+/// answers from the members, so a group flagged at either end is decided
+/// again, with every group of the sets' views that read it.
+pub(crate) fn reflagged(
+    at: &At<'_>,
+    staged: &Staged,
+    (view, key): (&TypeName, &RecordKey),
+) -> Result<bool> {
+    let place = (kept_name(view), key.clone());
+    let Some(Undo(done)) = &staged.undo else {
+        return Ok(false);
+    };
+    let first = done.iter().find_map(|u| match u {
+        Undone::Record(p, was) if *p == place => Some(was),
+        _ => None,
+    });
+    let was = match first {
+        None => return Ok(false),
+        Some(Some(r)) => Some(r.clone()),
+        Some(None) => staged.before(at.view, &place.0, key)?,
+    };
+    let flagged = |r: Option<&StoredRecord>| {
+        r.filter(|r| !r.is_ended())
+            .is_some_and(|r| carried(r).flagged[1])
+    };
+    Ok(flagged(was.as_ref()) || flagged(staged.records.get(&place)))
+}
+
+/// Put back what the run since `staged`'s undo began overwrote, newest
+/// first, and keep no more. The views as the run worked on them go too: each is read again
+/// from what stays, on first use, as the next transaction reads it.
+pub(crate) fn undo(staged: &mut Staged) {
+    let Some(Undo(done)) = staged.undo.take() else {
+        return;
+    };
+    for undone in done.into_iter().rev() {
+        match undone {
+            Undone::Record(at, Some(r)) => drop(staged.records.insert(at, r)),
+            Undone::Record(at, None) => drop(staged.records.remove(&at)),
+            Undone::Output(at, Some(o)) => drop(staged.outputs.insert(at, o)),
+            Undone::Output(at, None) => drop(staged.outputs.remove(&at)),
+            Undone::Orders(name, Some(o)) => drop(staged.orders.insert(name, o)),
+            Undone::Orders(name, None) => drop(staged.orders.remove(&name)),
+            Undone::Entry(name, key, was) => {
+                let orders = staged.orders.get_mut(&name).expect("an entry's orders");
+                match was {
+                    Some(e) => orders.entries.insert(key, e),
+                    None => orders.entries.remove(&key),
+                };
+            }
+        }
+    }
+    staged.kept = Views::default();
 }
 
 /// What the fold's hooks are handed: the transaction's view of the
-/// projection, the projection it writes, and the lake at the event.
+/// projection, the projection it writes, and the lake at the event. The
+/// write path runs the hooks over no projection ([`step`]): what they put
+/// is held in its [`Staged`] alone.
 pub(crate) struct At<'a> {
     pub view: &'a dyn ProjectionView,
-    pub projection: &'a dyn ProjectionStore,
+    pub projection: Option<&'a dyn ProjectionStore>,
     pub ontology: &'a Ontology,
     pub settings: &'a BTreeMap<String, Value>,
 }
@@ -319,8 +420,13 @@ impl At<'_> {
         let state = held.and_then(|(_, s)| serde_json::from_value(s.clone()).ok());
         Ok(match state {
             Some(state) => state,
-            None => self::state(self.view, ty)?.unwrap_or_default(),
+            None => staged.kept_state(self.view, ty)?.unwrap_or_default(),
         })
+    }
+
+    /// Put `r` into the projection, where there is one.
+    fn put(&self, r: &StoredRecord) -> Result<()> {
+        self.projection.map_or(Ok(()), |p| p.put_record(r))
     }
 
     /// Record `state` for `ty` at `at`.
@@ -333,8 +439,14 @@ impl At<'_> {
     ) -> Result<()> {
         let input = crate::backed::digest(&Value::from(ty.as_str()));
         let state = serde_json::json!(state);
-        self.projection.put_output(KEPT, &input, &state, at)?;
-        (staged.outputs).insert((KEPT.to_owned(), input), vec![(at, state)]);
+        if let Some(p) = self.projection {
+            p.put_output(KEPT, &input, &state, at)?;
+        }
+        let key = (KEPT.to_owned(), input);
+        let was = (staged.outputs).insert(key.clone(), vec![(at, state)]);
+        if let Some(undo) = &mut staged.undo {
+            undo.0.push(Undone::Output(key, was));
+        }
         Ok(())
     }
 
@@ -569,6 +681,7 @@ impl Work {
             fields,
             meta: BTreeMap::new(),
             position: at,
+            made: at,
             retired: false,
             restricted,
         })
@@ -686,8 +799,15 @@ impl Views {
             let before = work.state.clone();
             let mut changed = Vec::new();
             // The event's entries first: the seeks read them.
-            let (name, orders) = (order_name(&view), staged.orders.entry(order_name(&view)));
-            let orders = orders.or_default();
+            let name = order_name(&view);
+            if let Some(undo) = staged
+                .undo
+                .as_mut()
+                .filter(|_| !staged.orders.contains_key(&name))
+            {
+                undo.0.push(Undone::Orders(name.clone(), None));
+            }
+            let orders = staged.orders.entry(name.clone()).or_default();
             for (key, entry) in std::mem::take(&mut work.entries) {
                 let mut r = StoredRecord::ended(name.clone(), RecordKey::from(&*key), position);
                 if let Some(e) = &entry {
@@ -695,8 +815,11 @@ impl Views {
                     r.fields
                         .insert(ENTRY.into(), serde_json::from_str(e).expect("an entry"));
                 }
-                at.projection.put_record(&r)?;
-                orders.entries.insert(key, entry);
+                at.put(&r)?;
+                let was = orders.entries.insert(key.clone(), entry);
+                if let Some(undo) = &mut staged.undo {
+                    undo.0.push(Undone::Entry(name.clone(), key, was));
+                }
             }
             for key in std::mem::take(&mut work.touched) {
                 // An extreme whose holder the event took is read from its
@@ -717,8 +840,11 @@ impl Views {
                     }
                 };
                 if let Some(put) = put {
-                    at.projection.put_record(&put)?;
+                    at.put(&put)?;
                     staged.put(put);
+                    if let Some(moved) = &mut self.moved {
+                        moved.insert((view.clone(), key.clone()));
+                    }
                     changed.push((was, is.clone()));
                 }
                 // A group with no member leaves the transaction: one that
@@ -760,19 +886,27 @@ impl Views {
             Ok(())
         })?;
         for key in keys {
-            let ended = StoredRecord::ended(kept_name(view), key, position);
-            at.projection.put_record(&ended)?;
+            let ended = StoredRecord::ended(kept_name(view), key.clone(), position);
+            at.put(&ended)?;
             staged.put(ended);
+            if let Some(moved) = &mut self.moved {
+                moved.insert((view.clone(), key));
+            }
         }
         // The entries end as a whole, whatever their number: a seek in the
         // transaction reads only those put after.
         let name = order_name(view);
-        at.projection.end_head_only(&name, position)?;
+        if let Some(p) = at.projection {
+            p.end_head_only(&name, position)?;
+        }
         let ended = Orders {
             ended: true,
             ..Orders::default()
         };
-        staged.orders.insert(name, ended);
+        let was = staged.orders.insert(name.clone(), ended);
+        if let Some(undo) = &mut staged.undo {
+            undo.0.push(Undone::Orders(name, was));
+        }
         at.put_state(staged, view, &State::default(), position)
     }
 
@@ -908,45 +1042,58 @@ pub(crate) fn settle(at: &At<'_>, staged: &mut Staged, e: &Event) -> Result<()> 
     if none && staged.kept.idle() && asked.is_none() {
         return Ok(());
     }
-    // A setting's write and a declaration may move any view: all are
-    // read in. A record's write moves the views that read its type, which
-    // its notes have read in.
     let any = setting.is_some()
         || matches!(
             e.body,
             Declared { .. } | Migrated { .. } | ValueTypeMigrated { .. }
         );
     let mut views = std::mem::take(&mut staged.kept);
-    let settled = (|| {
+    let moves = (any, &declared, setting.as_deref());
+    let settled = views.settle(at, staged, moves, e.position);
+    staged.kept = views;
+    settled
+}
+
+impl Views {
+    /// [`settle`] of an event that writes `setting`, declares or steps
+    /// the types `declared`, or, where not `any`, writes a record.
+    fn settle(
+        &mut self,
+        at: &At<'_>,
+        staged: &mut Staged,
+        (any, declared, setting): (bool, &BTreeSet<TypeName>, Option<&str>),
+        position: Position,
+    ) -> Result<()> {
+        // A setting's write and a declaration may move any view: all are
+        // read in. A record's write moves the views that read its type,
+        // which its notes have read in.
         if any {
-            views.load(at, staged, None, asked.as_ref())?;
+            let asked = setting.and_then(|k| k.strip_prefix(SETTING));
+            self.load(at, staged, None, asked.map(TypeName::from).as_ref())?;
         }
-        for view in std::mem::take(&mut views.orphans) {
-            views.unmake(at, staged, &view, e.position)?;
+        for view in std::mem::take(&mut self.orphans) {
+            self.unmake(at, staged, &view, position)?;
         }
         // A view the event changes under its records is ended: its own
         // declaration or a source's, a source whose records wait to be
         // computed again, or a setting its expressions read.
         let moved = |w: &Work| {
-            let named = setting.as_deref();
             let under = |s: &Src| declared.contains(&s.ty) || staged.recomputes(&s.ty);
             declared.contains(&w.kept.decl.name)
                 || w.kept.sources.iter().any(under)
-                || named.is_some_and(|k| w.kept.settings.contains(k))
+                || setting.is_some_and(|k| w.kept.settings.contains(k))
         };
-        let ended: Vec<TypeName> = (views.views.values().filter(|w| moved(w)))
+        let ended: Vec<TypeName> = (self.views.values().filter(|w| moved(w)))
             .map(|w| w.kept.decl.name.clone())
             .collect();
         for view in &ended {
-            views.unmake(at, staged, view, e.position)?;
+            self.unmake(at, staged, view, position)?;
         }
         if setting.is_some() || !declared.is_empty() {
-            views.want(at, staged, e.position)?;
+            self.want(at, staged, position)?;
         }
-        views.flush(at, staged, e.position)
-    })();
-    staged.kept = views;
-    settled
+        self.flush(at, staged, position)
+    }
 }
 
 /// The end of a flush: the recomputations that were pending have put
@@ -962,6 +1109,179 @@ pub(crate) fn made(at: &At<'_>, staged: &mut Staged, position: Position) -> Resu
     let made = (views.load(at, staged, None, None)).and_then(|()| views.want(at, staged, position));
     staged.kept = views;
     made
+}
+
+/// The write path's run of the fold's own hooks (lakelands#1185), over
+/// no projection: where `write`, a record of the lake was `before` and is
+/// `after`; else a set of declarations declared `declared`. The views it
+/// moves are put as the fold of the same events will put them, from the
+/// same records, and the groups put or ended are answered.
+pub(crate) fn step(
+    at: &At<'_>,
+    staged: &mut Staged,
+    write: Option<(Option<&StoredRecord>, &StoredRecord)>,
+    declared: &BTreeSet<TypeName>,
+    position: Position,
+) -> Result<Moved> {
+    let mut setting = None;
+    if let Some((before, after)) = write {
+        note(at, staged, before, after)?;
+        staged.put(after.clone());
+        let named = after.ty.as_str() == lakelands_api::seam::SETTING_TYPE;
+        setting = named.then(|| after.key.to_string());
+    }
+    let mut views = std::mem::take(&mut staged.kept);
+    views.moved = Some(Moved::new());
+    let any = write.is_none() || setting.is_some();
+    let settled = views.settle(at, staged, (any, declared, setting.as_deref()), position);
+    let moved = views.moved.take().unwrap_or_default();
+    staged.kept = views;
+    settled.map(|()| moved)
+}
+
+/// The groups the hooks put or ended since the last call, and from here
+/// on those of the next: a fold that decides a set of a view itself asks
+/// (lakelands#1232).
+pub(crate) fn moved(staged: &mut Staged) -> Moved {
+    staged.kept.moved.replace(Moved::new()).unwrap_or_default()
+}
+
+/// Whether the views as the transaction leaves them hold `view` whole.
+pub(crate) fn whole(at: &At<'_>, staged: &Staged, view: &TypeName) -> Result<bool> {
+    Ok(at.state(staged, view)?.whole)
+}
+
+/// The record a set over `view` decides on at `key`, as the transaction
+/// leaves the view: the group's whole face, decided for no reader (004).
+/// Where the fold flags the group, or a group of a view it reads through,
+/// as not exact, the face is what a read of the view computes from the
+/// members (049). None where the group has no record on that face, or a
+/// measure fails over it or over a group of a view it reads.
+pub(crate) fn face(
+    at: &At<'_>,
+    staged: &Staged,
+    view: &TypeName,
+    key: &RecordKey,
+) -> Result<Option<StoredRecord>> {
+    Ok(faced(at, staged, view, key)?.flatten())
+}
+
+/// [`face`], where a measure that fails, which a read of the view
+/// refuses, is told apart from no record: none where one fails, and
+/// `Some(None)` where the group has no record on the whole face.
+fn faced(
+    at: &At<'_>,
+    staged: &Staged,
+    view: &TypeName,
+    key: &RecordKey,
+) -> Result<Option<Option<StoredRecord>>> {
+    let held = staged.record(at.view, &kept_name(view), key)?;
+    let Some(r) = held.filter(|r| !r.is_ended()) else {
+        return Ok(Some(None));
+    };
+    let flagged = carried(&r).flagged[1];
+    let Some(mut r) = shown(r, view, true) else {
+        return Ok(Some(None));
+    };
+    let kept = at
+        .ontology
+        .ty(view)
+        .ok()
+        .and_then(|d| Kept::of(at.ontology, d));
+    let Some(kept) = kept else {
+        return Ok(Some(Some(r)));
+    };
+    if flagged || inexact_below(at, staged, &kept)? {
+        let value = |f: &FieldName| (f.clone(), r.fields.get(f).cloned().unwrap_or(Value::Null));
+        let by: Row = kept.view().group_by.iter().map(value).collect();
+        match computed(at, staged, &kept, key, &by)? {
+            Some(Some(fields)) => r.fields = fields,
+            Some(None) => return Ok(Some(None)),
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(Some(r)))
+}
+
+/// Whether a view `kept` reads through holds a group that is not exact on
+/// the whole face: the fold folds that group's record as it stands.
+fn inexact_below(at: &At<'_>, staged: &Staged, kept: &Kept) -> Result<bool> {
+    for src in kept.sources.iter().filter(|s| s.view) {
+        let inner = (at.ontology.ty(&src.ty).ok()).and_then(|d| Kept::of(at.ontology, d));
+        if at.state(staged, &src.ty)?.not_exact[1] > 0
+            || inner.map_or(Ok(false), |k| inexact_below(at, staged, &k))?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The whole face of the group at `key` of `kept`, its values `by`, as a
+/// read of the view computes it from its members as the transaction leaves
+/// them, every record of each source read. `Some(None)` where it has no
+/// member; none where a measure fails over it or does not land, or over a
+/// group of a view it reads: a read refuses there.
+fn computed(
+    at: &At<'_>,
+    staged: &Staged,
+    kept: &Kept,
+    key: &RecordKey,
+    by: &Row,
+) -> Result<Option<Option<Row>>> {
+    let own = &kept.view().group_by;
+    let mut folds = Vec::with_capacity(kept.sources.len());
+    for src in &kept.sources {
+        let keys = src.group_by.iter().map(|f| (f.clone(), None)).collect();
+        let mut members = Grouping::new(keys, &src.measures, EPOCH);
+        let ty = match src.view {
+            true => kept_name(&src.ty),
+            false => src.ty.clone(),
+        };
+        let mut fails = false;
+        staged.each(at.view, &ty, |r| {
+            let r = match src.view {
+                true => faced(at, staged, &src.ty, &r.key)?,
+                false => Some(Some(r)),
+            };
+            fails |= r.is_none();
+            let m = r.flatten().and_then(|r| at.member(kept, src, &r, 1));
+            if let Some(m) = m.filter(|m| &m.group == key) {
+                members.add((&m.fields, m.meta.as_ref()), Some(at.settings));
+            }
+            Ok(())
+        })?;
+        if fails {
+            return Ok(None);
+        }
+        folds.push(members.groups().pop().map(|(_, f)| f));
+    }
+    if !own.is_empty() && folds.iter().all(Option::is_none) {
+        return Ok(Some(None));
+    }
+    let none = Folds::default();
+    let measured = |i: usize, given: Row| {
+        let src: &Src = &kept.sources[i];
+        let value = |(to, from): (&FieldName, &FieldName)| {
+            (to.clone(), by.get(from).cloned().unwrap_or(Value::Null))
+        };
+        let own: Row = src.group_by.iter().zip(own).map(value).collect();
+        let folds = folds[i].as_ref().unwrap_or(&none);
+        expr::aggregate::measures(folds, &own, &src.measures, given, Some(at.settings), EPOCH)
+    };
+    let mut given = Row::new();
+    for i in 1..kept.sources.len() {
+        let Ok(values) = measured(i, Row::new()) else {
+            return Ok(None);
+        };
+        given.extend(values);
+    }
+    let Ok(values) = measured(0, given) else {
+        return Ok(None);
+    };
+    Ok(crate::reads::landed(&kept.decl, by.clone(), values)
+        .ok()
+        .map(Some))
 }
 
 impl Work {

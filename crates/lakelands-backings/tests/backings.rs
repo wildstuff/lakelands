@@ -20,6 +20,7 @@ fn call(config: Value) -> FunctionCall {
         function: "lookup".into(),
         inputs: json!({"code": "AT"}),
         config,
+        cause: None,
     }
 }
 

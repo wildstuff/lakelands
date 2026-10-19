@@ -86,6 +86,25 @@ impl Timestamp {
         ))
     }
 
+    /// The start of the period `period` names (`day`, `week` from Monday,
+    /// or `month`, in UTC) that the instant falls in; `None` for a name
+    /// of none.
+    pub fn period_start(self, period: &str) -> Option<Timestamp> {
+        let day = self.0.div_euclid(MICROS_PER_SEC * SECS_PER_DAY);
+        let first = match period {
+            "day" => day,
+            // 1970-01-01 was a Thursday, so a Monday is 4 days past a
+            // multiple of 7.
+            "week" => day - (day + 3).rem_euclid(7),
+            "month" => {
+                let (y, m, _) = civil_from_days(day);
+                days_from_civil(y, m, 1)
+            }
+            _ => return None,
+        };
+        Some(Timestamp(first * SECS_PER_DAY * MICROS_PER_SEC))
+    }
+
     /// The calendar date of an instant at a UTC midnight, `YYYY-MM-DD`:
     /// the form a `date` field keeps. Any other instant has none.
     pub fn day(self) -> Option<String> {

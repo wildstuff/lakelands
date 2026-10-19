@@ -18,6 +18,16 @@ use crate::conformance::{Failure, Held, Store};
 use crate::links::link_type_name;
 
 check!(
+    DECLARED_SINCE_NOT_TAKEN = a_bundle_takes_no_place_declared_since_it_was_proposed,
+    "027 and 013, extended (lakelands#915): a bundle takes no place declared since it was proposed, as a migration changes no type changed since: a trigger, a verb, a type and an object set proposed while their names were free, and a verb under a name declared since on a type every reviewer is shown, are refused at the accept of a reviewer shown both as `declared_since_proposed`, naming what and which name, appending nothing, and stay pending; its reject is taken; to a reviewer kept from the type what took the name stands on, and to their proposer, kept alike, the first four are not listed, and its accept and reject answer as an id never proposed; a bundle whose name stood unchanged since before it was proposed is accepted; and a verb taken since on a type a reviewer is shown, reading a field it may not, leaves the bundle not there to it, as `describe` lists it no such verb"
+);
+
+check!(
+    HIDDEN_LINK_TYPE_NOT_GRANTED = a_link_type_its_author_is_not_shown_takes_no_field_from_it,
+    "027 and 024, extended (lakelands#965): a relation its author is shown whose link type it is not shown takes no link field from it: sent with one named as a field the link type holds, and with one named otherwise, by `declare`, `apply`, `propose` and a migration's preview, it is not granted, naming nothing, word for word alike, and the head does not move; sent without fields it is applied, the link type's field kept; the owner adds the field"
+);
+
+check!(
     HIDDEN_FIELD_KEPT = a_migration_keeps_the_fields_its_author_may_not_know_of,
     "027 and 024, extended: a migration's `to` is read as its author's view, so a field hidden from the author stays as declared, with its values, whether the migration is applied by a principal with the schema grant or proposed and accepted; `dropped` lists only what the author saw and removed; the proposer reads its own proposal without the field, a reviewer who may see it reads it there"
 );
@@ -161,7 +171,10 @@ async fn hiding(l: &Lake, store: &dyn LakeStore) -> Result<Principal, Failure> {
         to: "code".into(),
     }];
     let matched = RelationDecl {
-        derived: Some(Derived { pairs }),
+        derived: Some(Derived {
+            pairs,
+            filter: None,
+        }),
         ..RelationDecl::to("matched", "payroll")
     };
     let paid = RelationDecl::to("paid", "payroll");
@@ -212,9 +225,8 @@ async fn a_change_of_shape_never_names_a_field_its_author_may_not_know_of(store:
     );
 
     let shape = |to: TypeDecl, renames: &[(&str, &str)]| Migration {
-        to,
         renames: (renames.iter().map(|(a, b)| ((*a).into(), (*b).into()))).collect(),
-        relation_renames: Vec::new(),
+        ..Migration::to(to)
     };
     let mut settled = seen(&["no", "gross", "ref", "memo"]);
     settled
@@ -324,9 +336,9 @@ async fn a_migrations_faults_come_in_one_order_for_a_hidden_name_and_an_absent_o
             to.relations.push(RelationDecl::to(*new, "invoice"));
         }
         Migration {
-            to,
             renames: (renames.iter().map(|(a, b)| ((*a).into(), (*b).into()))).collect(),
             relation_renames: (relations.iter().map(|(a, b)| ((*a).into(), (*b).into()))).collect(),
+            ..Migration::to(to)
         }
     };
     let base = ["no", "gross", "ref"];
@@ -430,7 +442,7 @@ async fn a_migrations_faults_come_in_one_order_for_a_hidden_name_and_an_absent_o
 
 check!(
     HIDDEN_NAME_NOT_IN_THE_SHAPE = a_shape_names_no_field_its_author_may_not_know_of,
-    "027 and 024, extended (lakelands#726): a valid time, a key or a relation's `via` its author gives anew names a field of its view, so a field it may not know of answers word for word as a name no field has, by `declare` and by `migrate`, and the type in force is unmoved; what stands as declared is taken, valid times left out as `describe` gives them, and a rename from a relation the author is not shown, or a relation of that name sent to a hidden type, answers as for no relation and no type; a valid time sent where one over such a field stands, the one in force restated too, is judged by its name first, answering as on a type with none, and only a field its author may name is refused, as the bound taken (lakelands#692); a valid-time bound over a field its reader may not know of is not described, and a read at a `valid_at`, its total and a `get` answer by the bounds shown, as on a type declared with those alone"
+    "027 and 024, extended (lakelands#726): a valid time, a key or a relation's `via` its author gives anew names a field of its view, so a field it may not know of answers word for word as a name no field has, by `declare` and by `migrate`, and the type in force is unmoved; what stands as declared is taken, valid times left out as `describe` gives them, and a rename from a relation the author is not shown, or a relation of that name sent to a hidden type, answers as for no relation and no type; a valid time sent where one over such a field stands, the one in force restated too, is judged by its name first, answering as on a type with none, and only a field its author may name is refused, as the bound taken (lakelands#692), but for an end sent with no start shown, which is refused as one alone, as on a type with none (028, lakelands#909); a valid-time bound over a field its reader may not know of is not described, and a read at a `valid_at`, its total and a `get` answer by the bounds shown, as on a type declared with those alone"
 );
 
 async fn a_shape_names_no_field_its_author_may_not_know_of(store: Store) -> Held {
@@ -678,7 +690,13 @@ async fn a_shape_names_no_field_its_author_may_not_know_of(store: Store) -> Held
             left.is_ok() && plain.is_ok(),
             "`{axis}` left out is taken on `stamped` as on `plain`: {left:?} | {plain:?}"
         );
-        let says = json!({"code": "valid_time_stands", "axis": axis});
+        // An end with no start shown is one alone, refused on both as on a
+        // type with no valid time (028, lakelands#909); a start is the
+        // bound taken.
+        let says = match axis {
+            "valid_to" => json!({"code": "valid_to_alone", "field": "d2"}),
+            _ => json!({"code": "valid_time_stands", "axis": axis}),
+        };
         for door in ["declare", "migrate"] {
             let answer = send(shape("stamped", axis, Some("d2")), door).await;
             ensure!(
@@ -688,7 +706,11 @@ async fn a_shape_names_no_field_its_author_may_not_know_of(store: Store) -> Held
             );
         }
         let plain = send(shape("plain", axis, Some("d2")), "migrate").await;
-        ensure!(plain.is_ok(), "`{axis}: d2` on `plain` is taken: {plain:?}");
+        let taken = axis == "valid_from" && plain.is_ok();
+        ensure!(
+            taken || invalid_like(&plain, &says),
+            "`{axis}: d2` on `plain` is taken, an end alone refused: {plain:?}"
+        );
     }
     // A field of its own named like a hidden one, sent as a valid time, is
     // a field declared twice, as on `plain`, and never the bound taken: the
@@ -794,7 +816,7 @@ async fn a_shape_names_no_field_its_author_may_not_know_of(store: Store) -> Held
 check!(
     TAKEN_NAME_NOT_GRANTED =
         a_trigger_or_a_verb_under_a_name_its_author_is_not_shown_is_not_granted,
-    "027 and 024, extended (lakelands#893): a trigger and a verb are known by their name alone, so one declared under the name of one its author is not shown would take its place; it is not granted, naming nothing and word for word alike, to a holder of `schema` kept from the type it stands on by `declare` and by `apply`, to a proposer kept from that type by `propose`, and to a proposer that is shown the type and may not know of the field the trigger's `when` reads and the verb sets, a verb being judged by what it names and not by who may call it, so that one who reads the type and may not call the verb proposes it; so is a function proposed under the name of one that computes a field of that type, by one kept from the type and by one shown it that may not know of that field or of its input, where one that computes no field is proposed again, alone and with a type that uses it, as a new one is; the head does not move, so nothing is computed again, and `describe` shows them as they stood; proposed by one shown both types, the trigger and the verb under those names, and a set whose name was taken on that type since, are not there to a reviewer kept from the type the one in force stands on, in its listing, at its accept and at its reject, word for word as an id that does not exist, appending nothing, and the trigger still fires there; a name none bears is declared and proposed; and an author shown both types moves its trigger by declaring it again, after which a write to the type it stood on fires it no more"
+    "027 and 024, extended (lakelands#893): a trigger and a verb are known by their name alone, so one declared under the name of one its author is not shown would take its place; it is not granted, naming nothing and word for word alike, to a holder of `schema` kept from the type it stands on by `declare` and by `apply`, to a proposer kept from that type by `propose`, and to a proposer that is shown the type and may not know of the field the trigger's `when` reads and the verb sets, a verb being judged by what it names and not by who may call it, so that one who reads the type and may not call the verb proposes it; so is a function proposed under the name of one that computes a field of that type, by one kept from the type and by one shown it that may not know of that field or of its input, and declared or applied by a holder of `schema` kept from the type, which is shown every function, with a new body and with an input named as the field it computes, where it declares one that computes no field again (lakelands#917), where one that computes no field is proposed again, alone and with a type that uses it, as a new one is; the head does not move, so nothing is computed again, and `describe` shows them as they stood; proposed by one shown both types, the trigger and the verb under those names, and a set whose name was taken on that type since, are not there to a reviewer kept from the type the one in force stands on, in its listing, at its accept and at its reject, word for word as an id that does not exist, appending nothing, and the trigger still fires there; a name none bears is declared and proposed; and an author shown both types moves its trigger by declaring it again, after which a write to the type it stood on fires it no more"
 );
 
 async fn a_trigger_or_a_verb_under_a_name_its_author_is_not_shown_is_not_granted(
@@ -846,7 +868,14 @@ async fn a_trigger_or_a_verb_under_a_name_its_author_is_not_shown_is_not_granted
     let before = s.head().await.must("reading the head")?;
     let was = stood(l.describe().await?);
     let proposed = |who: &Principal, declarations: Vec<Declaration>| {
-        let (who, cat, write) = (who.clone(), &l.cat, ProposedWrite::Declare { declarations });
+        let (who, cat, write) = (
+            who.clone(),
+            &l.cat,
+            ProposedWrite::Declare {
+                declarations,
+                plan: None,
+            },
+        );
         async move { cat.propose(&who, write, "mine".into()).await }
     };
     let mut told = Vec::new();
@@ -858,6 +887,17 @@ async fn a_trigger_or_a_verb_under_a_name_its_author_is_not_shown_is_not_granted
         }
     }
     told.push(proposed(&proposer, vec![half("half", "n * 3")]).await.err());
+    // Nor to a holder of `schema` kept from `vault`, shown every function
+    // (lakelands#917), and so before an input named as the field it
+    // computes would tell that the field reads itself.
+    let mut own = half("half", "h / 3");
+    if let Declaration::Function(f) = &mut own {
+        f.inputs[0].field.name = "h".into();
+    }
+    for d in [half("half", "n * 3"), own] {
+        told.push(l.cat.declare(&author, d.clone()).await.err());
+        told.push(l.cat.apply(&author, vec![d]).await.err());
+    }
     // One shown `vault` that may not know of the field `half` computes, or
     // of its input, is not shown the function either.
     for f in ["h", "n"] {
@@ -875,7 +915,8 @@ async fn a_trigger_or_a_verb_under_a_name_its_author_is_not_shown_is_not_granted
          a holder of `schema` and proposed by one without, each kept from `vault`, and \
          proposed by one kept from the field they read, and a function under the name of the \
          one that computes a field of `vault`, proposed by one kept from it, from that field \
-         and from its input, are not granted, \
+         and from its input, and declared and applied by the holder of `schema`, are not \
+         granted, \
          naming nothing ({told:?}), and what is declared stands as it stood ({was:?}); it stands \
          as {stands:?}"
     );
@@ -931,6 +972,7 @@ async fn a_trigger_or_a_verb_under_a_name_its_author_is_not_shown_is_not_granted
     // both types moves its own trigger by declaring it again.
     let [heed, stow] = on("heed", "stow", "desk");
     let declared = l.cat.declare(&author, heed).await;
+    let idle = l.cat.declare(&author, half("third", "n * 5")).await;
     let shelf = |by: &str| {
         let fields = vec![field("n", number), computed_by("h", number, by, &["n"])];
         vec![
@@ -958,11 +1000,12 @@ async fn a_trigger_or_a_verb_under_a_name_its_author_is_not_shown_is_not_granted
     let new = fired(l.upsert("desk", "d1", json!({"state": "a"})).await?);
     ensure!(
         declared.is_ok()
+            && idle.is_ok()
             && free
                 .iter()
                 .all(|o| matches!(o, Ok(Outcome::Proposed { .. })))
             && (still && !old && new),
-        "a trigger `heed` is declared ({declared:?}); a verb `stow`, twice, `seal` on `desk` by \
+        "a trigger `heed` and `third` are declared ({declared:?}, {idle:?}); a verb `stow`, twice, `seal` on `desk` by \
          one that reads `vault`, and `third`, which computes no field, alone, with a type that \
          uses it, and as a new `fourth` is, are proposed ({free:?}); `watch` fires on `vault` \
          until it is moved ({still}), then no more ({old}), and on `desk` ({new})"
@@ -972,7 +1015,7 @@ async fn a_trigger_or_a_verb_under_a_name_its_author_is_not_shown_is_not_granted
 
 check!(
     TAKEN_TOOL_NOT_GRANTED = a_tool_name_taken_by_what_its_author_is_not_shown_is_not_granted,
-    "027 and 024, extended (lakelands#896): a tool's name is taken as a trigger's is, so a declaration whose tool would bear the name of one that comes from a type, a relation or a verb its author is not shown is not granted, naming nothing and word for word as declaring that type is: a type under the name of a verb's tool, a verb under the name of the type's tool, of its relation's, and of a relation its author is not shown of a type it is, alone and in a set that declares that type again as its author knows it, and a set that brings a link type under the name of a verb's tool, by `declare`, by `apply` and by `propose`, and a migration that adds a relation under the name of a verb's tool, previewed and proposed; so is the accept of a proposal, a set's and a migration's, whose tool's name was taken since by what its accepter is not shown; the head does not move, and, as it stands, that accepter is listed such a proposal and its reject is taken; a collision between what its author is shown is refused to it as to the owner, as `tool_names`, by `declare`, by `propose` and at the accept, and to one that is listed a verb and may not call it, and a relation under the name of one its author is not shown as declared twice, as before; a free name is declared and proposed"
+    "027 and 024, extended (lakelands#896): a tool's name is taken as a trigger's is, so a declaration whose tool would bear the name of one that comes from a type, a relation or a verb its author is not shown is not granted, naming nothing and word for word as declaring that type is: a type under the name of a verb's tool, a verb under the name of the type's tool, of its relation's, and of a relation its author is not shown of a type it is, alone and in a set that declares that type again as its author knows it, and a set that brings a link type under the name of a verb's tool, by `declare`, by `apply` and by `propose`, and a migration that adds a relation under the name of a verb's tool, previewed and proposed; the head does not move; a proposal, a set's and a migration's, whose tool's name was taken since by what its reviewer is not shown is not there to it, in its listing, at its accept and at its reject, word for word as an id that does not exist (lakelands#915); a collision between what its author is shown is refused to it as to the owner, as `tool_names`, by `declare`, by `propose` and at the accept, and to one that is listed a verb and may not call it, and a relation under the name of one its author is not shown as declared twice, as before; a free name is declared and proposed"
 );
 
 async fn a_tool_name_taken_by_what_its_author_is_not_shown_is_not_granted(store: Store) -> Held {
@@ -990,7 +1033,15 @@ async fn a_tool_name_taken_by_what_its_author_is_not_shown_is_not_granted(store:
         let (who, cat) = (who.clone(), &l.cat);
         async move { cat.propose(&who, write, "mine".into()).await }
     };
-    let proposed = |who, declarations| propose(who, ProposedWrite::Declare { declarations });
+    let proposed = |who, declarations| {
+        propose(
+            who,
+            ProposedWrite::Declare {
+                declarations,
+                plan: None,
+            },
+        )
+    };
     let moved = |to: &[(&str, &str)]| ProposedWrite::Migrate {
         migration: Box::new(migration(shape("desk", to))),
         report: Default::default(),
@@ -1017,6 +1068,7 @@ async fn a_tool_name_taken_by_what_its_author_is_not_shown_is_not_granted(store:
     for write in [
         ProposedWrite::Declare {
             declarations: vec![ty("box", &[])],
+            plan: None,
         },
         moved(&[("holds", "vault"), ("near", "desk")]),
     ] {
@@ -1051,9 +1103,22 @@ async fn a_tool_name_taken_by_what_its_author_is_not_shown_is_not_granted(store:
         vec![ty("desk", &[("far", "desk")]), ty("crate", &[])],
     ];
     let near = migration(shape("desk", &[("near", "desk")]));
+    // Proposed while the names were free, they are not there to it: its
+    // accept and its reject answer as an id that does not exist
+    // (lakelands#915).
+    let mut gone = Vec::new();
+    for id in &offers {
+        let missing = lakelands_api::Missing::Proposal { id: id.clone() };
+        let absent = Some(Error::NotFound { missing });
+        gone.push(l.cat.accept(&author, id).await.err() == absent);
+        gone.push(l.cat.reject(&author, id, "no".into()).await.err() == absent);
+    }
+    ensure!(
+        gone.iter().all(|g| *g),
+        "`box` and `near`, proposed before their tools' names were taken on `vault`, are not \
+         there to one kept from it: {gone:?}"
+    );
     let mut told = vec![
-        l.cat.accept(&author, &offers[0]).await.err(),
-        l.cat.accept(&author, &offers[1]).await.err(),
         l.cat.migrate(&author, near).await.err(),
         propose(&proposer, moved(&[("near", "desk")])).await.err(),
     ];
@@ -1090,15 +1155,14 @@ async fn a_tool_name_taken_by_what_its_author_is_not_shown_is_not_granted(store:
     let again = vec![ty("desk", &[("holds", "desk")])];
     let twice = l.cat.apply(&author, again).await;
     ensure!(
-        told.iter().all(|t| *t == refused) && told.len() == 23,
+        told.iter().all(|t| *t == refused) && told.len() == 21,
         "a type `vault` its author is not shown, a type `box` where a verb under its door's \
          name stands on it, on `desk` verbs under the names of a door of `vault`, of its \
          relation's and of that of `holds` ({link}), the last also in a set with `desk` as \
          its author knows it, and a set that brings the link type of a relation `far` where \
          a verb bears its door's name, declared and applied by a holder of `schema` and \
          proposed by one without, each kept from `vault`, a relation `near` of `desk` by a \
-         migration previewed and proposed, and the accepts of `box` and of `near`, proposed \
-         before, are not granted, naming nothing: {told:?}"
+         migration previewed and proposed, are not granted, naming nothing: {told:?}"
     );
     ensure!(
         shown[..2] == shown[2..4]
@@ -1110,20 +1174,12 @@ async fn a_tool_name_taken_by_what_its_author_is_not_shown_is_not_granted(store:
          of `desk` is declared twice to one not shown the one in force ({twice:?})"
     );
     head_unmoved(s, before, "a declaration under a tool's taken name").await?;
-    // As it stands: the kept reviewer is listed both, `box` whole, and its
-    // reject of each is taken where its accept is not granted.
+    // Nor is either listed to it.
     let listed = l.cat.proposals(&author, Default::default()).await;
     let listed = listed.must("a reviewer's listing")?.data;
-    let entry = |id: &ProposalId| listed.iter().find(|p| &p.id == id);
-    let as_listed = [0, 1].map(|i| entry(&offers[i]).map(|p| (p.write.is_some(), p.more)));
-    let mut rejected = Vec::new();
-    for id in &offers {
-        rejected.push(l.cat.reject(&author, id, "no".into()).await.err());
-    }
     ensure!(
-        as_listed == [Some((true, false)), Some((true, true))] && rejected == [None, None],
-        "as it stands, one kept from `vault` is listed `box` whole and `near` with more \
-         ({as_listed:?}), and its reject of each is taken ({rejected:?})"
+        listed.iter().all(|p| !offers.contains(&p.id)),
+        "one kept from `vault` is listed neither `box` nor `near`: {listed:?}"
     );
     let free = [
         l.cat.apply(&author, vec![ty("crate", &[])]).await.err(),
@@ -1157,7 +1213,10 @@ async fn no_door_leaves_a_lake_with_a_tool_name_problem(store: Store) -> Held {
         let (who, cat) = (l.own.clone(), &l.cat);
         async move { cat.propose(&who, write, "mine".into()).await }
     };
-    let set = |declarations| ProposedWrite::Declare { declarations };
+    let set = |declarations| ProposedWrite::Declare {
+        declarations,
+        plan: None,
+    };
     // `desk` is near `vault`; a relation `far` of it is proposed while its
     // link type's doors are free, then a type takes their names. A
     // relation of 48 characters has link doors, and its link type's doors
@@ -1290,4 +1349,331 @@ async fn no_door_leaves_a_lake_with_a_tool_name_problem(store: Store) -> Held {
          ({twin:?})"
     );
     Ok(())
+}
+
+async fn a_bundle_takes_no_place_declared_since_it_was_proposed(store: Store) -> Held {
+    use crate::conformance::fixture::{head_unmoved, object_set_on, trigger_on, write_verb};
+    use lakelands_api::error::Naming;
+    use lakelands_api::{Error, Missing};
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let text = StorageKind::Text;
+    for ty in ["desk", "vault"] {
+        l.declare(type_of(ty, &[("state", text)])).await?;
+    }
+    l.declare_as(write_verb("mark", "desk", "state", "'m'"), "`mark`")
+        .await?;
+    // `carol` and `blind` are kept from `vault` and from `cell`.
+    let reviewer = |id: &str, kept: serde_json::Value| {
+        let types = json!({"vault": kept, "cell": kept});
+        let grants = json!({"default": "read", "schema": true, "review": true, "types": types});
+        super::only::holder(s, id, grants)
+    };
+    let none = || json!({"default": "none"});
+    let declared = |mut t: serde_json::Value| {
+        t["declare"] = json!("type");
+        serde_json::from_value::<Declaration>(t).expect("a type reads")
+    };
+    let (carol, blind, both) = (
+        reviewer("carol", none()),
+        reviewer("blind", none()),
+        reviewer("both", json!({})),
+    );
+    let when = Some("state is not null");
+    let cell = |fields: &[(&str, StorageKind)]| Declaration::Type(type_of("cell", fields));
+    let offered = [
+        trigger_on("watch", "desk", when),
+        write_verb("seal", "desk", "state", "'x'"),
+        cell(&[("state", text)]),
+        object_set_on("late", "desk", "state is not null"),
+        write_verb("stamp", "desk", "state", "'y'"),
+        write_verb("mark", "desk", "state", "'z'"),
+    ];
+    let mut offers = Vec::new();
+    for d in &offered {
+        let write = ProposedWrite::Declare {
+            declarations: vec![d.clone()],
+            plan: None,
+        };
+        match l.cat.propose(&carol, write, "mine".into()).await {
+            Ok(Outcome::Proposed { proposal, .. }) => offers.push(proposal),
+            other => return Err(Failure::new(format!("`carol` proposing {d:?}: {other:?}"))),
+        }
+    }
+    // The names are taken since: four on what `carol` is not shown, one
+    // on `desk`.
+    for d in [
+        trigger_on("watch", "vault", when),
+        write_verb("seal", "vault", "state", "'x'"),
+        cell(&[("state", text), ("note", text)]),
+        object_set_on("late", "vault", "state is not null"),
+        write_verb("stamp", "desk", "state", "'w'"),
+    ] {
+        l.declare_as(d, "a name taken since").await?;
+    }
+    let names = [
+        (Naming::Trigger, "watch"),
+        (Naming::Verb, "seal"),
+        (Naming::Type, "cell"),
+        (Naming::ObjectSet, "late"),
+        (Naming::Verb, "stamp"),
+    ];
+    let ids = &offers;
+    let listed = |who: &Principal| {
+        let (who, cat) = (who.clone(), &l.cat);
+        async move {
+            let listed = cat.proposals(&who, ProposalFilter::default()).await;
+            let listed = listed.must("a listing")?.data;
+            let found = ids.iter().map(|id| listed.iter().find(|p| &p.id == id));
+            let cells = found.map(|p| p.map(|p| (p.write.is_some(), p.more)));
+            Ok::<_, Failure>(cells.collect::<Vec<_>>())
+        }
+    };
+    let whole = [Some((true, false)); 6];
+    let kept = [
+        None,
+        None,
+        None,
+        None,
+        Some((true, false)),
+        Some((true, false)),
+    ];
+    let seen = (
+        listed(&both).await?,
+        listed(&blind).await?,
+        listed(&carol).await?,
+    );
+    ensure!(
+        seen == (whole.to_vec(), kept.to_vec(), kept.to_vec()),
+        "`both` is listed all six whole, `blind` and `carol` only the two on `desk`; they are \
+         listed {seen:?}"
+    );
+    let before = s.head().await.must("reading the head")?;
+    let mut told = Vec::new();
+    for (id, (what, name)) in offers.iter().zip(names) {
+        let accepted = l.cat.accept(&both, id).await;
+        let due = Case::DeclaredSinceProposed {
+            what,
+            name: name.into(),
+        };
+        if invalid_case(&accepted) != Some(&due) {
+            told.push(format!("{name}: {accepted:?}"));
+        }
+    }
+    for id in &offers[..4] {
+        let missing = Missing::Proposal { id: id.clone() };
+        let absent = Some(Error::NotFound { missing });
+        let decided = [
+            l.cat.accept(&blind, id).await.err(),
+            l.cat.reject(&blind, id, "no".into()).await.err(),
+        ];
+        if decided != [absent.clone(), absent] {
+            told.push(format!("`blind` on {id}: {decided:?}"));
+        }
+    }
+    ensure!(
+        told.is_empty(),
+        "each bundle under a name taken since is refused `declared_since_proposed` at the accept \
+         of `both`, naming it, and is not there to `blind`: {told:?}"
+    );
+    head_unmoved(s, before, "accepts of bundles under names taken since").await?;
+    let rejected = l.cat.reject(&both, &offers[1], "no".into()).await;
+    let accepted = l.cat.accept(&both, &offers[5]).await;
+    ensure!(
+        rejected.is_ok() && matches!(accepted, Ok(Outcome::Applied { .. })),
+        "a refused bundle is rejected ({rejected:?}), and `mark`, unchanged since before it was \
+         proposed, is accepted ({accepted:?})"
+    );
+    // A verb taken since on a type its reviewer is shown, reading a field
+    // it may not: the bundle is not there to it, as `describe` lists no
+    // such verb, so its refusal names nothing.
+    l.declare_as(
+        declared(json!({"name": "safe", "fields": [{"name": "secret", "type": {"kind": "text"}}]})),
+        "`safe`",
+    )
+    .await?;
+    let r = json!({"name": "r", "type": {"kind": "reference", "target": "safe"}});
+    l.declare_as(
+        declared(
+            json!({"name": "pad", "fields": [r, {"name": "state", "type": {"kind": "text"}}]}),
+        ),
+        "`pad`",
+    )
+    .await?;
+    let peek = write_verb("peek", "pad", "state", "'p'");
+    let write = ProposedWrite::Declare {
+        declarations: vec![peek],
+        plan: None,
+    };
+    let offer = match l.cat.propose(&carol, write, "mine".into()).await {
+        Ok(Outcome::Proposed { proposal, .. }) => proposal,
+        other => return Err(Failure::new(format!("`carol` proposing `peek`: {other:?}"))),
+    };
+    let taken = json!({"declare": "verb", "name": "peek", "on": "pad", "risk": "high",
+        "effect": "write", "requires": "r.secret = 'x'",
+        "set": [{"field": "state", "value": "'q'"}]});
+    l.declare_as(
+        serde_json::from_value(taken).expect("a verb reads"),
+        "`peek` reading `safe.secret`",
+    )
+    .await?;
+    let mid = super::only::holder(
+        s,
+        "mid",
+        json!({"default": "read", "schema": true, "review": true,
+        "types": {"safe": {"fields": {"secret": "none"}}}}),
+    );
+    let listed = l.cat.proposals(&mid, ProposalFilter::default()).await;
+    let listed = listed.must("`mid`'s listing")?.data;
+    let absent = Some(Error::NotFound {
+        missing: Missing::Proposal { id: offer.clone() },
+    });
+    let decided = [
+        l.cat.accept(&mid, &offer).await.err(),
+        l.cat.reject(&mid, &offer, "no".into()).await.err(),
+    ];
+    ensure!(
+        listed.iter().all(|p| p.id != offer) && decided == [absent.clone(), absent],
+        "`peek` on `pad`, taken since by a verb reading `safe.secret`, is not there to `mid`, \
+         kept from that field: listed {listed:?}, decided {decided:?}"
+    );
+    Ok(())
+}
+
+async fn a_link_type_its_author_is_not_shown_takes_no_field_from_it(store: Store) -> Held {
+    use super::only::de;
+    use crate::conformance::fixture::head_unmoved;
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let t = |n: &str| json!({"name": n, "type": {"kind": "text"}});
+    let deal = |fields: serde_json::Value| -> TypeDecl {
+        let with = json!([{"name": "with", "target": "party", "fields": fields}]);
+        de(json!({"name": "deal", "fields": [t("name")], "relations": with}))
+    };
+    l.declare(de(json!({"name": "party", "fields": [t("name")]})))
+        .await?;
+    l.declare(deal(json!([t("note")]))).await?;
+    let types = json!({"sys.link.deal.with": {"default": "none"}});
+    let grants = json!({"default": "read", "schema": true, "restricted": true, "types": types});
+    let author = super::only::holder(s, "author", grants);
+    let declare =
+        async |who: &Principal, fields| l.cat.declare(who, Declaration::Type(deal(fields))).await;
+    let before = s.head().await.must("reading the head")?;
+    let mut told = Vec::new();
+    for field in ["note", "memo"] {
+        let d = Declaration::Type(deal(json!([t(field)])));
+        let write = ProposedWrite::Declare {
+            declarations: vec![d.clone()],
+            plan: None,
+        };
+        let moved = migration(deal(json!([t(field)])));
+        told.push(declare(&author, json!([t(field)])).await.err());
+        told.push(l.cat.apply(&author, vec![d]).await.err());
+        told.push(l.cat.propose(&author, write, "mine".into()).await.err());
+        told.push(l.cat.migrate(&author, moved).await.err());
+    }
+    let refused = lakelands_api::Error::Refused {
+        reason: lakelands_api::Refusal::NotGranted,
+        field: None,
+    };
+    ensure!(
+        told.iter().all(|t| t.as_ref() == Some(&refused)),
+        "`with` sent with `note` and with `memo` to a link type its author is not shown is not \
+         granted, naming nothing: {told:?}"
+    );
+    head_unmoved(s, before, "a link field sent to a hidden link type").await?;
+    let kept = declare(&author, json!([])).await;
+    let added = declare(&l.own, json!([t("note"), t("memo")])).await;
+    let link = "sys.link.deal.with".into();
+    let link = l.cat.describe_type(&l.own, &link, Default::default()).await;
+    let fields = link.must("describing the link type")?.data.fields;
+    let names: Vec<_> = fields.iter().map(|f| f.name.as_str()).collect();
+    ensure!(
+        kept.is_ok() && added.is_ok() && names == ["from", "to", "note", "memo"],
+        "`with` without fields is applied ({kept:?}) and keeps `note`, and the owner adds \
+         `memo` ({added:?}): the link type holds {names:?}"
+    );
+    Ok(())
+}
+
+check!(
+    UNLISTED_NOT_TAKEN = a_declaration_in_force_listed_to_no_one_is_declared_again_by_no_one,
+    "027 and 024, extended (lakelands#1055): a verb in force that is listed to no one, as one a log the store did not write holds with a `requires` that does not parse, is not granted to be declared again, naming nothing, to the owner, who reads every field, word for word as to an author kept from a field; nor is a type whose tool would bear the name of such a verb's; and the head does not move",
+    given
+);
+
+async fn a_declaration_in_force_listed_to_no_one_is_declared_again_by_no_one(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    use crate::conformance::fixture::{declared_below, head_unmoved, write_verb};
+    let l = Lake::of(store.as_ref());
+    l.declare(type_of(
+        "job",
+        &[("state", StorageKind::Text), ("secret", StorageKind::Text)],
+    ))
+    .await?;
+    // `close` declared below the store, its `requires` not parsing.
+    let mut close = write_verb("close", "job", "state", "'shut'");
+    if let Declaration::Verb(v) = &mut close {
+        v.requires = Some("state = ((".into());
+    }
+    // And a verb whose tool bears the name of `job2`'s `find` door.
+    let door = format!("{}_{}", lakelands_api::tools::tool_base("job2"), "find");
+    let mut found = write_verb(&door, "job", "state", "'seen'");
+    if let Declaration::Verb(v) = &mut found {
+        v.requires = Some("state = ((".into());
+    }
+    let store = declared_below(store, &given, vec![close.clone(), found]).await?;
+    let l = Lake::of(store.as_ref());
+    let hidden = [(FieldName::from("secret"), Access::None)].into();
+    let mut grants = lakelands_api::Grants {
+        default: Access::Write,
+        schema: true,
+        ..Default::default()
+    };
+    grants.types.insert(
+        "job".into(),
+        TypeGrants {
+            fields: hidden,
+            ..Default::default()
+        },
+    );
+    let kept = crate::conformance::fixture::principal(
+        store.as_ref(),
+        lakelands_api::PrincipalKind::Agent,
+        "kept",
+        grants,
+    );
+    let mut again = write_verb("close", "job", "state", "'done'");
+    if let Declaration::Verb(v) = &mut again {
+        v.requires = Some("state = 'open'".into());
+    }
+    let head = store.head().await.must("reading the head")?;
+    let by = |who: Principal| {
+        let (cat, d) = (l.cat.clone(), again.clone());
+        async move { cat.declare(&who, d).await }
+    };
+    let (owner, other) = (by(l.own.clone()).await, by(kept.clone()).await);
+    let refused = Err(lakelands_api::Error::Refused {
+        field: None,
+        reason: lakelands_api::Refusal::NotGranted,
+    });
+    ensure!(
+        owner == refused && other == refused,
+        "`close`, listed to no one, is declared again by neither the owner nor one kept from \
+         `job.secret`, each refused as not granted naming nothing; the owner was answered \
+         {owner:?}, the other {other:?}"
+    );
+    // Nor does a type take the name of its tool.
+    let job2 = || Declaration::Type(type_of("job2", &[("state", StorageKind::Text)]));
+    let (owner, other) = (
+        l.cat.declare(&l.own, job2()).await,
+        l.cat.declare(&kept, job2()).await,
+    );
+    ensure!(
+        owner == refused && other == refused,
+        "`job2`, whose `find` bears the name of a verb's tool, listed to no one, is \
+         declared by neither, each refused as not granted naming nothing; the owner was \
+         answered {owner:?}, the other {other:?}"
+    );
+    head_unmoved(store.as_ref(), head, "the refused declarations").await
 }

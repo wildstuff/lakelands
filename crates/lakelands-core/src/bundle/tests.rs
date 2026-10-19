@@ -1,8 +1,8 @@
 use lakelands_api::expr::{Condition, Expr, Literal};
 use lakelands_api::ontology::{
-    Assignment, Authority, Cardinality, FieldDecl, FieldType, Measure, OnInputChange, RelationDecl,
-    Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, VerbScope,
-    ViewDecl, ViewSource,
+    Assignment, Authority, Cardinality, FieldDecl, FieldType, FunctionInput, Measure,
+    OnInputChange, RelationDecl, RetiredBy, Risk, StorageKind, TriggerDecl, TypeDecl,
+    ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewSource,
 };
 use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl};
 use lakelands_api::{FieldName, RelationName, TypeName, ValueTypeName, VerbName};
@@ -253,19 +253,15 @@ fn complete_declarations() -> Vec<Declaration> {
             name: ValueTypeName::new("iban"),
             kind: StorageKind::Text,
             constraint: Some(text("len(value) >= 15")),
-            one_of: Vec::new(),
             format: Some("iban".to_owned()),
-            scale: None,
             description: Some("An international bank account number.".to_owned()),
+            ..Default::default()
         }),
         Declaration::ValueType(ValueTypeDecl {
             name: ValueTypeName::new("invoice_status"),
             kind: StorageKind::Text,
-            constraint: None,
             one_of: vec!["open".to_owned(), "paid".to_owned()],
-            format: None,
-            scale: None,
-            description: None,
+            ..Default::default()
         }),
         Declaration::Type(invoice),
         Declaration::Type(TypeDecl {
@@ -303,10 +299,14 @@ fn complete_declarations() -> Vec<Declaration> {
         Declaration::Function(FunctionDecl {
             name: "gross".to_owned(),
             backing: "expr".to_owned(),
-            inputs: vec![field("net", kind(StorageKind::Decimal))],
+            inputs: vec![FunctionInput::typed(field(
+                "net",
+                kind(StorageKind::Decimal),
+            ))],
             expr: Some(text("net * 1.19")),
             config: serde_json::Value::Null,
             description: None,
+            risk: Risk::Low,
         }),
         Declaration::Verb(VerbDecl {
             name: VerbName::new("pay_invoice"),
@@ -340,6 +340,8 @@ fn complete_declarations() -> Vec<Declaration> {
         }),
         Declaration::Trigger(TriggerDecl {
             max_depth: None,
+            when_strict: false,
+            on_changes: None,
             name: "invoice_paid".into(),
             on: TypeName::new("invoice"),
             when: Some(text("changed(status) and status = 'paid'")),
@@ -387,6 +389,8 @@ fn value_types_and_functions_come_before_the_types_that_use_them() {
         Declaration::Verb(_) => 3,
         Declaration::Trigger(_) => 4,
         Declaration::ObjectSet(_) => 5,
+        Declaration::Setting(_) => 6,
+        _ => unreachable!("a lane this release does not have"),
     };
     let lanes: Vec<u8> = bundle.declarations.iter().map(lane).collect();
     let mut sorted = lanes.clone();
@@ -401,6 +405,7 @@ fn an_empty_bundle_declares_nothing() {
         Ok(Bundle {
             declarations: vec![],
             aging_rules: vec![],
+            settings: vec![],
         })
     );
 }
@@ -670,6 +675,8 @@ fn the_documented_examples_load() {
         let has = |key: &str| body.lines().any(|l| l.starts_with(key));
         let lane = if has("from:") {
             "aging_rules"
+        } else if body.starts_with("key:") {
+            "settings"
         } else if has("kind:") {
             "value_types"
         } else if has("risk:") {
@@ -685,7 +692,7 @@ fn the_documented_examples_load() {
         };
         owned.push((format!("{lane}/{}.yaml", owned.len()), body.to_owned()));
     }
-    assert_eq!(owned.len(), 11, "every documented example is found");
+    assert_eq!(owned.len(), 12, "every documented example is found");
     fs.extend(owned.iter().map(|(p, c)| (p.as_str(), c.as_str())));
     load(&fs).expect("the documented examples load");
 }
@@ -1034,6 +1041,10 @@ fn a_text_expression_that_does_not_parse_is_refused_wherever_it_is() {
             "types/x.yaml",
             "name: x\nview:\n  source: partner\n  measures:\n    n: \"nosuch(1)\"\n",
         ),
+        (
+            "types/x.yaml",
+            "name: x\nfields:\n  p: text\nrelations:\n  r:\n    target: partner\n    derived: { match: [{ from: p, to: id }], where: \"from.p =\" }\n",
+        ),
         ("functions/x.yaml", "name: x\nexpr: \"1 +\"\n"),
         (
             "verbs/x.yaml",
@@ -1167,6 +1178,32 @@ fn a_verb_needs_exactly_one_effect() {
         ],
         Problem::Contradiction,
     );
+}
+
+/// A type only its verbs retire, and a verb that retires: `retire: true`
+/// is an effect of its own, beside neither `set` nor `executor`
+/// (lakelands#1148).
+#[test]
+fn a_verb_may_retire_and_a_type_may_be_retired_by_its_verbs_alone() {
+    let partner = "name: partner\nretired_by: verbs\nfields:\n  name: text\n";
+    let b = load(&[
+        ("types/partner.yaml", partner),
+        (
+            "verbs/v.yaml",
+            "name: v\non: partner\nrisk: low\nretire: true\n",
+        ),
+    ])
+    .expect("the bundle loads");
+    assert_eq!(ty(&b, "partner").retired_by, RetiredBy::Verbs);
+    let effect = b.declarations.iter().find_map(|d| match d {
+        Declaration::Verb(v) => Some(&v.effect),
+        _ => None,
+    });
+    assert_eq!(effect, Some(&VerbEffect::Retire));
+    for both in ["set: {}\n", "executor: mailer\n"] {
+        let v = format!("name: v\non: partner\nrisk: low\nretire: true\n{both}");
+        one(&[PARTNER, ("verbs/v.yaml", &v)], Problem::Contradiction);
+    }
 }
 
 #[test]
@@ -1534,5 +1571,45 @@ fn a_views_merged_source_arrives_whole() {
                 expr: text("sum(amount)"),
             }],
         }]
+    );
+}
+
+/// A setting's file declares it and gives its first value; a setting is
+/// declared once, and its type names a value type of the bundle.
+#[test]
+fn a_setting_is_declared_with_its_first_value() {
+    let vat = (
+        "settings/vat_rate.yaml",
+        "key: vat_rate\ntype: { kind: decimal }\nunit: fraction\ngroup: operator\nvalue: \"0.19\"\n",
+    );
+    let bundle = load(&[vat]).expect("loads");
+    let Some(Declaration::Setting(s)) = bundle.declarations.first() else {
+        panic!("a setting: {:?}", bundle.declarations);
+    };
+    assert_eq!(
+        (s.key.as_str(), s.group.as_deref(), s.unit.as_deref()),
+        ("vat_rate", Some("operator"), Some("fraction"))
+    );
+    let first = serde_json::to_value(&bundle.settings).expect("serialises");
+    assert_eq!(
+        first,
+        serde_json::json!([{"key": "vat_rate", "value": "0.19"}])
+    );
+    let twice = ("settings/again.yaml", "key: vat_rate\ntype: decimal\n");
+    let refused = load(&[vat, twice]).expect_err("declared twice");
+    assert!(
+        refused.iter().any(|e| e.problem == Problem::DuplicateName),
+        "{refused:?}"
+    );
+    let unknown = (
+        "settings/rate.yaml",
+        "key: rate\ntype: { kind: decimal, value_type: money }\n",
+    );
+    let refused = load(&[unknown]).expect_err("an unknown value type");
+    assert!(
+        refused
+            .iter()
+            .any(|e| e.problem == Problem::UnknownReference),
+        "{refused:?}"
     );
 }

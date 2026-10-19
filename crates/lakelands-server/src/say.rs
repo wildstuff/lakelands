@@ -8,6 +8,8 @@
 use std::fmt;
 
 use lakelands_api::error::{Case, Error, Refusal, Said, Situation};
+use lakelands_api::id::RecordKey;
+use lakelands_api::write::Plan;
 
 /// A failure, for a person.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,6 +107,19 @@ fn advice(case: &Case) -> Option<String> {
 
 impl From<Error> for Failure {
     fn from(e: Error) -> Failure {
+        // A refused record of an ingest: what to do about its refusal, and
+        // where to send the stream again from (lakelands#1043).
+        if let Error::Ingested { from, error, .. } = &e {
+            let inner = Failure::from((**error).clone());
+            let todo = format!(
+                "{}; then send the stream again from record {from}",
+                inner.todo
+            );
+            return Failure {
+                what: e.to_string(),
+                todo,
+            };
+        }
         if let Some(todo) = e.case().and_then(|said| advice(&said.case)) {
             return Failure {
                 what: e.to_string(),
@@ -117,8 +132,18 @@ impl From<Error> for Failure {
                     "act as a principal whose grants allow it, or ask the lake's owner for a grant"
                         .to_owned()
                 }
+                Refusal::WrongDoor if field.is_none() => {
+                    "another door does it: a relation's authored links through `link` and `unlink`, \
+                     a source's links through `lakelands ingest`, a derived relation's by the lake \
+                     alone, and a record only its type's verbs retire through one of those verbs"
+                        .to_owned()
+                }
                 Refusal::WrongDoor => {
                     "source fields arrive through `lakelands ingest`; authored fields through writes and verbs"
+                        .to_owned()
+                }
+                Refusal::VerbsOnly { .. } => {
+                    "call one of the verbs it names, which does it under its own condition"
                         .to_owned()
                 }
                 Refusal::Reserved => "choose a name that does not begin with `sys.`; a verb names no \
@@ -150,6 +175,12 @@ impl From<Error> for Failure {
                     "fix the records the report names, then run the migration again".to_owned()
                 }
                 Refusal::Decided => "list the proposals to see how it was decided".to_owned(),
+                // A retry answers the same: the reason is the host's.
+                Refusal::Declined(_) => {
+                    "the host declined this call and a retry under the same idempotency key answers the same; ask the host's \
+                     operator for its reason, or change the call"
+                        .to_owned()
+                }
                 // Waiting helps only a call whose executor still runs.
                 Refusal::Unanswered(_) => {
                     "a retry under this key runs nothing: if the call's executor is still \
@@ -192,7 +223,7 @@ impl From<Error> for Failure {
             Error::Unavailable { situation }
                 if matches!(**situation, Situation::Damaged { .. }) =>
             {
-                "restore the lake's files from a backup; where the projection alone is damaged, \
+                "restore the lake from a backup; where the projection alone is damaged, \
                  `lakelands rebuild` makes it anew from the log"
                     .to_owned()
             }
@@ -200,12 +231,131 @@ impl From<Error> for Failure {
                 "wait and retry, or check that no other process holds the lake".to_owned()
             }
             Error::Unknown(_) => "do what the message says".to_owned(),
+            Error::Ingested { .. } => unreachable!("a refused record is said above"),
         };
         Failure {
             what: e.to_string(),
             todo,
         }
     }
+}
+
+/// What a change's plan says, for a person who decides on it: a sentence
+/// per finding, each standing alone, its count first and then the first
+/// keys its reader is answered
+/// (`docs/decisions/062-a-change-plans-before-it-acts.md`). The CLI prints
+/// them, and MCP and REST send them beside the plan as `said`; they are no
+/// part of the plan or its id.
+pub fn plan(plan: &Plan) -> Vec<String> {
+    let mut said = Vec::new();
+    for t in &plan.types {
+        let ty = &t.ty;
+        match t.recomputed {
+            Some(0) => {}
+            Some(n) => said.push(format!("{} of `{ty}` would be computed again.", records(n))),
+            None => said.push(format!("It computes every record of `{ty}` again.")),
+        }
+        for u in &t.unlive {
+            said.push(format!(
+                "{} of `{ty}` would be left with `{}` naming no live record{}",
+                records(u.records),
+                u.field,
+                first(&u.sample_keys, u.records)
+            ));
+        }
+        for b in &t.breaches {
+            said.push(format!(
+                "{} of `{}` would break the constraint `{}`{}",
+                records(b.records),
+                b.ty,
+                b.constraint,
+                first(&b.sample_keys, b.records)
+            ));
+        }
+        for c in t.fields.iter().filter(|c| c.not_convertible > 0) {
+            said.push(format!(
+                "{} of `{ty}`.`{}` would not convert to its new type{}",
+                values(c.not_convertible),
+                c.field,
+                first(&c.sample_keys, c.not_convertible)
+            ));
+        }
+        for (field, n) in t.dropped.iter().filter(|(_, n)| *n > 0) {
+            said.push(format!(
+                "{} of `{ty}`.`{field}` would be dropped.",
+                values(*n)
+            ));
+        }
+        for f in t.filled.iter().filter(|f| f.records > 0) {
+            said.push(format!(
+                "{} of `{ty}` would take `{}`'s initial value{}",
+                records(f.records),
+                f.field,
+                first(&f.sample_keys, f.records)
+            ));
+        }
+        for r in t.rekeyed.iter().filter(|r| r.records > 0) {
+            said.push(format!(
+                "{} of `{}` would take a new key.",
+                records(r.records),
+                r.ty
+            ));
+            if r.collisions > 0 {
+                let n = records(r.collisions);
+                said.push(format!("{n} of `{}` would take a key another holds.", r.ty));
+            }
+        }
+    }
+    for v in plan.value_types.iter().filter(|v| v.misfits > 0) {
+        let keys: Vec<RecordKey> = v.first.iter().map(|m| m.key.clone()).collect();
+        said.push(format!(
+            "{} of the value type `{}` would no longer fit{}",
+            values(v.misfits),
+            v.value_type,
+            first(&keys, v.misfits)
+        ));
+    }
+    if said.is_empty() {
+        said.push("The change would leave every stored record as it is.".to_owned());
+    }
+    if !plan.lossless {
+        said.push(
+            "It cannot be made as planned: it would lose values or break a constraint that refuses."
+                .to_owned(),
+        );
+    }
+    said
+}
+
+/// `n` records, said.
+fn records(n: u64) -> String {
+    match n {
+        1 => "1 record".to_owned(),
+        n => format!("{n} records"),
+    }
+}
+
+/// `n` values, said.
+fn values(n: u64) -> String {
+    match n {
+        1 => "1 value".to_owned(),
+        n => format!("{n} values"),
+    }
+}
+
+/// The end of a sentence that counts `n`: the first keys, and whether
+/// there are more.
+fn first(keys: &[RecordKey], n: u64) -> String {
+    if keys.is_empty() {
+        return ".".to_owned();
+    }
+    let named: Vec<String> = keys.iter().map(|k| format!("`{k}`")).collect();
+    let more = if n > keys.len() as u64 {
+        " and more"
+    } else {
+        ""
+    };
+    format!(": {}{more}.", named.join(", "))
 }
 
 #[cfg(test)]

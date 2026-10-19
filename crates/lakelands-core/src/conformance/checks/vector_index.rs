@@ -361,7 +361,9 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
             field: "v".into(),
             vector: query(0),
             weight: None,
+            model: None,
         }],
+        model: None,
     };
     let fused = Search {
         ty: TypeName::from(TY),

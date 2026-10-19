@@ -542,6 +542,18 @@ pub fn measures(
     settings: Option<&BTreeMap<String, Value>>,
     now: Timestamp,
 ) -> Result<Row> {
+    named_measures(folds, by, measures, given, settings, now).map_err(|(_, e)| e)
+}
+
+/// [`measures`], its error naming the measure that failed.
+pub fn named_measures(
+    folds: &Folds,
+    by: &Row,
+    measures: &[(FieldName, Expr)],
+    given: Row,
+    settings: Option<&BTreeMap<String, Value>>,
+    now: Timestamp,
+) -> std::result::Result<Row, (FieldName, Case)> {
     let mut earlier = given;
     for (name, expr) in measures {
         let scope = GroupScope {
@@ -551,7 +563,7 @@ pub fn measures(
             settings,
             now,
         };
-        let v = eval(expr, &scope)?;
+        let v = eval(expr, &scope).map_err(|e| (name.clone(), e))?;
         earlier.insert(name.clone(), to_value(&v));
     }
     Ok(earlier)

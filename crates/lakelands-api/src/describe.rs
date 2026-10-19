@@ -8,10 +8,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::expr::Condition;
-use crate::id::{FieldName, LakeId, RelationName, TypeName, VerbName};
+use crate::id::{FieldName, LakeId, RelationName, TypeName, ValueTypeName, VerbName};
 use crate::ontology::{
     Annotations, Authority, ComputedAt, EmbedDecl, FieldDecl, FieldType, OnInputChange,
-    RelationDecl, Risk, TriggerDecl, ValueTypeDecl, VerbScope, ViewDecl,
+    RelationDecl, RetiredBy, Risk, TriggerDecl, ValueTypeDecl, VerbScope, ViewDecl,
 };
 use crate::principal::Access;
 use crate::write::{FunctionDecl, ObjectSetDecl};
@@ -35,6 +35,10 @@ pub struct LakeDescription {
     /// The value types in use.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub value_types: Vec<ValueTypeDecl>,
+    /// Each of `value_types` by its version: one more for every
+    /// declaration or migration of it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub value_type_versions: BTreeMap<ValueTypeName, u32>,
     /// The functions in force.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub functions: Vec<FunctionDecl>,
@@ -44,8 +48,30 @@ pub struct LakeDescription {
     /// The object sets in force, of types the principal sees.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub object_sets: Vec<ObjectSetDecl>,
+    /// The listed lake settings (`crate::settings`), told to a holder of
+    /// `schema`: each one for the lake, and each one the lake holds for a
+    /// type.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub settings: Vec<SettingValue>,
     /// What the principal may do beyond the per-type doors.
     pub may: LakeRights,
+}
+
+/// A lake setting: its key, the value the lake holds, and the value it
+/// has where none is held.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SettingValue {
+    /// The key, `<setting>` or `<setting>.<type>`.
+    pub key: String,
+    /// What the lake holds; `None` where it holds none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<crate::Value>,
+    /// Its value where none is held.
+    pub default: crate::Value,
+    /// A host's setting's declaration: its kind, unit, meaning and group,
+    /// told to a holder of `schema` and to one who may write it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared: Option<crate::write::SettingDecl>,
 }
 
 /// Rights of the principal beyond any one type.
@@ -98,6 +124,15 @@ pub struct TypeDescription {
     pub lineage: TypeLineage,
     /// Lifecycle: version and shape.
     pub lifecycle: TypeLifecycle,
+    /// The constraints every record of the type holds, those whose
+    /// fields its reader reads (lakelands#1119).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<crate::ontology::ConstraintDecl>,
+    /// From `describe_type`: the declaration of each value type the
+    /// lifecycle's `value_types` names, in name order. `describe` answers
+    /// them once, in the lake's `value_types`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub value_types: Vec<ValueTypeDecl>,
 }
 
 /// One field, as the principal may see it: the declaration whole for a
@@ -132,6 +167,14 @@ pub struct FieldDescription {
     /// The value it takes when its record comes to exist without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial: Option<serde_json::Value>,
+    /// Whether a create needs a value of it: it feeds, itself or through
+    /// derived fields, a constraint the record a create leaves without it
+    /// (`initial` or null) breaks (lakelands#1169). An authored field is
+    /// one a create must send; one only verbs write, with no `initial`, is
+    /// one no create can give, and a create is then closed. Told only to a
+    /// reader shown the constraint.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required_at_create: bool,
     /// Whether `where` and `order_by` may use it.
     pub filterable: bool,
     /// Whether full-text search covers it.
@@ -139,6 +182,10 @@ pub struct FieldDescription {
     /// Whether its value is masked, not dropped, for a principal who may
     /// not read it.
     pub sensitive: bool,
+    /// Whether a source's values of it are sealed under that source's key
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub erasable: bool,
     /// What it means.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -167,6 +214,7 @@ impl FieldDescription {
             decl.shape_alone();
         }
         FieldDescription {
+            required_at_create: false,
             filterable: access.reads() && !matches!(decl.ty.kind, Bytes | Json | Vector),
             name: decl.name,
             ty: decl.ty,
@@ -181,6 +229,7 @@ impl FieldDescription {
             initial: decl.initial,
             searchable: decl.searchable,
             sensitive: decl.sensitive,
+            erasable: decl.erasable,
             description: decl.description,
             label: decl.label,
             embed: decl.embed,
@@ -189,7 +238,7 @@ impl FieldDescription {
     }
 
     /// Whether the principal may write the field through an authored
-    /// door (`upsert`, a verb).
+    /// door (`upsert`, `link`): not one only the type's verbs write.
     pub fn authored_writable(&self) -> bool {
         self.access.writes() && matches!(self.authority, Authority::Authored | Authority::Shared)
     }
@@ -227,9 +276,21 @@ pub struct TypeRights {
     pub get: bool,
     /// `upsert`: at least one authored field is writable.
     pub upsert: bool,
+    /// `upsert` of a record that does not exist yet: false where the
+    /// declaration shows that no create the principal can send is taken,
+    /// for a value it may not send or a field it may not read
+    /// (lakelands#1188). `upsert` keeps its meaning, updates included.
+    /// Absent from an older server's answer, it reads as true: what that
+    /// server said of a create, it said by `upsert`.
+    #[serde(default = "crate::describe::yes")]
+    pub create: bool,
+    /// Why `create` is false, naming nothing hidden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_why: Option<String>,
     /// `retire`: every field of the type is writable, whatever its
     /// authority, as the principal's grants resolve it. A principal who
     /// may write only some fields of a record may not remove all of them.
+    /// Never on a type only its verbs retire (lakelands#1148).
     pub retire: bool,
     /// `link` and `unlink`: the relations carried by link records whose
     /// links the principal may write through those doors.
@@ -248,6 +309,13 @@ pub struct TypeRights {
 pub struct TypeLineage {
     /// Whether any field this principal is described is fed by a source.
     pub sourced: bool,
+    /// Whether a source writes each of its records once (lakelands#1044).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub insert_only: bool,
+    /// Who retires its records: only its verbs, or its authors too
+    /// (lakelands#1148).
+    #[serde(default, skip_serializing_if = "RetiredBy::is_authors")]
+    pub retired_by: RetiredBy,
     /// For a view type: the type it is computed from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view_of: Option<TypeName>,
@@ -269,6 +337,13 @@ pub struct TypeLifecycle {
     /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sorted: Vec<FieldName>,
+    /// The fields a `find` ordered first by and the lake answered by
+    /// sorting the type, since it was opened in the process that answers:
+    /// the pages and the time they cost. Each is one `sort_index.<type>`
+    /// would name, told to a holder of `schema` who reads the field, to
+    /// weigh (lakelands#1029).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sorted_whole: Vec<SortedWhole>,
     /// The vector fields the lake asks an index for, by its
     /// `vector_index.<type>` setting: a search over one of them answers
     /// the index's set and says `ranked_by: index`; on an engine that keeps
@@ -280,6 +355,23 @@ pub struct TypeLifecycle {
     /// `indexed` it describes the projection, not the log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kept: Option<Kept>,
+    /// The version of each value type a field its reader is shown uses.
+    /// A value type decides the values its fields accept, yet changing it
+    /// moves neither `version` nor `schema_hash`: what a type accepts is
+    /// keyed by the three together.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub value_types: BTreeMap<ValueTypeName, u32>,
+}
+
+/// A field ordered by sorting the whole type, and what it cost.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SortedWhole {
+    /// The field a `find` ordered first by.
+    pub field: FieldName,
+    /// The pages so answered.
+    pub pages: u64,
+    /// The time those reads took, in milliseconds.
+    pub millis: u64,
 }
 
 /// Whether a view's records are kept as its sources are written, or
@@ -382,9 +474,14 @@ pub struct VerbDescription {
     /// there.
     pub external: bool,
     /// For a verb that reaches outside the lake: its executor, and whether
-    /// this lake's host binds it. Absent for a verb that sets fields.
+    /// this lake's host binds it. Absent for a verb that sets fields or
+    /// retires its record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executor: Option<ExecutorDescription>,
+    /// Whether it retires the record it is called on (lakelands#1148).
+    /// Left out where it does not.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retires: bool,
     /// What it does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -401,4 +498,9 @@ pub struct ExecutorDescription {
     /// (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended).
     /// Without one, calling or proposing the verb is refused as `unbound`.
     pub bound: bool,
+}
+
+/// `true`, a member's default where an older answer leaves it out.
+fn yes() -> bool {
+    true
 }

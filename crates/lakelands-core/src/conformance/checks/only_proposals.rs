@@ -12,19 +12,24 @@ use serde_json::{Value, json};
 use super::only::{alice, claims, de, holder, said};
 use crate::conformance::backing::{KIND, plug, unplug};
 use crate::conformance::fixture::{
-    Lake, Must, computed_by, events_from, field, head_unmoved, type_decl,
+    Lake, Must, alike_renamed, computed_by, events_from, field, head_unmoved, type_decl,
 };
 use crate::conformance::{Failure, Held, Store};
 
 check!(
     ONLY_PROPOSES = a_holder_of_only_proposes_its_own_records,
-    "051: a holder of `only` proposes an upsert, a retirement and a high-risk call on its own records, each logged `pinned`, another's proposals not; on another's record a proposal that would pass is not granted and one that reads the record is not found; a proposal is refused where a field its `only` names is derived or backed, or where the verb assigns one, called or proposed, in a call's one order: after its scope, before an external verb's executor is asked and before its payload is read (lakelands#851); neither `describe` nor `describe_type` lists it such a verb; the accept of a pinned proposal applies while its record and type stand as proposed, and is refused once a rederive, a backed output, a record made again at the key, a redeclaration of the type that leaves its records as they are, a migration or a re-key moved them, or, for a link, once either end record moved"
+    "051 and 013 (lakelands#935): a holder of `only` proposes no change of the ontology, refused before its declaration is read, and no write to a type it is not shown, not found before the record checks; it proposes an upsert, a retirement and a high-risk call on its own records, each logged `pinned`, another's proposals not; on another's record a proposal that would pass is not granted and one that reads the record is not found (a proposed retirement the rights grid compares with a key no record holds, lakelands#962); a proposal is refused where a field its `only` names is derived or backed, before the record checks, or where the verb assigns one, called or proposed, in a call's one order: after its scope, before an external verb's executor is asked and before its payload is read (lakelands#851); neither `describe` nor `describe_type` lists it such a verb; the accept of a pinned proposal applies while its record and type stand as proposed, and is refused once a rederive, a backed output, a record made again at the key, a redeclaration of the type that leaves its records as they are, a migration or a re-key moved them, or, for a link, once either end record moved"
 );
 
 check!(
     ONLY_DECIDES = a_holder_of_only_decides_what_it_is_shown_whole,
-    "051: a reviewer holding `only` accepts and rejects a proposal its listing shows it whole; one on another's record it is refused, a retirement by one who holds `restricted` too, appending nothing, before it is told the proposal is decided, so a guessed id tells it nothing; and its accept is refused where the write, its derived values computed, would leave the record outside its pairs"
+    "051: a reviewer holding `only` accepts and rejects a proposal its listing shows it whole; one on another's record, a retirement too and by one who holds `restricted` as well, is not there to it, its accept and reject answered as an id never made, decided or not, to the byte (lakelands#1016), appending nothing, so a guessed id tells it nothing; one listed to it in part, its own record handed to another or a free key made another's, it neither accepts nor rejects, each refused as not granted, appending nothing; a key whose record another retired, and which is not held, is free to it: a proposal that makes it the holder's is listed whole and accepted; and one whose record the write would leave outside its pairs, as the accept plans it (its derived values computed, a call's assignments made, by a constant, from the payload or from the record, on a link too), is listed to it in part and neither accepted nor rejected, while a call that leaves the record its own is listed whole and accepted, and one that would make another's record its own is not there to it (lakelands#914)"
 );
+
+/// The call of `verb` on the record `key` with `payload`.
+fn call(verb: &str, key: &str, payload: Value) -> Value {
+    json!({"write": "call", "verb": verb, "key": key, "payload": payload})
+}
 
 /// `who`'s proposal of the write `json`, its id or what refused it.
 async fn proposes(l: &Lake, who: &Principal, json: Value) -> Result<ProposalId, String> {
@@ -104,6 +109,8 @@ async fn a_holder_of_only_proposes_its_own_records(store: Store) -> Held {
         {"name": "n", "type": {"kind": "text"}},
         {"name": "owner", "type": {"kind": "text"}, "authority": "derived", "derived": "n"}]}))
         .await?;
+    l.declare(type_decl("vault", vec![field("n", Text)]))
+        .await?;
     // A verb on `ticket` that reaches outside the lake, its executor not bound.
     l.declare_json(
         json!({"declare": "verb", "name": "mail", "on": "ticket", "risk": "high",
@@ -119,7 +126,8 @@ async fn a_holder_of_only_proposes_its_own_records(store: Store) -> Held {
     }
     plug(token);
     let hers = json!({"only": {"owner": "alice"}});
-    let types = json!({"claim": hers, "bill": hers, "ticket": hers});
+    let none = json!({"default": "none"});
+    let types = json!({"claim": hers, "bill": hers, "ticket": hers, "vault": none});
     let alice = alice(store.as_ref(), json!({"default": "write", "types": types}));
     let bob = holder(store.as_ref(), "bob", json!({"default": "write"}));
     let (ng, gone) = (not_granted(), "not found");
@@ -169,13 +177,6 @@ async fn a_holder_of_only_proposes_its_own_records(store: Store) -> Held {
         p.unwrap_err_or(),
         &ng,
     );
-    let p = proposes(
-        &l,
-        &alice,
-        json!({"write": "retire", "type": "claim", "key": "c2"}),
-    )
-    .await;
-    row("a retirement of bob's `c2`", p.unwrap_err_or(), gone);
     row(
         "a high-risk verb on bob's `c2`",
         said(call(alice.clone(), "propose_pay", "c2").await),
@@ -245,6 +246,25 @@ async fn a_holder_of_only_proposes_its_own_records(store: Store) -> Held {
         p.unwrap_err_or(),
         &ng,
     );
+    // 013's order: no shape before the declaration is read, the type
+    // shown and the pin before the record checks.
+    let bad = json!({"write": "declare", "declarations": [{"declare": "type", "name": "no such"}]});
+    let unpinned = upsert("ticket", "t1", "zz", json!("x"));
+    for (what, write, want) in [
+        ("a declaration of no identifier, proposed", bad, &ng),
+        ("an unpinnable proposal of no field", unpinned, &ng),
+        (
+            "a proposal of no field of a type not shown",
+            upsert("vault", "v1", "zz", json!(1)),
+            &gone.to_owned(),
+        ),
+    ] {
+        row(
+            what,
+            proposes(&l, &alice, write).await.unwrap_err_or(),
+            want,
+        );
+    }
     head_unmoved(store.as_ref(), head, "every refused proposal by alice").await?;
     let told = cat
         .describe_type(&alice, &"claim".into(), Default::default())
@@ -394,12 +414,29 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
     let l = Lake::of(store.as_ref());
     let cat = l.cat.as_ref();
     claims(&l, false).await?;
-    let set = json!([{"field": "owner", "value": "'bob'"}]);
-    l.declare_json(
-        json!({"declare": "verb", "name": "give", "on": "claim", "risk": "high",
-                          "effect": "write", "set": set}),
-    )
-    .await?;
+    // Verbs that set the owner by a constant, from the payload, from the
+    // record, and a link's label (lakelands#914).
+    let to = json!([{"name": "to", "type": {"kind": "text"}}]);
+    for (name, on, field, value, payload) in [
+        ("give", "claim", "owner", "'bob'", json!([])),
+        ("hand", "claim", "owner", "payload.to", to),
+        (
+            "swap",
+            "claim",
+            "owner",
+            "if(amount > 5, 'bob', owner)",
+            json!([]),
+        ),
+        ("take", "claim", "owner", "'alice'", json!([])),
+        ("mark", "sys.link.claim.on_trip", "label", "'x'", json!([])),
+    ] {
+        let set = json!([{"field": field, "value": value}]);
+        l.declare_json(
+            json!({"declare": "verb", "name": name, "on": on, "risk": "high",
+                              "effect": "write", "set": set, "payload": payload}),
+        )
+        .await?;
+    }
     // `ticket`'s owner is derived from `n`: what a write leaves is known
     // only once it is computed.
     l.declare_json(json!({"declare": "type", "name": "ticket", "fields": [
@@ -407,6 +444,8 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
         {"name": "owner", "type": {"kind": "text"}, "authority": "derived", "derived": "n"}]}))
         .await?;
     l.upsert("ticket", "t1", json!({"n": "alice"})).await?;
+    l.upsert("claim", "c4", json!({"owner": "bob"})).await?;
+    l.retire("claim", "c4").await?;
     let (carol, bob) = (
         holder(store.as_ref(), "carol", json!({"default": "write"})),
         holder(store.as_ref(), "bob", json!({"default": "write"})),
@@ -415,10 +454,7 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
     for (who, write) in [
         (&carol, upsert("claim", "c1", "note", json!("q1"))),
         (&carol, upsert("claim", "c1", "note", json!("q2"))),
-        (
-            &carol,
-            json!({"write": "call", "verb": "give", "key": "c1", "payload": {}}),
-        ),
+        (&carol, call("give", "c1", json!({}))),
         (&bob, upsert("claim", "c2", "note", json!("q4"))),
         (&bob, upsert("claim", "c2", "note", json!("q5"))),
         (&carol, upsert("ticket", "t1", "n", json!("bob"))),
@@ -426,6 +462,16 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
             &bob,
             json!({"write": "retire", "type": "claim", "key": "c2"}),
         ),
+        // Listed to her in part: her `c1` handed to bob, a free key made
+        // his; and whole: bob's retired `c4`, a free key, made hers.
+        (&carol, upsert("claim", "c1", "owner", json!("bob"))),
+        (&carol, upsert("claim", "c9", "owner", json!("bob"))),
+        (&carol, upsert("claim", "c4", "owner", json!("alice"))),
+        (&carol, call("hand", "c1", json!({"to": "bob"}))),
+        (&carol, call("swap", "c1", json!({}))),
+        (&carol, call("swap", "c3", json!({}))),
+        (&carol, call("take", "c2", json!({}))),
+        (&carol, call("mark", "c1:t1", json!({}))),
     ] {
         ids.push(proposes(&l, who, write).await.map_err(Failure::new)?);
     }
@@ -433,7 +479,8 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
         .await
         .must("the owner's accept of bob's second proposal")?;
     let hers = json!({"only": {"owner": "alice"}});
-    let types = json!({"claim": hers, "ticket": hers});
+    let link = json!({"only": {"label": "trip"}});
+    let types = json!({"claim": hers, "ticket": hers, "sys.link.claim.on_trip": link});
     // With `restricted` she is judged by her `only` all the same: a
     // retirement names a record alone, and is judged by a read of it.
     let more = json!({"default": "write", "review": true, "restricted": true, "types": types});
@@ -444,39 +491,66 @@ async fn a_holder_of_only_decides_what_it_is_shown_whole(store: Store) -> Held {
         rows.push((what.to_owned(), said, want.to_owned()));
     };
     let head = store.head().await.must("reading the head")?;
-    for (what, id) in [("bob's pending", &ids[3]), ("bob's decided", &ids[4])] {
-        let accepted = cat.accept(&alice, id).await.map(|_| ());
+    // A proposal on another's record is not there to her, decided or
+    // not: its accept and reject answer as an id never made, to the byte
+    // (lakelands#1016).
+    let none = ProposalId::from("none");
+    for (what, id) in [
+        ("bob's pending proposal", &ids[3]),
+        ("bob's decided proposal", &ids[4]),
+        ("a retirement of bob's `c2`", &ids[6]),
+        ("a call that would make bob's `c2` hers", &ids[13]),
+    ] {
+        let decide = async |id: &ProposalId| {
+            let accepted = cat.accept(&alice, id).await;
+            [accepted, cat.reject(&alice, id, "no".into()).await]
+        };
+        let (decided, never) = (decide(id).await, decide(&none).await);
+        let as_never = decided.iter().zip(&never).all(|(d, n)| {
+            matches!((d, n), (Err(d), Err(n)) if alike_renamed("", d, n, ("none", id.as_str())).is_ok())
+        });
         row(
-            &format!("the accept of {what} proposal"),
-            said(accepted),
-            &ng,
-        );
-        let rejected = cat.reject(&alice, id, "no".into()).await.map(|_| ());
-        row(
-            &format!("the reject of {what} proposal"),
-            said(rejected),
-            &ng,
+            &format!("the accept and reject of {what}"),
+            format!("as an id never made: {as_never}; {decided:?}"),
+            &format!("as an id never made: true; {decided:?}"),
         );
     }
-    let given = cat.accept(&alice, &ids[2]).await.map(|_| ());
-    row(
-        "the accept of a call that hands her `c1` to bob",
-        said(given),
-        &ng,
-    );
-    let derived = cat.accept(&alice, &ids[5]).await.map(|_| ());
-    row(
-        "the accept of a write that derives bob her `t1`",
-        said(derived),
-        &ng,
-    );
-    let retired = cat.accept(&alice, &ids[6]).await.map(|_| ());
-    row(
-        "the accept of a retirement of bob's `c2`",
-        said(retired),
-        &ng,
-    );
+    // An entry listed to her in part she neither accepts nor rejects: a
+    // record the write leaves outside her pairs, as the accept plans it
+    // (lakelands#914).
+    let listed = cat.proposals(&alice, Default::default()).await;
+    let listed = listed.must("alice's listing")?.data;
+    let shown = |id: &ProposalId| {
+        let p = listed.iter().find(|p| &p.id == id);
+        format!("{:?}", p.map(|p| (p.write.is_some(), p.more)))
+    };
+    for (what, id) in [
+        ("her `c1` handed to bob", &ids[7]),
+        ("a free `c9` made bob's", &ids[8]),
+        ("a call that hands her `c1` to bob", &ids[2]),
+        ("a write that derives bob her `t1`", &ids[5]),
+        ("a call that hands her `c1` to the payload's bob", &ids[10]),
+        ("a call that hands her `c1` to bob by its amount", &ids[11]),
+        ("a call that marks her link out", &ids[14]),
+    ] {
+        row(&format!("{what}, listed"), shown(id), "Some((false, true))");
+        let accepted = cat.accept(&alice, id).await.map(|_| ());
+        row(&format!("the accept of {what}"), said(accepted), &ng);
+        let rejected = cat.reject(&alice, id, "no".into()).await.map(|_| ());
+        row(&format!("the reject of {what}"), said(rejected), &ng);
+    }
     head_unmoved(store.as_ref(), head, "every refused decision by alice").await?;
+    // Bob's retired `c4` is a free key to her, as to her writes: its
+    // remaking as hers is listed whole, and she accepts it, as a call
+    // that leaves her `c3` hers.
+    for (what, id) in [
+        ("bob's retired `c4` made hers", &ids[9]),
+        ("a call that leaves her `c3` hers by its amount", &ids[12]),
+    ] {
+        row(&format!("{what}, listed"), shown(id), "Some((true, false))");
+        let accepted = cat.accept(&alice, id).await.map(|_| ());
+        row(&format!("the accept of {what}"), said(accepted), "applied");
+    }
     let accepted = cat.accept(&alice, &ids[0]).await.map(|_| ());
     row(
         "the accept of a change to her `c1`",

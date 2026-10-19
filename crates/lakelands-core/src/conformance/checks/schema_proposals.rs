@@ -86,6 +86,7 @@ fn proposed(o: &Outcome) -> Result<ProposalId, Failure> {
 async fn propose_ticket(store: &dyn LakeStore) -> Result<ProposalId, Failure> {
     let write = ProposedWrite::Declare {
         declarations: vec![ticket()],
+        plan: None,
     };
     let why = "a place for tickets".into();
     let o = doors(store).propose(&agent(store), write, why).await;
@@ -463,6 +464,7 @@ async fn a_tightening_is_refused_while_a_value_would_not_fit_or_the_value_type_c
     };
     let narrowed = ProposedWrite::Declare {
         declarations: vec![Declaration::ValueType(states(&["open", "paid"]))],
+        plan: None,
     };
     let pointed = l.cat.propose(&clerk, narrowed, "fewer".into()).await;
     ensure!(

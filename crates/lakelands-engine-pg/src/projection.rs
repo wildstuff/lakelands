@@ -79,7 +79,8 @@ impl Names {
     /// The statements that create the lake's tables, if absent.
     ///
     /// `text_index` has no primary key: a record's value is in it once by
-    /// the unique index `text_index_value`, whose last column is the key
+    /// the unique index `text_index_value`, which holds the value's `md5`,
+    /// so no text is too long for a btree row, and whose last column is the key
     /// in byte order, so the records holding a text are read from it in
     /// key order (`in_key_order` in `view.rs`). A lake made with a primary
     /// key there keeps it and gains the index.
@@ -87,6 +88,13 @@ impl Names {
     /// A record's key is compared bytewise (`COLLATE "C"`), so the primary
     /// keys of `records` and `records_head` hold the order keys are read
     /// in.
+    ///
+    /// `records_since` ends with the key, so a seek of one state by its
+    /// type, key and position uses every column of either index the
+    /// planner picks. Before a table is analysed the planner may pick it
+    /// for that seek; ending at `since`, it filtered a type's states put at
+    /// one position row by row, every head read paying for all of them
+    /// (lakelands#1018).
     pub(crate) fn schema_sql(&self) -> String {
         let (s, heads) = (&self.schema, heads_sql(&self.schema));
         format!(
@@ -111,16 +119,18 @@ CREATE TABLE IF NOT EXISTS {s}.declarations (
     ident TEXT NOT NULL, since BIGINT NOT NULL, state TEXT NOT NULL,
     PRIMARY KEY (ident, since)
 );
+CREATE INDEX IF NOT EXISTS declarations_since ON {s}.declarations (since);
 CREATE TABLE IF NOT EXISTS {s}.records (
     ty TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, since BIGINT NOT NULL,
     state TEXT NOT NULL,
     PRIMARY KEY (ty, key, since)
 );
-CREATE INDEX IF NOT EXISTS records_since ON {s}.records (ty, since);
+CREATE INDEX IF NOT EXISTS records_since ON {s}.records (ty, since, key);
 CREATE TABLE IF NOT EXISTS {s}.proposals (
     id TEXT NOT NULL, since BIGINT NOT NULL, state TEXT NOT NULL,
     PRIMARY KEY (id, since)
 );
+CREATE INDEX IF NOT EXISTS proposals_newest ON {s}.proposals (((state::jsonb ->> 'position')::int8));
 CREATE TABLE IF NOT EXISTS {s}.members (
     object_set TEXT NOT NULL, ty TEXT NOT NULL, key TEXT NOT NULL,
     since BIGINT NOT NULL, state BOOLEAN NOT NULL,
@@ -135,17 +145,21 @@ CREATE TABLE IF NOT EXISTS {s}.outputs (
     id TEXT PRIMARY KEY, at BIGINT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS {s}.routes (
-    at BIGINT NOT NULL, kind TEXT NOT NULL, ty TEXT, key TEXT
+    at BIGINT NOT NULL, kind TEXT NOT NULL, ty TEXT, key TEXT, source TEXT
 );
 CREATE INDEX IF NOT EXISTS routes_kind ON {s}.routes (kind, at);
 CREATE INDEX IF NOT EXISTS routes_ty ON {s}.routes (ty, at);
 CREATE INDEX IF NOT EXISTS routes_key ON {s}.routes (key, at);
+CREATE INDEX IF NOT EXISTS routes_source ON {s}.routes (source, at);
 CREATE TABLE IF NOT EXISTS {s}.text_index (
     ty TEXT NOT NULL, field TEXT NOT NULL, value TEXT NOT NULL, key TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS text_index_value
-    ON {s}.text_index (ty, field, value, key COLLATE \"C\");
+    ON {s}.text_index (ty, field, md5(value), key COLLATE \"C\");
 CREATE INDEX IF NOT EXISTS text_index_key ON {s}.text_index (ty, key);
+CREATE TABLE IF NOT EXISTS {s}.lookup_fields (
+    ty TEXT NOT NULL, field TEXT NOT NULL, PRIMARY KEY (ty, field)
+);
 CREATE TABLE IF NOT EXISTS {s}.edges (
     src_ty TEXT NOT NULL, src_key TEXT NOT NULL, relation TEXT NOT NULL,
     dst_ty TEXT NOT NULL, dst_key TEXT NOT NULL
@@ -200,11 +214,11 @@ fn heads_sql(s: &str) -> String {
 /// table changes so that a projection made before would answer wrongly,
 /// not fail: one made with another layout is never read, and is rebuilt
 /// from the log.
-pub(crate) const LAYOUT: u64 = 2;
+pub(crate) const LAYOUT: u64 = 4;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
-pub(crate) const LAKE_TABLES: [&str; 18] = [
+pub(crate) const LAKE_TABLES: [&str; 19] = [
     "meta",
     "lease",
     "segments",
@@ -217,6 +231,7 @@ pub(crate) const LAKE_TABLES: [&str; 18] = [
     "applied",
     "routes",
     "text_index",
+    "lookup_fields",
     "edges",
     "full_text",
     "sort_index",
@@ -424,11 +439,13 @@ impl History {
 #[derive(Default)]
 pub(crate) struct HeadTypes(HashMap<TypeName, HeadType>);
 
-/// A type's declaration at the head and the fields its order index keeps.
+/// A type's declaration at the head, its order index's fields, and its
+/// exact-text index's (`None`, every field, for a kept name).
 #[derive(Clone, Default)]
 pub(crate) struct HeadType {
     pub(crate) decl: Option<TypeDecl>,
     pub(crate) sorted: Vec<FieldName>,
+    pub(crate) looked: Option<BTreeSet<FieldName>>,
 }
 
 impl HeadTypes {
@@ -451,27 +468,101 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
     let row = db.query_one(
         &format!(
             "SELECT (SELECT r.state FROM {d} WHERE h.ident = $1), \
-             (SELECT r.state FROM {r} WHERE h.ty = $2 AND h.key = $3)",
+             (SELECT r.state FROM {r} WHERE h.ty = $2 AND h.key = $3), \
+             (SELECT array_agg(field) FROM {l} WHERE ty = $4)",
             d = DECLARATIONS.at_head(names),
             r = RECORDS.at_head(names),
+            l = names.t("lookup_fields"),
         ),
         &[
             &format!("type {}", view.as_ref().unwrap_or(ty)),
             &SETTING_TYPE,
             &engines::sort_index_key(ty),
+            &ty.as_str(),
         ],
     )?;
+    let looked: Option<Vec<String>> = row.get(2);
     let declared = declared_type(row.get(0))?;
     let setting = row
         .get::<_, Option<String>>(1)
-        .map(|state| decode::<StoredRecord>(&state, "a record"))
+        .map(|state| decode_record(&state))
         .transpose()?;
     let sorted = match &declared {
         Some(d) => engines::sorted_fields(ty, d, setting.as_ref().and_then(engines::setting_value)),
         None => Vec::new(),
     };
     let decl = declared.filter(|_| view.is_none());
-    Ok(HeadType { decl, sorted })
+    let looked = decl
+        .as_ref()
+        .map(|_| looked.into_iter().flatten().map(FieldName::from).collect());
+    Ok(HeadType {
+        decl,
+        sorted,
+        looked,
+    })
+}
+
+/// The declarations at the head.
+pub(crate) fn head_declarations(db: &mut Db, names: &Names) -> Result<Vec<Declaration>> {
+    let sql = format!("SELECT r.state FROM {}", DECLARATIONS.at_head(names));
+    let states = db.query(&sql, &[])?;
+    let decls = states
+        .iter()
+        .map(|row| decode::<Declared>(row.get(0), "a declaration"));
+    decls.map(|d| d.map(|d| d.declaration)).collect()
+}
+
+/// Decide again which fields the exact-text index keeps ([`engines::relooked`])
+/// for the types `moved` names (`None`, every type), and fill or drop each
+/// field's rows from the head records: at the commit of a transaction that
+/// put a declaration or a `lookup_index.<type>`, after its last page; the
+/// types it read are read again after it.
+pub(crate) fn relook(
+    db: &mut Db,
+    names: &Names,
+    types: &mut HeadTypes,
+    kept: &engines::Heads,
+    moved: Option<&BTreeSet<TypeName>>,
+) -> Result<()> {
+    types.0.clear();
+    let lookup = names.t("lookup_fields");
+    let rows = match moved {
+        Some(moved) => {
+            let moved: Vec<&str> = moved.iter().map(TypeName::as_str).collect();
+            let sql = format!("SELECT ty, field FROM {lookup} WHERE ty = ANY($1)");
+            db.query(&sql, &[&moved])?
+        }
+        None => db.query(&format!("SELECT ty, field FROM {lookup}"), &[])?,
+    };
+    let was = rows.iter().map(|row| (row.get(0), row.get(1))).collect();
+    let heads = RECORDS.at_head(names);
+    let changes = engines::relooked(kept, moved, &was, |key| {
+        let sql = format!("SELECT r.state FROM {heads} WHERE h.ty = $1 AND h.key = $2");
+        let row = db.query_opt(&sql, &[&SETTING_TYPE, &key])?;
+        (row.map(|row| decode::<StoredRecord>(row.get(0), "a record"))).transpose()
+    })?;
+    let text = names.t("text_index");
+    for (ty, f, comes) in changes {
+        let statements = match comes {
+            true => [
+                format!(
+                    "INSERT INTO {text} (ty, field, value, key) \
+                     SELECT h.ty, $2, r.state::jsonb -> 'fields' ->> $2, h.key FROM {heads} \
+                     WHERE h.ty = $1 AND jsonb_typeof(r.state::jsonb -> 'fields' -> $2) = 'string' \
+                     ON CONFLICT DO NOTHING"
+                ),
+                format!("INSERT INTO {lookup} (ty, field) VALUES ($1, $2)"),
+            ],
+            false => [
+                format!("DELETE FROM {text} WHERE ty = $1 AND field = $2"),
+                format!("DELETE FROM {lookup} WHERE ty = $1 AND field = $2"),
+            ],
+        };
+        for statement in statements {
+            db.execute(&statement, &[&ty, &f])?;
+        }
+    }
+    Ok(())
 }
 
 /// The statement of a feed filter's positions in `routes` from `$2`
@@ -659,7 +750,7 @@ pub(crate) fn catch_up_sorted(db: &mut Db, names: &Names) -> Result<()> {
 }
 
 pub(crate) fn decode_record(state: &str) -> Result<StoredRecord> {
-    decode(state, "a record")
+    lakelands_core::engines::decode_record(state)
 }
 
 /// The declaration of a type in force at `at` (`None` for the head).
@@ -776,6 +867,9 @@ pub(crate) fn index_records(
         let decl = head.decl.as_ref();
         let (ty, key) = (r.ty.as_str(), r.key.as_str());
         for (field, value) in &r.fields {
+            if head.looked.as_ref().is_some_and(|l| !l.contains(field)) {
+                continue;
+            }
             if let Some(value) = value.as_str() {
                 for (column, v) in rows.text.iter_mut().zip([ty, field.as_str(), value, key]) {
                     column.push(v);
@@ -926,10 +1020,18 @@ pub(crate) struct Buffer {
     members: BTreeMap<(Vec<String>, i64), bool>,
     /// Applied ids, each with the first position it was marked at.
     applied: BTreeMap<String, i64>,
-    /// The feed index's rows of the events applied: position, kind, type
-    /// and key.
-    routes: Vec<(i64, &'static str, Option<String>, Option<String>)>,
+    /// The feed index's rows of the events applied.
+    routes: Vec<Route>,
 }
+
+/// A row of the feed index: position, kind, type, key and source.
+type Route = (
+    i64,
+    &'static str,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 impl Buffer {
     /// The puts it holds, of every kind.
@@ -943,8 +1045,7 @@ impl Buffer {
 
     pub(crate) fn record(&mut self, r: &StoredRecord) {
         if lakelands_api::seam::is_head_only(&r.ty) {
-            let state =
-                (!r.is_ended()).then(|| serde_json::to_string(r).expect("a record serialises"));
+            let state = (!r.is_ended()).then(|| lakelands_core::engines::record_state(r));
             let key = (r.ty.to_string(), r.key.to_string());
             self.heads.insert(key, (r.position.0 as i64, state));
             return;
@@ -980,7 +1081,8 @@ impl Buffer {
         self.applied.entry(applied.id.0.clone()).or_insert(at);
         for a in &applied.about {
             let (ty, key) = (a.ty.as_ref().map(|t| t.to_string()), a.key.as_ref());
-            (self.routes).push((at, applied.kind, ty, key.map(|k| k.to_string())));
+            let (key, source) = (key.map(|k| k.to_string()), applied.source.clone());
+            (self.routes).push((at, applied.kind, ty, key, source.map(|s| s.to_string())));
         }
     }
 
@@ -1001,10 +1103,7 @@ impl Buffer {
         let records: BTreeMap<(Vec<String>, i64), String> = self
             .records
             .iter()
-            .map(|(k, r)| {
-                let state = serde_json::to_string(r).expect("a record serialises");
-                (k.clone(), state)
-            })
+            .map(|(k, r)| (k.clone(), lakelands_core::engines::record_state(r)))
             .collect();
         let heads = RECORDS.put_many(db, names, &records)?;
         // A head-only name's key is one row, written over in place, and its
@@ -1105,19 +1204,21 @@ impl Buffer {
         }
         if !self.routes.is_empty() {
             let (mut at, mut kinds, mut tys, mut keys) = (vec![], vec![], vec![], vec![]);
-            for (p, kind, ty, key) in &self.routes {
+            let mut sources = vec![];
+            for (p, kind, ty, key, source) in &self.routes {
                 at.push(*p);
                 kinds.push(*kind);
                 tys.push(ty.as_deref());
                 keys.push(key.as_deref());
+                sources.push(source.as_deref());
             }
             db.execute(
                 &format!(
-                    "INSERT INTO {} (at, kind, ty, key) \
-                     SELECT * FROM unnest($1::int8[], $2::text[], $3::text[], $4::text[])",
+                    "INSERT INTO {} (at, kind, ty, key, source) SELECT * FROM \
+                     unnest($1::int8[], $2::text[], $3::text[], $4::text[], $5::text[])",
                     names.t("routes")
                 ),
-                &[&at, &kinds, &tys, &keys],
+                &[&at, &kinds, &tys, &keys, &sources],
             )?;
         }
         Ok(rebuilt)

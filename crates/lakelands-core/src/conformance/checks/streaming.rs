@@ -246,6 +246,7 @@ fn reading() -> TypeDecl {
                 from: "note".into(),
                 to: "note".into(),
             }],
+            filter: None,
         }),
         ..RelationDecl::to(SAME_NOTE, TY)
     });
@@ -1410,12 +1411,14 @@ impl Size<'_> {
                         fields: None,
                         weight: None,
                         text_weight: None,
+                        model: None,
                     },
                     k: K,
                     cursor: None,
                     filter: None,
                     with_meta: false,
                     at: ReadAt::default(),
+                    rerank: None,
                 },
             )
             .await

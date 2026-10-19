@@ -28,13 +28,54 @@ of its last write.
 A field computed at the read is computed for every record a read loads
 from an engine, before the read uses the record: in the order the fold
 computes derived fields, over the record as stored, with the lake's
-settings and the read's clock, the one a `where` reads (the wall clock,
-also in a read as of a position). So `get`, a `where` that names the
-field or its expression, a group and a measure of an aggregate or of a
-view, a pattern's start and rows and a search's hits agree in every
-read. A `where` that names it is evaluated by the store, a page at a
-time, as one that reads the clock is. A value that cannot be computed is
-none.
+settings and the read's clock, the one a `where` reads (below). So
+`get`, a `where` that names the field or its expression, a group and a
+measure of an aggregate or of a view, a pattern's start and rows and a
+search's hits agree in every read. A `where` that names it is
+evaluated by the store, a page at a time, as one that reads the clock
+is. A value that cannot be computed is none.
+
+### The read's clock is the instant or the position it names
+
+A read has one clock, which `now()` and `today()` read wherever the read
+evaluates them: a `where`, a field computed at the read, a group key, a
+measure, a view's `where` and measures, a pattern's starts and rows,
+and a search's `where`. It is decided once, when the read opens:
+- a read `valid_at` an instant reads that instant, at the head and as of
+  a position: a read of what was true at a business date counts its
+  days to that date;
+- else a read `as_of` a position reads the `known_at` of the event
+  there, the clock the fold read that event under (017), so a read as of
+  a position repeats;
+- else it reads the wall clock.
+
+A cursor carries the clock its first page read, and every page it
+continues reads it, at the head too. A cursor handed out without one
+reads by the rule above. A cursor's clock is the caller's to keep, as
+`valid_at` is: a cursor is not sealed, and one that names another clock
+reads no more than a read `valid_at` that instant would.
+
+The time a position was written is not withheld, as the position is
+not: a read as of a position tells the `known_at` of the event there,
+also when that event is a write the reader is not shown.
+
+A host may give a read its clock (`ReadAt::clock`), which no wire
+carries, so no caller names it. `valid_at` comes before it. An MCP
+session's pin of the head keeps the instant it was set at as the clock
+of every read it pins: an agent that pins at the start of its turn is
+answered as of that turn, not as of the last write, and its pinned reads
+repeat within the session. A pin of a named position reads by the rule
+above.
+
+A listing of proposals judges what a proposed write reaches under the
+host's clock, else the clock of the position it reads, never under
+`valid_at`: the `known_at` of the event there as of a position, else
+the wall clock. A pin's clock is the one a read at the head had when
+the pin was set, so a listing under it shows no more than that read.
+Whether a write reaches a record the reviewer is not shown decides
+whether it is listed, so a clock the reviewer may name would let it
+move the clock until the listing changes, and learn to the microsecond
+when a value it may not read lets a hidden record in.
 
 ### Nothing holds the value of a field computed at the read
 
@@ -52,7 +93,7 @@ records as stored, and would read it as absent. So it has the authority
 backing is called at a write), it reads no `previous` or `changed`, and
 it is not `required`, `sensitive` by itself, cleared by
 `on_input_change` or searchable; it is no key, validity bound, `via` or
-derived relation's match on either side, no `reference` (nothing would
+derived relation's match or `where` on either side, no `reference` (nothing would
 judge the record it names for a writer, 032), no field of a view (a view
 is computed at the read already) or of a link; no field computed at the
 write reads it; a trigger, a verb and an object set that read it are
@@ -71,8 +112,11 @@ all.
 
 `order_by` a field computed at the read is refused, in `find` and in a
 pattern: its value moves with the clock, so the order one page is read
-in would not hold to the next. The refusal comes after the reader is
-known to read the field: one kept from the field, or from its type, is
+in would not hold to the next. Since a cursor carries its clock, that
+holds no longer for a cursor; it still holds for `after`, which carries
+no clock, and for a cursor handed out before. Whether the refusal stays
+is asked in lakelands#1189. The refusal comes after the reader is known
+to read the field: one kept from the field, or from its type, is
 told nothing of it.
 
 ### A declaration that changes `computed_at` computes the type's records again
@@ -116,3 +160,10 @@ absent for it.
   the record it names. A function declared again with a backing is
   refused while a field computed at the read calls it, where only the
   field's own declaration was asked (lakelands#795).
+- The read's clock was the wall clock, also as of a position, so a read
+  as of a position did not repeat and a read of a business date counted
+  days to the day it was made. It is the instant `valid_at` names, else
+  the `known_at` of the position read, and a cursor carries it, as a
+  pin of the head carries the instant it was set at; a listing of
+  proposals judges under the position's clock or the host's, never
+  `valid_at` (lakelands#571).

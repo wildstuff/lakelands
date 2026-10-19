@@ -14,6 +14,7 @@ fn intent(e: &Error) -> &'static str {
         Error::Refused { reason, .. } => match reason {
             Refusal::NotGranted => "the principal lacks a grant; nothing was written",
             Refusal::WrongDoor => "the field belongs to another authority's door",
+            Refusal::VerbsOnly { .. } => "only the type's verbs write the field; call one it names",
             Refusal::Reserved => "a `sys.` name is the system's",
             Refusal::Invalid { .. } => "the request does not fit the lake's map",
             Refusal::Constraint { .. } => "a value breaks a declared constraint",
@@ -22,6 +23,9 @@ fn intent(e: &Error) -> &'static str {
             Refusal::TooLarge { .. } => "a graph measure would reach past the lake's ceiling",
             Refusal::Migration { .. } => "a migration would lose information",
             Refusal::Decided => "the proposal is already decided",
+            Refusal::Declined { .. } => {
+                "the host declined the call by policy; nothing ran, a retry answers the same"
+            }
             Refusal::Unanswered { .. } => "an external call has no recorded answer; nothing ran",
             Refusal::OutOfRange { .. } => "the position is past the head",
             Refusal::Unknown(_) => "a refusal a newer lake knows: its message says it",
@@ -37,6 +41,9 @@ fn intent(e: &Error) -> &'static str {
         Error::Conflict { .. } => "the record moved: retry against its version",
         Error::Unbound { .. } => "the host bound no seam for this",
         Error::Unavailable { .. } => "the lake cannot answer now; retrying may help",
+        Error::Ingested { .. } => {
+            "a record of an ingest was refused: its refusal, and where to resume"
+        }
         Error::Unknown(_) => "an error of a kind a newer lake knows: its message says it",
     }
 }
@@ -67,4 +74,42 @@ fn the_event_kinds_are_distinct_and_each_is_on_the_log_format_page() {
             "the kind `{k}` is not named on docs/log-format.md"
         );
     }
+}
+
+/// A feed written outside the repository, which never waits: its `wait`
+/// is the trait's own, and answers at once with the head its poll reads
+/// (lakelands#1061).
+#[test]
+fn a_feed_that_cannot_wait_answers_at_once() {
+    use lakelands_api::Position;
+    use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter};
+    struct Relay;
+    #[async_trait::async_trait]
+    impl ChangeFeed for Relay {
+        async fn poll(
+            &self,
+            from: Position,
+            _: &FeedFilter,
+            _: u32,
+        ) -> lakelands_api::Result<FeedBatch> {
+            let head = Position(7);
+            Ok(FeedBatch {
+                events: Vec::new(),
+                next: from.max(head.next()),
+                head,
+                overruled: Vec::new(),
+            })
+        }
+        async fn ack(&self, _: &str, _: Position) -> lakelands_api::Result<()> {
+            Ok(())
+        }
+    }
+    let wait = Relay.wait(Position(3), std::time::Duration::from_secs(3600));
+    let mut wait = std::pin::pin!(wait);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    let answered = wait.as_mut().poll(&mut cx);
+    assert!(
+        matches!(answered, std::task::Poll::Ready(Ok(Position(7)))),
+        "{answered:?}"
+    );
 }

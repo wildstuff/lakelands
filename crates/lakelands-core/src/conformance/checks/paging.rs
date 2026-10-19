@@ -160,6 +160,7 @@ async fn one_page(
             rows,
             next_cursor,
             total,
+            ..
         } => Ok((
             rows.iter().map(|r| r.key.to_string()).collect(),
             next_cursor,

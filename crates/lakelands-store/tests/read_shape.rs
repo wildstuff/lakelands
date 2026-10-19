@@ -124,14 +124,15 @@ async fn what_ends_a_range_is_seen_by_the_next_read() {
     };
     assert_eq!(twice().await, Some(4.0));
     assert!(keys(&l, "n > setting('floor')").await.is_empty());
-    // Each change, then two reads: the first builds once more and sees it.
+    // Each change, then two reads: the first builds once more and sees it,
+    // but after a declaration, whose writer left the shape (lakelands#1056).
     let was = {
         l.declare(type_of("u", &[("a", Text)])).await.unwrap();
         builds(&probe)
     };
     assert!(shown(&l, "u", None).await, "a type declared");
     assert!(shown(&l, "u", None).await);
-    assert_eq!(builds(&probe), was + 1, "a type declared: one build");
+    assert_eq!(builds(&probe), was, "a type declared: the writer's shape");
 
     let was = {
         l.migrate(type_of("t", &[("a", Text), ("n", Number), ("b", Text)]))
@@ -154,8 +155,8 @@ async fn what_ends_a_range_is_seen_by_the_next_read() {
     assert_eq!(twice().await, Some(6.0));
     assert_eq!(
         builds(&probe),
-        was + 1,
-        "a function declared again: one build"
+        was,
+        "a function declared again: the writer's shape"
     );
 
     let was = {
@@ -390,9 +391,8 @@ async fn a_rename_is_followed_from_the_shapes_list() {
     let r = get().await;
     assert!(value(&r, "a").is_none() && value(&r, "n").is_some());
     let m = Migration {
-        to: type_of("t", &[("b", Text), ("n", Number)]),
         renames: vec![("a".into(), "b".into())],
-        relation_renames: Vec::new(),
+        ..Migration::to(type_of("t", &[("b", Text), ("n", Number)]))
     };
     let id = l
         .cat
@@ -443,4 +443,55 @@ async fn a_shape_read_beside_a_rebuild_is_not_kept() {
         shown(&l, "t", None).await,
         "the head after a plain write shows `t`"
     );
+}
+
+/// An agent kept from one field declares one type again after another:
+/// its door reads the head's shape, and the declaration before it left
+/// that shape, so no declaration is read from the engine (lakelands#1056).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_masked_authors_declaration_reads_the_shape_the_one_before_left() {
+    let (store, probe) = lake("left").await;
+    let l = Lake::of(store.as_ref());
+    let mut grants = Grants {
+        default: Access::Write,
+        schema: true,
+        ..Grants::default()
+    };
+    let hidden = [("n".into(), Access::None)].into();
+    let hidden = TypeGrants {
+        fields: hidden,
+        ..Default::default()
+    };
+    grants.types.insert("t".into(), hidden);
+    let masked = principal(store.as_ref(), PrincipalKind::Agent, "masked", grants);
+    l.declare(type_of("u", &[("a", Text)])).await.unwrap();
+    // The first read of the head builds its shape; each declaration after
+    // it leaves the next one.
+    assert!(shown(&l, "u", None).await);
+    let was = builds(&probe);
+    for more in [&["b"][..], &["b", "c"], &["b", "c", "d"]] {
+        let mut t = type_of("u", &[("a", Text)]);
+        t.fields.extend(more.iter().map(|f| field(f, Text)));
+        let d = lakelands_api::write::Declaration::Type(t);
+        l.cat.declare(&masked, d).await.unwrap();
+    }
+    assert_eq!(
+        builds(&probe),
+        was,
+        "three declarations by one kept from a field"
+    );
+    // Two more with no read between: the read after them builds what they
+    // left, each put in the order of the log, from no declaration read.
+    for last in ["e", "f"] {
+        let mut t = type_of("u", &[("a", Text)]);
+        let more = ["b", "c", "d", "e", "f"]
+            .into_iter()
+            .take_while(|f| *f <= last);
+        t.fields.extend(more.map(|f| field(f, Text)));
+        l.declare(t).await.unwrap();
+    }
+    let fields = l.describe_type("u").await.unwrap().fields;
+    let fields: Vec<_> = fields.iter().map(|f| f.name.to_string()).collect();
+    assert_eq!(fields, ["a", "b", "c", "d", "e", "f"]);
+    assert_eq!(builds(&probe), was, "a chain of two read once");
 }

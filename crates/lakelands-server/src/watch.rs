@@ -25,18 +25,29 @@
 //!   type that declares an `initial` value: the fold filled those the
 //!   patch left out. Which fields declare one is read from the
 //!   principal's own description, so a field it reads masked, whose
-//!   `initial` it is not shown, is told by its patch alone.
-//! - **`trigger_fired` and `object_set_changed`** say that a condition
-//!   held for the record, and a trigger's guard or a set's filter may read
-//!   any field of its type. So they are told only to a principal who reads
+//!   `initial` it is not shown, is told by its patch alone. A write of a
+//!   setting is told by the record as the principal is told it before
+//!   and after (`docs/decisions/063-every-setting-is-in-one-list.md`): a
+//!   field only where the value it is told changed; a record it is no
+//!   longer told as retired, to a subscription that asks for
+//!   retirements; one it is told first as made.
+//! - **`trigger_fired`, `trigger_dropped` and `object_set_changed`** say
+//!   that a condition held for the record, and a trigger's guard or a
+//!   set's filter may read any field of its type. So they are told only
+//!   to a principal who reads
 //!   every field of the type in full at that position: a condition over a
 //!   field it may not read, or reads masked, is never probed this way
 //!   (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
+//!   A condition over `sys.setting` is told only to one from whom nothing
+//!   is held, the only principal no setting is told narrowed or withheld.
+//!   One the feed names overruled, decided over a value an act erased
+//!   since, is told to no one
+//!   (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
 //!
 //! **What a gap says.** The positions a session is told are a subset of
 //! the log's, so a gap between two says that something happened the
-//! principal may not see. That is no more than every read's `position`
-//! already says: the lake's head moves for every event.
+//! principal may not see, or is not told. That is no more than every
+//! read's `position` already says: the lake's head moves for every event.
 //!
 //! **Retry, never loss.** A read that refuses (the principal may not see
 //! the record) hides the event. A read that fails for any other reason
@@ -47,7 +58,8 @@
 //!
 //! **What one change costs.** Each change a session is told costs one
 //! read: the record at the event's position, which decides whether the
-//! principal may see it then. The fields a type shows the principal,
+//! principal may see it then; a setting's write costs one more, the
+//! record before it. The fields a type shows the principal,
 //! which of them it is shown declare an `initial` value, and whether it
 //! reads the type whole are read once per type and kept for the pump's
 //! life.
@@ -74,7 +86,7 @@
 //! it again. So at most one change in flight may be told twice; each
 //! carries its position, which a client already deduplicates by.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -83,9 +95,9 @@ use lakelands_api::event::{Event, EventBody};
 use lakelands_api::id::{Position, RecordKey, TypeName};
 use lakelands_api::principal::{Grants, PrincipalKind};
 use lakelands_api::read::{Get, ReadAt};
-use lakelands_api::seam::{FeedBatch, FeedFilter};
+use lakelands_api::seam::{ChangeFeed, FeedFilter, SETTING_TYPE};
 use lakelands_api::tools::CHANGE_KINDS;
-use lakelands_api::{Catalog, LakeStore, Principal, WriteContext};
+use lakelands_api::{Catalog, LakeStore, Principal, Record, WriteContext};
 use serde_json::{Map, Value, json};
 use tokio::sync::{Notify, mpsc};
 
@@ -93,11 +105,21 @@ use tokio::sync::{Notify, mpsc};
 /// reading the feed.
 pub const QUEUE: usize = 256;
 
-/// How many events the pump reads at once.
-const BATCH: u32 = 100;
-
 /// The method of a change notification.
 pub const CHANGED: &str = "notifications/lakelands/changed";
+
+/// The kind a retirement is told as.
+const RETIRED: &str = "record_retired";
+
+/// Whether a subscription reads the feed's events of `kind`: those it
+/// asked for, and a write where it asked for retirements of settings, as
+/// a setting's write may be told as one (063). No source writes a
+/// setting.
+fn reads_kind(s: &Subscription, kind: &str) -> bool {
+    let asked = |k: &str| s.kinds.iter().any(|a| a == k);
+    let settings = (s.types.as_ref()).is_none_or(|t| t.iter().any(|t| t.as_str() == SETTING_TYPE));
+    asked(kind) || (asked(RETIRED) && settings && kind == "record_upserted")
+}
 
 /// One message on a session's queue.
 #[derive(Clone, Debug, PartialEq)]
@@ -295,10 +317,9 @@ pub async fn pump(
     who: Principal,
     watch: Arc<Watch>,
     queue: mpsc::Sender<Queued>,
-    pause: Duration,
+    (pause, floor): (Duration, Duration),
 ) {
     let catalog = store.catalog(WriteContext::default());
-    let feed = store.feed();
     // The head the session starts at; a lake that cannot answer is asked
     // again after the pause.
     loop {
@@ -311,7 +332,7 @@ pub async fn pump(
                 if queue.is_closed() {
                     return;
                 }
-                wait(&watch, &queue, pause).await;
+                let _ = wait(&watch, &queue, pause, None).await;
             }
         }
     }
@@ -319,6 +340,10 @@ pub async fn pump(
     let mut view = View::new(catalog.as_ref(), &who, &host);
     // Where the view's reads go on from; `None` after a pass broke off.
     let mut view_at: Option<Position> = None;
+    // The pump reads the lake's hub for its kinds (lakelands#1113): a new
+    // subscription leaves its hub for its own, joining it as every
+    // follower joins.
+    let mut follow: Option<(u64, Vec<String>, crate::hub::Follow)> = None;
     'poll: loop {
         if queue.is_closed() {
             return;
@@ -331,7 +356,8 @@ pub async fn pump(
         ];
         let from = match &subscription {
             Some(s) => {
-                kinds.extend(s.kinds.iter().cloned());
+                let read = CHANGE_KINDS.iter().filter(|k| reads_kind(s, k));
+                kinds.extend(read.map(|k| (*k).to_owned()));
                 next.min(declared)
             }
             None => declared,
@@ -341,20 +367,42 @@ pub async fn pump(
             types: vec![],
             keys: Vec::new(),
         };
-        let batch = match feed.poll(from, &filter, BATCH).await {
-            Ok(b) => b,
+        let same = |(g, k, _): &(u64, Vec<String>, _)| *g == generation && *k == filter.kinds;
+        let (_, _, f) = match follow.take().filter(same) {
+            Some(held) => follow.insert(held),
+            None => {
+                let kinds = filter.kinds.clone();
+                match crate::hub::Follow::new(&store, filter, (pause, floor)).await {
+                    Ok(f) => follow.insert((generation, kinds, f)),
+                    Err(_) => {
+                        let _ = wait(&watch, &queue, pause, None).await;
+                        continue;
+                    }
+                }
+            }
+        };
+        // It waits on the hub, or for a new subscription, or the queue's end.
+        let got = tokio::select! {
+            got = f.next(from, pause) => got,
+            _ = watch.wake.notified() => continue 'poll,
+            _ = queue.closed() => return,
+        };
+        let shared = match got {
+            Ok(crate::hub::Next::Batch(b)) => b,
+            Ok(crate::hub::Next::Quiet) => continue,
             Err(_) => {
                 // The lake cannot be read now; try again after the pause.
-                wait(&watch, &queue, pause).await;
+                let _ = wait(&watch, &queue, pause, None).await;
                 continue;
             }
         };
+        let batch = &shared.batch;
         // The view holds only while the passes read on without a gap.
         if view_at != Some(from) {
             view.forget();
         }
         view_at = None;
-        for e in &batch.events {
+        for e in batch.events.iter().filter(|e| e.position >= from) {
             if watch.generation() != generation {
                 continue 'poll;
             }
@@ -373,8 +421,9 @@ pub async fn pump(
                     })
                 }
                 "declared" | "migrated" | "value_type_migrated" => None,
+                _ if batch.overruled.binary_search(&e.position).is_ok() => None,
                 kind => match &subscription {
-                    Some(s) if e.position >= next && s.kinds.iter().any(|k| k == kind) => {
+                    Some(s) if e.position >= next && reads_kind(s, kind) => {
                         match view.of(e, s).await {
                             Seen::Shown(params) => Some(Queued {
                                 generation: Some(generation),
@@ -384,7 +433,7 @@ pub async fn pump(
                             Seen::Retry => {
                                 // Not past this event: read it again.
                                 view_at = Some(e.position);
-                                wait(&watch, &queue, pause).await;
+                                let _ = wait(&watch, &queue, pause, None).await;
                                 continue 'poll;
                             }
                         }
@@ -399,20 +448,10 @@ pub async fn pump(
             }
             watch.advance(generation, e.position.next());
         }
-        watch.advance(generation, batch.next);
-        view_at = Some(batch.next);
-        if caught_up(&batch, from) {
-            wait(&watch, &queue, pause).await;
-        }
+        let to = batch.next.max(from);
+        watch.advance(generation, to);
+        view_at = Some(to);
     }
-}
-
-/// Whether a batch reached the head, so the pump pauses before it polls
-/// again; a batch with no events may stop short of it. One whose `next`
-/// did not move from `from` pauses too, rather than poll the same place
-/// at once again.
-fn caught_up(batch: &FeedBatch, from: Position) -> bool {
-    batch.next > batch.head || batch.next == from
 }
 
 /// The lake as its host reads it: every field of every type.
@@ -425,12 +464,28 @@ fn host(lake: &lakelands_api::LakeId) -> Principal {
     }
 }
 
-/// Wait for the pause, a new subscription, or the queue's end.
-async fn wait(watch: &Watch, queue: &mpsc::Sender<Queued>, pause: Duration) {
+/// Wait for the pause, or for the lake's next append past `next`'s
+/// position, bounded by the pause; for a new subscription; or for the
+/// queue's end. Whether an append ended it.
+async fn wait(
+    watch: &Watch,
+    queue: &mpsc::Sender<Queued>,
+    pause: Duration,
+    next: Option<(&dyn ChangeFeed, Position)>,
+) -> bool {
+    let next = async {
+        match next {
+            Some((feed, after)) => (feed.wait(after, pause).await).is_ok_and(|h| h > after),
+            None => {
+                tokio::time::sleep(pause).await;
+                false
+            }
+        }
+    };
     tokio::select! {
-        _ = tokio::time::sleep(pause) => {}
-        _ = watch.wake.notified() => {}
-        _ = queue.closed() => {}
+        woken = next => woken,
+        _ = watch.wake.notified() => false,
+        _ = queue.closed() => false,
     }
 }
 
@@ -446,6 +501,9 @@ struct View<'a> {
     /// Whether the principal reads every field of a type in full, by type,
     /// since the last declaration the pump passed.
     whole: BTreeMap<TypeName, bool>,
+    /// The sets and triggers the principal's description names, since the
+    /// last declaration the pump passed.
+    listed: Option<BTreeSet<String>>,
 }
 
 /// The field names a type shows the principal, and those of them it is
@@ -464,6 +522,7 @@ impl<'a> View<'a> {
             host,
             shown: BTreeMap::new(),
             whole: BTreeMap::new(),
+            listed: None,
         }
     }
 
@@ -471,6 +530,7 @@ impl<'a> View<'a> {
     fn forget(&mut self) {
         self.shown.clear();
         self.whole.clear();
+        self.listed = None;
     }
 
     /// How the principal may see an event.
@@ -478,12 +538,14 @@ impl<'a> View<'a> {
         let at = e.position;
         let mut extra = Map::new();
         let mut condition = false;
-        let made = matches!(
+        let mut named = None;
+        let mut kind = e.body.kind();
+        let mut made = matches!(
             e.body,
             EventBody::RecordUpserted { made: true, .. }
                 | EventBody::RecordIngested { made: true, .. }
         );
-        let (ty, key, fields, read_at) = match &e.body {
+        let (ty, key, mut fields, read_at) = match &e.body {
             EventBody::RecordUpserted { ty, key, patch, .. }
             | EventBody::RecordIngested { ty, key, patch, .. } => (
                 ty,
@@ -498,9 +560,15 @@ impl<'a> View<'a> {
                 field: Some((ty, key, field)),
                 ..
             } => (ty, key, Some(vec![field.to_string()]), at),
-            EventBody::TriggerFired { trigger, ty, key } => {
+            EventBody::TriggerFired {
+                trigger, ty, key, ..
+            }
+            | EventBody::TriggerDropped {
+                trigger, ty, key, ..
+            } => {
                 extra.insert("trigger".into(), json!(trigger));
                 condition = true;
+                named = Some(format!("trigger {trigger}"));
                 (ty, key, None, at)
             }
             EventBody::ObjectSetChanged {
@@ -512,6 +580,7 @@ impl<'a> View<'a> {
                 extra.insert("set".into(), json!(set));
                 extra.insert("joined".into(), json!(joined));
                 condition = true;
+                named = Some(format!("set {set}"));
                 (ty, key, None, at)
             }
             _ => return Seen::Hidden,
@@ -528,28 +597,62 @@ impl<'a> View<'a> {
         {
             return Seen::Hidden;
         }
+        let written = matches!(e.body, EventBody::RecordUpserted { .. });
+        let setting = written && ty.as_str() == SETTING_TYPE;
+        if !setting && !s.kinds.iter().any(|k| k == kind) {
+            return Seen::Hidden;
+        }
         // The record as the principal could read it then: a record it may
         // not read, or of a type it may not read, is never named.
-        let got = self
-            .catalog
-            .get(
-                self.who,
-                ty,
-                Get {
-                    key: key.clone(),
-                    with_meta: false,
-                    at: as_of(read_at),
-                    params: Default::default(),
-                },
-            )
-            .await;
-        if let Err(e) = got {
-            return failed(&e);
+        let got = self.read(ty, key, read_at).await;
+        if !setting && let Err(seen) = got {
+            return seen;
+        }
+        // A setting's write as its principal is told the record before it
+        // and after: what it is not told alone is not told, and a record
+        // it is no longer told is told as retired (063).
+        if setting {
+            let was = match at.0.checked_sub(1) {
+                Some(p) => self.told(ty, key, Position(p)).await,
+                None => Ok(None),
+            };
+            let (was, now) = match (was, got.map(Some).or_else(untold)) {
+                (Ok(was), Ok(now)) => (was, now),
+                (Err(seen), _) | (_, Err(seen)) => return seen,
+            };
+            match (was, now) {
+                (None, None) => return Seen::Hidden,
+                (Some(_), None) => (kind, fields) = (RETIRED, None),
+                // As the write that made it, which names every field it holds.
+                (None, Some(now)) => {
+                    let held = now.fields.keys().chain(&now.masked);
+                    (made, fields) = (true, Some(held.map(|f| f.to_string()).collect()));
+                }
+                (Some(was), Some(now)) => {
+                    let differs = |f: &String| {
+                        let f = lakelands_api::FieldName::from(f.as_str());
+                        was.fields.get(&f) != now.fields.get(&f)
+                    };
+                    fields = fields.map(|f| f.into_iter().filter(differs).collect());
+                }
+            }
+            if !s.kinds.iter().any(|k| k == kind) {
+                return Seen::Hidden;
+            }
         }
         if condition {
             match self.whole(ty, read_at).await {
                 Ok(true) => {}
                 Ok(false) => return Seen::Hidden,
+                Err(seen) => return seen,
+            }
+        }
+        // A set or a trigger its description does not name is not its: one
+        // across an edge whose far side is held from it (055, extended).
+        if let Some(named) = named {
+            match self.listed(read_at).await {
+                Ok(l) if l.contains(&named) => {}
+                Ok(_) => return Seen::Hidden,
                 Err(seen) => return seen,
             }
         }
@@ -579,7 +682,7 @@ impl<'a> View<'a> {
         let mut params = Map::from_iter([
             ("lake".to_owned(), json!(e.lake)),
             ("position".to_owned(), json!(at.0)),
-            ("kind".to_owned(), json!(e.body.kind())),
+            ("kind".to_owned(), json!(kind)),
             ("type".to_owned(), json!(ty)),
             ("key".to_owned(), json!(key)),
         ]);
@@ -588,6 +691,29 @@ impl<'a> View<'a> {
         }
         params.extend(extra);
         Seen::Shown(Value::Object(params))
+    }
+
+    /// The record `key` of `ty` as the principal may read it at `at`.
+    async fn read(&self, ty: &TypeName, key: &RecordKey, at: Position) -> Result<Record, Seen> {
+        let get = Get {
+            key: key.clone(),
+            with_meta: false,
+            at: as_of(at),
+            params: Default::default(),
+        };
+        let got = self.catalog.get(self.who, ty, get).await;
+        got.map(|r| r.data).map_err(|e| failed(&e))
+    }
+
+    /// The record `key` of `ty` as the principal is told it at `at`;
+    /// `None` where it is not.
+    async fn told(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        at: Position,
+    ) -> Result<Option<Record>, Seen> {
+        self.read(ty, key, at).await.map(Some).or_else(untold)
     }
 
     /// The field names of `ty` the principal is shown at `at`: those it
@@ -618,6 +744,12 @@ impl<'a> View<'a> {
         if let Some(w) = self.whole.get(ty) {
             return Ok(*w);
         }
+        // A setting may be told narrowed, or not at all, to one from whom
+        // something is held, so a condition over it is never its (063).
+        if ty.as_str() == SETTING_TYPE && !self.who.grants.reads_everything() {
+            self.whole.insert(ty.clone(), false);
+            return Ok(false);
+        }
         let d = self
             .catalog
             .describe_type(self.host, ty, as_of(at))
@@ -640,10 +772,36 @@ impl<'a> View<'a> {
     }
 }
 
+impl View<'_> {
+    /// The sets and triggers the principal's description names.
+    async fn listed(&mut self, at: Position) -> Result<&BTreeSet<String>, Seen> {
+        if self.listed.is_none() {
+            let d = (self.catalog.describe(self.who, as_of(at)).await).map_err(|e| failed(&e))?;
+            let sets = d.data.object_sets.iter().map(|s| format!("set {}", s.name));
+            let triggers = d
+                .data
+                .triggers
+                .iter()
+                .map(|t| format!("trigger {}", t.name));
+            self.listed = Some(sets.chain(triggers).collect());
+        }
+        Ok(self.listed.get_or_insert_default())
+    }
+}
+
+/// A read that hides the record answers none; any other failure is its.
+fn untold(seen: Seen) -> Result<Option<Record>, Seen> {
+    match seen {
+        Seen::Hidden => Ok(None),
+        other => Err(other),
+    }
+}
+
 fn as_of(at: Position) -> ReadAt {
     ReadAt {
         as_of: Some(at),
         valid_at: None,
+        clock: None,
     }
 }
 
@@ -656,31 +814,5 @@ pub(crate) fn kinds(asked: Option<Vec<String>>) -> Result<Vec<String>, String> {
             Some(bad) => Err(bad.clone()),
             None => Ok(k),
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A poll stops after `FEED_EXAMINED` events examined, so a batch with
-    /// no events short of the head is not the end of the log: the pump
-    /// reads on at once and pauses only past the head, or when `next` did
-    /// not move.
-    #[test]
-    fn an_empty_batch_short_of_the_head_is_not_caught_up() {
-        let examined = Position(u64::from(lakelands_api::seam::FEED_EXAMINED));
-        let batch = |next, head| FeedBatch {
-            events: Vec::new(),
-            next,
-            head,
-        };
-        let from = Position::GENESIS;
-        assert!(!caught_up(&batch(examined, Position(10_000)), from));
-        assert!(caught_up(&batch(Position(10_001), Position(10_000)), from));
-        assert!(
-            caught_up(&batch(examined, Position(10_000)), examined),
-            "a batch whose `next` did not move pauses"
-        );
     }
 }

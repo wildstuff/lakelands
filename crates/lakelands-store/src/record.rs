@@ -47,9 +47,9 @@ use std::sync::{Arc, Mutex};
 use lakelands_api::error::{Case, Flaw, Part, Said};
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::expr::Expr;
-use lakelands_api::ontology::{TypeDecl, ValueTypeDecl};
+use lakelands_api::ontology::{OnInputChange, TypeDecl, ValueTypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
-use lakelands_api::{FieldName, Result, TypeName, Value};
+use lakelands_api::{FieldName, Position, Result, TypeName, Value};
 use lakelands_core::rights::Door;
 use lakelands_core::{damaged, derive, value};
 
@@ -78,6 +78,18 @@ pub struct Plan {
     pub(crate) settled: std::result::Result<Vec<(FieldName, BTreeSet<FieldName>)>, Case>,
     /// The version of the function that computes a field, by field.
     versions: BTreeMap<FieldName, String>,
+    /// Its constraints, parsed once (lakelands#1119).
+    pub(crate) constraints: Vec<Constraint>,
+}
+
+/// A type's constraint as the write path judges it: parsed, with the
+/// fields it reads and those whose write moves them, through derived
+/// fields and fields cleared when their inputs change.
+pub(crate) struct Constraint {
+    pub(crate) decl: lakelands_api::ontology::ConstraintDecl,
+    pub(crate) holds: Expr,
+    pub(crate) reads: BTreeSet<FieldName>,
+    pub(crate) fed: BTreeSet<FieldName>,
 }
 
 impl Plan {
@@ -88,15 +100,48 @@ impl Plan {
             let function = o.functions.get(f.function.as_ref()?)?;
             Some((f.name.clone(), function.version.to_string()))
         });
+        let derived = derive::order(&decl);
+        let computed = derived.as_deref().unwrap_or_default();
+        let constraints = (decl.constraints.iter()).filter_map(|c| {
+            let holds = crate::declare::typed(&c.holds, lakelands_core::expr::Place::Guard).ok()?;
+            let reads = lakelands_core::derive::reads(&holds);
+            // What moves a field it reads: a derived field's inputs, and
+            // those of a field the fold clears when they change, to the
+            // fields a write sends (lakelands#1119).
+            let feeds = (computed.iter())
+                .map(|(f, e)| (f, lakelands_core::derive::reads(e)))
+                .chain(
+                    decl.fields
+                        .iter()
+                        .filter(|f| f.on_input_change == OnInputChange::Clear)
+                        .map(|f| (&f.name, f.depends_on.iter().cloned().collect())),
+                );
+            let feeds: Vec<(&FieldName, BTreeSet<FieldName>)> = feeds.collect();
+            let mut fed = reads.clone();
+            while let Some(more) =
+                (feeds.iter()).find(|(f, inputs)| fed.contains(*f) && !inputs.is_subset(&fed))
+            {
+                fed.extend(more.1.iter().cloned());
+            }
+            let decl = c.clone();
+            Some(Constraint {
+                decl,
+                holds,
+                reads,
+                fed,
+            })
+        });
+        let constraints = constraints.collect();
         Plan {
             entries: entries(o, &raw.name).collect(),
             value_types: named
                 .filter_map(|n| o.value_types.get(n.as_str()))
                 .map(|e| e.decl.clone())
                 .collect(),
-            derived: derive::order(&decl),
+            derived,
             settled: backed::computed_order(o, raw),
             versions: versions.collect(),
+            constraints,
             decl,
         }
     }
@@ -148,6 +193,29 @@ impl Plans {
     }
 }
 
+/// The field's `initial`, as checked against its kind and value type.
+pub(crate) fn initial_of(
+    ontology: &Ontology,
+    f: &lakelands_api::ontology::FieldDecl,
+) -> Option<Value> {
+    let v = f.initial.as_ref()?;
+    let vt = f.ty.value_type.as_ref();
+    let vt = vt.and_then(|n| ontology.value_types.get(n.as_str()));
+    Some(value::check(v, &f.ty, vt.map(|e| &e.decl)).unwrap_or_else(|_| v.clone()))
+}
+
+/// The provenance of a field filled with its `initial` at `event`: at a
+/// create, and at a migration that fills it (050).
+pub(crate) fn initial_meta(event: &Event) -> FieldMeta {
+    FieldMeta {
+        upstream: None,
+        seen_at: None,
+        source: None,
+        procedure_version: None,
+        ..meta_of(event, Origin::Initial)
+    }
+}
+
 /// The provenance an event gives the fields it writes.
 pub(crate) fn meta_of(event: &Event, origin: Origin) -> FieldMeta {
     FieldMeta {
@@ -160,6 +228,7 @@ pub(crate) fn meta_of(event: &Event, origin: Origin) -> FieldMeta {
         source: event.source.clone(),
         procedure_version: event.procedure.as_ref().map(|p| p.version.clone()),
         error: None,
+        erased: false,
     }
 }
 
@@ -180,7 +249,7 @@ pub fn apply(
             version,
             patch,
             ..
-        } => (ty, key, *version, patch, Door::Authored),
+        } => (ty, key, *version, patch, Door::Verb),
         EventBody::RecordIngested {
             ty,
             key,
@@ -235,31 +304,21 @@ pub fn apply(
     // fold computes from it, as it computes every field at a create (050).
     if live_before.is_none() {
         for f in raw.fields.iter().filter(|f| f.initial.is_some()) {
-            if fields.contains_key(&f.name) {
-                continue;
+            if !fields.contains_key(&f.name)
+                && let Some(v) = initial_of(ontology, f)
+            {
+                fields.insert(f.name.clone(), v);
+                meta.insert(f.name.clone(), initial_meta(event));
             }
-            let (v, vt) = (
-                f.initial.as_ref().expect("initial"),
-                f.ty.value_type.as_ref(),
-            );
-            let vt = vt.and_then(|n| ontology.value_types.get(n.as_str()));
-            let v = value::check(v, &f.ty, vt.map(|e| &e.decl)).unwrap_or_else(|_| v.clone());
-            fields.insert(f.name.clone(), v);
-            let of_the_event = FieldMeta {
-                upstream: None,
-                seen_at: None,
-                source: None,
-                procedure_version: None,
-                ..meta_of(event, Origin::Initial)
-            };
-            meta.insert(f.name.clone(), of_the_event);
         }
     }
 
+    // A record made again after a retirement is made at this write.
+    let made = live_before.map_or(event.position, |b| b.made);
     compute(
         ontology,
         raw,
-        key,
+        (key, made),
         live_before.map(|b| &b.fields),
         written,
         &mut fields,
@@ -276,6 +335,7 @@ pub fn apply(
         fields,
         meta,
         position: event.position,
+        made,
         retired: false,
         restricted: before.is_some_and(|b| b.restricted),
     }))
@@ -313,7 +373,7 @@ pub fn rederive(
     let changed = compute(
         ontology,
         raw,
-        &before.key,
+        (&before.key, before.made),
         Some(&before.fields),
         BTreeSet::new(),
         &mut fields,
@@ -364,20 +424,21 @@ pub fn fill(
     if !backed::put_output(
         ontology,
         raw,
-        field,
+        (&record.key, record.made, field),
         seam,
         input,
         output,
         event,
         &mut fields,
         &mut meta,
-    ) {
+        outputs,
+    )? {
         return Ok(None);
     }
     compute(
         ontology,
         raw,
-        &record.key,
+        (&record.key, record.made),
         Some(&record.fields),
         [field.clone()].into(),
         &mut fields,
@@ -407,7 +468,7 @@ pub fn fill(
 fn compute(
     ontology: &Ontology,
     raw: &TypeDecl,
-    key: &lakelands_api::RecordKey,
+    record: (&lakelands_api::RecordKey, Position),
     before: Option<&BTreeMap<FieldName, Value>>,
     mut written: BTreeSet<FieldName>,
     fields: &mut BTreeMap<FieldName, Value>,
@@ -449,7 +510,7 @@ fn compute(
             ontology,
             &event.lake,
             raw,
-            key,
+            record,
             before.as_ref(),
             fields,
             meta,

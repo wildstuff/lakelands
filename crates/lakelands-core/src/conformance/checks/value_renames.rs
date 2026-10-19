@@ -61,7 +61,7 @@ check!(
 
 check!(
     RENAMES_DECIDE_SETS = a_value_rename_decides_set_membership_in_its_append,
-    "004 and 027, extended (lakelands#553): a value type's renames decide set membership again in their append, caused by the `value_type_migrated`, over the records as the step and the computation leave them: a set whose `where` names the new value, and one whose `where` reads a derived field over the renamed one; past the lake's `max_set_changes` the migration is refused `too_large`, naming the set, and appends nothing",
+    "004 and 027, extended (lakelands#553): a value type's renames decide set membership again in their append, caused by the `value_type_migrated`, over the records as the step and the computation leave them: a set whose `where` names the new value, and one whose `where` reads a derived field over the renamed one; past the lake's `max_set_changes` the migration is refused `too_large`, naming the set, and appends nothing, at its apply and at the accept of its proposal (013, lakelands#935)",
     given
 );
 
@@ -82,7 +82,7 @@ check!(
 
 check!(
     RENAMES_SHOWN = a_value_rename_is_not_granted_to_one_not_shown_every_field_it_writes,
-    "024 and 027, extended (lakelands#553): a value type's migration with renames writes every field that uses it, so its preflight, its apply and its proposal are not granted, naming nothing, to a caller not shown one of them"
+    "024 and 027, extended (lakelands#553): a value type's migration with renames writes every field that uses it, so its preflight, its apply and its proposal are not granted, naming nothing, to a caller not shown one of them, its proposal before a stored value that would not fit is counted (013, lakelands#935)"
 );
 
 check!(
@@ -509,6 +509,8 @@ async fn a_value_rename_decides_set_membership_in_its_append(
     let set = object_set_on("finished", "task", "state = 'finished'");
     l.declare_as(set, "declaring a set").await?;
     l.upsert("task", "t4", json!({"state": "done"})).await?;
+    let m = renamed(&["active", "finished"], &[("done", "finished")]);
+    let id = propose(&l, &m).await?;
     let lower = lakelands_api::location::Limits {
         max_set_changes: 1,
         ..crate::conformance::fixture::limits()
@@ -518,7 +520,12 @@ async fn a_value_rename_decides_set_membership_in_its_append(
         .map_err(|e| Failure::new(format!("opening the lake again with a lower ceiling: {e}")))?;
     let l = Lake::of(store.as_ref());
     let before = store.head().await.must("reading the head")?;
-    let m = renamed(&["active", "finished"], &[("done", "finished")]);
+    let accepted = l.cat.accept(&l.own, &id).await;
+    ensure!(
+        reason(&accepted) == Some(&Refusal::TooLarge { max: 1 }),
+        "the accept of the rename past a ceiling of one is refused `too_large`; it answered \
+         {accepted:?}"
+    );
     let report = preflight(&l, m.clone()).await?;
     let said = l.cat.migrate_value_type_apply(&l.own, m, &report.report_id);
     let said = said.await;
@@ -647,7 +654,24 @@ async fn a_value_rename_is_not_granted_to_one_not_shown_every_field_it_writes(
         "a caller not shown `task`.`state` is not granted the rename's preflight, apply or \
          proposal; they answered {answers:?}"
     );
-    head_unmoved(store.as_ref(), before, "a rename not granted").await
+    head_unmoved(store.as_ref(), before, "a rename not granted").await?;
+    // Before a stored value that would not fit is counted.
+    l.upsert("task", "t2", json!({"state": "done"})).await?;
+    let tight = renamed(&["active"], &[("open", "active")]);
+    let proposal = || ProposedWrite::MigrateValueType {
+        to: Box::new(tight.to.clone()),
+        renames: tight.renames.clone(),
+        report: Default::default(),
+    };
+    let blank_said = l.cat.propose(&blank, proposal(), "why".into()).await;
+    let own_said = l.cat.propose(&l.own, proposal(), "why".into()).await;
+    ensure!(
+        reason(&blank_said) == Some(&Refusal::NotGranted)
+            && matches!(reason(&own_said), Some(Refusal::Invalid(..))),
+        "a rename that would leave `done` unfit is not granted to one not shown `task`.`state`, \
+         and invalid to the owner; they answered {blank_said:?} and {own_said:?}"
+    );
+    Ok(())
 }
 
 async fn the_feed_shows_a_value_rename_to_a_consumer_of_a_type_it_rewrites(store: Store) -> Held {

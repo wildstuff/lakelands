@@ -33,6 +33,25 @@ function, but a `reference`: its output lands in the fold, where nothing
 judges the record it names for a writer, so it is refused as
 `reference_unjudged` (032).
 
+### An input states a kind or none, and a type binds it by that
+
+An input states a `type` or does not. A typed input is bound by a field
+of that name held in exactly that kind: a type that holds it in another
+is refused `function_input_kind`, naming the function, the input, both
+kinds and the type. An input with no `type` is bound by a field of that
+name in any kind, and the function reads the value in the kind the
+binding type holds it. It is a form of its own, not `json`, which keeps
+its meaning, a JSON value: a declaration that says `json` means a JSON
+value, and one that says nothing means anything. A host whose functions
+carry input names but no kinds states none.
+
+A function declared again is held to every type that binds it: an input
+whose declared kind a type holds otherwise is refused `function_input_kind`
+naming that type. To an author or a reviewer not shown a type that
+binds it, or the field the type binds, it is not granted, naming
+nothing (024), at `declare` and at the accept alike. Dropping an
+input's `type` is always taken.
+
 ### A type's computed fields read one another without a cycle
 
 A type's computed fields, derived expressions and fields computed by a
@@ -266,7 +285,11 @@ the first, and a record's entry follows its record.
 
 When no backing of the kind is bound when a call is to be made (a lake
 reopened without it), nothing is called or recorded, and the field stays
-cleared until it is due again.
+cleared until it is due again. A call of a function declared above `low`
+risk is proposed instead of made, and made once accepted; such a call is
+its record's, digested with the record, so its decision and its output
+reach no other record
+(`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`).
 
 ### A write waits for what it owes, not for what others owe
 
@@ -541,3 +564,6 @@ output that is not deterministic is recorded.
   lake's head at that moment", said after the batch of entries no write
   waits for. The head it answers is read before that batch, whose
   failure is not the write's.
+- A call of a function above `low` risk is proposed and made once
+  accepted, and every call names the write that set it off
+  (lakelands#997, record 064).

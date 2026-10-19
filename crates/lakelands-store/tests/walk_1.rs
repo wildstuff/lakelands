@@ -66,6 +66,7 @@ fn records(csv: &str, map: &str) -> Vec<SourceRecord> {
                 })
                 .collect();
             SourceRecord {
+                source: None,
                 upstream: None,
                 ty: map["type"].as_str().unwrap().into(),
                 key: cells[col(map["key"].as_str().unwrap())].into(),
@@ -113,6 +114,7 @@ fn overdue_by_partner(as_of: Option<Position>) -> Find {
         at: ReadAt {
             as_of,
             valid_at: None,
+            clock: None,
         },
         ..Find::default()
     }
@@ -161,6 +163,7 @@ async fn answer(
                     at: ReadAt {
                         as_of,
                         valid_at: None,
+                        clock: None,
                     },
                     params: Default::default(),
                 },

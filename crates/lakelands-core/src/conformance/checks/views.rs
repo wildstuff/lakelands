@@ -49,7 +49,7 @@ check!(
 
 check!(
     FAILING_MEASURE_REFUSES = a_measure_that_fails_over_a_group_refuses_the_read_of_its_view,
-    "023: a view's measure that fails over a group refuses the read of the view as invalid, placed at the view: where one group's measure divides by zero and another's computes, `find`, a count and `get` of the group that computes are each refused naming the division, with the setting that asks for the view kept and without (a group whose measure fails is flagged and not exact, so the read computes and refuses), and once that group computes too `find` and the count answer and `get` reads the other group's quotient"
+    "023, extended (lakelands#925): a view's measure that fails over a group refuses the read of the view as invalid, naming the view, the measure and the group as one whose value does not land is named: where one group's measure divides by zero and another's computes, `find`, one filtered to the group that computes, a count, and `get` of either group are each refused naming the division, with the setting that asks for the view kept and without (a group whose measure fails is flagged and not exact, so the read computes and refuses), and once that group computes too `find` and the count answer and `get` reads the other group's quotient"
 );
 
 check!(
@@ -79,7 +79,7 @@ check!(
 
 check!(
     NO_TRIGGER_OR_SET_ON_A_VIEW = a_trigger_or_object_set_on_a_view_is_refused,
-    "018, extended: a view is never written, so `declare` and `apply` refuse a trigger on a view, which no write would fire, and an object set over one, which holds stored records, naming both; nothing is appended"
+    "018, extended: a view is never written, so `declare` and `apply` refuse a trigger on a view, which no write would fire, and an object set over one the lake does not keep, which no write would decide (066), naming both; nothing is appended"
 );
 
 check!(
@@ -367,7 +367,9 @@ fn from(ty: &str, key: Option<&str>, filter: Option<&str>, steps: Vec<Step>) -> 
 async fn nodes(l: &Lake, p: Pattern, far: &str) -> Result<Vec<String>, Failure> {
     let what = format!(
         "a pattern started on `{}` (key {:?}, where {:?})",
-        p.start.ty, p.start.key, p.start.filter
+        p.start.ty.as_ref().map_or("", |t| t.as_str()),
+        p.start.key,
+        p.start.filter
     );
     let reply = l.cat.query(&l.own, p).await.must(&what)?;
     let mut got: Vec<String> = match reply.data {
@@ -441,6 +443,7 @@ async fn a_walk_over_a_derived_relation_reaches_a_views_records_both_ways(store:
                 from: "name".into(),
                 to: "partner".into(),
             }],
+            filter: None,
         }),
         ..RelationDecl::to("totals", "partner_totals")
     }];
@@ -600,6 +603,7 @@ async fn a_relation_on_a_view_is_derived_or_refused(store: Store) -> Held {
                 from: "partner".into(),
                 to: "partner".into(),
             }],
+            filter: None,
         }),
         ..RelationDecl::to("billed", "invoice")
     };
@@ -688,6 +692,7 @@ async fn a_search_on_a_view_is_refused_naming_it(store: Store) -> Held {
             vector: Some(near().1),
             weight: None,
             text_weight: None,
+            model: None,
         },
     ] {
         let what = format!("{mode:?}");
@@ -1054,26 +1059,38 @@ async fn a_measure_that_fails_over_a_group_refuses_the_read_of_its_view(store: S
     l.upsert("part", "h1", json!({"g": "h", "n": "6", "z": "4"}))
         .await?;
     let rate = TypeName::from("rate");
-    // What `find`, a count and `get` of `h` answer: the refusal each,
-    // whether the first two answered, and `h`'s quotient.
+    // What `find`, one filtered to `h`, a count, and `get` of `h` and of
+    // `f` answer: the refusal each, whether the first answered, and `h`'s
+    // quotient.
     let reads = || async {
         let count = aggregate(vec![agg("n", AggFunc::Count, None)]);
+        let only_h = Find {
+            filter: Some("g = 'h'".into()),
+            ..Find::default()
+        };
         let found = l.cat.find(&l.own, &rate, Find::default()).await;
+        let filtered = l.cat.find(&l.own, &rate, only_h).await;
         let counted = l.cat.find(&l.own, &rate, count).await;
         let got = l.cat.get(&l.own, &rate, get_at("h", None)).await;
+        let failing = l.cat.get(&l.own, &rate, get_at("f", None)).await;
         let per = got
             .as_ref()
             .ok()
             .and_then(|r| r.data.fields.get("per").cloned());
         let said = [
             invalid_said(&found).cloned(),
+            invalid_said(&filtered).cloned(),
             invalid_said(&counted).cloned(),
             invalid_said(&got).cloned(),
+            invalid_said(&failing).cloned(),
         ];
         (said, found.is_ok() && counted.is_ok(), per)
     };
-    let name = rate.clone();
-    let refused = Some(Said::from(Case::DivisionByZero).within(Place::View { name }));
+    // The refusal names the view, the measure and the group (lakelands#925).
+    let (group, why) = ("f".into(), Box::new(Case::DivisionByZero));
+    let said = Said::from(Case::MeasureFails { group, why });
+    let at = said.within(Place::Measure { name: "per".into() });
+    let refused = Some(at.within(Place::View { name: rate.clone() }));
     let computed = reads().await;
     l.set("view_kept.rate", json!(true)).await?;
     let kept = reads().await;
@@ -1087,9 +1104,10 @@ async fn a_measure_that_fails_over_a_group_refuses_the_read_of_its_view(store: S
             .chain(&kept.0)
             .all(|said| *said == refused)
             && answered,
-        "a view whose measure divides by zero over one group refuses `find`, a count and `get` \
-         of another group as invalid at the view: computed {computed:?}, kept {kept:?}, and \
-         once the group computes {whole:?}"
+        "a view whose measure divides by zero over one group refuses `find`, one filtered to \
+         another group, a count, and `get` of either group as invalid, naming the view, the \
+         measure and the group: computed {computed:?}, kept {kept:?}, and once the group \
+         computes {whole:?}"
     );
     Ok(())
 }

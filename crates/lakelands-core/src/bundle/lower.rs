@@ -11,17 +11,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use lakelands_api::error::Naming;
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
-    Assignment, EmbedDecl, FieldDecl, FieldType, Measure, RelationDecl, StorageKind, TriggerDecl,
-    TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl, ViewParam, ViewSource,
+    Assignment, EmbedDecl, FieldDecl, FieldType, FunctionInput, Measure, RelationDecl, StorageKind,
+    TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl, ViewParam, ViewSource,
 };
-use lakelands_api::write::{AnnotationFault, Declaration, FunctionDecl, ObjectSetDecl};
+use lakelands_api::write::{
+    AnnotationFault, Declaration, FunctionDecl, ObjectSetDecl, SettingDecl,
+};
 use lakelands_api::{
     FieldName, ParamName, Patch, RelationName, TriggerName, TypeName, ValueTypeName, VerbName,
 };
 
 use super::doc::{
-    AgingRuleDoc, Cond, FieldDoc, FieldTypeDoc, FunctionDoc, Named, ObjectSetDoc, StrOr,
-    TriggerDoc, TypeDoc, TypeSpec, ValueTypeDoc, VerbDoc,
+    AgingRuleDoc, Cond, FieldDoc, FieldTypeDoc, FunctionDoc, Named, ObjectSetDoc, SettingDoc,
+    StrOr, TriggerDoc, TypeDoc, TypeSpec, ValueTypeDoc, VerbDoc,
 };
 use super::{BundleError, Problem};
 
@@ -168,6 +170,7 @@ impl<'a> Lower<'a> {
             initial: body.initial,
             sensitive: body.sensitive,
             searchable: body.searchable,
+            erasable: body.erasable,
             description: body.description,
             label: body.label,
             embed,
@@ -378,6 +381,7 @@ pub(super) fn value_type(l: &mut Lower<'_>, doc: ValueTypeDoc) -> ValueTypeDecl 
         format: doc.format,
         scale: doc.scale,
         description: doc.description,
+        annotations: doc.annotations,
     };
     l.annotated(&Declaration::ValueType(v.clone()));
     v
@@ -396,9 +400,14 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
             let at = format!("relation `{name}`");
             let target = l.type_ref(&at, &r.target);
             let fields = l.fields(&format!("{at}, field"), r.fields);
+            let derived = r.derived.map(|mut d| {
+                let filter = d.filter.take().map(super::doc::Cond);
+                d.filter = l.opt_cond(&format!("{at}, where"), filter);
+                d
+            });
             RelationDecl {
                 annotations: r.annotations,
-                derived: r.derived,
+                derived,
                 name: RelationName::new(name),
                 target,
                 cardinality: r.cardinality,
@@ -457,6 +466,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
         }
     });
     let t = TypeDecl {
+        constraints: Default::default(),
         annotations: doc.annotations,
         name: TypeName::new(doc.name),
         key,
@@ -466,6 +476,8 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
         valid_from: doc.valid_from.map(FieldName::new),
         valid_to: doc.valid_to.map(FieldName::new),
         field_meta: doc.field_meta,
+        insert_only: doc.insert_only,
+        retired_by: doc.retired_by,
         language: doc.language,
         description: doc.description,
         label: doc.label,
@@ -475,13 +487,15 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
 }
 
 /// A verb: a write verb when it has `set`, an external one when it has
-/// `executor`, never both.
+/// `executor`, one that retires its record when it says `retire: true`;
+/// one of the three.
 pub(super) fn verb(l: &mut Lower<'_>, doc: VerbDoc) -> VerbDecl {
     let on = l.type_ref("`on`", &doc.on);
     let payload = l.fields("payload field", doc.payload);
     let requires = l.opt_cond("`requires`", doc.requires);
-    let effect = match (doc.set, doc.executor) {
-        (Some(set), None) => VerbEffect::Write {
+    let effect = match (doc.set, doc.executor, doc.retire) {
+        (None, None, true) => VerbEffect::Retire,
+        (Some(set), None, false) => VerbEffect::Write {
             set: set
                 .0
                 .into_iter()
@@ -505,15 +519,15 @@ pub(super) fn verb(l: &mut Lower<'_>, doc: VerbDoc) -> VerbDecl {
                 })
                 .collect(),
         },
-        (None, Some(executor)) => {
+        (None, Some(executor), false) => {
             l.name(Naming::Executor, &executor);
             VerbEffect::External { executor }
         }
-        (set, _) => {
-            let message = if set.is_some() {
-                "a verb either sets fields of its record (`set`) or runs an executor (`executor`), not both"
+        (set, executor, retire) => {
+            let message = if set.is_some() || executor.is_some() || retire {
+                "a verb sets fields of its record (`set`), runs an executor (`executor`) or retires its record (`retire`), one of the three"
             } else {
-                "a verb says what it does: `set` for the fields it writes, or `executor` for what it runs outside the lake"
+                "a verb says what it does: `set` for the fields it writes, `executor` for what it runs outside the lake, or `retire`"
             };
             l.fail(Problem::Contradiction, message.to_owned());
             VerbEffect::Write { set: Vec::new() }
@@ -538,6 +552,8 @@ pub(super) fn trigger(l: &mut Lower<'_>, doc: TriggerDoc) -> TriggerDecl {
     let when = l.opt_cond("`when`", doc.when);
     let t = TriggerDecl {
         max_depth: doc.max_depth,
+        when_strict: doc.when_strict,
+        on_changes: doc.on_changes,
         name: TriggerName::new(doc.name),
         on,
         when,
@@ -584,13 +600,39 @@ pub(super) fn aging_rule(l: &mut Lower<'_>, doc: AgingRuleDoc) -> Patch {
     p
 }
 
+/// A host's setting, and the fields of the `sys.setting` record that gives
+/// it its first value, where the file gives one.
+pub(super) fn setting(l: &mut Lower<'_>, doc: SettingDoc) -> (SettingDecl, Option<Patch>) {
+    let ty = l.field_type("`type`", doc.ty);
+    let value = doc.value.map(|v| {
+        let key = serde_json::Value::String(doc.key.clone());
+        [("key".into(), key), ("value".into(), v)].into()
+    });
+    let decl = SettingDecl {
+        key: doc.key,
+        ty,
+        unit: doc.unit,
+        description: doc.description,
+        group: doc.group,
+    };
+    (decl, value)
+}
+
 /// A function. An `expr` function (the default backing) carries its
 /// expression; any other backing is configured through `config` and
 /// carries none, so a function never has two definitions.
 pub(super) fn function(l: &mut Lower<'_>, doc: FunctionDoc) -> FunctionDecl {
     let backing = doc.backing.unwrap_or_else(|| EXPR_BACKING.to_owned());
     l.name(Naming::Backing, &backing);
-    let inputs = l.fields("input", doc.inputs);
+    let inputs = (doc.inputs.0.into_iter())
+        .map(|(name, doc)| match doc {
+            Some(doc) => FunctionInput::typed(l.field("input", name, doc)),
+            None => {
+                l.name(Naming::Field, &name);
+                FunctionInput::any(name)
+            }
+        })
+        .collect();
     let expr = l.opt_cond("`expr`", doc.expr);
     match (backing == EXPR_BACKING, expr.is_some()) {
         (true, false) => l.fail(
@@ -612,6 +654,7 @@ pub(super) fn function(l: &mut Lower<'_>, doc: FunctionDoc) -> FunctionDecl {
         expr,
         config: doc.config.unwrap_or(serde_json::Value::Null),
         description: doc.description,
+        risk: doc.risk,
     };
     l.annotated(&Declaration::Function(f.clone()));
     f

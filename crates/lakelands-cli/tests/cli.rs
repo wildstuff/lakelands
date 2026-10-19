@@ -48,6 +48,8 @@ struct Shell {
     root: PathBuf,
     backend: Backend,
     lakes: Arc<Mutex<BTreeMap<String, Arc<dyn LakeStore>>>>,
+    /// How many of the engine's next reclaims fail (the suite's harness).
+    fails: lakelands_core::conformance::checks::Fails,
 }
 
 struct Said {
@@ -67,12 +69,14 @@ impl Shell {
             root,
             backend,
             lakes: Arc::default(),
+            fails: Arc::default(),
         }
     }
 
     /// Open a lake once per shell, as the binary opens it once per process.
     fn open(&self, l: Location, mode: OpenMode, host: Seams) -> Opening {
         let (lakes, backend) = (self.lakes.clone(), self.backend);
+        let failing = lakelands_core::conformance::checks::failing(&self.fails);
         Box::pin(async move {
             let name = l.lake.to_string();
             if let Some(store) = lakes.lock().unwrap().get(&name) {
@@ -84,8 +88,8 @@ impl Shell {
             }
             let seams = Seams {
                 engines: vec![
-                    Arc::new(lakelands_engine_mem::MemoryOpener::new()),
-                    Arc::new(lakelands_engine_sqlite::SqliteOpener),
+                    failing(Arc::new(lakelands_engine_mem::MemoryOpener::new())),
+                    failing(Arc::new(lakelands_engine_sqlite::SqliteOpener)),
                 ],
                 ..host
             };
@@ -294,21 +298,126 @@ fn init_help_says_where_the_root_comes_from() {
             &sh.raw(&["lakelands", "init", "-h"]),
             "Create a Lakelands root in a directory
 
-Usage: lakelands init [DIR] [--owner <ID>]
-       lakelands init --root <DIR> [--owner <ID>]
+Usage: lakelands init [DIR] [--owner <ID>] [--example [<NAME>]]
+       lakelands init --root <DIR> [--owner <ID>] [--example [<NAME>]]
 
 Arguments:
   [DIR]  The directory to hold the root; --root when left out
 
 Options:
-      --owner <ID>  The id recorded as the writer when you act as the owner [default: owner]
-      --root <DIR>  The Lakelands root to work in [default: .]
-      --as <NAME>   Act as this principal from the root's configuration instead of the owner
-      --lake <ID>   The lake to work on; may be left out when the root holds only one
-  -h, --help        Print help (see more with '--help')
+      --owner <ID>        The id recorded as the writer when you act as the owner [default: owner]
+      --root <DIR>        The Lakelands root to work in [default: .]
+      --as <NAME>         Act as this principal from the root's configuration instead of the owner
+      --example [<NAME>]  Make a lake from an example this binary carries, with an MCP configuration for it; without a name, list them
+      --lake <ID>         The lake to work on; may be left out when the root holds only one
+  -h, --help              Print help (see more with '--help')
 ",
         );
     }
+}
+
+#[cfg(feature = "pg")]
+#[test]
+fn lake_new_writes_a_postgres_location_as_hosting_shows_it() {
+    let sh = Shell::on("lake-new-pg", Backend::Store);
+    let root = sh.root.display().to_string();
+    assert_eq!(sh.raw(&["lakelands", "init", &root]).code, 0);
+    fails(
+        &sh.run(&["lake", "new", "books", "--engine", "postgres"]),
+        "error: a PostgreSQL lake needs `--url`\n  what to do: name the database, as `--url postgres://user@host/database`; the location file holds the URL, password included, as plain text\n",
+    );
+    assert!(!sh.root.join("lakes/books.json").exists());
+    let url = "postgres://lakelands:secret@db.example:5432/lakes";
+    ok(
+        &sh.run(&["lake", "new", "books", "--engine", "postgres", "--url", url]),
+        "created lake `books` (engine postgres) in lakes/books.json\n",
+    );
+    let written = fs::read_to_string(sh.root.join("lakes/books.json")).unwrap();
+    let location: Location = serde_json::from_str(&written).unwrap();
+    assert_eq!(location, Location::postgres("books", url));
+    #[cfg(unix)]
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(
+            &fs::metadata(sh.root.join("lakes/books.json"))
+                .unwrap()
+                .permissions()
+        ) & 0o777,
+        0o600,
+        "a location that may hold a password is its operator's alone"
+    );
+    fails(
+        &sh.run(&["lake", "new", "x", "--url", url]),
+        "error: `--url`, `--schema`, `--no-tls` and `--ca-file` are for `postgres`, not `sqlite`\n  what to do: leave them out, or choose `--engine postgres`\n",
+    );
+    fails(
+        &sh.run(&[
+            "lake",
+            "new",
+            "x",
+            "--engine",
+            "postgres",
+            "--url",
+            url,
+            "--no-tls",
+            "--ca-file",
+            "/c.pem",
+        ]),
+        "error: `--no-tls` and `--ca-file` contradict each other\n  what to do: a CA file verifies a TLS connection: leave one of them out\n",
+    );
+    assert!(!sh.root.join("lakes/x.json").exists());
+    ok(
+        &sh.run(&[
+            "lake",
+            "new",
+            "ledger",
+            "--engine",
+            "postgres",
+            "--url",
+            url,
+            "--schema",
+            "ledger_s",
+            "--ca-file",
+            "/etc/ssl/ca.pem",
+        ]),
+        "created lake `ledger` (engine postgres) in lakes/ledger.json\n",
+    );
+    let written = fs::read_to_string(sh.root.join("lakes/ledger.json")).unwrap();
+    let written: serde_json::Value = serde_json::from_str(&written).unwrap();
+    assert_eq!(written["engine"]["schema"], "ledger_s");
+    assert_eq!(written["engine"]["tls"]["ca_file"], "/etc/ssl/ca.pem");
+    ok(
+        &sh.run(&[
+            "lake", "new", "local", "--engine", "postgres", "--url", url, "--no-tls",
+        ]),
+        "created lake `local` (engine postgres) in lakes/local.json\n",
+    );
+    let written = fs::read_to_string(sh.root.join("lakes/local.json")).unwrap();
+    let written: serde_json::Value = serde_json::from_str(&written).unwrap();
+    assert_eq!(written["engine"]["tls"]["mode"], "disable");
+    fails(
+        &sh.run(&["lake", "new", "books", "--engine", "postgres", "--url", url]),
+        "error: lake `books` exists already in <root>; nothing was changed\n  what to do: choose another name, or keep working with the lake that is there\n",
+    );
+}
+
+#[cfg(not(feature = "pg"))]
+#[test]
+fn lake_new_refuses_postgres_in_a_build_without_it() {
+    let sh = Shell::on("lake-new-no-pg", Backend::Store);
+    let root = sh.root.display().to_string();
+    assert_eq!(sh.raw(&["lakelands", "init", &root]).code, 0);
+    fails(
+        &sh.run(&[
+            "lake",
+            "new",
+            "books",
+            "--engine",
+            "postgres",
+            "--url",
+            "postgres://h/d",
+        ]),
+        "error: this build of lakelands has no PostgreSQL engine\n  what to do: build it with the `pg` feature, or choose `sqlite` or `memory`\n",
+    );
 }
 
 #[test]
@@ -353,6 +462,40 @@ fn apply_applies_a_bundle_as_one_set_at_one_position() {
         ok(
             &sh.run(&["apply", &fixture]),
             "applied 4 declaration(s), in force from position 7:\n  type `invoice`\n  type `partner`\n  verb `approve`\n  verb `pay`\n",
+        );
+        // Applied again, it says each is in force already and since when,
+        // and that nothing was appended (lakelands#1106).
+        ok(
+            &sh.run(&["apply", &fixture]),
+            "4 declaration(s) in force already: nothing appended\n  \
+             type `invoice`, in force since position 4\n  \
+             type `partner`, in force since position 5\n  \
+             verb `approve`, in force since position 6\n  \
+             verb `pay`, in force since position 7\n",
+        );
+        // A set of one in force and one new: the new one is appended, and
+        // the other says since when.
+        let note = "name: note\nfields:\n  text: { type: text }\n";
+        let mixed = sh.bundle(
+            "mixed",
+            &[("types/partner.yaml", PARTNER), ("types/note.yaml", note)],
+        );
+        let said = sh.run(&["apply", &mixed]);
+        assert_eq!(
+            (said.code, said.err.as_str()),
+            (0, ""),
+            "stdout: {}",
+            said.out
+        );
+        assert!(
+            said.out
+                .starts_with("applied 2 declaration(s), in force from position 8:\n")
+                && said.out.contains("  type `note`\n")
+                && said
+                    .out
+                    .contains("  type `partner`, in force since position 5\n"),
+            "{backend:?}: {}",
+            said.out
         );
     }
 }
@@ -530,11 +673,12 @@ fn ingest_reads_csv_through_a_column_map() {
         // Refused as invalid: the CLI's framing, never the sentence.
         let s = sh.run(&["ingest", &empty, "--source", "bank", "--map", &map]);
         assert_eq!((s.code, s.out.as_str()), (1, ""));
+        // The record is named, and where to send the stream again from.
         assert!(
-            s.err.starts_with("error: refused: ")
-                && s.err.ends_with(
-                    "  what to do: correct the input and run the command again; nothing was written\n"
-                ),
+            s.err
+                .starts_with("error: record 0 of the stream (`invoice` `INV-4`): refused: ")
+                && s.err
+                    .ends_with("nothing was written; then send the stream again from record 0\n"),
             "{}",
             s.err
         );
@@ -852,6 +996,171 @@ fn rebuild_prints_the_position_it_rebuilt_through() {
             "rebuilt the projection from the log through position 7\n",
         );
     }
+}
+
+/// `upgrade` reads the log's ends: a lake in the format this release
+/// writes needs none, with `--check` or without. A lake of an older
+/// format is upgraded by the open it makes, which
+/// `crates/lakelands-store/tests/lake.rs` holds.
+#[test]
+fn upgrade_says_a_lake_of_this_release_s_format_needs_none() {
+    let v = lakelands_api::event::LOG_FORMAT_VERSION;
+    let sh = Shell::on("upgrade", Backend::Store);
+    sh.lake();
+    sh.run(&["apply", &sh.fixture()]);
+    let said = format!("finance is written in log format {v}: nothing to upgrade\n");
+    ok(&sh.run(&["upgrade", "--check"]), &said);
+    ok(&sh.run(&["upgrade"]), &said);
+}
+
+/// `upgrade` on a lake the release before wrote whole, in format 14:
+/// `--check` says what an open for writing does and opens none; the
+/// upgrade says the step it took; run again it has none to take.
+#[test]
+fn upgrade_takes_a_lake_of_the_format_before_one_step_once() {
+    use lakelands_api::engine::EngineOpener;
+    use lakelands_api::event::{EventBody, LOG_FORMAT_VERSION as NEW, OLDEST_LOG_FORMAT as OLD};
+    use lakelands_api::{Position, Timestamp};
+    let sh = Shell::on("upgrade-14", Backend::Store);
+    sh.lake();
+    // The lake's location, as the root keeps it, its directory under it.
+    let file = sh.root.join("lakes").join("finance.json");
+    let mut at: lakelands_api::Location =
+        serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
+    if let lakelands_api::location::EngineConfig::Sqlite { dir, .. } = &mut at.engine
+        && dir.is_relative()
+    {
+        *dir = sh.root.join(&*dir);
+    }
+    // The release before's writer: `lake_created` and its lease, in 14.
+    let engine = lakelands_engine_sqlite::SqliteOpener
+        .open(&at, OpenMode::Create)
+        .unwrap();
+    let lease = engine.take_lease("the release before").unwrap();
+    let older = |e: lakelands_api::engine::CanonicalEvent, format: bool| {
+        let mut v: serde_json::Value = serde_json::from_slice(&e.bytes).unwrap();
+        v["v"] = serde_json::json!(OLD);
+        if format {
+            v["body"]["format"] = serde_json::json!(OLD);
+        }
+        v.as_object_mut().unwrap().remove("hash");
+        let hash = lakelands_api::canonical::sha256_hex(&v);
+        v["hash"] = serde_json::json!(hash);
+        lakelands_api::engine::CanonicalEvent {
+            hash: lakelands_api::event::Digest(hash),
+            bytes: lakelands_api::canonical::to_vec(&v),
+            ..e
+        }
+    };
+    let id = &"finance".into();
+    let made =
+        lakelands_store::log::Draft::system(Timestamp(1), EventBody::LakeCreated { format: OLD });
+    let (_, made) = lakelands_store::log::seal(
+        id,
+        Position(0),
+        &lakelands_api::event::Digest::zero(),
+        0,
+        made,
+    );
+    let made = older(made, true);
+    let (fence, holder) = (lease.fence, "the release before".to_owned());
+    let taken =
+        lakelands_store::log::Draft::system(Timestamp(2), EventBody::LeaseTaken { fence, holder });
+    let (_, taken) = lakelands_store::log::seal(id, Position(1), &made.hash, fence, taken);
+    engine.append(&lease, &[made, older(taken, false)]).unwrap();
+    engine.release_lease(&lease).unwrap();
+    drop(engine);
+    ok(
+        &sh.run(&["upgrade", "--check"]),
+        &format!(
+            "finance is written in log format {OLD}: an open for writing appends `lake_upgraded` \
+             from {OLD} to {NEW}, and rebuilds the projection where an older build laid it \
+             out; nothing was opened for writing\n"
+        ),
+    );
+    let run = sh.run(&["upgrade"]);
+    let said = format!("upgraded finance from log format {OLD} to {NEW} through position ");
+    assert!(
+        run.code == 0 && run.out.starts_with(&said),
+        "{} {}{}",
+        run.code,
+        run.out,
+        run.err
+    );
+    ok(
+        &sh.run(&["upgrade"]),
+        &format!("finance is written in log format {NEW}: nothing to upgrade\n"),
+    );
+}
+
+/// `upgrade` on a lake of this release's format whose projection an
+/// older build laid out (lakelands#1151): `--check` says the open for
+/// writing rebuilds it and opens none; the upgrade rebuilds it once.
+#[test]
+fn upgrade_rebuilds_a_projection_an_older_build_laid_out() {
+    let sh = Shell::on("upgrade-layout", Backend::Store);
+    sh.lake();
+    let file = sh.root.join("lakes").join("finance.json");
+    let mut at: lakelands_api::Location =
+        serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
+    let lakelands_api::location::EngineConfig::Sqlite { dir, .. } = &mut at.engine else {
+        panic!("a store lake is SQLite's")
+    };
+    *dir = sh.root.join(&*dir);
+    let path = dir.join("projection.db");
+    // Made outside the shell, whose process keeps every store it opened.
+    let seams = Seams {
+        engines: vec![Arc::new(lakelands_engine_sqlite::SqliteOpener)],
+        ..Seams::default()
+    };
+    block_on(async {
+        let store = lakelands_store::open(at, seams, OpenMode::Create)
+            .await
+            .unwrap();
+        store.close().await.unwrap();
+    });
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let wanted: i64 =
+        (db.query_row("SELECT v FROM meta WHERE k = 'layout'", [], |r| r.get(0))).unwrap();
+    let older = wanted - 1;
+    db.execute_batch(&format!(
+        "DROP INDEX routes_source; ALTER TABLE routes DROP COLUMN source;
+         UPDATE meta SET v = {older} WHERE k = 'layout';"
+    ))
+    .unwrap();
+    drop(db);
+    let v = lakelands_api::event::LOG_FORMAT_VERSION;
+    ok(
+        &sh.run(&["upgrade", "--check"]),
+        &format!(
+            "finance is written in log format {v}, its projection in layout {older}: an open \
+             for writing rebuilds it; nothing was opened for writing\n"
+        ),
+    );
+    let run = sh.run(&["upgrade"]);
+    let said = format!("rebuilt the projection of finance from layout {older} in ");
+    assert!(
+        run.code == 0 && run.out.starts_with(&said),
+        "{} {}{}",
+        run.code,
+        run.out,
+        run.err
+    );
+    // The disk, not the shell's store: the projection is laid out anew.
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let now: i64 =
+        (db.query_row("SELECT v FROM meta WHERE k = 'layout'", [], |r| r.get(0))).unwrap();
+    let source: i64 = (db.query_row(
+        "SELECT count(*) FROM pragma_table_info('routes') WHERE name = 'source'",
+        [],
+        |r| r.get(0),
+    ))
+    .unwrap();
+    assert_eq!(
+        (now, source),
+        (wanted, 1),
+        "the projection is at layout {wanted} again"
+    );
 }
 
 #[test]
@@ -1649,4 +1958,592 @@ fn the_built_binary_exports_without_a_writer_beside_a_running_serve() {
     assert_eq!(head(&ok(&["feed"])), served, "the export appended nothing");
     drop(to);
     assert!(server.wait().unwrap().success());
+}
+
+/// `forget` (058): with the root's keyring, a source's erasable values
+/// enter the log sealed; the preflight says what the act erases and
+/// retires and how long it holds the writer, the act under its id erases
+/// them and says through which position, and the source then writes
+/// nothing more.
+#[test]
+fn forget_erases_a_sources_values_and_prints_what_it_did() {
+    const TYPES: [(&str, &str); 1] = [(
+        "types/contact.yaml",
+        "name: contact\nfields:\n  email: { type: text, authority: source, erasable: true }\n",
+    )];
+    for backend in BACKENDS {
+        let sh = Shell::on("forget", backend);
+        sh.lake();
+        let config = r#"{"lakelands": 1, "owner": "owner", "keys": {"keyring": "keys"}}"#;
+        fs::write(sh.root.join("lakelands.json"), config).unwrap();
+        let applied = sh.run(&["apply", &sh.bundle("types", &TYPES)]);
+        assert_eq!(applied.code, 0, "{backend:?}: {}", applied.err);
+        let rows = sh.file(
+            "crm.ndjson",
+            "{\"type\": \"contact\", \"key\": \"c1\", \"fields\": {\"email\": \"ada@example.org\"}}\n",
+        );
+        let fed = sh.run(&["ingest", &rows, "--source", "crm"]);
+        assert_eq!(fed.code, 0, "{backend:?}: {}", fed.err);
+        // Without --report it acts not: it answers the preflight.
+        let bare = sh.run(&["forget", "--source", "crm"]);
+        assert!(
+            bare.out.contains("forget with --report "),
+            "{backend:?}: {} {}",
+            bare.out,
+            bare.err
+        );
+        let seen = sh.run(&["forget", "--source", "crm", "--preflight"]);
+        let said = "contact.email: would erase 1 value(s)\ncontact: retires 1 record(s) crm alone brought\ncrm: preflight at position ";
+        assert!(
+            seen.out.starts_with(said),
+            "{backend:?}: {} {}",
+            seen.out,
+            seen.err
+        );
+        let id = seen
+            .out
+            .rsplit("--report ")
+            .next()
+            .map(str::trim)
+            .unwrap_or_default();
+        assert!(
+            seen.out.contains("the act holds the writer about"),
+            "{}",
+            seen.out
+        );
+        let done = sh.run(&["forget", "--source", "crm", "--report", id]);
+        assert!(
+            done.code == 0
+                && done.out.starts_with("contact.email: erased 1 value(s)\ncontact: retires 1 record(s) crm alone brought\nforgot crm through position "),
+            "{backend:?}: {} {}",
+            done.out,
+            done.err
+        );
+        let again = sh.run(&["ingest", &rows, "--source", "crm"]);
+        assert!(
+            again.code != 0 && again.err.contains("was forgotten"),
+            "{backend:?}: {}",
+            again.err
+        );
+    }
+}
+
+/// `values remove` (065): without --report, as with --preflight, it says
+/// the report's sentences and the id, appending nothing; a stale id is
+/// refused in the store's words, and so is `--require-shredded` while a
+/// value of an erasable field would be redacted only, naming the count;
+/// `--before` and `--delivery` are one selection, given once; the act
+/// under the preflight's id takes the values back and says through which
+/// position, and, where its reclaim fails, that the reclaim is owed and
+/// why, as the preflights after it say (lakelands#1179).
+#[test]
+fn values_remove_takes_back_part_of_a_source_and_prints_what_it_did() {
+    const TYPES: [(&str, &str); 1] = [(
+        "types/visit.yaml",
+        "name: visit\nfields:\n  place: { type: text, authority: source }\n  email: { type: text, authority: source, erasable: true }\n  note: { type: text }\n",
+    )];
+    for backend in BACKENDS {
+        let sh = Shell::on("values-remove", backend);
+        sh.lake();
+        let config = r#"{"lakelands": 1, "owner": "owner", "keys": {"keyring": "keys"}}"#;
+        fs::write(sh.root.join("lakelands.json"), config).unwrap();
+        let applied = sh.run(&["apply", &sh.bundle("types", &TYPES)]);
+        assert_eq!(applied.code, 0, "{backend:?}: {}", applied.err);
+        // Two deliveries under one version of `tracker`'s key, the cut
+        // between them: the version also seals what the cut leaves.
+        let mut cut = String::new();
+        for (n, at) in [("v1", "Rome"), ("v2", "Oslo")] {
+            let row = format!(
+                "{{\"type\": \"visit\", \"key\": \"{n}\", \"fields\": {{\"place\": \"{at}\", \"email\": \"{n}@example.org\"}}}}\n"
+            );
+            let fed = sh.run(&[
+                "ingest",
+                &sh.file(&format!("{n}.ndjson"), &row),
+                "--source",
+                "tracker",
+            ]);
+            assert_eq!(fed.code, 0, "{backend:?}: {}", fed.err);
+            if cut.is_empty() {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+                let micros = now.unwrap().as_micros() as i64;
+                cut = lakelands_api::Timestamp(micros).to_string();
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+        let remove = |more: &[&str]| {
+            let mut args = vec!["values", "remove", "--source", "tracker"];
+            args.extend_from_slice(more);
+            sh.run(&args)
+        };
+        let all = ["--before", cut.as_str()];
+        let feed = sh.run(&["feed"]).out;
+        let bare = remove(&all);
+        let seen = remove(&[&all[..], &["--preflight"]].concat());
+        let said = format!("1 event of `tracker` written before {cut}");
+        assert!(
+            [&bare, &seen].iter().all(|r| r.code == 0
+                && r.out.starts_with(&said)
+                && r.out.contains("remove with --report ")),
+            "{backend:?}: {} {} / {} {}",
+            bare.out,
+            bare.err,
+            seen.out,
+            seen.err
+        );
+        assert_eq!(
+            sh.run(&["feed"]).out,
+            feed,
+            "{backend:?}: the preflight appends nothing"
+        );
+        let id = seen
+            .out
+            .rsplit("--report ")
+            .next()
+            .map(str::trim)
+            .unwrap_or_default();
+        for usage in [
+            remove(&[]),
+            remove(&[&all[..], &["--delivery", "d1"]].concat()),
+            remove(&[&all[..], &["--preflight", "--report", id]].concat()),
+        ] {
+            assert!(usage.code == 2, "{backend:?}: a usage error: {}", usage.err);
+        }
+        let stale = remove(&[&all[..], &["--report", "0"]].concat());
+        assert!(
+            stale.code != 0
+                && stale
+                    .err
+                    .contains("that report is not of this removal at this head"),
+            "{backend:?}: {}",
+            stale.err
+        );
+        let shredded = remove(&[&all[..], &["--require-shredded", "--report", id]].concat());
+        assert!(
+            shredded.code != 0
+                && shredded
+                    .err
+                    .contains("1 value(s) of erasable fields of `tracker`"),
+            "{backend:?}: {} {}",
+            shredded.out,
+            shredded.err
+        );
+        assert_eq!(
+            sh.run(&["feed"]).out,
+            feed,
+            "{backend:?}: the refusals append nothing"
+        );
+        // The act's reclaim fails: it answers, owing it, and so do the
+        // preflights after it.
+        sh.fails[0].store(1, std::sync::atomic::Ordering::SeqCst);
+        let done = remove(&[&all[..], &["--report", id]].concat());
+        let owed = "an act's reclaim is still owed, tried again at the next open or compact: lake ";
+        assert!(
+            done.code == 0
+                && done.out.starts_with(&said)
+                && done
+                    .out
+                    .contains("\ntook back from tracker through position ")
+                && done.out.contains(&format!("; {owed}")),
+            "{backend:?}: {} {}",
+            done.out,
+            done.err
+        );
+        for pre in [
+            remove(&all),
+            sh.run(&["forget", "--source", "tracker", "--preflight"]),
+        ] {
+            assert!(
+                pre.out.contains(&format!("tracker: {owed}")),
+                "{backend:?}: {} {}",
+                pre.out,
+                pre.err
+            );
+        }
+    }
+}
+
+/// A keyring inside a lake's directory would travel with the lake's
+/// files, a destroyed key with it: the root refuses it (058).
+#[test]
+fn a_keyring_inside_a_lakes_directory_is_refused() {
+    let sh = Shell::on("keyring-inside", Backend::Store);
+    sh.lake();
+    // Named straight, through `..`, and through a link, which is followed.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(sh.root.join("lakes"), sh.root.join("shelf")).unwrap();
+    let mut named = vec!["lakes/finance/keys", "elsewhere/../lakes/finance/keys"];
+    if cfg!(unix) {
+        named.push("shelf/finance/keys");
+    }
+    for keyring in named {
+        let config =
+            format!(r#"{{"lakelands": 1, "owner": "owner", "keys": {{"keyring": "{keyring}"}}}}"#);
+        fs::write(sh.root.join("lakelands.json"), config).unwrap();
+        let refused = sh.run(&["feed"]);
+        assert!(
+            refused.code != 0
+                && refused
+                    .err
+                    .contains("is inside the lake `finance`'s directory"),
+            "{keyring}: {}",
+            refused.err
+        );
+    }
+}
+
+/// The members a struct declares, as its derived `Deserialize` names
+/// them to `deserialize_struct`: read from the type, so a member added is
+/// seen whether or not a configuration holds it.
+fn members_of<'de, T: serde::Deserialize<'de>>() -> &'static [&'static str] {
+    use serde::de::{Error, Visitor, value};
+    struct Names<'a>(&'a mut &'static [&'static str]);
+    impl<'de> serde::Deserializer<'de> for Names<'_> {
+        type Error = value::Error;
+        fn deserialize_any<V: Visitor<'de>>(self, _: V) -> Result<V::Value, value::Error> {
+            Err(value::Error::custom("not a struct"))
+        }
+        fn deserialize_struct<V: Visitor<'de>>(
+            self,
+            _: &'static str,
+            fields: &'static [&'static str],
+            _: V,
+        ) -> Result<V::Value, value::Error> {
+            *self.0 = fields;
+            Err(value::Error::custom("only its members are read"))
+        }
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes
+            byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct map enum
+            identifier ignored_any
+        }
+    }
+    let mut names: &'static [&'static str] = &[];
+    let _ = T::deserialize(Names(&mut names));
+    names
+}
+
+/// Every member of the root's `lakelands.json`, read from `Config` and
+/// each struct of its sections, is a root setting or binding of the list,
+/// and each one of the list is such a member: a section or a member added
+/// to the configuration and not listed is red, as is one listed that no
+/// struct holds. `lakelands`, `owner` and `principals` are neither (063).
+/// A setting's default is the section's.
+#[test]
+fn the_root_s_settings_are_the_list_s() {
+    use lakelands_api::settings::{BINDINGS, Layer, SETTINGS};
+    use std::collections::BTreeSet;
+    let sections: [(&str, &[&str]); 10] = [
+        ("", members_of::<lakelands_cli::Config>()),
+        ("server", members_of::<lakelands_server::HttpConfig>()),
+        ("aging", members_of::<lakelands_cli::ticker::AgingConfig>()),
+        ("deliver", members_of::<lakelands_backings::DeliverConfig>()),
+        ("embed", members_of::<lakelands_backings::EmbedConfig>()),
+        ("backings", members_of::<lakelands_backings::Config>()),
+        (
+            "backings.http",
+            members_of::<lakelands_backings::HttpConfig>(),
+        ),
+        (
+            "backings.exec",
+            members_of::<lakelands_backings::ExecConfig>(),
+        ),
+        (
+            "mirror",
+            members_of::<lakelands_cli::mirror::MirrorConfig>(),
+        ),
+        ("keys", members_of::<lakelands_cli::KeysConfig>()),
+    ];
+    let neither = ["lakelands", "owner", "principals"];
+    let path = |s: &str, m: &str| match s {
+        "" => m.to_owned(),
+        s => format!("{s}.{m}"),
+    };
+    let every: BTreeSet<String> = (sections.iter())
+        .flat_map(|(s, ms)| ms.iter().map(|m| path(s, m)))
+        .collect();
+    for n in neither {
+        assert!(every.contains(n), "`{n}` is a member of the root");
+    }
+    for (s, ms) in &sections[1..] {
+        assert!(
+            !ms.is_empty() && every.contains(*s),
+            "`{s}` is a section of the root"
+        );
+    }
+    let declared: BTreeSet<String> = (every.iter())
+        .filter(|k| !neither.contains(&k.as_str()) && !sections.iter().any(|(s, _)| s == k))
+        .cloned()
+        .collect();
+    let listed: BTreeSet<String> = (SETTINGS.iter().map(|s| (s.key, s.layer)))
+        .chain(BINDINGS.iter().map(|b| (b.key, b.layer)))
+        .filter(|(_, layer)| *layer == Layer::Root)
+        .map(|(k, _)| k.to_owned())
+        .collect();
+    assert_eq!(declared, listed, "the root's members and the list's");
+    let config: lakelands_cli::Config = serde_json::from_value(serde_json::json!({
+        "lakelands": 1, "owner": "owner",
+        "server": {"bind": "127.0.0.1:7700"},
+        "aging": {},
+        "deliver": {"endpoints": [], "ca_file": "ca.pem"},
+        "embed": {"endpoint": "http://127.0.0.1:9/", "model": "m", "dimensions": 2,
+            "api_key_file": "k", "ca_file": "ca.pem"},
+        "backings": {"http": {"hosts": [], "ca_file": "ca.pem"}, "exec": {"commands": {}}},
+        "mirror": {"connections": []},
+        "keys": {"keyring": "keys"},
+    }))
+    .unwrap();
+    let held = serde_json::to_value(&config).unwrap();
+    for s in SETTINGS.iter().filter(|s| s.layer == Layer::Root) {
+        let at = format!("/{}", s.key.replace('.', "/"));
+        if !s.default_value().is_null() {
+            assert_eq!(held.pointer(&at), Some(&s.default_value()), "`{}`", s.key);
+        }
+    }
+}
+
+/// `settings` lists every setting with its value for the lake; `set` and
+/// `unset` write a lake setting through the store's judge, and a setting
+/// kept in a file is refused with exit 2, naming the file.
+#[test]
+fn settings_lists_every_setting_and_sets_only_the_lake_s() {
+    for backend in BACKENDS {
+        let sh = Shell::on("settings", backend);
+        sh.lake();
+        sh.run(&["apply", &sh.fixture()]);
+        let set = sh.run(&[
+            "settings",
+            "set",
+            "sort_index",
+            r#"["amount"]"#,
+            "--type",
+            "invoice",
+        ]);
+        ok(
+            &set,
+            "set `sort_index.invoice` to [\"amount\"] at position 8\n",
+        );
+        ok(&sh.run(&["settings"]), SETTINGS_SET);
+
+        let bad = sh.run(&[
+            "settings",
+            "set",
+            "sort_index",
+            r#"["nope"]"#,
+            "--type",
+            "invoice",
+        ]);
+        assert_eq!((bad.code, bad.out.as_str()), (1, ""));
+        assert!(
+            bad.err.contains("`sort_index.invoice`") && bad.err.contains("`nope`"),
+            "{}",
+            bad.err
+        );
+        let unlisted = sh.run(&["settings", "set", "sort_index", r#"["amount"]"#]);
+        assert!(
+            unlisted.code == 1 && unlisted.err.contains("`sort_index.`"),
+            "{}",
+            unlisted.err
+        );
+
+        let kept = sh.run(&["settings", "set", "limits.max_limit", "5"]);
+        assert_eq!((kept.code, kept.out.as_str()), (2, ""));
+        assert_eq!(
+            kept.err,
+            "error: `limits.max_limit` is not a lake setting: it is kept in lakes/finance.json\n  \
+             what to do: edit `limits.max_limit` in lakes/finance.json and open the lake again\n"
+        );
+        // Its last part alone would be a host's key that nothing reads.
+        let bare = sh.run(&["settings", "set", "max_limit", "5"]);
+        assert_eq!((bare.code, bare.out.as_str()), (2, ""));
+        assert!(
+            bare.err.starts_with(
+                "error: `max_limit` is not a lake setting: `limits.max_limit` is kept in lakes/finance.json\n"
+            ),
+            "{}",
+            bare.err
+        );
+        let shared = sh.run(&["settings", "set", "timeout_secs", "5"]);
+        assert!(
+            shared.code == 2
+                && shared
+                    .err
+                    .contains("`deliver.timeout_secs` in lakelands.json")
+                && shared
+                    .err
+                    .contains("`embed.timeout_secs` in lakelands.json"),
+            "{}",
+            shared.err
+        );
+        let served = sh.run(&["settings", "unset", "server.bind"]);
+        assert_eq!((served.code, served.out.as_str()), (2, ""));
+        assert!(
+            served.err.contains("it is kept in lakelands.json"),
+            "{}",
+            served.err
+        );
+        // So would its last parts, and a section's name.
+        let suffix = sh.run(&["settings", "set", "tuning.mmap_mb", "5"]);
+        assert!(
+            suffix.code == 2
+                && suffix.err.contains(
+                    "`tuning.mmap_mb` is not a lake setting: `engine.tuning.mmap_mb` is kept in lakes/finance.json"
+                ),
+            "{}",
+            suffix.err
+        );
+        let inner = sh.run(&["settings", "set", "tuning", "{}"]);
+        assert!(
+            inner.code == 2
+                && inner.err.contains(
+                    "`tuning` is not a lake setting: it is a section of lakes/finance.json"
+                ),
+            "{}",
+            inner.err
+        );
+        let section = sh.run(&["settings", "set", "deliver", "{}"]);
+        assert_eq!(
+            (section.code, section.err.as_str()),
+            (
+                2,
+                "error: `deliver` is not a lake setting: it is a section of lakelands.json\n  \
+                 what to do: edit its members in lakelands.json and open the root again\n"
+            )
+        );
+
+        let unset = sh.run(&["settings", "unset", "sort_index", "--type", "invoice"]);
+        ok(&unset, "retired `sort_index.invoice` at position 9\n");
+        let listed = sh.run(&["settings"]);
+        assert!(!listed.out.contains("sort_index.invoice"), "{}", listed.out);
+
+        // A configured section is read member by member, at each one's
+        // whole path.
+        let config = r#"{"lakelands": 1, "owner": "owner",
+            "backings": {"http": {"hosts": ["geo.example"], "timeout_secs": 3}},
+            "mirror": {"connections": [], "batch": 7}}"#;
+        fs::write(sh.root.join("lakelands.json"), config).unwrap();
+        let listed = sh.run(&["settings"]);
+        let rows: Vec<String> = (listed.out.lines())
+            .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect();
+        for want in [
+            "backings.http.timeout_secs root 3 (default 10)",
+            "backings.http.max_reply_bytes root 1048576 (default)",
+            "backings.exec.timeout_secs root not configured: lakelands.json has no `backings.exec`",
+            "mirror.poll_millis root 1000 (default)",
+            "mirror.batch root 7 (default 100)",
+        ] {
+            assert!(
+                rows.iter().any(|r| r == want),
+                "`{want}` in {}{}",
+                listed.out,
+                listed.err
+            );
+        }
+    }
+}
+
+const SETTINGS_SET: &str = "\
+sort_index.<type>                       lake      null (default)
+sort_index.invoice                      lake      [\"amount\"] (default null)
+vector_index.<type>                     lake      null (default)
+lookup_index.<type>                     lake      null (default)
+search_weights.<type>                   lake      null (default)
+view_kept.<type>                        lake      false (default)
+key_period                              lake      null (default)
+limits.default_limit                    location  50 (default)
+limits.max_limit                        location  1000 (default)
+limits.max_depth                        location  16 (default)
+limits.max_reactive_depth               location  8 (default)
+limits.commit_window_events             location  32 (default)
+limits.max_graph_nodes                  location  100000 (default)
+limits.max_offset                       location  100000 (default)
+limits.max_set_changes                  location  20000 (default)
+limits.max_rerank_top                   location  100 (default)
+engine.tuning.writer_cache_kb           location  65536 (default)
+engine.tuning.reader_cache_kb           location  16384 (default)
+engine.tuning.mmap_mb                   location  256 (default)
+engine.tuning.wal_autocheckpoint_pages  location  20000 (default)
+server.bind                             root      not configured: lakelands.json has no `server`
+server.allowed_origins                  root      not configured: lakelands.json has no `server`
+server.session_idle_secs                root      not configured: lakelands.json has no `server`
+server.feed_poll_millis                 root      not configured: lakelands.json has no `server`
+server.feed_floor_millis                root      not configured: lakelands.json has no `server`
+aging.utc_offset                        root      not configured: lakelands.json has no `aging`
+aging.check_secs                        root      not configured: lakelands.json has no `aging`
+deliver.poll_millis                     root      not configured: lakelands.json has no `deliver`
+deliver.batch                           root      not configured: lakelands.json has no `deliver`
+deliver.retry_first_secs                root      not configured: lakelands.json has no `deliver`
+deliver.retry_max_secs                  root      not configured: lakelands.json has no `deliver`
+deliver.timeout_secs                    root      not configured: lakelands.json has no `deliver`
+deliver.max_reply_bytes                 root      not configured: lakelands.json has no `deliver`
+embed.model                             root      not configured: lakelands.json has no `embed`
+embed.dimensions                        root      not configured: lakelands.json has no `embed`
+embed.send_dimensions                   root      not configured: lakelands.json has no `embed`
+embed.max_batch                         root      not configured: lakelands.json has no `embed`
+embed.timeout_secs                      root      not configured: lakelands.json has no `embed`
+embed.max_reply_bytes                   root      not configured: lakelands.json has no `embed`
+backings.http.timeout_secs              root      not configured: lakelands.json has no `backings.http`
+backings.http.max_reply_bytes           root      not configured: lakelands.json has no `backings.http`
+backings.exec.timeout_secs              root      not configured: lakelands.json has no `backings.exec`
+backings.exec.max_output_bytes          root      not configured: lakelands.json has no `backings.exec`
+mirror.poll_millis                      root      not configured: lakelands.json has no `mirror`
+mirror.batch                            root      not configured: lakelands.json has no `mirror`
+";
+
+/// A bundle declares a host's setting and gives its first value in one
+/// `apply`; applied again, it keeps the value written since. `settings`
+/// lists it with its group, kind and unit, and `set` judges it by its kind.
+#[test]
+fn a_bundle_declares_a_setting_and_gives_its_first_value() {
+    for backend in BACKENDS {
+        let sh = Shell::on("host-setting", backend);
+        sh.lake();
+        let vat = "key: vat_rate\ntype: { kind: decimal }\nunit: fraction\ngroup: operator\nvalue: \"0.19\"\n";
+        let bundle = sh.bundle("vat", &[("settings/vat_rate.yaml", vat)]);
+        let first = sh.run(&["apply", &bundle]);
+        assert_eq!(first.code, 0, "{}", first.err);
+        assert!(
+            first
+                .out
+                .contains("setting `vat_rate` given its first value"),
+            "{}",
+            first.out
+        );
+        ok(
+            &sh.run(&["settings", "set", "vat_rate", "\"0.2\""]),
+            "set `vat_rate` to \"0.2\" at position 6\n",
+        );
+        let again = sh.run(&["apply", &bundle]);
+        assert!(
+            again
+                .out
+                .contains("setting `vat_rate` holds a value already, kept"),
+            "{}",
+            again.out
+        );
+        let bad = sh.run(&["settings", "set", "vat_rate", "19%"]);
+        assert!(bad.code == 1 && bad.err.contains("`value`"), "{}", bad.err);
+        let listed = sh.run(&["settings"]);
+        assert!(
+            listed.out.lines().any(|l| l.starts_with("vat_rate ")
+                && l.contains(" host ")
+                && l.ends_with("\"0.2\" (group operator, decimal, in fraction)")),
+            "{}",
+            listed.out
+        );
+        // Unset since, it is not given its first value again.
+        ok(
+            &sh.run(&["settings", "unset", "vat_rate"]),
+            "retired `vat_rate` at position 7\n",
+        );
+        let third = sh.run(&["apply", &bundle]);
+        assert!(
+            third
+                .out
+                .contains("setting `vat_rate` was unset since, kept unset"),
+            "{}",
+            third.out
+        );
+    }
 }

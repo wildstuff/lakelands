@@ -23,6 +23,7 @@ fn stored(key: &str, retired: bool, restricted: bool) -> StoredRecord {
         fields: BTreeMap::new(),
         meta: BTreeMap::new(),
         position: Position(0),
+        made: Position(0),
         retired,
         restricted,
     }

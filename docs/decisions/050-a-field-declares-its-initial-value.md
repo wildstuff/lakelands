@@ -4,7 +4,8 @@
 
 ### An authored field of a type's own may declare `initial`
 
-An authored field of a type's own may declare `initial`: a literal the
+An authored field of a type's own, or one only its verbs write
+(`authority: verb`, lakelands#1130), may declare `initial`: a literal the
 field takes when its record comes to exist and the write that made it
 gives the field none.
 
@@ -32,6 +33,32 @@ record; an author's clear clears, refused where the field is required. A
 record retired and written again starts again: it holds the initial
 value at its next version, and a trigger sees a create.
 
+A migration may fill a field all the same, where it names the field in
+`fill` and its `to` declares the field's `initial`: each live record that
+holds no value for it then takes the value, once, at the `migrated`
+event, of origin `initial` at that position, as a create fills it. Its
+preflight counts them (`filled`), so a field made required with
+`initial` and named in `fill` is lossless. The declaration need not
+change: a migration to the type in force that fills a record appends
+its `migrated` event, moving the type's version by one and keeping its
+schema hash, as any migration's fill leaves them, and one that fills
+none appends nothing (lakelands#1104). A retired record is history
+and never held the value: it is left as it was, and takes the value if
+it is written again, as above. A restricted record is filled; whoever
+applies the migration is told how many records it fills, and the keys
+of those it is answered, as a field's conversion names them: so a
+reader who reads the field masked learns which records hold no value.
+An author is judged by the fields it declared itself: a field it may
+not know of is refused as one that is not there, with or without its
+`initial`. As at a create, what reads the filled field is computed
+again at the event (a derived field, a field a function computes, an
+embedding), and each set the filled value moves a record into or out
+of is changed in the migration's append. A trigger does not fire at the
+fill, as it fires at no record a migration converts. Without the fill a type that
+held records before its field, or before its field's `initial`, kept
+them without the value, and an aging rule, which moves a record only
+from a value, never reached them.
+
 ### The filled value has its own origin
 
 The filled value's provenance says origin `initial`, with the creating
@@ -54,6 +81,8 @@ field by a patch that names it.
 
 ### `initial` is declared only on an authored field of a type's own
 
+A field only its type's verbs write takes it as an authored one does
+(lakelands#1130).
 A field whose authority is `source`, `shared` or `derived`; one that is
 derived, computed or an embedding; a key field; a reference, and a
 relation's `via` field; a field cleared when an input changes; a field
@@ -129,7 +158,7 @@ changes, as `docs/decisions/007-schema-hash-covers-shape.md` has it, and
 - It is not a migration. Adding, changing or removing `initial` is a
   declaration and fills no record that exists; a field made required
   with `initial` over records without a value is as lossy as without
-  it.
+  it, unless a migration names it in `fill`.
 - It is not an expression. The value is a literal; a value that depends
   on the record is a derived field.
 - It is not on a source's field. A delivered value equal to the initial
@@ -142,3 +171,6 @@ changes, as `docs/decisions/007-schema-hash-covers-shape.md` has it, and
   deciding by the hash alone would send a changed `initial`.
 - That was withdrawn: the hash leaves `initial` out, and the host
   compares the declaration (lakelands#551).
+- A migration may fill a field's `initial` into the live records that
+  hold none (`fill`, lakelands#1023), where nothing could: an aging rule
+  never moved a record a type held before its field had an `initial`.

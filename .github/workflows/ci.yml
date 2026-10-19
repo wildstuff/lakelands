@@ -49,6 +49,13 @@ jobs:
   msrv:
     runs-on: ubuntu-latest
     steps:
+      # Builds every test of the workspace too, as nextest does.
+      - name: free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost "$AGENT_TOOLSDIRECTORY/CodeQL"
+          df -h /
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
@@ -56,6 +63,9 @@ jobs:
 
   nextest:
     runs-on: ubuntu-latest
+    # About twice the longest green run. A hung test ends on its own at
+    # .config/nextest.toml's bound; this ends whatever is left.
+    timeout-minutes: 60
     steps:
       # This job builds every test of the workspace; the runner image's
       # toolchains Lakelands never uses take the disk it needs.
@@ -77,6 +87,9 @@ jobs:
       - run: cargo test --locked -p lakelands-cli -p lakelands-server
       - run: df -h /
       - run: cargo test --locked -p lakelands-cli -p lakelands-server -- --test-threads=1
+      # The CLI without its default features: the rows that only a build
+      # without the PostgreSQL client can run.
+      - run: cargo test --locked -p lakelands-cli --no-default-features --test cli lake_new_refuses_postgres
 
   # The engines come from conformance/roster, never from this file.
   roster:
@@ -95,6 +108,8 @@ jobs:
     needs: roster
     if: needs.roster.result == 'success' && needs.roster.outputs.engines != ''
     runs-on: ubuntu-latest
+    # About three times the longest green run, which is pg's.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -184,6 +199,28 @@ jobs:
       - run: scripts/release/host-changes-test.sh
       - run: scripts/release/host-changes.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
+  # The host surface changes only by its rule
+  # (docs/decisions/056-the-host-surface-changes-by-one-release-of-deprecation.md):
+  # against the release scripts/release/surface-accepted names, each change
+  # the tool finds is an addition, a removal the release deprecated, or a
+  # line of that list. Blocking. The tool and the compiler are pinned
+  # together: the tool reads only the rustdoc formats it ships, so a
+  # compiler it cannot read would turn every pull request red. Both move
+  # in one pull request (docs/development.md).
+  host-surface:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks@0.50.0
+      - run: scripts/release/surface-held-test.sh
+      - run: scripts/release/surface-held.sh | tee -a "$GITHUB_STEP_SUMMARY"
+        shell: bash
+
   # docs/conformance.md lists every registered check; this fails while the
   # page differs from the registries. The same job rehearses the release
   # notes' list of pull requests on a patch release that is in the
@@ -218,6 +255,10 @@ jobs:
           - detail-sources
           - refusals
           - records-resolve
+          - vectors-kept
+          - conflict-markers
+          - settings
+          - brand-tokens
     name: gate (${{ matrix.gate }})
     steps:
       - uses: actions/checkout@v4

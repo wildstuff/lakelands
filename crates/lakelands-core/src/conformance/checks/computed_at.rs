@@ -25,7 +25,7 @@ use crate::conformance::{Failure, Held, Store};
 
 check!(
     AT_THE_READ = a_field_computed_at_the_read_means_its_expression_in_every_read,
-    "052 (lakelands#550): a derived field declared `computed_at: read` is computed at every read from the record as stored and the read's clock, the clock a `where` reads: `get`, a `where` naming it or its expression, an aggregate grouped by it, a view's measure over it, a pattern's start and rows, and a search's hits agree, at the head and as of a position; its value is of the instant it is read, not of the last write; it carries no provenance and no event of the log holds it; a reader is answered it as what it is computed from, masked or hidden; `describe` shows the member and the completed `depends_on`; `order_by` it is refused, in `find` and in a pattern, once the reader is known to read it, and one kept from it or from its type is told nothing; a grant's `only` on it cannot be applied; and a migration that renames its input follows"
+    "052 (lakelands#550): a derived field declared `computed_at: read` is computed at every read from the record as stored and the read's clock, the clock a `where` reads: `get`, a `where` naming it or its expression, an aggregate grouped by it, a view's measure over it, a pattern's start and rows, and a search's hits agree, at the head and as of a position, whose clock is its event's `known_at` (lakelands#571); its value is of the instant it is read, not of the last write; it carries no provenance and no event of the log holds it; a reader is answered it as what it is computed from, masked or hidden; `describe` shows the member and the completed `depends_on`; `order_by` it is refused, in `find` and in a pattern, once the reader is known to read it, and one kept from it or from its type is told nothing; a grant's `only` on it cannot be applied; and a migration that renames its input follows"
 );
 
 check!(
@@ -82,9 +82,15 @@ async fn a_field_computed_at_the_read_means_its_expression_in_every_read(store: 
         at = l.upsert("invoice", key, fields).await?.position();
     }
     pause(Duration::from_millis(3200)).await;
-    let late: BTreeSet<String> = ["i1", "i3"].map(String::from).into();
+    // As of `at`, the clock is that event's `known_at`, before `i3` fell due.
+    let then = log_events(store.as_ref()).await?;
+    let then = then.iter().find(|e| e.position == at).map(|e| e.known_at);
     for as_of in [None, Some(at)] {
         let when = format!("as of {as_of:?}");
+        let late: BTreeSet<String> = match as_of {
+            None => ["i1", "i3"].map(String::from).into(),
+            Some(_) => ["i1"].map(String::from).into(),
+        };
         for key in ["i1", "i2", "i3"] {
             let r = c.get(own, &"invoice".into(), get_at(key, as_of)).await;
             let r = r.must(&format!("reading `{key}` {when}"))?.data;
@@ -94,6 +100,11 @@ async fn a_field_computed_at_the_read_means_its_expression_in_every_read(store: 
                 read.is_some() && said == Some(due < read),
                 "`overdue` is `due_on < now()` computed at the read, with the clock `read_at` \
                  reads; `{key}` {when} answers {r:?}"
+            );
+            ensure!(
+                as_of.is_none() || read == then,
+                "as of a position, the read's clock is the `known_at` of its event, {then:?}; \
+                 `{key}` {when} reads `read_at` {read:?}"
             );
             ensure!(
                 !r.meta.contains_key("overdue") && !r.meta.contains_key("read_at"),
@@ -106,8 +117,8 @@ async fn a_field_computed_at_the_read_means_its_expression_in_every_read(store: 
         let i3 = i3.must("reading `i3`")?.data;
         ensure!(
             instant(&i3, "stamped") < instant(&i3, "due_on"),
-            "`i3` was written before it fell due, and `overdue` is true of it now: its value \
-             is of the read, not of the write; {when} it answers {i3:?}"
+            "`i3` was written before it fell due: its value is of the read, not of the write; \
+             {when} it answers {i3:?}"
         );
         for filter in ["overdue", "due_on < now()", "overdue and due_on < now()"] {
             let mut find = find_where(filter);
@@ -132,10 +143,11 @@ async fn a_field_computed_at_the_read_means_its_expression_in_every_read(store: 
         let counted: Vec<(Value, Value)> = (rows.iter())
             .map(|g| (g.by["overdue"].clone(), g.values["n"].clone()))
             .collect();
+        let n = |k: usize| json!(k.to_string());
         ensure!(
-            counted.contains(&(json!(true), json!("2")))
-                && counted.contains(&(json!(false), json!("1"))),
-            "grouped by `overdue` {when}, two records are late and one is not; it answers \
+            counted.contains(&(json!(true), n(late.len())))
+                && counted.contains(&(json!(false), n(3 - late.len()))),
+            "grouped by `overdue` {when}, {late:?} are late and the rest is not; it answers \
              {counted:?}"
         );
         let fields = vec!["invoice.overdue".into()];
@@ -145,9 +157,9 @@ async fn a_field_computed_at_the_read_means_its_expression_in_every_read(store: 
         let rows = rows.await.must("a pattern from what is overdue")?;
         let shown = format!("{:?}", rows.data);
         ensure!(
-            shown.matches("Bool(true)").count() == 2 && !shown.contains("Bool(false)"),
-            "a pattern that starts where `overdue` holds starts at the two late records and \
-             answers `invoice.overdue` true for each; {when} it answers {shown}"
+            shown.matches("Bool(true)").count() == late.len() && !shown.contains("Bool(false)"),
+            "a pattern that starts where `overdue` holds starts at the late records, {late:?}, \
+             and answers `invoice.overdue` true for each; {when} it answers {shown}"
         );
         let search = Search {
             ty: "invoice".into(),
@@ -157,6 +169,7 @@ async fn a_field_computed_at_the_read_means_its_expression_in_every_read(store: 
             filter: Some("overdue".into()),
             with_meta: false,
             at: read_at(as_of),
+            rerank: None,
         };
         let hits = c.search(own, search).await.must("searching what is late")?;
         let hit = hits.data.hits.first().map(|h| &h.record);

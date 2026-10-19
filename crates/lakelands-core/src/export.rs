@@ -233,6 +233,8 @@ struct Chain {
     next: Position,
     prev: Digest,
     known_at: Option<lakelands_api::Timestamp>,
+    formats: crate::log::FormatSteps,
+    fence: u64,
     sealed: Vec<(Position, Position, String)>,
 }
 
@@ -252,14 +254,17 @@ impl Chain {
             return damaged(at, Flaw::NotCanonical);
         }
         let v = value.get("v").and_then(Value::as_u64).unwrap_or(0);
-        // An export of another release's format is not read in part.
-        if v != u64::from(LOG_FORMAT_VERSION) {
+        // An export of a format this release does not read is not read in
+        // part; an older one it reads is read through its converter.
+        if !crate::log::reads_format(v) {
             let reads = LOG_FORMAT_VERSION.into();
             return damaged(at, Flaw::FormatOther { v, reads });
         }
+        let read = crate::log::converted(v, value.clone());
+        let converted = canonical::to_vec(&read);
         // The parser's own words, which name the member it does not know:
         // an export is verified for its operator, from its own files.
-        let event: Event = serde_json::from_value(value.clone()).or_else(|e| {
+        let event: Event = serde_json::from_value(read).or_else(|e| {
             damaged(
                 at,
                 Flaw::NotAnEvent {
@@ -267,7 +272,7 @@ impl Chain {
                 },
             )
         })?;
-        if canonical::of(&event) != line {
+        if canonical::of(&event) != converted {
             return damaged(at, Flaw::NotOneForm);
         }
         // No number written as an integer beyond ±(2^53 − 1) (log-format
@@ -282,6 +287,15 @@ impl Chain {
         if let Some(flaw) = crate::log::created_in_another(&event) {
             return damaged(at, flaw);
         }
+        if let Some(flaw) = self.formats.next(&event) {
+            return damaged(at, flaw);
+        }
+        // Fences never fall (log-format §4).
+        if event.fence < self.fence {
+            let (fence, floor) = (event.fence, self.fence);
+            return damaged(at, Flaw::FenceBelow { fence, floor });
+        }
+        self.fence = event.fence;
         // `known_at` never goes back (log-format §1.3).
         if let Some(before) = self.known_at
             && event.known_at < before
@@ -293,11 +307,7 @@ impl Chain {
         if event.prev != self.prev {
             return damaged(at, Flaw::PrevHash);
         }
-        let mut unhashed = value;
-        if let Some(members) = unhashed.as_object_mut() {
-            members.remove("hash");
-        }
-        if canonical::sha256_hex(&unhashed) != event.hash.0 {
+        if crate::engines::hash_of(value) != event.hash.0 {
             return damaged(at, Flaw::HashMismatch);
         }
         let later_file_start = at == first && index > 0;
@@ -363,6 +373,8 @@ pub fn verify(dir: &Path) -> Result<Verification> {
         next: Position::GENESIS,
         prev: Digest::zero(),
         known_at: None,
+        formats: crate::log::FormatSteps::default(),
+        fence: 0,
         sealed: Vec::new(),
     };
     for (index, path) in files.iter().enumerate() {
@@ -408,6 +420,11 @@ pub fn verify(dir: &Path) -> Result<Verification> {
     }
     if chain.next == Position::GENESIS {
         return damaged(Position::GENESIS, Flaw::NoSegmentFile);
+    }
+    // A writer's `lease_taken` that raised the format ends the log with no
+    // `lake_upgraded` after it.
+    if let Some(flaw) = chain.formats.unmarked() {
+        return damaged(Position(chain.next.0 - 1), flaw);
     }
     Ok(Verification {
         from: Position::GENESIS,

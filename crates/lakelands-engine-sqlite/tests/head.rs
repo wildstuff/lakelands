@@ -58,6 +58,7 @@ async fn a_read_as_of_the_head_is_never_refused_while_a_writer_appends() {
         initial: None,
         sensitive: false,
         searchable: false,
+        erasable: false,
         description: None,
         label: None,
         embed: None,
@@ -65,6 +66,7 @@ async fn a_read_as_of_the_head_is_never_refused_while_a_writer_appends() {
     cat.declare(
         &owner(),
         Declaration::Type(TypeDecl {
+            constraints: Default::default(),
             annotations: Default::default(),
             name: "entry".into(),
             key: vec![],
@@ -74,6 +76,8 @@ async fn a_read_as_of_the_head_is_never_refused_while_a_writer_appends() {
             valid_from: None,
             valid_to: None,
             field_meta: true,
+            insert_only: false,
+            retired_by: Default::default(),
             language: None,
             description: None,
             label: None,
@@ -108,6 +112,7 @@ async fn a_read_as_of_the_head_is_never_refused_while_a_writer_appends() {
             at: ReadAt {
                 as_of: Some(head),
                 valid_at: None,
+                clock: None,
             },
             limit: Some(1),
             ..Default::default()

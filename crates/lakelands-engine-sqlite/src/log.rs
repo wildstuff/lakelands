@@ -29,13 +29,14 @@
 //! `index/<first>.idx`, one JSON line per event — its members and where
 //! its bytes lie — and one commit line closing each append.
 //!
-//! **All or none.** An append writes its lines to the segment and syncs
-//! them, then writes its index lines and the commit line and syncs those.
-//! Only events before the last commit line exist: a crash before it
-//! leaves lines past the committed end of the segment, which no read
-//! returns and which the next writer cuts off when it takes the lease. So
-//! an append is durable and whole when it returns, and after a crash it
-//! is either all there or not at all.
+//! **All or none.** An append writes its lines to the segment, then its
+//! index lines and the commit line, and syncs the two files at once. Only
+//! events before the last commit line exist, and a handle checks the
+//! active segment's last group against its hashes as it first reads it;
+//! what a crash left past it, or a group the check refuses, the next
+//! writer cuts off. How a failed sync, a crash during the syncs and the
+//! lease's rewrite of the last group go is
+//! `docs/decisions/060-an-append-syncs-its-two-files-at-once.md`.
 //!
 //! **Nothing is written behind bytes that are no event.** A write can
 //! fail after it wrote, as on a full disk, and the handle goes on under
@@ -48,22 +49,23 @@
 //! and a file that ends before what is committed in it is damage: it is
 //! refused, and nothing is written behind it.
 //!
-//! **A commit line that is whole is never cut.** Another handle may have
-//! read its group. One append's outcome is therefore not known: when the
-//! sync after the commit line fails, the group is in the files for every
-//! handle, this one too, and may not outlast a crash; its append answers
-//! the error and says so.
+//! **A commit line that is whole is never cut,** but for a last group
+//! the check refuses: another handle may have read its group, so where a
+//! sync after it fails the append answers that its outcome is not known.
 //!
 //! **A segment without its index is damage.** The order above tells a
 //! crash from a loss. A crash leaves an index shorter than its segment,
-//! or a lake's first segment with no bytes and no index yet. No crash
+//! its last group ahead of the segment, or a lake's first segment with no
+//! bytes and no index yet. No crash
 //! leaves a segment with lines and no index file, or a later segment
 //! with none: every handle refuses such a log, naming the segment,
 //! before anything is read or cut, where it was once read as empty and
 //! the next writer cut it
 //! (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`).
-//! One case nothing in the files tells apart: an index file that is
-//! there and was shortened by hand reads as a crash's tail.
+//! What nothing in the files tells apart reads as a crash's tail: an
+//! index file that is there and was shortened by hand, a byte changed by
+//! hand in the last group's lines, and a commit line before the last one
+//! made no JSON, after which the writer cuts the last two groups.
 //!
 //! **The segments follow each other.** The first begins at position 0,
 //! each later one at the position after the last of the one before it,
@@ -102,7 +104,10 @@
 //! between. An index line that is short, unreadable or not the position
 //! expected is a damaged index, never another event. It is found by the
 //! read that meets it, and so by a read of the whole log; an open, which
-//! reads an index's end and its first line alone, does not find it.
+//! reads an index's end, its first line and the active segment's last
+//! group alone, finds there a line that names another position. A line
+//! that is no JSON there, or past what is committed with no commit line
+//! after it, is a crash's tear.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
@@ -167,6 +172,13 @@ struct Segment {
     resume: (u64, u64),
     /// The digest, once the segment is sealed and it was computed.
     digest: Option<Digest>,
+    /// Whether the groups a refresh reads are checked before they count:
+    /// the active segment's last, as a handle first reads it, until one
+    /// passes (module doc).
+    unproven: bool,
+    /// Where its committed bytes and its index ended before its last
+    /// group: what a writer's lease writes again.
+    checked: (u64, u64),
 }
 
 impl Segment {
@@ -239,6 +251,35 @@ fn short(_: &Path) -> lakelands_api::Error {
     damaged_at(Part::Segment, None, Flaw::Truncated)
 }
 
+/// Whether the segment beginning at `first` holds each of `group`'s lines
+/// whole: its bytes, hashing to the hash its index line names, and the
+/// line feed after them. A crash can leave a commit line ahead of the
+/// bytes it commits (module doc).
+fn whole(dir: &Path, first: u64, group: &[Entry]) -> Result<bool> {
+    let reading = |e| io_error(Doing::Read, Part::Log, e);
+    let file = File::open(segment_path(dir, first)).map_err(reading)?;
+    let held = file.metadata().map_err(reading)?.len();
+    for e in group {
+        if e.offset.saturating_add(e.len) >= held {
+            return Ok(false);
+        }
+        let mut line = bytes_at(&file, e.offset, e.len + 1).map_err(reading)?;
+        let feed = line.pop();
+        let hashed = serde_json::from_slice(&line).map(lakelands_core::engines::hash_of);
+        if feed != Some(b'\n') || !hashed.is_ok_and(|h| h == e.hash) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// The `len` bytes of `file` from `from` on.
+fn bytes_at(mut file: &File, from: u64, len: u64) -> io::Result<Vec<u8>> {
+    let mut bytes = vec![0; len as usize];
+    file.seek(SeekFrom::Start(from))?;
+    file.read_exact(&mut bytes).map(|()| bytes)
+}
+
 /// One index line, an event line checked to name `expected`.
 fn parse_at(path: &Path, line: &[u8], expected: u64) -> Result<Option<Entry>> {
     match parse_line(path, line)? {
@@ -253,7 +294,8 @@ fn parse_at(path: &Path, line: &[u8], expected: u64) -> Result<Option<Entry>> {
 /// Where `wanted` last begins in the first `end` bytes of `file`, read
 /// `step` bytes at a time from the end and never whole: after a crash the
 /// lines without a commit line can be most of the active segment's index.
-/// What lies across two steps is passed by.
+/// The steps overlap by `wanted` less a byte, so what lies across two is
+/// found.
 fn last_of(mut file: &File, mut end: u64, wanted: &[u8], step: u64) -> io::Result<Option<u64>> {
     loop {
         let at = end.saturating_sub(step);
@@ -266,19 +308,24 @@ fn last_of(mut file: &File, mut end: u64, wanted: &[u8], step: u64) -> io::Resul
         if at == 0 {
             return Ok(None);
         }
-        end = at;
+        end = at + wanted.len() as u64 - 1;
     }
 }
 
 /// What the end of its index says of a segment this handle has not read:
 /// the event line before a commit line names the last position committed
 /// through it, where its bytes end and its hash. The commit line is the
-/// last, or one before it when the last lies across two blocks: the lines
-/// after it are read as a later append's are. An index that holds no
-/// commit line says nothing.
+/// last, or the one before it where the segment's last group is to be
+/// checked: the lines after it are read as a later append's are. An index
+/// that holds no such commit line says nothing.
 fn read_end(path: &Path, mut file: &File, segment: &mut Segment) -> Result<()> {
     let reading = |e| io_error(Doing::Read, Part::Log, e);
-    let len = file.metadata().map_err(reading)?.len();
+    let mut len = file.metadata().map_err(reading)?.len();
+    if segment.unproven {
+        len = last_of(file, len, COMMITTED, BLOCK)
+            .map_err(reading)?
+            .unwrap_or(0);
+    }
     let Some(feed) = last_of(file, len, COMMITTED, BLOCK).map_err(reading)? else {
         return Ok(());
     };
@@ -295,6 +342,7 @@ fn read_end(path: &Path, mut file: &File, segment: &mut Segment) -> Result<()> {
     segment.end = last.offset + last.len + 1;
     segment.last_hash = Some(last.hash);
     segment.index_read = feed + COMMITTED.len() as u64;
+    segment.checked = (segment.end, segment.index_read);
     Ok(())
 }
 
@@ -362,6 +410,11 @@ pub(crate) struct Log {
     /// while a later one was listed: they are sealed, their indexes do not
     /// change, and they are not opened again to look for new lines.
     sealed: usize,
+    /// How a file of the log is synced: `sync_data`, a fault in a test.
+    sync: fn(&Path, &File) -> io::Result<()>,
+    /// Whether a sync failed on this handle and writing it again failed
+    /// too: it writes nothing more (module doc).
+    unsynced: bool,
 }
 
 fn segment_path(dir: &Path, first: u64) -> PathBuf {
@@ -457,6 +510,8 @@ impl Log {
             dir: dir.to_owned(),
             segments: Vec::new(),
             sealed: 0,
+            sync: |_, file| file.sync_data(),
+            unsynced: false,
         };
         if make {
             for sub in ["log", "index"] {
@@ -509,7 +564,8 @@ impl Log {
                 });
             }
         }
-        for segment in &mut self.segments[self.sealed..] {
+        let count = self.segments.len();
+        for (at, segment) in (self.sealed..).zip(&mut self.segments[self.sealed..]) {
             let path = index_path(&self.dir, segment.first);
             let mut file = match File::open(&path) {
                 Ok(f) => f,
@@ -543,6 +599,9 @@ impl Log {
                 segment.prev = first_prev(&path, &file, segment.first)?;
             }
             if segment.index_read == 0 {
+                // The active segment's last group is read below, as a later
+                // append's is, and checked (module doc).
+                segment.unproven = at + 1 == count;
                 read_end(&path, &file, segment)?;
             }
             file.seek(SeekFrom::Start(segment.index_read))
@@ -556,6 +615,11 @@ impl Log {
             // event.
             let mut pending = 0u64;
             let mut last: Option<Entry> = None;
+            // The group's lines, kept only while they are to be checked.
+            let mut group = Vec::new();
+            // A line that is no JSON past what is committed: damage where a
+            // commit line follows it, a crash's tear where none does.
+            let mut torn_at = None;
             let mut read = 0u64;
             loop {
                 line.clear();
@@ -566,9 +630,42 @@ impl Log {
                     break;
                 }
                 read += line.len() as u64;
+                if torn_at.is_some() {
+                    match line == COMMITTED[1..] {
+                        true => return Err(torn_at.take().expect("checked above")),
+                        false => continue,
+                    }
+                }
                 let expected = segment.first + segment.count + pending;
-                match parse_at(&path, &line, expected)? {
+                let parsed = parse_at(&path, &line, expected);
+                // A line that is no JSON is one a crash tore: under the check
+                // its group was never answered. A line that names another
+                // position stays damage.
+                let torn = |e: &lakelands_api::Error| {
+                    matches!(
+                        e.situation(),
+                        Some(Situation::Damaged {
+                            flaw: Flaw::NotJson { .. } | Flaw::UnknownLine,
+                            ..
+                        })
+                    )
+                };
+                if parsed.as_ref().is_err_and(torn) {
+                    if segment.unproven {
+                        break;
+                    }
+                    torn_at = parsed.err();
+                    continue;
+                }
+                match parsed? {
                     None => {
+                        if segment.unproven {
+                            if !whole(&self.dir, segment.first, &group)? {
+                                break;
+                            }
+                            (segment.unproven, group) = (false, Vec::new());
+                        }
+                        segment.checked = (segment.end, segment.index_read);
                         segment.count += pending;
                         if let Some(e) = last.take() {
                             segment.end = e.offset + e.len + 1;
@@ -580,6 +677,9 @@ impl Log {
                     }
                     Some(e) => {
                         pending += 1;
+                        if segment.unproven {
+                            group.push(e.clone());
+                        }
                         last = Some(e);
                     }
                 }
@@ -619,8 +719,15 @@ impl Log {
     }
 
     /// Read what is committed, then cut off what lies past it in the
-    /// active segment. Only the writer does this, holding the lease.
+    /// active segment. Only the writer does this, holding the lease, and
+    /// not on a handle that writes nothing more: one whose append's sync
+    /// failed and whose second write of that group then failed in any
+    /// way, before its sync or at it
+    /// (`docs/decisions/060-an-append-syncs-its-two-files-at-once.md`).
     pub(crate) fn recover(&mut self) -> Result<()> {
+        if self.unsynced {
+            return Err(Error::unavailable(Situation::Unsynced));
+        }
         self.refresh()?;
         self.cut()
     }
@@ -628,11 +735,16 @@ impl Log {
     /// Cut the active segment's two files back to their committed lengths,
     /// as this handle has read them: the index first, which commits
     /// nothing the segment then loses. A file shorter than that is
-    /// refused as damaged.
+    /// refused as damaged, a segment before either file is cut.
     fn cut(&self) -> Result<()> {
         let Some(active) = self.segments.last() else {
             return Ok(());
         };
+        let lines = segment_path(&self.dir, active.first);
+        let held = fs::metadata(&lines).ok().filter(fs::Metadata::is_file);
+        if held.is_some_and(|m| m.len() < active.end) {
+            return Err(short(&lines));
+        }
         for (path, len) in [
             (index_path(&self.dir, active.first), active.index_read),
             (segment_path(&self.dir, active.first), active.end),
@@ -694,24 +806,87 @@ impl Log {
             return Err(invalid(Case::ActiveSegmentNamed { named, position }));
         }
         let (lines, index) = lines_of(events, active.end);
-        let written = [(&segment_path, &lines), (&index_path, &index)]
-            .into_iter()
-            .try_for_each(|(path, bytes)| {
-                OpenOptions::new()
-                    .append(true)
-                    .open(path)
-                    .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_data()))
-                    .map_err(|e| (path, e))
-            });
-        if let Err((path, e)) = written {
-            return Err(self.failed(events, path, &e));
+        let parts = [
+            (segment_path.as_path(), &lines[..], active.end),
+            (index_path.as_path(), &index[..], active.index_read),
+        ];
+        // A failed sync is written again and synced once more; where that
+        // second write fails in any way, the handle writes nothing more
+        // (`docs/decisions/060-an-append-syncs-its-two-files-at-once.md`).
+        let mut written = self.put(parts);
+        let again = matches!(written, Err((_, true)));
+        if again {
+            written = self.put(parts);
+        }
+        if let Err((e, _)) = written {
+            let e = self.failed(events, &e);
+            self.unsynced = again;
+            return Err(e);
         }
         let active = self.segments.last_mut().expect("checked above");
+        // A group this handle wrote needs no check.
+        (active.checked, active.unproven) = ((active.end, active.index_read), false);
         active.index_read += index.len() as u64;
         active.count += events.len() as u64;
         active.end += lines.len() as u64;
         active.last_hash = events.last().map(|e| e.hash.0.clone());
         Ok(())
+    }
+
+    /// Write each of `parts`, a file of the log, its bytes and the offset
+    /// they begin at, the segment first, then sync the files at once. An
+    /// error says whether it was a sync that failed.
+    fn put(&self, parts: [(&Path, &[u8], u64); 2]) -> std::result::Result<(), (io::Error, bool)> {
+        let mut files = Vec::new();
+        for (path, bytes, at) in parts {
+            let fail = |e| (e, false);
+            let mut file = OpenOptions::new().write(true).open(path).map_err(fail)?;
+            file.seek(SeekFrom::Start(at))
+                .and_then(|_| file.write_all(bytes))
+                .map_err(fail)?;
+            files.push(file);
+        }
+        let sync = self.sync;
+        let (synced, indexed) = std::thread::scope(|s| {
+            // Where no thread can be made, the segment is synced here.
+            let segment = || sync(parts[0].0, &files[0]);
+            let synced = std::thread::Builder::new().spawn_scoped(s, segment);
+            let indexed = sync(parts[1].0, &files[1]);
+            let panicked = |_| Err(io::Error::other("the sync's thread panicked"));
+            let synced = match synced {
+                Ok(thread) => thread.join().unwrap_or_else(panicked),
+                Err(_) => segment(),
+            };
+            (synced, indexed)
+        });
+        synced.and(indexed).map_err(|e| (e, true))
+    }
+
+    /// Write the active segment's last group again and sync it, as a
+    /// writer takes the lease: bytes whose sync failed may be held in
+    /// memory as written, where the check found them (module doc).
+    pub(crate) fn settle(&self) -> Result<()> {
+        let Some(active) = self.segments.last() else {
+            return Ok(());
+        };
+        let (from, indexed) = active.checked;
+        if active.end <= from {
+            return Ok(());
+        }
+        let (lines, index) = (
+            segment_path(&self.dir, active.first),
+            index_path(&self.dir, active.first),
+        );
+        let read = |path: &Path, from: u64, to: u64| bytes_at(&File::open(path)?, from, to - from);
+        let reading = |e| io_error(Doing::Read, Part::Log, e);
+        let bytes = read(&lines, from, active.end).map_err(reading)?;
+        let entries = read(&index, indexed, active.index_read).map_err(reading)?;
+        let parts = [
+            (lines.as_path(), &bytes[..], from),
+            (index.as_path(), &entries[..], indexed),
+        ];
+        self.put(parts)
+            .map_err(|(e, _)| io_error(Doing::Sync, Part::Log, e))
     }
 
     /// Refuse `events` unless they continue the log as this handle has
@@ -727,17 +902,11 @@ impl Log {
     }
 
     /// The error of an append of `events` whose write to a file of the
-    /// log failed with `e`; the file's path is the operator's, not the
-    /// answer's. What it left is read, then cut, before the error is
-    /// answered: a group whose commit line is whole stays, and its outcome
-    /// is not known. Where the cut fails, the next append or seal cuts
-    /// before it writes, or is refused.
-    fn failed(
-        &mut self,
-        events: &[CanonicalEvent],
-        _: &Path,
-        e: &io::Error,
-    ) -> lakelands_api::Error {
+    /// log failed with `e`. What it left is read, then cut, before the
+    /// error is answered: a group whose commit line is whole stays, and
+    /// its outcome is not known. Where the cut fails, the next append or
+    /// seal cuts before it writes, or is refused.
+    fn failed(&mut self, events: &[CanonicalEvent], e: &io::Error) -> lakelands_api::Error {
         let last = events.last().map(|e| (e.position, e.hash.clone()));
         let (left, cut) = match self.recover() {
             Ok(()) if self.tip() == last => (Left::Unsure, None),
