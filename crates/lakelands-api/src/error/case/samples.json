@@ -194,6 +194,19 @@
    "code": "erasable_reference"
   },
   {
+   "code": "admits_not_authored"
+  },
+  {
+   "code": "admits_not_of_type"
+  },
+  {
+   "code": "admits_no_provenance"
+  },
+  {
+   "code": "admits_twice",
+   "source": "src"
+  },
+  {
    "code": "verb_required"
   },
   {
@@ -2357,6 +2370,9 @@
   },
   {
    "code": "authority"
+  },
+  {
+   "code": "admits"
   },
   {
    "code": "links",

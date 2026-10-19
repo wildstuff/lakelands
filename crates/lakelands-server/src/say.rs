@@ -139,7 +139,7 @@ impl From<Error> for Failure {
                         .to_owned()
                 }
                 Refusal::WrongDoor => {
-                    "source fields arrive through `lakelands ingest`; authored fields through writes and verbs"
+                    "source fields arrive through `lakelands ingest`; authored fields through writes and verbs, or from a source they admit"
                         .to_owned()
                 }
                 Refusal::VerbsOnly { .. } => {

@@ -193,7 +193,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 566, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 573, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -395,7 +395,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 68] = [
+const SHOWN: [&str; 69] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -464,10 +464,11 @@ const SHOWN: [&str; 68] = [
     "sealed_apart_output",
     "removed_apart",
     "removal_apart_retires",
+    "admits",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 75;
+const LAST: u64 = 76;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
@@ -665,6 +666,8 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
         ),
         "verb_authority" => matches!(declared, Some(D::Type(t))
             if t.fields.iter().any(|f| f.authority == lakelands_api::ontology::Authority::Verb)),
+        "admits" => matches!(declared, Some(D::Type(t))
+            if t.fields.iter().any(|f| f.admits.iter().map(|s| s.as_str()).eq(["samples"]))),
         "retired_by_verbs" => matches!(declared, Some(D::Type(t))
             if t.retired_by == lakelands_api::ontology::RetiredBy::Verbs),
         "retire_effect" => matches!(declared, Some(D::Verb(v))

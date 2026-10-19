@@ -408,6 +408,12 @@
       "about": "The `record_retired` of `c5`, which only the delivery taken back wrote, in the act's append.",
       "line": "{\"body\":{\"key\":\"c5\",\"kind\":\"record_retired\",\"type\":\"contact\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"37ffa8aeb6bc37e080e36e4f9d7f83a1939ddc17ee6b09206d21b82acf9afba9\",\"id\":\"0000000000000000000000000000004b\",\"known_at\":\"2026-10-05T09:00:40.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":75,\"prev\":\"3a0b6b0b6235e690d6349fb93c896d7ff3fa301b79369d34a7d637d96509772d\",\"v\":18,\"writer\":\"system:lakelands\"}",
       "hash": "37ffa8aeb6bc37e080e36e4f9d7f83a1939ddc17ee6b09206d21b82acf9afba9"
+    },
+    {
+      "shows": "admits",
+      "about": "A `declared` type `item` whose authored `title` admits the source `samples` (069): `ingest` writes it under `samples` alone, where no other hand's value stands. `admits` is not hashed, so the type's schema hash is the one it has without it. A form format 18 holds and 17 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"type\",\"field_meta\":true,\"fields\":[{\"admits\":[\"samples\"],\"authority\":\"authored\",\"name\":\"title\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}},{\"authority\":\"authored\",\"name\":\"note\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"text\"}}],\"name\":\"item\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"ca640663473e200b86a20d4ceca2d9cae1e686d3377405caf5035440f04e7f42\",\"id\":\"0000000000000000000000000000004c\",\"known_at\":\"2026-10-05T09:00:41.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":76,\"prev\":\"37ffa8aeb6bc37e080e36e4f9d7f83a1939ddc17ee6b09206d21b82acf9afba9\",\"v\":18,\"writer\":\"agent:agent\"}",
+      "hash": "ca640663473e200b86a20d4ceca2d9cae1e686d3377405caf5035440f04e7f42"
     }
   ],
   "misplaced": [

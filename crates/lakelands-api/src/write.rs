@@ -1915,8 +1915,8 @@ pub struct RemoveReport {
     pub types: Vec<ForgetRecords>,
     /// Per type and field, in that order, the values it removes.
     pub fields: Vec<RemovedField>,
-    /// Per type, in name order, the records left holding nothing of
-    /// another hand: retired, as a purge retires them.
+    /// Per type, in name order, the records the source made left holding
+    /// nothing of another hand: retired, as a purge retires them.
     pub retired: Vec<TypeRetired>,
     /// Per type, in name order, the records reached that stay, with what
     /// another hand or the source outside the selection wrote.

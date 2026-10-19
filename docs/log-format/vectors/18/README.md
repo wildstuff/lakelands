@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 75, each
+- `further.json`: the lake's next events, positions 8 to 76, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -147,7 +147,10 @@ The files:
     version (74); and the `record_retired` of `c5`, which only `late`
     wrote, in the same append (75): forms format 18 holds and 17 does
     not (065, lakelands#1214). `hr`'s version `1` is the same key as
-    `crm`'s, and `a1` is SHA-256 of `lakelands:vectors:apart`.
+    `crm`'s, and `a1` is SHA-256 of `lakelands:vectors:apart`;
+  - a type `item` whose authored `title` admits the source `samples`
+    (76): a form format 18 holds and 17 does not
+    (`docs/decisions/069-an-authored-field-may-admit-a-named-source.md`).
 
   Its `misplaced` holds five lines that are not of the lake. Each
   stands at its position after the event before it, in the release's

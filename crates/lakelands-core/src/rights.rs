@@ -30,7 +30,8 @@ use lakelands_api::principal::TypeGrants;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Migration, MigrationReport};
 use lakelands_api::{
-    Access, Error, FieldName, Position, Principal, Record, Refusal, TypeName, Value,
+    Access, Error, FieldName, Origin, Position, Principal, Record, Refusal, SourceId, TypeName,
+    Value,
 };
 
 /// The prefix every system type's name carries
@@ -743,15 +744,19 @@ pub enum Door {
 }
 
 impl Door {
-    /// Whether a field of this authority may be written through this door.
-    pub fn admits(self, authority: Authority) -> bool {
-        matches!(
-            (self, authority),
+    /// Whether `field` may be written through this door, from `source`
+    /// where it is `ingest`: by its authority, and an authored field by a
+    /// source it admits (069).
+    pub fn admits(self, field: &FieldDecl, source: Option<&SourceId>) -> bool {
+        let admitted = |s: &SourceId| field.admits.contains(s);
+        match (self, field.authority) {
+            (Door::Source, Authority::Authored) => source.is_some_and(admitted),
             (_, Authority::Shared)
-                | (Door::Authored | Door::Verb, Authority::Authored)
-                | (Door::Verb, Authority::Verb)
-                | (Door::Source, Authority::Source)
-        )
+            | (Door::Authored | Door::Verb, Authority::Authored)
+            | (Door::Verb, Authority::Verb)
+            | (Door::Source, Authority::Source) => true,
+            _ => false,
+        }
     }
 
     /// Whether a record of a type its `retired_by` names may be retired
@@ -763,12 +768,13 @@ impl Door {
 }
 
 /// Refuse a write, whole, unless every field it carries exists, is written
-/// through this door, and is granted to the principal. Fields are checked
-/// in name order, so the refusal names the same field every time.
+/// through this door, from `source` where it is `ingest`, and is granted
+/// to the principal. Fields are checked in name order, so the refusal
+/// names the same field every time.
 pub fn check_write(
     who: &Principal,
     decl: &TypeDecl,
-    door: Door,
+    (door, source): (Door, Option<&SourceId>),
     patch: &BTreeMap<FieldName, Value>,
 ) -> Result<(), Error> {
     if door == Door::Source && !who.grants.ingest {
@@ -780,7 +786,7 @@ pub fn check_write(
         if field_access(who, decl, field) == Access::None {
             return Err(no_field(decl, name));
         }
-        if !door.admits(field.authority) {
+        if !door.admits(field, source) {
             return Err(refused(Some(name), Refusal::WrongDoor));
         }
         if !who.grants.access(&decl.name, name).writes() {
@@ -788,6 +794,46 @@ pub fn check_write(
         }
     }
     Ok(())
+}
+
+/// Refuse `source`'s write of an authored field it is admitted to where
+/// the record as it stands, `live`, holds another hand's write there: an
+/// author's value or clear, or another source's. Its own write and a field
+/// no hand wrote are written over, and the field's `initial` on a record
+/// the source made, which `made` answers, asked only for an `initial`
+/// (069). Fields are checked in name order, as [`check_write`] checks them.
+pub fn check_admitted(
+    decl: &TypeDecl,
+    (live, source): (Option<&StoredRecord>, &SourceId),
+    patch: &BTreeMap<FieldName, Value>,
+    made: impl FnOnce() -> Result<bool, Error>,
+) -> Result<(), Error> {
+    let Some(live) = live else {
+        return Ok(());
+    };
+    let admitted = |n: &FieldName| {
+        (decl.fields.iter()).any(|f| &f.name == n && f.authority == Authority::Authored)
+    };
+    let initial = |n: &FieldName| {
+        live.meta
+            .get(n)
+            .is_some_and(|m| m.origin == Origin::Initial)
+    };
+    let made = match patch.keys().any(|n| admitted(n) && initial(n)) {
+        true => made()?,
+        false => false,
+    };
+    // A clear keeps its writer's provenance, so the field's last hand is
+    // read there.
+    let others = |n: &FieldName| match live.meta.get(n) {
+        Some(m) if m.origin == Origin::Source => m.source.as_ref() != Some(source),
+        Some(m) => m.origin != Origin::Initial || !made,
+        None => live.fields.contains_key(n),
+    };
+    match patch.keys().find(|n| admitted(n) && others(n)) {
+        Some(name) => Err(refused(Some(name), Refusal::WrongDoor)),
+        None => Ok(()),
+    }
 }
 
 /// Refuse a view at a door that writes or holds a record: its records are

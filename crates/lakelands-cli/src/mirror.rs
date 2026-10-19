@@ -147,6 +147,7 @@ pub fn mirror_type() -> TypeDecl {
         ty: FieldType::kind(kind),
         required,
         authority: Authority::Authored,
+        admits: vec![],
         derived: None,
         function: None,
         computed_at: None,
@@ -1629,12 +1630,14 @@ impl Mirror {
             let before = Position(p.0.saturating_sub(1));
             let t = self.describe_source(&s, Some(before)).await?;
             // A field a removal may take: neither a key field nor a
-            // reference, and one a source writes or derived from one.
+            // reference, and one a source writes, an authored one that
+            // admits a source (069), or one derived from one.
             let takeable = |f: &&lakelands_api::describe::FieldDescription| {
-                let by = matches!(
-                    f.authority,
-                    Authority::Source | Authority::Shared | Authority::Derived
-                );
+                let by = match f.authority {
+                    Authority::Source | Authority::Shared | Authority::Derived => true,
+                    Authority::Authored => !f.admits.is_empty(),
+                    _ => false,
+                };
                 f.access.reads() && by && !t.access.key.contains(&f.name) && f.ty.target.is_none()
             };
             let reached = match removal {

@@ -148,6 +148,11 @@ pub struct FieldDescription {
     pub required: bool,
     /// Which authority writes it.
     pub authority: Authority,
+    /// The sources an `ingest` may write it under, as declared
+    /// (`docs/decisions/069-an-authored-field-may-admit-a-named-source.md`):
+    /// shown wherever its authority is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admits: Vec<crate::id::SourceId>,
     /// This principal's access to it.
     pub access: Access,
     /// For a derived field: its expression.
@@ -203,9 +208,9 @@ pub struct FieldDescription {
 impl FieldDescription {
     /// The description of a declared field for a principal with `access`.
     /// A masked field answers its shape only — name, type, whether it is
-    /// required and sensitive, its authority and what an input change does
-    /// to it — never what it is computed from, what it starts as, what it
-    /// means or how the host marked it
+    /// required and sensitive, its authority and the sources it admits,
+    /// and what an input change does to it — never what it is computed
+    /// from, what it starts as, what it means or how the host marked it
     /// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
     pub fn of(decl: &FieldDecl, access: Access) -> FieldDescription {
         use crate::ontology::StorageKind::{Bytes, Json, Vector};
@@ -220,6 +225,7 @@ impl FieldDescription {
             ty: decl.ty,
             required: decl.required,
             authority: decl.authority,
+            admits: decl.admits,
             access,
             derived: decl.derived,
             function: decl.function,

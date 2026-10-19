@@ -74,7 +74,8 @@
 //! kind's name.
 //!
 //! The full form of a field carries `type` and, all optional, `required`,
-//! `authority` (`authored`, `source`, `shared`, `derived`), `derived`,
+//! `authority` (`authored`, `source`, `shared`, `derived`, `verb`), `admits`
+//! (the sources an `ingest` may write an authored field under), `derived`,
 //! `computed_at` (`write`, `read`), `depends_on`, `on_input_change` (`keep`, `clear`), `initial`,
 //! `sensitive`, `searchable`, `erasable`, `description` and `label`.
 //!

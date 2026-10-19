@@ -10,6 +10,7 @@ use super::Check;
 pub use forgotten::{Fails, failing};
 
 mod accepted_whole;
+mod admitted;
 mod after;
 mod aggregates;
 mod aging;
@@ -777,6 +778,13 @@ pub const ALL: &[Check] = &[
     upgrade::LAYOUT_REBUILT,
     verb_written::VERB_ONLY,
     verb_written::VERB_ONLY_TOLD,
+    admitted::ADMITTED,
+    admitted::ADMITS_DECLARED,
+    admitted::OWN_VALUE,
+    admitted::ADMITTED_TAKEN,
+    admitted::CLOSED,
+    admitted::ADMITTED_KEY,
+    admitted::ADMITTED_FORGOTTEN,
     retired_by_verbs::RETIRED_BY_VERBS,
     retired_by_verbs::RETIRED_BY_VERBS_TOLD,
     upgrade::LAKE_14_READ,

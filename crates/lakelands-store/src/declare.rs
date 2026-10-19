@@ -546,6 +546,31 @@ fn verb_written(owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) -> Result
     Err(invalid_field(&f.name, at(&on, why)))
 }
 
+/// `admits` stands on an authored field of a type's own records that keeps
+/// per-field provenance, naming each source once, in its form (069).
+fn admitted(owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) -> Result<()> {
+    let mut named = BTreeSet::new();
+    let misnamed =
+        (f.admits.iter()).find_map(|s| match (crate::writes::formed(s), named.insert(s)) {
+            (false, _) => Some(Case::SourceIdForm),
+            (true, false) => Some(Case::AdmitsTwice { source: s.clone() }),
+            (true, true) => None,
+        });
+    let why = match of {
+        _ if f.admits.is_empty() => return Ok(()),
+        None => Case::AdmitsNotOfType,
+        Some(t) if t.view.is_some() => Case::AdmitsNotOfType,
+        Some(_) if f.authority != Authority::Authored => Case::AdmitsNotAuthored,
+        Some(t) if !t.field_meta => Case::AdmitsNoProvenance,
+        Some(_) => match misnamed {
+            Some(case) => case,
+            None => return Ok(()),
+        },
+    };
+    let on = [owner, &[of_field(&f.name), Place::Admits]].concat();
+    Err(invalid_field(&f.name, at(&on, why)))
+}
+
 /// Refuse `computed_at` on a field no record holds: a verb's payload's, a
 /// function's input.
 fn computed_here(on: &[Place], f: &FieldDecl) -> Result<()> {
@@ -571,6 +596,7 @@ fn field_type(
     initial(o, owner, f, of)?;
     erasable(o, owner, f, of)?;
     verb_written(owner, f, of)?;
+    admitted(owner, f, of)?;
     let ty = &f.ty;
     let on = [owner, &[of_field(&f.name)]].concat();
     let wrong = |c: Case| invalid_field(&f.name, at(&on, c));

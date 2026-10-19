@@ -327,6 +327,7 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
         ty: FieldType::kind(StorageKind::Text),
         required: false,
         authority: Default::default(),
+        admits: vec![],
         derived: None,
         function: None,
         computed_at: None,

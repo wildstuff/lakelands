@@ -1,8 +1,9 @@
 //! Part of a source is taken back in one act
 //! (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`): what it
 //! wrote before a time, or in one delivery, reads as erased at every
-//! position, a record left holding nothing of another hand is retired,
-//! and a record another hand also wrote keeps that hand's values.
+//! position, a record the source made left holding nothing of another
+//! hand is retired, and a record another hand also wrote keeps that
+//! hand's values.
 
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::write::{RemoveReport, Selection};

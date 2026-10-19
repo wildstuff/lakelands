@@ -51,6 +51,7 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
         ty: FieldType::kind(StorageKind::Text),
         required: false,
         authority: Authority::Authored,
+        admits: vec![],
         derived: None,
         function: None,
         computed_at: None,

@@ -314,6 +314,9 @@ SHOWS = {
         and e["body"].get("keys") == ["1"] and "sealed" not in e),
     "verb_authority": shows("a declared type with a field only its verbs write, `authority: verb`")(
         lambda e: any(f.get("authority") == "verb" for f in declaration(e).get("fields", []))),
+    "admits": shows("a declared type with an authored field that admits a named source")(
+        lambda e: any(f.get("authority") == "authored" and f.get("admits") == ["samples"]
+                      for f in declaration(e).get("fields", []))),
     "setting_declared": shows("a declared host setting with its type, unit, meaning and group")(
         lambda e: declaration(e).get("declare") == "setting" and declaration(e).get("key") == "vat_rate"
         and declaration(e).get("type") == {"kind": "decimal"} and declaration(e).get("group") == "operator"),

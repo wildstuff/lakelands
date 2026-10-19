@@ -80,6 +80,8 @@ pub(super) struct FieldBody {
     pub required: bool,
     #[serde(default)]
     pub authority: Authority,
+    #[serde(default)]
+    pub admits: OneOrMany,
     pub derived: Option<Cond>,
     pub function: Option<String>,
     pub computed_at: Option<ComputedAt>,

@@ -371,7 +371,7 @@ this object:
   and `a and (b and c)` is not `a and b and c`.
 - Excluded, because they do not change how a record is stored or
   validated: descriptions, labels, `sensitive`, `searchable`, field
-  `authority`, `derived`, `computed_at`, `depends_on`, `on_input_change`, a relation's
+  `authority` and `admits`, `derived`, `computed_at`, `depends_on`, `on_input_change`, a relation's
   `authority`, `via`, `inverse` and description, `valid_from` /
   `valid_to`, `language`, and `field_meta`. A relation's own `fields`
   are shape, above; so is its link type's, which has a schema hash of
@@ -382,9 +382,9 @@ this object:
 | Kind | Payload | Fold |
 |---|---|---|
 | `record_upserted` | `type`, `key`, `version`, `patch`, `made` | An authored write. From format 17 its `patch` may carry a field of `authority: verb` too, written by a verb's call or by an aging rule (lakelands#1130). `patch` is sparse: each member sets a field, `null` clears it, an absent field is unchanged (`docs/decisions/012-writes-touch-only-their-fields.md`). `made` is described below the table. |
-| `record_ingested` | `type`, `key`, `version`, `patch`, `made` | A write from a source; `source` is set in the envelope. Only `source` and `shared` fields may appear in the patch. `made` as on `record_upserted`. |
+| `record_ingested` | `type`, `key`, `version`, `patch`, `made` | A write from a source; `source` is set in the envelope. Only `source` and `shared` fields may appear in the patch, and from format 18 an `authored` field whose `admits` names the event's `source` (`docs/decisions/069-an-authored-field-may-admit-a-named-source.md`). `made` as on `record_upserted`. |
 | `record_retired` | `type`, `key`, `version` | The record is retired: invisible to reads at or after this position, its history kept. From format 17 a verb whose `effect` is `retire` writes it, caused by its `verb_called` and carrying the verb as its `procedure` (lakelands#1148). The same append closes its pending `compute`s (see `write_proposed`). |
-| `values_removed` | `source`, `selection` (`{"written_before": <time>}` or `{"delivery": <id>}`), `before` (for a time, the first position it does not reach), `keys` (the versions of the source's key it destroys, oldest first; absent where none), `apart` (from format 18, the source's keys of deliveries sealed apart it destroys, in id order; absent where none) | From format 17. The host took back part of the source (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`): each non-null member of the patch of a `record_ingested` of the source before this position that the selection names (below `before`, or of that `delivery`), a key field and a reference field excepted, folds as erased, as at `source_forgotten`. A value sealed under a version `keys` names, or a key `apart` names, which the key store no longer gives, folds as erased, not as a lost key, and an output sealed under one records nothing. The `record_retired` of each record left holding nothing of another hand follows in the same append. A reader refuses one of a format before 17. |
+| `values_removed` | `source`, `selection` (`{"written_before": <time>}` or `{"delivery": <id>}`), `before` (for a time, the first position it does not reach), `keys` (the versions of the source's key it destroys, oldest first; absent where none), `apart` (from format 18, the source's keys of deliveries sealed apart it destroys, in id order; absent where none) | From format 17. The host took back part of the source (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`): each non-null member of the patch of a `record_ingested` of the source before this position that the selection names (below `before`, or of that `delivery`), a key field and a reference field excepted, folds as erased, as at `source_forgotten`. A value sealed under a version `keys` names, or a key `apart` names, which the key store no longer gives, folds as erased, not as a lost key, and an output sealed under one records nothing. The `record_retired` of each record the source made left holding nothing of another hand follows in the same append. A reader refuses one of a format before 17. |
 | `source_forgotten` | `source`, `keys` (the versions of its key, a list) | From format 16. The host forgot the source (`docs/decisions/058-a-source-may-be-forgotten.md`): its keys are destroyed, and every value it sealed, before this position and after, folds as erased: the field holds no value, and its provenance is kept with `erased: true`; an `output_recorded` it sealed records nothing, and one that names it by `output_at` fills nothing. A sealed value whose key the key store does not give, where no `source_forgotten` of its source is in the log, is not erased: the fold fails closed. The `record_retired` of each record the source alone brought follows in the same append. A reader refuses one of a format before 16. |
 | `record_restricted` | `type`, `key`, `version`, `reason` | The record is withheld from principals without the `restricted` grant (a retention hold); `reason` is the host's. Written by the host through the store facade, never by a caller's door. |
 | `record_unrestricted` | `type`, `key`, `version` | The hold is lifted. |
@@ -713,9 +713,10 @@ So the separators are unambiguous.
   part of it: the same record delivered again under another delivery is
   a duplicate, and stays with the delivery that first wrote it.
   `patch` is the patch exactly as the event stores it: the store has
-  already checked that every field in it is a `source` or `shared` field
-  (a record carrying any other field is refused whole, never trimmed,
-  per `docs/decisions/012-writes-touch-only-their-fields.md`) and has
+  already checked that every field in it is a `source` or `shared` field,
+  or from format 18 an `authored` one that admits the source (a record
+  carrying any other field is refused whole, never trimmed, per
+  `docs/decisions/012-writes-touch-only-their-fields.md`) and has
   normalised every `date_time` value to the one form of §1.3. The
   envelope's `seen_at`, `upstream` and `writer` are not in the preimage: a record
   delivered twice by the same source with the same values against the
@@ -973,9 +974,11 @@ the first release with real installations
   no list of 16 is read. 17 → 18: none. Format 18 is 0.17.0's one
   step, taken before any form it adds (lakelands#1214); each is said
   here by the change that adds it, and a log of format 17 holds none of
-  them. No other step changes a fold, so the projection stays. A step
-  that changes how an event folds says so here, and a
-  writer's open then rebuilds the projection.
+  them: a field's `admits`
+  (`docs/decisions/069-an-authored-field-may-admit-a-named-source.md`).
+  No other step changes a fold, so the projection stays. A step that
+  changes how an event folds says so here, and a writer's open then
+  rebuilds the projection.
 - **A writer's open upgrades.** Where the newest event, read under the
   writer's lease, is in an older format the release reads, the open
   appends, right after its `lease_taken`, one `lake_upgraded` from that
@@ -1072,7 +1075,7 @@ with that declaration's members beside it. Every member not marked
 | Declaration | Members (default when absent) |
 |---|---|
 | `type` | `name` (required), `key` (`[]`), `fields` (`[]`), `relations` (`[]`), `view` (none), `valid_from`, `valid_to`, `language` (none), `field_meta` (`true`), `insert_only` (`false`), `retired_by` (`authors`; from format 17), `description`, `label` (none), `annotations` (`{}`), `constraints` (`[]`: each `{ "name", "holds" }` required, `description` (none), `at_ingest` (`refuse`)) |
-| a field (in `fields`, a relation's `fields`, a verb's `payload`, a function's `inputs`; from format 17 an input may leave `type` out, and is bound by a field of any kind) | `name` and `type` (required, but for such an input), `required` (`false`), `authority` (`authored`), `derived` (none), `computed_at` (none), `depends_on` (`[]`), `on_input_change` (`keep`), `initial` (none; on a type's own field alone), `sensitive` (`false`), `searchable` (`false`), `description`, `label` (none), `annotations` (`{}`) |
+| a field (in `fields`, a relation's `fields`, a verb's `payload`, a function's `inputs`; from format 17 an input may leave `type` out, and is bound by a field of any kind) | `name` and `type` (required, but for such an input), `required` (`false`), `authority` (`authored`), `admits` (`[]`: the source ids an `ingest` may write the field under, on a type's own `authored` field alone; from format 18), `derived` (none), `computed_at` (none), `depends_on` (`[]`), `on_input_change` (`keep`), `initial` (none; on a type's own field alone), `sensitive` (`false`), `searchable` (`false`), `description`, `label` (none), `annotations` (`{}`) |
 | a field's `type` | `kind` (required), `value_type`, `target`, `dimensions` (none) |
 | a relation | `name` and `target` (required), `cardinality` (`many_to_one`), `authority` (`authored`; who writes its links, when link records carry it), `inverse`, `via` (none), `fields` (`[]`), `description` (none), `annotations` (`{}`), `derived` (none: `{ "match": [ { "from", "to" } ], "where" }`, a field of the owner and one of the target per pair, and `where` (none) a condition over `from.<field>` and `to.<field>`) |
 | a `view` | `source` and `measures` (required; each measure `{ "name", "expr" }`), `where` (none), `group_by` (`[]`), `params` (`[]`: each `{ "name", "kind" }`, a kind of `text`, `number`, `decimal`, `boolean`, `date_time` or `date`), `merge` (`[]`: each `{ "source", "where", "group_by", "measures" }`; `source` and `measures` required, `where` none, `group_by` `[]`) |
