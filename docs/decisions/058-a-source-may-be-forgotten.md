@@ -20,7 +20,7 @@ The unit is the source, as for a purge (039), because a source is what a host ca
 ### A host forgets a source in one act, and the act is in the log
 
 `forget_source(source)` works in this order, under the writer's lock:
-1. It appends one `source_forgotten` event: the source, the versions of its key, the writer and the time, with a `record_retired` for each record the source alone brought. The act is recorded as a purge is, and nothing leaves the log.
+1. It appends one `source_forgotten` event: the source, the versions of its key, the writer and the time, with a `record_retired` for each record the source made and alone brought (039). The act is recorded as a purge is, and nothing leaves the log.
 2. The source's keys are dropped from memory, and the host's key store is asked to destroy them, every version.
 3. The projection is rebuilt from the log (below).
 4. The engine reclaims the storage the erased values held (below).
@@ -29,8 +29,8 @@ The unit is the source, as for a purge (039), because a source is what a host ca
 
 **After the act:**
 - every value the source wrote to an erasable field reads as **erased**, at every position, `as_of` included;
-- the records the source alone brought are retired, as a purge retires them;
-- a co-owned record stays: its other values are another hand's, so it is not refused whole as a purge refuses it.
+- the records the source made and alone brought are retired, as a purge retires them;
+- a co-owned record stays: its other values are another hand's, so it is not refused whole as a purge refuses it. A record another hand made is co-owned, whatever it holds now: who made it is read at its `made` position, as the purge reads it (039).
 
 A forgotten source id is never given a key again, so an ingest from it is refused. A device that comes back is a new source.
 
@@ -148,7 +148,7 @@ The first version carries no per-copy erasure across lakes.
 
 `forget_preflight(source)` answers what the act would take and appends nothing. Its report carries an id that `forget_source` may repeat, as a purge's may (039); the act refuses a report of another head. Its report:
 - per type, the records holding a value of the source in an erasable field: a count, and the first ten keys;
-- the records it would retire, which the source alone brought, with the co-owned records named apart;
+- the records it would retire, which the source made and alone brought, with the co-owned records named apart;
 - per field, the values it would erase, and the recorded outputs;
 - the derived fields and views that recompute;
 - the mirror connections whose types it would stop;
@@ -171,12 +171,13 @@ was its own source. `forget_sources(sources)` and
   `source_forgotten` for each source, so a log reader sees each as it
   sees one forgotten alone, with the retirements of the set; the keys of
   each destroyed; one rebuild; one reclaim.
-- **What the set retires:** a record the set's sources alone brought,
-  once, under the first of them in id order that brought it. A record
-  another hand wrote too is co-owned, as for one source. The judgement
-  is over the whole set, a source of it forgotten already included: a
-  record only it and another source of the set wrote is retired, where
-  forgetting that other source alone would keep it co-owned.
+- **What the set retires:** a record the set's sources made and alone
+  brought, once, under the first of them in id order that brought it. A
+  record another hand made or wrote too is co-owned, as for one source.
+  The judgement is over the whole set, a source of it forgotten already
+  included: a record only it and another source of the set wrote is
+  retired, where forgetting that other source alone would keep it
+  co-owned.
 - **Refused whole, appending nothing:** an empty set, a source named
   twice, a source the log holds no event of, a source whose values the
   log holds in plaintext, and a report of another set or head

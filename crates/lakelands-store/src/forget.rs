@@ -5,7 +5,7 @@
 //! The act runs under the writer's lock, in this order, each step
 //! idempotent:
 //! 1. one append: `source_forgotten`, and a `record_retired` for each live
-//!    record the source alone brought in, as a purge retires it;
+//!    record the source made and alone brought in, as a purge retires it;
 //! 2. the source's keys are dropped from memory and destroyed;
 //! 3. the projection is rebuilt from the log, where the fold meets sealed
 //!    values with no key and the act that forgot them, and erases them;
@@ -46,7 +46,7 @@ use lakelands_core::invalid;
 use crate::lake::{Lake, Staged, every, forgotten_list};
 use crate::log::Draft;
 use crate::ontology::Ontology;
-use crate::purge::{brought_by, co_owned};
+use crate::purge::{brought_by, co_owned, made_by};
 use crate::writes::{self, Call};
 
 /// How many keys a report names per type.
@@ -84,9 +84,9 @@ struct Taken {
 /// What forgetting the sources of `set` takes at `view`, in one scan of
 /// the projection and one walk of their events: each one's report, with
 /// whether the log holds an event of it, and the live records the set
-/// retires. A record the set's sources alone brought is retired under the
-/// first of them that brought it; one another hand wrote too is co-owned,
-/// for each of them that brought it.
+/// retires. A record the set's sources made and alone brought is retired
+/// under the first of them that brought it; one another hand made, or
+/// wrote too, is co-owned, for each of them that brought it.
 fn found(
     lake: &Lake,
     view: &dyn ProjectionView,
@@ -121,14 +121,20 @@ fn found(
             .map(|f| &f.name)
             .collect();
         let mut holding: Vec<_> = set.iter().map(|_| (counted(name), counted(name))).collect();
-        for r in view.scan(name, &every(false))? {
+        let brought: Vec<StoredRecord> = (view.scan(name, &every(false))?.into_iter())
+            .filter(|r| set.iter().any(|s| brought_by(r, s)))
+            .collect();
+        let alone: Vec<&StoredRecord> =
+            brought.iter().filter(|r| !co_owned(decl, r, set)).collect();
+        let made = made_by(lake, &alone, set)?;
+        for r in brought {
             let by: Vec<usize> = (0..set.len())
                 .filter(|&i| brought_by(&r, &set[i]))
                 .collect();
             let Some(&first) = by.first() else {
                 continue;
             };
-            let shared = co_owned(decl, &r, set);
+            let shared = co_owned(decl, &r, set) || !made.contains(&r.made);
             for &i in &by {
                 let held: Vec<&&FieldName> = (erasable.iter())
                     .filter(|f| r.fields.contains_key(**f) && mine(&r, f, &set[i]))

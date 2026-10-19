@@ -44,6 +44,7 @@ use crate::forget::{History, each_of, named_now};
 use crate::lake::{Lake, Staged, Writer};
 use crate::log::Draft;
 use crate::ontology::Ontology;
+use crate::purge::made_by;
 use crate::writes::{self, Call, Walked};
 
 /// How many keys a report names per type.
@@ -283,9 +284,6 @@ fn found(
     let history = History::new(lake, view)?;
     let (mut events, mut undelivered, mut unseen) = (0, 0, 0);
     let mut selected = BTreeSet::new();
-    // Every write of the source, selected or not: a record it did not make
-    // is never retired, as the purge never retires one (069).
-    let mut brought = BTreeSet::new();
     let mut reached: BTreeSet<(TypeName, RecordKey)> = BTreeSet::new();
     // The values of the selected events it does not take, by the event's
     // position and the field's name now.
@@ -310,7 +308,6 @@ fn found(
         if e.source.as_ref() != Some(source) {
             return;
         }
-        brought.insert(e.position);
         undelivered += u64::from(e.delivery.is_none());
         unseen += u64::from(e.seen_at.is_none());
         let sealed = e.sealed.as_ref();
@@ -398,6 +395,7 @@ fn found(
         let Ok(decl) = ontology.ty(&ty) else { continue };
         let (mut holding, mut staying) = (counted(&ty), counted(&ty));
         let mut judged = Vec::new();
+        let mut holders = Vec::new();
         for r in view.get_many(&ty, &keys)? {
             let lost: BTreeSet<FieldName> = (r.fields.keys())
                 .filter(|f| {
@@ -425,7 +423,14 @@ fn found(
                         !mine(m) && matches!(m.origin, Origin::Authored | Origin::Source)
                     })
             });
-            if !holds && brought.contains(&r.made) {
+            holders.push((r, lost, holds));
+        }
+        // A record the source did not make is never retired, by the test
+        // the purge and forgetting retire by (039).
+        let bare: Vec<&StoredRecord> = (holders.iter().filter(|h| !h.2)).map(|h| &h.0).collect();
+        let made = made_by(lake, &bare, std::slice::from_ref(source))?;
+        for (r, lost, holds) in holders {
+            if !holds && made.contains(&r.made) {
                 retire.push(r);
                 continue;
             }

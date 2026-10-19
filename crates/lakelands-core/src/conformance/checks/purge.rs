@@ -3,7 +3,7 @@
 //!
 //! `purge_source` retires every live record a source brought in, across
 //! every type it reached, in one append, as `retire` would retire each; a
-//! record another hand also wrote refuses the whole purge.
+//! record another hand made or also wrote refuses the whole purge.
 
 use lakelands_api::error::{Case, RecordName};
 use lakelands_api::event::EventBody;
@@ -37,7 +37,7 @@ check!(
 
 check!(
     CO_OWNED_REFUSES = a_record_another_hand_also_wrote_refuses_the_whole_purge,
-    "039: a record the source brought in that a principal or another source also wrote refuses the whole purge as invalid, naming it, and nothing is appended"
+    "039 and 058: a record the source brought in that another hand made, a principal or another source, though the source wrote over every value of it, or that one also wrote, refuses the whole purge and its preflight as invalid, naming it, and nothing is appended; forgetting the source keeps it, its preflight naming it co-owned, and retires the records the source made and alone brought"
 );
 
 check!(
@@ -305,23 +305,62 @@ async fn a_record_another_hand_also_wrote_refuses_the_whole_purge(store: Store) 
     l.upsert("partner", "p1", json!({"note": "called"})).await?;
     // Another source's shared value on `crm`'s invoice.
     feed_one(&l, "erp", "invoice", "c1", json!({"status": "paid"})).await?;
+    // Records another hand made, every value of which `crm` wrote over:
+    // the author's `c9` and `erp`'s `i1`.
+    l.upsert("invoice", "c9", json!({"status": "draft"}))
+        .await?;
+    for (key, amount) in [("c9", 9), ("i1", 6)] {
+        let fields = json!({"amount": amount, "status": "sent"});
+        feed_one(&l, "crm", "invoice", key, fields).await?;
+    }
+    let crm = SourceId::from("crm");
     let before = store.head().await.must("reading the head")?;
+    let preflight = store.purge_preflight(&crm, None).await;
     let e = store
-        .purge_source(&SourceId::from("crm"), None, None)
+        .purge_source(&crm, None, None)
         .await
-        .must_fail("purging `crm` while two of its records are co-owned")?;
-    let named = shared(&e).is_some_and(|(_, first)| {
-        first.contains(&"p1") && first.contains(&"c1") && !first.contains(&"p2")
-    });
+        .must_fail("purging `crm` while four of its records are co-owned")?;
+    let named = |e: &Error| {
+        shared(e).is_some_and(|(count, first)| count == 4 && first == ["c1", "c9", "i1", "p1"])
+    };
     ensure!(
-        matches!(&e, Error::Refused { field: None, .. }) && named,
-        "the purge was refused as {e:?}; invalid, naming `p1` and `c1` and not `p2`, was \
-         expected"
+        matches!(&e, Error::Refused { field: None, .. })
+            && named(&e)
+            && preflight.as_ref().err().is_some_and(named),
+        "the purge and its preflight were refused as {e:?} and {preflight:?}; invalid, naming \
+         `c1`, `c9`, `i1` and `p1` and not `p2`, was expected"
     );
     head_unmoved(store.as_ref(), before, "a purge of a co-owned source").await?;
     ensure!(
         live(&l, "partner", "p2").await?,
         "the refused purge retired `p2`"
+    );
+    // Forgetting `crm` keeps the same four and retires `p2`.
+    let pre = store
+        .forget_preflight(&crm)
+        .await
+        .must("the forget preflight")?;
+    let co: Vec<&str> = (pre.co_owned.iter())
+        .flat_map(|t| t.first.iter().map(|k| k.as_str()))
+        .collect();
+    store
+        .forget_source(&crm, None)
+        .await
+        .must("forgetting `crm`")?;
+    let mut kept = Vec::new();
+    let these = [
+        ("invoice", "c1"),
+        ("invoice", "c9"),
+        ("invoice", "i1"),
+        ("partner", "p1"),
+    ];
+    for (ty, key) in these.into_iter().chain([("partner", "p2")]) {
+        kept.push(live(&l, ty, key).await?);
+    }
+    ensure!(
+        co == ["c1", "c9", "i1", "p1"] && kept == [true, true, true, true, false],
+        "forgetting `crm` names `c1`, `c9`, `i1` and `p1` co-owned, keeps them and retires \
+         `p2`; the preflight named {co:?}, and they and `p2` live: {kept:?}"
     );
     Ok(())
 }

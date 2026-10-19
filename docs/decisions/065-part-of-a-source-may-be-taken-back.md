@@ -62,11 +62,13 @@ reach. A record
 the source made, left holding nothing of another hand, nor of the
 source outside the selection, is retired in the same append, as 039
 retires it. A record another hand made is never retired: the act erases
-the source's values there and keeps it (069).
+the source's values there and keeps it (069). Who made a record is read
+at its `made` position, as the purge and forgetting read it (039).
 
 A record another hand also wrote stays, with that hand's values.
 Co-ownership is 039's: an authored value or another source's co-owns; a
-derived value, the lake's own, and a field declaring `initial` do not.
+derived value, the lake's own, and a field declaring `initial` on a
+record the source made do not.
 
 ### Every removed value is redacted; where the keys allow, it is shredded
 

@@ -35,7 +35,7 @@ check!(
 
 check!(
     ADMITTED_TAKEN = an_admitted_sources_rows_are_taken_back_as_any_of_its_values,
-    "069 with 039 and 065: the purge of an admitted source retires the rows it brought in and passes over one an author wrote over whole; a row an author edited in part refuses the purge and its preflight whole, naming it alone, appending nothing; `remove_values` of the source takes its values from that row and keeps the author's, retires the row it alone wrote, and passes over the row the author wrote over whole and a row an author made, whose `initial` the source was refused on; from a row an author made holding a value of a field with an `initial` alone, it takes the source's value and keeps the row"
+    "069 with 039 and 065: the purge of an admitted source retires the rows it brought in and passes over one an author wrote over whole; a row an author edited in part, and a row an author made holding a value of a field with an `initial` alone, one of whose empty fields the source filled, refuse the purge and its preflight whole, naming those two, appending nothing; `remove_values` of the source takes its values from that row and keeps the author's, retires the row it alone wrote, and passes over the row the author wrote over whole and a row an author made, whose `initial` the source was refused on; from a row an author made holding a value of a field with an `initial` alone, it takes the source's value and keeps the row"
 );
 
 check!(
@@ -50,7 +50,7 @@ check!(
 
 check!(
     ADMITTED_FORGOTTEN = forgetting_an_admitted_source_retires_the_rows_it_alone_brought,
-    "069 with 058: forgetting an admitted source retires the rows it alone brought, keeps a row an author edited in part, the source's value there included, since an authored field is never erasable, and leaves a row an author made, whose `initial` the source was refused on; after it an ingest under the source is refused"
+    "069 with 058: forgetting an admitted source retires the rows it alone brought, keeps a row an author edited in part, the source's value there included, since an authored field is never erasable, and a row an author made holding a value of a field with an `initial` alone, one of whose empty fields the source filled, with that value; the preflight names both co-owned; it leaves a row an author made, whose `initial` the source was refused on; after it an ingest under the source is refused"
 );
 
 /// `item`, keyless: `title` admits `samples`, `tag` admits `samples` and
@@ -412,21 +412,24 @@ async fn an_admitted_sources_rows_are_taken_back_as_any_of_its_values(store: Sto
             && held(&l, "d2", "tag").await? == (json!("mine"), None),
         "the purge of `demo` retires `d1` alone: {demo:?}"
     );
-    // `s2` refuses the purge of `samples` whole, named alone.
+    // `s2`, edited in part, and the author's `a2` refuse the purge of `samples`.
     let samples = SourceId::from("samples");
     let before = s.head().await.must("reading the head")?;
     let preflight = s.purge_preflight(&samples, None).await;
     let purge = s.purge_source(&samples, None, None).await;
     let named = |e: &lakelands_api::Result<_>| match invalid_case(e) {
         Some(Case::PurgeShared { count, first, .. }) => {
-            *count == 1
-                && matches!(&first[..], [RecordName::Of { key, .. }] if key.as_str() == "s2")
+            let keys = first.iter().map(|n| match n {
+                RecordName::Of { key, .. } => key.as_str(),
+                _ => "",
+            });
+            *count == 2 && keys.collect::<Vec<_>>() == ["a2", "s2"]
         }
         _ => false,
     };
     ensure!(
         named(&preflight) && named(&purge),
-        "the preflight and the purge of `samples` are refused naming `s2` alone: \
+        "the preflight and the purge of `samples` are refused naming `a2` and `s2` alone: \
          {preflight:?}, {purge:?}"
     );
     head_unmoved(s, before, "the purge of `samples`").await?;
@@ -605,12 +608,27 @@ async fn forgetting_an_admitted_source_retires_the_rows_it_alone_brought(store: 
     let cat = l.cat.as_ref();
     upsert(cat, &own, "item", "s2", json!({"note": "kept"})).await?;
     upsert(cat, &own, "item", "a1", json!({"title": "Chair"})).await?;
+    upsert(cat, &own, "item", "a2", json!({"status": "approved"})).await?;
+    feed(&l, &own, "samples", "a2", json!({"title": "Lamp"}))
+        .await
+        .must("`samples` writing the empty `title` of `a2`")?;
     let e = feed(&l, &own, "samples", "a1", json!({"status": "listed"})).await;
     ensure!(
         e.as_ref().err() == Some(&wrong_door("status")),
         "`samples` writing `a1`'s `status` is refused `wrong_door`: {e:?}"
     );
     let samples = SourceId::from("samples");
+    let pre = s
+        .forget_preflight(&samples)
+        .await
+        .must("the forget preflight")?;
+    let co: Vec<&str> = (pre.co_owned.iter())
+        .flat_map(|t| t.first.iter().map(|k| k.as_str()))
+        .collect();
+    ensure!(
+        co == ["a2", "s2"],
+        "the preflight of `samples` names `a2` and `s2` co-owned: {co:?}"
+    );
     let forgot = s.forget_source(&samples, None).await;
     forgot.must("forgetting `samples`")?;
     let s2 = at(&l, "item", "s2", None).await?;
@@ -619,12 +637,14 @@ async fn forgetting_an_admitted_source_retires_the_rows_it_alone_brought(store: 
         at(&l, "item", "s1", None).await?.is_none()
             && s2.is_some_and(|r| r.fields.get("note") == Some(&json!("kept")))
             && held(&l, "s2", "title").await? == (json!("Desk"), Some("samples".into()))
+            && held(&l, "a2", "status").await? == (json!("approved"), None)
+            && held(&l, "a2", "title").await? == (json!("Lamp"), Some("samples".into()))
             && a1.is_some_and(|r| {
                 r.fields.get("title") == Some(&json!("Chair"))
                     && r.fields.get("status") == Some(&json!("draft"))
             }),
         "forgetting `samples` retires `s1`, keeps `s2` with its `note` and `samples`' \
-         `title`, which is not erasable, and leaves `a1`"
+         `title`, which is not erasable, keeps the author's `a2` with it, and leaves `a1`"
     );
     let e = feed(&l, &own, "samples", "s3", json!({"title": "Shelf"})).await;
     ensure!(

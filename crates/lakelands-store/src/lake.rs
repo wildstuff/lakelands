@@ -3138,7 +3138,7 @@ pub fn find_proposal(view: &dyn ProjectionView, id: &ProposalId) -> Result<Propo
 }
 
 /// How many events a page of the log holds at most.
-const PAGE: u32 = 1024;
+pub(crate) const PAGE: u32 = 1024;
 
 /// The widest gap between two positions [`Lake::read_these`] reads
 /// through: reading 64 events from the engine costs about what seeking one
