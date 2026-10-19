@@ -75,6 +75,7 @@ fn lexical_in(names: &[&str]) -> SearchMode {
     SearchMode::Lexical {
         text: "harbour quayside".into(),
         fields: named(names),
+        text_fields: None,
     }
 }
 
@@ -86,6 +87,7 @@ fn hybrid_in(text: &str, field: &str, vector: Option<Vec<f32>>, names: &[&str]) 
         field,
         vector,
         fields,
+        text_fields: None,
         weight: None,
         text_weight: None,
         model: None,
@@ -328,6 +330,7 @@ async fn a_hybrid_search_limited_to_named_fields_still_probes_what_its_vector_is
         SearchMode::Lexical {
             text: "harbour".into(),
             fields: named(&["note"]),
+            text_fields: None,
         },
         "the reader's lexical search in `note`",
     )

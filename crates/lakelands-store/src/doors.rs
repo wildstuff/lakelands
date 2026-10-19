@@ -20,9 +20,10 @@ use lakelands_api::seam::{
     ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter, Seams, VerbInvocation,
 };
 use lakelands_api::write::{
-    AgeReport, Change, CompactReport, Declaration, ForgetReport, IngestOpts, Migration,
-    MigrationReport, Outcome, Plan, Proposal, ProposalFilter, ProposedWrite, PurgeReport,
-    Recompute, RemoveReport, Selection, ValueTypeMigration, ValueTypeReport, WriteOpts,
+    AgeReport, Change, CompactReport, Declaration, ForgetReport, ForgetSetReport, IngestOpts,
+    Migration, MigrationReport, Outcome, Plan, Proposal, ProposalFilter, ProposedWrite,
+    PurgeReport, Recompute, RemoveReport, Selection, ValueTypeMigration, ValueTypeReport,
+    WriteOpts,
 };
 use lakelands_api::{
     Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
@@ -998,6 +999,22 @@ impl LakeStore for Store {
         writes::check_source(source)?;
         let (lake, source) = (self.lake.clone(), source.clone());
         exec::run(move || crate::forget::preflight(&lake, &source)).await
+    }
+
+    async fn forget_sources(
+        &self,
+        sources: &[SourceId],
+        id: Option<&str>,
+    ) -> Result<ForgetSetReport> {
+        sources.iter().try_for_each(writes::check_source)?;
+        let (lake, sources, id) = (self.lake.clone(), sources.to_vec(), id.map(str::to_owned));
+        exec::run(move || crate::forget::run_set(&lake, &sources, id.as_deref())).await
+    }
+
+    async fn forget_sources_preflight(&self, sources: &[SourceId]) -> Result<ForgetSetReport> {
+        sources.iter().try_for_each(writes::check_source)?;
+        let (lake, sources) = (self.lake.clone(), sources.to_vec());
+        exec::run(move || crate::forget::preflight_set(&lake, &sources)).await
     }
 
     async fn remove_values(

@@ -511,6 +511,7 @@ What a refusal is about.
 | `search_fields_empty` | — | `fields` names no field; leave it out to search every searchable field | A search's `fields` that names none. |
 | `search_needs_vector` | `field` (FieldName) | `{field}` holds vectors its writers make, in a space the lake does not know; a hybrid search over it brings its own query vector | A hybrid search without a vector over a vector field no model fills: its writers chose the space, so no bound model may stand in for one. |
 | `search_not_vector` | `field` (FieldName), `kind` (StorageKind) | `{field}` is a {kind} field; a vector ranking reads a vector field | A vector ranking over a field that holds no vectors. |
+| `search_text_fields_empty` | — | `text_fields` weighs no field; leave it out to weigh each as its type's setting does | A search's `text_fields` that weighs no field. |
 | `start_no_type` | `asks` (String) | `{asks}` needs the start's `type`; only `components` may leave it out, and then names no `key`, `where`, `search` or `params` | A start with no type where a type is needed. |
 | `step_reaches` | `reached` (TypeName), `type` (TypeName), `also` (Names, optional) | it reaches `{reached}`[, {also}], not `{type}` | A step that reaches another type than it names. |
 | `step_several_types` | `reached` (TypeName, optional), `also` (Names, optional) | it reaches several types[, `{reached}`][, {also}], and a `where`, the step after it or a path that reads one of its fields reads one; name the step's `type` | A step reaching several types where a `where`, the next step or a path that reads a field reads one. |
@@ -532,6 +533,9 @@ What a refusal is about.
 | `field_read_elsewhere` | `field` (FieldName), `type` (TypeName) | `{field}` is read by another part of `{type}` and cannot be removed or changed | A field taken away that another part of the type reads. |
 | `forget_plaintext` | `source` (SourceId), `count` (u64) | the log holds {count} value(s) of `{source}` in erasable fields in plaintext, written before the field was erasable or before the log sealed them; destroying its key cannot reach them, so it is not forgotten: export the lake, leave the source out and import that as a new lake | A forgetting refused while the log holds plaintext values of the source in erasable fields. |
 | `forget_report_stale` | — | that report is not of this forgetting at this head; run the preflight again | A forgetting's report of another source or head. |
+| `forget_set_empty` | — | a forgetting of several sources names at least one | A forgetting of several sources that names none. |
+| `forget_source_twice` | `source` (SourceId) | the set names `{source}` twice; a source is forgotten once | A forgetting of several sources that names one twice. |
+| `forget_source_unknown` | `source` (SourceId) | the log holds no event of `{source}`, so the set is not forgotten; forget it alone to keep the id from the lake | A forgetting of several sources that names one the log does not. |
 | `idempotency_key_nul` | — | an idempotency key holds no NUL character | An idempotency key holding a NUL. |
 | `is_a_view` | `type` (TypeName) | `{type}` is a view; it is computed, never written | A view at a door that writes or holds a record. |
 | `key_component_kind` | `part` (String), `kind` (StorageKind), `field` (FieldName) | the key component `{part}` is not a {kind} for `{field}` | A key component of a kind its field cannot read it as. |

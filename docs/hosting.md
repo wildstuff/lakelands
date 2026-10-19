@@ -296,6 +296,12 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     and only if the lake has not moved since; without it, it answers the
     preflight.
     Choose a moment when waiting writes can wait.
+  - **Several sources at once:** `LakeStore::forget_sources(sources,
+    report_id)`, with its preflight `forget_sources_preflight`, forgets a
+    set in one act, one rebuild under one hold of the writer instead of
+    one for each, with one report id over the set. Use it when a
+    request reaches several sources, so that the reports do not go stale
+    one after another.
   - **What it cannot reach** refuses it: a value the log holds in
     plaintext, written before its field was erasable or by a release
     before 0.15.0. Such a lake is exported, the source left out, and
@@ -1374,7 +1380,8 @@ them:
   `RelationDecl::to("partner", "partner")`, and `SearchMode::lexical(text)`,
   `::vector` and `::hybrid` (0.9.0 added `weight` and `also` to a vector
   search and `weight` and `text_weight` to a hybrid one, and 0.16.0
-  `model` to both and to a vector term, and to `Axis`; a mode built by
+  `model` to both and to a vector term, and to `Axis`, and 0.17.0
+  `text_fields` to a lexical and a hybrid one; a mode built by
   its constructor leaves them out, and a `VectorTerm` written as a
   struct literal names `model`). `TypeDecl`, `FieldDecl`, `RelationDecl`,
   `TypeDescription`, `FieldDescription`, `LakeDescription` and

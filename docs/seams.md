@@ -1897,20 +1897,21 @@ at least. `fields` and `text_weight` weigh each ranking a fused search
 of `<type>` gives no weight; `text_fields` weighs a match of the text by
 the field it is in, in every ranking of text: a lexical search's, a
 hybrid search's lexical half before the fusion, and its fallback to the
-text (§`ranked`, lakelands#1230). Each is read as the read finds it at
-its position. A write of it is refused as invalid when `<type>` is no
-declared stored type (`key`), when it names a field the type does not
-declare, in `fields` one it declares with a kind other than vector, in
-`text_fields` one it does not declare searchable, or a weight a search
-could not give (above 0, at most 1 000 000; the member named), and when
-its value is no such object or names nothing (`value`). A weight it
-holds that a search could not give, as a log the store did not write
-may hold, weighs nothing. A field a migration removed stays named and
-weighs nothing; declared again, it takes its weight again. A rename is
-not followed: the field is weighed by its old name at a position before
-it, and at the head by its new one, which the setting does not name
-until a host writes it again. The judge of
-all four settings is the contract's
+text (§`ranked`, lakelands#1230). A search's own `text_fields` wins
+over the setting's for each field it names (lakelands#1237). Each is
+read as the read finds it at its position. A write of it is refused as
+invalid when `<type>` is no declared stored type (`key`), when it names
+a field the type does not declare, in `fields` one it declares with a
+kind other than vector, in `text_fields` one it does not declare
+searchable, or a weight a search could not give (above 0, at most
+1 000 000; the member named), and when its value is no such object or
+names nothing (`value`). A weight it holds that a search could not give,
+as a log the store did not write may hold, weighs nothing. A field a
+migration removed stays named and weighs nothing; declared again, it
+takes its weight again. A rename is not followed: the field is weighed
+by its old name at a position before it, and at the head by its new one,
+which the setting does not name until a host writes it again. The judge
+of all four settings is the contract's
 (`lakelands_api::seam::check_setting`). It changes no answer's members,
 only the order a search ranks them in.
 
@@ -2300,6 +2301,16 @@ reclaim that fails is not a failure of the act: the report answers it in
 `reclaim_owed`, the cause alone, as `LakeStore::reclaim_owed` does, and
 the writer's next open, a repeat or a `compact` that runs clears it
 (lakelands#1179).
+
+`LakeStore::forget_sources(sources, report_id)` and
+`forget_sources_preflight(sources)` do the same for a set of sources in
+one act (lakelands#1183): one `source_forgotten` for each in one append,
+one rebuild and one reclaim under one hold of the lock, one report id and
+one expected time, each source's report beside them. A set that is
+empty, names a source twice or names one the log holds no event of is
+refused whole, appending nothing. A set of one answers as
+`forget_preflight` does, its id included. They default to `unbound` for
+a facade that does not carry them, as `lakelands-client` does.
 
 `LakeStore::remove_values(source, selection, require_shredded,
 report_id)` takes back what a source wrote before a time or in one

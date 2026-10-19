@@ -688,6 +688,7 @@ async fn a_search_on_a_view_is_refused_naming_it(store: Store) -> Held {
         SearchMode::Hybrid {
             text: "p1".into(),
             fields: None,
+            text_fields: None,
             field: near().0,
             vector: Some(near().1),
             weight: None,

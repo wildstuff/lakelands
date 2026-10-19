@@ -1186,6 +1186,12 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 json!({"type": "array", "items": {"type": "string"}, "minItems": 1,
                 "description": "lexical and hybrid: match the text only in these searchable fields."}),
             ),
+            (
+                "text_fields",
+                json!({"type": "object", "minProperties": 1,
+                "additionalProperties": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000000},
+                "description": "lexical and hybrid: a weight for a match of the text in each searchable field named, over the type's `search_weights` setting; a field it leaves out takes the setting's, else 1."}),
+            ),
             ("field", json!({"type": "string"})),
             (
                 "vector",

@@ -157,6 +157,38 @@ The first version carries no per-copy erasure across lakes.
 
 The preflight and the act each count from the source's own events, which the feed index names (`ProjectionView::of_source`), not from a walk of the whole log; where the index decides nothing, as while the projection is rebuilt, they walk the log from there. The judgement is the same either way: a field erasable now, under the names it bears now.
 
+### Several sources are forgotten in one act; the unit stays the source
+
+A request to forget often reaches several sources: one person who came
+in through several connections, or a connection whose every delivery
+was its own source. `forget_sources(sources)` and
+`forget_sources_preflight(sources)` take the set (lakelands#1183):
+- **One preflight:** one report id over the set and one expected time,
+  one rebuild and one reclaim at the measured rate above, and the walk
+  of the set's events once; beside them, each source's report as
+  `forget_preflight` answers it, in id order.
+- **One act,** under one hold of the writer: one append of a
+  `source_forgotten` for each source, so a log reader sees each as it
+  sees one forgotten alone, with the retirements of the set; the keys of
+  each destroyed; one rebuild; one reclaim.
+- **What the set retires:** a record the set's sources alone brought,
+  once, under the first of them in id order that brought it. A record
+  another hand wrote too is co-owned, as for one source. The judgement
+  is over the whole set, a source of it forgotten already included: a
+  record only it and another source of the set wrote is retired, where
+  forgetting that other source alone would keep it co-owned.
+- **Refused whole, appending nothing:** an empty set, a source named
+  twice, a source the log holds no event of, a source whose values the
+  log holds in plaintext, and a report of another set or head
+  (`forget_report_stale`). A source the log never named is forgotten
+  alone, to keep its id from the lake; in a set it is a mistake.
+- **A repeat:** a source of the set forgotten already appends nothing
+  again, and a set forgotten whole finishes what is owed.
+
+A set of one is the source alone: its report and its id are those of
+`forget_preflight`. The source stays the unit of the key, the event and
+the provenance; only the act is batched.
+
 ### A lake 0.14.0 writes holds plaintext, and the feature starts where it starts
 
 The feature is a format step: the `sealed` member, the declaration's `erasable`, and `source_forgotten`. From 0.14.0 on, every format step carries its converter (054). A lake 0.14.0 wrote is upgraded and read, and its events keep their bytes, so its values stay plaintext.

@@ -498,6 +498,7 @@ fn hybrid(text: &str) -> lakelands_api::query::SearchMode {
         field: "e".into(),
         vector: None,
         fields: None,
+        text_fields: None,
         weight: None,
         text_weight: None,
         model: None,

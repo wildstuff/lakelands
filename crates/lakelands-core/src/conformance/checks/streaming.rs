@@ -1411,6 +1411,7 @@ impl Size<'_> {
                         field: "vec".into(),
                         vector: None,
                         fields: None,
+                        text_fields: None,
                         weight: None,
                         text_weight: None,
                         model: None,

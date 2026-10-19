@@ -283,7 +283,7 @@ fn found(
     let mut fields: BTreeMap<(TypeName, FieldName), Tally> = BTreeMap::new();
     // The versions sealing values it selects, and those sealing others.
     let (mut inside, mut outside) = (BTreeSet::new(), BTreeSet::new());
-    each_of(lake, view, source, |e| {
+    each_of(lake, view, std::slice::from_ref(source), |_, e| {
         let EventBody::RecordIngested { ty, key, patch, .. } = &e.body else {
             return;
         };

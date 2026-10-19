@@ -372,6 +372,7 @@ async fn a_cursor_continues_only_the_read_it_was_handed_out_for(store: Store) ->
     let named = SearchMode::Lexical {
         text: "same".into(),
         fields: Some(vec!["name".into()]),
+        text_fields: None,
     };
     let refused = [
         (

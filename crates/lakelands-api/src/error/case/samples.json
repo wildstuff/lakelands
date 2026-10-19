@@ -1170,6 +1170,9 @@
    "kind": "text"
   },
   {
+   "code": "search_text_fields_empty"
+  },
+  {
    "asks": "s",
    "code": "start_no_type"
   },
@@ -1266,6 +1269,17 @@
   },
   {
    "code": "forget_report_stale"
+  },
+  {
+   "code": "forget_set_empty"
+  },
+  {
+   "code": "forget_source_twice",
+   "source": "src"
+  },
+  {
+   "code": "forget_source_unknown",
+   "source": "src"
   },
   {
    "code": "idempotency_key_nul"

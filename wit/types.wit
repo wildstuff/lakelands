@@ -939,6 +939,9 @@ interface types {
     record lexical-search {
         text: string,
         fields: option<list<field-name>>,
+        /// A weight for a match of the text in each searchable field
+        /// named, over its type's `search_weights` setting's.
+        text-fields: option<list<tuple<field-name, f64>>>,
     }
 
     record vector-term {
@@ -963,6 +966,9 @@ interface types {
         field: field-name,
         vector: option<list<f32>>,
         fields: option<list<field-name>>,
+        /// A weight for a match of the text in each searchable field
+        /// named, over its type's `search_weights` setting's.
+        text-fields: option<list<tuple<field-name, f64>>>,
         weight: option<f64>,
         text-weight: option<f64>,
         /// The model that made the vector, if the caller names it.
@@ -1583,6 +1589,20 @@ interface types {
         recomputed: list<record-field>,
         views: list<type-name>,
         plaintext: u64,
+        events: u64,
+        expected-ms: u64,
+        position: position,
+        reclaimed: option<compact-report>,
+        reclaim-owed: option<string>,
+        report-id: string,
+    }
+
+    /// What one forgetting of several sources erased, or its preflight
+    /// says it would: each source's report, the events its one rebuild
+    /// folds and the time it is expected to hold the writer's lock, the
+    /// position, the act's reclaim, and a preflight's id over the set.
+    record forget-set-report {
+        sources: list<forget-report>,
         events: u64,
         expected-ms: u64,
         position: position,

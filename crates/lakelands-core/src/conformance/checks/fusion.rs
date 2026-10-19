@@ -249,6 +249,7 @@ fn weighed(text_weight: Option<f64>, weight: Option<f64>) -> SearchMode {
         field: "v".into(),
         vector: Some(vec![1.0, 0.0]),
         fields: None,
+        text_fields: None,
         weight,
         text_weight,
         model: None,
