@@ -1189,6 +1189,13 @@
     "a"
    ],
    "code": "step_several_types",
+   "field": "f",
+   "missing": [
+    "a"
+   ],
+   "other": [
+    "a"
+   ],
    "reached": "t"
   },
   {

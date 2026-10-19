@@ -158,39 +158,57 @@ means nothing to a graph, a path, a degree or components, which answer
 nodes or fixed columns, so it is refused there, as `to` is outside a
 graph.
 
-### Under one name a record has one type where a path reads its fields, so a step whose fields are read reaches one type or names its `type`
+### Under one name a field reads alike on every type, so a step over several types reads only what they declare alike
 
-A type the pattern binds is the one type each step reaches. Under one
-name a record has one type where a path reads one of its fields, so a
-step whose records rows or an aggregate bind reaches one type or names
-its `type`, as it does when it reads a `where`, and is refused where it
-does not (`step_several_types`, naming every type it reaches): under
-each name a row's paths are read against one type.
+A type the pattern binds is the one type each step reaches, or the
+types a step reaches where it names none. Under one name a path reads a
+field the same way on every record it binds, so a step over several
+types reads, in its `where`, an order, `fields`, a group key or a
+measure, only a field each type it reaches and its reader is shown
+declares alike: in one storage kind and, where one is named, one value
+type, a reference to one target type and a vector of one length.
+Anything else is refused `step_several_types`, naming every type the
+step reaches, the field, the types that lack it and those that declare
+it otherwise than most of them do (than the first type's, by name,
+where they split evenly), so the odd one is the one named. A field the
+reader may not know of on one of the types is one that type lacks, so
+the refusal tells it nothing a typed read would not. Which types a step
+reaches is the planner's alone, the types an inverse reaches included;
+nothing else reckons them. A `where` that reads through a relation, not
+a field, is read against one type and names the step's `type`. An open
+name's row is shaped from the types it binds, never from the type a
+range's first hop reaches.
 
-A last step over several types that names no `type` and reads no
-`where` may be bound all the same, where nothing reads its fields. Its
-records are bound under the step's `as`, or under its relation as the
-caller wrote it (the inverse's name where it named the inverse), and a
-row holds their `key`, `_type` and `_depth` alone, since a field would
-be read against one of the types. Its key is the record's key, whatever
-field `key` one of the types declares. An order, `fields`, a group key
-or a measure that reads one of its fields is refused as above. A plain
+A field read over several types is read against each as a typed read
+of that type reads it. Its reader masked from it, or allowed to write
+it alone, on any of them is refused as that typed read is, the field
+named by its type (`<type>.<field>`): no type is left out of the answer
+without a word, and the answer never turns on which types happen to
+hold a record. `fields` leaves a field masked on one type out of that
+type's rows, as it does on a typed read.
+
+The answer is one: one order, one cursor, one measure over every type,
+and `<name>._type` names each row's type. A decimal sum adds as decimals
+across the types, as over one. Its records are bound under the step's
+`as`, or under its relation as the caller wrote it (the inverse's name
+where it named the inverse), and a row holds their `key`, `_type`,
+`_depth` and the fields the types declare alike. Its key, `_type` and
+`_depth` are the lake's columns, read against no type and never probed,
+so a field `key` one of the types declares turns nothing. A plain
 `count` reads no field, so it counts what the step reaches over every
 type, and grouped by `<name>._type` it counts each type: the answer a
 caller would otherwise add up from one typed query a type. A step
 another follows still reaches one type or names it: the next step is
-read from one type. Its key, `_type` and `_depth` are the lake's
-columns, read against no type and never probed, so a field `key` one
-of the types declares turns nothing. A host names with `as` a step that
-may reach several types: left out, its name follows the types its
-reader is shown, so a reader shown one of them binds under that type's
-name, as on a lake without the others, and one query would not give two
-readers the same columns. With its `type` the step binds that type's
-records alone, and the step after it is read from that type. Were a
-chain's step to bind only the first type that declares its relation,
-which paths its rows could be read by would depend on the order of the
-declarations, and its `where` would be read against that first type and
-drop the other's records without a word.
+read from one type. A host names with `as` a step that may reach
+several types: left out, its name follows the types its reader is
+shown, so a reader shown one of them binds under that type's name, as
+on a lake without the others, and one query would not give two readers
+the same columns. With its `type` the step binds that type's records
+alone, and the step after it is read from that type. Were a step to
+bind only the first type that declares its relation, which paths its
+rows could be read by would depend on the order of the declarations,
+and its `where` would be read against that first type and drop the
+other's records without a word.
 
 The `type` of a step of rows, an aggregate or a graph may be any type it
 reaches from where it stands, over its whole range in a chain. A measure

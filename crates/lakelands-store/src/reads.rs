@@ -470,16 +470,54 @@ const DEPTH: &str = "_depth";
 /// extended).
 const TYPE: &str = "_type";
 
-/// A step over several types, at `at`, refused where one is read: naming
-/// every type it reaches.
-fn several_types(at: &Place, reached: &BTreeSet<TypeName>) -> Error {
+/// A step over several types, at `at`, refused where one is read, or
+/// where it reads a field they do not all declare alike: naming every
+/// type it reaches, and the field with the types that differ, those
+/// missing it and those that declare it otherwise.
+fn several_types(at: &Place, reached: &BTreeSet<TypeName>, unlike: Option<Unlike>) -> Error {
     let mut all = reached.iter().cloned();
     let reached = all.next().expect("several types");
+    let some = |n: Names| (!n.0.is_empty()).then(|| Box::new(n));
+    let (field, missing, other) = match unlike {
+        Some((f, missing, other)) => (Some(f), some(missing), some(other)),
+        None => (None, None, None),
+    };
     let case = Case::StepSeveralTypes {
         reached: Some(reached),
         also: Some(all.collect()),
+        field,
+        missing,
+        other,
     };
     invalid(Said::from(case).within(at.clone()))
+}
+
+/// A field the types a step reaches do not declare alike: the types
+/// missing it, and those that declare it otherwise than most of them.
+type Unlike = (FieldName, Names, Names);
+
+/// A path of a pattern's rows read against a type: the type, its field,
+/// and whether its name is over several types (`wide`).
+type Read = (TypeName, FieldName, bool);
+
+/// The fields a name over several types holds ([`Reader::shared`]), or
+/// None for a name over one.
+type Shared = Option<BTreeSet<FieldName>>;
+
+/// A refusal of a field of `ty`, read over a step that reaches several
+/// types, as a read of that type alone refuses it, its field named by
+/// the type: `<type>.<field>`.
+fn of_type(ty: &TypeName, e: Error) -> Error {
+    match e {
+        Error::Refused {
+            field: Some(f),
+            reason,
+        } => Error::Refused {
+            field: Some(FieldName::from(format!("{ty}.{f}"))),
+            reason,
+        },
+        e => e,
+    }
 }
 
 /// The most records a hop over a derived relation holds at once: a page of
@@ -4155,14 +4193,13 @@ impl<'a> Reader<'a> {
                 true => self.ranged(step, &here, reach[i].owner.as_ref()),
                 false => self.neighbours(step, None, reach[i].owner.as_ref()),
             };
-            // A row binds the step's records under one name, and the step
-            // after it in a chain is judged from one type. Rows and an
-            // aggregate may bind a last step over several types where no
-            // `where` reads it (018, extended): under the relation's name as
-            // its caller wrote it, its records hold their key, `_type` and
-            // `_depth` alone, and a path that reads a field is refused.
-            let open = binds && i == last && step.ty.is_none() && step.filter.is_none();
-            let open = open && all.len() > 1;
+            // The step after another in a chain is judged from one type.
+            // Rows and an aggregate may bind a last step over several types
+            // (018, extended): under the relation's name as its caller
+            // wrote it, its records hold their key, `_type`, `_depth` and
+            // the fields every type declares alike, and a `where` or a path
+            // that reads another field is refused.
+            let open = binds && i == last && step.ty.is_none() && all.len() > 1;
             let one = (binds && !open) || (chain && !measure && i < last);
             let reached = self.neighbour_target(&at, step, &all, one)?.or(reached);
             // At a valid time a walk keeps each record it meets by its own
@@ -4175,7 +4212,7 @@ impl<'a> Reader<'a> {
                 }
             }
             let reached = reached.or_else(|| step.ty.clone()).unwrap_or(here);
-            let decl = self.visible_type(&reached)?.clone();
+            self.visible_type(&reached)?;
             // A view with parameters is bound only by a read that names it
             // (018): a step that arrives at one other than the start has no
             // values to read it with, whatever records the walk would reach,
@@ -4211,8 +4248,27 @@ impl<'a> Reader<'a> {
                 return Err(invalid(said.within(at)));
             }
             names.push(name);
+            // A `where` over several types is read against each, once
+            // every field it reads is declared alike by all of them.
+            let wide = step.ty.is_none() && all.len() > 1;
+            let over = if wide {
+                all
+            } else {
+                BTreeSet::from([reached.clone()])
+            };
+            let parsed = step.filter.as_ref().and_then(|c| c.typed().ok());
+            for f in parsed.iter().flat_map(Expr::fields_read).filter(|_| wide) {
+                self.alike(&at, &over, f)?;
+            }
             let at = [at, Place::Where];
-            filters.push(self.record_filter(&decl, step.filter.as_ref(), &at)?);
+            let mut filter = BTreeMap::new();
+            for t in over.iter().filter(|_| step.filter.is_some()) {
+                let decl = self.sight.ty(t)?;
+                let judged = self.record_filter(decl, step.filter.as_ref(), &at);
+                let judged = judged.map_err(|e| if wide { of_type(t, e) } else { e })?;
+                filter.extend(judged.map(|e| (t.clone(), e)));
+            }
+            filters.push((step.filter.is_some()).then_some(filter));
             types.push(reached);
         }
         // A depth no walk takes is refused for what the pattern says,
@@ -4263,8 +4319,8 @@ impl<'a> Reader<'a> {
             }
         }
         // Whether a record reached over step `i` is kept and walked from:
-        // it is of the step's `type`, and its `where`, read against the type
-        // the step reaches, holds of it.
+        // it is of the step's `type`, and its `where`, read against the
+        // record's own type among those the step reaches, holds of it.
         let keep = |i: usize, node: &graph::Node| -> Result<bool> {
             if p.steps[i].ty.as_ref().is_some_and(|t| *t != node.0) {
                 return Ok(false);
@@ -4272,8 +4328,11 @@ impl<'a> Reader<'a> {
             let Some(f) = &filters[i] else {
                 return Ok(true);
             };
+            let Some(f) = f.get(&node.0) else {
+                return Ok(false);
+            };
             let r = hidden.record(node)?;
-            Ok(node.0 == types[i + 1] && r.is_some_and(|r| self.holds(f, &r, true)))
+            Ok(r.is_some_and(|r| self.holds(f, &r, true)))
         };
         // The start: the one record a key names, what a search finds, or
         // the records of the start's type a filter (or none) selects, which
@@ -4490,29 +4549,45 @@ impl<'a> Reader<'a> {
         // over values the principal may not read; a named key's fields are
         // probed as a field key's are.
         let bound = |n: &str| names.iter().any(|b| b == n);
-        // A name over several types holds no field: a path that reads
-        // one is refused, naming the types.
-        // Its `key`, `_type` and `_depth` are the lake's columns, read
-        // against no type and never probed (`None`).
+        // A path under a name over several types reads a field every one
+        // of them declares alike, against each (`true`), and is refused
+        // otherwise, naming the types that differ. Its `key`, `_type` and
+        // `_depth` are the lake's columns, read against no type and never
+        // probed.
         let typed = |n: &str, f: FieldName| {
             let i = names.iter().position(|b| b == n).expect("a bound name");
             match &several[i] {
-                Some(_) if ["key", DEPTH, TYPE].contains(&f.as_str()) => Ok(None),
-                Some((at, all)) => Err(several_types(at, all)),
-                None => Ok(Some((types[i].clone(), f))),
+                Some(_) if ["key", DEPTH, TYPE].contains(&f.as_str()) => Ok(Vec::new()),
+                Some((at, all)) => {
+                    self.alike(at, all, &f)?;
+                    Ok(all.iter().map(|t| (t.clone(), f.clone(), true)).collect())
+                }
+                None => Ok(vec![(types[i].clone(), f, false)]),
             }
         };
         let path = |name: &str| {
             let (n, f) = aggregate::row_path(name, &bound).map_err(invalid)?;
             typed(&n, f)
         };
-        let ordered: Vec<Option<_>> = (p.order_by.iter())
+        let ordered: Vec<Vec<_>> = (p.order_by.iter())
             .map(|o| path(o.field.as_str()))
             .collect::<Result<_>>()?;
-        let mut paths: Vec<(TypeName, FieldName)> = ordered.into_iter().flatten().collect();
+        let mut paths: Vec<Read> = ordered.into_iter().flatten().collect();
         let orders = paths.len();
-        let open: Vec<bool> = several.iter().map(Option::is_some).collect();
-        let row = self.row_shape(&names, &types, &open);
+        let shared: Vec<Shared> = (several.iter())
+            .map(|s| s.as_ref().map(|(_, all)| self.shared(all)))
+            .collect();
+        // An open name's fields are shaped from a type it reaches: the
+        // first hop's may not be one over a range.
+        let shaped: Vec<TypeName> = (types.iter().zip(&several))
+            .map(|(t, s)| {
+                s.as_ref()
+                    .and_then(|(_, all)| all.first())
+                    .unwrap_or(t)
+                    .clone()
+            })
+            .collect();
+        let row = self.row_shape(&names, &shaped, &shared);
         let mut over_rows = None;
         if let Projection::Aggregate(a) = &p.project {
             let (a, read) = aggregate::over_rows(a, &bound).map_err(invalid)?;
@@ -4527,7 +4602,7 @@ impl<'a> Reader<'a> {
         // out of the row, as an absent value is.
         if let Projection::Rows { fields } = &p.project {
             let read = fields.iter().map(|f| path(f)).collect::<Result<Vec<_>>>()?;
-            for (t, f) in read.into_iter().flatten() {
+            for (t, f, _) in read.into_iter().flatten() {
                 let decl = self.shape.ontology.ty(&t)?;
                 if !self.lakes(decl, &f) {
                     rights::check_known(self.who, decl, [&f])?;
@@ -4565,14 +4640,9 @@ impl<'a> Reader<'a> {
         });
         let row = |start: &graph::Node, binding: &[graph::Reached]| -> Result<_> {
             let mut row = BTreeMap::new();
-            self.bind(
-                &mut row,
-                &names[0],
-                (start, 0, false),
-                hidden.record(start)?,
-            )?;
-            for ((r, name), open) in binding.iter().zip(&names[1..]).zip(&several[1..]) {
-                let at = (&r.node, r.depth, open.is_some());
+            self.bind(&mut row, &names[0], (start, 0, None), hidden.record(start)?)?;
+            for ((r, name), open) in binding.iter().zip(&names[1..]).zip(&shared[1..]) {
+                let at = (&r.node, r.depth, open.as_ref());
                 self.bind(&mut row, name, at, hidden.record(&r.node)?)?;
             }
             if let Projection::Rows { fields } = &p.project
@@ -4799,14 +4869,16 @@ impl<'a> Reader<'a> {
     /// one (024, 006). A row's `<name>.key` and `<name>._depth` are the
     /// lake's columns and probe nothing.
     /// The first `ordered` paths are orders, and an order by a field
-    /// computed at the read is refused once the field is probed.
-    fn probe_rows(&self, paths: &[(TypeName, FieldName)], ordered: usize) -> Result<()> {
-        for (i, (ty, field)) in paths.iter().enumerate() {
+    /// computed at the read is refused once the field is probed. A path
+    /// read over several types (`wide`) is refused naming its type.
+    fn probe_rows(&self, paths: &[Read], ordered: usize) -> Result<()> {
+        for (i, (ty, field, wide)) in paths.iter().enumerate() {
             let decl = self.shape.ontology.ty(ty)?;
             if self.lakes(decl, field) {
                 continue;
             }
-            rights::check_probe(self.who, decl, [field])?;
+            let probed = rights::check_probe(self.who, decl, [field]);
+            probed.map_err(|e| if *wide { of_type(ty, e) } else { e })?;
             if i < ordered {
                 Self::steady_order(decl, field.as_str())?;
             }
@@ -4819,6 +4891,56 @@ impl<'a> Reader<'a> {
     /// extended), and its key where [`Self::keyed`]. It is never probed.
     fn lakes(&self, decl: &TypeDecl, field: &FieldName) -> bool {
         [DEPTH, TYPE].contains(&field.as_str()) || self.keyed(decl, field)
+    }
+
+    /// How the types a step reaches declare `field`, where not alike: one
+    /// its reader may not know of is missing, as on a type without it
+    /// (024), and one whose field type (storage kind, value type, target
+    /// or dimensions) is not the one most of them declare, the first
+    /// type's by name on a tie, is said otherwise. None where all declare it alike.
+    fn unlike(&self, all: &BTreeSet<TypeName>, field: &FieldName) -> Option<Unlike> {
+        let declared = |t: &TypeName| {
+            let decl = self.shape.ontology.ty(t).ok()?;
+            let f = decl.fields.iter().find(|f| &f.name == field)?;
+            self.knows(decl, field).then_some(&f.ty)
+        };
+        let each: Vec<_> = all.iter().map(|t| (t, declared(t))).collect();
+        let count = |d: &FieldType| each.iter().filter(|(_, e)| *e == Some(d)).count();
+        let most = (each.iter().rev().filter_map(|(_, d)| *d)).max_by_key(|d| count(d));
+        let (mut missing, mut other) = (Vec::new(), Vec::new());
+        for (t, d) in &each {
+            match d {
+                None => missing.push(*t),
+                Some(d) if Some(*d) != most => other.push(*t),
+                Some(_) => {}
+            }
+        }
+        let missing: Names = missing.into_iter().collect();
+        let other: Names = other.into_iter().collect();
+        (!missing.0.is_empty() || !other.0.is_empty()).then(|| (field.clone(), missing, other))
+    }
+
+    /// Refuse a field a step over `all`, at `at`, reads and they do not
+    /// all declare alike ([`Self::unlike`]).
+    fn alike(&self, at: &Place, all: &BTreeSet<TypeName>, field: &FieldName) -> Result<()> {
+        match self.unlike(all, field) {
+            Some(u) => Err(several_types(at, all, Some(u))),
+            None => Ok(()),
+        }
+    }
+
+    /// The fields a name over the types `all` holds: those every one of
+    /// them declares alike, but `key`, `_depth` and `_type`, which are the
+    /// lake's columns there.
+    fn shared(&self, all: &BTreeSet<TypeName>) -> BTreeSet<FieldName> {
+        let Some(decl) = all.first().and_then(|t| self.shape.ontology.ty(t).ok()) else {
+            return BTreeSet::new();
+        };
+        let lakes = |f: &FieldName| ["key", DEPTH, TYPE].contains(&f.as_str());
+        (decl.fields.iter().map(|f| &f.name))
+            .filter(|f| !lakes(f) && self.unlike(all, f).is_none())
+            .cloned()
+            .collect()
     }
 
     /// Whether a row's `<name>.<field>` is its record's key: the field is
@@ -5013,10 +5135,10 @@ impl<'a> Reader<'a> {
 
     /// The type a step reaches, one of `reached`: the one it names as its
     /// `type`, or the only one. None where it reaches several and names
-    /// none, or reaches none. A step that reaches several types and reads
-    /// a `where`, or that must reach `one` (a row binds its records, or a
-    /// chain's next step is judged from it), names its `type`; a `type` it
-    /// does not reach is refused, naming every type it does.
+    /// none, or reaches none. A step that reaches several types and must
+    /// reach `one` (a row binds its records, or a chain's next step is
+    /// judged from it) names its `type`; a `type` it does not reach is
+    /// refused, naming every type it does.
     fn neighbour_target(
         &self,
         at: &Place,
@@ -5035,8 +5157,8 @@ impl<'a> Reader<'a> {
                 Case::StepReaches { reached, ty, also }
             }
             None if reached.len() < 2 => return Ok(Some(first.clone())),
-            None if step.filter.is_none() && !one => return Ok(None),
-            None => return Err(several_types(at, reached)),
+            None if !one => return Ok(None),
+            None => return Err(several_types(at, reached, None)),
         };
         Err(invalid(Said::from(said).within(at.clone())))
     }
@@ -5077,8 +5199,8 @@ impl<'a> Reader<'a> {
     /// path, `<name>.<field>`, and `<name>.key`, the record's key where no
     /// such field is named `key`. A field named `_depth` or `_type` is left
     /// out: under a bound name that path is the lake's column. A name over
-    /// several types holds no field.
-    fn row_shape(&self, names: &[String], types: &[TypeName], open: &[bool]) -> TypeDecl {
+    /// several types holds the fields they share alone.
+    fn row_shape(&self, names: &[String], types: &[TypeName], open: &[Shared]) -> TypeDecl {
         let mut row = TypeDecl::default();
         for ((name, ty), open) in names.iter().zip(types).zip(open) {
             let Ok(t) = self.shape.ontology.ty(ty) else {
@@ -5086,8 +5208,9 @@ impl<'a> Reader<'a> {
             };
             let at = |f: &str| FieldName::from(format!("{name}.{f}"));
             let lakes = |f: &FieldName| [DEPTH, TYPE].contains(&f.as_str());
-            let known =
-                (t.fields.iter()).filter(|f| !open && self.knows(t, &f.name) && !lakes(&f.name));
+            let held = |f: &FieldName| open.as_ref().is_none_or(|s| s.contains(f));
+            let known = (t.fields.iter())
+                .filter(|f| held(&f.name) && self.knows(t, &f.name) && !lakes(&f.name));
             let fields: Vec<_> = known
                 .map(|f| lakelands_api::ontology::FieldDecl {
                     name: at(f.name.as_str()),
@@ -5112,23 +5235,24 @@ impl<'a> Reader<'a> {
     /// is the hops its step took to reach it, 0 for the start, and
     /// `<name>._type` its type, whatever field of those names a lake
     /// written before the rule holds. A name over several types (`open`)
-    /// binds the key, the type and the depth alone.
+    /// binds the key, the type, the depth and the fields its types share.
     fn bind(
         &self,
         row: &mut BTreeMap<String, Value>,
         name: &str,
-        (node, depth, open): (&graph::Node, u32, bool),
+        (node, depth, open): (&graph::Node, u32, Option<&BTreeSet<FieldName>>),
         rec: Option<StoredRecord>,
     ) -> Result<()> {
         let decl = self.shape.ontology.ty(&node.0)?;
         if let Some(rec) = rec.and_then(|r| rights::visible(self.sight, decl, &r, false)) {
             let decl = self.shape.ontology.ty(&node.0)?;
-            let key = match open || self.keyed(decl, &FieldName::from("key")) {
+            let key = match open.is_some() || self.keyed(decl, &FieldName::from("key")) {
                 true => Value::String(node.1.to_string()),
                 false => Value::Null,
             };
             row.insert(format!("{name}.key"), key);
-            for (f, v) in rec.fields.into_iter().filter(|_| !open) {
+            let held = |f: &FieldName| open.is_none_or(|s| s.contains(f));
+            for (f, v) in rec.fields.into_iter().filter(|(f, _)| held(f)) {
                 row.insert(format!("{name}.{f}"), v);
             }
             row.insert(format!("{name}.{DEPTH}"), Value::from(depth));

@@ -43,7 +43,7 @@ check!(
 
 check!(
     GRAPH_STEPS = a_graph_honours_each_steps_direction_depth_and_where,
-    "018, extended: a graph whose steps all start at depth 0 walks each relation in its own step's direction to its own `max`, keeping and walking on from a record only where its step's `where`, read against the type its relation reaches wherever it is declared, holds, and a step that reaches several types and reads a `where`, or one of whose fields rows read (lakelands#680, lakelands#990), names its `type`; any other is a chain walked as rows walk it, answered as the start, what rows bind, the records between and the links walked; an empty range and a chain's undeclared relation are refused; over a reference field and over link records alike"
+    "018, extended: a graph whose steps all start at depth 0 walks each relation in its own step's direction to its own `max`, keeping and walking on from a record only where its step's `where`, read against the type its relation reaches wherever it is declared, holds; any other is a chain walked as rows walk it, answered as the start, what rows bind, the records between and the links walked; an empty range and a chain's undeclared relation are refused; over a reference field and over link records alike"
 );
 
 check!(
@@ -494,8 +494,6 @@ async fn a_graph_honours_each_steps_direction_depth_and_where(store: Store) -> H
         "several starts walk a chain as one; it answered {nodes:?} {edges:?}"
     );
     let of = |min, max| st("of", In, min, max);
-    let mut both = st("owned_by", Walk::Both, 0, 1);
-    both.filter = Some("name = 'p1'".into());
     let cases = vec![
         (
             graph_of("hub", Some("h1"), vec![of(2, 1)]),
@@ -504,21 +502,6 @@ async fn a_graph_honours_each_steps_direction_depth_and_where(store: Store) -> H
         (
             graph_of("hub", Some("h1"), vec![of(1, 1), of(1, 1)]),
             "a chain's undeclared step",
-        ),
-        (
-            graph_of("spoke", Some("s1"), vec![both]),
-            "a step that reaches spokes and people, with a `where` and no `type`",
-        ),
-        (
-            pattern(
-                "spoke",
-                Some("s1"),
-                vec![st("owned_by", Walk::Both, 0, 1)],
-                Projection::Rows {
-                    fields: vec!["owned_by.name".into()],
-                },
-            ),
-            "rows reading a field of a step that reaches spokes and people, with no `type`",
         ),
     ];
     refused(cat.as_ref(), own, cases).await
