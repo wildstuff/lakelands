@@ -1763,7 +1763,13 @@ pub struct ForgetReport {
     /// The events the act's rebuild folds again: the log's length.
     pub events: u64,
     /// How long the act is expected to hold the writer's lock, in
-    /// milliseconds: `events` at the engine's measured rebuild rate.
+    /// milliseconds: an estimate, `events` at the rate the last rebuild
+    /// this handle ran folded (its own, an act's, or its open's), or
+    /// before any at the engine's stated rate, and the time the last
+    /// reclaim it ran took, where it ran one: a handle that has not
+    /// reclaimed counts no reclaim; and the time the preflight's own walk
+    /// of the log took, which the act walks again. The fold's cost is the ontology's and
+    /// a reclaim's the projection's, so the act may still differ from it.
     pub expected_ms: u64,
     /// The head after the act, or the head the preflight read.
     pub position: Position,
@@ -1889,7 +1895,9 @@ pub struct RemoveReport {
     /// The events the act's rebuild folds again: the log's length.
     pub log_events: u64,
     /// How long the act is expected to hold the writer's lock, in
-    /// milliseconds: `log_events` at the engine's measured rebuild rate.
+    /// milliseconds: an estimate, `log_events` at the rate the last
+    /// rebuild this handle ran folded, the last reclaim's time and the
+    /// preflight's own walk, as [`ForgetReport::expected_ms`].
     pub expected_ms: u64,
     /// The head after the act, or the head the preflight read.
     pub position: Position,
