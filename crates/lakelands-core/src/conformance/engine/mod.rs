@@ -90,6 +90,25 @@ pub trait EngineHarness: Send + Sync {
     fn mark_layout(&self, _lake: &LakeId, _layout: Option<u64>) -> bool {
         false
     }
+
+    /// Leave the projection of the lake `lake` names as a writer that keeps
+    /// no chosen field (a binary before them) would after folding one more
+    /// commit: every row of the order index holding one sort key, as rows
+    /// its fold left behind, and the position folded through and every
+    /// `sorted.<type>` mark moved on by one. `false` for an engine whose
+    /// projection no other build opens.
+    fn fold_as_before(&self, _lake: &LakeId) -> bool {
+        false
+    }
+
+    /// Leave the projection of the lake `lake` names as a writer that keeps
+    /// no chosen field would after rebuilding it through the same position:
+    /// its order index emptied and every mark kept. `false` for an engine
+    /// whose rebuild drops its marks with its tables, or whose projection no
+    /// other build opens.
+    fn rebuild_as_before(&self, _lake: &LakeId) -> bool {
+        false
+    }
 }
 
 /// One promise of the engine seam.
@@ -159,6 +178,8 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::FIELD_ORDER_WALK,
     reads::SETTINGS_ORDERED,
     reads::SORTED_PAGE,
+    reads::CHOSEN_ORDER,
+    reads::CHOSEN_LEFT_BEHIND,
     reads::SORTED_PAGE_PINNED,
     reads::FILTER_AS_EVALUATOR,
     reads::EQUAL_IS_IDENTITY,

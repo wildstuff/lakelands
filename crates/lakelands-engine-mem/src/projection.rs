@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::engine::{About, Applied, Declared};
+use lakelands_api::engine::{About, Applied, Choose, Chosen, Declared};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{
@@ -161,6 +161,10 @@ pub(crate) struct Projection {
     /// The order index of the head (`engines::order_rows`): per type and
     /// declared field, the head records holding it, by sort key and key.
     pub(crate) sorted: BTreeMap<(TypeName, FieldName), SortedRows>,
+    /// The fields of each type's order index the lake chose, kept beside
+    /// the log (`Chosen`): the fold keeps their rows, a read takes only
+    /// the ones kept.
+    chosen: BTreeMap<TypeName, Chosen>,
     /// Each head record's rows in `sorted`, to take them out again.
     sorted_rows: BTreeMap<(TypeName, RecordKey), RecordRows>,
     /// The ends of the head's link records (`sys.link.*`): per link type,
@@ -248,6 +252,12 @@ impl Projection {
             }
             self.apply(put);
         }
+        // A host's setting that names a field wins over the lake's choice.
+        for ty in &types {
+            if !self.named_fields(ty).is_empty() {
+                self.chosen.remove(ty);
+            }
+        }
         // The order index follows the head: every record whose latest
         // state the transaction put, every record of a type it declared
         // again, and of a type and its kept name whose `sort_index.<type>`
@@ -318,11 +328,11 @@ impl Projection {
         Some(engines::Changed { keys, states })
     }
 
-    /// The fields of `ty` whose order index the lake keeps: those its
-    /// `sort_index.<type>` setting at the head names that its declaration
+    /// The fields of `ty` whose order index its `sort_index.<type>`
+    /// setting at the head names that its declaration
     /// at the head (a kept name's view's) declares with a kind the index
     /// keeps.
-    pub(crate) fn sorted_fields(&self, ty: &TypeName) -> Vec<FieldName> {
+    fn named_fields(&self, ty: &TypeName) -> Vec<FieldName> {
         let declared = lakelands_core::engines::kept_view(ty).unwrap_or_else(|| ty.clone());
         let Some(decl) = self.type_at(&declared, Some(Position(u64::MAX))) else {
             return Vec::new();
@@ -339,6 +349,87 @@ impl Projection {
             decl,
             setting.and_then(lakelands_core::engines::setting_value),
         )
+    }
+
+    /// The fields the fold keeps rows of: those the setting names, else
+    /// those the lake chose, the ones being built too.
+    pub(crate) fn sorted_fields(&self, ty: &TypeName) -> Vec<FieldName> {
+        self.order_fields(ty, true)
+    }
+
+    /// The fields a read takes the order index for.
+    pub(crate) fn read_fields(&self, ty: &TypeName) -> Vec<FieldName> {
+        self.order_fields(ty, false)
+    }
+
+    fn order_fields(&self, ty: &TypeName, building: bool) -> Vec<FieldName> {
+        let named = self.named_fields(ty);
+        let Some(chosen) = self.chosen.get(ty).filter(|_| named.is_empty()) else {
+            return named;
+        };
+        let Some(decl) = self.type_at(ty, Some(Position(u64::MAX))) else {
+            return named;
+        };
+        lakelands_core::engines::order_fields(ty, decl, None, chosen, building)
+    }
+
+    /// The fields of `ty`'s order index the lake chose.
+    pub(crate) fn chosen(&self, ty: &TypeName) -> Chosen {
+        self.chosen.get(ty).cloned().unwrap_or_default()
+    }
+
+    /// One step of choosing an order index (`ProjectionStore::choose_order`).
+    pub(crate) fn choose(&mut self, ty: &TypeName, step: &Choose) -> Option<RecordKey> {
+        // A type the host's setting names fields of, a view, an undeclared
+        // type and a field it does not hold with a kind the index keeps are
+        // no step's, as on every engine.
+        let decl = self.type_at(ty, Some(Position(u64::MAX)))?;
+        let sortable = |f: &FieldName| {
+            (decl.fields.iter()).any(|d| d.name == *f && lakelands_api::seam::sortable(&d.ty.kind))
+        };
+        if !self.named_fields(ty).is_empty()
+            || decl.view.is_some()
+            || matches!(step, Choose::Start(f) if !sortable(f))
+        {
+            return None;
+        }
+        let mut chosen = self.chosen.get(ty).cloned().unwrap_or_default();
+        if !lakelands_core::engines::chosen_after(&mut chosen, step) {
+            return None;
+        }
+        if let Choose::Fill { after, limit, .. } = step {
+            let from = after.clone().unwrap_or_else(|| RecordKey::from(""));
+            let page: Vec<RecordKey> = (self.records)
+                .range((ty.clone(), from)..)
+                .take_while(|((t, _), _)| t == ty)
+                .map(|((_, k), _)| k.clone())
+                .filter(|k| after.as_ref() != Some(k))
+                .take(*limit as usize)
+                .collect();
+            for key in &page {
+                self.index(ty, key);
+            }
+            return page
+                .last()
+                .cloned()
+                .filter(|_| page.len() == *limit as usize);
+        }
+        match chosen == Chosen::default() {
+            true => self.chosen.remove(ty),
+            false => self.chosen.insert(ty.clone(), chosen),
+        };
+        // A field dropped takes its rows out of every record's.
+        if matches!(step, Choose::Drop(_)) {
+            let keys: Vec<RecordKey> = (self.records)
+                .range((ty.clone(), RecordKey::from(""))..)
+                .take_while(|((t, _), _)| t == ty)
+                .map(|((_, k), _)| k.clone())
+                .collect();
+            for key in &keys {
+                self.index(ty, key);
+            }
+        }
+        None
     }
 
     /// Rewrite one record's rows in the head indexes from its latest

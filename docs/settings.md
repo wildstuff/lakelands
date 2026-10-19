@@ -127,6 +127,56 @@ The largest `top` a search's `rerank` may ask for; a larger one is refused, nami
 - **Takes:** a count, 1 at least.
 - **Default:** `100`.
 
+### `limits.choose_order_index`
+
+Whether the lake chooses an order index itself, for a field a type is ordered by whole at least `limits.order_after_pages` times within `limits.order_window_secs`, beside what `sort_index` names; the host's own `sort_index` for a type always wins. Off, only what the host sets is indexed.
+
+- **Takes:** `true` or `false`.
+- **Default:** `true`.
+- **Cost:** each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` (2 by default) bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records.
+
+### `limits.order_after_pages`
+
+How many pages ordered whole by one field of a type, within `limits.order_window_secs`, make the lake choose an index for it.
+
+- **Takes:** a count.
+- **Default:** `3`.
+
+### `limits.order_window_secs`
+
+The window the pages that make the lake choose an index are counted in.
+
+- **Takes:** seconds.
+- **Default:** `600`.
+
+### `limits.order_min_records`
+
+The fewest live records a type holds for the lake to choose an index of its fields.
+
+- **Takes:** a count.
+- **Default:** `2000`.
+
+### `limits.order_max_fields`
+
+The most fields of one type the lake chooses an index for.
+
+- **Takes:** a count.
+- **Default:** `2`.
+
+### `limits.order_unused_secs`
+
+How long a chosen index may go unused, in seconds of the writer's life, before the lake drops it.
+
+- **Takes:** seconds.
+- **Default:** `604800`.
+
+### `limits.order_chunk`
+
+The records one chunk of a chosen index's build writes while it holds the writer; a write waits for a chunk, never for the build.
+
+- **Takes:** a count; 0 is taken as 1.
+- **Default:** `10000`.
+
 ### `engine.tuning.writer_cache_kb`
 
 SQLite: the writer connection's page cache.

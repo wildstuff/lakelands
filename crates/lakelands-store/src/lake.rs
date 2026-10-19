@@ -225,6 +225,9 @@ pub struct Lake {
     /// lake keeps no order index for, since it was opened here, and the
     /// microseconds they took (lakelands#1029).
     pub(crate) sorted_whole: Mutex<BTreeMap<(TypeName, FieldName), (u64, u64)>>,
+    /// What the lake weighs of those pages to choose an order index
+    /// itself, and what it chose (`crate::choose`).
+    pub(crate) choosing: Mutex<crate::choose::Choosing>,
     writer: Mutex<Writer>,
     /// The tip's position and whether the lease is held, as of the last
     /// change the writer made: read without the writer's lock, which an
@@ -693,6 +696,7 @@ impl Lake {
             calls: tokio::sync::Mutex::new(()),
             waiting: Mutex::new(BTreeMap::new()),
             sorted_whole: Mutex::new(BTreeMap::new()),
+            choosing: Mutex::default(),
             writer: Mutex::new(Writer {
                 lease,
                 tip: None,
@@ -834,7 +838,7 @@ impl Lake {
     /// lease and failed after it goes on with that lease. Where another
     /// holds the lease it is refused with the lease's situation, appends
     /// nothing, and stays lost.
-    fn regain(&self, w: &mut Writer) -> Result<()> {
+    pub(crate) fn regain(&self, w: &mut Writer) -> Result<()> {
         if !w.lost {
             return Ok(());
         }
@@ -3112,7 +3116,7 @@ fn no_lease() -> Error {
 }
 
 /// What a seal or a compaction is answered on a handle opened read-only.
-fn read_only() -> Error {
+pub(crate) fn read_only() -> Error {
     let (lake, leased_elsewhere) = (None, false);
     Error::unavailable(Situation::ReadOnly {
         lake,

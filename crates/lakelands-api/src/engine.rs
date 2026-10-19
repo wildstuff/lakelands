@@ -267,6 +267,54 @@ pub trait ProjectionStore: Send + Sync {
     /// the writer's lock. A compact that fails leaves every answer as it
     /// was (`docs/decisions/040-maintenance-never-changes-an-answer.md`).
     fn compact(&self) -> Result<Reclaimed>;
+
+    /// One step of keeping an order index the lake chose beside the log
+    /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`). Called
+    /// outside a transaction, under the writer's lock, and it changes no
+    /// answer: a reader takes a field only once its step is [`Choose::Keep`].
+    /// A step that names a field the type does not hold as the step needs,
+    /// or a type that has a `sort_index.<type>` setting at the head, does
+    /// nothing. Answers the last key a [`Choose::Fill`] wrote, none once the
+    /// type is filled. An engine that keeps no order index refuses as
+    /// unbound, as this default does.
+    fn choose_order(&self, ty: &TypeName, step: &Choose) -> Result<Option<RecordKey>> {
+        let _ = (ty, step);
+        Err(crate::Error::unbound(crate::error::Seam::Operation {
+            op: "choose_order".to_owned(),
+        }))
+    }
+}
+
+/// A step of building or dropping an order index the lake chose.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Choose {
+    /// Start keeping the field's rows as records are put. Reads do not use
+    /// the field yet.
+    Start(FieldName),
+    /// Write the field's rows of the head records after `after`, at most
+    /// `limit` of them, in key order.
+    Fill {
+        /// The field.
+        field: FieldName,
+        /// The key the last chunk ended at; none for the first.
+        after: Option<RecordKey>,
+        /// The most records the chunk writes.
+        limit: u32,
+    },
+    /// The field's rows are whole: reads may use the index for it.
+    Keep(FieldName),
+    /// Stop keeping the field, and delete its rows.
+    Drop(FieldName),
+}
+
+/// The fields of a type's order index the lake chose, kept in the
+/// projection and never in the log.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Chosen {
+    /// The fields reads use the index for.
+    pub kept: Vec<FieldName>,
+    /// The fields being built: the fold keeps their rows, no read uses them.
+    pub building: Vec<FieldName>,
 }
 
 /// What a compact of the projection measured: its storage in bytes before
@@ -426,6 +474,13 @@ pub trait ProjectionView {
     fn replaced(&self, from: Position, to: Position) -> Result<Option<Vec<Declared>>> {
         let _ = (from, to);
         Ok(None)
+    }
+
+    /// The fields of `ty`'s order index the lake chose, at the head: none
+    /// from an engine that keeps no such index.
+    fn chosen(&self, ty: &TypeName) -> Result<Chosen> {
+        let _ = ty;
+        Ok(Chosen::default())
     }
 
     /// One record, retired and restricted ones included.

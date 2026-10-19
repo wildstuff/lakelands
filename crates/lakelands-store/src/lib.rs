@@ -18,6 +18,7 @@ mod aging;
 #[doc(hidden)]
 pub mod backed;
 mod backing;
+mod choose;
 mod declare;
 mod doors;
 mod exec;

@@ -13,7 +13,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use lakelands_api::engine::{
-    Applied, CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
+    Applied, CanonicalEvent, Choose, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
     ProjectionView, Ranked, Rankings, Reclaimed, VectorIndex,
 };
 use lakelands_api::error::Result;
@@ -486,7 +486,7 @@ impl ProjectionStore for SqliteLake {
                 projection::index_older(conn, ty, *at)?;
             }
             projection::set_folded(conn, through)?;
-            projection::mark_sorted(conn, through)?;
+            projection::mark_sorted(conn, folded, through)?;
             conn.execute_batch("COMMIT").map_err(sql)?;
             Ok(heads)
         })?;
@@ -651,6 +651,19 @@ impl ProjectionStore for SqliteLake {
                 before: Some(before),
                 after: Some(self.size()?),
             })
+        })
+    }
+
+    /// One step of a chosen order index, in a transaction of its own
+    /// (`projection::choose_order`), outside the fold's.
+    fn choose_order(&self, ty: &TypeName, step: &Choose) -> Result<Option<RecordKey>> {
+        let transaction = lock(&self.transaction);
+        if transaction.is_some() {
+            return Err(invalid(Case::CompactInTransaction));
+        }
+        self.write(|conn| {
+            abandon(conn)?;
+            projection::choose_order(conn, ty, step)
         })
     }
 }

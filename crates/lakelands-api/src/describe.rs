@@ -337,6 +337,14 @@ pub struct TypeLifecycle {
     /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sorted: Vec<FieldName>,
+    /// The fields the lake chose an order index for itself, from the pages
+    /// it had to sort whole, beside `sorted` and never in it: kept by the
+    /// lake and not in its log, so a feed, a mirror and an export carry
+    /// none. Told to a holder of `schema` who reads the field, as
+    /// `sorted_whole` is, and only at the head
+    /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chosen: Vec<FieldName>,
     /// The fields a `find` ordered first by and the lake answered by
     /// sorting the type, since it was opened in the process that answers:
     /// the pages and the time they cost. Each is one `sort_index.<type>`

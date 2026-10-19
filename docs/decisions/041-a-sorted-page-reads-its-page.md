@@ -69,33 +69,116 @@ is full. A field not asked for is ordered by sorting the type.
   (`sorted`), so an agent can see which orders are cheap. The seams page
   gives the numbers, and what an index costs a write.
 
-### The lake tells what it sorted the type for; the host chooses
+### The lake chooses an order index from what is ordered by, beside its log, and the host's setting wins
 
-The lake does not choose an order index itself (lakelands#1029): one it
-chose would be a write to its own log decided by how it is read, which a
-host's feed, its mirrors and its exports would carry as no caller's. The
-host chooses, and the lake tells it what to choose from:
+**What changes no answer, the lake may keep beside the log; what it keeps
+there is learned from use and never logged.** An order index changes only
+what a page costs. A host's `sort_index.<type>` setting is the logged
+choice, with a history an auditor can read, and it wins; the lake's own
+choice is a cache decision of the kind every engine makes for itself, and
+a choice written to the log would be a write decided by how it is read,
+which a host's feed, its mirrors and its exports would carry as no
+caller's (lakelands#1029, lakelands#1131).
 
 - **What is counted.** Each `find` page ordered first, by value, by a
   scalar field of the type that `sort_index.<type>` does not name, is
   counted for that field with the time the read took, since the lake was
-  opened in the process that answers. An order by key, by `known_at` or
-  `seen_at`, a page of a view and an aggregate are not counted, and
-  neither is a page the index answered.
-- **Where it is told.** `describe_type`'s lifecycle names each counted
-  field in `sorted_whole`, with its pages and their time in
-  milliseconds, to a holder of `schema` who reads the field, the one who
-  can weigh `sort_index.<type>`, and never one it indexes. No other reader
-  is told it: the pages count every principal's reads, and the time grows
-  with the whole type, records held from a reader included. It reads no
-  value: a count of reads says what was asked, not what is stored. `lakelands serve` prints a line for each field whose count
-  grew, every ten minutes.
-- **What a host does with it.** `docs/hosting.md` gives a rule: name in
-  `sort_index.<type>` a field ordered by often enough, on a type large
-  enough, that a sort of every page costs more than a row more per
-  write. Each indexed field costs a write about 4 % on SQLite; at
-  100 000 records an unindexed page costs 0.6 s on SQLite and 1.0 s on
-  PostgreSQL, and the setting's rebuild about one to three such pages.
+  opened in the process that answers, and within a window. An order by
+  key, by `known_at` or `seen_at`, a page of a view and an aggregate are
+  not counted, and neither is a page the index answered. Only the
+  process that holds the writer acts on the count: a reader-only process
+  has no writer to build with, and its pages are not seen there.
+- **When a field is chosen.** Once `limits.order_after_pages` (3) pages
+  ordered by it came within `limits.order_window_secs` (10 minutes), on a
+  type holding at least `limits.order_min_records` (2 000) live records
+  and fewer than `limits.order_max_fields` (2) chosen fields, and with no
+  `sort_index.<type>` setting naming a field. At 2 000 records an
+  unindexed page costs about 15 ms on SQLite, so a build below that size
+  is noise either way. The switch `limits.choose_order_index` is on; off,
+  only what the host sets is built, as before. All of them are members of
+  the lake's `Location`, never of the environment.
+- **Where it is kept.** In the projection's meta row `chosen.<type>`,
+  beside the mark `sorted.<type>`: the field names kept, and those being
+  built. It is text in a column that takes text, so there is no layout
+  step and no format change. Nothing enters the log: a feed, a mirror,
+  an export and an import carry none of it, and a projection rebuilt
+  from the log starts with none and learns again from use.
+  - **A writer that keeps no chosen field.** A binary before this one
+    reads the lake (the format and the layout are the same), and its fold
+    leaves a chosen field's rows as they were while it moves every
+    `sorted.<type>` mark. So the chosen fields carry a mark of their own,
+    one for the lake: the meta row `chosen_through`, the position they
+    were kept through. The fold moves it to the position it folds
+    through only when it stands at the position folded from, so once
+    such a writer folded past it, it stays behind, even when a writer
+    that keeps them takes the lease back without opening the lake
+    again. Such a writer's rebuild on PostgreSQL drops the order index
+    and keeps `meta`, so there the mark holds only beside a twin row in
+    the order index, which every rebuild drops. A read takes a chosen
+    field, and `chosen` tells it, only while the mark holds; no step of
+    choosing is taken while it does not; and a writer's open drops the
+    lake's whole choice and its mark, after which the lake learns again
+    from use.
+- **How it is built: beside the writer, never inside one append.** In
+  steps the engine takes outside a transaction under the writer's lock
+  (`ProjectionStore::choose_order`): `Start` makes the fold keep the
+  field's rows for every record put from then on; `Fill` writes the rows
+  of the head records in chunks of `limits.order_chunk` (10 000) in key
+  order, each chunk a short write between appends; `Keep` marks the field
+  as one a read may take. Because the fold keeps a building field's rows
+  from `Start`, a record put during the build has its row and nothing is
+  caught up at the end. A reader takes a field only once it is kept and
+  the type's mark equals the head and `chosen_through` holds, so an
+  answer never depends on the build, and a page ordered by a field being built
+  sorts the type, as before.
+  - **A write waits for a chunk, not for the build.** The setting's own
+    write rebuilds the type's rows inside its append and stops every
+    write for the whole pass: about 0.85 s at 100 000 records on SQLite
+    and 2.4 s on PostgreSQL. A write sent while 100 000 records were
+    built waited at most 160 ms on SQLite and 320 ms on PostgreSQL, with
+    each chunk 140 to 190 ms on PostgreSQL. The builder's lock is not
+    fair, so it rests as long as each chunk held it; without that rest a
+    write sent during the build waited for nearly all of it in the runs
+    measured.
+- **The host's setting wins.** A `sort_index.<type>` setting naming a
+  field takes the lake's choice away in the same rebuild that writes the
+  setting's rows, and the lake chooses nothing for that type. Retiring
+  the setting hands the type back; the lake may then choose again.
+- **Dropped when unused.** A chosen field no page has been ordered by for
+  `limits.order_unused_secs` (7 days of the writer's life) is dropped by
+  the same steps, `Drop`, which deletes its rows. The first `find` a
+  writer answers in a process starts every field it finds chosen as just
+  used, and drops one left half built by a task that died, so a restart
+  never drops one early. A lake opened with the switch off drops there
+  every field an earlier writer chose. A drop deletes the field's rows in
+  one step under the writer's lock, which is not chunked as a build is.
+- **Where it is told.** `describe_type`'s lifecycle gains `chosen`, the
+  fields the lake chose and keeps, beside `sorted` (the fields the setting
+  names) and never in it. Like `sorted_whole` it is told to a holder of
+  `schema` who reads the field, and to no other reader: the choice says
+  what other readers ordered by. It is told at the head only, where the
+  index is kept. `sorted_whole` stops naming a field once the lake keeps
+  it or builds it. It reads no value.
+- **What it costs.** Each chosen field adds an index entry to every
+  state put: measured through the store (release builds, 20 000 and 100 000
+  records of 11 fields, two lakes side by side, one with the switch off),
+  a single upsert's median moved by about 0 to 2 % on SQLite and by 20
+  to 24 % on PostgreSQL, and a 10 000-record ingest by −2 to +22 % on
+  SQLite, 0 to +43 % on PostgreSQL and +9 % on the memory engine, the
+  runs' spread as wide as the change. `limits.order_max_fields`
+  bounds what the lake can add to a type's writes. Its default is 2,
+  because the switch is on by default and the cost of a lake that chooses
+  is the cost a host did not ask for, agreed with the operator: twice one
+  field's cost, not measured at two, a single upsert about 0 to 4 % on
+  SQLite and 40 to 50 % on PostgreSQL. A host that raises the bound to 4
+  pays four times one field's cost, not measured at four: a single upsert
+  about 0 to 8 % on SQLite and 80 to 100 % on PostgreSQL, a bulk ingest
+  up to about 90 % on SQLite (within the runs' spread at one field) and
+  up to about 170 % on PostgreSQL. A field ordered by on a large type pays its build back
+  on its first page or two, as a host's own setting does:
+  at 100 000 records a first page ordered by an unindexed field
+  cost 0.6 to 1.1 s on SQLite and 1.0 to 1.2 s on PostgreSQL, the whole
+  build 2.0 s and 3.5 s, and the page then 1.6 ms and 2.6 to 6.2 ms.
 
 ### An earlier position reads the head index and the keys changed since
 
@@ -571,6 +654,16 @@ an auditor can read, and the fold already reads settings. The store
 checks the setting's fields when it is written, so a name that could
 never be indexed is refused at the door rather than ignored.
 
+The lake's own choice is the other half of that reason. A host's setting
+is a decision an auditor should read; the lake's is a cache decision,
+learned from reads, and logging it would put writes no caller made into
+every feed, mirror and export, decided by read traffic. So it is kept in
+the projection, where an engine already keeps what changes no answer, and
+a rebuild from the log forgets it. It is built in chunks because a
+setting's rebuild holds the writer for the whole type, which a host
+chooses to pay in a quiet moment and the lake must not impose at a moment
+no caller picked.
+
 The index keeps only the kinds an agent sorts by, and only the start of
 long values: two texts that differ only after 32 bytes are rare enough
 that reading their run whole costs less than writing every long text
@@ -578,7 +671,9 @@ into two ordered indexes.
 
 The mark makes a stale index unused rather than wrong. A lake written in
 between by a binary that does not keep the index answers correctly at
-once, more slowly, until a writer rebuilds.
+once, more slowly, until a writer rebuilds. So does `chosen_through` for
+the fields the lake chose: a writer's open drops them, and the lake
+chooses again from use.
 
 ## What it is not
 
@@ -626,3 +721,7 @@ once, more slowly, until a writer rebuilds.
   list left out.
 - The order it cites stands in 025, where the rules of 029 moved
   (lakelands#817).
+- The lake chooses an order index itself from the pages it sorted whole,
+  keeps the choice beside its log and builds it in chunks beside the
+  writer, where only the host's setting asked for one; a host's setting
+  wins (lakelands#1131).

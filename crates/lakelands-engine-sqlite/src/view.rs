@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::engine::{Declared, Matched, ProjectionView, Scan};
+use lakelands_api::engine::{Chosen, Declared, Matched, ProjectionView, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, TypeName};
@@ -551,7 +551,7 @@ impl Read<'_> {
         if self.folded.is_none() || projection::sorted(self.conn, ty)? != self.folded {
             return Ok(Vec::new());
         }
-        projection::sorted_fields(self.conn, ty, decl)
+        projection::sorted_fields(self.conn, ty, decl, false)
     }
 
     /// The keys of `ty` with a state put or ended after the view's
@@ -801,6 +801,10 @@ impl Read<'_> {
 impl ProjectionView for SqliteView<'_> {
     fn position(&self) -> Option<Position> {
         self.at
+    }
+
+    fn chosen(&self, ty: &TypeName) -> Result<Chosen> {
+        self.read(Chosen::default(), |r| projection::chosen_kept(r.conn, ty))
     }
 
     fn declarations(&self) -> Result<Vec<Declared>> {
