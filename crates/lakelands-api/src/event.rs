@@ -501,7 +501,8 @@ pub enum ChangeKind {
     Ingested,
     /// A retirement, asked for or accepted, or a migration's of a link.
     Retired,
-    /// A retirement of a record a forgotten source alone brought in.
+    /// A retirement of a record a forgotten source made and alone brought
+    /// in.
     Forgotten,
     /// A retirement of a record a purged source brought in.
     Purged,

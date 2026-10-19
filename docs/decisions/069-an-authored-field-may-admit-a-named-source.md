@@ -42,9 +42,9 @@ writes: `origin: source`, the source, the writer, the delivery. Nothing
 new marks it. `purge_source`, `remove_values` and `forget_source` read
 that provenance, so they take these values as they take any of the
 source's. Forgetting erases only values of an `erasable` field, which
-an authored field never is (058): it retires the rows the source alone
-brought, and leaves its values in a row another hand co-owns, which
-`remove_values` takes.
+an authored field never is (058): it retires the rows the source made
+and alone brought, and leaves its values in a row another hand made or
+co-owns, which `remove_values` takes.
 
 ### An admitted source writes only where no other hand's value stands
 
@@ -95,16 +95,13 @@ co-owned while a value of the source remains in it.
   keeps the author's, and retires a record the source made that is left
   with nothing of another hand. This is the host's act for example rows
   that people may have edited.
-- A record an author made is never retired by `remove_values`, even
-  where the author's only value is its key: the act erases the
-  source's values there and keeps the record. The purge's preflight
-  refuses such a record as co-owned where the author wrote its key or
-  a field without an `initial`. Before 069, `remove_values` retired it,
-  since a key field co-owns nothing there; 065 now says so.
-- One gap stays, 039's: a record whose author wrote only fields that
-  declare `initial` co-owns nothing, so the purge and forgetting retire
-  it once the source filled one of its empty fields, while
-  `remove_values` keeps it.
+- A record an author made is never retired by taking the source back,
+  even where the author's only value is its key or a field that
+  declares `initial`. `remove_values` erases the source's values there
+  and keeps the record; the purge and its preflight refuse it as
+  co-owned; forgetting keeps it. All three read who made it at its
+  `made` position (039). Before 069, `remove_values` retired it, since a
+  key field co-owns nothing there; 065 now says so.
 - Once the author has written over every value of the source, the row
   is the author's. The purge passes it over, as 039 says, and so does
   `remove_values`.
@@ -168,7 +165,10 @@ The checks that would pin it:
    edited in part refuses the purge whole, and `remove_values` takes the
    source's values from it and keeps the author's. A row an author
    wrote over whole is passed over by both, and so is a record an
-   author made.
+   author made. An author's record holding a value of a field with an
+   `initial` alone, one of whose empty fields the source filled,
+   refuses the purge; `remove_values` erases the source's value and
+   keeps it.
 5. Closing refuses the source from its position on. The rows written
    before keep their values and provenance, and the source's purge
    still takes them. `describe` as of before the close shows the
@@ -178,8 +178,10 @@ The checks that would pin it:
    author made holding its key alone takes the source's value in an
    empty field; the purge refuses it, and `remove_values` erases the
    value and keeps the record.
-7. Forgetting the source retires the rows it alone brought, and keeps
-   a co-owned row whole, the source's value included.
+7. Forgetting the source retires the rows it made and alone brought,
+   and keeps a co-owned row whole, the source's value included, and an
+   author's record holding a value of a field with an `initial` alone,
+   one of whose empty fields the source filled.
 
 ## Why
 
@@ -235,8 +237,8 @@ where the need is one named source.
   close it for both, and it is a question of its own.
 - It does not change `shared`: the later position still wins there.
 - It does not change what the purge, `remove_values` or forgetting
-  select, or what the preflight reports. It changes what `remove_values`
-  retires: only a record the source made (above).
+  select. It changes what they may retire: only a record the source
+  made; the purge is refused on any other (above, lakelands#1278).
 - It does not let a source write a field an author or another source
   wrote, and it does not let an author's write carry a source's name
   (lakelands#611 keeps that out).

@@ -1993,7 +1993,7 @@ fn forget_erases_a_sources_values_and_prints_what_it_did() {
             bare.err
         );
         let seen = sh.run(&["forget", "--source", "crm", "--preflight"]);
-        let said = "contact.email: would erase 1 value(s)\ncontact: retires 1 record(s) crm alone brought\ncrm: preflight at position ";
+        let said = "contact.email: would erase 1 value(s)\ncontact: retires 1 record(s) crm made and alone brought\ncrm: preflight at position ";
         assert!(
             seen.out.starts_with(said),
             "{backend:?}: {} {}",
@@ -2014,7 +2014,7 @@ fn forget_erases_a_sources_values_and_prints_what_it_did() {
         let done = sh.run(&["forget", "--source", "crm", "--report", id]);
         assert!(
             done.code == 0
-                && done.out.starts_with("contact.email: erased 1 value(s)\ncontact: retires 1 record(s) crm alone brought\nforgot crm through position "),
+                && done.out.starts_with("contact.email: erased 1 value(s)\ncontact: retires 1 record(s) crm made and alone brought\nforgot crm through position "),
             "{backend:?}: {} {}",
             done.out,
             done.err

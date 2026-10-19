@@ -2287,8 +2287,8 @@ yet, only the host's: `lakelands-client` answers it `unbound`, naming it
 values of erasable fields the log holds sealed
 (`docs/decisions/058-a-source-may-be-forgotten.md`): under the writer's
 lock it appends `source_forgotten` with the retirements of the records
-the source alone brought, has the key store destroy the source's keys,
-rebuilds the projection and reclaims the storage. `forget_preflight`
+the source made and alone brought, has the key store destroy the
+source's keys, rebuilds the projection and reclaims the storage. `forget_preflight`
 answers the same report, appending nothing, with the time the act is
 expected to hold the lock: an estimate, `events` at the rate the
 handle's last rebuild measured (its open's included), or at the

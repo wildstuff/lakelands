@@ -261,7 +261,7 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `LakeStore::purge_source(source, None, None)`
   (`lakelands purge --source <id>`):
   every record it brought in is retired in one append, and a record
-  another hand also wrote refuses the purge
+  another hand made or also wrote refuses the purge
   (`docs/decisions/039-a-source-is-retracted-as-one.md`). The report
   names, per relation, the live records outside the purge that still
   refer to a record it took. A host that must know that before it acts
@@ -287,7 +287,8 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   nobody edited goes with `purge_source`. A row an author edited in part
   refuses the purge whole, so `remove_values` is the act for rows people
   may have touched: it takes the source's values, keeps the author's,
-  and never retires a record an author made. Declaring the fields again
+  and never retires a record an author made, as neither the purge nor
+  forgetting does. Declaring the fields again
   without the source closes them; the rows written before stay its own.
   **Forgetting a source** erases it
   (`docs/decisions/058-a-source-may-be-forgotten.md`). A source's values
@@ -299,7 +300,7 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   Without one a value that would be sealed is refused.
   - **The act:** `LakeStore::forget_source(source, None)`
     (`lakelands forget --source <id> --report <id>`) appends `source_forgotten`,
-    retires what the source alone brought, has the key store destroy its
+    retires what the source made and alone brought, has the key store destroy its
     keys, rebuilds the projection and reclaims the storage, all under the
     writer's lock. Its preflight, `forget_preflight` (`--preflight`),
     says what it erases and retires, what is computed again, and how

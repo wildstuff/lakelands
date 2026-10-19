@@ -862,7 +862,7 @@ pub async fn forget(
         put(
             out,
             format!(
-                "{}: retires {} record(s) {source} alone brought",
+                "{}: retires {} record(s) {source} made and alone brought",
                 t.ty, t.retired
             ),
         )?;
@@ -870,7 +870,7 @@ pub async fn forget(
     for t in &report.co_owned {
         let first: Vec<String> = t.first.iter().map(|k| k.to_string()).collect();
         let what = format!(
-            "{}: keeps {} record(s) another hand wrote too",
+            "{}: keeps {} record(s) another hand made or wrote too",
             t.ty, t.records
         );
         put(out, format!("{what}, first {}", first.join(", ")))?;

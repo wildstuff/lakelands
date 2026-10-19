@@ -18,25 +18,36 @@ Who brought a record in is read from its per-field provenance
 (`docs/decisions/010-provenance-per-field.md`), over the fields that hold
 a value. A record belongs to the purge when one of those came from the
 source; a record whose values from the source were all cleared since
-holds nothing of it, and stays. It is **co-owned**
-when a field that holds a value came from another hand: a principal's
-authored write, or another source. A derived value and a value the lake
-wrote itself (a backed output, an aging move) make no owner, and a field
-a person wrote and later cleared holds no value, so it co-owns nothing.
+holds nothing of it, and stays. It is **co-owned** when another hand
+made it, or when a field that holds a value came from another hand: a
+principal's authored write, or another source. A derived value and a
+value the lake wrote itself (a backed output, an aging move) make no
+owner, and a field a person wrote and later cleared holds no value, so
+it co-owns nothing.
 One co-owned record refuses the whole purge as invalid, naming the count
 and the first ten, and nothing is appended.
 
-A field that declares `initial` co-owns nothing, whoever wrote it last
+Who made a record is read from the write at its `made` position: the
+source made it when that write was the source's ingest. A record another
+hand made is never retired by taking a source back, whatever its fields
+hold now; the purge refuses it as co-owned, removing values erases the
+source's values on it and keeps it (065), and forgetting keeps it (058).
+One test, at the `made` position, answers for all three.
+
+On a record the source made, a field that declares `initial` co-owns
+nothing, whoever wrote it last
 (`docs/decisions/050-a-field-declares-its-initial-value.md`). It is
 there because its record is, and the record is there because the source
 brought it: an author who moved the state did not bring the record, and
-when the source is taken back the state goes with it. A whole purge and
-a typed one ask the same rule. The report says what went: `moved`
-holds, per type and field, how many records the purge takes whose such
-field an author had written, and the first ten by key; it is left out
-when empty, and the preflight says the same. Every other authored field
-co-owns, so a record where a person wrote anything else still refuses
-the purge whole.
+when the source is taken back the state goes with it. This rule does
+not decide whether a record is retired: a record another hand made
+stays whatever its fields hold, such a field's value alone or its
+`initial` included. A whole purge and a typed one ask the same rule.
+The report says what went: `moved` holds, per type and field, how many
+records the purge takes whose such field an author had written, and the
+first ten by key; it is left out when empty, and the preflight says the
+same. Every other authored field co-owns, so a record where a person
+wrote anything else still refuses the purge whole.
 
 A type declared without per-field provenance cannot say who brought its
 records in. The purge of a source whole does not search it and names
@@ -181,6 +192,12 @@ ingest, because the ingest id carries the version it was written over
   id takes in the type (lakelands#562).
 - A field that declares `initial` makes no owner, and the report says
   in `moved` what an author had written there (lakelands#551).
+- A record another hand made, an author or another source, is
+  co-owned, read at its `made` position by the purge, forgetting and
+  removing values alike: an author's record whose only author value was
+  an `initial` is no longer retired by the first two while the third
+  kept it, nor one whose every value the source wrote over
+  (lakelands#1278).
 - Corrected at the rewrite (lakelands#817): every purge was said to
   name a type it does not search, where only the purge of a source
   whole does; and a view was said to be named, where it is passed over.

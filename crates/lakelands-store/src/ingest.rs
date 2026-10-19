@@ -39,17 +39,16 @@ use lakelands_api::error::{Case, Place, Said};
 use lakelands_api::event::{EventBody, EventId, Sealed};
 use lakelands_api::id::KeyId;
 use lakelands_api::principal::WriteContext;
-use lakelands_api::record::{Origin, StoredRecord};
+use lakelands_api::record::Origin;
 use lakelands_api::seam::DataKey;
 use lakelands_api::write::Committed;
-use lakelands_api::{
-    DeliveryId, FieldMeta, Principal, RecordKey, Result, SourceId, SourceRecord, Timestamp,
-};
+use lakelands_api::{DeliveryId, Principal, RecordKey, Result, SourceId, SourceRecord, Timestamp};
 use lakelands_core::rights::Door;
 
 use crate::exec;
 use crate::lake::{Lake, Reads, Writer};
 use crate::log::{self, Draft};
+use crate::purge::made_by;
 use crate::sealing::turns;
 use crate::writes::Call;
 use lakelands_core::{canonical, links};
@@ -314,7 +313,10 @@ fn judge(
             }
             // An authored field it is admitted to, only where no other
             // hand's value stands (069).
-            let made = || made_by(lake, t.live(), source);
+            let made = || match t.live() {
+                Some(r) => Ok(made_by(lake, &[r], std::slice::from_ref(source))?.contains(&r.made)),
+                None => Ok(false),
+            };
             lakelands_core::rights::check_admitted(decl, (t.live(), source), &patch, made)?;
             // An insert-only type's key is written once: a record stands
             // at it, live or retired, or this window wrote it. Another's
@@ -531,18 +533,3 @@ impl Stream for Receiver {
 
 #[cfg(test)]
 mod tests;
-
-/// Whether `source` made `live`: the write at its `made` position was the
-/// source's ingest (069). A value it wrote there that still stands says so
-/// without a read, for a record this window made too.
-fn made_by(lake: &Lake, live: Option<&StoredRecord>, source: &SourceId) -> Result<bool> {
-    let Some(live) = live else { return Ok(false) };
-    let mine = |m: &FieldMeta| m.origin == Origin::Source && m.source.as_ref() == Some(source);
-    if (live.meta.values()).any(|m| m.position == live.made && mine(m)) {
-        return Ok(true);
-    }
-    let made = lake.read_these(&[live.made])?;
-    Ok((made.first()).is_some_and(|e| {
-        matches!(e.body, EventBody::RecordIngested { .. }) && e.source.as_ref() == Some(source)
-    }))
-}

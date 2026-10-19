@@ -3,13 +3,16 @@
 //!
 //! Who brought a record in is read from its per-field provenance, over
 //! the fields that hold a value: a record belongs to the purge when one
-//! of them came from the source. It is co-owned when a field that holds a value came from
-//! another hand, a principal's authored write or another source; a
-//! derived or system value (a computed field, a backed output, an aging
-//! move) is the lake's own and makes no owner, and neither does a field
-//! that declares an `initial` value: the report's `moved` counts the
-//! records taken with an author's write in one. One co-owned record
-//! refuses the whole purge, and nothing is appended. A type that keeps no
+//! of them came from the source. It is co-owned when another hand made it,
+//! or when a field that holds a value came from another hand, a
+//! principal's authored write or another source; a derived or system
+//! value (a computed field, a backed output, an aging move) is the lake's
+//! own and makes no owner, and neither does a field that declares an
+//! `initial` value on a record the source made: the report's `moved`
+//! counts the records taken with an author's write in one. Who made a
+//! record is read from the write at its `made` position, as removing
+//! values and forgetting read it. One co-owned record refuses the whole
+//! purge, and nothing is appended. A type that keeps no
 //! per-field provenance cannot be read this way; it is not searched, and
 //! the report names it.
 //!
@@ -27,16 +30,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::ProjectionView;
 use lakelands_api::error::{Case, RecordName};
+use lakelands_api::event::EventBody;
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::{Origin, StoredRecord, Value};
 use lakelands_api::write::{PurgeMoved, PurgeReference, PurgeReport, RecordRef, TypeRetired};
 use lakelands_api::{
-    FieldName, Position, RecordKey, RelationName, Result, SourceId, TypeName, WriteContext,
+    FieldMeta, FieldName, Position, RecordKey, RelationName, Result, SourceId, TypeName,
+    WriteContext,
 };
 
 use lakelands_core::{invalid, links};
 
-use crate::lake::{Lake, every};
+use crate::lake::{Lake, PAGE, every};
 use crate::log::Draft;
 use crate::ontology::Ontology;
 use crate::writes::{self, Call};
@@ -64,7 +69,8 @@ pub(crate) fn brought_by(r: &StoredRecord, source: &SourceId) -> bool {
 /// cleared since holds no value and co-owns nothing, and neither does one
 /// that declares an `initial` value, whoever wrote it last: it is there
 /// because the record is
-/// (`docs/decisions/050-a-field-declares-its-initial-value.md`).
+/// (`docs/decisions/050-a-field-declares-its-initial-value.md`). Who made
+/// the record is [`made_by`]'s to say.
 pub(crate) fn co_owned(decl: &TypeDecl, r: &StoredRecord, set: &[SourceId]) -> bool {
     let starts = |f: &FieldName| {
         decl.fields
@@ -78,6 +84,38 @@ pub(crate) fn co_owned(decl: &TypeDecl, r: &StoredRecord, set: &[SourceId]) -> b
             _ => false,
         })
     })
+}
+
+/// The `made` positions of those of `records` the sources of `set` made:
+/// the write there was an ingest of one of them (069). A value one wrote
+/// there that still stands says so without a read; the rest are read from
+/// the log in one pass, a page at a time. A record another hand made is
+/// never retired by taking a source back, whatever it holds now.
+pub(crate) fn made_by(
+    lake: &Lake,
+    records: &[&StoredRecord],
+    set: &[SourceId],
+) -> Result<BTreeSet<Position>> {
+    let ours = |s: Option<&SourceId>| s.is_some_and(|s| set.contains(s));
+    let (mut made, mut unread) = (BTreeSet::new(), BTreeSet::new());
+    for r in records {
+        let wrote = |m: &FieldMeta| {
+            m.position == r.made && m.origin == Origin::Source && ours(m.source.as_ref())
+        };
+        match r.meta.values().any(wrote) {
+            true => made.insert(r.made),
+            false => unread.insert(r.made),
+        };
+    }
+    let unread: Vec<Position> = unread.into_iter().collect();
+    for page in unread.chunks(PAGE as usize) {
+        for e in lake.read_these(page)? {
+            if matches!(e.body, EventBody::RecordIngested { .. }) && ours(e.source.as_ref()) {
+                made.insert(e.position);
+            }
+        }
+    }
+    Ok(made)
 }
 
 /// The types a purge from `ty` reads: `ty` and the link types of the
@@ -104,6 +142,7 @@ fn named(ontology: &Ontology, ty: &TypeName) -> Result<BTreeSet<TypeName>> {
 /// not search. One co-owned record refuses it whole. The purge and its
 /// preflight both select here.
 fn selection(
+    lake: &Lake,
     view: &dyn ProjectionView,
     ontology: &Ontology,
     source: &SourceId,
@@ -120,11 +159,15 @@ fn selection(
             unsearched.push(name.clone());
             continue;
         }
-        for r in view.scan(name, &every(false))? {
-            if !brought_by(&r, source) {
-                continue;
-            }
-            if co_owned(decl, &r, std::slice::from_ref(source)) {
+        let set = std::slice::from_ref(source);
+        let brought: Vec<StoredRecord> = (view.scan(name, &every(false))?.into_iter())
+            .filter(|r| brought_by(r, source))
+            .collect();
+        let alone: Vec<&StoredRecord> =
+            brought.iter().filter(|r| !co_owned(decl, r, set)).collect();
+        let made = made_by(lake, &alone, set)?;
+        for r in brought {
+            if co_owned(decl, &r, set) || !made.contains(&r.made) {
                 let (ty, key) = (r.ty.clone(), r.key.clone());
                 shared.push(RecordName::Of { ty, key });
             } else {
@@ -275,7 +318,7 @@ fn id(source: &SourceId, ty: Option<&TypeName>, head: Option<Position>) -> Strin
 pub fn preflight(lake: &Lake, source: &SourceId, ty: Option<&TypeName>) -> Result<PurgeReport> {
     let view = lake.engine.view(None)?;
     let w = lake.reading(view.as_ref())?;
-    let (purged, unsearched) = selection(view.as_ref(), &w.ontology, source, ty)?;
+    let (purged, unsearched) = selection(lake, view.as_ref(), &w.ontology, source, ty)?;
     let mut report = report(
         view.as_ref(),
         &w.ontology,
@@ -335,7 +378,7 @@ pub fn run(
     if report_id.is_some_and(|given| given != id(source, ty, view.position())) {
         return Err(invalid(Case::PurgeReportStale));
     }
-    let (purged, unsearched) = selection(view.as_ref(), &w.ontology, source, ty)?;
+    let (purged, unsearched) = selection(lake, view.as_ref(), &w.ontology, source, ty)?;
     let mut report = report(
         view.as_ref(),
         &w.ontology,

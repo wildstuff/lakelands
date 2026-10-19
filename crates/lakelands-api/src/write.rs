@@ -1755,10 +1755,10 @@ pub struct ForgetReport {
     /// are erased with it.
     pub outputs: u64,
     /// Per type, in name order, the records it retires: those the source
-    /// alone brought, as a purge retires them.
+    /// made and alone brought, as a purge retires them.
     pub retired: Vec<TypeRetired>,
-    /// Per type, in name order, the records another hand wrote too: they
-    /// stay, with that hand's values.
+    /// Per type, in name order, the records another hand made or wrote
+    /// too: they stay, with that hand's values.
     pub co_owned: Vec<ForgetRecords>,
     /// The computed fields that read an erasable field holding the
     /// source's values, each computed again, in type then field order.
@@ -1807,9 +1807,9 @@ pub struct ForgetSetReport {
     /// Per source, in id order, what forgetting it takes, as
     /// `forget_source` answers it, the set's time, position and
     /// `reclaim_owed` in each; the act's reclaim and the preflight's id
-    /// are the set's alone, below. A record the set's sources alone
-    /// brought is retired under the first of them that brought it, and
-    /// one another hand wrote too is co-owned.
+    /// are the set's alone, below. A record the set's sources made and
+    /// alone brought is retired under the first of them that brought it,
+    /// and one another hand made or wrote too is co-owned.
     pub sources: Vec<ForgetReport>,
     /// The events the act's one rebuild folds again: the log's length.
     pub events: u64,

@@ -484,8 +484,8 @@ pub trait LakeStore: Send + Sync {
 
     /// Retire, in one append, every live record the source brought in,
     /// across every type it reached, restricted ones included. A record
-    /// another hand also wrote refuses the whole purge as invalid, naming
-    /// it, and nothing is appended; a type that keeps no per-field
+    /// another hand made or also wrote refuses the whole purge as invalid,
+    /// naming it, and nothing is appended; a type that keeps no per-field
     /// provenance is not searched and is named in the report
     /// (`docs/decisions/039-a-source-is-retracted-as-one.md`). With `ty`,
     /// the purge is of what the source brought into that type and the
@@ -510,15 +510,15 @@ pub trait LakeStore: Send + Sync {
     ) -> Result<crate::write::PurgeReport>;
 
     /// Forget a source (`docs/decisions/058-a-source-may-be-forgotten.md`):
-    /// append `source_forgotten` with the records it alone brought retired,
-    /// destroy its keys, rebuild the projection, in which every value it
-    /// sealed reads as erased at every position, and reclaim the storage,
-    /// all under the writer's lock. Refused while the log holds its values
-    /// of an erasable field in plaintext. With a preflight's id, refused
-    /// unless that report is of this source at this head. A step a crash
-    /// left owed is finished by the next writer's open; a reclaim that
-    /// fails is not a failure of the act, which answers it in its report's
-    /// `reclaim_owed`.
+    /// append `source_forgotten` with the records it made and alone
+    /// brought retired, destroy its keys, rebuild the projection, in which
+    /// every value it sealed reads as erased at every position, and
+    /// reclaim the storage, all under the writer's lock. Refused while the
+    /// log holds its values of an erasable field in plaintext. With a
+    /// preflight's id, refused unless that report is of this source at
+    /// this head. A step a crash left owed is finished by the next
+    /// writer's open; a reclaim that fails is not a failure of the act,
+    /// which answers it in its report's `reclaim_owed`.
     async fn forget_source(
         &self,
         source: &SourceId,
@@ -532,9 +532,9 @@ pub trait LakeStore: Send + Sync {
 
     /// Forget several sources in one act, as [`Self::forget_source`]
     /// forgets one: one `source_forgotten` for each, appended together
-    /// with the records the set's sources alone brought retired, their
-    /// keys destroyed, one rebuild and one reclaim, under one hold of the
-    /// writer. A set that is empty, names a source twice, names one the
+    /// with the records the set's sources made and alone brought retired,
+    /// their keys destroyed, one rebuild and one reclaim, under one hold
+    /// of the writer. A set that is empty, names a source twice, names one the
     /// log holds no event of, or one whose values the log holds in
     /// plaintext, is refused whole with nothing appended; the first two
     /// before anything is read. With a preflight's id, refused unless
