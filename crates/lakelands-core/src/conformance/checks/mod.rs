@@ -469,6 +469,8 @@ pub const ALL: &[Check] = &[
     sets_across::SET_ACROSS_EDGES,
     sets_across::SET_ACROSS_BOUND,
     sets_across::SET_ACROSS_DECLARED,
+    sets_across::SET_CLOCK,
+    sets_across::SET_CLOCK_REPLAYS,
     sets_across::SET_ACROSS_READ,
     sets_across::SET_ACROSS_HELD,
     kept_sets::KEPT_SET,

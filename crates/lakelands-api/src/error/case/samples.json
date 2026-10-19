@@ -423,6 +423,11 @@
    "type": "t"
   },
   {
+   "call": "s",
+   "code": "set_reads_clock",
+   "set": "s"
+  },
+  {
    "code": "set_reads_computed",
    "field": "f",
    "type": "t"

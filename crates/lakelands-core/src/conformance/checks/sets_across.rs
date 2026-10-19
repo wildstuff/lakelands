@@ -52,6 +52,17 @@ check!(
 );
 
 check!(
+    SET_CLOCK = a_sets_where_that_reads_the_clock_is_refused,
+    "066, extended (lakelands#1223): a set's `where` that calls `now()` or `today()`, however deep in it, is refused `set_reads_clock` naming the set and the call, over a type and over a kept view alike, and a set whose `where` reads a stored date field declares: a set keeps what it decided at the write, so a clock would drift from a read's"
+);
+
+check!(
+    SET_CLOCK_REPLAYS = a_log_holding_a_set_that_reads_the_clock_opens_and_replays,
+    "066, extended (lakelands#1223): a log whose `declared` event holds a set that reads `now()`, as a writer before the refusal appended it, opens for writing and rebuilds, and reads `in_set` of that set the same after each, a write after the open lands, and the refusal `set_reads_clock` is met only where the set is declared again",
+    given
+);
+
+check!(
     SET_ACROSS_READ = a_reads_in_set_of_a_set_across_an_edge_reads_its_kept_members,
     "055 and 004, extended (lakelands#567): a read's `in_set` of a set whose `where` reads across an edge answers the set's kept membership, not its filter read again: at the head, as of an earlier position, in a count, beside the read's own conditions, and through a set that names it; a far write moves what it answers as it moves the members, and a far record held from no one changes nothing it answers"
 );
@@ -1006,4 +1017,99 @@ async fn a_reads_in_set_of_a_set_across_an_edge_reads_its_kept_members(store: St
         "a hold on `c2` changes nothing the set answers; it answered {got:?}"
     );
     Ok(())
+}
+
+async fn a_sets_where_that_reads_the_clock_is_refused(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let task = [
+        field("owner", StorageKind::Text),
+        field("due_on", StorageKind::Date),
+    ];
+    l.declare(type_decl("task", task.to_vec())).await?;
+    l.declare_json(json!({"declare": "type", "name": "load", "key": ["owner"],
+        "fields": [{"name": "owner", "type": {"kind": "text"}},
+                   {"name": "n", "type": {"kind": "number"}}],
+        "view": {"source": "task", "group_by": ["owner"],
+                 "measures": [{"name": "n", "expr": "count()"}]}}))
+        .await?;
+    l.set("view_kept.load", json!(true)).await?;
+    for (of, filter, call) in [
+        ("task", "due_on < now()", "now()"),
+        ("task", "due_on < today() - 1d", "today()"),
+        ("load", "n > 1 and now() is null", "now()"),
+        ("load", "n > 1 or today() is null", "today()"),
+    ] {
+        let case = json!({"code": "set_reads_clock", "set": "late", "call": call});
+        let what = format!("`{filter}` over `{of}`");
+        refused_like(
+            &what,
+            l.cat
+                .declare(&l.own, object_set_on("late", of, filter))
+                .await,
+            &case,
+        )?;
+    }
+    l.declare_as(
+        object_set_on("past", "task", "due_on < '2026-01-01'"),
+        "a stored date",
+    )
+    .await?;
+    Ok(())
+}
+
+async fn a_log_holding_a_set_that_reads_the_clock_opens_and_replays(
+    store: Store,
+    given: Given,
+) -> Held {
+    let task = [
+        field("owner", StorageKind::Text),
+        field("due_on", StorageKind::Date),
+    ];
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl("task", task.to_vec())).await?;
+    l.upsert("task", "t1", json!({"owner": "a", "due_on": "2020-01-01"}))
+        .await?;
+    l.upsert("task", "t2", json!({"owner": "a", "due_on": "2999-01-01"}))
+        .await?;
+    let late = object_set_on("late", "task", "due_on < now()");
+    let store =
+        crate::conformance::fixture::declared_below(store, &given, vec![late.clone()]).await?;
+    let lake = store.lake().clone();
+    let members = |l: Lake| async move {
+        let rows = l.all_found("task", find_where("in_set('late')")).await?;
+        Ok::<_, Failure>(
+            rows.into_iter()
+                .map(|r| r.key.to_string())
+                .collect::<Vec<_>>(),
+        )
+    };
+    let opened = members(Lake::of(store.as_ref())).await?;
+    let c = (given.continued)(
+        Some(store),
+        lake,
+        Box::new(|_, _| (Vec::new(), 0)),
+        OpenMode::Rebuild,
+        Seams::default(),
+    );
+    let c = c
+        .await
+        .map_err(|e| Failure::new(format!("rebuilding the lake: {e}")))?;
+    let store = c
+        .opened
+        .map_err(|e| Failure::new(format!("the rebuild: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    let rebuilt = members(Lake::of(store.as_ref())).await?;
+    ensure!(
+        opened == ["t1"] && rebuilt == opened,
+        "a log holding a set that reads `now()` opens and rebuilds, and `in_set('late')` \
+         answers the record due in 2020 alone after each; it answered {opened:?} and \
+         {rebuilt:?}"
+    );
+    l.upsert("task", "t3", json!({"owner": "b", "due_on": "2021-01-01"}))
+        .await?;
+    refused_like(
+        "the set declared again",
+        l.cat.declare(&l.own, late).await,
+        &json!({"code": "set_reads_clock", "set": "late", "call": "now()"}),
+    )
 }

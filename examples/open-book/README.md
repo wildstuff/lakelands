@@ -21,7 +21,6 @@ bundle a host can start from.
 | `types/dunning.yaml` | one reminder of one overdue receivable, a record a level, written by the business |
 | `types/debtor.yaml`, `types/cash_position.yaml` | views: open receivables by partner, and the cash in euros |
 | `verbs/` | `set_credit_limit`; `mark_dunning_sent`, `escalate_dunning`, `resolve_dunning`, and `write_off_dunning`, which is `high` risk and so proposed and accepted |
-| `object_sets/overdue.yaml` | the open receivables more than thirty days past due |
 
 Four of the types come from exports the business already has
 (`authority: source`): an accounting export for partners and invoices, a

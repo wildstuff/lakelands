@@ -1144,6 +1144,20 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
         Declaration::ObjectSet(s) => o.ty(&s.of).ok(),
         _ => None,
     };
+    // A set is decided at the write and keeps what it decided: a clock in
+    // its `where` would drift from the clock a read of `in_set` evaluates.
+    if let Declaration::ObjectSet(s) = d
+        && let Ok(e) = s.filter.typed()
+        && e.reads_clock()
+    {
+        let call = if e.calls(&[Func::Now]) {
+            "now()"
+        } else {
+            "today()"
+        };
+        let (set, call) = (s.name.clone(), call.to_owned());
+        return Err(invalid(at(&[d.place()], Case::SetReadsClock { set, call })));
+    }
     // A verb's path may begin at a relation of its type and go on to the
     // link's fields (055, extended); the relation is judged below. One
     // carried by links begins a path only where `o` holds its link type's
