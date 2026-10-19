@@ -1288,6 +1288,8 @@ catalog! {
         SearchNeedsVector { field: FieldName } => "`{field}` holds vectors its writers make, in a space the lake does not know; a hybrid search over it brings its own query vector",
         /// A vector ranking over a field that holds no vectors.
         SearchNotVector { field: FieldName, kind: StorageKind } => "`{field}` is a {kind} field; a vector ranking reads a vector field",
+        /// A search's `text_fields` that weighs no field.
+        SearchTextFieldsEmpty => "`text_fields` weighs no field; leave it out to weigh each as its type's setting does",
         /// A start with no type where a type is needed.
         StartNoType { asks: String } => "`{asks}` needs the start's `type`; only `components` may leave it out, and then names no `key`, `where`, `search` or `params`",
         /// A step that reaches another type than it names.

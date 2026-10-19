@@ -232,6 +232,7 @@ macro_rules! door_checks {
             #[own_principals]
             a_vector_ranking_reads_a_vector_field,
             a_search_limited_to_named_fields_matches_and_probes_only_those,
+            a_search_weighs_its_own_text_fields_over_its_types,
             a_hybrid_search_fuses_its_text_and_vector_ranks,
             #[own_principals]
             a_grant_admits_only_the_records_whose_fields_hold_its_values,
@@ -10358,6 +10359,7 @@ async fn read_doors(c: &Arc<dyn Catalog>, who: &Principal, t: &str) -> Vec<(&'st
         mode: SearchMode::Lexical {
             text: "open".into(),
             fields: None,
+            text_fields: None,
         },
         k: 5,
         cursor: None,
@@ -11215,6 +11217,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
         field: "v".into(),
         vector: Some(vec![1.0, 0.0]),
         fields: None,
+        text_fields: None,
         weight: None,
         text_weight: None,
         model: None,
@@ -11245,6 +11248,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
         field: "v".into(),
         vector: Some(vec![1.0, 0.0]),
         fields: None,
+        text_fields: None,
         weight: None,
         text_weight: None,
         model: None,
@@ -11833,6 +11837,7 @@ pub async fn a_vector_ranking_reads_a_vector_field(store: Arc<dyn LakeStore>) {
         field: field.into(),
         vector,
         fields: None,
+        text_fields: None,
         weight: None,
         text_weight: None,
         model: None,
@@ -12096,6 +12101,7 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
                 SearchMode::Lexical {
                     text: "quayside".into(),
                     fields: fields.clone(),
+                    text_fields: None,
                 },
             ),
             (
@@ -12105,6 +12111,7 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
                     field: "v".into(),
                     vector: None,
                     fields: fields.clone(),
+                    text_fields: None,
                     weight: None,
                     text_weight: None,
                     model: None,
@@ -12117,6 +12124,7 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
                     field: "v".into(),
                     vector: Some(vec![0.0, 1.0]),
                     fields: fields.clone(),
+                    text_fields: None,
                     weight: None,
                     text_weight: None,
                     model: None,
@@ -12254,6 +12262,7 @@ pub async fn a_search_limited_to_named_fields_matches_and_probes_only_those(
         mode: SearchMode::Lexical {
             text: "quayside".into(),
             fields: names,
+            text_fields: None,
         },
         k: 5,
         cursor: None,
@@ -12349,6 +12358,105 @@ pub async fn a_search_limited_to_named_fields_matches_and_probes_only_those(
     }
 }
 
+/// A lexical search's own `text_fields` weighs a match in each field it
+/// names over its type's `search_weights` setting, a field it does not
+/// name at the setting's weight, else 1 (025, extended, lakelands#1237):
+/// `a` holds the word in its title, `b` in its body. A field that is not
+/// searchable, one not declared, a weight that cannot weigh, and an empty
+/// object are refused as invalid.
+pub async fn a_search_weighs_its_own_text_fields_over_its_types(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let searchable = |name| FieldDecl {
+        searchable: true,
+        ..text(name)
+    };
+    let doc = TypeDecl {
+        constraints: Default::default(),
+        name: "doc".into(),
+        key: Vec::new(),
+        fields: vec![searchable("title"), searchable("body"), text("label")],
+        relations: Vec::new(),
+        view: None,
+        valid_from: None,
+        valid_to: None,
+        field_meta: true,
+        insert_only: false,
+        retired_by: Default::default(),
+        language: None,
+        description: None,
+        label: None,
+        annotations: Default::default(),
+    };
+    f.catalog
+        .declare(owner, Declaration::Type(doc))
+        .await
+        .expect("the owner declares `doc`");
+    let set = json!({"key": "search_weights.doc", "value": {"text_fields": {"title": 4}}});
+    let writes = [
+        ("doc", "a", vec![("title", json!("quayside"))]),
+        ("doc", "b", vec![("body", json!("quayside"))]),
+        (
+            "sys.setting",
+            "search_weights.doc",
+            vec![("value", set["value"].clone()), ("key", set["key"].clone())],
+        ),
+    ];
+    for (t, k, fields) in writes {
+        (f.catalog)
+            .upsert(owner, &ty(t), &key(k), patch(&fields), WriteOpts::default())
+            .await
+            .expect("a record is written");
+    }
+    let lexical = |weights: Value| Search {
+        ty: ty("doc"),
+        mode: SearchMode::Lexical {
+            text: "quayside".into(),
+            fields: None,
+            text_fields: serde_json::from_value(weights).expect("weights read"),
+        },
+        k: 5,
+        cursor: None,
+        filter: None,
+        with_meta: false,
+        at: ReadAt::default(),
+        rerank: None,
+    };
+    for (weights, want) in [
+        (json!({"body": 2}), [("a", 4.0), ("b", 2.0)]),
+        (json!({"title": 0.5}), [("b", 1.0), ("a", 0.5)]),
+    ] {
+        let got = (f.catalog.search(owner, lexical(weights.clone())).await)
+            .expect("a weighed search answers")
+            .data;
+        let scored: Vec<(&str, f64)> = (got.hits.iter())
+            .map(|h| (h.record.key.as_str(), h.score))
+            .collect();
+        assert_eq!(scored, want, "a search weighing its text by {weights}");
+    }
+    for (weights, on, code) in [
+        (json!({"label": 1}), Some("label"), "not_searchable"),
+        (json!({"subject": 1}), Some("subject"), "unknown_field"),
+        (json!({"title": 0}), Some("title"), "weight_range"),
+        (json!({}), None, "search_text_fields_empty"),
+    ] {
+        match f.catalog.search(owner, lexical(weights.clone())).await {
+            Err(Error::Refused {
+                field,
+                reason: Refusal::Invalid(said),
+            }) => assert_eq!(
+                (
+                    field.as_ref().map(|f| f.as_str()),
+                    json!(said)["code"].as_str()
+                ),
+                (on, Some(code)),
+                "{weights}"
+            ),
+            other => panic!("{weights} must be refused as invalid; it answered {other:?}"),
+        }
+    }
+}
+
 /// A hybrid search with a vector fuses its lexical and its vector ranking
 /// by reciprocal rank, the lexical first, ties by key, and says `hybrid`:
 /// `b` alone holds the word and is the vector's third, so it ranks first
@@ -12422,6 +12530,7 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
         field: "v".into(),
         vector: Some(vec![1.0, 0.0]),
         fields: None,
+        text_fields: None,
         weight,
         text_weight,
         model: None,

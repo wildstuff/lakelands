@@ -328,6 +328,16 @@ struct CursorState {
     stage: Option<stage::Staged>,
 }
 
+/// The weights a lexical or hybrid search gives its text fields itself.
+fn own_text_weights(mode: &SearchMode) -> Option<&BTreeMap<FieldName, f64>> {
+    match mode {
+        SearchMode::Lexical { text_fields, .. } | SearchMode::Hybrid { text_fields, .. } => {
+            text_fields.as_ref()
+        }
+        SearchMode::Vector { .. } => None,
+    }
+}
+
 /// The digest of what decides a search's hits and their order: its mode,
 /// its `where`, `valid_at` and its second stage.
 fn search_read(s: &Search) -> String {
@@ -3371,18 +3381,21 @@ impl<'a> Reader<'a> {
         }
         let vectors = s.mode.vectors();
         let vector_fields: Vec<&FieldName> = vectors.iter().map(|v| v.0).collect();
-        let text_fields = match &s.mode {
+        let fields = match &s.mode {
             SearchMode::Lexical { fields, .. } | SearchMode::Hybrid { fields, .. } => {
                 fields.as_deref()
             }
             SearchMode::Vector { .. } => None,
         };
-        rights::check_search(self.who, &decl, text_fields, &vector_fields)?;
+        rights::check_search(self.who, &decl, fields, &vector_fields)?;
+        if let Some(weights) = own_text_weights(&s.mode) {
+            rights::check_text_weights(self.who, &decl, weights)?;
+        }
         // The names, the rights and the `where` are read at the read's
         // position; the rankings are judged by the head's declaration, whose
         // indexes they read, each field under the name it bears there (025).
-        let texts = match text_fields {
-            Some(named) => Box::new(named.iter()) as Box<dyn Iterator<Item = &FieldName>>,
+        let texts = match fields {
+            Some(n) => Box::new(n.iter()) as Box<dyn Iterator<Item = &FieldName>>,
             None => Box::new(rights::searched_fields(self.who, &decl)),
         };
         let ranks = self.ranks(&decl, vector_fields.iter().copied().chain(texts))?;
@@ -3444,7 +3457,7 @@ impl<'a> Reader<'a> {
             }
         }
         let filter = self.record_filter(&decl, s.filter.as_ref(), &[Place::Where])?;
-        Ok((decl, text_fields, filter, ranks))
+        Ok((decl, fields, filter, ranks))
     }
 
     /// The rankings over `named` fields of `decl` as the head declares
@@ -3568,13 +3581,16 @@ impl<'a> Reader<'a> {
         // A ranking the search does not weigh takes its type's setting, as
         // the read finds it at its position (lakelands#561); a field the
         // type no longer holds is never named by a search, so weighs 1.
-        // A match of the text weighs what the setting gives the field it is
-        // in, a field searched under its name at the head; a field not
-        // searched brings no weight (lakelands#1230).
+        // A match of the text weighs what the search gives the field it is
+        // in, else the setting, a field searched under its name at the
+        // head; a field not searched brings no weight (lakelands#1230,
+        // lakelands#1237).
         let key = format!("{}{}", lakelands_api::seam::SEARCH_WEIGHTS_SETTING, s.ty);
         let set = self.shape.settings.get(&key);
         let (field_weights, text_default) = lakelands_api::seam::search_weights(set);
-        let by_field = lakelands_api::seam::text_field_weights(set);
+        let mut by_field = lakelands_api::seam::text_field_weights(set);
+        let own = own_text_weights(&s.mode).into_iter().flatten();
+        by_field.extend(own.map(|(f, w)| (f.to_string(), *w)));
         let text_weights = searched()
             .filter_map(|(n, f)| Some((f.name.clone(), *by_field.get(n.as_str())?)))
             .collect();

@@ -7,15 +7,19 @@
 //! holds it, 1 for a field it does not name, so with none the score is
 //! the count of the tokens held. It weighs every ranking of text, a
 //! lexical search's and a hybrid search's lexical half before the fusion.
+//!
+//! A lexical or hybrid search may give its own `text_fields`, each
+//! field's weight winning over the setting's (lakelands#1237), judged as
+//! the setting's are, at the search.
 
 use lakelands_api::principal::TypeGrants;
-use lakelands_api::query::{Hits, Search};
-use lakelands_api::{Access, Principal};
+use lakelands_api::query::{Hits, Projection, QueryResult, Search};
+use lakelands_api::{Access, Principal, Refusal};
 use serde_json::{Value, json};
 
 use crate::conformance::fixture::{
-    Lake, Must, alike_renamed, embedding, field, field_access, invalid_like, read, refused_on,
-    searchable, try_upsert, type_decl, vector,
+    Lake, Must, alike_renamed, embedding, field, field_access, invalid_like, pattern, read,
+    refused_on, searchable, try_upsert, type_decl, vector,
 };
 use crate::conformance::{Failure, Given, Held, Reopen, Store, backing};
 use lakelands_api::ontology::{StorageKind, TypeDecl};
@@ -45,6 +49,22 @@ check!(
 check!(
     WEIGHTS_TEXT_REFUSED = a_text_fields_weight_is_refused_for_what_a_search_could_not_weigh,
     "025, extended (lakelands#1230): `text_fields` is refused as invalid naming the field: `unknown_field` for a field the type does not declare, `not_searchable` for a text, number or vector field that is not searchable, `weight_range` for a weight above 0 and at most 1 000 000 it is not, and `setting_weights_shape` for an empty object; a text field in `fields` is still `not_vector_field`"
+);
+
+check!(
+    WEIGHTS_TEXT_OWN = a_searchs_own_text_fields_win_over_its_types,
+    "025, extended (lakelands#1237): a lexical or hybrid search's own `text_fields` weighs each field it names, over `search_weights.<type>`'s weight for it; a field it does not name takes the setting's, else 1, and a read as of before the setting takes its own and 1; a weight for a field its `fields` leaves out weighs nothing; a hybrid search fuses the lexical ranks so weighed; its pages are of the weighed ranking, a cursor continues no search of other weights, and a pattern that starts from the search walks that ranking"
+);
+
+check!(
+    WEIGHTS_TEXT_OWN_HIDDEN = a_searchs_weight_of_a_field_not_shown_is_answered_as_never_declared,
+    "025 and 024, extended (lakelands#1237): to a reader not shown a field the setting weighs, or shown it masked, a search weighing the fields it is shown is answered, page by page, as in a twin lake that never declared the field; a search weighing a field it is not shown is refused as in the twin, and one weighing a field shown masked is not granted naming it, each before its weight is judged",
+    given
+);
+
+check!(
+    WEIGHTS_TEXT_OWN_REFUSED = a_searchs_text_fields_are_refused_as_the_settings_are,
+    "025, extended (lakelands#1237): a search's own `text_fields` is refused as invalid naming the field: `unknown_field` for a field the type does not declare, `not_searchable` for one that is not searchable, also where `fields` leaves it out, and `weight_range` for a weight above 0 and at most 1 000 000 it is not, each field judged whole in name order, so the first faulty field is the one named; an empty object is refused as `search_text_fields_empty`, as an empty `fields` is"
 );
 
 /// `memo`: `title`, `heading` and `body` searchable, `note` and `n` not,
@@ -292,12 +312,16 @@ fn blind(
 }
 
 /// What `who` is answered by `l`: the pages of each search, by keys and
-/// scores' bits, their axes and what ranked them, and the setting.
-async fn told(l: &Lake, who: &Principal) -> Result<Vec<String>, Failure> {
+/// scores' bits, their axes and what ranked them, and the setting; each
+/// search weighs its text by `own` where it is not null.
+async fn told(l: &Lake, who: &Principal, own: &Value) -> Result<Vec<String>, Failure> {
     let mut told = Vec::new();
     let hybrid = json!({"mode": "hybrid", "text": "invoice rent", "field": "v", "vector": [1, 0]});
     for mut s in [lexical("invoice rent"), hybrid] {
         s["k"] = json!(1);
+        if !own.is_null() {
+            s["text_fields"] = own.clone();
+        }
         loop {
             let page = search(l, who, s.clone()).await?;
             told.push(format!(
@@ -337,7 +361,10 @@ async fn a_text_weight_of_a_field_not_shown_is_answered_as_never_declared(
     let mut wrong = Vec::new();
     for title in [Access::None, Access::Masked] {
         let reader = blind(store.as_ref(), "reader", title, false);
-        let (here, there) = (told(&l, &reader).await?, told(&t, &reader).await?);
+        let (here, there) = (
+            told(&l, &reader, &Value::Null).await?,
+            told(&t, &reader, &Value::Null).await?,
+        );
         if here != there {
             wrong.push(format!(
                 "`title` {title:?}: {here:?}; never declared: {there:?}"
@@ -416,6 +443,241 @@ async fn a_text_fields_weight_is_refused_for_what_a_search_could_not_weigh(store
     ensure!(
         wrong.is_empty(),
         "`text_fields` must be refused for what a search could not weigh: {wrong:?}"
+    );
+    Ok(())
+}
+
+async fn a_searchs_own_text_fields_win_over_its_types(store: Store) -> Held {
+    let l = memos(store.as_ref(), true).await?;
+    let before = store.head().await.must("reading the head")?;
+    let set = json!({"text_fields": {"title": 4, "heading": 2}});
+    l.set("search_weights.memo", set).await?;
+    let own = |text: &str, weights: Value| {
+        let mut s = lexical(text);
+        s["text_fields"] = weights;
+        s
+    };
+    // `title` at 0.25, its own; `heading` at 2, the setting's; `body` at 1.
+    let quarter = || own("invoice rent", json!({"title": 0.25}));
+    let mut then = quarter();
+    then["as_of"] = json!(before);
+    let mut body = own("invoice rent", json!({"title": 4, "body": 2}));
+    body["fields"] = json!(["body"]);
+    let mut wrong = misranked(
+        &l,
+        &[
+            (
+                quarter(),
+                &[("d", 3.0), ("a", 1.25), ("b", 1.25), ("c", 1.0)],
+            ),
+            (then, &[("d", 2.0), ("a", 1.25), ("b", 1.25), ("c", 1.0)]),
+            (body, &[("a", 2.0), ("b", 2.0), ("c", 2.0), ("d", 2.0)]),
+        ],
+    )
+    .await?;
+    // Weighed, `invoice` ranks a, c, d, b; near (1, 0) is a, d, c, b.
+    let hybrid = json!({"mode": "hybrid", "text": "invoice", "field": "v",
+                        "vector": [1.0, 0.0], "text_fields": {"title": 0.25}});
+    let fused = |text: f64, near: f64| 1.0 / (60.0 + text) + 1.0 / (60.0 + near);
+    let ranks = [
+        ("a", 0.0, 0.0),
+        ("b", 3.0, 3.0),
+        ("c", 1.0, 2.0),
+        ("d", 2.0, 1.0),
+    ];
+    let mut expected: Vec<(&str, f64)> = ranks.map(|(k, t, n)| (k, fused(t, n))).to_vec();
+    expected.sort_by(|x, y| y.1.total_cmp(&x.1).then(x.0.cmp(y.0)));
+    wrong.extend(misranked(&l, &[(hybrid, &expected)]).await?);
+    // Two pages of the weighed ranking; its cursor continues no other.
+    let mut paged = quarter();
+    paged["k"] = json!(2);
+    let first = search(&l, &l.own, paged.clone()).await?;
+    let Some(next) = first.next_cursor.clone() else {
+        return Err(Failure::new("a page of two of four hits has no cursor"));
+    };
+    paged["cursor"] = json!(next);
+    let second = search(&l, &l.own, paged).await?;
+    let pages = [scored(&first), scored(&second)].concat();
+    let whole = [("d", 3.0), ("a", 1.25), ("b", 1.25), ("c", 1.0)];
+    if pages != want(&whole) {
+        wrong.push(format!("its pages: {pages:?}"));
+    }
+    let mut other = own("invoice rent", json!({"title": 0.5}));
+    (other["type"], other["k"], other["cursor"]) = (json!("memo"), json!(2), json!(next));
+    let s: Search = serde_json::from_value(other).expect("the check's search reads");
+    let moved = l.cat.search(&l.own, s).await;
+    if !invalid_like(&moved, &json!({"code": "cursor_other_read"})) {
+        wrong.push(format!("its cursor under other weights: {moved:?}"));
+    }
+    // A pattern that starts from the search walks the weighed ranking.
+    let mut p = pattern("memo", None, vec![], Projection::default());
+    let start = serde_json::from_value(quarter()).expect("the check's mode reads");
+    p.start.search = Some(start);
+    let rows = l.cat.query(&l.own, p).await.must("a weighed start")?.data;
+    let keys = match &rows {
+        QueryResult::Rows { rows, .. } => (rows.iter())
+            .map(|r| r["memo.key"].as_str().unwrap_or("?"))
+            .collect(),
+        _ => vec!["not rows"],
+    };
+    if keys != ["d", "a", "b", "c"] {
+        wrong.push(format!("a pattern started from it: {rows:?}"));
+    }
+    ensure!(
+        wrong.is_empty(),
+        "a search's own `text_fields` must win over its type's: {wrong:?}"
+    );
+    Ok(())
+}
+
+async fn a_searchs_weight_of_a_field_not_shown_is_answered_as_never_declared(
+    store: Store,
+    given: Given,
+) -> Held {
+    let l = memos(store.as_ref(), true).await?;
+    let twin = (given.twin)(store.lake().clone(), Default::default()).await;
+    let twin = twin.map_err(|e| Failure::new(format!("the harness opened no twin: {e}")))?;
+    let t = memos(twin.as_ref(), false).await?;
+    let set = json!({"text_fields": {"title": 4, "heading": 2}});
+    l.set("search_weights.memo", set).await?;
+    let set = json!({"text_fields": {"heading": 2}});
+    t.set("search_weights.memo", set).await?;
+    let mut wrong = Vec::new();
+    let own = json!({"heading": 0.5, "body": 3});
+    for title in [Access::None, Access::Masked] {
+        let reader = blind(store.as_ref(), "reader", title, false);
+        let (here, there) = (
+            told(&l, &reader, &own).await?,
+            told(&t, &reader, &own).await?,
+        );
+        if here != there {
+            wrong.push(format!(
+                "`title` {title:?}: {here:?}; never declared: {there:?}"
+            ));
+        }
+    }
+    let reader = blind(store.as_ref(), "reader", Access::None, false);
+    let mut zero = lexical("invoice");
+    (zero["type"], zero["text_fields"]) = (json!("memo"), json!({"title": 0}));
+    let zero: Search = serde_json::from_value(zero).expect("the check's search reads");
+    let (h, u) = (
+        l.cat.search(&reader, zero.clone()).await,
+        t.cat.search(&reader, zero).await,
+    );
+    match (h, u) {
+        (Err(h), Err(u)) => {
+            if let Err(f) = alike_renamed("not shown `title`, its weight", &h, &u, ("", "")) {
+                wrong.push(f.message);
+            }
+            let unknown = json!({"code": "unknown_field", "field": "title"});
+            if !invalid_like(&h, &unknown) {
+                wrong.push(format!("not shown `title`, a weight of 0: {h:?}"));
+            }
+        }
+        other => wrong.push(format!("not shown `title`, a weight of 0: {other:?}")),
+    }
+    // A field shown masked is known but not read: a weight of it, in range
+    // or not, is not granted.
+    let reader = blind(store.as_ref(), "reader", Access::Masked, false);
+    for w in [1, 0] {
+        let mut s = lexical("invoice");
+        (s["type"], s["text_fields"]) = (json!("memo"), json!({"title": w}));
+        let s: Search = serde_json::from_value(s).expect("the check's search reads");
+        let masked = l.cat.search(&reader, s).await;
+        if !matches!(refused_on(&masked), Some(("title", Refusal::NotGranted))) {
+            wrong.push(format!("masked `title`, a weight of {w}: {masked:?}"));
+        }
+    }
+    ensure!(
+        wrong.is_empty(),
+        "a search's weight of a field not shown must be answered as never declared: {wrong:?}"
+    );
+    Ok(())
+}
+
+async fn a_searchs_text_fields_are_refused_as_the_settings_are(store: Store) -> Held {
+    let l = memos(store.as_ref(), true).await?;
+    let hybrid = json!({"mode": "hybrid", "text": "invoice", "field": "v", "vector": [1.0, 0.0]});
+    let mut body = lexical("invoice");
+    body["fields"] = json!(["body"]);
+    let mut wrong = Vec::new();
+    for (mode, weights, named, code) in [
+        (
+            lexical("invoice"),
+            json!({"subject": 1}),
+            Some("subject"),
+            "unknown_field",
+        ),
+        (
+            lexical("invoice"),
+            json!({"note": 1}),
+            Some("note"),
+            "not_searchable",
+        ),
+        (
+            lexical("invoice"),
+            json!({"v": 1}),
+            Some("v"),
+            "not_searchable",
+        ),
+        (hybrid.clone(), json!({"n": 1}), Some("n"), "not_searchable"),
+        (body, json!({"note": 1}), Some("note"), "not_searchable"),
+        (
+            lexical("invoice"),
+            json!({"body": 0}),
+            Some("body"),
+            "weight_range",
+        ),
+        (
+            lexical("invoice"),
+            json!({"subject": 0}),
+            Some("subject"),
+            "unknown_field",
+        ),
+        (
+            lexical("invoice"),
+            json!({"note": 0}),
+            Some("note"),
+            "not_searchable",
+        ),
+        (
+            lexical("invoice"),
+            json!({"body": 0, "note": 1}),
+            Some("body"),
+            "weight_range",
+        ),
+        (
+            lexical("invoice"),
+            json!({"body": 0, "subject": 1}),
+            Some("body"),
+            "weight_range",
+        ),
+        (
+            hybrid,
+            json!({"body": 1_000_001}),
+            Some("body"),
+            "weight_range",
+        ),
+        (
+            lexical("invoice"),
+            json!({}),
+            None,
+            "search_text_fields_empty",
+        ),
+    ] {
+        let mut s = mode;
+        (s["type"], s["text_fields"]) = (json!("memo"), weights);
+        let what = s.to_string();
+        let s: Search = serde_json::from_value(s).expect("the check's search reads");
+        let answer = l.cat.search(&l.own, s).await;
+        let on = refused_on(&answer).map(|(f, _)| f);
+        if on != named || !invalid_like(&answer, &json!({"code": code})) {
+            wrong.push(format!("{what}: {answer:?}"));
+        }
+    }
+    ensure!(
+        wrong.is_empty(),
+        "a search's `text_fields` must be refused as the setting's are: {wrong:?}"
     );
     Ok(())
 }

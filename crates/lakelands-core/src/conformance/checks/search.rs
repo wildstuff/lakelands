@@ -366,6 +366,7 @@ async fn a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused(sto
             field: "vec".into(),
             vector: Some(vec![1.0, 0.0]),
             fields: None,
+            text_fields: None,
             weight: None,
             text_weight: None,
             model: None,
@@ -830,6 +831,7 @@ fn over_e(text: &str) -> SearchMode {
         field: "e".into(),
         vector: None,
         fields: None,
+        text_fields: None,
         weight: None,
         text_weight: None,
         model: None,
@@ -855,6 +857,7 @@ fn hybrid(text: &str, vector: Option<Vec<f32>>) -> SearchMode {
         field: "v".into(),
         vector,
         fields: None,
+        text_fields: None,
         weight: None,
         text_weight: None,
         model: None,
@@ -986,6 +989,7 @@ async fn a_vector_ranking_reads_a_vector_field_and_makes_no_call_it_cannot_use(
         field: field.into(),
         vector,
         fields: None,
+        text_fields: None,
         weight: None,
         text_weight: None,
         model: None,
@@ -1242,6 +1246,7 @@ fn hybrid_over(field: &str, text: &str, vector: Option<Vec<f32>>) -> SearchMode 
         field: field.into(),
         vector,
         fields: None,
+        text_fields: None,
         weight: None,
         text_weight: None,
         model: None,
@@ -1405,6 +1410,7 @@ async fn a_search_as_of_a_position_ranks_by_the_heads_declaration(
     let mode = SearchMode::Lexical {
         text: "quayside".into(),
         fields: Some(vec!["t".into()]),
+        text_fields: None,
     };
     let got = as_of(s, &own, "s5", mode, p).await;
     row(

@@ -365,6 +365,12 @@ pub enum SearchMode {
         /// caller reads.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fields: Option<Vec<FieldName>>,
+        /// A weight for a match of the text in each searchable field named,
+        /// winning over its type's `search_weights` setting's for that
+        /// field; a field it does not name takes the setting's, else 1.
+        /// A field `fields` leaves out is not searched, so weighs nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text_fields: Option<BTreeMap<FieldName, f64>>,
     },
     /// Nearest neighbours of a vector the caller supplies.
     Vector {
@@ -399,6 +405,12 @@ pub enum SearchMode {
         /// every one the caller reads. The vector half is not narrowed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fields: Option<Vec<FieldName>>,
+        /// A weight for a match of the text in each searchable field named,
+        /// winning over its type's `search_weights` setting's for that
+        /// field; a field it does not name takes the setting's, else 1.
+        /// A field `fields` leaves out is not searched, so weighs nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text_fields: Option<BTreeMap<FieldName, f64>>,
         /// The weight of the vector half; absent, 1.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         weight: Option<f64>,
@@ -474,6 +486,7 @@ impl SearchMode {
         SearchMode::Lexical {
             text: text.into(),
             fields: None,
+            text_fields: None,
         }
     }
 
@@ -496,6 +509,7 @@ impl SearchMode {
             field: field.into(),
             vector: None,
             fields: None,
+            text_fields: None,
             weight: None,
             text_weight: None,
             model: None,
@@ -691,7 +705,8 @@ impl<'de> Deserialize<'de> for Search {
         let members = [
             "mode", "text", "fields", "field", "vector", "weight", "also", "model",
         ];
-        let mode = (members.iter().chain(&["text_weight"])).filter_map(|m| own.remove_entry(*m));
+        let mode = (members.iter().chain(&["text_weight", "text_fields"]))
+            .filter_map(|m| own.remove_entry(*m));
         let mode =
             serde_json::from_value(Value::Object(mode.collect())).map_err(D::Error::custom)?;
         let w: SearchWire = serde_json::from_value(Value::Object(own)).map_err(D::Error::custom)?;

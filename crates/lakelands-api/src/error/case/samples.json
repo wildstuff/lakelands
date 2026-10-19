@@ -1170,6 +1170,9 @@
    "kind": "text"
   },
   {
+   "code": "search_text_fields_empty"
+  },
+  {
    "asks": "s",
    "code": "start_no_type"
   },
