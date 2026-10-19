@@ -3644,6 +3644,11 @@ impl Call<'_> {
                 // A retarget converts as its author is answered (lakelands#1071).
                 let judged = (&**migration, author.as_ref(), Some(self.who));
                 let planned = as_plain.preflight_plan(&w, view.as_ref(), judged, None)?;
+                // One whose target is in force changes nothing: answered as
+                // a declaration in force is, and not filed (027, extended).
+                if unchanged(&w.ontology, migration, &planned) {
+                    in_force = Some(vec![Declaration::Type(migration.to.clone())]);
+                }
                 let found = planned.report;
                 if !found.lossless {
                     return Err(self.lossy(&w, migration, found));
