@@ -650,8 +650,9 @@ async fn a_pattern_aggregate_reads_its_rows_by_their_paths(store: Store) -> Held
         s.ty = ty.map(Into::into);
         vec![s]
     };
-    // Untyped, it is bound under its relation's name and holds no field
-    // (lakelands#990): a path that reads one is refused.
+    // Untyped, it is bound under its relation's name and holds the fields
+    // its types declare alike (lakelands#990, lakelands#1186): a path that
+    // reads another is refused.
     for (start, steps, path) in [
         ("bill", both(None), "of.tier"),
         ("customer", into(None), "of.x"),

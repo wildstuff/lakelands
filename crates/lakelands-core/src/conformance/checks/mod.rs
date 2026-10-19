@@ -362,6 +362,7 @@ pub const ALL: &[Check] = &[
     walks::ROWS_HOLD_MATCHED_STARTS,
     walks::STEP_BINDS_ONE_TYPE,
     walks::OPEN_STEP,
+    walks::ALIKE_STEP,
     search::MATCH_SET,
     search::SEARCH_ORDER,
     search::SEARCH_PROBE_REFUSED,

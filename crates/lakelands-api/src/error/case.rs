@@ -1304,13 +1304,23 @@ catalog! {
         StartNoType { asks: String } => "`{asks}` needs the start's `type`; only `components` may leave it out, and then names no `key`, `where`, `search` or `params`",
         /// A step that reaches another type than it names.
         StepReaches { reached: TypeName, #[serde(rename = "type")] ty: TypeName, also: Option<Names> } => "it reaches `{reached}`[, {also}], not `{ty}`",
-        /// A step reaching several types where a `where`, the next step or a path that reads a field reads one.
+        /// A step reaching several types where the next step reads one, or
+        /// where a `where` or a path reads a field they do not all declare
+        /// alike: `field`, missing from the types `missing` names and of
+        /// another kind, value type, target or dimensions than most of them in
+        /// those `other` names.
         StepSeveralTypes {
             #[serde(default, skip_serializing_if = "Option::is_none")]
             reached: Option<TypeName>,
             #[serde(default, skip_serializing_if = "Option::is_none")]
             also: Option<Names>,
-        } => "it reaches several types[, `{reached}`][, {also}], and a `where`, the step after it or a path that reads one of its fields reads one; name the step's `type`",
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            field: Option<FieldName>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            missing: Option<Box<Names>>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            other: Option<Box<Names>>,
+        } => "it reaches several types[, `{reached}`][, {also}], and [it reads `{field}`, which is[ missing from {missing}][[{?missing},] of another kind, value type, target or dimensions in {other}]|the step after it reads one]; name the step's `type`",
         /// A step deeper than the lake walks.
         StepTooDeep { max: u32, asked: u32 } => "a step may walk at most {max} hops; this one asks for {asked}",
         /// A `text_weight` out of range.
