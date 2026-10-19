@@ -5086,7 +5086,8 @@ impl Call<'_> {
     /// change's plan is told the type's section, as its author is shown it
     /// (062): the records computed again, those that would be left naming
     /// no live record, and the constraints that admit that they would
-    /// break. A type nothing is judged of is neither walked nor counted. A
+    /// break. A type nothing is judged of is not counted, and is walked
+    /// only where it may read a source's sealed value (058). A
     /// type its author is not shown, or knows of none of the fields it
     /// computes again (those `fields` names of it, and those derived or
     /// embedded from them), has no section, and one it is not told of a reference of has
@@ -5147,12 +5148,25 @@ impl Call<'_> {
             let shown = |r: &StoredRecord| {
                 Ok(!sight.withheld(r) && crate::reads::answered(v, &sight, ty, &r.key)?)
             };
+            let with = (&computing, v, &plans, &*self.lake.keys);
+            // Unjudged, its outputs are planned again all the same where one
+            // may read a source's sealed value: under a key the key store
+            // lost, the fold would refuse it past the append, so it is
+            // refused here, appending nothing, as a write is (058).
+            let sealed = decl.fields.iter().any(|f| f.erasable)
+                && crate::backed::computed_outside(whole, decl);
             // Nothing judged: every record is computed again, uncounted. A
             // held record is counted only for one who holds `restricted`.
             let recomputed = match judges {
+                false if !telling && sealed => {
+                    live(v, ty, |r| {
+                        computed_again(with, r, event, &w.settings).map(drop)
+                    })?;
+                    None
+                }
                 false => None,
                 true => Some({
-                    let (with, mut n) = ((&computing, v, &plans, &*self.lake.keys), 0);
+                    let mut n = 0;
                     live(v, ty, |r| {
                         // A plan that only tells computes no held record: it
                         // counts none, and its inputs are not its author's.

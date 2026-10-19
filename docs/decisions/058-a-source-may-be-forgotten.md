@@ -98,7 +98,7 @@ A type whose key holds personal data is given a surrogate key. `hosting.md` says
 - the index entries the value made: the text and sort indexes, full text, vectors, which the rebuild never makes;
 - a membership the log holds, decided at a write over the value, which the fold decides again without it (065).
 
-**A key the key store does not give, with no act in the log,** is lost, not destroyed: the fold fails closed, and the value is never read as erased. A rebuild meets the values before the act that forgot them, so where a key is missing it looks ahead in the log for that act.
+**A key the key store does not give, with no act in the log,** is lost, not destroyed: the fold fails closed, and the value is never read as erased. A write or a declaration whose fold would meet such a value, a re-plan of an output digested under the lost version among them, plans it before it appends and is refused `key_missing`, naming the source and the version, with nothing appended: the head never moves past an event that does not fold (lakelands#1218). A rebuild meets the values before the act that forgot them, so where a key is missing it looks ahead in the log for that act.
 
 The projection is the fold of the log and the key store by construction (001), the log including the act: there is no second path, an incremental scrub of the states kept, that would have to come out equal to a rebuild.
 
