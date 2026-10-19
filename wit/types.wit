@@ -1,4 +1,4 @@
-package lakelands:data@0.16.0;
+package lakelands:data@0.16.1;
 
 /// The types every interface of the package shares: the contract of
 /// `lakelands-api`, type for type.

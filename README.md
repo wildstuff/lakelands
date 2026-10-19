@@ -160,14 +160,14 @@ terrain Lakelands is built for, and where it is not the right tool.
   map first. An agent can draw it over MCP (`declare_type`, `add_field`),
   but there is always a map.
 
-> **Status: `0.16.0`.** Lakelands `0.16.0` is the `lakelands` CLI, its
+> **Status: `0.16.1`.** Lakelands `0.16.1` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (716 checks through the doors and 72 through the
+> conformance suite (718 checks through the doors and 72 through the
 > engine seam), with 67 decision records and the event log at format
 > version 17, installable from the release. Its budgets: the store
 > facade and engine traits hold 71 of 110 methods, the core crates'
-> product code 72 241 of 74 000 lines and their specification 107 360 of
+> product code 72 370 of 74 000 lines and their specification 107 554 of
 > 108 000, and 6 of 20 `cfg(feature)` sites. A ceiling rises only by a
 > recorded rule (decision 047): the operator set the round's ceilings at
 > 68 000 and 98 000 and raised them twice, measured, to 74 000 and
@@ -196,6 +196,11 @@ terrain Lakelands is built for, and where it is not the right tool.
 > to 17 by appending, and the lake this release writes, a part of a
 > source taken back and a destroyed key version among it, is kept beside
 > those of the releases before.
+> `0.16.1` fixes `0.16.0`: a declaration that re-plans over a lost key
+> is refused before it appends, an ingest reads the targets of its
+> references together, a preflight's expected time follows the lake's
+> last rebuild, and an import's batch is bounded in bytes. The log
+> format is unchanged.
 
 ## Try it
 
