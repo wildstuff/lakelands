@@ -180,7 +180,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting {
         range: "`true` or `false`",
         says: "Whether the lake chooses an order index itself, for a field a type is ordered by whole at least `limits.order_after_pages` times within `limits.order_window_secs`, beside what `sort_index` names; the host's own `sort_index` for a type always wins. Off, only what the host sets is indexed.",
-        cost: "each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records",
+        cost: "each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` (2 by default) bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records",
         ..location("limits.choose_order_index", "true")
     },
     Setting {
@@ -201,7 +201,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting {
         range: "a count",
         says: "The most fields of one type the lake chooses an index for.",
-        ..location("limits.order_max_fields", "4")
+        ..location("limits.order_max_fields", "2")
     },
     Setting {
         range: "seconds",

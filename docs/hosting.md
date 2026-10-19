@@ -1232,7 +1232,7 @@ A host that already has a store of its own moves in four steps.
   ordered by on `limits.order_after_pages` (3) whole-sorted pages within
   `limits.order_window_secs` (10 minutes), on a type of at least
   `limits.order_min_records` (2 000) live records with fewer than
-  `limits.order_max_fields` (4) chosen fields, the writer's process builds
+  `limits.order_max_fields` (2) chosen fields, the writer's process builds
   its order index beside the log, in chunks of `limits.order_chunk`
   (10 000) records between writes, and pages ordered by it read their
   page from then on. Nothing is logged: a feed, a mirror and an export
@@ -1246,13 +1246,16 @@ A host that already has a store of its own moves in four steps.
     write: a single upsert about 0–2 % on SQLite and about 20 % on
     PostgreSQL in this release's runs, a bulk ingest within the runs'
     spread on SQLite and up to about 40 % on PostgreSQL.
-    `limits.order_max_fields` (4) bounds it, at a type's fourth field:
-    one field's cost taken four times (not measured at four), a single
-    upsert about 0–8 % slower on SQLite and about 80–100 % on
-    PostgreSQL, a bulk ingest up to about 90 % on SQLite (within the
-    runs' spread at one field) and up to about 170 % on PostgreSQL. A
-    host for whom that is too much lowers the bound or turns the switch
-    off. A build writes in chunks, and a write sent meanwhile waited at
+    `limits.order_max_fields` bounds it, and its default is 2, the cost
+    of a lake that chooses by default: at a type's second field, one
+    field's cost taken twice (not measured at two), a single upsert about
+    0–4 % slower on SQLite and about 40–50 % on PostgreSQL. A host that
+    raises the bound to 4 pays up to four times one field's cost (not
+    measured at four): a single upsert about 0–8 % slower on SQLite and
+    80–100 % on PostgreSQL, a bulk ingest up to about 90 % on SQLite
+    (within the runs' spread at one field) and up to about 170 % on
+    PostgreSQL. A host for whom the default is too much lowers the bound
+    or turns the switch off. A build writes in chunks, and a write sent meanwhile waited at
     most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records,
     where a host's own setting holds every write for its whole rebuild
     (0.85 s and 2.4 s).

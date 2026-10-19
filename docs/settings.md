@@ -133,7 +133,7 @@ Whether the lake chooses an order index itself, for a field a type is ordered by
 
 - **Takes:** `true` or `false`.
 - **Default:** `true`.
-- **Cost:** each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records.
+- **Cost:** each chosen index costs a single upsert about 0–2 % on SQLite and about 20 % on PostgreSQL, and `limits.order_max_fields` (2 by default) bounds how many; it is built beside the writer in chunks of `limits.order_chunk` records, and a write sent meanwhile waited at most 160 ms on SQLite and 320 ms on PostgreSQL at 100 000 records.
 
 ### `limits.order_after_pages`
 
@@ -161,7 +161,7 @@ The fewest live records a type holds for the lake to choose an index of its fiel
 The most fields of one type the lake chooses an index for.
 
 - **Takes:** a count.
-- **Default:** `4`.
+- **Default:** `2`.
 
 ### `limits.order_unused_secs`
 

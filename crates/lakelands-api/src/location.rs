@@ -293,7 +293,7 @@ impl Default for Limits {
             order_after_pages: 3,
             order_window_secs: 600,
             order_min_records: 2_000,
-            order_max_fields: 4,
+            order_max_fields: 2,
             order_unused_secs: 604_800,
             order_chunk: 10_000,
         }

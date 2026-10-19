@@ -91,7 +91,7 @@ caller's (lakelands#1029, lakelands#1131).
 - **When a field is chosen.** Once `limits.order_after_pages` (3) pages
   ordered by it came within `limits.order_window_secs` (10 minutes), on a
   type holding at least `limits.order_min_records` (2 000) live records
-  and fewer than `limits.order_max_fields` (4) chosen fields, and with no
+  and fewer than `limits.order_max_fields` (2) chosen fields, and with no
   `sort_index.<type>` setting naming a field. At 2 000 records an
   unindexed page costs about 15 ms on SQLite, so a build below that size
   is noise either way. The switch `limits.choose_order_index` is on; off,
@@ -165,12 +165,16 @@ caller's (lakelands#1029, lakelands#1131).
   a single upsert's median moved by about 0 to 2 % on SQLite and by 20
   to 24 % on PostgreSQL, and a 10 000-record ingest by −2 to +22 % on
   SQLite, 0 to +43 % on PostgreSQL and +9 % on the memory engine, the
-  runs' spread as wide as the change. `limits.order_max_fields` (4)
-  bounds what the lake can add to a type's writes: four times one field's
-  cost, not measured at four: a single upsert about 0 to 8 % on SQLite
-  and 80 to 100 % on PostgreSQL, a bulk ingest up to about 90 % on
-  SQLite (within the runs' spread at one field) and up to about 170 %
-  on PostgreSQL. A field ordered by on a large type pays its build back
+  runs' spread as wide as the change. `limits.order_max_fields`
+  bounds what the lake can add to a type's writes. Its default is 2,
+  because the switch is on by default and the cost of a lake that chooses
+  is the cost a host did not ask for, agreed with the operator: twice one
+  field's cost, not measured at two, a single upsert about 0 to 4 % on
+  SQLite and 40 to 50 % on PostgreSQL. A host that raises the bound to 4
+  pays four times one field's cost, not measured at four: a single upsert
+  about 0 to 8 % on SQLite and 80 to 100 % on PostgreSQL, a bulk ingest
+  up to about 90 % on SQLite (within the runs' spread at one field) and
+  up to about 170 % on PostgreSQL. A field ordered by on a large type pays its build back
   on its first page or two, as a host's own setting does:
   at 100 000 records a first page ordered by an unindexed field
   cost 0.6 to 1.1 s on SQLite and 1.0 to 1.2 s on PostgreSQL, the whole

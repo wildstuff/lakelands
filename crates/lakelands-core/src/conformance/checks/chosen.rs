@@ -63,13 +63,14 @@ async fn rows_of(l: &Lake, ty: &str, size: u64) -> Result<(), Failure> {
     let fields = vec![
         sourced("n", StorageKind::Number),
         sourced("s", StorageKind::Text),
+        sourced("t", StorageKind::Text),
     ];
     l.declare(type_decl(ty, fields)).await?;
     let records = (0..size)
         .map(|i| {
             let n = (i * 7919) % size;
             let s = format!("s{}", i % 17);
-            source_record(ty, &format!("r{i:05}"), json!({"n": n, "s": s}))
+            source_record(ty, &format!("r{i:05}"), json!({"n": n, "s": s, "t": s}))
         })
         .collect();
     l.ingest(ty, records).await.must("ingesting the rows")?;
@@ -179,6 +180,20 @@ async fn a_lake_chooses_an_order_index_from_the_pages_it_had_to_sort_whole_and_l
     ensure!(
         now == head,
         "the lake's choice is kept beside the log: the head moved from {head} to {now}"
+    );
+    // The default bound is two fields: `s` is chosen beside `n`, a third
+    // field ordered by is not.
+    for field in ["s", "t"] {
+        for _ in 0..4 {
+            page_of(&l, &l.own, "row", field, 0).await?;
+        }
+        pause(Duration::from_millis(500)).await;
+    }
+    let (_, chosen, _) = told(&l, &l.own).await?;
+    ensure!(
+        chosen.len() == 2 && chosen.contains(&"n".to_string()),
+        "at the default `order_max_fields` of 2 the lake must choose two fields and not a third; \
+         it said chosen {chosen:?}"
     );
     // A projection rebuilt from the log holds no choice: none is logged.
     store.rebuild().await.must("rebuilding the projection")?;
