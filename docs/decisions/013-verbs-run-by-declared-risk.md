@@ -245,7 +245,8 @@ drop. Nothing about the ontology changes until the proposal is accepted,
 and a proposer needs no `schema` grant: proposing is how a principal
 without it asks. A set whose declarations are all in force is not
 filed: it is answered as `apply` answers it, with how each stands, and
-appends nothing (lakelands#1187,
+appends nothing, a migration to the type in force that renames and fills
+nothing included (lakelands#1187, lakelands#1267,
 `027 § A declaration in force appends nothing`).
 
 Accepting one needs `schema` as well as `review`

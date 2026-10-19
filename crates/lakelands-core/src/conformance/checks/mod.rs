@@ -507,6 +507,7 @@ pub const ALL: &[Check] = &[
     schema::IN_FORCE_APPENDS_NOTHING,
     schema::IN_FORCE_ANSWERED,
     schema::MIGRATION_IN_FORCE,
+    schema::MIGRATION_FILL_PROPOSED,
     schema::RECOMPUTED,
     relation_renamed::RENAMED_KEEPS_EDGES,
     relation_renamed::RENAMED_GRANT_FOLLOWS,

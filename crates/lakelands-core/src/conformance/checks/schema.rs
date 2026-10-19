@@ -11,7 +11,8 @@ use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl, Value
 use lakelands_api::seam::Seams;
 use lakelands_api::tools::{Door, GENERIC_TOOLS, MAX_TOOL_NAME, ToolSpec, tools};
 use lakelands_api::write::{
-    Declaration, DeclarationKind, InForce, Outcome, ProposedWrite, Recompute, ValueTypeMigration,
+    Declaration, DeclarationKind, InForce, Migration, Outcome, ProposedWrite, Recompute,
+    ValueTypeMigration,
 };
 use lakelands_api::{Access, Error, Grants, LakeStore, PrincipalKind, ReadAt, Refusal, TypeName};
 use serde_json::{Value, json};
@@ -831,6 +832,70 @@ async fn a_migration_to_what_is_in_force_appends_nothing(store: Store) -> Held {
         "the accepted migration with a change migrates `bill` to version 2; it is at {version}"
     );
     Ok(())
+}
+
+check!(
+    MIGRATION_FILL_PROPOSED = a_proposed_migration_in_force_is_filed_only_where_it_fills,
+    "027, extended (lakelands#1267): a proposed migration to the type in force that fills a record is filed, as it changes that record; one that fills none is answered `applied` at the head with its plan and the type named in `declared`, appending nothing, to one without `schema` too; a filed one whose fill the records took by then is accepted by appending `write_accepted` alone"
+);
+
+async fn a_proposed_migration_in_force_is_filed_only_where_it_fills(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let no = field("no", StorageKind::Text);
+    let mut status = field("status", StorageKind::Text);
+    status.initial = Some(json!("open"));
+    l.declare(type_decl("t", vec![no.clone()])).await?;
+    l.upsert("t", "t1", json!({"no": "1"})).await?;
+    // Added with an `initial`, a migration fills nothing; `fill` does.
+    let to = type_decl("t", vec![no, status]);
+    l.migrate(to.clone()).await?;
+    let fill = Migration {
+        fill: vec!["status".into()],
+        ..migration(to)
+    };
+    let propose = |who| {
+        let write = ProposedWrite::Migrate {
+            migration: Box::new(fill.clone()),
+            report: Default::default(),
+        };
+        l.cat.propose(who, write, "fill".into())
+    };
+    let before = store.head().await.must("reading the head")?;
+    let Outcome::Proposed { proposal, .. } = propose(&l.own).await.must("proposing the fill")?
+    else {
+        return Err(Failure::new(
+            "a proposed migration that fills a record is not answered as proposed",
+        ));
+    };
+    let written = events_after(store.as_ref(), before).await?;
+    ensure!(
+        written.len() == 1 && matches!(written[0].body, EventBody::WriteProposed { .. }),
+        "a proposed migration to the type in force that fills a record is filed; the log \
+         holds {written:?}"
+    );
+    // The record takes the field before the accept: it fills none by then.
+    l.upsert("t", "t1", json!({"status": "done"})).await?;
+    let at = store.head().await.must("reading the head")?;
+    l.cat.accept(&l.own, &proposal).await.must("accepting")?;
+    let written = events_after(store.as_ref(), at).await?;
+    ensure!(
+        written.len() == 1 && matches!(written[0].body, EventBody::WriteAccepted { .. }),
+        "an accepted proposal whose fill the records took by then appends `write_accepted` \
+         alone; the log holds {written:?}"
+    );
+    // Nothing to fill now: not filed, for one without `schema` as well.
+    let head = store.head().await.must("reading the head")?;
+    for who in [&l.own, &reviewer(store.as_ref(), false)] {
+        let got = propose(who).await.must("proposing what is in force")?;
+        ensure!(
+            matches!(&got, Outcome::Applied { position, declared, plan, .. }
+                if *position == head && plan.is_some()
+                    && declared.len() == 1 && !declared[0].appended),
+            "a proposed migration that fills none is answered `applied` at the head {head} \
+             with its plan and `t` in force; it answered {got:?}"
+        );
+    }
+    head_unmoved(store.as_ref(), head, "the proposals of what is in force").await
 }
 
 check!(

@@ -536,7 +536,9 @@ declaration's changes, and the times `recompute` appended it again (022).
   moment is not appended again, so an acceptance may append
   `write_accepted` alone; the accept answers how each declaration of
   the bundle stands after it, as `apply` does (lakelands#1187).
-  A proposed migration whose `to` is the type in force, renaming and filling nothing, is answered the same way and not recorded (lakelands#1267).
+  A proposed migration whose `to` is the type in force, renaming and
+  filling nothing, is answered the same way, with its plan and the type
+  named in `declared`, and is not recorded (lakelands#1267).
 - **Every kind:** a value type, a type, a function, a verb, a trigger,
   an object set. A function with a backing and a type with a field
   computed outside the lake are no exception (022).
@@ -545,8 +547,10 @@ declaration's changes, and the times `recompute` appended it again (022).
   `migrate_apply` answers it `applied` at the head and appends nothing
   only where it fills no record (050), after every refusal, a stale
   report among them: the preflight is made and its id compared, and each
-  answers as for any migration. An accepted proposal of one that fills
-  no record appends its acceptance alone. A value type's
+  answers as for any migration. A proposal of one that fills no record
+  is not recorded; one that fills a record is, and when the records have
+  taken the field by its accept, that accept appends its acceptance
+  alone. A value type's
   migration to itself needs no rule: its preflight refuses it, there
   being nothing to migrate.
 
@@ -961,6 +965,9 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
   declarations all in force is answered as `apply` answers it and is not
   recorded, and an accept of declarations answers how each stands
   (lakelands#1187).
+- Extended: a proposed migration to the type in force that renames and
+  fills nothing is answered the same way and is not recorded
+  (lakelands#1267).
 - Added: a declaring append leaves the shape after it, built at the
   first read of its position (lakelands#1056).
 - Marking a field `authority: verb` is a change of meaning, taken by `declare` (lakelands#1130).

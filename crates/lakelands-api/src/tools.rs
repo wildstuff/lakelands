@@ -1274,7 +1274,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 and a migration need no `schema` grant to propose; a reviewer holding it \
                 accepts them. Declarations all in force, and a migration to the type in \
                 force that renames and fills nothing, are not filed: they are answered \
-                applied at the head with `declared`, as apply answers them, and nothing is \
+                applied at the head with `declared` naming what stands, and nothing is \
                 appended."
                 .into(),
             input_schema: obj(
