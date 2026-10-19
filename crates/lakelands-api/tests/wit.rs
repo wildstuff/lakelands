@@ -722,6 +722,7 @@ fn remove_report() -> lakelands_api::write::RemoveReport {
         before: Some(Position(2)),
         events: 2,
         undelivered: 1,
+        unseen: 1,
         types: vec![forget_records()],
         fields: vec![removed_field()],
         retired: vec![TypeRetired {
@@ -1580,6 +1581,8 @@ fn case_names<T: Serialize>(values: &[T], tag: Option<&str>) -> BTreeSet<String>
             |v| match (serde_json::to_value(v).expect("serialises"), tag) {
                 (Value::String(s), _) => s,
                 (Value::Object(m), Some(tag)) => m[tag].as_str().expect("a tag").to_owned(),
+                // Externally tagged: the one member's name.
+                (Value::Object(m), None) if m.len() == 1 => m.keys().next().cloned().unwrap(),
                 (other, _) => panic!("{other} has no case name"),
             },
         )
@@ -1656,6 +1659,23 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     units!("write_origin", WriteOrigin, [Direct, Reactive, Scheduled]);
     units!("walk", Walk, [Out, In, Both]);
     units!("carrier", Carrier, [Via, Links, Derived]);
+    {
+        use lakelands_api::write::Selection;
+        fn guard(s: &Selection) {
+            match s {
+                Selection::WrittenBefore(_) | Selection::Delivery(_) | Selection::SeenBefore(_) => {
+                }
+            }
+        }
+        let _ = guard;
+        let t = Timestamp(0);
+        let all = [
+            Selection::WrittenBefore(t),
+            Selection::Delivery("d".into()),
+            Selection::SeenBefore(t),
+        ];
+        checks.push(("selection", case_names(&all, None)));
+    }
 
     fn kept(k: &Kept) -> [NotKept; 5] {
         match k {

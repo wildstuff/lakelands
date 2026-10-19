@@ -140,12 +140,15 @@ impl Removal {
     }
 
     /// Whether it selects `e`: a `record_ingested` of its source before
-    /// it, below its position for a time, of its delivery for one.
+    /// it, below its position for a time of the log's clock, of its
+    /// delivery for one, stating a `seen_at` before the time for a time
+    /// the source observed.
     pub(crate) fn selects(&self, e: &Event) -> bool {
         let ingested = matches!(e.body, EventBody::RecordIngested { .. });
         let picked = match &self.selection {
             Selection::WrittenBefore(_) => self.before.is_some_and(|b| e.position < b),
             Selection::Delivery(d) => e.delivery.as_ref() == Some(d),
+            Selection::SeenBefore(t) => e.seen_at.is_some_and(|s| s < *t),
         };
         ingested && e.position < self.at && e.source.as_ref() == Some(&self.source) && picked
     }
@@ -262,7 +265,7 @@ fn found(
             Some(p) => p.next(),
             None => Position::GENESIS,
         }),
-        Selection::Delivery(_) => None,
+        Selection::Delivery(_) | Selection::SeenBefore(_) => None,
     };
     let act = Removal {
         at: at.unwrap_or(head.map_or(Position::GENESIS, Position::next)),
@@ -278,7 +281,7 @@ fn found(
     // value is taken where its field identifies records neither at its
     // event nor at the act, as the fold takes it (lakelands#1228).
     let history = History::new(lake, view)?;
-    let (mut events, mut undelivered) = (0, 0);
+    let (mut events, mut undelivered, mut unseen) = (0, 0, 0);
     let mut selected = BTreeSet::new();
     // Every write of the source, selected or not: a record it did not make
     // is never retired, as the purge never retires one (069).
@@ -309,6 +312,7 @@ fn found(
         }
         brought.insert(e.position);
         undelivered += u64::from(e.delivery.is_none());
+        unseen += u64::from(e.seen_at.is_none());
         let sealed = e.sealed.as_ref();
         let taken = earlier.iter().any(|r| r.selects(e));
         if !act.selects(e) && !taken {
@@ -369,8 +373,12 @@ fn found(
     let gone = |(k, a): &(KeyId, Vec<KeyId>)| {
         keys.contains(k) || a.iter().any(|a| apart.contains(a)) || forgot
     };
-    if matches!(selection, Selection::WrittenBefore(_)) {
+    // Each selection counts only the events it cannot select.
+    if !matches!(selection, Selection::Delivery(_)) {
         undelivered = 0;
+    }
+    if !matches!(selection, Selection::SeenBefore(_)) {
+        unseen = 0;
     }
     // At the head: what each record reached keeps, and what it loses.
     let mine = |m: &lakelands_api::FieldMeta| {
@@ -531,6 +539,7 @@ fn found(
         before,
         events,
         undelivered,
+        unseen,
         types,
         fields,
         retired,
@@ -578,7 +587,7 @@ fn id(source: &SourceId, selection: &Selection, head: Option<Position>) -> Strin
 /// 9999.
 fn checked(selection: &Selection) -> Result<()> {
     match selection {
-        Selection::WrittenBefore(t) if !t.in_years() => {
+        Selection::WrittenBefore(t) | Selection::SeenBefore(t) if !t.in_years() => {
             let value = t.to_string();
             Err(invalid(Case::NotDateTime { value }))
         }

@@ -280,6 +280,25 @@ fn apart_belongs_to_format_18_on() {
 }
 
 #[test]
+fn seen_before_belongs_to_format_18_on() {
+    let line = |v: u32| -> Event {
+        serde_json::from_value(json!({
+            "v": v, "lake": "l", "position": 1, "id": "0".repeat(32),
+            "prev": "0".repeat(64), "known_at": "2026-01-01T00:00:00.000000Z",
+            "writer": "system:lakelands", "origin": "system",
+            "context": {"origin": "direct", "depth": 0}, "fence": 1,
+            "body": {"kind": "values_removed", "source": "crm",
+                     "selection": {"seen_before": "2026-01-01T00:00:00.000000Z"}},
+            "hash": "0".repeat(64)
+        }))
+        .unwrap()
+    };
+    assert_eq!(misplaced(&line(18)), None);
+    let why = misplaced(&line(17)).expect("refused");
+    assert_eq!(why, lakelands_api::error::Flaw::SelectsSeenBefore { v: 17 });
+}
+
+#[test]
 fn trigger_dropped_belongs_to_format_17_on() {
     let line = |v: u32| -> Event {
         serde_json::from_value(json!({

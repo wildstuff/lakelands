@@ -1876,6 +1876,9 @@ pub enum Selection {
     WrittenBefore(Timestamp),
     /// What it wrote in one delivery.
     Delivery(DeliveryId),
+    /// What it wrote of what it says it observed before a time: each event
+    /// whose `seen_at` is before it, wherever in the log it stands.
+    SeenBefore(Timestamp),
 }
 
 /// The values one field of one type loses to a removal.
@@ -1902,8 +1905,8 @@ pub struct RemoveReport {
     pub source: SourceId,
     /// The selection, as asked.
     pub selection: Selection,
-    /// For a time, the first position it does not reach: every event of
-    /// the source below it is selected.
+    /// For a time of the log's clock, the first position it does not
+    /// reach: every event of the source below it is selected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before: Option<Position>,
     /// The source's `record_ingested` events selected.
@@ -1911,6 +1914,10 @@ pub struct RemoveReport {
     /// For a delivery, the source's events written before the log kept
     /// deliveries, which it cannot select.
     pub undelivered: u64,
+    /// For a time the source observed, the source's events that state no
+    /// `seen_at`, which it cannot select.
+    #[serde(default)]
+    pub unseen: u64,
     /// Per type, in name order, the records holding a value it removes.
     pub types: Vec<ForgetRecords>,
     /// Per type and field, in that order, the values it removes.
@@ -1974,6 +1981,7 @@ impl RemoveReport {
             }
             (Selection::WrittenBefore(t), None) => format!("written before {t}"),
             (Selection::Delivery(d), _) => format!("of delivery `{d}`"),
+            (Selection::SeenBefore(t), _) => format!("seen before {t}"),
         };
         let (events, are) = (counted(self.events, "event"), be(self.events));
         let mut said = vec![format!(
@@ -1988,6 +1996,12 @@ impl RemoveReport {
                 "keep"
             };
             said.push(format!("{n} {keep} no delivery and stay."));
+        }
+        if self.unseen > 0 {
+            let n = counted(self.unseen, "event");
+            let state = verb(self.unseen, "states", "state");
+            let stay = verb(self.unseen, "stays", "stay");
+            said.push(format!("{n} {state} no time seen and {stay}."));
         }
         for f in &self.fields {
             let (ty, field) = (&f.ty, &f.field);
