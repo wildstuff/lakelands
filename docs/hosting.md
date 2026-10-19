@@ -1380,7 +1380,8 @@ them:
   `RelationDecl::to("partner", "partner")`, and `SearchMode::lexical(text)`,
   `::vector` and `::hybrid` (0.9.0 added `weight` and `also` to a vector
   search and `weight` and `text_weight` to a hybrid one, and 0.16.0
-  `model` to both and to a vector term, and to `Axis`; a mode built by
+  `model` to both and to a vector term, and to `Axis`, and 0.17.0
+  `text_fields` to a lexical and a hybrid one; a mode built by
   its constructor leaves them out, and a `VectorTerm` written as a
   struct literal names `model`). `TypeDecl`, `FieldDecl`, `RelationDecl`,
   `TypeDescription`, `FieldDescription`, `LakeDescription` and

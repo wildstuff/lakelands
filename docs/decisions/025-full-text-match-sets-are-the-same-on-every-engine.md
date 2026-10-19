@@ -226,7 +226,12 @@ in its title no higher than one mentioning it in a note.
 - **It weighs what a search does not.** A fused search that gives a
   vector field no `weight` takes the setting's `fields` weight, and a
   hybrid search with no `text_weight` takes the setting's; a weight the
-  search gives wins, and a ranking neither names weighs 1. Each fused
+  search gives wins, and a ranking neither names weighs 1. A lexical or
+  hybrid search may give its own `text_fields` as well: its weight for a
+  field wins over the setting's for that field, and a field it does not
+  name takes the setting's, else 1, so a host that wants another
+  weighting for one search does not rewrite how every other search of
+  the type ranks (lakelands#1237). Each fused
   axis names the weight it ranked by. A search of one axis is not fused,
   and `fields` and `text_weight` change nothing there. A restricted setting's value
   shows only as the weight of an axis its reader is shown, as any
@@ -249,11 +254,24 @@ in its title no higher than one mentioning it in a note.
   and not a ranking against another, so it is read where nothing is
   fused too. A hybrid search's lexical half is ranked by it before the
   fusion, which reads that half's ranks. The axes do not name it: it
-  is the type's, not an axis's. A field is weighed only where the
-  search reads it, under its name at the head: a field it does not
-  name, or whose reader is not shown it, brings no weight, and no
-  weight is scaled by another's, so a field its reader is not shown
-  moves no score of the fields it is (lakelands#1230).
+  is the type's or the search's, not an axis's. A field is weighed
+  only where the search reads it, under its name at the head: a field
+  it does not name, or whose reader is not shown it, brings no weight,
+  and no weight is scaled by another's, so a field its reader is not
+  shown moves no score of the fields it is (lakelands#1230).
+- **A search's own `text_fields` is judged as the setting's is,** at
+  the search. Each field it names, in name order, is probed as a field
+  a search names (024), so one the type does not declare and one the
+  reader is not shown are refused alike, as `unknown_field`, and one
+  shown masked is not granted; then it must be searchable
+  (`not_searchable`), and only then is its weight judged
+  (`weight_range`), so a refusal of a weight never tells a reader of a
+  field it is not shown. The first faulty field in that order is the
+  one named. An empty object is refused as an empty
+  `fields` is (`search_text_fields_empty`). A field the search's
+  `fields` leaves out is judged too, and weighs nothing, since it is
+  not searched. The weights are part of the search a cursor is bound
+  to, so a cursor continues no search of other weights.
 - **A weight a search could not give weighs nothing.** The store reads
   the setting through the same bound it is written under, so a log
   that came another way, by an import, cannot make a search rank by a
@@ -834,6 +852,8 @@ Of an index asked for:
   it is in, `text_fields`, each token at its heaviest field, in every
   ranking of text; a lexical hit scored the count of its tokens before,
   which is its score where nothing is weighed (lakelands#1230).
+- Added: a lexical or hybrid search gives its own `text_fields`, each
+  weight winning over the setting's for its field (lakelands#1237).
 - 046 added: a query vector has a direction (lakelands#696).
 - 046 added: a vector ranking reads a vector field, which replaced the
   fallback of a hybrid search over a field no model fills

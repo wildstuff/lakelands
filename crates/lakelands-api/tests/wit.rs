@@ -739,6 +739,7 @@ fn search_mode() -> SearchMode {
         field: "f".into(),
         vector: Some(vec![1.0]),
         fields: Some(vec!["f".into()]),
+        text_fields: Some([("f".into(), 2.0)].into()),
         weight: None,
         text_weight: None,
         model: None,
@@ -1186,7 +1187,15 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     with_meta: true,
                     at: read_at(),
                 }),
-                &["as_of", "valid_at", "text", "field", "vector", "fields"],
+                &[
+                    "as_of",
+                    "valid_at",
+                    "text",
+                    "field",
+                    "vector",
+                    "fields",
+                    "text_fields",
+                ],
                 &["at"],
             ),
         ),
@@ -1922,6 +1931,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 SearchMode::Lexical {
                     text: "t".into(),
                     fields: Some(vec!["f".into()]),
+                    text_fields: None,
                 },
                 SearchMode::Vector {
                     field: "f".into(),
