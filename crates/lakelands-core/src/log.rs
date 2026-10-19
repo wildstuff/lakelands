@@ -124,6 +124,10 @@ pub fn reads_format(v: u64) -> bool {
 /// The log format that first holds `sealed` and `source_forgotten` (058).
 const SEALED_FROM: u32 = 16;
 
+/// The log format that first holds `apart`, a delivery's key outside its
+/// source's versions (065).
+const APART_FROM: u32 = 18;
+
 /// An event as log format `v` wrote it, its members as the format this
 /// release writes says them, for the release's own structs to read. Its
 /// `v` stays the one it was written in, and its bytes and hash are the
@@ -141,6 +145,8 @@ const SEALED_FROM: u32 = 16;
 /// - **16 → 17:** none. Format 17 is 0.16.0's one step, taken before any
 ///   form it adds (lakelands#1164): a log of format 16 holds none of them.
 ///   `docs/log-format.md` §6 names each, by the change that adds it.
+/// - **17 → 18:** none. Format 18 is 0.17.0's one step, taken before any
+///   form it adds (lakelands#1214): a log of format 17 holds none of them.
 #[doc(hidden)]
 pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
     debug_assert!(reads_format(v), "format {v} is not one this release reads");
@@ -258,7 +264,8 @@ pub fn created_in_another(event: &Event) -> Option<Flaw> {
 /// (`docs/decisions/058-a-source-may-be-forgotten.md`); and `delivery` on
 /// any kind but `record_ingested`, or before format 17
 /// (`docs/log-format.md` §1.1); and a `trigger_dropped`, or a
-/// `trigger_fired`'s `change` or `created`, before format 17.
+/// `trigger_fired`'s `change` or `created`, before format 17; and `apart`,
+/// in `sealed` or on a `values_removed`, before format 18 (065).
 /// No door
 /// puts any there; a reader holds the rule for a log written by something
 /// else.
@@ -296,6 +303,15 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
     if matches!(event.body, EventBody::ValuesRemoved { .. }) && event.v < 17 {
         let v = event.v;
         return Some(Flaw::RemovedBefore { v });
+    }
+    let apart = match &event.body {
+        EventBody::ValuesRemoved { apart, .. } => !apart.is_empty(),
+        _ => false,
+    };
+    let apart = apart || event.sealed.as_ref().is_some_and(|s| !s.apart.is_empty());
+    if apart && event.v < APART_FROM {
+        let v = event.v;
+        return Some(Flaw::ApartBefore { v });
     }
     let told = |c: &Option<_>, m: &Option<bool>| c.is_some() || m.is_some();
     if let EventBody::TriggerFired {

@@ -26,6 +26,7 @@ use lakelands_api::error::{Flaw, Situation};
 use lakelands_api::event::{
     ChangeKind, DepthBound, Event, EventBody, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT,
 };
+use lakelands_api::id::KeyId;
 use lakelands_api::ontology::{AtIngest, TypeDecl, VerbScope};
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, ProposedWrite};
@@ -192,7 +193,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 538, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 566, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -394,7 +395,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 64] = [
+const SHOWN: [&str; 68] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -459,10 +460,14 @@ const SHOWN: [&str; 64] = [
     "removed_before",
     "removal_by_time_retires",
     "proposed_migrate_recomputed",
+    "sealed_apart",
+    "sealed_apart_output",
+    "removed_apart",
+    "removal_apart_retires",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 71;
+const LAST: u64 = 75;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
@@ -725,8 +730,8 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
         "untyped_input" => matches!(declared, Some(D::Function(f))
             if !f.inputs.is_empty() && f.inputs.iter().all(|i| i.any_kind)),
         "values_removed" => {
-            matches!(&event.body, B::ValuesRemoved { source, selection, before, keys }
-            if source == "erp" && before.is_none() && keys.is_empty()
+            matches!(&event.body, B::ValuesRemoved { source, selection, before, keys, apart }
+            if source == "erp" && before.is_none() && keys.is_empty() && apart.is_empty()
                 && *selection == lakelands_api::write::Selection::Delivery("batch-7".into()))
         }
         "removal_retires" => matches!(&event.body, B::RecordRetired { key, .. } if key == "INV-2"),
@@ -735,8 +740,8 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
                 && event.delivery.as_ref().map(|d| d.as_str()) == Some("d68")
         }
         "removed_before" => {
-            matches!(&event.body, B::ValuesRemoved { source, selection, before, keys }
-            if source == "erp" && *before == Some(lakelands_api::Position(69)) && keys.is_empty()
+            matches!(&event.body, B::ValuesRemoved { source, selection, before, keys, apart }
+            if source == "erp" && *before == Some(lakelands_api::Position(69)) && keys.is_empty() && apart.is_empty()
                 && matches!(selection, lakelands_api::write::Selection::WrittenBefore(_)))
         }
         "removal_by_time_retires" => {
@@ -751,6 +756,34 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
                     "report": lakelands_api::write::MigrationReport { report_id: String::new(), ..(**report).clone() },
                     "head": 70,
                 })))
+        }
+        // A delivery sealed apart, its output, and the act that shreds it
+        // alone (065, lakelands#1214).
+        "sealed_apart" => {
+            matches!(&event.body, B::RecordIngested { key, .. } if key == "c5")
+                && event
+                    .sealed
+                    .as_ref()
+                    .is_some_and(|s| s.key == "1" && s.apart == [KeyId::from("a1")])
+                && event.delivery.as_ref().map(|d| d.as_str()) == Some("late")
+        }
+        "sealed_apart_output" => {
+            matches!(
+                &event.body,
+                B::OutputRecorded {
+                    output: Some(_),
+                    ..
+                }
+            ) && event.sealed.as_ref().is_some_and(|s| {
+                s.source.as_ref().is_some_and(|s| s == "hr") && s.apart == [KeyId::from("a1")]
+            })
+        }
+        "removed_apart" => {
+            matches!(&event.body, B::ValuesRemoved { source, keys, apart, .. }
+            if source == "hr" && keys.is_empty() && *apart == [KeyId::from("a1")])
+        }
+        "removal_apart_retires" => {
+            matches!(&event.body, B::RecordRetired { key, .. } if key == "c5")
         }
         other => panic!("`further.json` shows `{other}`, which this test has no check for"),
     }
@@ -983,12 +1016,12 @@ fn lines_of(n: u32) -> Vec<Value> {
 
 /// The steps from each older format to this release's change no event:
 /// 14 → 15 lets a verb's path read across a reference or a relation's
-/// link (055), which a log of format 14 never declares, and 15 → 16 and
-/// 16 → 17 add forms a log of the format before never holds. So every
-/// line of each older format's vectors, of every kind they hold, is read
-/// as it was written, `v` included, and decodes into this release's
-/// structs; the kinds each holds are named, so a kind the vectors miss is
-/// seen.
+/// link (055), which a log of format 14 never declares, and 15 → 16,
+/// 16 → 17 and 17 → 18 add forms a log of the format before never holds.
+/// So every line of each older format's vectors, of every kind they hold,
+/// is read as it was written, `v` included, and decodes into this
+/// release's structs; the kinds each holds are named, so a kind the
+/// vectors miss is seen.
 #[test]
 fn the_steps_from_every_older_format_change_no_event_of_any_kind() {
     for n in OLDEST_LOG_FORMAT..LOG_FORMAT_VERSION {

@@ -758,6 +758,9 @@ interface types {
     /// Options an `ingest` takes.
     record ingest-opts {
         delivery: option<delivery-id>,
+        /// Seal the delivery under a key of its own too, so that taking
+        /// it back shreds it alone.
+        sealed-apart: bool,
     }
 
     record applied {
@@ -1651,7 +1654,8 @@ interface types {
     /// records and values it takes, redacted and shredded, the records it
     /// retires and those it keeps, what is computed again, the constraints
     /// and references it leaves broken, the versions of the source's key
-    /// it destroys and the values of erasable fields it redacts only, the
+    /// it destroys, the keys of deliveries sealed apart it destroys alone,
+    /// and the values of erasable fields it redacts only, the
     /// events its rebuild folds and the time it is
     /// expected to hold the writer's lock, the position, the act's
     /// reclaim, and a preflight's id.
@@ -1670,6 +1674,7 @@ interface types {
         breaches: list<breach>,
         references: list<purge-reference>,
         keys: list<key-id>,
+        apart: list<key-id>,
         unshredded: u64,
         log-events: u64,
         expected-ms: u64,

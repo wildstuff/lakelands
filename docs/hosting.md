@@ -385,7 +385,11 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   - **key periods** are how a retention cut shreds: each period's values
     seal under a version of their own, and a cut destroys the versions
     of the periods wholly before it. One delivery taken back is
-    redacted, and shredded only once such a cut covers it;
+    redacted, and shredded only once such a cut covers it, unless its
+    ingest asked `IngestOpts::sealed_apart`: its values then seal under
+    their version composed with a key of the delivery's own, and taking
+    it back destroys that key alone, which needs a key store that makes
+    such keys (`KeyStore::create_apart`); the file keyring does;
   - **`require_shredded`** refuses the act, `remove_not_shredded`,
     while a value of an erasable field it takes would be redacted only;
     a key store that destroys a source's key only whole

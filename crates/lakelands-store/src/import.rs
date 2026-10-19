@@ -159,7 +159,7 @@ struct Envelope {
 
 /// Of an event's body, its kind, the fence a `lease_taken` names, the
 /// source a `source_forgotten` forgot or a `values_removed` took from, and
-/// the versions of its key the latter destroyed.
+/// the versions of its key and the keys sealed apart the latter destroyed.
 #[derive(serde::Deserialize)]
 struct Body {
     kind: String,
@@ -169,6 +169,8 @@ struct Body {
     source: Option<SourceId>,
     #[serde(default)]
     keys: Vec<lakelands_api::id::KeyId>,
+    #[serde(default)]
+    apart: Vec<lakelands_api::id::KeyId>,
 }
 
 /// Of an event's `sealed`, the version of the key and the source of a
@@ -178,6 +180,9 @@ struct Sealed {
     key: lakelands_api::id::KeyId,
     #[serde(default)]
     source: Option<SourceId>,
+    /// The keys of a delivery sealed apart it is sealed under too (065).
+    #[serde(default)]
+    apart: Vec<lakelands_api::id::KeyId>,
 }
 
 /// Each line of `path` as the event the store would append, with its
@@ -210,7 +215,9 @@ fn events(path: &Path) -> Result<impl Iterator<Item = Result<(CanonicalEvent, En
 /// is one the bound key store gives. With none bound such a value is
 /// refused as unbound, and a key the store does not give as missing: the
 /// value would be lost (058). A forgotten source's values arrive erased,
-/// and so do those under a version an act of removal destroyed (065).
+/// and so do those under a key an act of removal destroyed, a version or
+/// one of a delivery sealed apart, though their other keys are gone too
+/// (065).
 /// Answers each file's digest.
 fn check(
     files: &[PathBuf],
@@ -247,7 +254,8 @@ fn check(
             if let Some(s) = &event.sealed
                 && let Some(source) = s.source.clone().or_else(|| event.source.clone())
             {
-                sealed.insert((source, s.key.clone()));
+                let keys: Vec<_> = std::iter::once(&s.key).chain(&s.apart).cloned().collect();
+                sealed.insert((source, keys));
             }
             if event.body.kind == "source_forgotten" {
                 forgot.extend(event.body.source.clone());
@@ -256,8 +264,8 @@ fn check(
             if event.body.kind == "values_removed"
                 && let Some(source) = &event.body.source
             {
-                let taken = event.body.keys.iter().map(|k| (source.clone(), k.clone()));
-                shredded.extend(taken);
+                let taken = (event.body.keys.iter()).chain(&event.body.apart);
+                shredded.extend(taken.map(|k| (source.clone(), k.clone())));
             }
             if event.fence != fence {
                 let (carried, lease) = (event.fence, fence);
@@ -270,10 +278,16 @@ fn check(
             }
         }
     }
-    let kept = |(s, k): &(SourceId, lakelands_api::id::KeyId)| {
-        !forgot.contains(s) && !shredded.contains(&(s.clone(), k.clone()))
+    let kept = |(s, ks): &(SourceId, Vec<lakelands_api::id::KeyId>)| {
+        !forgot.contains(s)
+            && !ks
+                .iter()
+                .any(|k| shredded.contains(&(s.clone(), k.clone())))
     };
-    for (source, key) in sealed.into_iter().filter(kept) {
+    let needed: BTreeSet<_> = (sealed.into_iter().filter(kept))
+        .flat_map(|(s, ks)| ks.into_iter().map(move |k| (s.clone(), k)))
+        .collect();
+    for (source, key) in needed {
         let Some(keys) = keys else {
             return Err(Error::unbound(lakelands_api::error::Seam::KeyStore));
         };

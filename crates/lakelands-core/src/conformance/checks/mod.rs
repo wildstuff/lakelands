@@ -102,6 +102,7 @@ mod row_pages;
 mod schema;
 mod schema_proposals;
 mod sealed;
+mod sealed_apart;
 mod search;
 mod search_axes;
 mod search_fields;
@@ -600,6 +601,13 @@ pub const ALL: &[Check] = &[
     removed::REMOVED_COMPUTED,
     removed::REMOVED_REPLAYED,
     removed::REMOVE_CRASH_SHREDDED,
+    sealed_apart::APART_SHREDDED,
+    sealed_apart::APART_OUTPUT,
+    sealed_apart::APART_CUT,
+    sealed_apart::APART_SET,
+    sealed_apart::APART_STREAMING,
+    sealed_apart::APART_OFF,
+    sealed_apart::APART_KEPT,
     reached::REMOVED_REKEYED,
     reached::FORGOTTEN_REKEYED,
     reached::REMOVED_ACROSS,
@@ -765,6 +773,7 @@ pub const ALL: &[Check] = &[
     upgrade::FORMAT_14_UPGRADED,
     upgrade::FORMAT_15_UPGRADED,
     upgrade::FORMAT_16_UPGRADED,
+    upgrade::FORMAT_17_UPGRADED,
     upgrade::LAYOUT_REBUILT,
     verb_written::VERB_ONLY,
     verb_written::VERB_ONLY_TOLD,

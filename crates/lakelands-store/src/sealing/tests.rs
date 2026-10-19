@@ -11,10 +11,10 @@ use lakelands_api::{LakeId, Result, SourceId, Timestamp};
 
 use super::{Keys, List, digest, open, rotates, seal, turns};
 
-/// The lines of `vectors/17/further.json` that show `shows`.
+/// The lines of `vectors/18/further.json` that show `shows`.
 fn line(shows: &str) -> Event {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/17/further.json");
+        .join("../../docs/log-format/vectors/18/further.json");
     let further: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     let entries = further["events"].as_array().unwrap();
     let entry = entries.iter().find(|e| e["shows"] == shows).unwrap();
@@ -57,6 +57,62 @@ fn the_vectors_sealed_output_opens_and_its_input_is_the_hmac_of_the_call() {
         panic!("an output")
     };
     assert_eq!(output.as_ref(), Some(&json!("ADA@EXAMPLE.ORG")));
+}
+
+/// The vectors' key of `hr`'s delivery sealed apart, as their README
+/// names it.
+fn apart() -> DataKey {
+    DataKey(Sha256::digest(b"lakelands:vectors:apart").into())
+}
+
+/// The vectors' ingest sealed apart opens under its version composed
+/// with the delivery's key, to its plaintext, and under neither alone;
+/// its output's input is the HMAC of the call under the composed key
+/// (065, lakelands#1214).
+#[test]
+fn the_vectors_ingest_sealed_apart_opens_only_under_both_keys() {
+    let both = super::compose(&key(), &[apart()]);
+    let stored = line("sealed_apart");
+    for alone in [key(), apart()] {
+        assert!(open(&mut stored.clone(), &alone).is_err());
+    }
+    let mut plain = stored.clone();
+    open(&mut plain, &both).unwrap();
+    let EventBody::RecordIngested { patch, .. } = &plain.body else {
+        panic!("an ingest")
+    };
+    assert_eq!(patch["email"], json!("bea@example.org"));
+    let (sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
+    seal(&mut plain.body, &sealed, &source, &both);
+    assert_eq!(plain.body, stored.body);
+    let mut e = line("sealed_apart_output");
+    let call = json!({"function": "shout", "inputs": {"email": "bea@example.org"}, "config": {}});
+    let EventBody::OutputRecorded { input, .. } = &e.body else {
+        panic!("an output")
+    };
+    assert_eq!(*input, digest(&both, &call));
+    assert_ne!(*input, digest(&key(), &call));
+    open(&mut e, &both).unwrap();
+    let EventBody::OutputRecorded { output, .. } = &e.body else {
+        panic!("an output")
+    };
+    assert_eq!(output.as_ref(), Some(&json!("BEA@EXAMPLE.ORG")));
+}
+
+/// A version composed with no key apart is the version itself, so a
+/// value sealed before format 18 opens as it was sealed; composed with
+/// keys apart it depends on each of them and on their order.
+#[test]
+fn a_version_composed_with_no_key_apart_is_itself() {
+    let other = DataKey(Sha256::digest(b"another").into());
+    assert_eq!(super::compose(&key(), &[]).0, key().0);
+    let one = super::compose(&key(), &[apart()]).0;
+    assert_ne!(one, key().0);
+    assert_ne!(one, super::compose(&key(), std::slice::from_ref(&other)).0);
+    assert_ne!(
+        super::compose(&key(), &[apart(), other.clone()]).0,
+        super::compose(&key(), &[other, apart()]).0
+    );
 }
 
 /// A sealed value moved to another record does not open: its nonce is
@@ -367,4 +423,14 @@ fn a_source_with_no_version_left_is_destroyed_all_the_same() {
     let keys = Keys::new(LakeId::from("l"), Some(store.clone()));
     keys.destroy(&SourceId::from("crm")).unwrap();
     assert_eq!(store.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+/// The list marks a version a delivery sealed apart sealed under with a
+/// fourth member, and only those (065).
+#[test]
+fn the_list_marks_the_versions_a_delivery_sealed_apart_sealed_under() {
+    let list = List::of(json!([["k1", 3, 7], ["k2", 9, 8, true], ["k3", 12]]));
+    assert_eq!(list.apart, [KeyId::from("k2")]);
+    assert_eq!(list.firsts.len(), 3);
+    assert!(List::of(json!([["k1", 3, 7]])).apart.is_empty());
 }

@@ -336,12 +336,14 @@ pub trait KeyStore: Send + Sync {
     /// Make a new version of the source's key and answer its id.
     fn create(&self, lake: &LakeId, source: &SourceId) -> Result<KeyId>;
 
-    /// The key of that version, or none once it is destroyed.
+    /// The key of that version, or of that key [`Self::create_apart`]
+    /// made, or none once it is destroyed.
     fn key(&self, lake: &LakeId, source: &SourceId, id: &KeyId) -> Result<Option<DataKey>>;
 
-    /// Destroy every version of the source's key, and refuse it a new one:
-    /// a source whose versions are all destroyed already, or that has none,
-    /// is accepted and marked so.
+    /// Destroy every version of the source's key, and every key
+    /// [`Self::create_apart`] made of it, and refuse it a new one: a
+    /// source whose keys are all destroyed already, or that has none, is
+    /// accepted and marked so.
     fn destroy(&self, lake: &LakeId, source: &SourceId) -> Result<()>;
 
     /// Destroy the version `id` of the source's key and every older one,
@@ -365,6 +367,25 @@ pub trait KeyStore: Send + Sync {
 
     /// The versions of the source's key, oldest first; none destroyed.
     fn ids(&self, lake: &LakeId, source: &SourceId) -> Result<Vec<KeyId>>;
+
+    /// Make a key of the source outside its versions, for one delivery
+    /// sealed apart, and answer its id: [`Self::key`] answers it, it is
+    /// never among [`Self::ids`], and [`Self::destroy`] destroys it with
+    /// the versions
+    /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). A key
+    /// store that makes none refuses as unbound, as this default does.
+    fn create_apart(&self, lake: &LakeId, source: &SourceId) -> Result<KeyId> {
+        let _ = (lake, source);
+        Err(crate::Error::unbound(crate::error::Seam::KeyApart))
+    }
+
+    /// Destroy the key `id` [`Self::create_apart`] made, and no other. One
+    /// it does not hold is no change. A key store that makes none refuses
+    /// as unbound, as this default does.
+    fn destroy_apart(&self, lake: &LakeId, source: &SourceId, id: &KeyId) -> Result<()> {
+        let _ = (lake, source, id);
+        Err(crate::Error::unbound(crate::error::Seam::KeyApart))
+    }
 }
 
 /// The type holding a lake's named settings: `setting('key')` reads the

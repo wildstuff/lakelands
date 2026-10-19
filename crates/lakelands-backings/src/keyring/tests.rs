@@ -174,3 +174,35 @@ fn a_destroyed_version_takes_the_older_ones_and_leaves_the_newer() {
     assert_eq!(again.ids(&lake, &crm).unwrap(), [next]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A key made apart is answered by `key`, never listed among the versions,
+/// destroyed alone, from another keyring over the same directory too, and
+/// with the source's versions by `destroy`, after which none is made (065).
+#[test]
+fn a_key_apart_is_destroyed_alone_and_with_the_source() {
+    let dir = scratch("apart");
+    let (lake, crm) = (LakeId::from("orders"), SourceId::from("crm"));
+    let ring = FileKeyring::new(&dir);
+    let v1 = ring.create(&lake, &crm).unwrap();
+    let (a1, a2) = (
+        ring.create_apart(&lake, &crm).unwrap(),
+        ring.create_apart(&lake, &crm).unwrap(),
+    );
+    assert_eq!(ring.ids(&lake, &crm).unwrap(), std::slice::from_ref(&v1));
+    assert!(ring.key(&lake, &crm, &a1).unwrap().is_some());
+    ring.destroy_apart(&lake, &crm, &a1).unwrap();
+    ring.destroy_apart(&lake, &crm, &a1).unwrap();
+    let again = FileKeyring::new(&dir);
+    assert!(again.key(&lake, &crm, &a1).unwrap().is_none());
+    assert!(again.key(&lake, &crm, &a2).unwrap().is_some());
+    assert!(again.key(&lake, &crm, &v1).unwrap().is_some());
+    again.destroy(&lake, &crm).unwrap();
+    assert!(again.key(&lake, &crm, &a2).unwrap().is_none());
+    let refused = again.create_apart(&lake, &crm).unwrap_err();
+    let destroyed = matches!(
+        refused.case().map(|s| &s.case),
+        Some(Case::KeyDestroyed { .. })
+    );
+    assert!(destroyed, "{refused}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

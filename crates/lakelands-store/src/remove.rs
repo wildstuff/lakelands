@@ -70,6 +70,8 @@ pub(crate) struct Removal {
     pub before: Option<Position>,
     /// The versions of the source's key it destroyed.
     pub keys: Vec<KeyId>,
+    /// The source's keys of deliveries sealed apart it destroyed.
+    pub apart: Vec<KeyId>,
     /// What identifies records at it, where the fold was told it
     /// ([`told`]).
     pub fixed: Fixed,
@@ -113,6 +115,7 @@ impl Removal {
             selection,
             before,
             keys,
+            apart,
         } = &e.body
         else {
             return None;
@@ -124,14 +127,16 @@ impl Removal {
             selection,
             before,
             keys: keys.clone(),
+            apart: apart.clone(),
             fixed: Fixed::default(),
         })
     }
 
-    /// Whether it destroyed version `key` of `source`'s key: a value
-    /// sealed under it, missing from the key store, is erased, not lost.
+    /// Whether it destroyed `source`'s key `key`, a version or a
+    /// delivery's sealed apart: a value sealed under it, missing from the
+    /// key store, is erased, not lost.
     pub(crate) fn destroyed(&self, source: &SourceId, key: &KeyId) -> bool {
-        &self.source == source && self.keys.contains(key)
+        &self.source == source && (self.keys.contains(key) || self.apart.contains(key))
     }
 
     /// Whether it selects `e`: a `record_ingested` of its source before
@@ -265,6 +270,7 @@ fn found(
         selection: selection.clone(),
         before,
         keys: Vec::new(),
+        apart: Vec::new(),
         fixed: Fixed::default(),
     };
     // From the log: the selected events, the records they reached and the
@@ -278,11 +284,19 @@ fn found(
     // The values of the selected events it does not take, by the event's
     // position and the field's name now.
     let mut untaken: BTreeSet<(Position, FieldName)> = BTreeSet::new();
-    // Per field, the values taken, and of them those sealed, by version.
-    type Tally = (u64, BTreeMap<KeyId, u64>);
+    // Per field, the values taken, and of them those sealed, by version
+    // and the keys of a delivery sealed apart.
+    type Tally = (u64, BTreeMap<(KeyId, Vec<KeyId>), u64>);
     let mut fields: BTreeMap<(TypeName, FieldName), Tally> = BTreeMap::new();
-    // The versions sealing values it selects, and those sealing others.
+    // The keys sealing values it selects, and those sealing others: the
+    // versions, and the keys of deliveries sealed apart.
     let (mut inside, mut outside) = (BTreeSet::new(), BTreeSet::new());
+    let keys_of = |s: &lakelands_api::event::Sealed| -> Vec<(bool, KeyId)> {
+        let apart = s.apart.iter().map(|k| (true, k.clone()));
+        std::iter::once((false, s.key.clone()))
+            .chain(apart)
+            .collect()
+    };
     each_of(lake, view, std::slice::from_ref(source), |_, e| {
         let EventBody::RecordIngested { ty, key, patch, .. } = &e.body else {
             return;
@@ -294,10 +308,10 @@ fn found(
         let sealed = e.sealed.as_ref();
         let taken = earlier.iter().any(|r| r.selects(e));
         if !act.selects(e) && !taken {
-            outside.extend(sealed.map(|s| s.key.clone()));
+            outside.extend(sealed.into_iter().flat_map(keys_of));
             return;
         }
-        inside.extend(sealed.map(|s| s.key.clone()));
+        inside.extend(sealed.into_iter().flat_map(keys_of));
         if taken {
             return;
         }
@@ -307,7 +321,7 @@ fn found(
         for (written, _) in patch.iter().filter(|(_, v)| !v.is_null()) {
             let under = sealed
                 .filter(|s| s.fields.contains(written))
-                .map(|s| s.key.clone());
+                .map(|s| (s.key.clone(), s.apart.clone()));
             let (t, f) = history.named((e.position, act.at), ty, written);
             let taken = then.is_some_and(|d| takeable(d, written))
                 && history.ty(&t, act.at).is_some_and(|d| takeable(d, &f));
@@ -329,14 +343,28 @@ fn found(
     // destroys only whole sources shreds none.
     let held = lake.keys.ids(source)?;
     let keys: Vec<KeyId> = (held.iter())
-        .take_while(|k| lake.keys.shreds() && inside.contains(*k) && !outside.contains(*k))
+        .take_while(|k| {
+            let k = (false, (*k).clone());
+            lake.keys.shreds() && inside.contains(&k) && !outside.contains(&k)
+        })
         .cloned()
         .collect();
+    // Every key of a delivery sealed apart whose values it all selects,
+    // and that the key store still holds: it is in no chain, so it goes
+    // alone (065).
+    let mut apart = Vec::new();
+    for (_, k) in inside.iter().filter(|(a, _)| *a) {
+        if !outside.contains(&(true, k.clone())) && lake.keys.holds(source, k)? {
+            apart.push(k.clone());
+        }
+    }
     // A value under a version it destroys, or under any of a source the
     // log forgot, is shredded; one a key store lost is not. An earlier
     // act's values are not counted again.
     let forgot = crate::lake::forgotten_list(view, &Staged::default())?.contains_key(source);
-    let gone = |k: &KeyId| keys.contains(k) || forgot;
+    let gone = |(k, a): &(KeyId, Vec<KeyId>)| {
+        keys.contains(k) || a.iter().any(|a| apart.contains(a)) || forgot
+    };
     if matches!(selection, Selection::WrittenBefore(_)) {
         undelivered = 0;
     }
@@ -508,6 +536,7 @@ fn found(
         breaches,
         references: references.references,
         keys,
+        apart,
         unshredded,
         log_events,
         expected_ms: lake.expected_ms(log_events),
@@ -626,6 +655,7 @@ pub fn run(
         selection: selection.clone(),
         before: report.before,
         keys: report.keys.clone(),
+        apart: report.apart.clone(),
     };
     let system = lake.system("lakelands");
     let call = Call {

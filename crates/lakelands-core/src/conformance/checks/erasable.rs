@@ -54,24 +54,37 @@ check!(
 
 /// A key store in memory, for the checks: one key a version, made from a
 /// counter, so nothing of it is random, and every id once in the process,
-/// so a store made anew never gives an id it gave before.
+/// so a store made anew never gives an id it gave before; and, beside the
+/// versions, each key of a delivery sealed apart (065).
 #[derive(Default)]
-pub struct Keys(Mutex<BTreeMap<(LakeId, SourceId), Versions>>);
+pub struct Keys(
+    Mutex<BTreeMap<(LakeId, SourceId), Versions>>,
+    Mutex<BTreeMap<(LakeId, SourceId), Versions>>,
+);
 
 /// A source's keys by version, none where destroyed.
 type Versions = Vec<(KeyId, Option<[u8; 32]>)>;
 
+/// A new key of `source` in `held`, its id `prefix` and a counter.
+fn made(
+    held: &Mutex<BTreeMap<(LakeId, SourceId), Versions>>,
+    (lake, source): (&LakeId, &SourceId),
+    prefix: &str,
+) -> KeyId {
+    let mut held = crate::lock(held);
+    let versions = held.entry((lake.clone(), source.clone())).or_default();
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let id = KeyId::from(format!("{prefix}{n}"));
+    let bytes: [u8; 32] =
+        <sha2::Sha256 as sha2::Digest>::digest(format!("{lake}/{source}/{id}")).into();
+    versions.push((id.clone(), Some(bytes)));
+    id
+}
+
 impl KeyStore for Keys {
     fn create(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<KeyId> {
-        let mut held = crate::lock(&self.0);
-        let versions = held.entry((lake.clone(), source.clone())).or_default();
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let id = KeyId::from(format!("k{n}"));
-        let bytes: [u8; 32] =
-            <sha2::Sha256 as sha2::Digest>::digest(format!("{lake}/{source}/{id}")).into();
-        versions.push((id.clone(), Some(bytes)));
-        Ok(id)
+        Ok(made(&self.0, (lake, source), "k"))
     }
 
     fn key(
@@ -80,15 +93,39 @@ impl KeyStore for Keys {
         source: &SourceId,
         id: &KeyId,
     ) -> lakelands_api::Result<Option<DataKey>> {
-        let held = crate::lock(&self.0);
-        let versions = held.get(&(lake.clone(), source.clone()));
-        let found = versions.and_then(|v| v.iter().find(|(i, _)| i == id));
-        Ok(found.and_then(|(_, k)| k.map(DataKey)))
+        for held in [&self.0, &self.1] {
+            let held = crate::lock(held);
+            let versions = held.get(&(lake.clone(), source.clone()));
+            if let Some((_, k)) = versions.and_then(|v| v.iter().find(|(i, _)| i == id)) {
+                return Ok(k.map(DataKey));
+            }
+        }
+        Ok(None)
     }
 
     fn destroy(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<()> {
-        let mut held = crate::lock(&self.0);
-        for (_, k) in held.entry((lake.clone(), source.clone())).or_default() {
+        for held in [&self.0, &self.1] {
+            let mut held = crate::lock(held);
+            for (_, k) in held.entry((lake.clone(), source.clone())).or_default() {
+                *k = None;
+            }
+        }
+        Ok(())
+    }
+
+    fn create_apart(&self, lake: &LakeId, source: &SourceId) -> lakelands_api::Result<KeyId> {
+        Ok(made(&self.1, (lake, source), "a"))
+    }
+
+    fn destroy_apart(
+        &self,
+        lake: &LakeId,
+        source: &SourceId,
+        id: &KeyId,
+    ) -> lakelands_api::Result<()> {
+        let mut held = crate::lock(&self.1);
+        let apart = held.entry((lake.clone(), source.clone())).or_default();
+        for (_, k) in apart.iter_mut().filter(|(i, _)| i == id) {
             *k = None;
         }
         Ok(())
@@ -141,24 +178,32 @@ impl Keys {
             let bytes: Option<Vec<u8>> = (0..hex.len()).step_by(2).map(byte).collect();
             Some((KeyId::from(id), Some(<[u8; 32]>::try_from(bytes?).ok()?)))
         };
-        let mut held = BTreeMap::new();
+        let (mut held, mut apart) = (BTreeMap::new(), BTreeMap::new());
         for (source, versions) in ring["sources"].as_object().into_iter().flatten() {
-            let keys = versions["keys"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(key);
-            held.insert(
-                (lake.clone(), SourceId::from(source.as_str())),
-                keys.collect(),
-            );
+            let of = |list: &str| -> Versions {
+                let all = versions[list].as_array().into_iter().flatten();
+                all.filter_map(key).collect()
+            };
+            let at = (lake.clone(), SourceId::from(source.as_str()));
+            held.insert(at.clone(), of("keys"));
+            apart.insert(at, of("apart"));
         }
-        Ok(Keys(Mutex::new(held)))
+        Ok(Keys(Mutex::new(held), Mutex::new(apart)))
     }
 
     /// A copy of every key, as a backup of the key store holds them.
     pub(super) fn backup(&self) -> Keys {
-        Keys(Mutex::new(crate::lock(&self.0).clone()))
+        let apart = Mutex::new(crate::lock(&self.1).clone());
+        Keys(Mutex::new(crate::lock(&self.0).clone()), apart)
+    }
+
+    /// The keys of deliveries sealed apart of `source` it holds, none
+    /// destroyed.
+    pub(super) fn apart(&self, lake: &LakeId, source: &SourceId) -> Vec<KeyId> {
+        let held = crate::lock(&self.1);
+        let apart = held.get(&(lake.clone(), source.clone())).into_iter();
+        let live = apart.flatten().filter(|(_, k)| k.is_some());
+        live.map(|(i, _)| i.clone()).collect()
     }
 }
 
@@ -727,7 +772,7 @@ async fn an_output_computed_from_a_sources_erasable_values_is_sealed_under_its_k
     let behind = {
         let mut held = crate::lock(&keys.0).clone();
         held.values_mut().for_each(|v| v.truncate(1));
-        Arc::new(Keys(Mutex::new(held)))
+        Arc::new(Keys(Mutex::new(held), Mutex::default()))
     };
     let store = again(&reopen, store, with(&behind), "with a key store behind it").await?;
     let before = store.head().await.must("reading the head")?;

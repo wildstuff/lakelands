@@ -1212,7 +1212,7 @@ impl Lake {
             if let Some(sealed) = &d.sealed
                 && let Some(source) = sealed.source.as_ref().or(d.source.as_ref())
             {
-                let key = self.keys.key(source, &sealed.key)?;
+                let key = self.keys.sealed(source, sealed)?;
                 crate::sealing::seal(&mut d.body, sealed, source, &key);
             }
             let (event, canon, fault) = log::seal_judged(&self.id, position, &prev_hash, fence, d);
@@ -1842,31 +1842,45 @@ impl Lake {
             EventBody::RecordIngested { .. } => e.source.clone(),
             _ => source.or(e.source.as_ref()).cloned(),
         };
+        // A value sealed apart and erased by its apart key alone still
+        // tells the version it sealed with, whose first use it may be: the
+        // list of versions stays the one the write kept (065).
+        let mut kept_seal = e.sealed.clone();
         let e = match (&e.sealed, source) {
             (Some(sealed), Some(source)) => {
                 let mut plain = e.clone();
                 // With no key store at all, as an import made without one,
                 // a value the log forgot is erased, and any other refused
                 // as unbound rather than lost.
-                let key = match self.keys.opened(source, &sealed.key) {
-                    Ok(Some(key)) => Ok(key),
-                    Ok(None) => {
-                        let (source, key) = (source.clone(), sealed.key.clone());
-                        Err(Error::unavailable(Situation::KeyMissing { source, key }))
+                // A seal of a delivery sealed apart needs its version and
+                // its apart keys: it is erased where an act destroyed any
+                // of those missing, and fails closed on the first (065).
+                let (key, missing) = match self.keys.opened_sealed(source, sealed) {
+                    Ok(Ok(key)) => (Ok(key), Vec::new()),
+                    Ok(Err(missing)) => {
+                        let (source, key) = (source.clone(), missing[0].clone());
+                        let lost = Error::unavailable(Situation::KeyMissing { source, key });
+                        (Err(lost), missing)
                     }
-                    Err(e @ Error::Unbound { .. }) => Err(e),
+                    Err(e @ Error::Unbound { .. }) => {
+                        let all = std::iter::once(&sealed.key).chain(&sealed.apart);
+                        (Err(e), all.cloned().collect())
+                    }
                     Err(e) => return Err(e),
                 };
                 match key {
                     Ok(key) => crate::sealing::open(&mut plain, &key)?,
                     Err(_)
-                        if self.erased_key(
+                        if self.erased_any(
                             w,
                             (view, staged),
                             source,
-                            (&sealed.key, e.position),
+                            (&missing, e.position),
                         )? =>
                     {
+                        if missing.contains(&sealed.key) {
+                            kept_seal = None;
+                        }
                         dropped = matches!(plain.body, EventBody::OutputRecorded { .. });
                         erased = crate::sealing::erase(&mut plain);
                     }
@@ -1907,13 +1921,15 @@ impl Lake {
             }
         }
         // The versions of each source's key the log sealed with, each with
-        // the position of its first use ([`crate::sealing::USED`]).
+        // the position of its first use ([`crate::sealing::USED`]), and the
+        // apart keys of each event a delivery sealed apart
+        // ([`crate::sealing::APART`]).
         if let (EventBody::RecordIngested { .. }, Some(sealed), Some(source)) =
-            (&e.body, &e.sealed, &e.source)
+            (&e.body, &kept_seal, &e.source)
         {
-            let used = (source, &sealed.key, e.position, e.known_at);
+            let used = (source, sealed, e.position, e.known_at);
             let read = (&staged.outputs, view, &*self.keys);
-            if let Some((at, list)) = crate::sealing::first_use(read, used)? {
+            for (at, list) in crate::sealing::kept(read, used)? {
                 projection.put_output(&at.0, &at.1, &list, e.position)?;
                 staged
                     .outputs
@@ -1974,7 +1990,10 @@ impl Lake {
                     true => Vec::new(),
                     false => self.keys.ids(&act.source)?,
                 };
-                let destroyed = !act.keys.iter().any(|k| ids.contains(k));
+                let mut destroyed = !act.keys.iter().any(|k| ids.contains(k));
+                for k in &act.apart {
+                    destroyed = destroyed && !self.keys.holds(&act.source, k)?;
+                }
                 // One met untold fixes what identifies records here, as a
                 // rebuild would be told it (lakelands#1228).
                 if !w.removals.contains(&act) {
@@ -2379,8 +2398,27 @@ impl Lake {
         let Some((sealed, source)) = sealed.and_then(|s| Some((s, s.source.as_ref()?))) else {
             return Ok(false);
         };
-        Ok(self.keys.opened(source, &sealed.key)?.is_none()
-            && self.erased_key(w, (view, staged), source, (&sealed.key, at))?)
+        match self.keys.opened_sealed(source, sealed)? {
+            Ok(_) => Ok(false),
+            Err(missing) => self.erased_any(w, (view, staged), source, (&missing, at)),
+        }
+    }
+
+    /// Whether any of `keys`, which the key store does not give, was
+    /// destroyed by an act in the log ([`Self::erased_key`]).
+    fn erased_any(
+        &self,
+        w: &mut Writer,
+        (view, staged): (&dyn ProjectionView, &Staged),
+        source: &SourceId,
+        (keys, at): (&[lakelands_api::id::KeyId], Position),
+    ) -> Result<bool> {
+        for key in keys {
+            if self.erased_key(w, (view, staged), source, (key, at))? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Whether version `key` of `source`'s key, which the key store does
@@ -2646,6 +2684,7 @@ impl Lake {
                 .filter(|r| owed(r))
             {
                 self.keys.destroy_versions(&act.source, &act.keys)?;
+                self.keys.destroy_apart(&act.source, &act.apart)?;
             }
             drop(view);
             self.rebuild_held(w)?;
