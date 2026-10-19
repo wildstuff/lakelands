@@ -45,6 +45,12 @@ check!(
 );
 
 check!(
+    APART_STREAMING = a_call_writing_past_an_act_takes_a_new_key_apart,
+    "065 (lakelands#1214): an ingest of the delivery `late`, sealed apart, writes `p2` in its first window and then waits; an act taking `late` back lands before its next window, its key store failing to destroy `late`'s key, so the act answers the failure with the key held; the call then writes `p3`, whose `sealed.apart` names a new key, not the one the act named, since the act did not select it; after the writer's next open finishes the act, `p2` reads its name erased and `p3` reads Cy, as do a writer opened again and a rebuild",
+    reopens
+);
+
+check!(
     APART_OFF = an_ingest_not_sealed_apart_seals_as_before,
     "065 (lakelands#1214): an ingest that does not ask `sealed_apart` seals under the source's version alone, `sealed` naming no `apart` and the key store making no key apart; one that asks it and writes no erasable value seals nothing and asks for no key; and with a key store that makes no key apart, one that asks it and writes an erasable value is refused as unbound (`key_apart`) and appends nothing, while the same records without it are written",
     reopens
@@ -607,6 +613,145 @@ async fn a_set_forgotten_destroys_the_keys_apart_of_each_source(
     };
     read(&l, "after the act").await?;
     let store = again(&reopen, store, with(&keys), "after the act").await?;
+    read(&Lake::of(store.as_ref()), "a writer opened again").await?;
+    store.rebuild().await.must("rebuilding")?;
+    read(&Lake::of(store.as_ref()), "after a rebuild").await?;
+    Ok(())
+}
+
+/// Records in hand: `first` at once, then `rest` once `released` is set
+/// and the waker it holds is woken.
+struct Gated {
+    first: std::vec::IntoIter<SourceRecord>,
+    rest: std::vec::IntoIter<SourceRecord>,
+    released: bool,
+    waker: Option<std::task::Waker>,
+}
+
+/// A source stream over [`Gated`].
+struct Gate(Arc<std::sync::Mutex<Gated>>);
+
+impl futures_core::Stream for Gate {
+    type Item = SourceRecord;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<SourceRecord>> {
+        let held = &mut *crate::lock(&self.0);
+        if let Some(r) = held.first.next() {
+            return std::task::Poll::Ready(Some(r));
+        }
+        if !held.released {
+            held.waker = Some(cx.waker().clone());
+            return std::task::Poll::Pending;
+        }
+        std::task::Poll::Ready(held.rest.next())
+    }
+}
+
+async fn a_call_writing_past_an_act_takes_a_new_key_apart(store: Store, reopen: Reopen) -> Held {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let keys = Arc::new(Keys::default());
+    let failing = Arc::new(FailingApart(keys.clone(), AtomicBool::new(false)));
+    let seams = || Seams {
+        keys: Some(failing.clone()),
+        backings: backing::backings(),
+        ..Seams::default()
+    };
+    let store = again(&reopen, store, seams(), "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(person()).await?;
+    let crm: SourceId = "crm".into();
+    let p = |k: &str, name: &str| source_record("person", k, json!({"id": k, "name": name}));
+    l.ingest("crm", vec![p("p1", "Ada")])
+        .await
+        .must("ingesting p1")?;
+    let v1 = first(&keys, store.as_ref(), "crm")?;
+    let gate = Arc::new(std::sync::Mutex::new(Gated {
+        first: vec![p("p2", "Bea")].into_iter(),
+        rest: vec![p("p3", "Cy")].into_iter(),
+        released: false,
+        waker: None,
+    }));
+    let opts = IngestOpts {
+        delivery: Some("late".into()),
+        sealed_apart: true,
+    };
+    let gated = Box::pin(Gate(gate.clone()));
+    let mut commits = match l.cat.ingest_with(&l.own, &crm, opts, gated).await {
+        Ok(c) => c,
+        Err(e) => return Err(Failure::new(format!("ingesting `late` sealed apart: {e}"))),
+    };
+    let window = std::future::poll_fn(|cx| commits.as_mut().poll_next(cx)).await;
+    window
+        .ok_or_else(|| Failure::new("`late`'s first window answers"))?
+        .must("`late`'s first window")?;
+    l.upsert("person", "p2", json!({"note": "kept"})).await?;
+    let made = keys.apart(store.lake(), &crm);
+    let [a] = made.as_slice() else {
+        return Err(Failure::new(format!(
+            "the first window makes one key apart; the key store holds {made:?}"
+        )));
+    };
+    let before = store.head().await.must("reading the head")?;
+    let late = Selection::Delivery("late".into());
+    failing.1.store(true, Ordering::SeqCst);
+    let stopped = store.remove_values(&crm, &late, false, None).await;
+    let held = keys.apart(store.lake(), &crm);
+    ensure!(
+        stopped.is_err() && held == made,
+        "the act whose destroy fails answers {stopped:?}, and the key stays: {held:?}"
+    );
+    let mark = store.head().await.must("reading the head")?;
+    {
+        let held = &mut *crate::lock(&gate);
+        held.released = true;
+        if let Some(w) = held.waker.take() {
+            w.wake();
+        }
+    }
+    while let Some(window) = std::future::poll_fn(|cx| commits.as_mut().poll_next(cx)).await {
+        window.must("`late`'s window after the act")?;
+    }
+    failing.1.store(false, Ordering::SeqCst);
+    let sealed = seals(store.as_ref(), mark).await?;
+    let p3 = sealed
+        .iter()
+        .find(|(w, _)| w == "ingest p3")
+        .map(|(_, s)| s);
+    let fresh = p3.and_then(|s| s.apart.first()).cloned();
+    ensure!(
+        fresh
+            .as_ref()
+            .is_some_and(|b| b != a && p3 == Some(&under(&v1, std::slice::from_ref(b), false))),
+        "`p3`, written after the act, is sealed under {v1} and a new key apart, not {a}: \
+         {sealed:?}"
+    );
+    let store = again(&reopen, store, seams(), "after the stopped act").await?;
+    let left = keys.apart(store.lake(), &crm);
+    ensure!(
+        left == fresh.into_iter().collect::<Vec<_>>(),
+        "the writer's next open destroys {a} alone: {left:?}"
+    );
+    let read = async |l: &Lake, by: &str| {
+        for when in [Some(before), None] {
+            let p2 = at(l, "person", "p2", when).await?;
+            ensure!(
+                p2.as_ref().is_some_and(|r| erased(r, "name", "crm")),
+                "{by}, as of {when:?}, `p2` reads its name erased: {p2:?}"
+            );
+        }
+        let p3 = at(l, "person", "p3", None).await?;
+        ensure!(
+            p3.as_ref()
+                .is_some_and(|r| r.fields.get("name") == Some(&json!("Cy"))),
+            "{by}, `p3` reads Cy: {p3:?}"
+        );
+        Ok::<_, Failure>(())
+    };
+    read(&Lake::of(store.as_ref()), "after the writer's next open").await?;
+    let store = again(&reopen, store, seams(), "after the finish").await?;
     read(&Lake::of(store.as_ref()), "a writer opened again").await?;
     store.rebuild().await.must("rebuilding")?;
     read(&Lake::of(store.as_ref()), "after a rebuild").await?;
