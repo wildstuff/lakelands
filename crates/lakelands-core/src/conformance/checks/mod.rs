@@ -109,6 +109,7 @@ mod search;
 mod search_axes;
 mod search_fields;
 mod search_text_weights;
+mod seen_before;
 mod set_declared;
 mod set_migrated;
 mod set_names;
@@ -615,6 +616,9 @@ pub const ALL: &[Check] = &[
     sealed_apart::APART_STREAMING,
     sealed_apart::APART_OFF,
     sealed_apart::APART_KEPT,
+    seen_before::SEEN_BEFORE,
+    seen_before::SEEN_SHREDDED,
+    seen_before::SEEN_PREFIX,
     reached::REMOVED_REKEYED,
     reached::FORGOTTEN_REKEYED,
     reached::REMOVED_ACROSS,

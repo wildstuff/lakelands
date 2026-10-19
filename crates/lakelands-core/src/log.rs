@@ -9,6 +9,7 @@
 
 use lakelands_api::error::Flaw;
 use lakelands_api::event::{Event, EventBody, EventId, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT};
+use lakelands_api::write::Selection;
 use lakelands_api::{
     IdempotencyKey, LakeId, Patch, Position, ProposalId, RecordKey, SourceId, TypeName,
 };
@@ -125,7 +126,7 @@ pub fn reads_format(v: u64) -> bool {
 const SEALED_FROM: u32 = 16;
 
 /// The log format that first holds `apart`, a delivery's key outside its
-/// source's versions (065).
+/// source's versions, and a selection by `seen_before` (065).
 const APART_FROM: u32 = 18;
 
 /// An event as log format `v` wrote it, its members as the format this
@@ -266,7 +267,8 @@ pub fn created_in_another(event: &Event) -> Option<Flaw> {
 /// any kind but `record_ingested`, or before format 17
 /// (`docs/log-format.md` §1.1); and a `trigger_dropped`, or a
 /// `trigger_fired`'s `change` or `created`, before format 17; and `apart`,
-/// in `sealed` or on a `values_removed`, before format 18 (065).
+/// in `sealed` or on a `values_removed`, and a `values_removed` selecting
+/// by `seen_before`, before format 18 (065).
 /// No door
 /// puts any there; a reader holds the rule for a log written by something
 /// else.
@@ -313,6 +315,15 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
     if apart && event.v < APART_FROM {
         let v = event.v;
         return Some(Flaw::ApartBefore { v });
+    }
+    if let EventBody::ValuesRemoved {
+        selection: Selection::SeenBefore(_),
+        ..
+    } = &event.body
+        && event.v < APART_FROM
+    {
+        let v = event.v;
+        return Some(Flaw::SelectsSeenBefore { v });
     }
     let told = |c: &Option<_>, m: &Option<bool>| c.is_some() || m.is_some();
     if let EventBody::TriggerFired {

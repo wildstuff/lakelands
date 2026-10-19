@@ -205,9 +205,10 @@ The new lake has its own log and its own hashes. Lakelands does not rewrite a lo
 - `declared` gains `erasable` by the same step.
 - What 0.14.0 can already do is in `hosting.md`: opaque source ids, and surrogate keys for types that will hold personal data. Both make a lake ready to opt in later.
 
-Part of a source, what it wrote before a time or in one delivery, is
-taken back by an act of its own, which redacts and, where the key
-periods allow, destroys versions of this key
+Part of a source, what it wrote before a time, in one delivery or of
+what it observed before a time, is taken back by an act of its own,
+which redacts and, where the key periods allow, destroys versions of
+this key
 (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
 
 ## Why

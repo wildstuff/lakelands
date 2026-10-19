@@ -375,19 +375,21 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `LakeStore::remove_values(source, selection, require_shredded,
   report_id)` takes what a
   source wrote before a time (`Selection::WrittenBefore`, the log's
-  clock) or in one delivery (`Selection::Delivery`, the id `ingest`
-  answered), and nothing another hand wrote. It appends
-  `values_removed`, retires each record the source made left holding
-  nothing of another hand, rebuilds and reclaims, all under the writer's lock, as
+  clock), in one delivery (`Selection::Delivery`, the id `ingest`
+  answered) or of what it says it observed before a time
+  (`Selection::SeenBefore`, its `seen_at`), and nothing another hand
+  wrote. It appends `values_removed`, retires each record the source
+  made left holding nothing of another hand, rebuilds and reclaims, all
+  under the writer's lock, as
   forgetting does; its preflight, `remove_values_preflight`, says what
   it takes, keeps and retires, what is computed again, the constraints
   and references it leaves broken, the required fields it leaves empty
   (a breach of `required` naming the field), and how long it expects to
   hold the lock. `RemoveReport::said` says it in sentences. The CLI's
   `lakelands values remove --source <id> (--before <instant> |
-  --delivery <id>) [--require-shredded]` prints those sentences, and acts
-  only with `--report <id>`, the preflight's, as `forget` does. What the
-  host is told:
+  --delivery <id> | --seen-before <instant>) [--require-shredded]`
+  prints those sentences, and acts only with `--report <id>`, the
+  preflight's, as `forget` does. What the host is told:
   - **a redacted value** is read by no door at any position, `as_of`
     included, but it is still in the log, every export and every
     backup: in plaintext for a field that is not erasable, sealed under

@@ -310,7 +310,7 @@ fn command() -> Command {
                 .subcommand_required(true)
                 .subcommand(
                     Command::new("remove")
-                        .about("Take back what one source wrote before a time, or in one delivery: its values read as erased at every position, as one act")
+                        .about("Take back what one source wrote before a time, in one delivery, or of what it observed before a time: its values read as erased at every position, as one act")
                         .arg(
                             Arg::new("source")
                                 .long("source")
@@ -321,7 +321,8 @@ fn command() -> Command {
                         )
                         .arg(Arg::new("before").long("before").value_name("RFC3339").value_parser(|s: &str| lakelands_api::Timestamp::parse(s).map_err(|e| e.to_string())).help("Take back what the source wrote before this instant: RFC 3339, or a date at midnight UTC"))
                         .arg(Arg::new("delivery").long("delivery").value_name("ID").value_parser(clap::builder::NonEmptyStringValueParser::new()).help("Take back what the source wrote in this one delivery"))
-                        .group(clap::ArgGroup::new("selection").args(["before", "delivery"]).required(true))
+                        .arg(Arg::new("seen-before").long("seen-before").value_name("RFC3339").value_parser(|s: &str| lakelands_api::Timestamp::parse(s).map_err(|e| e.to_string())).help("Take back what the source wrote of what it says it observed before this instant (its seen_at): RFC 3339, or a date at midnight UTC"))
+                        .group(clap::ArgGroup::new("selection").args(["before", "delivery", "seen-before"]).required(true))
                         .arg(Arg::new("require-shredded").long("require-shredded").action(ArgAction::SetTrue).help("Refuse while a value of an erasable field would be redacted only, its key version not destroyed"))
                         .arg(Arg::new("preflight").long("preflight").action(ArgAction::SetTrue).conflicts_with("report").help("Say what the act would take, retire and leave broken, and how long it would hold the writer, appending nothing; what `values remove` does without --report"))
                         .arg(Arg::new("report").long("report").value_name("ID").help("Take back, only under the id of a preflight of this removal at this head")),
@@ -627,9 +628,11 @@ async fn dispatch(
             // As `forget`: the act runs only under a preflight's id (065).
             let of = sub.subcommand().map_or(sub, |(_, of)| of);
             let source = text(of, "source").unwrap_or_default();
-            let selection = match of.get_one::<lakelands_api::Timestamp>("before") {
-                Some(t) => lakelands_api::write::Selection::WrittenBefore(*t),
-                None => lakelands_api::write::Selection::Delivery(
+            let at = |name: &str| of.get_one::<lakelands_api::Timestamp>(name).copied();
+            let selection = match (at("before"), at("seen-before")) {
+                (Some(t), _) => lakelands_api::write::Selection::WrittenBefore(t),
+                (_, Some(t)) => lakelands_api::write::Selection::SeenBefore(t),
+                _ => lakelands_api::write::Selection::Delivery(
                     text(of, "delivery").unwrap_or_default().into(),
                 ),
             };

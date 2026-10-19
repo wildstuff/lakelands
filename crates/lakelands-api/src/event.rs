@@ -269,7 +269,8 @@ pub enum EventBody {
         source: SourceId,
         /// The selection, as asked.
         selection: crate::write::Selection,
-        /// For a time, the first position it does not reach.
+        /// For a time of the log's clock, the first position it does not
+        /// reach.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         before: Option<Position>,
         /// The versions of the source's key it destroys, oldest first: the

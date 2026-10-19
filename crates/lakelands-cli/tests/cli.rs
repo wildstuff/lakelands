@@ -2032,7 +2032,9 @@ fn forget_erases_a_sources_values_and_prints_what_it_did() {
 /// the report's sentences and the id, appending nothing; a stale id is
 /// refused in the store's words, and so is `--require-shredded` while a
 /// value of an erasable field would be redacted only, naming the count;
-/// `--before` and `--delivery` are one selection, given once; the act
+/// `--before`, `--delivery` and `--seen-before` are one selection, given
+/// once, and `--seen-before` counts the events that state no `seen_at`
+/// apart (lakelands#1166); the act
 /// under the preflight's id takes the values back and says through which
 /// position, and, where its reclaim fails, that the reclaim is owed and
 /// why, as the preflights after it say (lakelands#1179).
@@ -2084,6 +2086,7 @@ fn values_remove_takes_back_part_of_a_source_and_prints_what_it_did() {
         assert!(
             [&bare, &seen].iter().all(|r| r.code == 0
                 && r.out.starts_with(&said)
+                && !r.out.contains("no time seen")
                 && r.out.contains("remove with --report ")),
             "{backend:?}: {} {} / {} {}",
             bare.out,
@@ -2102,9 +2105,24 @@ fn values_remove_takes_back_part_of_a_source_and_prints_what_it_did() {
             .next()
             .map(str::trim)
             .unwrap_or_default();
+        let day = lakelands_api::Timestamp::parse("2026-01-01").unwrap();
+        let unseen = remove(&["--seen-before", "2026-01-01"]);
+        assert!(
+            unseen.code == 0
+                && unseen.out.starts_with(&format!(
+                    "0 events of `tracker` seen before {day} are selected."
+                ))
+                && unseen
+                    .out
+                    .contains("\n2 events state no time seen and stay.\n"),
+            "{backend:?}: {} {}",
+            unseen.out,
+            unseen.err
+        );
         for usage in [
             remove(&[]),
             remove(&[&all[..], &["--delivery", "d1"]].concat()),
+            remove(&[&all[..], &["--seen-before", "2026-01-01"]].concat()),
             remove(&[&all[..], &["--preflight", "--report", id]].concat()),
         ] {
             assert!(usage.code == 2, "{backend:?}: a usage error: {}", usage.err);

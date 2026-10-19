@@ -1638,10 +1638,12 @@ interface types {
     }
 
     /// Which of a source's values a removal takes back: what it wrote
-    /// before a time of the log's clock, or in one delivery.
+    /// before a time of the log's clock, in one delivery, or of what it
+    /// says it observed before a time (its `seen-at`).
     variant selection {
         written-before(timestamp),
         delivery(delivery-id),
+        seen-before(timestamp),
     }
 
     /// The values one field of one type loses to a removal.
@@ -1655,7 +1657,8 @@ interface types {
     /// What one removal took back, or its preflight says it would: the
     /// selection and the first position a time does not reach, the
     /// events selected and, for a delivery, the source's events from
-    /// before format 17, which carry none and are never selected, the
+    /// before format 17, which carry none and are never selected, and for
+    /// a time the source observed, its events that state no `seen-at`, the
     /// records and values it takes, redacted and shredded, the records it
     /// retires and those it keeps, what is computed again, the constraints
     /// and references it leaves broken, the versions of the source's key
@@ -1670,6 +1673,7 @@ interface types {
         before: option<position>,
         events: u64,
         undelivered: u64,
+        unseen: u64,
         types: list<forget-records>,
         fields: list<removed-field>,
         retired: list<type-retired>,

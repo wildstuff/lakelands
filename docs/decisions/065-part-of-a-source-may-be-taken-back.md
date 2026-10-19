@@ -3,25 +3,36 @@
 ## What is decided
 
 Decided by the operator on lakelands#1153; it is built in 0.16.0, and a
-delivery sealed apart in 0.17.0 (lakelands#1214). It
+delivery sealed apart and a selection by the time the source observed in
+0.17.0 (lakelands#1214, lakelands#1166). It
 stands beside 039, which retracts a source as one, and 058, which
 forgets a source whole.
 
-### A host takes back part of a source: what it wrote before a time, or one delivery
+### A host takes back part of a source: what it wrote before a time, one delivery, or what it saw before a time
 
 `remove_values(source, selection)` removes the values the source wrote
-in the selection from the records they live in. There are two
+in the selection from the records they live in. There are three
 selections:
 - **`written_before: T`:** the source's `record_ingested` events whose
   `known_at` is before `T`. The log's clock never falls, so this is every
   such event below one position, which the act names. What the source
-  says it observed (`seen_at`) selects nothing: it may be absent, false
-  or out of order. A time outside the years 0000 to 9999 is refused.
+  says it observed (`seen_at`) plays no part in it. A time outside the
+  years 0000 to 9999 is refused, by this selection and by `seen_before`.
 - **`delivery: D`:** the source's events of one delivery. Each
   `record_ingested` carries the delivery it came in: the id its caller
   gave, or the store's own (`d` and the position of its first event),
   answered by `ingest`. An event from before format 17 carries none, so
   no delivery selects it, and the report counts such events.
+- **`seen_before: T`:** the source's events whose `seen_at`, the time
+  the source says it observed the values, is before `T`
+  (lakelands#1166). That time is the source's word, not the log's: it
+  need not rise along the log, so the selection is a set of events
+  spread across it, not one cut, and the act names no position. A late
+  delivery of old observations is selected wherever it lands, and an
+  early event that says it observed later is not. An event that states
+  no `seen_at` is never selected, and the report counts such events
+  apart. The selection is only as true as the source: a false `seen_at`
+  keeps a value or takes it by that falsehood.
 
 Only events before the act are selected: a later delivery under the
 same id is not taken.
@@ -46,7 +57,8 @@ the record bears now.
 ### The act is in the log, and the record keeps everyone else's values
 
 The act appends one `values_removed` event: the source, the selection as
-asked, and for a time the first position it does not reach. A record
+asked, and for a time of the log's clock the first position it does not
+reach. A record
 the source made, left holding nothing of another hand, nor of the
 source outside the selection, is retired in the same append, as 039
 retires it. A record another hand made is never retired: the act erases
@@ -121,6 +133,20 @@ source's versions whose values are all in the selection.
   back is redacted, and is shredded only once a retention cut's prefix
   covers it. A delivery the source's ingest sealed apart (below) is
   shredded when it is taken back.
+- **A time seen shreds only where a key seals nothing else.** Versions
+  follow `known_at`, not `seen_at`, so a version is destroyed by
+  `seen_before` only where every value it seals states a `seen_at`
+  before `T` or was taken by an earlier act, and so does every older
+  version: in practice a source that delivers in the order it observes
+  and states the time on every record. A key a delivery sealed apart is
+  in no chain, so a delivery each of whose values states a `seen_at`
+  before `T`, or was taken before, is shredded on its own,
+  wherever in the log it stands: a source that seals each delivery apart
+  has a late delivery of old observations shredded, not only redacted. A
+  version or a key apart that also seals a value seen at `T` or after, or
+  one that states no time, stays, and the values it seals in the
+  selection are redacted only, counted in `unshredded`; `require:
+  shredded` then refuses the act.
 
 The act names the versions it destroys in its event, and drops them
 from the open lake's memory, so the lake seals and opens with none of
@@ -183,9 +209,11 @@ be shredded alone (lakelands#1214).
   that never sealed apart costs no read.
 - **The act destroys every apart key whose values it all selects.** For
   a delivery, that is the keys of the ingests of that delivery before
-  the act. For a time, it is the keys of the ingests below the position
-  the act names. It names them in its event, in `apart`, beside the
-  prefix of versions, and the report names them too. A value under an
+  the act. For a time of the log's clock, it is the keys of the ingests
+  below the position the act names. For a time seen, it is the keys
+  every one of whose ingests states a `seen_at` before it. It names them
+  in its event, in `apart`, beside the prefix of versions, and the
+  report names them too. A value under an
   apart key the act destroyed is shredded, so `require: shredded` is met
   by a delivery sealed apart.
 - **Forgetting the source destroys its apart keys** with its versions
@@ -235,9 +263,12 @@ readers.
 `remove_values_preflight(source, selection)` answers the act's report
 and appends nothing. It reads on any handle and takes no lease. The
 report gives, in counts and the first keys:
-- the selection, and for a time the first position it does not reach;
+- the selection, and for a time of the log's clock the first position
+  it does not reach;
 - the events selected, and for a delivery the source's events from
   before format 17, which carry no delivery and so are never selected;
+  for a time seen, the source's events that state no `seen_at`, which it
+  never selects;
 - per type, the records reached; per field, the values taken, and of
   them those shredded;
 - the versions of the source's key it destroys, and the values of
@@ -307,8 +338,9 @@ the host's process, on the host's lake.
 ### The doors around it
 
 - **The CLI.** `lakelands values remove --source <id>` with
-  `--before <instant>` (RFC 3339, or a date at midnight UTC) or `--delivery <id>`, one of
-  the two, and `--require-shredded`, as `forget` is shaped: without
+  `--before <instant>` (RFC 3339, or a date at midnight UTC),
+  `--delivery <id>` or `--seen-before <instant>`, one of the three, and
+  `--require-shredded`, as `forget` is shaped: without
   `--report`, as with `--preflight`, it prints the report's sentences and
   the id, appending nothing, and only `--report <id>` acts. The server
   has no door for the act and nothing to configure for it: the doors are
@@ -357,6 +389,16 @@ period makes. Shredding is better and costs the host a key version per
 period, so it is offered where the host arranged for it, and the report
 never claims it where it did not happen.
 
+**A time seen is the source's word, and the report says where it is
+silent.** A retention rule is often stated in the source's time: what it
+observed before a date. The lake cannot check that time, so the act
+takes it as said, and the report counts the events that state none
+rather than guessing for them. **Rejected: falling back to `known_at`**
+for an event that states no `seen_at`. One selection would then read two
+clocks, and which values it took would turn on which records the source
+happened to stamp; a host that wants those events gone too takes them by
+`written_before` or by their delivery, in an act of its own.
+
 **Rejected: removing only from the act on.** `as_of` would still answer
 what the lake says it no longer holds, and an author's clear already
 does that.
@@ -385,8 +427,8 @@ whole log, which the preflight says; a scoped refold is lakelands#1120.
 - It does not reach copies outside the lake: backups, archives, an
   export made before, a mirror's target. A mirror stops at the act, and
   its target keeps what it copied until the host takes it back there.
-- It does not select by the source's own time, or by anything but the
-  source and the selection.
+- It selects by nothing but the source and the selection: no type, no
+  field, no value.
 - It is not a door, and not a purge: it never refuses a co-owned record,
   and it retires only a record the source made that holds nothing
   else.
@@ -401,3 +443,6 @@ whole log, which the preflight says; a scoped refold is lakelands#1120.
 - A record another hand made, its key the author's only value, is kept,
   not retired: the source's values there are erased (069,
   lakelands#1264).
+- A selection by the time the source observed, `seen_before`, whose
+  events stand anywhere in the log, shredded only where a version or a
+  delivery's key apart seals nothing outside it (lakelands#1166).
