@@ -47,8 +47,10 @@ the record bears now.
 
 The act appends one `values_removed` event: the source, the selection as
 asked, and for a time the first position it does not reach. A record
-left holding nothing of another hand, nor of the source outside the
-selection, is retired in the same append, as 039 retires it.
+the source made, left holding nothing of another hand, nor of the
+source outside the selection, is retired in the same append, as 039
+retires it. A record another hand made is never retired: the act erases
+the source's values there and keeps it (069).
 
 A record another hand also wrote stays, with that hand's values.
 Co-ownership is 039's: an authored value or another source's co-owns; a
@@ -386,7 +388,8 @@ whole log, which the preflight says; a scoped refold is lakelands#1120.
 - It does not select by the source's own time, or by anything but the
   source and the selection.
 - It is not a door, and not a purge: it never refuses a co-owned record,
-  and it retires only what holds nothing else.
+  and it retires only a record the source made that holds nothing
+  else.
 
 ## How it came to be
 
@@ -395,3 +398,6 @@ whole log, which the preflight says; a scoped refold is lakelands#1120.
 - A delivery sealed apart, under its version composed with a key of its
   own, is shredded alone, and an output over it dies with either key
   (lakelands#1214).
+- A record another hand made, its key the author's only value, is kept,
+  not retired: the source's values there are erased (069,
+  lakelands#1264).

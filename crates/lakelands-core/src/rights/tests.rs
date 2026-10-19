@@ -192,7 +192,7 @@ fn a_write_is_refused_whole_by_its_first_failing_field() {
     let owner = principal(Access::Write, &[]);
     let write = |who: &Principal, v: serde_json::Value| {
         let patch: BTreeMap<FieldName, Value> = serde_json::from_value(v).unwrap();
-        check_write(who, &invoice(), Door::Authored, &patch)
+        check_write(who, &invoice(), (Door::Authored, None), &patch)
     };
     assert!(write(&owner, json!({"verdict": "x", "note": "y"})).is_ok());
     assert_eq!(
@@ -215,24 +215,39 @@ fn ingest_needs_the_ingest_grant_and_writes_source_and_shared_fields_only() {
     let mut feed = principal(Access::Write, &[]);
     let patch: BTreeMap<FieldName, Value> =
         serde_json::from_value(json!({"amount": "1", "note": "n"})).unwrap();
+    let crm = SourceId::from("crm");
+    let from = |s| (Door::Source, Some(s));
     assert_eq!(
-        check_write(&feed, &invoice(), Door::Source, &patch),
+        check_write(&feed, &invoice(), from(&crm), &patch),
         Err(Error::Refused {
             field: None,
             reason: Refusal::NotGranted
         })
     );
     feed.grants.ingest = true;
-    assert!(check_write(&feed, &invoice(), Door::Source, &patch).is_ok());
+    assert!(check_write(&feed, &invoice(), from(&crm), &patch).is_ok());
     let authored: BTreeMap<FieldName, Value> =
         serde_json::from_value(json!({"verdict": "x"})).unwrap();
     assert!(matches!(
-        check_write(&feed, &invoice(), Door::Source, &authored),
+        check_write(&feed, &invoice(), from(&crm), &authored),
         Err(Error::Refused {
             reason: Refusal::WrongDoor,
             ..
         })
     ));
+    // An authored field that admits a source takes that source alone (069).
+    let mut admitting = invoice();
+    let verdict = admitting
+        .fields
+        .iter_mut()
+        .find(|f| f.name.as_str() == "verdict");
+    verdict.unwrap().admits = vec!["samples".into()];
+    let samples = SourceId::from("samples");
+    assert!(check_write(&feed, &admitting, from(&samples), &authored).is_ok());
+    assert_eq!(
+        check_write(&feed, &admitting, from(&crm), &authored),
+        refused_on("verdict", Refusal::WrongDoor)
+    );
 }
 
 #[test]

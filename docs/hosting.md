@@ -276,7 +276,20 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   into what went, and the id is of that purge alone. A view, and a type
   that keeps no per-field provenance, are refused there.
   A purge retires and does not erase: `as_of` still reads what the
-  source wrote. **Forgetting a source** erases it
+  source wrote. **Example rows** a host writes into a type the operator
+  modelled, so that one act removes them again, come from a source the
+  fields admit (`admits: [<source id>]` on each authored field, declared
+  by a holder of `schema`;
+  `docs/decisions/069-an-authored-field-may-admit-a-named-source.md`):
+  every other source is still refused there, and the admitted one never
+  writes over an author's value, nor over the `initial` of a record an
+  author made; it writes an `initial` only on a record it made. A row
+  nobody edited goes with `purge_source`. A row an author edited in part
+  refuses the purge whole, so `remove_values` is the act for rows people
+  may have touched: it takes the source's values, keeps the author's,
+  and never retires a record an author made. Declaring the fields again
+  without the source closes them; the rows written before stay its own.
+  **Forgetting a source** erases it
   (`docs/decisions/058-a-source-may-be-forgotten.md`). A source's values
   of a field declared `erasable` enter the log sealed under a key of its
   own, which the host's key store keeps outside the lake; the CLI and
@@ -364,8 +377,8 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   source wrote before a time (`Selection::WrittenBefore`, the log's
   clock) or in one delivery (`Selection::Delivery`, the id `ingest`
   answered), and nothing another hand wrote. It appends
-  `values_removed`, retires each record left holding nothing of another
-  hand, rebuilds and reclaims, all under the writer's lock, as
+  `values_removed`, retires each record the source made left holding
+  nothing of another hand, rebuilds and reclaims, all under the writer's lock, as
   forgetting does; its preflight, `remove_values_preflight`, says what
   it takes, keeps and retires, what is computed again, the constraints
   and references it leaves broken, the required fields it leaves empty

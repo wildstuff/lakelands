@@ -18,7 +18,8 @@ use lakelands_api::write::{
     AnnotationFault, Declaration, FunctionDecl, ObjectSetDecl, SettingDecl,
 };
 use lakelands_api::{
-    FieldName, ParamName, Patch, RelationName, TriggerName, TypeName, ValueTypeName, VerbName,
+    FieldName, ParamName, Patch, RelationName, SourceId, TriggerName, TypeName, ValueTypeName,
+    VerbName,
 };
 
 use super::doc::{
@@ -162,6 +163,7 @@ impl<'a> Lower<'a> {
             ty,
             required: body.required,
             authority: body.authority,
+            admits: body.admits.0.into_iter().map(SourceId::from).collect(),
             derived,
             function: body.function,
             computed_at: body.computed_at,

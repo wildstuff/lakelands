@@ -1,14 +1,14 @@
 //! Taking back part of a source
 //! (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`): each value
 //! a selected `record_ingested` of the source carries reads as erased, at
-//! every position, and a record left holding nothing of another hand is
-//! retired.
+//! every position, and a record the source made left holding nothing of
+//! another hand is retired.
 //!
 //! The act runs as forgetting runs (058), under the writer's lock, each
 //! step idempotent:
 //! 1. one append: `values_removed`, naming the versions of the source's
-//!    key it destroys, and a `record_retired` for each live record left
-//!    holding nothing but what the selection wrote;
+//!    key it destroys, and a `record_retired` for each live record the
+//!    source made left holding nothing but what the selection wrote;
 //! 2. those versions are dropped from memory and destroyed: the longest
 //!    prefix of them whose values it all selects, so what they sealed is
 //!    shredded, and the rest is redacted only;
@@ -280,6 +280,9 @@ fn found(
     let history = History::new(lake, view)?;
     let (mut events, mut undelivered) = (0, 0);
     let mut selected = BTreeSet::new();
+    // Every write of the source, selected or not: a record it did not make
+    // is never retired, as the purge never retires one (069).
+    let mut brought = BTreeSet::new();
     let mut reached: BTreeSet<(TypeName, RecordKey)> = BTreeSet::new();
     // The values of the selected events it does not take, by the event's
     // position and the field's name now.
@@ -304,6 +307,7 @@ fn found(
         if e.source.as_ref() != Some(source) {
             return;
         }
+        brought.insert(e.position);
         undelivered += u64::from(e.delivery.is_none());
         let sealed = e.sealed.as_ref();
         let taken = earlier.iter().any(|r| r.selects(e));
@@ -413,7 +417,7 @@ fn found(
                         !mine(m) && matches!(m.origin, Origin::Authored | Origin::Source)
                     })
             });
-            if !holds {
+            if !holds && brought.contains(&r.made) {
                 retire.push(r);
                 continue;
             }

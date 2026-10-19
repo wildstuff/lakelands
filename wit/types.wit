@@ -164,6 +164,8 @@ interface types {
         %type: field-type,
         required: bool,
         authority: authority,
+        /// The sources an ingest may write an authored field under.
+        admits: list<source-id>,
         derived: option<condition>,
         function: option<string>,
         computed-at: option<computed-at>,
@@ -193,6 +195,8 @@ interface types {
         %type: option<field-type>,
         required: bool,
         authority: authority,
+        /// The sources an ingest may write an authored field under.
+        admits: list<source-id>,
         derived: option<condition>,
         function: option<string>,
         computed-at: option<computed-at>,
@@ -1212,6 +1216,7 @@ interface types {
         %type: field-type,
         required: bool,
         authority: authority,
+        admits: list<source-id>,
         access: access,
         derived: option<condition>,
         /// The declared function that computes it.

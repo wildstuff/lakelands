@@ -296,7 +296,7 @@ pub fn apply(
         let Some(field) = raw.fields.iter().find(|f| &f.name == name) else {
             continue;
         };
-        if !door.admits(field.authority) {
+        if !door.admits(field, event.source.as_ref()) {
             continue;
         }
         if value.is_null() {

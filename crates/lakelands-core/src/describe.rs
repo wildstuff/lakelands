@@ -1034,8 +1034,10 @@ impl Sight<'_> {
             may,
             verbs,
             lineage: TypeLineage {
-                sourced: (fields.iter())
-                    .any(|f| matches!(f.authority, Authority::Source | Authority::Shared)),
+                sourced: (fields.iter()).any(|f| {
+                    matches!(f.authority, Authority::Source | Authority::Shared)
+                        || !f.admits.is_empty()
+                }),
                 insert_only: t.insert_only,
                 retired_by: t.retired_by,
                 view_of: t.view.as_ref().map(|v| v.source.clone()),

@@ -39,10 +39,12 @@ use lakelands_api::error::{Case, Place, Said};
 use lakelands_api::event::{EventBody, EventId, Sealed};
 use lakelands_api::id::KeyId;
 use lakelands_api::principal::WriteContext;
-use lakelands_api::record::Origin;
+use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::seam::DataKey;
 use lakelands_api::write::Committed;
-use lakelands_api::{DeliveryId, Principal, RecordKey, Result, SourceId, SourceRecord, Timestamp};
+use lakelands_api::{
+    DeliveryId, FieldMeta, Principal, RecordKey, Result, SourceId, SourceRecord, Timestamp,
+};
 use lakelands_core::rights::Door;
 
 use crate::exec;
@@ -219,10 +221,13 @@ fn judge(
         let judged = (|| {
             let decl = sees.ty(&r.ty)?;
             crate::writes::untold_setting(&sees, decl, &r.key)?;
+            // The record's own source, else the call's: its event and its id.
+            let source = r.source.as_ref().unwrap_or(source);
+            d.envelope.source = Some(source.clone());
             // The key's form before the door, as `upsert` checks it. Then the
             // door: a patch that carries a field the source is not the
-            // authority on is refused whole, even when that field's value is
-            // the one already stored.
+            // authority on, nor admitted to, is refused whole, even when that
+            // field's value is the one already stored.
             let patch = d.checked(decl, &r.key, &r.fields)?;
             if let Some(own) = &r.source {
                 crate::writes::check_source(own)?;
@@ -242,13 +247,10 @@ fn judge(
             }
             let other = t.own().is_none() && t.before.is_some();
             let version_before = t.before.as_ref().map_or(0, |b| b.version.0);
-            // The record's own source, else the call's: its event and its id.
-            let source = r.source.as_ref().unwrap_or(source);
             if forgotten.contains_key(source) {
                 let source = source.clone();
                 return Err(lakelands_core::invalid(Case::SourceForgotten { source }));
             }
-            d.envelope.source = Some(source.clone());
             // Its values of an erasable field enter the log sealed under its
             // key, and its id is the sealed patch's: no digest of a plaintext
             // value enters the log (058).
@@ -310,6 +312,10 @@ fn judge(
             if patch.is_empty() {
                 return Err(lakelands_core::invalid(Case::PatchEmpty));
             }
+            // An authored field it is admitted to, only where no other
+            // hand's value stands (069).
+            let made = || made_by(lake, t.live(), source);
+            lakelands_core::rights::check_admitted(decl, (t.live(), source), &patch, made)?;
             // An insert-only type's key is written once: a record stands
             // at it, live or retired, or this window wrote it. Another's
             // record and a held one are judged as before, so the mark
@@ -525,3 +531,18 @@ impl Stream for Receiver {
 
 #[cfg(test)]
 mod tests;
+
+/// Whether `source` made `live`: the write at its `made` position was the
+/// source's ingest (069). A value it wrote there that still stands says so
+/// without a read, for a record this window made too.
+fn made_by(lake: &Lake, live: Option<&StoredRecord>, source: &SourceId) -> Result<bool> {
+    let Some(live) = live else { return Ok(false) };
+    let mine = |m: &FieldMeta| m.origin == Origin::Source && m.source.as_ref() == Some(source);
+    if (live.meta.values()).any(|m| m.position == live.made && mine(m)) {
+        return Ok(true);
+    }
+    let made = lake.read_these(&[live.made])?;
+    Ok((made.first()).is_some_and(|e| {
+        matches!(e.body, EventBody::RecordIngested { .. }) && e.source.as_ref() == Some(source)
+    }))
+}

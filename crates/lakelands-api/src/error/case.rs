@@ -617,6 +617,8 @@ catalog! {
         Erasable => "`erasable`",
         /// A field's `authority`.
         Authority => "`authority`",
+        /// A field's `admits`.
+        Admits => "`admits`",
         /// The link types of a type's relations.
         Links { name: TypeName } => "the links of `{name}`",
         /// A pattern's start.
@@ -835,6 +837,14 @@ catalog! {
         ErasableKey => "a key's field is the record's key, which stays plaintext in every event",
         /// A field that names a record declared erasable.
         ErasableReference => "a field that names a record is read by every walk, so it stays plaintext",
+        /// `admits` on a field whose authority is not `authored`.
+        AdmitsNotAuthored => "only an authored field admits a source: a shared field takes every source already, a source field is any source's, and no source writes a derived field or one only verbs write",
+        /// `admits` on a field no `ingest` writes.
+        AdmitsNotOfType => "only a field of a type's own records admits a source; no ingest writes a view's field, a relation's, a verb's payload or a function's input",
+        /// `admits` on a field of a type that keeps no per-field provenance.
+        AdmitsNoProvenance => "the type keeps no per-field provenance, so a source's value could not be told from an author's, nor taken back by its purge",
+        /// A source `admits` names twice.
+        AdmitsTwice { source: SourceId } => "it admits `{source}` twice",
         /// A field only verbs write declared required with no `initial`.
         VerbRequired => "a required field is written by every create, and a verb writes only a record that stands; it needs an `initial`",
         /// A field only verbs write that the fold computes.

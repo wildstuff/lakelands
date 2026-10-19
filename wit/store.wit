@@ -79,13 +79,13 @@ interface store {
         /// time the one act is expected to hold the writer's lock.
         forget-sources-preflight: func(sources: list<source-id>) -> result<forget-set-report, error>;
         /// Take back part of a source: each value a selected event of it
-        /// wrote erased at every position, the records left holding
-        /// nothing of another hand retired, the storage reclaimed, in one
-        /// act under the writer's lock; the versions of its key whose
-        /// values it all selects are destroyed. With `require-shredded`,
-        /// refused while a value of an erasable field would be redacted
-        /// only. With a preflight's id, refused unless that report is of
-        /// this removal at this head.
+        /// wrote erased at every position, the records the source made
+        /// left holding nothing of another hand retired, the storage
+        /// reclaimed, in one act under the writer's lock; the versions of
+        /// its key whose values it all selects are destroyed. With
+        /// `require-shredded`, refused while a value of an erasable field
+        /// would be redacted only. With a preflight's id, refused unless
+        /// that report is of this removal at this head.
         remove-values: func(source: source-id, selection: selection, require-shredded: bool, report-id: option<string>) -> result<remove-report, error>;
         /// What `remove-values` would do, appending nothing, with the time
         /// it is expected to hold the writer's lock.

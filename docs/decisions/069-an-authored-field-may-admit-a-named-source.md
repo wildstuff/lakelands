@@ -14,13 +14,23 @@ writes it too, but only a record whose source is one the list names (the
 call's source, or the record's own where it names one). Every other
 source is refused on the field, `wrong_door`, as today.
 
-The declaration refuses `admits`:
+The declaration refuses `admits`, at the field's `admits`:
 - on a field whose authority is not `authored`: a `shared` field admits
   every source already, a `source` field is any source's, and no door
-  writes a `derived` or a `verb` field from a source;
-- on a relation's field, a verb's payload and a function's input, which
-  no ingest writes;
-- with a source id that is not formed as one (016), or named twice.
+  writes a `derived` or a `verb` field from a source
+  (`admits_not_authored`);
+- on a view's field, a relation's field, a verb's payload and a
+  function's input, which no ingest writes (`admits_not_of_type`);
+- on a field of a type that keeps no per-field provenance (010): the
+  rule below and the purge both read who wrote a value, which such a
+  type does not keep (`admits_no_provenance`);
+- with a source id that is not formed as one (016, `source_id_form`),
+  or named twice (`admits_twice`).
+
+A create by `ingest` fills a key's fields from the record's key, as
+every create does. On a type whose key fields are authored, each of
+them must admit the source too, or every create from it is refused
+`wrong_door` on the key field.
 
 `admits` is not hashed (007): it says who may write the field, not what
 a record holds. Declaring it, or taking it away, leaves the schema hash
@@ -31,16 +41,29 @@ A value an admitted source writes carries the provenance every ingest
 writes: `origin: source`, the source, the writer, the delivery. Nothing
 new marks it. `purge_source`, `remove_values` and `forget_source` read
 that provenance, so they take these values as they take any of the
-source's.
+source's. Forgetting erases only values of an `erasable` field, which
+an authored field never is (058): it retires the rows the source alone
+brought, and leaves its values in a row another hand co-owns, which
+`remove_values` takes.
 
 ### An admitted source writes only where no other hand's value stands
 
-On an authored field, the admitted source writes only where the field
-holds no value, or holds a value that same source wrote. A value an
-author wrote, or another admitted source wrote, stands. The source's
-record is refused on that field, `wrong_door`, and its window appends
-nothing (016). Clearing its own value, and writing it again, are its
-own writes and are applied.
+On an authored field, the admitted source writes only where no hand
+wrote the field, or where that same source wrote it last. On a record
+the source made, it also writes over the field's declared `initial`
+(filled at the create, or by a migration's fill): the record took it
+because the source's write made it. A record is the source's own where
+its making write, at the record's `made` position, was the source's.
+On a record an author made, an `initial` is a value the field holds,
+and it stands: writing over it would change what the author's record
+started with, and taking the source back could not give it back. Where
+an author, or another admitted source, wrote the field last, a value
+or a clear, it stands too: the provenance a clear leaves names who
+cleared. The source's record is refused on that field, `wrong_door`,
+and its window appends nothing (016). Clearing its own
+value, and writing it again, are its own writes and are applied. A
+record that would change nothing is a duplicate, as any is, and
+appends nothing.
 
 The rule is judged at the door, against the record as it stands. The
 fold judges nothing again, and no event carries the rule.
@@ -62,16 +85,26 @@ they were declared, wherever it carries the field's `authority`.
 Whoever is shown the field is shown both. `describe` as of a position
 shows the admission in force there.
 
-### A row an author later edited is co-owned, as 039 says
+### A row an author edited or made keeps the author's values
 
 A row the admitted source brought in, which an author then edited, is
 co-owned while a value of the source remains in it.
 - `purge_preflight` and `purge_source` refuse it whole and name it, as
   039 refuses any co-owned record. The purge does not take it.
 - `remove_values(source, …)` (065) takes the source's values from it,
-  keeps the author's, and retires a record left with nothing of
-  another hand. This is the host's act for example rows that people may
-  have edited.
+  keeps the author's, and retires a record the source made that is left
+  with nothing of another hand. This is the host's act for example rows
+  that people may have edited.
+- A record an author made is never retired by `remove_values`, even
+  where the author's only value is its key: the act erases the
+  source's values there and keeps the record. The purge's preflight
+  refuses such a record as co-owned where the author wrote its key or
+  a field without an `initial`. Before 069, `remove_values` retired it,
+  since a key field co-owns nothing there; 065 now says so.
+- One gap stays, 039's: a record whose author wrote only fields that
+  declare `initial` co-owns nothing, so the purge and forgetting retire
+  it once the source filled one of its empty fields, while
+  `remove_values` keeps it.
 - Once the author has written over every value of the source, the row
   is the author's. The purge passes it over, as 039 says, and so does
   `remove_values`.
@@ -84,8 +117,8 @@ The host declares the field again without the source. From that
 position on, the source is refused on the field, a redelivery of a row
 it wrote before included. Rows already written keep their values and
 their provenance. A `declared` never reshapes a stored record (the
-log format, §2.2), so they stay the source's, and its purge or removal still takes them.
-Only the named source could write the field, so closing needs to know
+log format, §2.2), so they stay the source's, and its purge or removal
+still takes them. Only the named source could write the field, so closing needs to know
 nothing about other sources.
 
 A field a host opened as `shared` in the meantime closes the same way:
@@ -104,13 +137,16 @@ nearest shipped change of a door rule plus a declaration member:
   (`rights.rs`); the own-value rule in the ingest's judgement in
   `lakelands-store`; the declare and describe tool schemas in the
   server.
-- **Specification:** about +350 to +450 lines, in five checks.
+- **Specification:** about +350 to +450 lines, in five checks; seven
+  as built.
 - **Docs:** about +80 lines: 016's door table, the log format's field
   member and format step, the hosting page's entry on rows that one act
   removes.
 - **Public API:** a new member on `FieldDecl` and on
-  `FieldDescription`. No new method, no new refusal, no new `Case`.
-- **WIT:** `admits: list<string>` on the field records of `types.wit`
+  `FieldDescription`. No new method and no new refusal reason: a write
+  is refused `wrong_door`. The declaration's refusals are four new
+  cases and the place `admits` (above).
+- **WIT:** `admits: list<source-id>` on the field records of `types.wit`
   that carry `authority`.
 - **The log:** one field member, in a format step. No new event.
 
@@ -119,20 +155,31 @@ The checks that would pin it:
    refused on it, `wrong_door`. An author's `upsert` still writes it.
    `describe` shows `admits`.
 2. The declaration refuses `admits` on a field that is not authored,
-   on a relation's field, and with a malformed or repeated source id.
+   on a relation's field, a verb's payload, a view's field and a
+   function's input, and with a malformed or repeated source id.
    Admitting and closing leave the schema hash as it was.
 3. An author's value stands. The admitted source's redelivery onto a
    field an author wrote since is refused on that field and appends
    nothing, and so is a second admitted source onto the first's value.
-   The source's own value is written again, and cleared.
+   The source's own value is written again, and cleared. The source
+   writes the `initial` of a record it made, and is refused on the
+   `initial` of a record an author made.
 4. The source's purge takes the rows it brought in. A row an author
    edited in part refuses the purge whole, and `remove_values` takes the
    source's values from it and keeps the author's. A row an author
-   wrote over whole is passed over by both.
+   wrote over whole is passed over by both, and so is a record an
+   author made.
 5. Closing refuses the source from its position on. The rows written
    before keep their values and provenance, and the source's purge
    still takes them. `describe` as of before the close shows the
    admission.
+6. On a type keyed by an authored field, a create from the source is
+   refused on the key field until it admits the source. A record an
+   author made holding its key alone takes the source's value in an
+   empty field; the purge refuses it, and `remove_values` erases the
+   value and keeps the record.
+7. Forgetting the source retires the rows it alone brought, and keeps
+   a co-owned row whole, the source's value included.
 
 ## Why
 
@@ -188,7 +235,8 @@ where the need is one named source.
   close it for both, and it is a question of its own.
 - It does not change `shared`: the later position still wins there.
 - It does not change what the purge, `remove_values` or forgetting
-  select, or what the preflight reports.
+  select, or what the preflight reports. It changes what `remove_values`
+  retires: only a record the source made (above).
 - It does not let a source write a field an author or another source
   wrote, and it does not let an author's write carry a source's name
   (lakelands#611 keeps that out).

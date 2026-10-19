@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Case, Place, Said};
 use crate::expr::{Condition, Func};
 use crate::id::{
-    ConstraintName, FieldName, ParamName, RelationName, TriggerName, TypeName, ValueTypeName,
-    VerbName,
+    ConstraintName, FieldName, ParamName, RelationName, SourceId, TriggerName, TypeName,
+    ValueTypeName, VerbName,
 };
 
 /// A host's own marks on a declaration: a map from a namespaced key
@@ -279,6 +279,13 @@ pub struct FieldDecl {
     /// Which authority writes it.
     #[serde(default)]
     pub authority: Authority,
+    /// For `authored`: the sources an `ingest` may write it under, in the
+    /// order declared, each only where no other hand's value stands
+    /// (`docs/decisions/069-an-authored-field-may-admit-a-named-source.md`).
+    /// Not part of the schema hash: it says who writes the field, not what
+    /// a record holds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admits: Vec<SourceId>,
     /// For `derived`: the expression the fold computes it from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derived: Option<Condition>,
@@ -389,6 +396,8 @@ struct InputWire {
     required: bool,
     #[serde(default)]
     authority: Authority,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    admits: Vec<SourceId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     derived: Option<Condition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -424,6 +433,7 @@ impl From<&FunctionInput> for InputWire {
             ty,
             required,
             authority,
+            admits,
             derived,
             function,
             computed_at,
@@ -443,6 +453,7 @@ impl From<&FunctionInput> for InputWire {
             name,
             required,
             authority,
+            admits,
             derived,
             function,
             computed_at,
@@ -470,6 +481,7 @@ impl From<InputWire> for FunctionInput {
                 name: w.name,
                 required: w.required,
                 authority: w.authority,
+                admits: w.admits,
                 derived: w.derived,
                 function: w.function,
                 computed_at: w.computed_at,
@@ -531,8 +543,8 @@ macro_rules! unread {
             pub const UNREAD: &[&str] = &[$(stringify!($member)),*];
 
             /// Leaves the declaration its shape alone: its name, type,
-            /// authority, whether it is required and sensitive and what
-            /// an input change does to it.
+            /// authority and the sources it admits, whether it is required
+            /// and sensitive and what an input change does to it.
             pub fn shape_alone(&mut self) {
                 $(self.$member = Default::default();)*
             }

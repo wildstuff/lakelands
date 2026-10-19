@@ -336,8 +336,10 @@ pub enum Refusal {
     /// The principal holds no grant for it.
     NotGranted,
     /// The field is written by another authority, through another door
-    /// (a source field through `upsert`, a derived field by anyone), or
-    /// `retire` is used where only its type's verbs retire the record.
+    /// (a source field through `upsert`, a derived field by anyone, an
+    /// authored field by a source it does not admit or over another
+    /// hand's write), or `retire` is used where only its type's verbs
+    /// retire the record.
     WrongDoor,
     /// Only its type's verbs write the field, or retire the record
     /// (lakelands#1148): these, which its writer may call; shown none, it

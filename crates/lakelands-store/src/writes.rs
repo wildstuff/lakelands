@@ -1288,7 +1288,7 @@ fn fill_key_fields(
     decl: &TypeDecl,
     key: &RecordKey,
     patch: &mut Patch,
-    door: Door,
+    door: (Door, Option<&SourceId>),
     who: &Principal,
 ) -> Result<()> {
     if decl.key.is_empty() || decl.key.iter().all(|k| patch.contains_key(k)) {
@@ -1476,10 +1476,15 @@ pub(crate) fn check_key(key: &RecordKey) -> Result<()> {
 /// Refuse a source id that is empty or holds a NUL character: it is a
 /// part of an ingested event's id, whose parts NUL separates.
 pub(crate) fn check_source(source: &SourceId) -> Result<()> {
-    if source.as_str().is_empty() || source.as_str().contains('\0') {
-        return Err(invalid(Case::SourceIdForm));
+    match formed(source) {
+        true => Ok(()),
+        false => Err(invalid(Case::SourceIdForm)),
     }
-    Ok(())
+}
+
+/// Whether a source id is of its form: not empty, and no NUL.
+pub(crate) fn formed(source: &SourceId) -> bool {
+    !source.as_str().is_empty() && !source.as_str().contains('\0')
 }
 
 /// A caller's delivery id: not empty, no NUL, and not of the store's own
@@ -2689,8 +2694,8 @@ impl Decide<'_> {
     /// its values, each in its written form.
     pub(crate) fn checked(&self, decl: &TypeDecl, key: &RecordKey, patch: &Patch) -> Result<Patch> {
         check_key(key)?;
-        rights::check_write(self.who, decl, self.door, patch)
-            .map_err(|e| self.verbs_only(decl, e))?;
+        let door = (self.door, self.envelope.source.as_ref());
+        rights::check_write(self.who, decl, door, patch).map_err(|e| self.verbs_only(decl, e))?;
         check_values(&self.w.ontology, decl, patch, &decl.fields)
     }
 
@@ -2853,7 +2858,8 @@ impl Decide<'_> {
                 .as_ref()
                 .is_some_and(|b| !b.retired || sees.withheld(b));
         if live.is_none() {
-            fill_key_fields(w, decl, key, &mut patch, self.door, who)?;
+            let door = (self.door, self.envelope.source.as_ref());
+            fill_key_fields(w, decl, key, &mut patch, door, who)?;
         }
         if decl.name.as_str() == SETTING_TYPE {
             let told = |s: &SettingDecl| sees.setting_visible(s);

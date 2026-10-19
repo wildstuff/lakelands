@@ -50,8 +50,14 @@ admits a create where the field's `initial` is the value it names.
 | door ↓ / authority → | `authored` | `source` | `shared` | `derived` | `verb` |
 |---|---|---|---|---|---|
 | `upsert`, `link`, an accepted `upsert` | ✓ | | ✓ | | refused |
-| `ingest`, a mirror's copy | | ✓ | ✓ | | refused |
+| `ingest`, a mirror's copy | a source it `admits` | ✓ | ✓ | | refused |
 | a declared verb's `set`, `initial`, aging | ✓ | | ✓ | | ✓ |
+
+An authored field may name the sources it `admits` (069): `ingest`
+writes it under such a source, and only where no other hand wrote it
+last: no hand, its `initial`, or that source itself. Any other source,
+and an admitted one over an author's or another source's write, is
+refused the field as `wrong_door`, and its window appends nothing.
 
 The refusal is `verbs_only`, naming the verbs that set the field which
 its writer is shown and may call, so it knows the way; where it is shown
@@ -366,4 +372,5 @@ is just another caller later, not a change to the contract.
 - A source id is formed as a key is, not empty and holding no NUL, and a source record with a member it does not have is refused, never read without it (lakelands#1081).
 - A window is the store's: no rule is judged over one, and a link that breaks its relation's cardinality with an earlier link of its window is answered as over the lake, the other end named by the same rule; `window_links_already` is never answered from 0.15.0 (lakelands#886).
 - A field may be written by its type's verbs alone, `authority: verb`; the other doors are refused it as `verbs_only`, naming the verbs its writer is shown, or `wrong_door` (lakelands#1130).
+- An authored field may admit named sources, `admits`, which `ingest` writes it under where no other hand's value stands (069, lakelands#1264).
 - A type's records may be retired by its verbs alone, `retired_by: verbs`; `retire`, a proposed `retire` and its accept are refused as `verbs_only`, naming the retire verbs its writer is shown, or `wrong_door`, and the system's retirements stay (lakelands#1148).

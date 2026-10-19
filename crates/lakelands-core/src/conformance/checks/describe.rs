@@ -165,6 +165,7 @@ fn field_projected(f: &FieldDescription) -> FieldDecl {
         ty: f.ty.clone(),
         required: f.required,
         authority: f.authority,
+        admits: f.admits.clone(),
         derived: f.derived.clone(),
         function: f.function.clone(),
         computed_at: f.computed_at,

@@ -220,6 +220,7 @@ Where in a declaration or a request a case is said.
 | `initial` | — | `initial` | A field's `initial` value. |
 | `erasable` | — | `erasable` | A field's `erasable`. |
 | `authority` | — | `authority` | A field's `authority`. |
+| `admits` | — | `admits` | A field's `admits`. |
 | `links` | `name` (TypeName) | the links of `{name}` | The link types of a type's relations. |
 | `start` | — | the start | A pattern's start. |
 | `step` | `step` (usize), `relation` (RelationName) | step {step} over `{relation}` | A pattern's step, by its number from 1 and its relation. |
@@ -298,6 +299,10 @@ What a refusal is about.
 | `erasable_not_of_type` | — | only a field of a type declares it | A field of no type declared erasable. |
 | `erasable_key` | — | a key's field is the record's key, which stays plaintext in every event | A key field declared erasable. |
 | `erasable_reference` | — | a field that names a record is read by every walk, so it stays plaintext | A field that names a record declared erasable. |
+| `admits_not_authored` | — | only an authored field admits a source: a shared field takes every source already, a source field is any source's, and no source writes a derived field or one only verbs write | `admits` on a field whose authority is not `authored`. |
+| `admits_not_of_type` | — | only a field of a type's own records admits a source; no ingest writes a view's field, a relation's, a verb's payload or a function's input | `admits` on a field no `ingest` writes. |
+| `admits_no_provenance` | — | the type keeps no per-field provenance, so a source's value could not be told from an author's, nor taken back by its purge | `admits` on a field of a type that keeps no per-field provenance. |
+| `admits_twice` | `source` (SourceId) | it admits `{source}` twice | A source `admits` names twice. |
 | `verb_required` | — | a required field is written by every create, and a verb writes only a record that stands; it needs an `initial` | A field only verbs write declared required with no `initial`. |
 | `verb_computed` | — | the fold computes it, so no door writes it, a verb's neither | A field only verbs write that the fold computes. |
 | `initial_breaks` | `constraint` (ConstraintName), `field` (FieldName) | the `initial` of `{field}`, which only the type's verbs write, breaks the constraint `{constraint}`: no record of the type could be made | An `initial` of fields only verbs write that a type's constraint refuses: no create could hold it. |

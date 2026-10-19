@@ -569,8 +569,8 @@ pub trait LakeStore: Send + Sync {
 
     /// Take back part of a source
     /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`): append
-    /// `values_removed` with the records left holding nothing of another
-    /// hand retired, rebuild the projection, in which each value a selected
+    /// `values_removed` with the records the source made left holding
+    /// nothing of another hand retired, rebuild the projection, in which each value a selected
     /// event of the source wrote reads as erased at every position, and
     /// reclaim the storage, all under the writer's lock. A key field and a
     /// reference field are never taken. The versions of the source's key
