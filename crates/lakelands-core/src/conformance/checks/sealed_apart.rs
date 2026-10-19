@@ -39,6 +39,12 @@ check!(
 );
 
 check!(
+    APART_SET = a_set_forgotten_destroys_the_keys_apart_of_each_source,
+    "065 and 058, extended (lakelands#1214): `crm` writes `p1` under its first version and the delivery `late`, sealed apart, writes `p2`, while `erp` writes `e1`, each record given a note by its owner; forgetting the set of `crm` and `erp` in one act appends a `source_forgotten` for each and destroys `late`'s key with both sources' versions; `p1`, `p2` and `e1` read their names erased under their sources and keep their notes, at the head and before the act; a writer opened again and a rebuild each answer the same",
+    reopens
+);
+
+check!(
     APART_OFF = an_ingest_not_sealed_apart_seals_as_before,
     "065 (lakelands#1214): an ingest that does not ask `sealed_apart` seals under the source's version alone, `sealed` naming no `apart` and the key store making no key apart; one that asks it and writes no erasable value seals nothing and asks for no key; and with a key store that makes no key apart, one that asks it and writes an erasable value is refused as unbound (`key_apart`) and appends nothing, while the same records without it are written",
     reopens
@@ -524,6 +530,79 @@ async fn a_cut_by_time_takes_a_delivery_sealed_apart_with_its_version(
                 .is_some_and(|r| r.fields.get("name") == Some(&json!("Cy"))),
             "{by}, `p3` reads Cy: {p3:?}"
         );
+        Ok::<_, Failure>(())
+    };
+    read(&l, "after the act").await?;
+    let store = again(&reopen, store, with(&keys), "after the act").await?;
+    read(&Lake::of(store.as_ref()), "a writer opened again").await?;
+    store.rebuild().await.must("rebuilding")?;
+    read(&Lake::of(store.as_ref()), "after a rebuild").await?;
+    Ok(())
+}
+
+async fn a_set_forgotten_destroys_the_keys_apart_of_each_source(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    let keys = Arc::new(Keys::default());
+    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(person()).await?;
+    let (crm, erp): (SourceId, SourceId) = ("crm".into(), "erp".into());
+    let p = |k: &str, name: &str| source_record("person", k, json!({"id": k, "name": name}));
+    l.ingest("crm", vec![p("p1", "Ada")])
+        .await
+        .must("ingesting p1")?;
+    apart(&l, "late", vec![p("p2", "Bea")]).await?;
+    l.ingest("erp", vec![p("e1", "Eve")])
+        .await
+        .must("ingesting e1")?;
+    for k in ["p1", "p2", "e1"] {
+        l.upsert("person", k, json!({"note": "kept"})).await?;
+    }
+    let made = keys.apart(store.lake(), &crm);
+    ensure!(
+        made.len() == 1,
+        "the delivery makes one key apart; the key store holds {made:?}"
+    );
+    let head = store.head().await.must("reading the head")?;
+    let set = [crm.clone(), erp.clone()];
+    let pre = (store.forget_sources_preflight(&set).await).must("the preflight of the set")?;
+    store
+        .forget_sources(&set, Some(&pre.report_id))
+        .await
+        .must("forgetting crm and erp")?;
+    let forgotten: Vec<_> = (events_after(store.as_ref(), head).await?.into_iter())
+        .filter_map(|e| match e.body {
+            EventBody::SourceForgotten { source, .. } => Some(source),
+            _ => None,
+        })
+        .collect();
+    let live = |s: &SourceId| {
+        let held = keys.ids(store.lake(), s).unwrap_or_default();
+        let held = held
+            .iter()
+            .filter(|k| keys.key(store.lake(), s, k).ok().flatten().is_some());
+        held.count()
+    };
+    let left = keys.apart(store.lake(), &crm);
+    ensure!(
+        forgotten == set && left.is_empty() && live(&crm) == 0 && live(&erp) == 0,
+        "the act appends a `source_forgotten` for crm and erp and destroys {made:?} with \
+         their versions: {forgotten:?}, {left:?}"
+    );
+    let read = async |l: &Lake, by: &str| {
+        for (k, source) in [("p1", "crm"), ("p2", "crm"), ("e1", "erp")] {
+            for when in [None, Some(head)] {
+                let r = at(l, "person", k, when).await?;
+                ensure!(
+                    r.as_ref().is_some_and(|r| erased(r, "name", source)
+                        && r.fields.get("note") == Some(&json!("kept"))),
+                    "{by}, as of {when:?}, `{k}` reads its name erased under {source} and \
+                     keeps its note: {r:?}"
+                );
+            }
+        }
         Ok::<_, Failure>(())
     };
     read(&l, "after the act").await?;
