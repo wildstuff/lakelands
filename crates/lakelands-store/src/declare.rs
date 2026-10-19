@@ -1751,15 +1751,10 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 };
                 return Err(invalid_field(&"on".into(), at(&on, case)));
             }
-            let watched = declared(o, &t.on, &on)?;
-            // A view is computed on read and never written, so no write
-            // of it can fire a trigger: a trigger on one could never act.
-            if watched.view.is_some() {
-                return Err(invalid_field(
-                    &"on".into(),
-                    at(&on, Case::WatchesView { ty }),
-                ));
-            }
+            // A trigger on a view fires from the rows the lake keeps of it:
+            // whether it keeps them is a setting's, judged at the write
+            // (lakelands#1185).
+            declared(o, &t.on, &on)?;
             if let Some(w) = &t.when {
                 filter(&|n| o.set(n), &t.on, w, Eval::Guard, &on)?;
             }

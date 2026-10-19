@@ -337,23 +337,66 @@ pub(crate) fn reflagged(
     (view, key): (&TypeName, &RecordKey),
 ) -> Result<bool> {
     let place = (kept_name(view), key.clone());
-    let Some(Undo(done)) = &staged.undo else {
+    let Some(was) = was(at, staged, &place)? else {
         return Ok(false);
-    };
-    let first = done.iter().find_map(|u| match u {
-        Undone::Record(p, was) if *p == place => Some(was),
-        _ => None,
-    });
-    let was = match first {
-        None => return Ok(false),
-        Some(Some(r)) => Some(r.clone()),
-        Some(None) => staged.before(at.view, &place.0, key)?,
     };
     let flagged = |r: Option<&StoredRecord>| {
         r.filter(|r| !r.is_ended())
             .is_some_and(|r| carried(r).flagged[1])
     };
     Ok(flagged(was.as_ref()) || flagged(staged.records.get(&place)))
+}
+
+/// The record the run since `staged`'s undo began found at `place`
+/// before it put one there; `None` where it put none there.
+fn was(
+    at: &At<'_>,
+    staged: &Staged,
+    place: &(TypeName, RecordKey),
+) -> Result<Option<Option<StoredRecord>>> {
+    let Some(Undo(done)) = &staged.undo else {
+        return Ok(None);
+    };
+    let first = done.iter().find_map(|u| match u {
+        Undone::Record(p, was) if p == place => Some(was),
+        _ => None,
+    });
+    Ok(match first {
+        None => None,
+        Some(Some(r)) => Some(Some(r.clone())),
+        Some(None) => Some(staged.before(at.view, &place.0, &place.1)?),
+    })
+}
+
+/// The group at `key` of `view` as the run since `staged`'s undo began
+/// found it: whether it had a record on the whole face, and that face,
+/// which a trigger on the view reads as the row before (lakelands#1185).
+/// The face is none where the fold had flagged the group as not exact, or
+/// where a view it reads through holds such a group (049): a read
+/// computes that face from members the run has moved since.
+pub(crate) fn before(
+    at: &At<'_>,
+    staged: &Staged,
+    (view, key): (&TypeName, &RecordKey),
+) -> Result<(bool, Option<StoredRecord>)> {
+    let place = (kept_name(view), key.clone());
+    let was = match was(at, staged, &place)? {
+        Some(was) => was,
+        None => staged.record(at.view, &place.0, key)?,
+    };
+    let Some(was) = was.filter(|r| !r.is_ended()) else {
+        return Ok((false, None));
+    };
+    let flagged = carried(&was).flagged[1];
+    let Some(face) = shown(was, view, true) else {
+        return Ok((false, None));
+    };
+    let kept = (at.ontology.ty(view).ok()).and_then(|d| Kept::of(at.ontology, d));
+    let below = match &kept {
+        Some(kept) => inexact_below(at, staged, kept)?,
+        None => false,
+    };
+    Ok((true, (!flagged && !below).then_some(face)))
 }
 
 /// Put back what the run since `staged`'s undo began overwrote, newest
