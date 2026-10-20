@@ -225,10 +225,14 @@ An executor that declines a call by the host's policy answers
 run, and a retry under the same idempotency key answers the same. Neither `not_granted`, which speaks
 of the lake's own grants, nor `unavailable`, which is an outage of a lake
 that cannot answer a correct request (015), says that. The case carries
-no text of the host's: its reason, a rule or a ruling, belongs in the
-host's own trail, under the invocation's dedup key (the lake and the
-position), which joins that trail to the lake's record exactly. This keeps
-what a model reads back inside the closed catalog.
+the host's reason when the executor gives one, `Error::declined_because`:
+a `Detail`, the one free-text carrier the closed set has, so the reason is
+recorded in the call's answer and travels with the refusal on the wire
+and in the log, where the only durable answer to the call is. A decline
+with no reason carries none. The host's fuller trail, under the
+invocation's dedup key (the lake and the position), joins the lake's
+record exactly, and may say more than the sentence it records here.
+(lakelands#1284)
 
 A host code inside `Refusal::Unknown` was weighed and not built: it could
 not be told from a newer lake's code, and it would open the closed set.

@@ -140,8 +140,9 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   due stands, and the caller gets the recorded answer either way. To
   decline a call by the host's policy, answer `Error::declined(verb)`,
   never `not_granted` nor `unavailable`: the record then says `declined`,
-  the call did not run, and a retry under the same idempotency key answers the same. The host's reason
-  goes in its own trail, under the dedup key; the case carries none. Without a bound
+  the call did not run, and a retry under the same idempotency key answers the same. To say why, answer
+  `Error::declined_because(verb, reason)`: the reason, a `Detail` of the
+  host's own words (never a record's values), is recorded in the answer. Without a bound
   executor such a verb is refused as `Unbound`, not faked. See
   `docs/decisions/013-verbs-run-by-declared-risk.md`.
 - **`ChangeFeed`.** The host reads the store's feed: the log, filtered

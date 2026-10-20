@@ -1359,7 +1359,11 @@ catalog! {
 
         // ---- writes
         /// A call a verb's executor declined by the host's policy.
-        CallDeclined { verb: VerbName } => "the host declined the call of `{verb}`: it did not run, and a retry under the same idempotency key answers the same",
+        CallDeclined {
+            verb: VerbName,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            reason: Option<super::Detail>,
+        } => "the host declined the call of `{verb}`[ ({reason})]: it did not run, and a retry under the same idempotency key answers the same",
         /// A host's cause past the head.
         CausePastHead { cause: Position, head: Option<Position> } => "the cause {cause} is past the lake's head [{head}|(none)]",
         /// A type declared again since its migration was proposed.

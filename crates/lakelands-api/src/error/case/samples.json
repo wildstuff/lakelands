@@ -1256,6 +1256,7 @@
   },
   {
    "code": "call_declined",
+   "reason": "d",
    "verb": "v"
   },
   {

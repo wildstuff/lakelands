@@ -38,7 +38,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use async_trait::async_trait;
-use lakelands_api::error::{Case, Exchange, Remote, Situation};
+use lakelands_api::error::{Case, Detail, Exchange, Remote, Situation};
 use lakelands_api::seam::{
     CallCause, EmbedBackend, FunctionBacking, FunctionCall, RerankCall, Reranker,
 };
@@ -435,6 +435,10 @@ impl lakelands_api::seam::VerbExecutor for Executor {
         }
         if invocation.payload.get("decline") == Some(&Value::Bool(true)) {
             return Err(Error::declined(&invocation.verb));
+        }
+        if invocation.payload.get("decline_because") == Some(&Value::Bool(true)) {
+            let reason = Detail::scrubbed("above this executor's ceiling");
+            return Err(Error::declined_because(&invocation.verb, reason));
         }
         if invocation.payload.get("vast_error") == Some(&Value::Bool(true)) {
             let n = serde_json::Number::from(i64::MAX);

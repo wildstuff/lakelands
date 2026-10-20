@@ -530,7 +530,7 @@ What a refusal is about.
 | `view_reads_itself` | `type` (TypeName), `chain` (Names) | view `{type}` reads itself through other views, reading {chain} in turn, so it has no records | A view that reads itself through views the reader did not check. |
 | `weight_alone` | — | `weight` weighs one vector field's ranking against another's, and the search names no other in `also` | A `weight` on a vector search of one field. |
 | `weight_range` | `field` (FieldName) | the weight of `{field}` must be above 0 and at most 1000000 | A field's weight out of range. |
-| `call_declined` | `verb` (VerbName) | the host declined the call of `{verb}`: it did not run, and a retry under the same idempotency key answers the same | A call a verb's executor declined by the host's policy. |
+| `call_declined` | `verb` (VerbName), `reason` (Detail, optional) | the host declined the call of `{verb}`[ ({reason})]: it did not run, and a retry under the same idempotency key answers the same | A call a verb's executor declined by the host's policy. |
 | `cause_past_head` | `cause` (Position), `head` (Position, optional) | the cause {cause} is past the lake's head [{head}\|(none)] | A host's cause past the head. |
 | `changed_since_proposed` | `type` (TypeName) | `{type}` changed since this migration was proposed; propose it again | A type declared again since its migration was proposed. |
 | `declared_since_proposed` | `what` (Naming), `name` (String) | the {what} `{name}` was declared since this bundle was proposed; propose it again | A bundle's declaration under a name declared again since it was proposed. |

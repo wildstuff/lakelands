@@ -1047,7 +1047,7 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
 
 check!(
     EXECUTOR_DECLINES = an_executors_error_is_recorded_in_its_wire_form_and_a_declined_call_says_so,
-    "013, extended (lakelands#812): an executor's error is recorded as the wire carries it, `error`, its `reason` where it is a refusal, and `message`; one whose wire form holds an integer beyond ±(2^53 − 1) is recorded as its sentence, `{\"error\": …}`, and a retry answers it; a call the executor declines by `Error::declined` is recorded as `refused` / `declined` with the case `call_declined` naming the verb, said at the verb, and one it answers `not_granted` or an outage is recorded as that, each telling what it is; a retry under the call's key answers the same and runs nothing; so is the acceptance of a proposed external call its executor declines"
+    "013, extended (lakelands#812): an executor's error is recorded as the wire carries it, `error`, its `reason` where it is a refusal, and `message`; one whose wire form holds an integer beyond ±(2^53 − 1) is recorded as its sentence, `{\"error\": …}`, and a retry answers it; a call the executor declines by `Error::declined` is recorded as `refused` / `declined` with the case `call_declined` naming the verb, said at the verb, and one it declines by `Error::declined_because` carries the host's reason as the case's `reason`, and one it answers `not_granted` or an outage is recorded as that, each telling what it is; a retry under the call's key answers the same and runs nothing; so is the acceptance of a proposed external call its executor declines"
 );
 
 async fn an_executors_error_is_recorded_in_its_wire_form_and_a_declined_call_says_so(
@@ -1055,7 +1055,7 @@ async fn an_executors_error_is_recorded_in_its_wire_form_and_a_declined_call_say
 ) -> Held {
     use crate::conformance::backing::executed;
     use lakelands_api::IdempotencyKey;
-    use lakelands_api::error::{Place, Said};
+    use lakelands_api::error::{Detail, Place, Said};
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(type_decl(
@@ -1063,7 +1063,13 @@ async fn an_executors_error_is_recorded_in_its_wire_form_and_a_declined_call_say
         vec![field("status", StorageKind::Text)],
     ))
     .await?;
-    let flags = ["decline", "ungrant", "fail", "vast_error"];
+    let flags = [
+        "decline",
+        "decline_because",
+        "ungrant",
+        "fail",
+        "vast_error",
+    ];
     let payload: Vec<Value> = flags
         .iter()
         .map(|f| json!({"name": f, "type": {"kind": "boolean"}}))
@@ -1092,7 +1098,11 @@ async fn an_executors_error_is_recorded_in_its_wire_form_and_a_declined_call_say
     let declined = |name: &str| Error::Refused {
         field: None,
         reason: Refusal::Declined(Box::new(
-            Said::from(Case::CallDeclined { verb: name.into() }).within(verb(name)),
+            Said::from(Case::CallDeclined {
+                verb: name.into(),
+                reason: None,
+            })
+            .within(verb(name)),
         )),
     };
     ensure!(
@@ -1107,6 +1117,14 @@ async fn an_executors_error_is_recorded_in_its_wire_form_and_a_declined_call_say
     };
     for (flag, once, expected) in [
         ("decline", "judge-declined", Some(declined("judge"))),
+        (
+            "decline_because",
+            "judge-declined-because",
+            Some(Error::declined_because(
+                &"judge".into(),
+                Detail::scrubbed("above this executor's ceiling"),
+            )),
+        ),
         ("ungrant", "judge-ungranted", Some(ungranted)),
         ("fail", "judge-outage", None),
     ] {
@@ -1133,6 +1151,12 @@ async fn an_executors_error_is_recorded_in_its_wire_form_and_a_declined_call_say
             tells && output["message"].is_string(),
             "an executor that errs with `{flag}` is recorded as its error's wire form, which \
              decodes as {expected:?} and has a `message`; the output is {output}"
+        );
+        ensure!(
+            (flag == "decline_because")
+                == (output["reason"]["reason"] == "above this executor's ceiling"),
+            "a declined call carries the host's reason in its recorded answer, as `reason` of \
+             the case, and one declined with none carries no `reason`; `{flag}` recorded {output}"
         );
         let recorded = outputs_from(store.as_ref(), *position).await?;
         ensure!(
