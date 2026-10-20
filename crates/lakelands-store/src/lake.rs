@@ -47,6 +47,7 @@ use lakelands_core::sight::{InForce, Sight};
 use lakelands_core::{damaged, shape};
 
 use crate::backed::{Due, Of, Outputs, Owed, Recorded};
+use crate::declare::Held;
 use crate::kept;
 use crate::log::{self, Draft};
 use crate::ontology::Ontology;
@@ -555,7 +556,7 @@ impl Lake {
         if mode == OpenMode::Read {
             let w = lake.writer();
             for t in lake.vocabulary() {
-                if crate::declare::vocabulary_older(&w.ontology, &t)? {
+                if crate::declare::vocabulary_held(&w.ontology, &t)? == Held::Older {
                     let (lake, ty) = (lake.id.to_string(), t.name);
                     let situation = Situation::VocabularyUpgradeOwed { lake, ty };
                     return Err(Error::unavailable(situation));
@@ -607,13 +608,13 @@ impl Lake {
             // Every vocabulary type is checked before anything is appended,
             // held already or not: a process whose vocabulary collides with
             // the store's own names must not write, nor one that changes a
-            // type the lake holds beyond adding optional fields to it. One
-            // the lake holds without fields the vocabulary has since added
-            // is declared again, as the store's own are below.
+            // type the lake holds beyond adding optional fields to it and
+            // rewording it. One the lake holds without those fields, or
+            // reworded, is declared again, as the store's own are below.
             let mut again = BTreeSet::new();
             for t in &held {
                 crate::declare::check_vocabulary_type(t)?;
-                if crate::declare::vocabulary_older(&w.ontology, t)? {
+                if crate::declare::vocabulary_held(&w.ontology, t)? != Held::Same {
                     again.insert(t.name.clone());
                 }
             }

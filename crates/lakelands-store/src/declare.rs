@@ -1014,18 +1014,32 @@ pub fn check_vocabulary_type(t: &TypeDecl) -> Result<()> {
     Err(invalid(Case::VocabularyReserved { ty, link }))
 }
 
-/// Whether the lake holds a host vocabulary's type in an older form, one
-/// the vocabulary only adds optional fields to: that reshapes no record and
-/// asks nothing of the records held, so a writer's open declares it again.
-/// A type the lake holds as the vocabulary declares it, its descriptions
-/// and labels aside, or does not hold, is not. One the vocabulary changes
-/// in any other way, beside a field added or without one, is refused,
-/// naming the type and each difference: an open makes no migration and
-/// judges no change as a door does, so it applies none.
-pub(crate) fn vocabulary_older(o: &Ontology, t: &TypeDecl) -> Result<bool> {
+/// How the lake holds a type of the host's vocabulary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Held {
+    /// Not at all, or as the vocabulary declares it.
+    Same,
+    /// Otherwise only in what no record and no door's check reads: its
+    /// descriptions, labels, annotations and the order of its fields. A
+    /// writer's open declares it again; a reader reads it as held.
+    Reworded,
+    /// Without optional fields the vocabulary has since added, and
+    /// otherwise only as `Reworded`. A writer's open declares it again,
+    /// and a reader is refused until then.
+    Older,
+}
+
+/// How the lake holds a host vocabulary's type: as the vocabulary declares
+/// it, reworded, or in an older form, one the vocabulary only adds optional
+/// fields to, which reshapes no record and asks nothing of the records
+/// held. A type the vocabulary changes in any other way, beside a field
+/// added or without one, is refused, naming the type and each difference:
+/// an open makes no migration and judges no change as a door does, so it
+/// applies none. Annotations changed are judged as a door judges them.
+pub(crate) fn vocabulary_held(o: &Ontology, t: &TypeDecl) -> Result<Held> {
     use lakelands_api::error::Revision;
     let Some(held) = o.types.get(&t.name) else {
-        return Ok(false);
+        return Ok(Held::Same);
     };
     let held = &held.decl;
     let (mut bare, mut reasons, mut added) = (t.clone(), Vec::new(), false);
@@ -1051,16 +1065,26 @@ pub(crate) fn vocabulary_older(o: &Ontology, t: &TypeDecl) -> Result<bool> {
     }
     let parts = otherwise(held, &bare, &reasons);
     reasons.extend(parts.into_iter().map(|part| Revision::Otherwise { part }));
-    if reasons.is_empty() {
-        return Ok(added);
+    if !reasons.is_empty() {
+        let ty = t.name.clone();
+        return Err(invalid(Case::VocabularyChanged { ty, reasons }));
     }
-    let ty = t.name.clone();
-    Err(invalid(Case::VocabularyChanged { ty, reasons }))
+    if annotations(held) != annotations(t)
+        && let Some(fault) = Declaration::Type(t.clone()).annotation_fault()
+    {
+        return Err(fault.into());
+    }
+    Ok(match (added, held == t) {
+        (true, _) => Held::Older,
+        (false, true) => Held::Same,
+        (false, false) => Held::Reworded,
+    })
 }
 
 /// What `t`, a host's type with the optional fields it adds taken out,
 /// declares otherwise than the lake holds it as `held`, beyond the shape
-/// `shaped` already names and beyond its descriptions and labels.
+/// `shaped` already names and beyond what `worded` takes out; the order of
+/// the fields is not compared, as no record and no check reads it.
 fn otherwise(
     held: &TypeDecl,
     t: &TypeDecl,
@@ -1070,14 +1094,6 @@ fn otherwise(
     let (a, b) = (worded(held), worded(t));
     let fields = |a: &[FieldDecl], b: &[FieldDecl], of: &str| {
         let mut parts = Vec::new();
-        let both = |x: &[FieldDecl], y: &[FieldDecl]| -> Vec<FieldName> {
-            let mut both = x.iter().map(|f| f.name.clone()).collect::<Vec<_>>();
-            both.retain(|n| y.iter().any(|g| &g.name == n));
-            both
-        };
-        if both(a, b) != both(b, a) {
-            parts.push(format!("the order of the fields{of}"));
-        }
         for f in a {
             let Some(g) = b.iter().find(|g| g.name == f.name) else {
                 continue;
@@ -1137,7 +1153,6 @@ fn otherwise(
         ("`field_meta`", a.field_meta != b.field_meta),
         ("`insert_only`", a.insert_only != b.insert_only),
         ("`retired_by`", a.retired_by != b.retired_by),
-        ("`annotations`", a.annotations != b.annotations),
         ("`constraints`", a.constraints != b.constraints),
     ] {
         if differs {
@@ -1147,15 +1162,32 @@ fn otherwise(
     parts
 }
 
-/// `t` without the words people read: its, its fields', its relations'
-/// and its constraints' descriptions and labels.
+/// Every annotation map `t` holds: its own, its fields', its relations'
+/// and their fields'.
+fn annotations(t: &TypeDecl) -> Vec<&lakelands_api::ontology::Annotations> {
+    let mut all = vec![&t.annotations];
+    all.extend(t.fields.iter().map(|f| &f.annotations));
+    for r in &t.relations {
+        all.push(&r.annotations);
+        all.extend(r.fields.iter().map(|f| &f.annotations));
+    }
+    all
+}
+
+/// `t` without what people and the host read: its, its fields', its
+/// relations' and its constraints' descriptions, labels and annotations.
 fn worded(t: &TypeDecl) -> TypeDecl {
     let mut t = t.clone();
     (t.description, t.label) = (None, None);
-    let unword = |f: &mut FieldDecl| (f.description, f.label) = (None, None);
+    t.annotations.clear();
+    let unword = |f: &mut FieldDecl| {
+        (f.description, f.label) = (None, None);
+        f.annotations.clear();
+    };
     t.fields.iter_mut().for_each(unword);
     for r in &mut t.relations {
         r.description = None;
+        r.annotations.clear();
         r.fields.iter_mut().for_each(unword);
     }
     t.constraints.iter_mut().for_each(|c| c.description = None);

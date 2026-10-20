@@ -50,7 +50,7 @@ check!(
 
 check!(
     HOST_TYPE_GAINS_A_FIELD = a_host_type_that_gains_a_field_is_declared_again_at_a_writers_open,
-    "003, extended (lakelands#1293), and seams, SystemVocabulary: a lake that holds a host's type without an optional field the host's vocabulary has since added, its description changed beside it, is refused to a reader as `vocabulary_upgrade_owed`, naming the lake and the type; a writer's open declares the type again with the field, in its version after the one held: the record written before reads the same, a write of the new field is applied, a reader then opens the lake, and the next writer's open declares nothing again",
+    "003, extended (lakelands#1293), and seams, SystemVocabulary: a lake that holds a host's type without an optional field the host's vocabulary has since added between two it holds, its description changed beside it, is refused to a reader as `vocabulary_upgrade_owed`, naming the lake and the type; a writer's open declares the type again with the field, in its version after the one held: the record written before reads the same, a write of the new field is applied, a reader then opens the lake, and the next writer's open declares nothing again; a vocabulary that only reorders the type's fields and annotates it is read by a reader as held and declared again by a writer's open, and one whose annotation key no door takes is refused at the writer's open as a door refuses it",
     given
 );
 
@@ -160,11 +160,12 @@ async fn a_host_type_that_gains_a_field_is_declared_again_at_a_writers_open(
     const NOTE: &str = "sys.host_note";
     let text = || field("text", StorageKind::Text);
     let tone = || field("tone", StorageKind::Text);
-    let before = hosting(vec![type_decl(NOTE, vec![text()])]);
+    let size = || field("size", StorageKind::Text);
+    let before = hosting(vec![type_decl(NOTE, vec![text(), size()])]);
     let worded = Some("A note the host keeps.".to_string());
     let after = TypeDecl {
         description: worded,
-        ..type_decl(NOTE, vec![text(), tone()])
+        ..type_decl(NOTE, vec![text(), tone(), size()])
     };
     let after = hosting(vec![after]);
     let store = (given.reopen)(store, before)
@@ -235,7 +236,7 @@ async fn a_host_type_that_gains_a_field_is_declared_again_at_a_writers_open(
         .map_err(|e| Failure::new(format!("opening the lake read-only: {e}")))?;
     read.opened
         .map_err(|e| Failure::new(format!("a reader's open after the upgrade: {e}")))?;
-    let write = (given.continued)(None, lake, none(), OpenMode::Write, after);
+    let write = (given.continued)(None, lake.clone(), none(), OpenMode::Write, after);
     let write = write
         .await
         .map_err(|e| Failure::new(format!("opening the lake for writing: {e}")))?;
@@ -248,6 +249,58 @@ async fn a_host_type_that_gains_a_field_is_declared_again_at_a_writers_open(
         "a type the lake holds as the vocabulary declares it is not declared again: the head \
          was {head}, and after the next writer's open, which takes the lease (one event), it \
          is {again}"
+    );
+    let marked = |key: &str| TypeDecl {
+        annotations: [(key.to_string(), json!("note"))].into(),
+        ..type_decl(NOTE, vec![size(), text(), tone()])
+    };
+    let read = (given.continued)(
+        Some(store),
+        lake.clone(),
+        none(),
+        OpenMode::Read,
+        hosting(vec![marked("acme.icon")]),
+    );
+    let read = read
+        .await
+        .map_err(|e| Failure::new(format!("opening the lake read-only: {e}")))?;
+    read.opened.map_err(|e| {
+        Failure::new(format!(
+            "a reader whose vocabulary reorders `{NOTE}`'s fields and annotates it reads it as \
+             held; it was refused: {e}"
+        ))
+    })?;
+    let opened =
+        |vocabulary| (given.continued)(None, lake.clone(), none(), OpenMode::Write, vocabulary);
+    let wrong = opened(hosting(vec![marked("icon")])).await;
+    let wrong = wrong
+        .map_err(|e| Failure::new(format!("opening the lake for writing: {e}")))?
+        .opened
+        .err();
+    ensure!(
+        matches!(
+            wrong.as_ref().and_then(invalid_case),
+            Some(Case::AnnotationKeyForm)
+        ),
+        "a writer's open whose vocabulary annotates `{NOTE}` with a key no door takes, `icon`, \
+         is refused as a door refuses it, `annotation_key_form`; it answered {wrong:?}"
+    );
+    let write = opened(hosting(vec![marked("acme.icon")]))
+        .await
+        .map_err(|e| Failure::new(format!("opening the lake for writing: {e}")))?;
+    let store = write
+        .opened
+        .map_err(|e| reopened("that reorders and annotates `sys.host_note`", e))?;
+    let told = Lake::of(store.as_ref()).describe_type(NOTE).await?;
+    ensure!(
+        told.annotations.get("acme.icon") == Some(&json!("note"))
+            && told.lifecycle.version == held + 2,
+        "a writer's open whose vocabulary only reorders `{NOTE}`'s fields and annotates it \
+         declares it again, not refused, in the version after {}; it is described at version \
+         {} with {:?}",
+        held + 1,
+        told.lifecycle.version,
+        told.annotations
     );
     Ok(())
 }
