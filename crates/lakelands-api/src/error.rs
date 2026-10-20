@@ -248,11 +248,24 @@ impl Error {
     }
 
     /// A verb's executor declines the call by the host's policy: it did
-    /// not run, and a retry under the same idempotency key answers the same. The host's reason is not
-    /// carried; it belongs in the host's own trail, under the invocation's
-    /// dedup key.
+    /// not run, and a retry under the same idempotency key answers the
+    /// same. It says no reason; [`Error::declined_because`] does.
     pub fn declined(verb: &VerbName) -> Error {
-        let case = Case::CallDeclined { verb: verb.clone() };
+        Error::declined_for(verb, None)
+    }
+
+    /// A verb's executor declines the call by the host's policy, and
+    /// says why: the host's own words, scrubbed as any [`Detail`] is,
+    /// recorded in the call's answer beside the verb.
+    pub fn declined_because(verb: &VerbName, reason: Detail) -> Error {
+        Error::declined_for(verb, Some(reason))
+    }
+
+    fn declined_for(verb: &VerbName, reason: Option<Detail>) -> Error {
+        let case = Case::CallDeclined {
+            verb: verb.clone(),
+            reason,
+        };
         let said = Said::from(case).within(Place::Verb { name: verb.clone() });
         Error::Refused {
             field: None,

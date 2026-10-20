@@ -140,8 +140,9 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   due stands, and the caller gets the recorded answer either way. To
   decline a call by the host's policy, answer `Error::declined(verb)`,
   never `not_granted` nor `unavailable`: the record then says `declined`,
-  the call did not run, and a retry under the same idempotency key answers the same. The host's reason
-  goes in its own trail, under the dedup key; the case carries none. Without a bound
+  the call did not run, and a retry under the same idempotency key answers the same. To say why, answer
+  `Error::declined_because(verb, reason)`: the reason, a `Detail` of the
+  host's own words (never a record's values), is recorded in the answer. Without a bound
   executor such a verb is refused as `Unbound`, not faked. See
   `docs/decisions/013-verbs-run-by-declared-risk.md`.
 - **`ChangeFeed`.** The host reads the store's feed: the log, filtered
@@ -1235,8 +1236,11 @@ A host that already has a store of its own moves in four steps.
   not know is shown as itself in backticks. A client and a lake on either
   side of this change cannot read each other's errors: move both
   together. The only free text is a `Detail`, an operating system's,
-  database's or library's own words, scrubbed where they arise: never a
-  record's key or values, and never a path on the host. See
+  database's or library's own words, or a host's reason for declining a
+  call, scrubbed where they arise: never a record's key or values, and
+  never a path on the host. A host scrubs its own reason and keeps it
+  short; neither the `detail-sources` gate nor the store checks or bounds
+  it. See
   `docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
   extended.
 - **A refusal is a case too (lakelands#650).** A refusal of `invalid`,
