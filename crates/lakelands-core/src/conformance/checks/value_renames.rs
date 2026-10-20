@@ -635,7 +635,7 @@ async fn a_value_rename_is_not_granted_to_one_not_shown_every_field_it_writes(
     let l = lake(store.as_ref(), &["open", "done"], vec![]).await?;
     l.upsert("task", "t1", json!({"state": "open"})).await?;
     let mut blank = reviewer(store.as_ref(), true);
-    blank.grants.default = Access::None;
+    (blank.grants.default, blank.grants.restricted) = (Access::None, true);
     let before = store.head().await.must("reading the head")?;
     let m = renamed(&["active", "done"], &[("open", "active")]);
     let id = preflight(&l, m.clone()).await?.report_id;
@@ -937,7 +937,7 @@ async fn a_rename_report_names_a_type_by_what_its_reader_is_described_of_it(stor
     // and holds no `schema`, which shows every definition.
     let reader = |name, ty: &str, fields: &[(&str, Access)], unseen: bool| {
         let mut p = field_access(s, name, ty, fields);
-        (p.grants.schema, p.grants.review) = (true, true);
+        (p.grants.schema, p.grants.review, p.grants.restricted) = (true, true, true);
         p.grants.types.entry(ty.into()).or_default().default = unseen.then_some(Access::None);
         p
     };

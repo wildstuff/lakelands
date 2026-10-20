@@ -819,7 +819,7 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
 | what may name an old value is listed to a reader shown it, a declaration as `describe` shows it and an aging rule as a read answers it, and another reader is told that there may be one (lakelands#553) | `006 § A report is answered as its reader may know it` |
 | a type is named in that list by what its reader is described of it (lakelands#861) | `006 § A report is answered as its reader may know it` |
 | a proposal's report of renames is listed to each reader as it is shown the lake as it stood before the proposal, and the list and the report's id are the reader's (lakelands#553) | `006 § A report is answered as its reader may know it` |
-| a proposed migration is listed as its reader may know it: `renames`, `dropped` and `fields`, `rekeyed`, `references`; the totals, `lossless`, the hashes, the id and `more`; a migration of a type its reader may not see (lakelands#499) | `006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
+| a proposed migration is listed as its reader may know it: `renames`, `dropped` and `fields`, `rekeyed`, `references`; the totals, the hashes, the id and `more`; `lossless` as its proposer was told it, by the records and constraints it is told of; a migration of a type its reader may not see (lakelands#499) | `006 § A proposal is listed as its reader's view, and one that names what its reader is not shown is not there` |
 | a report is answered as its reader may know it: one function trims it at the five places that answer one (lakelands#531) | `006 § A report is answered as its reader may know it` |
 | `sample_keys`: the keys of records the reader is answered, the first five among them (lakelands#531, lakelands#875) | `006 § A report is answered as its reader may know it` |
 | `sample_collisions`: a colliding key is named to a reader who is answered two or more of the records that would take it and reads every field of the new key, in the order of the new key (lakelands#531, lakelands#875) | `006 § A report is answered as its reader may know it` |
@@ -970,6 +970,12 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
   (lakelands#1267).
 - Added: a declaring append leaves the shape after it, built at the
   first read of its position (lakelands#1056).
+- Extended: a proposed migration is lossless as its proposer is told it.
+  A restricted record that it would leave breaking a constraint that
+  refuses makes it lossy at the accept alone; one that
+  would not convert or would collide makes it lossy to every reader,
+  since retired records are converted and keyed with the rest and a
+  held one tells no more than a retired one would.
 - Marking a field `authority: verb` is a change of meaning, taken by `declare` (lakelands#1130).
 - A trigger, a verb, an object set or a function is withdrawn by a declaration (lakelands#1219).
 - Marking a type `retired_by: verbs` is a change of meaning, taken by `declare` (lakelands#1148).

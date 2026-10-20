@@ -330,7 +330,7 @@ async fn a_named_set_is_read_by_the_right_to_read_what_its_filter_reads(store: S
     );
     // An author kept from `status` declares no set that names `open`.
     let mut author = kept.clone();
-    author.grants.schema = true;
+    (author.grants.schema, author.grants.restricted) = (true, true);
     let before = s.head().await.must("the head")?;
     // One without `schema` proposes none either, nor a trigger whose `when`
     // names one, and is told no more than a read tells it: the set is one
@@ -418,7 +418,7 @@ async fn a_named_set_is_read_by_the_right_to_read_what_its_filter_reads(store: S
     l.declare_as(object_set_on("vs", "vault", "state = 'x'"), "vs")
         .await?;
     let types = json!({"vault": {"fields": {"id": "none"}}});
-    let grants = json!({"default": "read", "schema": true, "types": types});
+    let grants = json!({"default": "read", "schema": true, "restricted": true, "types": types});
     let nok = super::only::holder(s, "nok", grants);
     let what = "a read naming `vs`, a set of a type `nok` is not shown";
     let read = found(&l, &nok, "in_set('vs')", None).await;

@@ -22,8 +22,39 @@ The plan and the act are one path up to the act's append: a
 declaration's drafts and its walk of the records it computes again, a
 migration's preflight. So a plan refuses what its act refuses, in the
 order of 016 and 028, and a walk the act makes is the one the plan
-counts. An id is compared before anything a lossy change is refused
-for, as a stale report is.
+counts, to a caller who may make the change (below). An id is compared
+before anything a lossy change is refused for, as a stale report is.
+
+### A change of the types is made by a holder of `restricted`, and planned as its caller is told
+
+`enact`, whatever change it names, `declare`, `apply`, `add_field`,
+`recompute`, `migrate_apply` and `migrate_value_type_apply` need
+`restricted` beside `schema`, whatever the lake holds, and refuse a
+caller without it `grant_needed`, naming `restricted`, before any record
+is read. `accept` of a proposed change of the ontology needs it beside
+`review` and `schema`, refused alike as soon as the proposal is known to
+change the ontology: what it has read by then (that the proposal is
+found, listed and undecided) tells nothing of a held record. So the
+refusal is the same on every lake. A migration that narrows a relation
+is applied by these doors and needs it alike.
+The act judges every record, held ones included; were it refused only
+where it met a held record, the refusal would tell of that record. So
+`enact` and `apply` of one declaration answer alike. A caller without
+`restricted` still plans, previews and proposes the change.
+
+To that caller a change's `plan`, and the previews `migrate` and
+`migrate_value_type`, only tell, and are judged as it is told, as a
+proposal's plan is (below): a held record the change would leave
+breaking a constraint that refuses, and a held link a narrowing would
+leave past the relation's new cardinality, count no more than a retired
+one, which the change does not judge; a declaration's plan decides no
+set and judges no setting's held value, as a proposal's does not. So
+the plan may answer `lossless` where the act, made by a holder of
+`restricted`, refuses. That tells nothing: the act is not this caller's
+on any lake, its refusal to it does not depend on the records, and the
+holder who makes it is shown the plan the act judges. Twins that differ
+only in whether a record is held or retired are planned alike to the
+caller, and refused alike.
 
 ### What a plan tells
 
@@ -54,10 +85,12 @@ change would change, and a value type's migration's report.
   PostgreSQL, about a second at 100 000 records, for a number nothing
   depends on.
 - **`lossless`** says whether the change can be made as planned: no
-  section loses a value or breaks a constraint that refuses. A
-  proposal's plan of declarations only tells, and is judged on the
-  records its proposer is told of; its accept still refuses on every
-  record.
+  section loses a value or breaks a constraint that refuses. Where an
+  answer only tells, a proposal's plan or report, a listing of either,
+  and a change's plan or preview to a caller without `restricted`
+  (above), it is judged on what its reader is told of: restricted
+  records and constraints over fields it does not read are left out.
+  Its accept still refuses on every record.
 
 A reference the change leaves naming no live record is told and never
 refused: the act stays its author's (032).
@@ -78,8 +111,15 @@ tells, and what its walk finds, a constraint left broken or a set past
 the ceiling, is the accept's to refuse. A constraint its proposer may
 not read is neither judged nor named in it, so it is answered as if the
 constraint were not there, and the plan is lossy only by a record its
-proposer is told of. A proposal of declarations keeps its plan in the
-log (`write_proposed`, log format 17), and a proposed migration its
+proposer is told of. So is a proposed migration, refused as lossy only
+by what its proposer is told of, of its own type and of each type whose
+references a re-key rewrites, and a value type's migration, refused by
+a constraint left broken only on that. A record that would not convert
+or would collide, or a value that would not fit, makes it lossy to
+every reader alike: retired records are converted, keyed and counted
+with the rest, so a restricted one tells nothing a retired one would
+not. A proposal of declarations keeps its plan in the log
+(`write_proposed`, log format 17), and a proposed migration its
 report, its plan's section, as before; both are made as the proposer is
 shown them without `restricted`, so no count kept tells of a hold. Each
 reader is shown them as its listing shows a report, a first key only
@@ -124,9 +164,9 @@ A proposal of declarations computes no held record: it counts none, and
 the record's inputs are not its proposer's. A held record is counted and
 named only for a holder of `restricted`, in `recomputed`, `unlive`,
 `filled` and `breaches` alike; a constraint that refuses still refuses
-on every record. `unlive` is told to a reader who reads the reference
-and is shown its target type; a count over a hidden type would tell
-which of its keys exist. A plan has no `more` of its own: a reference
+on every record, save where the plan only tells (above). `unlive` is
+told to a reader who reads the reference and is shown its target type;
+a count over a hidden type would tell which of its keys exist. A plan has no `more` of its own: a reference
 whose target type its reader is not shown is a field it does not know of
 (024), so its reader reads no such reference. A section's `more` keeps a
 report's meaning, counts past their first keys. A plan's id is made over

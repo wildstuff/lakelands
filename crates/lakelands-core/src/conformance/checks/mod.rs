@@ -501,6 +501,7 @@ pub const ALL: &[Check] = &[
     plan::PLAN_REFUSES,
     plan::PLAN_SHOWN,
     plan::PLAN_ACCEPTED,
+    plan::PLAN_TOLD,
     values::DECIMAL_NOT_A_NUMBER,
     values::GEO_VALUES,
     values::JSON_VALUES,

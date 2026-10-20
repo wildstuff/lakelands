@@ -132,6 +132,9 @@ impl From<Error> for Failure {
                     "act as a principal whose grants allow it, or ask the lake's owner for a grant"
                         .to_owned()
                 }
+                Refusal::GrantNeeded { grant } => format!(
+                    "act as a principal holding `{grant}`, or propose the change for one to accept"
+                ),
                 Refusal::WrongDoor if field.is_none() => {
                     "another door does it: a relation's authored links through `link` and `unlink`, \
                      a source's links through `lakelands ingest`, a derived relation's by the lake \

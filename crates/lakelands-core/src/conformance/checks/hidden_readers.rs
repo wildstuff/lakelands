@@ -210,7 +210,7 @@ async fn a_field_a_hidden_part_reads_stands_to_its_author(store: Store, reopen: 
         .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
     let l = Lake::of(store.as_ref());
     let mut who = field_access(store.as_ref(), "author", "he", &[("salary", Access::None)]);
-    (who.grants.schema, who.grants.review) = (true, true);
+    (who.grants.schema, who.grants.review, who.grants.restricted) = (true, true, true);
     let kept = |f: &str| TypeGrants {
         fields: [(f.into(), Access::None)].into(),
         ..Default::default()

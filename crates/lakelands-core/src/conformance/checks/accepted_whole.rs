@@ -204,7 +204,7 @@ async fn a_reviewer_accepts_only_what_it_is_listed_whole(store: Store, given: Gi
         };
         let l = Lake::of(store.as_ref());
         let ids = proposed(&l, store.as_ref()).await?;
-        let mut g = json!({"default": "read", "review": true});
+        let mut g = json!({"default": "read", "review": true, "restricted": true});
         let more: Value = serde_json::from_str(grants).expect("the grid's grants read");
         if let (Some(g), Value::Object(more)) = (g.as_object_mut(), more) {
             g.extend(more);

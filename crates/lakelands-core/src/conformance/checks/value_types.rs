@@ -412,10 +412,11 @@ async fn the_preflight_counts_what_would_not_fit_over_every_use_and_history(stor
     );
     // One without `restricted` is answered no read of `i4`: it is counted,
     // and the misfits named are of the records that reader is answered.
-    let (architect, to) = (
+    let (mut architect, to) = (
         reviewer(store.as_ref(), true),
         status(&["open", "paid", "void"]),
     );
+    architect.grants.restricted = false;
     let seen = l
         .cat
         .migrate_value_type(&architect, to.clone().into())
@@ -557,7 +558,7 @@ async fn a_value_type_report_from_before_the_lake_moved_is_refused(store: Store)
     // different uses are given two, and each other's is stale.
     let kept = |id, ty, field| {
         let mut who = field_access(store.as_ref(), id, ty, &[(field, Access::None)]);
-        who.grants.schema = true;
+        (who.grants.schema, who.grants.restricted) = (true, true);
         who
     };
     let (ka, kb) = (

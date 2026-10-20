@@ -164,7 +164,8 @@ pub trait Catalog: Send + Sync {
     /// verb answers its executor's recorded `output`, as `call` does, and
     /// so does the accept sent again; any other accept sent again is
     /// `decided`. An accepted proposal of declarations answers how each
-    /// stands after it, as `apply` does.
+    /// stands after it, as `apply` does. A change of the ontology is
+    /// refused `grant_needed` to a reviewer without `restricted`.
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome>;
 
     /// `accept` of a proposed change to the ontology, only where the plan
@@ -203,6 +204,7 @@ pub trait Catalog: Send + Sync {
     /// Add or revise a declaration that does not reshape stored records. One
     /// that is the declaration in force is answered at the head and appends
     /// nothing (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
+    /// Refused `grant_needed` to a caller without `restricted`.
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome>;
 
     /// Declare a set of declarations together, as a bundle is: validated as
@@ -212,6 +214,7 @@ pub trait Catalog: Send + Sync {
     /// The outcome names the position of the set's last declaration, from
     /// which all of it is in force. What is in force before the set is not
     /// appended again; a set wholly in force is answered at the head.
+    /// Refused `grant_needed` to a caller without `restricted`.
     async fn apply(&self, who: &Principal, declarations: Vec<Declaration>) -> Result<Outcome>;
 
     /// Compute again what a declaration in force computes: it is appended
@@ -220,10 +223,12 @@ pub trait Catalog: Send + Sync {
     /// settings and the time of that event, a call whose recorded output is
     /// a failure is made again, a field that waits for its backend is made.
     /// A deliberate act the log shows; an identical `declare` does none of
-    /// it (`docs/decisions/022-functions-are-declarations.md`).
+    /// it (`docs/decisions/022-functions-are-declarations.md`). Refused
+    /// `grant_needed` to a caller without `restricted`.
     async fn recompute(&self, who: &Principal, what: Recompute) -> Result<Outcome>;
 
-    /// Add one field to a type.
+    /// Add one field to a type. Refused `grant_needed` to a caller
+    /// without `restricted`.
     async fn add_field(&self, who: &Principal, ty: &TypeName, field: FieldDecl) -> Result<Outcome>;
 
     /// The preflight of a migration: what it would do, changing nothing —
@@ -237,11 +242,11 @@ pub trait Catalog: Send + Sync {
         migration: Migration,
     ) -> Result<Reply<MigrationReport>>;
 
-    /// Apply a migration whose preflight the caller was shown. Refused if
-    /// the lake moved since (the report differs) or if it is not
-    /// lossless. One to the type in force that renames nothing is then
-    /// answered at the head and appends nothing only where it fills no
-    /// record (050).
+    /// Apply a migration whose preflight the caller was shown. Refused
+    /// `grant_needed` to a caller without `restricted`, if the lake moved
+    /// since (the report differs) or if it is not lossless. One to the
+    /// type in force that renames nothing is then answered at the head
+    /// and appends nothing only where it fills no record (050).
     async fn migrate_apply(
         &self,
         who: &Principal,
@@ -263,8 +268,9 @@ pub trait Catalog: Send + Sync {
     ) -> Result<Reply<ValueTypeReport>>;
 
     /// Put a value type's migration in force against the preflight the
-    /// caller was shown. Refused if the lake moved since, or while any
-    /// stored value would not fit; otherwise, without renames, one
+    /// caller was shown. Refused `grant_needed` to a caller without
+    /// `restricted`, if the lake moved since, or while any stored value
+    /// would not fit; otherwise, without renames, one
     /// `declared` at the next version, and no record changes; with them,
     /// one `value_type_migrated`, and every record holding an old value
     /// holds the new one.
@@ -282,7 +288,8 @@ pub trait Catalog: Send + Sync {
     async fn plan(&self, who: &Principal, change: Change) -> Result<Reply<Plan>>;
 
     /// Make a change whose plan the caller was shown: refused `plan_stale`
-    /// where the plan made now, as the caller is shown it, has another id.
+    /// where the plan made now, as the caller is shown it, has another id,
+    /// and `grant_needed` to a caller without `restricted`.
     /// Its outcome carries the plan that applied, as every change to the
     /// ontology's does.
     async fn enact(&self, who: &Principal, change: Change, plan_id: &str) -> Result<Outcome>;

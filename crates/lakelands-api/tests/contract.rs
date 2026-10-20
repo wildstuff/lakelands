@@ -13,6 +13,9 @@ fn intent(e: &Error) -> &'static str {
     match e {
         Error::Refused { reason, .. } => match reason {
             Refusal::NotGranted => "the principal lacks a grant; nothing was written",
+            Refusal::GrantNeeded { .. } => {
+                "the principal lacks the grant named; nothing was written"
+            }
             Refusal::WrongDoor => "the field belongs to another authority's door",
             Refusal::VerbsOnly { .. } => "only the type's verbs write the field; call one it names",
             Refusal::Reserved => "a `sys.` name is the system's",

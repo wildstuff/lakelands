@@ -343,7 +343,7 @@ async fn a_walk_of_the_lake_leaves_no_record_breaking_a_constraint(store: Store)
         "bill",
         &[("amount", Access::Masked)],
     );
-    masked.grants.schema = true;
+    (masked.grants.schema, masked.grants.restricted) = (true, true);
     // As it knows the type: without the constraint it is not told.
     let mut known = bill("0 - paid");
     known["constraints"] = json!([]);
@@ -546,7 +546,7 @@ async fn a_walk_is_granted_by_the_fields_it_may_move(store: Store) -> Held {
         "loan",
         &[("amount", Access::Masked)],
     );
-    masked.grants.schema = true;
+    (masked.grants.schema, masked.grants.restricted) = (true, true);
     let not_granted =
         |a: &lakelands_api::Result<Outcome>| matches!(reason(a), Some(Refusal::NotGranted));
     // A function declared again: one that leaves `L-1` within, one that does not.
@@ -593,7 +593,7 @@ async fn a_constraint_named_like_one_its_author_is_not_told_is_not_granted(store
         "invoice",
         &[("amount", Access::Masked)],
     );
-    masked.grants.schema = true;
+    (masked.grants.schema, masked.grants.restricted) = (true, true);
     let theirs = |name: &str| {
         let mut t = invoice("invoice", "authored", "refuse");
         if let Some(cs) = t["constraints"].as_array_mut() {
@@ -792,7 +792,7 @@ async fn a_migration_lists_the_records_its_constraints_would_find_broken(store: 
     // To one kept from `amount`, its migration leaves the constraint over
     // it as declared, and is not told the entry but `more`.
     let mut kept = field_access(store.as_ref(), "kept", "bill", &[("amount", Access::None)]);
-    kept.grants.schema = true;
+    (kept.grants.schema, kept.grants.restricted) = (true, true);
     let mut theirs = invoice("bill", "authored", "admit");
     let unread = |v: &Value| v.to_string().contains("amount");
     for list in ["fields", "constraints"] {
@@ -821,7 +821,7 @@ async fn a_migration_lists_the_records_its_constraints_would_find_broken(store: 
         "bill",
         &[("amount", Access::Masked)],
     );
-    masked.grants.schema = true;
+    (masked.grants.schema, masked.grants.restricted) = (true, true);
     let mut theirs = invoice("bill", "authored", "admit");
     if let Some(cs) = theirs["constraints"].as_array_mut() {
         cs.retain(|c| c["name"] != "never_overpaid");

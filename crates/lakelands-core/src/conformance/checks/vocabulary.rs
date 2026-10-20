@@ -578,7 +578,7 @@ async fn a_vocabulary_whose_tools_would_bear_anothers_names_refuses_the_writers_
     // The lake has no problem among its names: it takes a declaration,
     // naming nothing, and opens once the host withholds the type.
     let (l, twin) = (Lake::of(store.as_ref()), tool_base("sys.audit"));
-    let grants = json!({"default": "read", "schema": true, "types": {twin: {"default": "none"}}});
+    let grants = json!({"default": "read", "schema": true, "restricted": true, "types": {twin: {"default": "none"}}});
     let kept = super::only::holder(store.as_ref(), "author", grants);
     let free = [
         declare(l.cat.as_ref(), &l.own, plain("crate")).await.err(),

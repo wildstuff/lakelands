@@ -804,7 +804,9 @@ impl Catalog for Doors {
             crate::writes::granted(c.who.grants.schema && !rights::holds_only(c.who))?;
             let w = c.writer()?;
             let view = c.lake.engine.view(None)?;
-            let report = c.preflight_value_type(&w, view.as_ref(), &m, None)?.report;
+            let report = c
+                .preflight_value_type(&w, view.as_ref(), &m, (None, c.tells()))?
+                .report;
             c.renames_shown(&w.ontology, &m, &report)?;
             Ok(Reply {
                 position: view.position().unwrap_or(Position::GENESIS),

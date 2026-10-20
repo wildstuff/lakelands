@@ -272,7 +272,7 @@ async fn a_verbs_path_reads_the_one_link_a_relation_holds(store: Store) -> Held 
     let unknown = json!({"code": "unknown_field", "type": "deal", "field": "with"});
     // An author who may not know of the link type is told of the path what
     // a field `deal` does not have tells, whatever the link holds.
-    let blind = json!({"default": "write", "schema": true, "types": {LT: {"default": "none"}}});
+    let blind = json!({"default": "write", "schema": true, "restricted": true, "types": {LT: {"default": "none"}}});
     let blind = holder(store.as_ref(), "blind", blind);
     for requires in ["with.note is null", "with.nope is null"] {
         let v = serde_json::from_value(verb("odd", "low", requires, ("grade", "'x'")));
@@ -332,7 +332,7 @@ async fn a_verbs_path_reads_the_one_link_a_relation_holds(store: Store) -> Held 
     )?;
     // An author not shown the relation adds a field: the verbs are judged
     // over the lake as it is, so nothing is said of what it is not shown.
-    let author = json!({"default": "write", "schema": true,
+    let author = json!({"default": "write", "schema": true, "restricted": true,
                         "types": {"customer": {"default": "none"}}});
     let author = holder(store.as_ref(), "author", author);
     let (deal, memo) = ("deal".into(), field("memo", StorageKind::Text));

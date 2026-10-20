@@ -13703,7 +13703,7 @@ pub async fn a_shape_names_no_field_its_author_may_not_know_of(store: Arc<dyn La
         wrote.await.expect("the owner writes `s1`");
     }
     let held = json!({"fields": {"veiled": "none", "cloak": "none"}});
-    let grants = json!({"default": "write", "schema": true, "types": {
+    let grants = json!({"default": "write", "schema": true, "restricted": true, "types": {
         "ev": held, "stamped": held, "plain": held, "payroll": {"default": "none"}}});
     let grants = serde_json::from_value(grants).expect("grants read");
     let author = &principal(store.lake(), PrincipalKind::Agent, "author", grants);
@@ -14410,8 +14410,7 @@ pub async fn a_relation_carried_by_a_hidden_field_answers_nothing_of_it(store: A
         }
     }
     // An author held from `tgt` who sends `r` again declares it twice.
-    let grants =
-        json!({"default": "read", "schema": true, "types": {"wk": {"fields": {"tgt": "none"}}}});
+    let grants = json!({"default": "read", "schema": true, "restricted": true, "types": {"wk": {"fields": {"tgt": "none"}}}});
     let grants = serde_json::from_value(grants).expect("grants read");
     let author = &principal(store.lake(), PrincipalKind::Agent, "author", grants);
     let sent = json!({"declare": "type", "name": "wk", "fields": [{"name": "no", "type": {"kind": "text"}}],

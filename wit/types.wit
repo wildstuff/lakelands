@@ -1429,6 +1429,7 @@ interface types {
     /// (`lakelands_api::error::Case`) and where it is said.
     variant refusal {
         not-granted,
+        grant-needed(string),
         wrong-door,
         verbs-only(list<verb-name>),
         reserved,

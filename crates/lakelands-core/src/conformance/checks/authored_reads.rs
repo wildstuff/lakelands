@@ -120,7 +120,7 @@ async fn a_declaration_reads_only_what_its_author_may_read(store: Store) -> Held
     let mut partial = field_access(store.as_ref(), "partial", "account", &grants);
     let mut full = field_access(store.as_ref(), "full", "account", &grants[..1]);
     for who in [&mut partial, &mut full] {
-        (who.grants.schema, who.grants.review) = (true, true);
+        (who.grants.schema, who.grants.review, who.grants.restricted) = (true, true, true);
     }
 
     // R2: a field its author may not know of answers as one the type does
@@ -225,7 +225,7 @@ async fn a_declaration_reads_only_what_its_author_may_read(store: Store) -> Held
         l.declare_json(over(shape.clone(), whole)).await?;
         let name = shape["name"].as_str().unwrap_or_default().to_owned();
         let mut author = field_access(store.as_ref(), "author", &name, &[(hidden, Access::None)]);
-        author.grants.schema = true;
+        (author.grants.schema, author.grants.restricted) = (true, true);
         let mut seen = shape.clone();
         if let Some(s) = seen.as_object_mut() {
             s.remove("relations");

@@ -1794,6 +1794,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     fn refusals(r: &Refusal) {
         match r {
             Refusal::NotGranted
+            | Refusal::GrantNeeded { .. }
             | Refusal::WrongDoor
             | Refusal::VerbsOnly { .. }
             | Refusal::Reserved
@@ -1818,6 +1819,9 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
         case_names(
             &[
                 Refusal::NotGranted,
+                Refusal::GrantNeeded {
+                    grant: "restricted".into(),
+                },
                 Refusal::WrongDoor,
                 Refusal::VerbsOnly { verbs: vec![] },
                 Refusal::Reserved,

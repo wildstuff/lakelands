@@ -455,6 +455,7 @@ async fn a_masked_authors_declaration_reads_the_shape_the_one_before_left() {
     let mut grants = Grants {
         default: Access::Write,
         schema: true,
+        restricted: true,
         ..Grants::default()
     };
     let hidden = [("n".into(), Access::None)].into();

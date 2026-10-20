@@ -163,7 +163,7 @@ async fn a_relation_carried_by_a_hidden_field_is_walked_by_no_one_held_from_it(
     // An author held from `tgt` sends `r` again: it is refused as the
     // owner is for a type that declares `r` twice, and `wk` stays as it is.
     let mut author = field_access(store.as_ref(), "author", "wk", &[("tgt", Access::None)]);
-    author.grants.schema = true;
+    (author.grants.schema, author.grants.restricted) = (true, true);
     let kind = |f: &str| match f {
         "tgt" => to_other.clone(),
         _ => json!({"kind": "text"}),

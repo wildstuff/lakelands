@@ -954,6 +954,7 @@ async fn the_door_computes_again_what_a_declaration_in_force_computes(store: Sto
             "blind",
             Grants {
                 schema: true,
+                restricted: true,
                 ..Grants::default()
             },
         ),
