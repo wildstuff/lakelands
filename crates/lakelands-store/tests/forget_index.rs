@@ -50,10 +50,13 @@ impl KeyStore for Keys {
 }
 
 /// A report without its expected time, which counts the preflight's own
-/// walk and so differs between two preflights alike (lakelands#1152).
+/// walk and so differs between two preflights alike (lakelands#1152), and
+/// without its way: a walk finds what the index finds, but only the index
+/// names the records a scoped refold restates, so a walk always rebuilds.
 fn timeless(r: lakelands_api::write::ForgetReport) -> lakelands_api::write::ForgetReport {
     lakelands_api::write::ForgetReport {
         expected_ms: 0,
+        way: Default::default(),
         ..r
     }
 }
@@ -102,6 +105,12 @@ async fn a_preflight_reads_the_sources_events_as_a_walk_does() {
     *probe.damaged.lock().unwrap() = None;
     probe.undecided.store(true, Ordering::SeqCst);
     let walked = store.forget_preflight(&crm).await.unwrap();
+    assert!(
+        indexed.way.scoped && !walked.way.scoped,
+        "the index plans the scoped refold, and a walk the index does not decide plans the rebuild: {:?}, {:?}",
+        indexed.way,
+        walked.way
+    );
     assert_eq!(
         timeless(indexed),
         timeless(walked),
@@ -165,11 +174,12 @@ async fn after_the_act_the_index_counts_the_sources_outputs_as_a_walk_does() {
     assert_eq!(repeat.outputs, 2, "a repeat counts them too: {repeat:?}");
 }
 
-/// A set's report without its expected times.
+/// A set's report without its expected times and its way.
 fn timeless_set(r: lakelands_api::write::ForgetSetReport) -> lakelands_api::write::ForgetSetReport {
     lakelands_api::write::ForgetSetReport {
         sources: r.sources.into_iter().map(timeless).collect(),
         expected_ms: 0,
+        way: Default::default(),
         ..r
     }
 }

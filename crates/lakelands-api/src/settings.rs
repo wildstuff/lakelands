@@ -214,6 +214,11 @@ pub const SETTINGS: &[Setting] = &[
         ..location("limits.order_chunk", "10000")
     },
     Setting {
+        range: "`true` or `false`",
+        says: "Whether a forgetting always rebuilds the projection; off, it refolds only the records its sources wrote where nothing else the lake keeps reads them, and the preflight says which it chose.",
+        ..location("limits.forget_rebuild", "false")
+    },
+    Setting {
         range: "KiB",
         says: "SQLite: the writer connection's page cache.",
         ..location("engine.tuning.writer_cache_kb", "65536")

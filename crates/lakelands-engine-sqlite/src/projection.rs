@@ -952,6 +952,35 @@ pub(crate) fn put_record(conn: &Connection, kept: &mut Kept, r: &StoredRecord) -
     Ok(())
 }
 
+/// Delete every state of a record, its memberships in every set the
+/// projection ever declared, and its rows in the engine's indexes.
+pub(crate) fn drop_record(conn: &Connection, ty: &TypeName, key: &RecordKey) -> Result<()> {
+    for statement in [
+        "DELETE FROM records WHERE ty = ?1 AND key = ?2",
+        "DELETE FROM members WHERE object_set IN (SELECT DISTINCT substr(ident, 12) \
+         FROM declarations WHERE ident LIKE 'object\\_set %' ESCAPE '\\') AND ty = ?1 AND key = ?2",
+        "DELETE FROM text_index WHERE ty = ?1 AND key = ?2",
+        "DELETE FROM edges WHERE src_ty = ?1 AND src_key = ?2",
+        "DELETE FROM sort_index WHERE ty = ?1 AND key = ?2",
+        "DELETE FROM full_text WHERE rowid IN (SELECT id FROM search_rows WHERE ty = ?1 AND key = ?2)",
+        "DELETE FROM search_rows WHERE ty = ?1 AND key = ?2",
+    ] {
+        (conn.prepare_cached(statement))
+            .and_then(|mut s| s.execute(params![ty.as_str(), key.as_str()]))
+            .map_err(sql)?;
+    }
+    Ok(())
+}
+
+/// Delete every state of a seam's output for one input.
+pub(crate) fn drop_output(conn: &Connection, seam: &str, input: &str) -> Result<()> {
+    run(
+        conn,
+        "DELETE FROM outputs WHERE seam = ?1 AND input = ?2",
+        params![seam, input],
+    )
+}
+
 /// How `ty`'s records are indexed at the head ([`Kept`]); a kept name's
 /// order fields are its view's, and every text field has rows.
 fn indexed(conn: &Connection, ty: &TypeName) -> Result<Indexed> {

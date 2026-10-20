@@ -230,6 +230,16 @@ pub trait ProjectionStore: Send + Sync {
     /// same transaction is kept. Any other name is refused as invalid.
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()>;
 
+    /// Delete every state `of` names holds, kept history included, inside
+    /// the transaction: what was put before it in the transaction or
+    /// before the transaction is gone, and what is put after it is kept.
+    /// A record's states take with them its memberships in every set and
+    /// the entries the engine derived from them (its indexes, full-text
+    /// entries and edges); its vectors are the lake's to keep. A scoped
+    /// refold drops a record's states before it puts them again
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
+    fn drop_states(&self, of: StatesOf<'_>) -> Result<()>;
+
     /// Store a proposal's state as of its latest event, at `at`; earlier
     /// states are kept, so a view before `at` still sees the earlier one.
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()>;
@@ -283,6 +293,15 @@ pub trait ProjectionStore: Send + Sync {
             op: "choose_order".to_owned(),
         }))
     }
+}
+
+/// What one [`ProjectionStore::drop_states`] deletes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatesOf<'a> {
+    /// The record at a key of a type.
+    Record(&'a TypeName, &'a RecordKey),
+    /// A seam's output for one input.
+    Output(&'a str, &'a Digest),
 }
 
 /// A step of building or dropping an order index the lake chose.

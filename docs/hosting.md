@@ -301,7 +301,7 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   - **The act:** `LakeStore::forget_source(source, None)`
     (`lakelands forget --source <id> --report <id>`) appends `source_forgotten`,
     retires what the source made and alone brought, has the key store destroy its
-    keys, rebuilds the projection and reclaims the storage, all under the
+    keys, restates the projection and reclaims the storage, all under the
     writer's lock. Its preflight, `forget_preflight` (`--preflight`),
     says what it erases and retires, what is computed again, and how
     long it expects to hold the lock (the log's events at the engine's
@@ -310,10 +310,30 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     and only if the lake has not moved since; without it, it answers the
     preflight.
     Choose a moment when waiting writes can wait.
+  - **The way it takes** (lakelands#1120): the preflight and the act's
+    report each carry `way`. With `scoped: true` the act refolds only
+    the records the source wrote, a page of 256 in each transaction,
+    and its time grows with what the source wrote and the types its
+    records read, not with the lake; `records` and `events` say how
+    much it folds, a record a migration of such a type walks counted as
+    an event in each page. With `scoped: false`
+    it rebuilds the whole projection, and `why` says, a sentence a
+    reason, what made it: a kept view, a set, a vector field, a relation
+    of link records or another type's computed field reading the
+    source's records, a migration that re-keyed or renamed them, an act
+    of removal in the log, an event of the source's that is not about
+    one record, or the host's own `limits.forget_rebuild`. `scoped_ms`
+    and `rebuild_ms` are each way's estimate, and `expected_ms` is the
+    chosen one's; the refold is taken where it is expected to be no
+    slower. Both ways leave the projection alike, which the conformance
+    suite holds read for read, so `limits.forget_rebuild` is for a host
+    that wants the reference way, not a fix. The act chooses again over
+    the log it appended to, so its `way` may differ from the
+    preflight's if the lake moved.
   - **Several sources at once:** `LakeStore::forget_sources(sources,
     report_id)`, with its preflight `forget_sources_preflight`, forgets a
-    set in one act, one rebuild under one hold of the writer instead of
-    one for each, with one report id over the set. Use it when a
+    set in one act, one restatement under one hold of the writer instead
+    of one for each, with one report id over the set. Use it when a
     request reaches several sources, so that the reports do not go stale
     one after another.
   - **What it cannot reach** refuses it: a value the log holds in
@@ -321,7 +341,8 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     before 0.15.0. Such a lake is exported, the source left out, and
     imported as a new lake.
   - **After a crash** between the act's steps, open a writer: the next
-    writer's open, or the act repeated, finishes what is owed. A
+    writer's open, or the act repeated, finishes what is owed. A scoped
+    refold stopped between pages is planned again and refolded whole. A
     handle that only reads answers what the projection held until then.
   - **A reclaim that fails** is owed, never a lock-out: the values are
     erased already, so the act answers its report with the cause in

@@ -700,7 +700,19 @@ fn forget_report() -> lakelands_api::write::ForgetReport {
         position: Position(3),
         reclaimed: Some(compact_report()),
         reclaim_owed: Some("busy".into()),
+        way: forget_way(),
         report_id: "r".into(),
+    }
+}
+
+fn forget_way() -> lakelands_api::write::ForgetWay {
+    lakelands_api::write::ForgetWay {
+        scoped: false,
+        why: vec!["asked".into()],
+        records: 1,
+        events: 2,
+        scoped_ms: 3,
+        rebuild_ms: 4,
     }
 }
 
@@ -1482,9 +1494,11 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 position: Position(3),
                 reclaimed: Some(compact_report()),
                 reclaim_owed: Some("busy".into()),
+                way: forget_way(),
                 report_id: "r".into(),
             }),
         ),
+        ("forget_way", members(&forget_way())),
         ("remove_report", members(&remove_report())),
         ("removed_field", members(&removed_field())),
         ("forget_records", members(&forget_records())),
@@ -1533,6 +1547,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 order_max_fields: 13,
                 order_unused_secs: 14,
                 order_chunk: 15,
+                forget_rebuild: true,
             }),
         ),
         (

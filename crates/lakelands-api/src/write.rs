@@ -1791,6 +1791,11 @@ pub struct ForgetReport {
     /// writer's next open, a repeat or a compact runs it again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reclaim_owed: Option<String>,
+    /// How the act restates the projection: the preflight's choice, or
+    /// the way the act took. A repeat that finds the act done restates
+    /// nothing, and answers the default.
+    #[serde(default)]
+    pub way: ForgetWay,
     /// Names a preflight's report; `forget_source` may repeat it. Empty
     /// on the act's own report.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1826,11 +1831,43 @@ pub struct ForgetSetReport {
     /// Why the reclaim is still owed, as `ForgetReport::reclaim_owed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reclaim_owed: Option<String>,
+    /// How the act restates the projection, as `ForgetReport::way`.
+    #[serde(default)]
+    pub way: ForgetWay,
     /// Names a preflight's report over the set; `forget_sources` may
     /// repeat it. For a set of one it is the id `forget_preflight`
     /// answers. Empty on the act's own report.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub report_id: String,
+}
+
+/// How a forgetting restates the projection
+/// (`docs/decisions/058-a-source-may-be-forgotten.md`): by a scoped
+/// refold of the records its sources wrote, where nothing else the lake
+/// keeps reads them and it is expected to take less than the rebuild;
+/// otherwise by the rebuild, with why. Either leaves the projection as
+/// the other would.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForgetWay {
+    /// Whether the records are refolded alone; the rebuild otherwise.
+    pub scoped: bool,
+    /// Why the rebuild is chosen, each in a sentence; empty for the
+    /// scoped refold.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub why: Vec<String>,
+    /// The records the scoped refold restates.
+    pub records: u64,
+    /// The events it folds: those about its records, and the lake's own
+    /// declarations, migrations and settings once per page, each record
+    /// a migration walks of a type its records read counted as one.
+    pub events: u64,
+    /// How long the scoped refold is expected to take, in milliseconds,
+    /// at the rate the last one this handle ran folded, or before any at
+    /// the rebuild's, and the reclaim's time.
+    pub scoped_ms: u64,
+    /// How long the rebuild is expected to take, as `expected_ms` reckons
+    /// it without the preflight's walk.
+    pub rebuild_ms: u64,
 }
 
 /// Records of one type a forgetting reads, with the first keys.

@@ -33,7 +33,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use lakelands_api::engine::{
     Applied, CanonicalEvent, Choose, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
-    ProjectionView, Ranked, Rankings, Reclaimed, VectorIndex,
+    ProjectionView, Ranked, Rankings, Reclaimed, StatesOf, VectorIndex,
 };
 use lakelands_api::error::{Act, Case, Error, Part, Result, Situation};
 use lakelands_api::event::{Digest, SegmentDigest};
@@ -684,6 +684,13 @@ impl ProjectionStore for PgLake {
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
         engines::head_only(name)?;
         self.stage(at, |b| b.end_heads(name.as_str()))
+    }
+
+    fn drop_states(&self, of: StatesOf<'_>) -> Result<()> {
+        self.stage(Position::GENESIS, |b| match of {
+            StatesOf::Record(ty, key) => b.drop_record(ty.as_str(), key.as_str()),
+            StatesOf::Output(seam, input) => b.drop_output(seam, input.0.as_str()),
+        })
     }
 
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {

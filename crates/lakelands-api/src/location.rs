@@ -275,6 +275,10 @@ pub struct Limits {
     /// The records one chunk of a chosen index's build writes while it
     /// holds the writer.
     pub order_chunk: u32,
+    /// Whether a forgetting always rebuilds the projection, never
+    /// refolding the records its sources wrote alone
+    /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
+    pub forget_rebuild: bool,
 }
 
 impl Default for Limits {
@@ -296,6 +300,7 @@ impl Default for Limits {
             order_max_fields: 2,
             order_unused_secs: 604_800,
             order_chunk: 10_000,
+            forget_rebuild: false,
         }
     }
 }

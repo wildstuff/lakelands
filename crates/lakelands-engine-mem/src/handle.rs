@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use lakelands_api::engine::{
     Applied, CanonicalEvent, Choose, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
-    ProjectionView, Ranked, Rankings, Reclaimed, VectorIndex,
+    ProjectionView, Ranked, Rankings, Reclaimed, StatesOf, VectorIndex,
 };
 use lakelands_api::error::{Act, Case, Error, Result, Situation};
 use lakelands_api::event::{Digest, SegmentDigest};
@@ -262,6 +262,13 @@ impl ProjectionStore for MemoryLake {
         lakelands_core::engines::head_only(name)?;
         let ty = name.clone();
         self.stage(Put::HeadsEnded { ty, at })
+    }
+
+    fn drop_states(&self, of: StatesOf<'_>) -> Result<()> {
+        self.stage(match of {
+            StatesOf::Record(ty, key) => Put::DroppedRecord(ty.clone(), key.clone()),
+            StatesOf::Output(seam, input) => Put::DroppedOutput(seam.to_owned(), input.clone()),
+        })
     }
 
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {

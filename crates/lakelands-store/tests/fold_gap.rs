@@ -182,6 +182,9 @@ impl ProjectionStore for Failing {
         }
         self.inner.projection().put_record(record)
     }
+    fn drop_states(&self, of: lakelands_api::engine::StatesOf<'_>) -> Result<()> {
+        self.inner.projection().drop_states(of)
+    }
     fn end_head_only(&self, name: &TypeName, at: Position) -> Result<()> {
         self.inner.projection().end_head_only(name, at)
     }

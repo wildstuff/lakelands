@@ -177,6 +177,13 @@ The records one chunk of a chosen index's build writes while it holds the writer
 - **Takes:** a count; 0 is taken as 1.
 - **Default:** `10000`.
 
+### `limits.forget_rebuild`
+
+Whether a forgetting always rebuilds the projection; off, it refolds only the records its sources wrote where nothing else the lake keeps reads them, and the preflight says which it chose.
+
+- **Takes:** `true` or `false`.
+- **Default:** `false`.
+
 ### `engine.tuning.writer_cache_kb`
 
 SQLite: the writer connection's page cache.

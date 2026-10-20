@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use lakelands_api::engine::{
     Applied, CanonicalEvent, Choose, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
-    ProjectionView, Ranked, Rankings, Reclaimed, VectorIndex,
+    ProjectionView, Ranked, Rankings, Reclaimed, StatesOf, VectorIndex,
 };
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, SegmentDigest};
@@ -537,6 +537,13 @@ impl ProjectionStore for SqliteLake {
         self.stage(at, |conn, _| {
             let gone = conn.execute("DELETE FROM records WHERE ty = ?1", [name.as_str()]);
             gone.map(drop).map_err(sql)
+        })
+    }
+
+    fn drop_states(&self, of: StatesOf<'_>) -> Result<()> {
+        self.stage(Position::GENESIS, |conn, _| match of {
+            StatesOf::Record(ty, key) => projection::drop_record(conn, ty, key),
+            StatesOf::Output(seam, input) => projection::drop_output(conn, seam, &input.0),
         })
     }
 
