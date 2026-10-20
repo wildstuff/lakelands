@@ -1122,7 +1122,7 @@ async fn an_executors_error_is_recorded_in_its_wire_form_and_a_declined_call_say
             "judge-declined-because",
             Some(Error::declined_because(
                 &"judge".into(),
-                Detail::scrubbed("above this executor's ceiling"),
+                Detail::scrubbed("above this executor's ceiling – über"),
             )),
         ),
         ("ungrant", "judge-ungranted", Some(ungranted)),
@@ -1154,7 +1154,7 @@ async fn an_executors_error_is_recorded_in_its_wire_form_and_a_declined_call_say
         );
         ensure!(
             (flag == "decline_because")
-                == (output["reason"]["reason"] == "above this executor's ceiling"),
+                == (output["reason"]["reason"] == "above this executor's ceiling – über"),
             "a declined call carries the host's reason in its recorded answer, as `reason` of \
              the case, and one declined with none carries no `reason`; `{flag}` recorded {output}"
         );

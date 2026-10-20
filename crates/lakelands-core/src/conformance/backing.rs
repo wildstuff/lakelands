@@ -437,7 +437,7 @@ impl lakelands_api::seam::VerbExecutor for Executor {
             return Err(Error::declined(&invocation.verb));
         }
         if invocation.payload.get("decline_because") == Some(&Value::Bool(true)) {
-            let reason = Detail::scrubbed("above this executor's ceiling");
+            let reason = Detail::scrubbed("above this executor's ceiling – über");
             return Err(Error::declined_because(&invocation.verb, reason));
         }
         if invocation.payload.get("vast_error") == Some(&Value::Bool(true)) {

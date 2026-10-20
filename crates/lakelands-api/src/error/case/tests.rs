@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use super::*;
-use crate::error::{Error, Refusal};
+use crate::error::{Detail, Error, Refusal};
 
 /// A refusal's case is written beside its places, its parameters and its
 /// own sentence (the error's says the places too), and read back as it
@@ -135,4 +135,23 @@ fn what_a_declaration_says_is_shown_only_beside_its_field() {
         named.shown_by(&listed, &|_| true, &|_| true, &|_| None)
     };
     assert_eq!((shown(None), shown(Some("level"))), (false, true));
+}
+
+/// A declined call's `reason` is optional on the wire: a decline with
+/// none writes no member, one with a reason reads back as it was written,
+/// and a reader of the older form, which has no `reason`, reads a decline
+/// without it.
+#[test]
+fn a_declined_calls_reason_is_optional_on_the_wire() {
+    let verb = "judge".into();
+    let plain = serde_json::to_value(Error::declined(&verb)).unwrap();
+    assert!(plain["reason"].get("reason").is_none(), "{plain}");
+    let said = Error::declined_because(&verb, Detail::scrubbed("über the ceiling – 上限"));
+    let wire = serde_json::to_value(&said).unwrap();
+    assert_eq!(wire["reason"]["reason"], "über the ceiling – 上限");
+    assert_eq!(serde_json::from_value::<Error>(wire).unwrap(), said);
+    assert_eq!(
+        serde_json::from_value::<Error>(plain).unwrap(),
+        Error::declined(&verb)
+    );
 }

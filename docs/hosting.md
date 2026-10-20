@@ -1228,8 +1228,11 @@ A host that already has a store of its own moves in four steps.
   not know is shown as itself in backticks. A client and a lake on either
   side of this change cannot read each other's errors: move both
   together. The only free text is a `Detail`, an operating system's,
-  database's or library's own words, scrubbed where they arise: never a
-  record's key or values, and never a path on the host. See
+  database's or library's own words, or a host's reason for declining a
+  call, scrubbed where they arise: never a record's key or values, and
+  never a path on the host. A host scrubs its own reason and keeps it
+  short; neither the `detail-sources` gate nor the store checks or bounds
+  it. See
   `docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
   extended.
 - **A refusal is a case too (lakelands#650).** A refusal of `invalid`,
