@@ -149,15 +149,19 @@ pub fn check(
 /// `field` as the system, so the author must hold write on it; and `when`
 /// decides, record by record, whether a field is moved, so every field it
 /// reads is probed and needs the author's right to read it
-/// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
-/// Refused as not granted, naming the field of `on`.
+/// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`),
+/// and every setting it reads to be told the author, since the run reads
+/// it as the lake holds it (063, extended). Refused as not granted, naming
+/// the field of `on`, or naming none for a setting.
 pub fn check_authority(who: &Principal, ontology: &Ontology, rule: &Rule) -> Result<()> {
     let decl = ontology.ty(&rule.on)?;
     // A rule moves every owner's records: never one a holder of `only` writes (051).
     crate::writes::granted(!rights::only_holder(who, decl, ontology))?;
     let patch: Patch = [(rule.field.clone(), rule.to.clone())].into();
     rights::check_write(who, decl, (Door::Verb, None), &patch)?;
-    rights::check_probe(who, decl, derive::reads(&rule.when).iter())
+    rights::check_probe(who, decl, derive::reads(&rule.when).iter())?;
+    let sees = lakelands_core::sight::Sight::held(who, ontology);
+    crate::writes::granted(sees.told_settings(&rule.when))
 }
 
 /// Counts a move the lake refused in `ran`, and lists it while the list

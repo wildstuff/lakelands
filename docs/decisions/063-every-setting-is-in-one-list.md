@@ -194,6 +194,46 @@ What the store computes at a write, a derived field stored and a view
 kept, reads every setting, as the lake does; a record's grants show it.
 An export and a mirror are the owner's and copy the records whole.
 
+### A condition judged once tells what it decides only to one told its settings
+
+Some conditions are judged once for every reader: a trigger's `when`
+and a set's `where`, with the sets they name, at the write that moves
+them; the `where` and measures of a kept view a trigger or a set
+watches, as the lake keeps its rows; a verb's `requires` and the values
+it sets, at the call; an aging rule's `when`, at the run. None can be
+judged for each reader. A firing and a membership stand in the log, and
+a replay decides them from the log alone, where no reader's grants
+stand; a call's write and an aging move are made once, for whoever
+reads the record after. So each reads `setting('<key>')` as the lake
+holds it, as for a principal from whom no setting is withheld.
+
+What such a condition decides is told only to a principal told every
+setting it reads, each as `describe` tells it (above), through the sets
+it names and the views under the type it watches; the judgement is the
+one a read of the setting makes, never a second. A reader not told one
+is answered as in a lake that never held it:
+
+- a trigger and a set are not listed to it, a write's answer names
+  neither among what it fired, joined or left, and `in_set` answers it
+  that the set is not declared, as for a set over a field it may not
+  read;
+- a verb is not described to it, and its call is refused as not
+  granted, before the record is read;
+- its write of an aging rule is refused as not granted, naming no field,
+  since the run moves records every reader reads.
+
+Telling it a narrowed answer could not be made alike: the condition
+held or not as the lake holds the setting, and nothing it decided can
+be decided again for one reader. Refusing or hiding what it decided
+tells no more than a direct read of `sys.setting`, which tells such a
+reader no record. A condition evaluated at a read, a view's `where`
+among them, reads the settings as its reader is told them (above). A
+constraint reads no setting, which is refused at its declaration; a
+field derived at the write is the record's (above). An aging rule
+written before this rule is not judged again: its author's grants are
+not in the log, so an operator reads `sys.aging_rule` for one whose
+`when` reads a setting for a type or a source.
+
 ### `lakelands settings` shows them and writes only the lake's
 
 `lakelands settings` prints every listed setting with the value it has
@@ -250,8 +290,10 @@ again to change and never withdrawn; a bundle declares it in its
   the records of a group by it; only the declaration is withheld.
 
 Any expression reads any setting, whatever its reader's grant on
-`sys.setting`, save a lake setting for a type, which an expression
-evaluated at a read reads as its reader is told it (above): a value
+`sys.setting`, save a lake setting for a type or a source, which an
+expression evaluated at a read reads as its reader is told it, and of
+which one judged once for every reader tells what it decides only to a
+reader told it (above): a value
 that must be kept from a reader, a secret above all, is never a
 setting. `lakelands settings` lists a lake's declared
 settings beside the store's, with their group, and `settings set` judges

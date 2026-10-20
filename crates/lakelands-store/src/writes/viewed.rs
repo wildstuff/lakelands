@@ -81,7 +81,7 @@ impl Viewed {
             // a membership refuses it.
             let mut asked = BTreeSet::new();
             if let Ok(e) = declare::set_filter(&|n| o.set(n), s, &at) {
-                kept::settings_named(&e, &mut asked);
+                lakelands_core::derive::settings(&e, &mut asked);
             }
             for k in asked {
                 v.asked.entry(k).or_default().insert(s.of.clone());

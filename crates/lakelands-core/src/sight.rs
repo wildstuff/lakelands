@@ -255,6 +255,16 @@ impl<'o> Sight<'o> {
         }
     }
 
+    /// Whether its principal is told every setting `e` reads, each as
+    /// [`Self::setting`] tells it. What an expression judged once for
+    /// every reader decides is told only to such a principal: it read
+    /// the setting as the lake holds it (063, extended).
+    pub fn told_settings(&self, e: &lakelands_api::expr::Expr) -> bool {
+        let mut keys = BTreeSet::new();
+        crate::derive::settings(e, &mut keys);
+        keys.iter().all(|k| self.setting(k, Value::Null).is_some())
+    }
+
     /// Whether its principal reads `ty` whole: its grants keep no field of
     /// the type back, by the type's default or by name, whatever the type
     /// declares, and it reads every field the type declares.
@@ -336,14 +346,19 @@ impl<'o> Sight<'o> {
     /// as a whole, or, for one that retires, it may retire the type's
     /// records; and it reads every field the verb reads (024, extended);
     /// and it holds the verb's own grant, where it is declared to need one
-    /// (070).
+    /// (070); and it is told every setting its `requires` and the values
+    /// it sets read ([`Self::told_settings`]), judged for every caller.
     pub fn callable(&self, on: &TypeDecl, verb: &VerbDecl) -> bool {
         let writes = |f: &FieldName| self.who.grants.access(&on.name, f).writes();
+        let told = |c: &lakelands_api::expr::Condition| {
+            describe::parsed(c).is_some_and(|e| self.told_settings(&e))
+        };
         rights::verb_granted(&self.who, verb)
             && rights::reads_what_verb_reads(&self.who, on, verb, &|n| self.force.ty(n))
+            && verb.requires.as_ref().is_none_or(told)
             && match &verb.effect {
                 VerbEffect::Write { set } => {
-                    !set.is_empty() && set.iter().all(|a| writes(&a.field))
+                    !set.is_empty() && set.iter().all(|a| writes(&a.field) && told(&a.value))
                 }
                 VerbEffect::External { .. } => rights::type_access(&self.who, &on.name).writes(),
                 // A retirement is called as `retire` is used: by one who

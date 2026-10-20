@@ -39,6 +39,21 @@ pub fn reads(e: &Expr) -> BTreeSet<FieldName> {
     e.fields_read().into_iter().cloned().collect()
 }
 
+/// The settings `e` reads, each by the key its `setting('…')` quotes.
+pub fn settings(e: &Expr, named: &mut BTreeSet<String>) {
+    if let Expr::Call {
+        func: Func::Setting,
+        args,
+    } = e
+        && let Some(Expr::Lit {
+            value: lakelands_api::expr::Literal::Text(key),
+        }) = args.first()
+    {
+        named.insert(key.clone());
+    }
+    lakelands_api::expr::children(e).for_each(|c| settings(c, named));
+}
+
 /// The member of the call's payload a path in a verb's value reads:
 /// `payload.<name>`, and no other path. A bare `payload` and a longer path
 /// are the record's field of that name (028, extended).
