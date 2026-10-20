@@ -987,6 +987,7 @@ version = "0.16.0"
 dependencies = [
  "async-trait",
  "futures-core",
+ "rust_decimal",
  "ryu",
  "serde",
  "serde_json",

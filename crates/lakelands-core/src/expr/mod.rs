@@ -1,7 +1,8 @@
 //! The one expression grammar: what an expression means (`eval`). The
-//! typed form and its text form (`parse`, `print`) live in
-//! `lakelands_api::expr`, so a host parses a condition exactly as the
-//! store does; text and typed forms reach the same evaluator.
+//! typed form, its text form (`parse`, `print`) and where it may be
+//! evaluated (`check`) live in `lakelands_api::expr`, so a host parses and
+//! checks a condition exactly as the store does; text and typed forms
+//! reach the same evaluator.
 
 #[doc(hidden)]
 pub mod aggregate;

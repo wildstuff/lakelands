@@ -55,6 +55,7 @@ use std::str::FromStr;
 
 use lakelands_api::error::{Case, Operand};
 use lakelands_api::expr::{ArithOp, CmpOp, Expr, Func, Literal};
+pub use lakelands_api::expr::{Place, check};
 use lakelands_api::{FieldMeta, FieldName, Timestamp};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::{Decimal, RoundingStrategy};
@@ -327,32 +328,6 @@ pub fn eval(e: &Expr, scope: &dyn Scope) -> Result<Val> {
     }
 }
 
-/// Where an expression is evaluated, which decides the functions it may
-/// use. A host names a place; it does not match on all of them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Place {
-    /// Over one record, outside a write: a filter, a constraint.
-    Record,
-    /// Over one record in a write: a derived field, where `changed` and
-    /// `previous` have meaning.
-    Write,
-    /// A trigger's guard: a write, where `retired` has meaning as well.
-    Guard,
-    /// Over a group of records: a view measure, where aggregates have
-    /// meaning.
-    Group,
-    /// Over one source record of a view: its `where`, or an aggregate's
-    /// argument in a measure. Like `Record`, and `param` has meaning.
-    View,
-    /// A verb's `requires` and set values, and an object set's `where`:
-    /// like `Record`, and `exists` has meaning.
-    Verb,
-}
-
-/// The units `date_bucket` knows.
-const BUCKET_UNITS: [&str; 5] = ["day", "week", "month", "quarter", "year"];
-
 /// The instant, in UTC, at which the bucket of `unit` holding `t` starts:
 /// midnight of the day, Monday 00:00 of the ISO week, or the first of the
 /// month, of the quarter's first month, or of January.
@@ -369,94 +344,6 @@ fn bucket_start(t: Timestamp, unit: &str) -> Result<Timestamp> {
         "quarter" => first((m - 1) / 3 * 3 + 1),
         "year" => first(1),
         other => err(Case::BucketUnit { unit: other.into() }),
-    }
-}
-
-/// Check an expression before evaluating it: every call has a count of
-/// arguments its function takes, a function that names a field is given
-/// one, `setting` is given a quoted key, numbers are numbers this
-/// evaluator can hold exactly, and `changed`, `previous` and the
-/// aggregates appear only where they have meaning. The store checks every
-/// typed expression it is handed this way and refuses it as invalid; a
-/// text expression is checked the same way after parsing.
-pub fn check(e: &Expr, place: Place) -> Result<()> {
-    match e {
-        Expr::Lit { value } => literal(value).map(|_| ()),
-        Expr::Path { path } if path.is_empty() => err(Case::PathEmpty),
-        Expr::Path { .. } => Ok(()),
-        Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => {
-            check(lhs, place)?;
-            check(rhs, place)
-        }
-        Expr::Neg { arg } | Expr::Not { arg } | Expr::IsNull { arg } => check(arg, place),
-        Expr::And { args } | Expr::Or { args } => args.iter().try_for_each(|a| check(a, place)),
-        Expr::In { arg, list } => {
-            if list.is_empty() {
-                return err(Case::InEmpty);
-            }
-            check(arg, place)?;
-            list.iter().try_for_each(|a| check(a, place))
-        }
-        Expr::Call { func, args } => {
-            let name = super::func_name(*func).to_owned();
-            let (min, max) = super::arity(*func);
-            if args.len() < min || max.is_some_and(|m| args.len() > m) {
-                return err(Case::CallArity {
-                    name,
-                    given: args.len(),
-                });
-            }
-            match func {
-                Func::KnownAt | Func::SeenAt | Func::Previous | Func::Changed if !matches!(args.first(), Some(Expr::Path { path }) if path.len() == 1) =>
-                {
-                    return err(Case::CallTakesField { name });
-                }
-                Func::Setting | Func::Param | Func::InSet if quoted(args.first()).is_none() => {
-                    return err(Case::CallTakesQuoted { name });
-                }
-                // A calendar unit, quoted, starts where the calendar says and
-                // takes no origin; a width is a duration above zero, with
-                // the origin its windows are counted from.
-                Func::DateBucket => {
-                    let unit = quoted(args.get(1));
-                    let width = matches!(args.get(1),
-                        Some(Expr::Lit { value: Literal::Duration(w) }) if *w > 0);
-                    let known = |u: &&String| BUCKET_UNITS.contains(&u.as_str());
-                    if let Some(u) = unit.filter(|u| !known(u)) {
-                        return err(Case::BucketUnit { unit: u.clone() });
-                    }
-                    if (unit.is_some(), width) != (args.len() == 2, args.len() == 3) {
-                        return err(Case::BucketArguments);
-                    }
-                }
-                Func::Previous | Func::Changed if !matches!(place, Place::Write | Place::Guard) => {
-                    return err(Case::OnlyInWrite { name });
-                }
-                Func::Retired if place != Place::Guard => return err(Case::RetiredOnlyInGuard),
-                Func::Created if place != Place::Guard => return err(Case::CreatedOnlyInGuard),
-                Func::Exists if !matches!(place, Place::Verb | Place::Guard) => {
-                    return err(Case::ExistsHere);
-                }
-                Func::Exists if !matches!(args.first(), Some(Expr::Path { path }) if path.len() == 1) =>
-                {
-                    return err(Case::CallTakesField { name });
-                }
-                f if f.is_aggregate() && place != Place::Group => {
-                    return err(Case::AggregateHere { name });
-                }
-                Func::Param if !matches!(place, Place::View | Place::Group) => {
-                    return err(Case::ParamOutsideView);
-                }
-                _ => {}
-            }
-            // An aggregate's argument is evaluated per source record.
-            let inner = if func.is_aggregate() {
-                Place::View
-            } else {
-                place
-            };
-            args.iter().try_for_each(|a| check(a, inner))
-        }
     }
 }
 

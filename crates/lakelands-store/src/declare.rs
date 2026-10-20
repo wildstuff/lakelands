@@ -34,7 +34,7 @@
 
 use std::collections::BTreeSet;
 
-use lakelands_api::error::{Beyond, Case, Names, Naming, Place, Said};
+use lakelands_api::error::{Case, Names, Naming, Place, Said};
 use lakelands_api::expr::kind::{self, Kind};
 use lakelands_api::expr::{Condition, Expr, Func};
 use lakelands_api::ontology::{
@@ -47,7 +47,7 @@ use lakelands_api::write::{
     Carrier, Declaration, DeclarationKind, FunctionDecl, ObjectSetDecl, SettingDecl, Withdrawal,
 };
 use lakelands_api::{Error, FieldName, Refusal, RelationName, Result, TypeName, VerbName};
-use lakelands_core::expr::{Place as Eval, check, parse};
+use lakelands_core::expr::{Place as Eval, parse};
 use lakelands_core::rights::is_system;
 use lakelands_core::shape::{self, Change};
 use lakelands_core::{derive, invalid, links, names, value};
@@ -381,15 +381,7 @@ pub fn names_set(o: &Ontology, s: &ObjectSetDecl, target: &str) -> bool {
 /// A condition parsed and checked for its place, the sets it names left
 /// as it names them.
 pub(crate) fn typed(c: &Condition, place: Eval) -> std::result::Result<Expr, Case> {
-    let e = match c {
-        Condition::Expr(e) => e.clone(),
-        Condition::Text(t) => parse(t).map_err(|e| {
-            let (text, why) = (t.clone(), Box::new(e.into()));
-            Case::NotParsed { text, why }
-        })?,
-    };
-    check(&e, place)?;
-    Ok(e)
+    c.checked(place)
 }
 
 /// A condition over the records of `ty` that may name object sets
@@ -1450,52 +1442,10 @@ fn constraints(o: &Ontology, t: &TypeDecl) -> Result<()> {
         if !named.insert(&c.name) {
             return wrong(Case::ConstraintNamedTwice { constraint });
         }
-        let e = typed(&c.holds, Eval::Guard).map_err(|s| invalid(at(&on, s)))?;
-        let mut paths = Vec::new();
-        lakelands_api::expr::paths(&e, &mut paths);
-        let backed = |n: &str| {
-            o.functions
-                .get(n)
-                .is_some_and(|f| crate::backed::is_backed(&f.decl))
-        };
-        let beyond = if paths.iter().any(|p| p.len() > 1) {
-            Some(Beyond::Path)
-        } else if e.calls(&[Func::InSet]) {
-            Some(Beyond::InSet)
-        } else if e.calls(&[Func::Setting]) {
-            Some(Beyond::Setting)
-        } else if e.reads_clock() {
-            Some(Beyond::Clock)
-        } else if e.calls(&[Func::Exists]) {
-            Some(Beyond::Exists)
-        } else {
-            let mut fields = e.fields_read().into_iter();
-            fields.find_map(|n| {
-                let f = t.fields.iter().find(|f| &f.name == n)?;
-                let field = n.clone();
-                if f.at_read() {
-                    Some(Beyond::ComputedAtRead { field })
-                } else if f.embed.is_some() || f.function.as_deref().is_some_and(backed) {
-                    Some(Beyond::ComputedOutside { field })
-                } else {
-                    None
-                }
-            })
-        };
-        if let Some(reads) = beyond {
-            return wrong(Case::ConstraintReadsBeyond {
-                constraint,
-                reads: Box::new(reads),
-            });
-        }
-        if let Some(n) = e
-            .fields_read()
-            .into_iter()
-            .find(|n| !t.fields.iter().any(|f| &f.name == *n))
-        {
-            let (ty, field) = (t.name.clone(), n.clone());
-            return wrong(Case::UnknownField { ty, field });
-        }
+        let function = |n: &str| o.functions.get(n).map(|f| &f.decl);
+        let e = t
+            .constraint_reach(c, function)
+            .map_err(|s| invalid(at(&on, s)))?;
         initial_holds(o, t, c, &e)?;
     }
     Ok(())
