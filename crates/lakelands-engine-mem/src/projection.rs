@@ -121,6 +121,10 @@ pub(crate) enum Put {
     },
     /// An event applied, with what the feed's index keeps of it.
     Applied(Applied),
+    /// Every state of a record, its memberships and its rows, deleted.
+    DroppedRecord(TypeName, RecordKey),
+    /// Every state of a seam's output for one input, deleted.
+    DroppedOutput(String, Digest),
 }
 
 impl Put {
@@ -130,6 +134,7 @@ impl Put {
             Put::Declaration(d) => d.since,
             Put::Record(r) | Put::Head(r) => r.position,
             Put::Applied(a) => a.at,
+            Put::DroppedRecord(..) | Put::DroppedOutput(..) => Position::GENESIS,
             Put::Membership { at, .. }
             | Put::HeadsEnded { at, .. }
             | Put::Proposal { at, .. }
@@ -236,6 +241,7 @@ impl Projection {
         let mut types = BTreeSet::new();
         for put in puts {
             match &put {
+                Put::DroppedRecord(ty, key) => drop(records.insert((ty.clone(), key.clone()))),
                 Put::Record(r) => {
                     records.insert((r.ty.clone(), r.key.clone()));
                     // The setting's write rebuilds the index it asks for.
@@ -648,6 +654,18 @@ impl Projection {
                     false => drop(self.records.insert(id, History(vec![(r.position, r)]))),
                 }
             }
+            Put::DroppedRecord(ty, key) => {
+                let id = (ty, key);
+                let states = self.records.remove(&id).unwrap_or_default();
+                if let Some(changes) = self.changes.get_mut(&id.0) {
+                    for (at, _) in states.0 {
+                        changes.remove(&(at, id.1.clone()));
+                    }
+                }
+                self.members
+                    .retain(|(_, ty, key), _| (ty, key) != (&id.0, &id.1));
+            }
+            Put::DroppedOutput(seam, input) => drop(self.outputs.remove(&(seam, input))),
             Put::HeadsEnded { ty, .. } => {
                 let from = (ty.clone(), RecordKey::from(""));
                 let of = self.records.range(from..).map(|(id, _)| id);

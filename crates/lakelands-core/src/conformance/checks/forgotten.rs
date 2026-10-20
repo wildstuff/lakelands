@@ -663,14 +663,19 @@ check!(
 /// begins with, fail; the rebuild rate the engine states, where not 0;
 /// how many of the next writer's opens meet a projection an older build
 /// laid out, so the store opens it for a rebuild (lakelands#1152); and
-/// how many clears ran, one for each rebuild (lakelands#1183).
-pub type Fails = Arc<[AtomicU32; 5]>;
+/// how many clears ran, one for each rebuild (lakelands#1183); which of
+/// the next commits of a transaction that dropped a key's states fails,
+/// counting from 1; and how many keys' states were dropped
+/// (lakelands#1120).
+pub type Fails = Arc<[AtomicU32; 7]>;
 
 /// The harness's engine with a projection whose next reclaims and
 /// clears fail as [`Fails`] says (lakelands#1161).
 struct Reclaims {
     inner: Box<dyn lakelands_api::engine::LakeEngine>,
     fails: Fails,
+    /// Whether the open transaction dropped a key's states.
+    dropped: AtomicBool,
 }
 
 /// The harness's engine opener, making [`Reclaims`].
@@ -714,7 +719,12 @@ impl EngineOpener for ReclaimsOpener {
             crate::engines::layout(&location.lake, Some(1), 2)?;
         }
         let (inner, fails) = (self.inner.open(location, mode)?, self.fails.clone());
-        Ok(Box::new(Reclaims { inner, fails }))
+        let dropped = AtomicBool::new(false);
+        Ok(Box::new(Reclaims {
+            inner,
+            fails,
+            dropped,
+        }))
     }
 }
 
@@ -776,9 +786,17 @@ impl lakelands_api::engine::LakeEngine for Reclaims {
 
 impl ProjectionStore for Reclaims {
     fn begin(&self) -> lakelands_api::Result<()> {
+        self.dropped.store(false, Ordering::SeqCst);
         self.inner.projection().begin()
     }
     fn commit(&self, through: Position) -> lakelands_api::Result<()> {
+        let n = &self.fails[5];
+        if self.dropped.load(Ordering::SeqCst)
+            && n.load(Ordering::SeqCst) > 0
+            && n.fetch_sub(1, Ordering::SeqCst) == 1
+        {
+            return Err(crashed());
+        }
         self.inner.projection().commit(through)
     }
     fn rollback(&self) {
@@ -801,6 +819,13 @@ impl ProjectionStore for Reclaims {
         record: &lakelands_api::record::StoredRecord,
     ) -> lakelands_api::Result<()> {
         self.inner.projection().put_record(record)
+    }
+    fn drop_states(&self, of: lakelands_api::engine::StatesOf<'_>) -> lakelands_api::Result<()> {
+        if matches!(of, lakelands_api::engine::StatesOf::Record(..)) {
+            self.dropped.store(true, Ordering::SeqCst);
+            self.fails[6].fetch_add(1, Ordering::SeqCst);
+        }
+        self.inner.projection().drop_states(of)
     }
     fn end_head_only(&self, name: &TypeName, at: Position) -> lakelands_api::Result<()> {
         self.inner.projection().end_head_only(name, at)

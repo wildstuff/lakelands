@@ -54,6 +54,8 @@ use crate::record;
 
 pub use lakelands_api::seam::{AGING_RULE_TYPE, SETTING_TYPE, aging_rule_type, setting_type};
 
+pub(crate) mod scrub;
+
 /// What only the writer changes.
 pub struct Writer {
     /// The lease, while this handle holds it.
@@ -252,6 +254,15 @@ pub struct Lake {
     /// ([`Self::expected_ms`], lakelands#1152).
     rebuilt_rate: AtomicU64,
     reclaim_ms: AtomicU64,
+    /// The events a second the last scoped refold this handle ran folded,
+    /// 0 where none has run ([`Self::scoped_ms`]).
+    scoped_rate: AtomicU64,
+    /// The projection the fold writes to, scoped while a forgetting
+    /// refolds the records its sources wrote ([`scrub`]).
+    scoped: scrub::Scoped,
+    /// How the last forgetting this handle finished restated the
+    /// projection.
+    way: Mutex<Option<lakelands_api::write::ForgetWay>>,
     /// The position of the last act that erased values (058, 065) this
     /// handle found folded or folded itself, 0 where none, and its time:
     /// only a reaction before it, or of its own append, is decided again
@@ -688,6 +699,7 @@ impl Lake {
         let seams_keys = seams.keys.clone();
         Lake {
             id: location.lake.clone(),
+            scoped: scrub::Scoped::new(engine.clone()),
             engine,
             embed: Mutex::new(seams.embed.take()),
             rerank: Mutex::new(seams.rerank.take()),
@@ -724,6 +736,8 @@ impl Lake {
             rebuilds: AtomicU64::new(0),
             rebuilt_rate: AtomicU64::new(0),
             reclaim_ms: AtomicU64::new(0),
+            scoped_rate: AtomicU64::new(0),
+            way: Mutex::new(None),
             acted: (AtomicU64::new(0), AtomicI64::new(i64::MIN)),
             reclaim_owed: Mutex::new(None),
             rebuilt_at_open: None,
@@ -1366,8 +1380,11 @@ impl Lake {
         let Some(last) = events.last() else {
             return Ok(());
         };
+        // A scoped refold makes no call due: its events are folded already.
+        let scoped = self.scoped.scoped();
         let owed = (!of_log).then_some(Position::GENESIS).or(w.failed);
-        let projection = self.engine.projection();
+        let owed = owed.filter(|_| !scoped);
+        let projection = self.store();
         let (start, mut due) = (w.owed.len(), w.owed.len());
         // A migration carries the entries in place: a fold that fails puts
         // them back as its last commit left them, for the fold that
@@ -1390,14 +1407,16 @@ impl Lake {
             // A `begin` that is refused leaves the writer behind like any
             // other failure of the fold: the events are in the log.
             projection.begin()?;
-            let mut view = self.engine.view(None)?;
+            let mut view = self.scoped.view(self.engine.view(None)?);
             for (i, e) in events.iter().enumerate() {
+                self.scoped
+                    .reads_at(Position(e.position.0.saturating_sub(1)));
                 let flushed = reads_a_record(&e.body)
                     && self.flush(w, view.as_ref(), &mut staged, &events[..i], owed)?;
                 if reads_a_record(&e.body) {
                     self.decide_whole(w, view.as_ref(), &mut staged)?;
                 }
-                if flushed && of_log {
+                if flushed && of_log && !scoped {
                     drop(view);
                     projection.commit(events[i - 1].position)?;
                     // What is committed stays owed, whatever fails next.
@@ -1412,11 +1431,12 @@ impl Lake {
                         keys: Some(self.keys.clone()),
                         ..Staged::default()
                     };
-                    view = self.engine.view(None)?;
+                    view = self.scoped.view(self.engine.view(None)?);
                 }
                 let owes = owed.is_some_and(|p| e.position >= p);
                 self.fold(w, view.as_ref(), &mut staged, e, owes)?;
             }
+            self.scoped.reads_at(last.position);
             self.flush(w, view.as_ref(), &mut staged, events, owed)?;
             self.decide_whole(w, view.as_ref(), &mut staged)
         })()
@@ -1438,7 +1458,7 @@ impl Lake {
                     Some(kept) => w.owed = kept,
                     None => w.owed.truncate(due),
                 }
-                if !of_log {
+                if !of_log && !scoped {
                     w.failed = Some(events[0].position);
                 }
                 if let Ok(view) = self.engine.view(None)
@@ -1658,7 +1678,7 @@ impl Lake {
             return Ok(false);
         };
         let pending = std::mem::take(&mut staged.pending);
-        let projection = self.engine.projection();
+        let projection = self.store();
         let mut put = vec![false; pending.len()];
         let mut owing: BTreeSet<(usize, TypeName)> = BTreeSet::new();
         let mut through = |r: &mut StoredRecord, recorded: &Recorded| {
@@ -1739,7 +1759,7 @@ impl Lake {
         view: &dyn ProjectionView,
         staged: &mut Staged,
     ) -> Result<()> {
-        let projection = self.engine.projection();
+        let projection = self.store();
         let max = self.limits.max_depth;
         let Some(zone) = w.zone.as_mut() else {
             return Ok(());
@@ -1838,10 +1858,7 @@ impl Lake {
         // The index keeps the source as the log names it, before an erasure
         // takes the seal away: an ingest's is its envelope's, as forgetting
         // walks it, and any other event's the one its seal names first.
-        let indexed = match &e.body {
-            EventBody::RecordIngested { .. } => e.source.clone(),
-            _ => source.or(e.source.as_ref()).cloned(),
-        };
+        let indexed = indexed(e);
         // A value sealed apart and erased by its apart key alone still
         // tells the version it sealed with, whose first use it may be: the
         // list of versions stays the one the write kept (065).
@@ -1901,7 +1918,7 @@ impl Lake {
             }
             None => e,
         };
-        let projection = self.engine.projection();
+        let projection = self.store();
         // A set that reads what the fold erased is decided by the fold
         // from here on (lakelands#1232).
         if let Some(zone) = &mut w.zone {
@@ -2349,7 +2366,7 @@ impl Lake {
         let Some(after) = staged.records.get(&(ty.clone(), key.clone())).cloned() else {
             return Ok(());
         };
-        let (projection, at) = (self.engine.projection(), (e.position, e.known_at));
+        let (projection, at) = (self.store(), (e.position, e.known_at));
         let f = folding!(w, view, projection, self.limits.max_depth, at);
         zone.record(f, staged, (before, &after))
     }
@@ -2505,7 +2522,7 @@ impl Lake {
         post: &StoredRecord,
         left: bool,
     ) -> Result<()> {
-        let Some(index) = self.engine.vectors() else {
+        let (Some(index), false) = (self.engine.vectors(), self.scoped.scoped()) else {
             return Ok(());
         };
         let now = ontology.ty(&post.ty).ok();
@@ -2550,7 +2567,14 @@ impl Lake {
         r: &StoredRecord,
         due: impl Fn(&FieldDecl) -> bool,
     ) -> Result<()> {
-        let (Some(index), Ok(decl)) = (self.engine.vectors(), ontology.ty(declared)) else {
+        // A scoped refold restates no vectors: the records it restates hold
+        // none (`scrub::falls_back`), and every other record's are those
+        // its head holds.
+        let (Some(index), Ok(decl), false) = (
+            self.engine.vectors(),
+            ontology.ty(declared),
+            self.scoped.scoped(),
+        ) else {
             return Ok(());
         };
         for f in (decl.fields.iter()).filter(|f| f.ty.kind == StorageKind::Vector && due(f)) {
@@ -2657,6 +2681,29 @@ impl Lake {
         folded.saturating_add(self.reclaim_ms.load(Ordering::SeqCst))
     }
 
+    /// How long a scoped refold of `events` and the reclaim after it are
+    /// expected to hold the writer's lock, in milliseconds: at the rate
+    /// of the last scoped refold this handle ran, or before any at a
+    /// rebuild's, as [`Self::expected_ms`] reckons that.
+    pub(crate) fn scoped_ms(&self, events: u64) -> u64 {
+        match self.scoped_rate.load(Ordering::SeqCst) {
+            0 => self.expected_ms(events),
+            rate => (events.saturating_mul(1000) / rate)
+                .saturating_add(self.reclaim_ms.load(Ordering::SeqCst)),
+        }
+    }
+
+    /// The projection the fold writes to.
+    fn store(&self) -> &dyn lakelands_api::engine::ProjectionStore {
+        &self.scoped
+    }
+
+    /// How the last forgetting this handle finished restated the
+    /// projection, where one did since this was last asked.
+    pub(crate) fn forget_way(&self) -> Option<lakelands_api::write::ForgetWay> {
+        lakelands_core::lock(&self.way).take()
+    }
+
     /// Finish what a forgetting (058) or a removal (065) left owed, as the
     /// act itself does and the writer's open after a crash between its
     /// steps: each source whose act the projection may still hold the
@@ -2686,8 +2733,22 @@ impl Lake {
                 self.keys.destroy_versions(&act.source, &act.keys)?;
                 self.keys.destroy_apart(&act.source, &act.apart)?;
             }
+            // The records the owed sources wrote are refolded alone where
+            // nothing else reads them, and the projection rebuilt
+            // otherwise: either restates it as the log now reads.
+            let owed: Vec<SourceId> = (list.iter())
+                .filter(|(_, s)| *s == "owed")
+                .map(|(source, _)| source.clone())
+                .collect();
+            let plan = scrub::plan(self, view.as_ref(), &owed, self.limits.forget_rebuild)?;
+            let events = view.position().map_or(0, |p| p.0);
+            let way = plan.way(self, events);
             drop(view);
-            self.rebuild_held(w)?;
+            match way.scoped {
+                true => self.scrub_held(w, &plan, &owed)?,
+                false => self.rebuild_held(w)?,
+            }
+            *lakelands_core::lock(&self.way) = Some(way);
         }
         Ok(self.reclaim()?.ok())
     }
@@ -2731,33 +2792,42 @@ impl Lake {
                     *state = "done".to_owned();
                 }
             }
-            let projection = self.engine.projection();
-            let list = serde_json::to_value(&list).expect("a list serialises");
-            let at = crate::sealing::forgotten_at();
-            projection.begin()?;
-            let written = (|| {
-                if !list.as_object().is_some_and(serde_json::Map::is_empty) {
-                    projection.put_output(crate::sealing::FORGOTTEN, &at, &list, head)?;
-                }
-                if !acts.is_empty() {
-                    let (at, acts) = (
-                        crate::remove::removed_at(),
-                        crate::remove::list_value(&acts),
-                    );
-                    projection.put_output(crate::remove::REMOVED, &at, &acts, head)?;
-                }
-                projection.commit(head)
-            })();
-            if written.is_err() {
-                projection.rollback();
-            }
-            written?;
+            self.put_lists(&list, &acts, head)?;
         }
         Ok(Ok(lakelands_api::write::CompactReport {
             before: reclaimed.before,
             after: reclaimed.after,
             head,
         }))
+    }
+
+    /// Put the forgotten sources and the acts of removal, each with its
+    /// state, at `head` in a transaction of their own: a list that is
+    /// empty is left as it is.
+    pub(crate) fn put_lists(
+        &self,
+        list: &BTreeMap<SourceId, String>,
+        acts: &BTreeMap<Position, String>,
+        head: Position,
+    ) -> Result<()> {
+        let projection = self.engine.projection();
+        let at = crate::sealing::forgotten_at();
+        projection.begin()?;
+        let written = (|| {
+            if !list.is_empty() {
+                let list = serde_json::to_value(list).expect("a list serialises");
+                projection.put_output(crate::sealing::FORGOTTEN, &at, &list, head)?;
+            }
+            if !acts.is_empty() {
+                let (at, acts) = (crate::remove::removed_at(), crate::remove::list_value(acts));
+                projection.put_output(crate::remove::REMOVED, &at, &acts, head)?;
+            }
+            projection.commit(head)
+        })();
+        if written.is_err() {
+            projection.rollback();
+        }
+        written
     }
 
     /// Why a forgetting's or a removal's reclaim is still owed, where the
@@ -3491,6 +3561,18 @@ fn last_act(view: &dyn ProjectionView) -> Result<Position> {
             Some(_) => return Ok(last),
             None => return Ok(to),
         }
+    }
+}
+
+/// The source the feed index keeps an event under, as the log names it
+/// before an erasure takes the seal away: an ingest's is its envelope's,
+/// as forgetting walks it, and any other event's the one its seal names
+/// first.
+pub(crate) fn indexed(e: &Event) -> Option<SourceId> {
+    let sealed = e.sealed.as_ref().and_then(|s| s.source.as_ref());
+    match &e.body {
+        EventBody::RecordIngested { .. } => e.source.clone(),
+        _ => sealed.or(e.source.as_ref()).cloned(),
     }
 }
 

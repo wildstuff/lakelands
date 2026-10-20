@@ -1606,7 +1606,20 @@ interface types {
         position: position,
         reclaimed: option<compact-report>,
         reclaim-owed: option<string>,
+        way: forget-way,
         report-id: string,
+    }
+
+    /// How a forgetting restates the projection: by a scoped refold of
+    /// the records its sources wrote, or by the rebuild with why, the
+    /// records and events the refold takes, and each way's expected time.
+    record forget-way {
+        scoped: bool,
+        why: list<string>,
+        records: u64,
+        events: u64,
+        scoped-ms: u64,
+        rebuild-ms: u64,
     }
 
     /// What one forgetting of several sources erased, or its preflight
@@ -1620,6 +1633,7 @@ interface types {
         position: position,
         reclaimed: option<compact-report>,
         reclaim-owed: option<string>,
+        way: forget-way,
         report-id: string,
     }
 
@@ -1716,6 +1730,7 @@ interface types {
         order-max-fields: u32,
         order-unused-secs: u32,
         order-chunk: u32,
+        forget-rebuild: bool,
     }
 
     record feed-filter {

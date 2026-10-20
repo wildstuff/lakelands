@@ -104,6 +104,7 @@ mod risky_calls;
 mod row_pages;
 mod schema;
 mod schema_proposals;
+mod scrubbed;
 mod sealed;
 mod sealed_apart;
 mod search;
@@ -604,6 +605,9 @@ pub const ALL: &[Check] = &[
     forgotten::FORGET_EXPECTED_TIME,
     forgotten::FORGET_SET,
     forgotten::FORGET_SET_OWED,
+    scrubbed::SCRUBBED,
+    scrubbed::SCRUB_FALLBACK,
+    scrubbed::SCRUB_CRASH,
     removed::REMOVED_BEFORE,
     removed::REMOVED_DELIVERY,
     removed::REMOVE_CRASH,

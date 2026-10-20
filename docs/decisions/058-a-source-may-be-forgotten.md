@@ -22,10 +22,10 @@ The unit is the source, as for a purge (039), because a source is what a host ca
 `forget_source(source)` works in this order, under the writer's lock:
 1. It appends one `source_forgotten` event: the source, the versions of its key, the writer and the time, with a `record_retired` for each record the source made and alone brought (039). The act is recorded as a purge is, and nothing leaves the log.
 2. The source's keys are dropped from memory, and the host's key store is asked to destroy them, every version.
-3. The projection is rebuilt from the log (below).
+3. The projection is restated from the log (below): the records the source wrote are folded again alone where nothing else reads them, and the whole projection is rebuilt otherwise.
 4. The engine reclaims the storage the erased values held (below).
 
-**A crash between the steps** leaves the event in the log. The writer's next open finishes what is owed, and each step is idempotent: destroying what is destroyed changes nothing, and a rebuild folds the same log to the same state. Nothing reads the source's values from the log in between, since its keys are out of memory; the projection holds them until the rebuild, and an ingest from the source is refused from the event on. The projection keeps, under a name of the store's own, which acts are owed, so the open knows what is left, and a repeat of the act finishes it too, appending nothing again. A handle opened only to read finishes nothing: after a crash between the event and the rebuild it answers the plaintext the projection still holds until a writer opens, and `hosting.md` tells the host to open one.
+**A crash between the steps** leaves the event in the log. The writer's next open finishes what is owed, and each step is idempotent: destroying what is destroyed changes nothing, and a rebuild, or a refold of the same records, folds the same log to the same states. Nothing reads the source's values from the log in between, since its keys are out of memory; the projection holds them until it is restated, and an ingest from the source is refused from the event on. The projection keeps, under a name of the store's own, which acts are owed, so the open knows what is left, and a repeat of the act finishes it too, appending nothing again. A handle opened only to read finishes nothing: after a crash between the event and the restatement it answers the plaintext the projection still holds until a writer opens, and `hosting.md` tells the host to open one.
 
 **After the act:**
 - every value the source wrote to an erasable field reads as **erased**, at every position, `as_of` included;
@@ -88,19 +88,25 @@ A type whose key holds personal data is given a surrogate key. `hosting.md` says
 - An output whose inputs hold erasable values of two sources records no value, and names the reason in its `error`. One key per output is all the first version carries.
 - **What a reaction still tells.** A `trigger_fired` or an `object_set_changed` in the log, an export or the raw feed tells that its condition held for a record at a position. The condition is declared and readable, so a trigger over an erasable field tells something of the value after its key is destroyed, as equality does. The doors and the deliverer do not tell one the act overruled (065). A host whose triggers read an erasable field should know that the log keeps their firings.
 
-### The projection holds plaintext, and the act rebuilds it
+### The projection holds plaintext, and the act restates it
 
 **Why plaintext:** the projection decrypts at the fold, so reads, filters, orders, search and indexes work on values as they do today. It never holds a key.
 
-**The act scrubs by rebuilding.** After the keys are destroyed, the projection is folded again from the log. The fold meets each sealed value of the source with no key to open it, and a `source_forgotten` of that source in the log, so it folds the value as erased: cleared, its provenance kept and marked. So every state the projection keeps holds the erasure, history included, and with it:
+**The act scrubs by folding again.** After the keys are destroyed, what the projection holds of the source is folded again from the log. The fold meets each sealed value of the source with no key to open it, and a `source_forgotten` of that source in the log, so it folds the value as erased: cleared, its provenance kept and marked. So every state the projection keeps holds the erasure, history included, and with it:
 - the derived fields and views computed from the value, which the fold computes without it;
 - an output a backing recorded under the source's key, which is dropped, and a fill that names it, which fills nothing;
-- the index entries the value made: the text and sort indexes, full text, vectors, which the rebuild never makes;
+- the index entries the value made: the text and sort indexes, full text, vectors, which the fold never makes again;
 - a membership the log holds, decided at a write over the value, which the fold decides again without it (065).
 
 **A key the key store does not give, with no act in the log,** is lost, not destroyed: the fold fails closed, and the value is never read as erased. A write or a declaration whose fold would meet such a value, a re-plan of an output digested under the lost version among them, plans it before it appends and is refused `key_missing`, naming the source and the version, with nothing appended: the head never moves past an event that does not fold (lakelands#1218). A rebuild meets the values before the act that forgot them, so where a key is missing it looks ahead in the log for that act.
 
-The projection is the fold of the log and the key store by construction (001), the log including the act: there is no second path, an incremental scrub of the states kept, that would have to come out equal to a rebuild.
+**Two ways, one fold** (lakelands#1120):
+- **The scoped refold** restates only the records the forgotten sources wrote, which the feed index names by their source. Each record's states, history included, are dropped with its memberships and its index rows, and its events are folded again from the log by the fold every write runs, beside the lake's own declarations, migrations and settings, so that each event folds under the ontology it met. An output the sources sealed is dropped with them. What the fold reads of any other record, it reads as of the event it folds, as it did when the event was new. A migration or a declaration walks, in the refold, only the types the restated records read, through a reference, a relation or a view, however many steps away, and the store's own types but the links of a type they do not read: what it would put of any other type the projection holds already, and nothing restated reads it. The records a migration of such a type walks count, one an event in each page, in what the refold is reckoned to fold.
+- **The rebuild** clears the projection and folds the whole log.
+- **The choice:** the scoped refold where nothing the lake keeps reads the records beyond their own states, and where it is expected to take no longer than the rebuild; the rebuild otherwise. A record is read beyond its states by a kept view over its type, a set over it, a vector index, a relation carried by link records, and another type's field computed through a reference to it; a set or a computed field reads it however many references or views away. The refold puts no vector: the records it restates keep none, and every other record's are those the head holds. A migration that re-keyed or renamed what the sources wrote, an act of removal in the log, an event of the sources' that is not about one record, a type of the store's own, and a feed index that does not decide the events rebuild too. The host forces the rebuild with `limits.forget_rebuild`.
+- **Told before and after:** the preflight chooses, and the act chooses again over the log it appended to. Each report names its way in `way`: whether it is scoped, every reason for a rebuild in a sentence, the records and events the refold takes, and both ways' expected times. `expected_ms` is the chosen way's.
+- **Pages:** the scoped refold restates the records 256 at a time, one transaction a page, the head unmoved. A crash between pages leaves the act owed; the writer's next open plans again and refolds every page, each idempotent, since dropping a record and folding it again from one log leaves the same states.
+- **Equality is the contract.** The projection is the fold of the log and the key store by construction (001), the log including the act. The scoped refold is that fold over fewer records, not a second path that edits the states kept. Where the scope might miss what a record reaches, the plan rebuilds rather than reaching. The conformance suite holds the two ways equal: twin lakes fed one log, one forgetting each way, answer every read alike at every position.
 
 **Reads after:**
 - **An erased value is absent:** the field holds no value, as if cleared.
@@ -109,7 +115,7 @@ The projection is the fold of the log and the key store by construction (001), t
 
 ### The engine's storage is reclaimed
 
-Deleting a row leaves its bytes in free pages until the engine reclaims them. So after the rebuild, the act runs the engine's own reclaim, and its report says what it measured:
+Deleting a row leaves its bytes in free pages until the engine reclaims them. So after the restatement, the act runs the engine's own reclaim, and its report says what it measured:
 - **SQLite:** `VACUUM`, which writes the database anew, so no freed page survives it, then a WAL truncate, which drops the old pages from the journal;
 - **PostgreSQL:** `VACUUM` of the tables it touched;
 - **pgvector:** the `VACUUM` repairs the index graph after deletes (040's one exception).
@@ -153,7 +159,8 @@ The first version carries no per-copy erasure across lakes.
 - the derived fields and views that recompute;
 - the mirror connections whose types it would stop;
 - **the values of the source that are plaintext in the log**: written before the field was erasable, or before the feature. Shredding cannot reach them, so the act refuses while they exist and names the count;
-- **the time it expects to hold the writer's lock**: an estimate, the log's events at the rate the handle's last rebuild measured, its open's included, or at the engine's stated rate before any, the time of the handle's last reclaim, where it ran one, and the time of the preflight's own walk of the log, which the act walks again, so a host can choose its moment. Every write waits while the act rebuilds. After a measured rebuild and reclaim on the handle, the conformance suite holds the estimate to at most their measured time plus the walk, and to at least two thirds of that time less 10 ms.
+- **the way it restates the projection** (above), and why where it rebuilds;
+- **the time it expects to hold the writer's lock**: an estimate, the log's events at the rate the handle's last rebuild measured, its open's included, or at the engine's stated rate before any, the time of the handle's last reclaim, where it ran one, and the time of the preflight's own walk of the log, which the act walks again, so a host can choose its moment. A scoped refold is reckoned alike over the events it folds, at the rate of the handle's last scoped refold, or at the rebuild's before any. Every write waits while the act restates the projection. After a measured rebuild and reclaim on the handle, the conformance suite holds the estimate to at most their measured time plus the walk, and to at least two thirds of that time less 10 ms.
 
 The preflight and the act each count from the source's own events, which the feed index names (`ProjectionView::of_source`), not from a walk of the whole log; where the index decides nothing, as while the projection is rebuilt, they walk the log from there. The judgement is the same either way: a field erasable now, under the names it bears now.
 
@@ -170,7 +177,8 @@ was its own source. `forget_sources(sources)` and
 - **One act,** under one hold of the writer: one append of a
   `source_forgotten` for each source, so a log reader sees each as it
   sees one forgotten alone, with the retirements of the set; the keys of
-  each destroyed; one rebuild; one reclaim.
+  each destroyed; one restatement, scoped to the set's records or a
+  rebuild; one reclaim.
 - **What the set retires:** a record the set's sources made and alone
   brought, once, under the first of them in id order that brought it. A
   record another hand made or wrote too is co-owned, as for one source.
@@ -237,3 +245,4 @@ What it gives up is plaintext in the log for the fields that opt in. Those field
 
 - The act scrubs by rebuilding the projection after the keys are destroyed, where it was first written as an incremental scrub of every kept state before the keys were destroyed. The operator decided it (lakelands#1042): the projection is then the fold of the log and the key store by construction, and no second path has to stay equal to a rebuild. The price is the rebuild's time under the writer's lock, which the preflight names; an incremental scrub, for hosts that forget often on large lakes, is its own later step.
 - The preflight and the act read the source's events by the feed index, where each walked the whole log, the act under the writer's lock: about 6 s at 200 000 events, on either engine, to count what the source's 2 000 held (lakelands#1151).
+- The act refolds only the records its sources wrote where nothing else reads them, and rebuilds otherwise, saying why (lakelands#1120). The rebuild under the writer's lock grew with the lake, not with the source: about 32 s on SQLite and 129 s on PostgreSQL at 100 000 records to erase what one source of a hundred held. The fold stays one: the refold runs it over the records the source wrote, the rebuild over every record, and the suite compares them read for read. A host that wants the reference way sets `limits.forget_rebuild`.

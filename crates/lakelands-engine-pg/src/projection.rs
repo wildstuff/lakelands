@@ -1280,6 +1280,11 @@ pub(crate) struct Buffer {
     applied: BTreeMap<String, i64>,
     /// The feed index's rows of the events applied.
     routes: Vec<Route>,
+    /// The records whose every state, membership and index row goes,
+    /// before any put of the buffer is written.
+    dropped: BTreeSet<(String, String)>,
+    /// The outputs whose every state goes, by seam and input, likewise.
+    dropped_outputs: BTreeSet<(String, String)>,
 }
 
 /// A row of the feed index: position, kind, type, key and source.
@@ -1298,7 +1303,24 @@ impl Buffer {
             self.records.len() + self.heads.len() + self.ended.len(),
             self.proposals.len() + self.outputs.len(),
         );
-        records + states + self.members.len() + self.applied.len()
+        let dropped = self.dropped.len() + self.dropped_outputs.len();
+        records + states + self.members.len() + self.applied.len() + dropped
+    }
+
+    /// Every state of a record goes, with its memberships and its index
+    /// rows: what the buffer holds of it, and the rows, before any put.
+    pub(crate) fn drop_record(&mut self, ty: &str, key: &str) {
+        let of = |ident: &[String]| ident[0] == ty && ident[1] == key;
+        self.records.retain(|(ident, _), _| !of(ident));
+        self.members.retain(|(ident, _), _| !of(&ident[1..]));
+        self.dropped.insert((ty.to_owned(), key.to_owned()));
+    }
+
+    /// Every state of a seam's output for one input goes, likewise.
+    pub(crate) fn drop_output(&mut self, seam: &str, input: &str) {
+        self.outputs
+            .retain(|(ident, _), _| ident[0] != seam || ident[1] != input);
+        (self.dropped_outputs).insert((seam.to_owned(), input.to_owned()));
     }
 
     pub(crate) fn record(&mut self, r: &StoredRecord) {
@@ -1344,6 +1366,54 @@ impl Buffer {
         }
     }
 
+    /// Delete the rows of what the buffer dropped, in one statement.
+    fn drop_rows(&self, db: &mut Db, names: &Names) -> Result<()> {
+        if !self.dropped.is_empty() {
+            let (tys, keys): (Vec<&str>, Vec<&str>) = (self.dropped.iter())
+                .map(|(t, k)| (t.as_str(), k.as_str()))
+                .unzip();
+            let gone = |table: &str, ty: &str, key: &str| {
+                format!(
+                    "DELETE FROM {} t USING d WHERE t.{ty} = d.ty AND t.{key} = d.key",
+                    names.t(table)
+                )
+            };
+            let sets = format!(
+                "SELECT DISTINCT substr(ident, 12) FROM {} WHERE starts_with(ident, 'object_set ')",
+                names.t("declarations")
+            );
+            db.execute(
+                &format!(
+                    "WITH d AS (SELECT * FROM unnest($1::text[], $2::text[]) AS d(ty, key)), \
+                     r AS ({}), h AS ({}), m AS ({} AND t.object_set IN ({sets})), \
+                     x AS ({}), y AS ({}), z AS ({}) {}",
+                    gone("records", "ty", "key"),
+                    gone("records_head", "ty", "key"),
+                    gone("members", "ty", "key"),
+                    gone("text_index", "ty", "key"),
+                    gone("full_text", "ty", "key"),
+                    gone("sort_index", "ty", "key"),
+                    gone("edges", "src_ty", "src_key"),
+                ),
+                &[&tys, &keys],
+            )?;
+        }
+        if !self.dropped_outputs.is_empty() {
+            let (seams, inputs): (Vec<&str>, Vec<&str>) = (self.dropped_outputs.iter())
+                .map(|(s, i)| (s.as_str(), i.as_str()))
+                .unzip();
+            db.execute(
+                &format!(
+                    "DELETE FROM {} t USING unnest($1::text[], $2::text[]) AS d(seam, input) \
+                     WHERE t.seam = d.seam AND t.input = d.input",
+                    names.t("outputs")
+                ),
+                &[&seams, &inputs],
+            )?;
+        }
+        Ok(())
+    }
+
     /// Write every buffered put: one statement per history table, the
     /// head indexes of the records whose latest state is now a buffered
     /// one, under their types' declarations at the head as `types` reads
@@ -1358,6 +1428,7 @@ impl Buffer {
         types: &mut HeadTypes,
         asked: &mut BTreeMap<TypeName, Position>,
     ) -> Result<u64> {
+        self.drop_rows(db, names)?;
         let records: BTreeMap<(Vec<String>, i64), String> = self
             .records
             .iter()

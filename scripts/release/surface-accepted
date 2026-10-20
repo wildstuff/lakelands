@@ -6,3 +6,4 @@
 # baseline becomes the new tag and the list empties
 # (docs/decisions/056-the-host-surface-changes-by-one-release-of-deprecation.md).
 baseline v0.16.0
+lakelands-api	trait_method_added	trait method ProjectionStore::drop_states

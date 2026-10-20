@@ -600,3 +600,37 @@ async fn a_chain_of_left_shapes_is_bounded_and_unlinked_in_a_loop() {
         .join()
         .expect("read and dropped in 64 KiB");
 }
+
+/// A `declared` event of the type `t`, at `at`.
+fn declared_type(t: serde_json::Value, at: u64) -> Event {
+    let body = EventBody::Declared {
+        declaration: Declaration::Type(ty(t)),
+        schema_hash: None,
+        version: 1,
+        with_the_set: false,
+    };
+    let draft = Draft::system(Timestamp(5), body);
+    log::seal(&"l".into(), Position(at), &Digest::zero(), 1, draft).0
+}
+
+#[test]
+fn a_scoped_refold_walks_only_what_its_records_read() {
+    let to = |name: &str, target: &str| json!({"name": name, "type": {"kind": "reference", "target": target}});
+    let wide = [
+        declared_type(json!({"name": "country", "fields": []}), 1),
+        declared_type(json!({"name": "town", "fields": [to("in", "country")]}), 2),
+        declared_type(json!({"name": "person", "fields": [to("home", "town")]}), 3),
+        declared_type(json!({"name": "visit", "fields": [to("who", "person")]}), 4),
+        declared_type(json!({"name": "order", "fields": []}), 5),
+    ];
+    let types = BTreeSet::from([TypeName::from("person")]);
+    let names = |n: &[&str]| {
+        n.iter()
+            .map(|&t| TypeName::from(t))
+            .collect::<BTreeSet<_>>()
+    };
+    assert_eq!(
+        scrub::near(&types, &wide),
+        names(&["country", "person", "town"])
+    );
+}

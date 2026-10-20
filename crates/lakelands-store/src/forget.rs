@@ -7,15 +7,18 @@
 //! 1. one append: `source_forgotten`, and a `record_retired` for each live
 //!    record the source made and alone brought in, as a purge retires it;
 //! 2. the source's keys are dropped from memory and destroyed;
-//! 3. the projection is rebuilt from the log, where the fold meets sealed
-//!    values with no key and the act that forgot them, and erases them;
+//! 3. the projection is restated from the log, where the fold meets
+//!    sealed values with no key and the act that forgot them, and erases
+//!    them: the records the source wrote are refolded alone where nothing
+//!    else reads them, and the whole log is folded again otherwise
+//!    (`lake::scrub`), each report naming the way and why;
 //! 4. the engine reclaims the storage.
 //!
 //! What a crash leaves after the append is finished by the next writer's
 //! open, and what a failure leaves by the act's repeat, which appends
-//! nothing again ([`Lake::finish_forgetting`]). A rebuild is the
-//! projection's fold of the log and the key store, so no second path has
-//! to come out equal to it.
+//! nothing again ([`Lake::finish_forgetting`]). Either way the fold is
+//! the one every write runs, so the scoped refold comes out as the
+//! rebuild does, and the conformance suite compares the two.
 //!
 //! The act is refused while the log holds a value of the source in an
 //! erasable field in plaintext, written before the field was erasable or
@@ -24,7 +27,7 @@
 //! Several sources are forgotten in one act ([`run_set`]): one scan of
 //! the projection, the feed index read for each source and one walk of
 //! the log from where it decides no more, one append of a
-//! `source_forgotten` for each, one rebuild and one reclaim. The unit
+//! `source_forgotten` for each, one restatement and one reclaim. The unit
 //! stays the source; only the act is batched, and one source is the set
 //! of it alone.
 
@@ -37,7 +40,7 @@ use lakelands_api::ontology::TypeDecl;
 use lakelands_api::principal::Renamed;
 use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::write::{
-    Declaration, ForgetField, ForgetRecords, ForgetReport, ForgetSetReport, RecordField,
+    Declaration, ForgetField, ForgetRecords, ForgetReport, ForgetSetReport, ForgetWay, RecordField,
     TypeRetired,
 };
 use lakelands_api::{FieldName, Position, RecordKey, Result, SourceId, TypeName, WriteContext};
@@ -218,6 +221,7 @@ fn found(
             position: view.position().unwrap_or(Position::GENESIS),
             reclaimed: None,
             reclaim_owed: lake.reclaim_owed(),
+            way: ForgetWay::default(),
             report_id: String::new(),
         };
         (report, t.known)
@@ -454,14 +458,23 @@ fn set(sources: &[SourceId]) -> Result<Vec<SourceId>> {
     }
 }
 
-/// The report over a set, from each source's: the set's time, position
-/// and owed reclaim in each, and in the set's.
-fn of_set(reports: Vec<ForgetReport>, view: &dyn ProjectionView, lake: &Lake) -> ForgetSetReport {
+/// The report over a set, from each source's: the set's time, position,
+/// owed reclaim and way in each, and in the set's. The time is the way's.
+fn of_set(
+    reports: Vec<ForgetReport>,
+    view: &dyn ProjectionView,
+    lake: &Lake,
+    way: ForgetWay,
+) -> ForgetSetReport {
     let events = view.position().map_or(0, |p| p.0);
     let mut set = ForgetSetReport {
         sources: reports,
         events,
-        expected_ms: lake.expected_ms(events),
+        expected_ms: match way.scoped {
+            true => way.scoped_ms,
+            false => way.rebuild_ms,
+        },
+        way,
         position: view.position().unwrap_or(Position::GENESIS),
         reclaimed: None,
         reclaim_owed: lake.reclaim_owed(),
@@ -477,6 +490,7 @@ fn settle(set: &mut ForgetSetReport) {
         r.expected_ms = set.expected_ms;
         r.position = set.position;
         r.reclaim_owed.clone_from(&set.reclaim_owed);
+        r.way.clone_from(&set.way);
     }
 }
 
@@ -486,6 +500,13 @@ fn alone(set: ForgetSetReport) -> ForgetReport {
     report.reclaimed = set.reclaimed;
     report.report_id = set.report_id;
     report
+}
+
+/// How forgetting `set` at `view`'s head would restate the projection:
+/// by the scoped refold or the rebuild, and why.
+fn way(lake: &Lake, view: &dyn ProjectionView, set: &[SourceId]) -> Result<ForgetWay> {
+    let plan = crate::lake::scrub::plan(lake, view, set, lake.limits.forget_rebuild)?;
+    Ok(plan.way(lake, view.position().map_or(0, |p| p.0)))
 }
 
 /// What [`run`] would do, appending nothing, under the id the act may
@@ -509,7 +530,8 @@ fn preflight_of(lake: &Lake, set: &[SourceId], known: bool) -> Result<ForgetSetR
     let ontology = Ontology::at(view.as_ref())?;
     let (found, _) = found(lake, view.as_ref(), &ontology, set)?;
     let reports = refuse_unknown(found, view.as_ref(), known)?;
-    let mut report = of_set(reports, view.as_ref(), lake);
+    let way = way(lake, view.as_ref(), set)?;
+    let mut report = of_set(reports, view.as_ref(), lake, way);
     report.report_id = id(set, view.position());
     // The act walks the log again under the lock, as this walk did, once
     // for the whole set.
@@ -544,7 +566,7 @@ pub fn run(lake: &Lake, source: &SourceId, report_id: Option<&str>) -> Result<Fo
 
 /// Forget the sources `sources` names in one act, as the module says of
 /// one: one append of a `source_forgotten` for each with the retirements
-/// of the set, one rebuild and one reclaim, under one hold of the writer.
+/// of the set, one restatement and one reclaim, under one hold of the writer.
 /// Refused whole, with nothing appended, for an empty set, a source named
 /// twice, one the log holds no event of, one whose values the log holds
 /// in plaintext, or a report of another set or head.
@@ -585,7 +607,8 @@ fn run_of(
         let view = lake.engine.view(None)?;
         let (found, _) = found(lake, view.as_ref(), &w.ontology, set)?;
         let reports = found.into_iter().map(|(r, _)| r).collect();
-        let mut report = of_set(reports, view.as_ref(), lake);
+        let way = lake.forget_way().unwrap_or_default();
+        let mut report = of_set(reports, view.as_ref(), lake, way);
         report.reclaimed = reclaimed;
         return Ok(report);
     }
@@ -615,10 +638,13 @@ fn run_of(
         let body = writes::retirement(&before.ty, &before.key, before.version);
         drafts.extend(d.retiring(&before, Draft::system(now, body))?);
     }
-    let mut report = of_set(reports, view.as_ref(), lake);
+    let way = way(lake, view.as_ref(), set)?;
+    let mut report = of_set(reports, view.as_ref(), lake, way);
     drop(view);
     lake.append(&mut w, drafts)?;
     report.reclaimed = lake.finish_forgetting(&mut w)?;
+    // The way the act took, chosen again over the log it appended to.
+    report.way = lake.forget_way().unwrap_or(report.way);
     report.reclaim_owed = lake.reclaim_owed();
     report.position = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
     settle(&mut report);
