@@ -703,6 +703,7 @@ pub fn write_verb(name: &str, on: &str, field: &str, value: &str) -> Declaration
         requires: None,
         effect: VerbEffect::Write { set },
         description: None,
+        granted: false,
     })
 }
 

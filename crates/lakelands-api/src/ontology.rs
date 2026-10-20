@@ -1402,6 +1402,12 @@ pub struct VerbDecl {
     /// What the verb does, for people and agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Whether it is callable only by a principal whose grants on `on`
+    /// name it ([`TypeGrants::verbs`](crate::principal::TypeGrants::verbs)),
+    /// on top of the field rights every verb asks
+    /// (`docs/decisions/070-a-verb-may-be-kept-to-the-callers-granted-it.md`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub granted: bool,
 }
 
 impl VerbDecl {
@@ -1494,6 +1500,8 @@ struct VerbWire {
     executor: Option<String>,
     #[serde(default)]
     description: Option<String>,
+    #[serde(default)]
+    granted: bool,
 }
 
 #[derive(Deserialize)]
@@ -1535,6 +1543,7 @@ impl TryFrom<VerbWire> for VerbDecl {
             requires: w.requires,
             effect,
             description: w.description,
+            granted: w.granted,
         })
     }
 }

@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 77, each
+- `further.json`: the lake's next events, positions 8 to 78, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -155,7 +155,10 @@ The files:
     08:00 on 2026-09-24, the ingest at 4 among it (77): a selection by
     the source's own time names no `before`, and one format 18 holds and
     17 does not (065, lakelands#1166). An earlier act took those values,
-    so it destroys no key and retires nothing.
+    so it destroys no key and retires nothing;
+  - a verb `void` on `voucher` declared `granted` (78): a form format 18
+    holds and 17 does not
+    (`docs/decisions/070-a-verb-may-be-kept-to-the-callers-granted-it.md`).
 
   Its `misplaced` holds five lines that are not of the lake. Each
   stands at its position after the event before it, in the release's

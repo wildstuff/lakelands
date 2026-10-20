@@ -280,6 +280,7 @@ fn invoice_with_verbs() -> Vec<Declaration> {
             }],
         },
         description: None,
+        granted: false,
     };
     let pay = VerbDecl {
         name: "pay".into(),
@@ -292,6 +293,7 @@ fn invoice_with_verbs() -> Vec<Declaration> {
             executor: "bank".into(),
         },
         description: None,
+        granted: false,
     };
     vec![
         Declaration::Type(ty("invoice", vec![field("status", StorageKind::Text)])),

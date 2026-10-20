@@ -76,6 +76,7 @@ async fn rest_lake(backend: Backend) -> Arc<dyn LakeStore> {
                     executor: "mailer".into(),
                 },
                 description: None,
+                granted: false,
             }),
         )
         .await

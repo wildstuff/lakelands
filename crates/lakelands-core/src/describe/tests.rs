@@ -45,6 +45,7 @@ fn declared() -> Vec<Declared> {
             }],
         },
         description: None,
+        granted: false,
     };
     [
         Declaration::Type(invoice),

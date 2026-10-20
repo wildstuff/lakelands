@@ -2713,7 +2713,10 @@ impl<'a> Reader<'a> {
     /// would show it once in force. Nor is a call there whose verb, as
     /// either lake declares it, reads a field its reader may not read:
     /// `describe` does not name the verb, and the entry would tell that
-    /// its `requires` held (024, extended). A migration's report counts
+    /// its `requires` held (024, extended). Nor is a call there whose
+    /// verb, as the lake declares it now or, withdrawn since, did at the
+    /// proposal, asks a grant of its own its reader does not hold (070).
+    /// A migration's report counts
     /// every owner's records, so a holder of `only` is listed none (051).
     /// A read the engine fails is the listing's error, never an entry
     /// left out (lakelands#927).
@@ -2879,6 +2882,15 @@ impl<'a> Reader<'a> {
         let left: Under<'_> = left.as_ref().map(|(s, o)| (s, *o));
         let force: Under<'_> = Some((self.sight, o));
         if let ProposedWrite::Call { verb, .. } = &logged {
+            // Nor to one without the verb's own grant, as the lake declares
+            // the verb now, or at the proposal where it is withdrawn since:
+            // the grant hides no value, so a verb declared again without it
+            // shows what it kept (070).
+            let mut now = [force, then].into_iter().flatten();
+            let now = now.find_map(|(s, o)| Some((s, o.verb(verb).ok()?)));
+            if now.is_some_and(|(s, v)| !rights::verb_granted(s.who(), v)) {
+                return Ok(None);
+            }
             for (sees, o) in [force, then].into_iter().flatten() {
                 let Ok(v) = o.verb(verb) else { continue };
                 let on = o.ty(&v.on);

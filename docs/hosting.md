@@ -824,6 +824,14 @@ A host that already has a store of its own moves in four steps.
   answered its first outcome before the grants are asked. A grant whose
   pairs cannot be applied refuses the reads that name the type until it
   is fixed. See `docs/decisions/051-a-grant-may-admit-only-some-records.md`.
+- **A verb may be kept to the callers granted it.** A verb declared
+  `granted` is called, proposed, accepted and described only by a
+  principal whose `TypeGrants.verbs` on the verb's type name it, its
+  field rights on top. The resolver names the verbs; `Grants::owner()`
+  names none, so give the owner the grant or declare the verb without
+  the flag. A grant is by the type's name and is not carried by a rename.
+  A retry is answered its first outcome before the grant is asked. See
+  `docs/decisions/070-a-verb-may-be-kept-to-the-callers-granted-it.md`.
 - **What a host reads before it applies a migration.** The preflight's
   report says, each in one member: whether the apply is admitted
   (`lossless`: every value the migration keeps converts, every record a

@@ -407,6 +407,7 @@ pub fn fixture() -> Vec<Declaration> {
             requires: None,
             effect: set("approved"),
             description: None,
+            granted: false,
         }),
         Declaration::Verb(VerbDecl {
             name: "pay".into(),
@@ -417,6 +418,7 @@ pub fn fixture() -> Vec<Declaration> {
             requires: Some(Condition::from("status = 'approved'")),
             effect: set("paid"),
             description: None,
+            granted: false,
         }),
     ]
 }
@@ -1606,6 +1608,7 @@ async fn declare_register(f: &Fixture) {
             executor: "crm".into(),
         },
         description: None,
+        granted: false,
     };
     f.catalog
         .declare(&f.cast.owner, Declaration::Verb(register))
@@ -1796,6 +1799,7 @@ pub async fn a_verb_tool_says_what_its_risk_does(store: Arc<dyn LakeStore>) {
                 executor: "mailer".into(),
             },
             description: None,
+            granted: false,
         };
         f.catalog
             .declare(owner, Declaration::Verb(verb))
@@ -10171,6 +10175,7 @@ async fn declare_vault(f: &Fixture) {
         requires: None,
         effect: VerbEffect::Write { set: vec![sealed] },
         description: None,
+        granted: false,
     };
     let open = VerbDecl {
         name: "open".into(),

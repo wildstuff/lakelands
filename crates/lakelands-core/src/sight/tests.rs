@@ -116,6 +116,7 @@ fn a_relation_and_a_verb_are_judged_by_the_sight() {
         requires: None,
         effect: VerbEffect::Write { set },
         description: None,
+        granted: false,
     };
     let n = Assignment {
         field: "n".into(),

@@ -133,3 +133,33 @@ fn nothing_is_granted_by_default() {
     assert_eq!(g.access(&"invoice".into(), &"amount".into()), Access::None);
     assert!(!g.review && !g.schema && !g.ingest && !g.restricted);
 }
+
+#[test]
+fn a_verb_grant_stays_with_the_type_name_it_is_given_under() {
+    let renamed = Renamed {
+        at: Position(4),
+        ty: "invoice".into(),
+        renames: Vec::new(),
+        to: Some("bill".into()),
+    };
+    let verbs = |names: &[&str]| TypeGrants {
+        verbs: names.iter().map(|n| (*n).into()).collect(),
+        ..TypeGrants::default()
+    };
+    let mut g = Grants::default();
+    g.types.insert("invoice".into(), verbs(&["pay"]));
+    g.types.insert("bill".into(), verbs(&["send"]));
+    let at = |p, ty: &str| {
+        let mut g = g.clone();
+        g.follow(std::slice::from_ref(&renamed), p);
+        let held = g.types.get(&TypeName::from(ty)).map(|t| t.verbs.clone());
+        held.unwrap_or_default()
+            .into_iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+    };
+    // Before the rename the type is `invoice`, after it `bill`: each name's
+    // verbs are its own, never the other's.
+    assert_eq!(at(Some(Position(3)), "invoice"), ["pay"]);
+    assert_eq!(at(None, "bill"), ["send"]);
+}

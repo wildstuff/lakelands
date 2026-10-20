@@ -899,6 +899,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                         default: Some(Access::Read),
                         fields: [("f".into(), Access::Write)].into(),
                         only: [("o".into(), json!("a"))].into(),
+                        verbs: ["v".into()].into(),
                     },
                 )]
                 .into(),
@@ -915,6 +916,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     default: Some(Access::Read),
                     fields: [("f".into(), Access::Write)].into(),
                     only: [("o".into(), json!("a"))].into(),
+                    verbs: ["v".into()].into(),
                 }),
                 &[],
                 &["type"],
@@ -975,6 +977,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                         executor: "x".into(),
                     },
                     description: Some("d".into()),
+                    granted: true,
                 }),
                 &["executor"],
                 &[],
@@ -2089,6 +2092,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     requires: None,
                     effect: VerbEffect::Write { set: vec![] },
                     description: None,
+                    granted: false,
                 }),
                 Declaration::Trigger(TriggerDecl {
                     max_depth: Some(2),

@@ -975,7 +975,9 @@ the first release with real installations
   step, taken before any form it adds (lakelands#1214); each is said
   here by the change that adds it, and a log of format 17 holds none of
   them: a field's `admits`
-  (`docs/decisions/069-an-authored-field-may-admit-a-named-source.md`).
+  (`docs/decisions/069-an-authored-field-may-admit-a-named-source.md`),
+  a verb's `granted`
+  (`docs/decisions/070-a-verb-may-be-kept-to-the-callers-granted-it.md`).
   No other step changes a fold, so the projection stays. A step that
   changes how an event folds says so here, and a writer's open then
   rebuilds the projection.
@@ -1080,7 +1082,7 @@ with that declaration's members beside it. Every member not marked
 | a relation | `name` and `target` (required), `cardinality` (`many_to_one`), `authority` (`authored`; who writes its links, when link records carry it), `inverse`, `via` (none), `fields` (`[]`), `description` (none), `annotations` (`{}`), `derived` (none: `{ "match": [ { "from", "to" } ], "where" }`, a field of the owner and one of the target per pair, and `where` (none) a condition over `from.<field>` and `to.<field>`) |
 | a `view` | `source` and `measures` (required; each measure `{ "name", "expr" }`), `where` (none), `group_by` (`[]`), `params` (`[]`: each `{ "name", "kind" }`, a kind of `text`, `number`, `decimal`, `boolean`, `date_time` or `date`), `merge` (`[]`: each `{ "source", "where", "group_by", "measures" }`; `source` and `measures` required, `where` none, `group_by` `[]`) |
 | `value_type` | `name` and `kind` (required), `constraint` (none), `one_of` (`[]`), `format`, `scale`, `description` (none), `annotations` (`{}`) |
-| `verb` | `name`, `on`, `risk` and `effect` (required), `payload` (`[]`), `requires` (none), `description` (none); `effect: write` carries `set`, a list of `{ "field", "value" }`; `effect: external` carries `executor`; `effect: retire` (from format 17) carries neither |
+| `verb` | `name`, `on`, `risk` and `effect` (required), `payload` (`[]`), `requires` (none), `description` (none); `effect: write` carries `set`, a list of `{ "field", "value" }`; `effect: external` carries `executor`; `effect: retire` (from format 17) carries neither; `granted` (`false`, which is never written; from format 18: only a caller whose grants on `on` name the verb calls it) |
 | `trigger` | `name` and `on` (required), `when`, `description` (none), `max_depth` (none: an integer at most the lake's `max_reactive_depth`), `when_strict` (`false`; from format 17: a field or `previous(f)` its `when` reads absent or null fails the guard as a whole), `on_changes` (none: every kind; from format 17, a list of the kinds of change that fire it, as `trigger_fired`'s `change`) |
 | `object_set` | `name`, `of` and `where` (required), `description` (none) |
 | `function` | `name` and `backing` (required), `inputs` (`[]`), `expr` (none), `config` (`null`), `description` (none), `risk` (`low`; from format 17) |

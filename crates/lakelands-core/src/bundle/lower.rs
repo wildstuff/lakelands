@@ -544,6 +544,7 @@ pub(super) fn verb(l: &mut Lower<'_>, doc: VerbDoc) -> VerbDecl {
         requires,
         effect,
         description: doc.description,
+        granted: doc.granted,
     };
     l.annotated(&Declaration::Verb(v.clone()));
     v

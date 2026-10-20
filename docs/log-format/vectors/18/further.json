@@ -420,6 +420,12 @@
       "about": "A `values_removed` taking back what `erp` says it observed before 08:00 on 2026-09-24, the ingest of `INV-1` at 4 among it, whose `seen_at` is 07:59:30.25 (065, lakelands#1166): the source's word selects events wherever they stand, so it names no `before`, and an earlier act took `INV-1`'s values, so it destroys no key and retires nothing. A selection format 18 holds and 17 does not.",
       "line": "{\"body\":{\"kind\":\"values_removed\",\"selection\":{\"seen_before\":\"2026-09-24T08:00:00.000000Z\"},\"source\":\"erp\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"dfb8d1f7c23c2310e3aef344cf37ff53e8095d5c195826c72330c2414c3fe8e8\",\"id\":\"0000000000000000000000000000004d\",\"known_at\":\"2026-10-05T09:00:42.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":77,\"prev\":\"ca640663473e200b86a20d4ceca2d9cae1e686d3377405caf5035440f04e7f42\",\"v\":18,\"writer\":\"system:lakelands\"}",
       "hash": "dfb8d1f7c23c2310e3aef344cf37ff53e8095d5c195826c72330c2414c3fe8e8"
+    },
+    {
+      "shows": "verb_granted",
+      "about": "A `declared` verb `void` on `voucher`, `granted` (070): only a caller whose grants on `voucher` name `void` calls it, proposes it or is shown it. A form format 18 holds and 17 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"verb\",\"effect\":\"retire\",\"granted\":true,\"name\":\"void\",\"on\":\"voucher\",\"risk\":\"low\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"dd1439eaf61c85f17b0ce0bbb1683ea58132ea26abca66912df516f775d0cf78\",\"id\":\"0000000000000000000000000000004e\",\"known_at\":\"2026-10-05T09:00:43.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":78,\"prev\":\"dfb8d1f7c23c2310e3aef344cf37ff53e8095d5c195826c72330c2414c3fe8e8\",\"v\":18,\"writer\":\"agent:agent\"}",
+      "hash": "dd1439eaf61c85f17b0ce0bbb1683ea58132ea26abca66912df516f775d0cf78"
     }
   ],
   "misplaced": [
