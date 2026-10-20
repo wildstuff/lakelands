@@ -566,7 +566,7 @@ What a refusal is about.
 | `required` | `type` (TypeName), `field` (FieldName) | `{type}` requires a value for `{field}` | A record with no value for a required field. |
 | `constraint_broken` | `constraint` (ConstraintName), `type` (TypeName), `key` (RecordKey) | `{type}` `{key}` would break the constraint `{constraint}` | A write that would leave a record breaking its type's constraint. |
 | `constraint_left_broken` | `constraint` (ConstraintName), `type` (TypeName), `records` (u64) | {records} record(s) of `{type}` would be left breaking the constraint `{constraint}`; fix them first | Records a walk of the lake would leave breaking their type's constraint: a declaration's or a migration's computing again, a re-key's rewritten references, a value type's renames. |
-| `requires_unmet` | `verb` (VerbName), `type` (TypeName), `key` (RecordKey) | verb `{verb}` requires what `{type}` `{key}` does not hold | A verb's `requires` that does not hold. |
+| `requires_unmet` | `verb` (VerbName), `type` (TypeName), `key` (RecordKey), `part` (Printed, optional) | verb `{verb}` requires what `{type}` `{key}` does not hold[: `{part}`] | A verb's `requires` that does not hold, and the part of it the record fails: of a conjunction, its first conjunct that does not hold; else the whole condition (006). |
 | `restriction` | `type` (TypeName), `key` (RecordKey), `already` (bool) | `{type}` `{key}` is [{?already}already\|not] restricted | A restriction of what is restricted, or a release of what is not. |
 | `set_declares_twice` | — | the set declares it more than once | A set of declarations that names one twice. |
 | `set_empty` | — | nothing to apply: the set holds no declaration | A set of no declarations. |
@@ -1117,6 +1117,8 @@ its own sentence. The other types:
 - **`Detail`**: an operating system's, a database's or a library's own
   words, scrubbed at their source; never a key, a value or a host path;
 - **`Value`**: a JSON value the caller gave;
+- **`Printed`**: a part of a declared condition in its text form, a
+  string;
 - **`Error`**: a nested error, as the error's own JSON;
 - **`bool`**: a flag, said only by the segment it switches.
 

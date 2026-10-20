@@ -342,6 +342,15 @@ pub fn paths<'e>(e: &'e Expr, out: &mut Vec<&'e [FieldName]>) {
 }
 
 impl Expr {
+    /// Its parts as an `and` holds them, in order, an `and` among them
+    /// split in turn; itself alone where it is no `and`.
+    pub fn conjuncts(&self) -> Vec<&Expr> {
+        match self {
+            Expr::And { args } => args.iter().flat_map(Expr::conjuncts).collect(),
+            e => vec![e],
+        }
+    }
+
     /// Whether it calls one of `funcs`, anywhere in it.
     pub fn calls(&self, funcs: &[Func]) -> bool {
         matches!(self, Expr::Call { func, .. } if funcs.contains(func))

@@ -1023,6 +1023,37 @@ not read, a write-only field and a reference to a type the caller is not
 shown are judged the same way, since a filter on them is. A verb that
 reads no such field is judged by the fields it writes alone.
 
+A refused `requires` names the part of it the record fails, so its
+caller knows which rule to meet (lakelands#1286). `requires_unmet`
+carries `part`: of an `and`, an `and` within it split in turn, the
+first conjunct in declaration order that does not hold; of any other
+condition, an `or` and a `not` among them, the whole. A part inside an
+`or` is never named alone, since no one alternative is what the record
+fails. The conjuncts are evaluated in order, as the `and` evaluates
+them, so naming one reads nothing the condition does not. The part is
+written in the text form a condition is declared in. A part that read
+a field its caller may not read would be left out; by the rule above
+there is none: a caller who may not read every field the
+`requires` reads is refused `not_granted` before the record is read,
+and a reviewer who may not is not shown the proposal, so whoever is
+told `requires_unmet` may read every part of it. A part that reads
+`setting('<key>')` is left out where its caller is not shown that
+setting, and so is a part after one that reads a setting its caller
+is not shown, since naming a part tells that every part before it
+held; the refusal is otherwise the same. A host's declared setting is
+shown to a holder of `schema` and to one who may write it, as
+`describe` tells its declaration; any other key to a reader of
+`sys.setting` that no `only` holds there,
+where its record is told whole
+(`docs/decisions/063-every-setting-is-in-one-list.md`). That is
+narrower than what a reader may read of the record, and errs towards
+leaving the part out. At an accept the caller is the reviewer. The
+literals and function names of a part are told: the condition is the
+contract of a verb its caller may call, `describe` does not carry it,
+so this is the one place it is told, and only the part that fails. A
+constraint is a type's own rule and its refusal names it, not a part of
+its condition (`docs/decisions/059-a-type-declares-its-constraints.md`).
+
 A type its principal is not shown is not named by what is declared
 beside it either. A verb on such a type is not described and no tool
 is made of it, even where the principal could write every field the

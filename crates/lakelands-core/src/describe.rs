@@ -676,6 +676,28 @@ impl Sight<'_> {
         writes && crate::rights::own_only(who, &ty).iter().all(admits)
     }
 
+    /// Whether its principal is shown the setting `key`, holding `value`
+    /// and declared as `declared` says: a host's declaration as
+    /// [`Self::setting_visible`] tells it, any other key to a reader of
+    /// `sys.setting` that no `only` holds there, where its record is told
+    /// whole (063). A refused `requires` names a part that reads a setting
+    /// only where it is shown (006).
+    pub fn setting_shown(
+        &self,
+        key: &str,
+        value: Option<&lakelands_api::Value>,
+        declared: Option<&SettingDecl>,
+    ) -> bool {
+        if let Some(s) = declared {
+            return self.setting_visible(s);
+        }
+        let ty = TypeName::from(lakelands_api::seam::SETTING_TYPE);
+        let whole = crate::rights::own_only(self.who(), &ty).is_empty();
+        let value = value.cloned().unwrap_or_default();
+        let told = self.setting(key, value.clone()).is_some_and(|v| v == value);
+        whole && self.reads(&ty, &"value".into()) && told
+    }
+
     /// Whether a function may be shown to its principal: it computes at
     /// least one field, and every type where it does is shown to it,
     /// which reads that field and every input, which the function reads

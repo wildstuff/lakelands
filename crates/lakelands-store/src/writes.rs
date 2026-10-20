@@ -40,7 +40,7 @@ use std::sync::Arc;
 
 use lakelands_api::engine::ProjectionView;
 use lakelands_api::error::{
-    Case, Flaw, Named, Naming, Part, Place, RecordName, Retry, Said, Seam, Situation,
+    Case, Flaw, Named, Naming, Part, Place, Printed, RecordName, Retry, Said, Seam, Situation,
 };
 use lakelands_api::event::{ChangeKind, Digest, Event, EventBody, EventId, Procedure};
 use lakelands_api::ontology::{
@@ -2001,7 +2001,8 @@ pub(crate) fn call_reads(
     if let Some(k) = key
         && let Some(r) = view.get(&v.on, k)?
     {
-        let _ = requires(settings, v, k, &r, now, &across);
+        // Only what the condition reads is wanted here, not its answer.
+        let _ = requires(settings, v, k, &r, now, &across, &|_| true);
         set = assigned(o, settings, v, &r, payload, (now, &across)).ok();
     }
     let read = across.read.borrow().keys().cloned().collect();
@@ -2041,9 +2042,12 @@ pub(crate) fn position_after(w: &Writer, n: usize) -> Position {
     Position(first.0 + n as u64)
 }
 
-/// Refuse a verb whose `requires` does not hold on `record`, and before
-/// that one whose `requires` reads across a reference that reaches no
-/// record (`across`).
+/// Refuse a verb whose `requires` does not hold on `record`, naming the
+/// first of its conjuncts that does not where every setting it and the
+/// ones before it read is `told` its caller, and before that one whose
+/// `requires` reads across a reference that reaches no record
+/// (`across`). The conjuncts are evaluated in order, as the `and`
+/// evaluates them, so they read what it reads (006).
 fn requires(
     settings: &BTreeMap<String, Value>,
     verb: &VerbDecl,
@@ -2051,6 +2055,7 @@ fn requires(
     record: &StoredRecord,
     now: Timestamp,
     across: &Across<'_>,
+    told: &dyn Fn(&str) -> bool,
 ) -> Result<()> {
     let Some(r) = &verb.requires else {
         return Ok(());
@@ -2075,13 +2080,29 @@ fn requires(
         payload,
         across,
     };
-    let holds = expr::holds(&e, &scope).unwrap_or(false);
+    let parts = e.conjuncts();
+    let unmet = parts
+        .iter()
+        .position(|p| !expr::holds(p, &scope).unwrap_or(false));
     across.reached()?;
-    if holds {
+    let Some(at) = unmet else {
         return Ok(());
-    }
+    };
     let (verb, ty, key) = (verb.name.clone(), verb.on.clone(), key.clone());
-    let case = Case::RequiresUnmet { verb, ty, key };
+    // Naming a part tells that every part before it held.
+    let mut read = BTreeSet::new();
+    for p in &parts[..=at] {
+        crate::kept::settings_named(p, &mut read);
+    }
+    let part = parts[at];
+    let shown = read.iter().all(|k| told(k));
+    let part = shown.then(|| Box::new(Printed(expr::print(part))));
+    let case = Case::RequiresUnmet {
+        verb,
+        ty,
+        key,
+        part,
+    };
     Err(refused(Refusal::Precondition(Box::new(case.into()))))
 }
 
@@ -3163,7 +3184,13 @@ impl Decide<'_> {
         let limits = (self.call.lake.limits.max_depth, (&w.settings, now));
         let stored = |ty: &TypeName, k: &RecordKey| pending.record(view, ty, k);
         let across = Across::new(o, on, (&far, &link, &stored), limits);
-        requires(&w.settings, verb, key, &record, now, &across)?;
+        // A part is named as the caller is shown what it reads: at an
+        // accept, the reviewer.
+        let told = |k: &str| {
+            let (value, declared) = (w.settings.get(k), o.settings.get(k).map(|e| &e.decl));
+            Sight::held(self.call.who, o).setting_shown(k, value, declared)
+        };
+        requires(&w.settings, verb, key, &record, now, &across, &told)?;
         // A verb on a link finds both its ends live and answered, whatever
         // its effect (035): one that writes the link has them judged where
         // the record is written, any other here, as `link` judges them.

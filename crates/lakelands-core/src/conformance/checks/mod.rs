@@ -93,6 +93,7 @@ mod removed;
 mod renamed_grants;
 mod report_names;
 mod required_at_create;
+mod requires_parts;
 mod rerank;
 mod restated;
 mod restriction;
@@ -175,6 +176,7 @@ pub const ALL: &[Check] = &[
     link_paths::LINK_PATH_READS,
     link_paths::LINK_PATH_HELD,
     link_paths::LINK_PATH_PROPOSED,
+    requires_parts::REQUIRES_PART,
     latest::LATEST_ORDER,
     decimals::AS_WRITTEN,
     decimals::EXACT_SUM,

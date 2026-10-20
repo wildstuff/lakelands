@@ -274,6 +274,8 @@ its own sentence. The other types:
 - **`Detail`**: an operating system's, a database's or a library's own
   words, scrubbed at their source; never a key, a value or a host path;
 - **`Value`**: a JSON value the caller gave;
+- **`Printed`**: a part of a declared condition in its text form, a
+  string;
 - **`Error`**: a nested error, as the error's own JSON;
 - **`bool`**: a flag, said only by the segment it switches.
 
@@ -287,6 +289,7 @@ SCALARS = {
     "ParamName", "TriggerName", "ConstraintName", "ValueTypeName", "LakeId", "SourceId", "KeyId",
     "Names",
     "Detail", "Error", "i32", "Timestamp", "ProposalId", "FieldType", "Bound",
+    "Printed",
 }
 
 
@@ -588,7 +591,7 @@ SAMPLE = {
     "TriggerName": "g", "ConstraintName": "c", "ValueTypeName": "vt", "LakeId": "lake", "SourceId": "src", "KeyId": "1",
     "Names": ["a"], "Detail": "d", "Error": {"error": "refused", "reason": {"refusal": "not_granted"}},
     "Timestamp": "2026-01-01T00:00:00Z", "ProposalId": "p-1", "FieldType": {"kind": "text"},
-    "Bound": {"model": "m", "dimensions": 2},
+    "Bound": {"model": "m", "dimensions": 2}, "Printed": "a = 1",
 }
 
 
