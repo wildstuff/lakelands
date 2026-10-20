@@ -195,6 +195,8 @@ pub(super) struct VerbDoc {
     #[serde(default)]
     pub retire: bool,
     pub description: Option<String>,
+    #[serde(default)]
+    pub granted: bool,
 }
 
 /// `triggers/<name>.yaml`.

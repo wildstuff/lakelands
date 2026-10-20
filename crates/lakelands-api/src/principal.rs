@@ -7,11 +7,11 @@
 //! identities into one [`Principal`] per call; the store enforces the
 //! grants on every read and write.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::id::{FieldName, LakeId, Position, TypeName};
+use crate::id::{FieldName, LakeId, Position, TypeName, VerbName};
 
 /// What kind of party a principal is. It is recorded as the `writer` of
 /// every value the principal writes; it grants nothing by itself.
@@ -182,6 +182,13 @@ pub struct TypeGrants {
     /// within a lake (`docs/decisions/051-a-grant-may-admit-only-some-records.md`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub only: BTreeMap<FieldName, crate::Value>,
+    /// The verbs of this type declared `granted` this principal may call,
+    /// its field rights permitting. A name no such verb bears grants
+    /// nothing. It stays with the type's name it is given under: it
+    /// permits, so a rename does not carry it
+    /// (`docs/decisions/070-a-verb-may-be-kept-to-the-callers-granted-it.md`).
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub verbs: BTreeSet<VerbName>,
 }
 
 impl Grants {

@@ -172,7 +172,7 @@ set:
     ),
     (
         "verbs/send_reminder.yaml",
-        "name: send_reminder\non: invoice\nrisk: medium\nexecutor: mailer\n",
+        "name: send_reminder\non: invoice\nrisk: medium\nexecutor: mailer\ngranted: true\n",
     ),
     (
         "triggers/invoice_paid.yaml",
@@ -325,6 +325,7 @@ fn complete_declarations() -> Vec<Declaration> {
                 }],
             },
             description: None,
+            granted: false,
         }),
         Declaration::Verb(VerbDecl {
             name: VerbName::new("send_reminder"),
@@ -337,6 +338,7 @@ fn complete_declarations() -> Vec<Declaration> {
                 executor: "mailer".to_owned(),
             },
             description: None,
+            granted: true,
         }),
         Declaration::Trigger(TriggerDecl {
             max_depth: None,

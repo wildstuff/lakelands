@@ -317,6 +317,8 @@ SHOWS = {
     "admits": shows("a declared type with an authored field that admits a named source")(
         lambda e: any(f.get("authority") == "authored" and f.get("admits") == ["samples"]
                       for f in declaration(e).get("fields", []))),
+    "verb_granted": shows("a declared verb kept to the callers granted it, `granted`")(
+        lambda e: declaration(e).get("declare") == "verb" and declaration(e).get("granted") is True),
     "setting_declared": shows("a declared host setting with its type, unit, meaning and group")(
         lambda e: declaration(e).get("declare") == "setting" and declaration(e).get("key") == "vat_rate"
         and declaration(e).get("type") == {"kind": "decimal"} and declaration(e).get("group") == "operator"),

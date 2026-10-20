@@ -1023,6 +1023,9 @@ not read, a write-only field and a reference to a type the caller is not
 shown are judged the same way, since a filter on them is. A verb that
 reads no such field is judged by the fields it writes alone.
 
+A verb declared `granted` asks one grant more: its type's grants name
+it (`docs/decisions/070-a-verb-may-be-kept-to-the-callers-granted-it.md`).
+
 A refused `requires` names the part of it the record fails, so its
 caller knows which rule to meet (lakelands#1286). `requires_unmet`
 carries `part`: of an `and`, an `and` within it split in turn, the
@@ -2775,3 +2778,5 @@ Of `only`:
   and `constraint` included, and a proposed migration of one was listed
   to every reviewer; a value type is now listed by the fields its reader
   is shown that use it, or to a holder of `schema` (lakelands#1088).
+- 070 added: a verb declared `granted` is callable and described only to
+  a caller whose grants on its type name it (lakelands#1287).

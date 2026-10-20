@@ -566,6 +566,7 @@ async fn pay_verb(l: &Lake, risk: Risk) {
             executor: "bank".into(),
         },
         description: None,
+        granted: false,
     });
     l.declare_as(pay, "the verb").await.unwrap();
 }

@@ -129,6 +129,7 @@ mod value_renames;
 mod value_types;
 mod values;
 mod vector_index;
+mod verb_grants;
 mod verb_reads;
 mod verb_written;
 mod verbs_on_type;
@@ -178,6 +179,7 @@ pub const ALL: &[Check] = &[
     link_paths::LINK_PATH_HELD,
     link_paths::LINK_PATH_PROPOSED,
     requires_parts::REQUIRES_PART,
+    verb_grants::VERB_GRANTED,
     latest::LATEST_ORDER,
     decimals::AS_WRITTEN,
     decimals::EXACT_SUM,

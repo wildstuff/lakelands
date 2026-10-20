@@ -476,6 +476,14 @@ pub fn pinnable(who: &Principal, decl: &TypeDecl, verb: Option<&VerbDecl>) -> bo
         .all(|(f, _)| !assigned(f) && !decl.fields.iter().any(|d| &d.name == f && computed(d)))
 }
 
+/// Whether `who` holds the grant `verb` asks of its own: none for a verb
+/// not declared `granted`, else its name among `who`'s verbs on its type.
+/// No other grant stands in for it, the owner's included (070).
+pub fn verb_granted(who: &Principal, verb: &VerbDecl) -> bool {
+    let named = || (who.grants.types.get(&verb.on)).is_some_and(|t| t.verbs.contains(&verb.name));
+    !verb.granted || named()
+}
+
 /// Whether `who` may read every field `verb` reads, each judged as a
 /// filter on it is: a verb that reads one would answer its value, by
 /// running or not, or copy it whole (024, extended). So is each field it
