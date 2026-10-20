@@ -35,7 +35,7 @@ use lakelands_api::ontology::{
     TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewParam,
     ViewSource,
 };
-use lakelands_api::principal::TypeGrants;
+use lakelands_api::principal::{Renamed, TypeGrants};
 use lakelands_api::query::{
     Axis, Depth, Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Start,
     Step, VectorTerm, Walk,
@@ -645,6 +645,7 @@ fn type_description() -> TypeDescription {
             insert_only: true,
             retired_by: RetiredBy::Verbs,
             view_of: Some("t".into()),
+            renamed: vec![renamed()],
         },
         lifecycle: TypeLifecycle {
             version: 1,
@@ -656,6 +657,15 @@ fn type_description() -> TypeDescription {
             kept: Some(Kept::Kept),
             value_types: [("money".into(), 2)].into(),
         },
+    }
+}
+
+fn renamed() -> Renamed {
+    Renamed {
+        at: Position(3),
+        ty: "invoice".into(),
+        renames: vec![("a".into(), "b".into())],
+        to: Some("bill".into()),
     }
 }
 
@@ -1307,6 +1317,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         ),
         ("type_access", members(&type_description().access)),
         ("type_lineage", members(&type_description().lineage)),
+        ("renamed", members(&renamed())),
         ("type_lifecycle", members(&type_description().lifecycle)),
         ("sorted_whole", members(&sorted_whole())),
         ("field_description", members(&field_description())),

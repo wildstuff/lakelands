@@ -1063,6 +1063,7 @@ impl Sight<'_> {
                 insert_only: t.insert_only,
                 retired_by: t.retired_by,
                 view_of: t.view.as_ref().map(|v| v.source.clone()),
+                renamed: vec![],
             },
             lifecycle: TypeLifecycle {
                 version: d.version,

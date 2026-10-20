@@ -650,13 +650,51 @@ under its name now, and a filter by type finds it by the type it
 withdrew from, whatever stands under the name since. The version a name
 declared again continues tells a reader that the name has a history,
 never what that history was: so does a trigger moved from a type the
-reader is not shown to one it is. A type leaves by `migrate` and a
-setting by its record; these and a value type are refused
-`withdrawn_kind`.
+reader is not shown to one it is. A setting leaves by its record; it
+and a value type are refused `withdrawn_kind`.
 
 Without it, the only way to end a rule was to declare it again with a
 guard that never holds: a dead declaration in every description and
 in the log, which reads like a rule that never matches.
+
+### A type is withdrawn once it is empty and nothing names it
+
+A type is withdrawn by the same declaration, `{"declare": "withdraw",
+"kind": "type", ...}`, and leaves as the others do: `describe` no
+longer lists it from the withdrawal on, a read as of before still
+does, and declared again its version continues. The link types its
+relations carry leave with it, each by a `declared` of its own the
+lake appends after the type's. A type in use is refused
+`withdrawn_in_use`, naming the first thing that holds it, in this
+order:
+
+- a type the lake reserves, `sys.` and not a link type, by the lake;
+  a link type a relation in force carries, by that relation, which
+  leaves only with its type or by a migration;
+- a field or a relation of another type that points at it or at one
+  of its link types, or a view computed from it, the author's types before the lake's own; then a
+  verb on it or on one of its link types, or whose payload points at
+  it; then an object set of one of them, then a trigger on one;
+- a live record, retired ones not counting, restricted ones counting:
+  `its records`, or `the links of its relation` for a link type that
+  would leave with it.
+
+The names come first and the records last, so an author who empties
+a type learns at once what else stands in its way. A type whose
+records hold history keeps that history: the withdrawal ends no
+record, and a read as of before answers them. Declared again while
+the lake keeps one of them, retired, it is refused
+`withdrawn_name_held`, as a link type it would bring is: those records
+were written to the shape that left, and the new one would read them
+as its own. A count of records its
+author is not answered is not its to learn, so where it is not
+answered one of them the refusal is not granted, as a function's is
+that only fields hidden from it read.
+
+Before, a type once declared stood in every description for good: an
+author who declared one by mistake, or whose use for it had ended, had
+no way to say so but a migration to an empty shape, which still
+listed it.
 
 ### The migration doors refuse in one order
 
@@ -972,4 +1010,5 @@ to `docs/decisions/006-grants-not-roles.md` at lakelands#817.
   first read of its position (lakelands#1056).
 - Marking a field `authority: verb` is a change of meaning, taken by `declare` (lakelands#1130).
 - A trigger, a verb, an object set or a function is withdrawn by a declaration (lakelands#1219).
+- Extended: a type is withdrawn once it holds no live record and nothing in force names it, its link types with it; it was refused `withdrawn_kind` (lakelands#1292).
 - Marking a type `retired_by: verbs` is a change of meaning, taken by `declare` (lakelands#1148).

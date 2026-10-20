@@ -107,13 +107,13 @@ impl ToolNames {
         self.judge(&name);
     }
 
-    /// `t` in force: the names it made give way to those it makes.
-    fn put_type(&mut self, t: &TypeDecl) {
+    /// The type `ty` out of force: the names it made give way.
+    fn take_type(&mut self, ty: &TypeName) {
         let of = |s: &NameSource| match s {
-            NameSource::Type { ty } | NameSource::Link { ty, .. } => ty == &t.name,
+            NameSource::Type { ty: t } | NameSource::Link { ty: t, .. } => t == ty,
             _ => false,
         };
-        for name in self.by.remove(&t.name).unwrap_or_default() {
+        for name in self.by.remove(ty).unwrap_or_default() {
             if let Some(held) = self.names.get_mut(&name) {
                 held.retain(|s| !of(s));
                 if held.is_empty() {
@@ -122,6 +122,15 @@ impl ToolNames {
             }
             self.judge(&name);
         }
+    }
+
+    /// `t` in force: the names it made give way to those it makes.
+    fn put_type(&mut self, t: &TypeDecl) {
+        let of = |s: &NameSource| match s {
+            NameSource::Type { ty } | NameSource::Link { ty, .. } => ty == &t.name,
+            _ => false,
+        };
+        self.take_type(&t.name);
         let links = crate::declare::link_relations(t);
         for (name, from) in tools::all_names(std::slice::from_ref(&t.name), &[], &links) {
             for s in from.into_iter().filter(of) {
@@ -425,11 +434,20 @@ impl Ontology {
         }
     }
 
-    /// The trigger, verb, object set or function `name` out of force, a
-    /// verb with the tool name it made. What reads it refuses its
-    /// withdrawal, so no type is completed again.
+    /// The type, trigger, verb, object set or function `name` out of
+    /// force, a type or a verb with the tool names it made. What reads it
+    /// refuses its withdrawal, so no type is completed again.
     pub fn take_out(&mut self, kind: DeclarationKind, name: &str) {
         match kind {
+            DeclarationKind::Type => {
+                let ty = TypeName::from(name);
+                if self.types.remove(&ty).is_some() {
+                    self.listed.remove(&ty);
+                    if let Some(names) = &mut self.names {
+                        Arc::make_mut(names).take_type(&ty);
+                    }
+                }
+            }
             DeclarationKind::Trigger => drop(self.triggers.remove(name)),
             DeclarationKind::Verb => {
                 let verb = VerbName::from(name);

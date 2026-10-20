@@ -456,7 +456,9 @@ impl Catalog for Doors {
     }
 
     async fn describe(&self, who: &Principal, at: ReadAt) -> Result<Reply<LakeDescription>> {
-        self.read(who, (at, None), |r| Ok(r.describe())).await
+        let asked = who.clone();
+        self.read(who, (at, None), move |r| r.describe(&asked))
+            .await
     }
 
     async fn describe_type(
@@ -465,8 +467,8 @@ impl Catalog for Doors {
         ty: &TypeName,
         at: ReadAt,
     ) -> Result<Reply<TypeDescription>> {
-        let ty = ty.clone();
-        self.read(who, (at, None), move |r| r.describe_type(&ty))
+        let (ty, asked) = (ty.clone(), who.clone());
+        self.read(who, (at, None), move |r| r.describe_type(&asked, &ty))
             .await
     }
 

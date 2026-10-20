@@ -2076,12 +2076,13 @@ pub(crate) fn input_kind_broken(o: &Ontology, f: &FunctionDecl) -> Option<Case> 
         })
 }
 
-/// A withdrawal: of a trigger, a verb, an object set or a function in
-/// force, which nothing in force reads ([`reader`]).
+/// A withdrawal: of a type, a trigger, a verb, an object set or a
+/// function in force, which nothing in force reads ([`reader`]). A type's
+/// records are judged where it is appended.
 fn withdrawal(o: &Ontology, w: &Withdrawal) -> Result<()> {
-    use DeclarationKind::{Function, ObjectSet, Trigger, Verb};
+    use DeclarationKind::{Function, ObjectSet, Trigger, Type, Verb};
     let (kind, name) = (w.kind.naming(), w.name.clone());
-    if !matches!(w.kind, Trigger | Verb | ObjectSet | Function) {
+    if !matches!(w.kind, Type | Trigger | Verb | ObjectSet | Function) {
         return Err(invalid(Case::WithdrawnKind { kind }));
     }
     if o.held_named(w.kind, &w.name).is_none() {
@@ -2099,14 +2100,73 @@ fn withdrawal(o: &Ontology, w: &Withdrawal) -> Result<()> {
 /// other verb of the type sets (lakelands#1130), and the last that retires
 /// a type only its verbs retire by that type (lakelands#1239); an object
 /// set by each set and each trigger whose condition names it, itself or
-/// through the sets it names.
+/// through the sets it names; a type by what names it ([`type_reader`]).
 pub(crate) fn reader(o: &Ontology, w: &Withdrawal) -> Option<String> {
     match w.kind {
+        DeclarationKind::Type => type_reader(o, &TypeName::from(w.name.as_str())),
         DeclarationKind::Function => function_reader(o, &w.name),
         DeclarationKind::Verb => verb_reader(o, &VerbName::from(w.name.as_str())),
         DeclarationKind::ObjectSet => set_reader(o, &w.name),
         _ => None,
     }
+}
+
+/// The first declaration in force that names the type `ty`, as a
+/// refusal names it: the lake, for a type it reserves; the relation that
+/// carries a link type; then a field or a relation of another type, a
+/// view computed from it, and a verb, a set or a trigger on it or on a
+/// link type its relations carry, which leave with it (lakelands#1292).
+fn type_reader(o: &Ontology, ty: &TypeName) -> Option<String> {
+    let carries = |owner: &TypeName, relation: &RelationName| {
+        let rs = o.types.get(owner).map(|e| &e.decl.relations);
+        rs.is_some_and(|rs| {
+            rs.iter()
+                .any(|r| &r.name == relation && r.carried_by_links())
+        })
+    };
+    match links::link_type_parts(ty) {
+        Some((owner, relation)) if carries(&owner, &relation) => {
+            return Some(format!("the relation `{relation}` of `{owner}`"));
+        }
+        None if is_system(ty) => return Some("the lake".into()),
+        _ => {}
+    }
+    let decl = &o.types.get(ty)?.decl;
+    let own: BTreeSet<TypeName> = (links::link_types_of(decl).into_iter().map(|l| l.name))
+        .chain([ty.clone()])
+        .collect();
+    let on = |t: &TypeName| own.contains(t);
+    let to = |f: &FieldDecl| f.ty.target.as_ref().is_some_and(on);
+    let (user, system): (Vec<_>, Vec<_>) = (o.types.values().map(|e| &e.decl))
+        .filter(|t| !own.contains(&t.name))
+        .partition(|t| !is_system(&t.name));
+    let named = user.into_iter().chain(system).find_map(|t| {
+        if let Some(f) = t.fields.iter().find(|f| to(f)) {
+            return Some(format!("the field `{}` of `{}`", f.name, t.name));
+        }
+        if let Some(r) = (t.relations.iter()).find(|r| on(&r.target) || r.fields.iter().any(to)) {
+            return Some(format!("the relation `{}` of `{}`", r.name, t.name));
+        }
+        let view = t.view.as_deref();
+        let reads = view.is_some_and(|v| on(&v.source) || v.merge.iter().any(|m| on(&m.source)));
+        reads.then(|| format!("the view `{}`", t.name))
+    });
+    let verbs = o.verbs.values().map(|e| &e.decl);
+    let mut verbs = verbs.filter(|v| on(&v.on) || v.payload.iter().any(to));
+    let sets = o.object_sets.values().map(|e| &e.decl);
+    let triggers = o.triggers.values().map(|e| &e.decl);
+    named
+        .or_else(|| verbs.next().map(|v| format!("the verb `{}`", v.name)))
+        .or_else(|| {
+            (sets.clone())
+                .find(|s| on(&s.of))
+                .map(|s| format!("the object set `{}`", s.name))
+        })
+        .or_else(|| {
+            (triggers.clone())
+                .find(|t| on(&t.on))
+                .map(|t| format!("the trigger `{}`", t.name))
+        })
 }
 
 /// The first field only verbs write that `verb` alone of its type's verbs

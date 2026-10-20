@@ -868,6 +868,16 @@ both its ends, the field that carries it where it is carried by a
 reference field, and, for a derived relation, every field its match
 pairs (above).
 
+A type described as of a position is told the names it bore after it
+(`035 § A renamed relation keeps its edges`) only where its reader,
+its grants named at the head, is shown it at the head under its last
+name too. The position judges whether the type is described at all;
+the head judges whether its new name is told. A reader shown the old
+link type as of before by a permission on the old name alone, which
+gives nothing under the new one, is not told the new name: it would
+learn the name of a type it is not shown. A reader not shown the type
+at the position is described nothing of it, rename included.
+
 ### A write asks first whether its writer is shown the type, checks grants before data, and tells only what the grants cover
 
 A refusal is an answer too. A write that would break a rule about the
@@ -2780,3 +2790,5 @@ Of `only`:
   is shown that use it, or to a holder of `schema` (lakelands#1088).
 - 070 added: a verb declared `granted` is callable and described only to
   a caller whose grants on its type name it (lakelands#1287).
+- Extended: a type described as of a position is told its names since
+  only where its reader is shown it at the head too (lakelands#1291).

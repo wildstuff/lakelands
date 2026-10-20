@@ -316,7 +316,8 @@ What a refusal is about.
 | `function_undeclared` | `name` (String) | it names the function `{name}`, which is not declared | A field naming a function that is not declared. |
 | `withdrawn_in_use` | `kind` (Naming), `name` (String), `by` (String) | the {kind} `{name}` is in use by {by}, so it is not withdrawn | A withdrawal of a declaration something in force reads. |
 | `withdrawn_undeclared` | `kind` (Naming), `name` (String) | the {kind} `{name}` is not declared, so it is not withdrawn | A withdrawal of a name not in force. |
-| `withdrawn_kind` | `kind` (Naming) | a {kind} is not withdrawn: a trigger, a verb, an object set or a function is; a type leaves by `migrate`, and a setting by its record | A withdrawal of a kind that leaves force another way. |
+| `withdrawn_name_held` | `type` (TypeName) | the lake keeps the records of the withdrawn type `{type}`; take another name | A type declared again where the lake keeps records of the one withdrawn. |
+| `withdrawn_kind` | `kind` (Naming) | a {kind} is not withdrawn: a type, a trigger, a verb, an object set or a function is, and a setting leaves by its record | A withdrawal of a kind that leaves force another way. |
 | `group_unkeyable` | `field` (FieldName) | it groups by `{field}`, whose kind cannot be part of a key | A view grouped by a field no key may be. |
 | `initial_cleared` | — | its inputs would clear it at their next change | An `initial` value on a field its inputs clear. |
 | `initial_in_view` | — | a view's records are computed, and none is created | An `initial` value on a view's field. |

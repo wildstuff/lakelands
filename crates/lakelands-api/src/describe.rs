@@ -325,6 +325,12 @@ pub struct TypeLineage {
     /// For a view type: the type it is computed from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view_of: Option<TypeName>,
+    /// As of a position: the names the type bore after it, each entry of
+    /// the lake's list of renames that gave it one, oldest first, so that
+    /// the last `to` is its name at the head (lakelands#1291). Told only to
+    /// a reader shown the type there too; empty at the head.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub renamed: Vec<crate::principal::Renamed>,
 }
 
 /// A type's version and shape.

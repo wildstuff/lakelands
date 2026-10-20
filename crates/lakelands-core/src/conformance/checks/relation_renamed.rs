@@ -6,7 +6,7 @@ use lakelands_api::event::{Event, EventBody};
 use lakelands_api::ontology::{
     Authority, Cardinality, Derived, MatchPair, RelationDecl, StorageKind,
 };
-use lakelands_api::principal::TypeGrants;
+use lakelands_api::principal::{Renamed, TypeGrants};
 use lakelands_api::query::{Edge, Projection, QueryResult, Search, SearchMode, Walk};
 use lakelands_api::read::Found;
 use lakelands_api::seam::FeedFilter;
@@ -19,8 +19,8 @@ use serde_json::json;
 use super::links::{SEPT, dated, invoice, lake, link_ok, pairs};
 use crate::conformance::fixture::{
     Lake, Must, derived, events_after, field, find_at, followed, get_at, head_unmoved,
-    invalid_case, invalid_like, object_set_on, patch, pattern, principal, reference, source_record,
-    sourced, step, trigger_on, type_decl, vector,
+    invalid_case, invalid_like, object_set_on, patch, pattern, principal, read_at, reference,
+    source_record, sourced, step, trigger_on, type_decl, vector,
 };
 use crate::conformance::{Failure, Held, Store};
 
@@ -182,6 +182,30 @@ async fn seen(l: &Lake, who: &Principal, ty: &str, as_of: Option<Position>) -> S
     }
 }
 
+/// An agent with a permission on the old link type alone, and what shows
+/// it: its owner's `amount` and its target (006, extended).
+fn permitted(store: &dyn LakeStore) -> Principal {
+    let mut permitted = granted(
+        store,
+        "permitted",
+        Access::None,
+        (OLD, Some(Access::Read), &[]),
+    );
+    let amount = [("amount".into(), Access::Read)].into();
+    let of_owner = TypeGrants {
+        default: None,
+        fields: amount,
+        ..Default::default()
+    };
+    permitted.grants.types.insert("invoice".into(), of_owner);
+    let partner = TypeGrants {
+        default: Some(Access::Read),
+        ..Default::default()
+    };
+    permitted.grants.types.insert("partner".into(), partner);
+    permitted
+}
+
 async fn a_grant_on_a_link_type_follows_its_relations_rename(store: Store) -> Held {
     let l = lake(store.as_ref()).await?;
     link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
@@ -192,7 +216,7 @@ async fn a_grant_on_a_link_type_follows_its_relations_rename(store: Store) -> He
     let (kept, later, permitted, both) = (
         granted(s, "kept", Access::Read, (OLD, none, &[])),
         granted(s, "later", Access::Read, (NEW, none, &[])),
-        granted(s, "permitted", Access::None, (OLD, Some(Access::Read), &[])),
+        permitted(s),
         {
             let mut both = granted(
                 s,
@@ -208,20 +232,6 @@ async fn a_grant_on_a_link_type_follows_its_relations_rename(store: Store) -> He
             both
         },
     );
-    // A link type is shown with its owner and its target (006, extended).
-    let mut permitted = permitted;
-    let amount = [("amount".into(), Access::Read)].into();
-    let of_owner = TypeGrants {
-        default: None,
-        fields: amount,
-        ..Default::default()
-    };
-    permitted.grants.types.insert("invoice".into(), of_owner);
-    let partner = TypeGrants {
-        default: Some(Access::Read),
-        ..Default::default()
-    };
-    permitted.grants.types.insert("partner".into(), partner);
     let mut red = Vec::new();
     for (what, who, ty, as_of, want) in [
         (
@@ -300,6 +310,66 @@ async fn a_grant_on_a_link_type_follows_its_relations_rename(store: Store) -> He
         "a grant on a link type follows its rename: {}; the walk of one kept from the link \
          type shows `since`: {shown:?}",
         red.join("; ")
+    );
+    Ok(())
+}
+
+check!(
+    RENAMED_LINEAGE = describe_as_of_before_a_rename_tells_the_name_at_the_head,
+    "035 and 006, extended (lakelands#1291): `describe` as of a position before a relation's rename tells its old link type the rename, at the position of the `migrated`, and its new name, and so does `describe_type`; as of after the rename neither link type is told one, the old standing empty, and as of before the declaration neither is described; a reader shown the old link type as of before by a permission on the old name, which the head does not show the new one, is told no rename, and one kept from it is described neither"
+);
+
+/// The link types of `approved_by` that `who` is described as of `at`,
+/// each with the names it is told it bore after: `old>new@position`.
+async fn told(l: &Lake, who: &Principal, at: Position) -> Result<Vec<String>, Failure> {
+    let d = l.cat.describe(who, read_at(Some(at))).await;
+    let types = d.must("describing")?.data.types.into_iter();
+    let types = types.filter(|t| [OLD, NEW].contains(&t.name.as_str()));
+    let name = |r: &Renamed| r.to.as_ref().map(|n| format!(">{n}@{}", r.at.0));
+    Ok(types
+        .map(|t| {
+            t.name.to_string()
+                + &t.lineage
+                    .renamed
+                    .iter()
+                    .filter_map(name)
+                    .collect::<String>()
+        })
+        .collect())
+}
+
+async fn describe_as_of_before_a_rename_tells_the_name_at_the_head(store: Store) -> Held {
+    let s = store.as_ref();
+    let empty = s.head().await.must("reading the head")?;
+    let l = lake(s).await?;
+    let before = s.head().await.must("reading the head")?;
+    apply(&l, renaming()).await?;
+    let migrated = events_after(s, before).await?[0].position;
+    let after = s.head().await.must("reading the head")?;
+    let kept = granted(s, "kept", Access::Read, (OLD, Some(Access::None), &[]));
+    let was = format!("{OLD}>{NEW}@{}", migrated.0);
+    let one = l
+        .cat
+        .describe_type(&l.own, &OLD.into(), read_at(Some(before)))
+        .await;
+    let one = one
+        .must("describing the old link type")?
+        .data
+        .lineage
+        .renamed;
+    let got = [
+        told(&l, &l.own, before).await?,
+        told(&l, &l.own, after).await?,
+        told(&l, &l.own, empty).await?,
+        told(&l, &permitted(s), before).await?,
+        told(&l, &kept, before).await?,
+    ];
+    let want: [&[&str]; 5] = [&[&was], &[OLD, NEW], &[], &[OLD], &[]];
+    ensure!(
+        got.iter().zip(want).all(|(g, w)| g == w) && one.len() == 1,
+        "as of before, after, before the declaration, to a permission on the old name and \
+         to one kept from it, `describe` must tell {want:?}; it tells {got:?}, and \
+         `describe_type` {one:?}"
     );
     Ok(())
 }

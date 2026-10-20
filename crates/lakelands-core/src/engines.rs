@@ -45,7 +45,7 @@ use lakelands_api::query::Edge;
 use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::record::{FieldMeta, StoredRecord, Value};
 use lakelands_api::time::Timestamp;
-use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposedWrite};
+use lakelands_api::write::{Declaration, DeclarationKind, Proposal, ProposalFilter, ProposedWrite};
 
 pub use crate::expr::order::{cmp_values, sort_key};
 use crate::expr::{RecordScope, holds};
@@ -1665,7 +1665,10 @@ pub fn declared_on(d: &Declaration, stands: &impl Fn(&str) -> Option<TypeName>) 
         Declaration::Verb(v) => v.on.clone(),
         Declaration::Trigger(t) => t.on.clone(),
         Declaration::ObjectSet(s) => s.of.clone(),
-        // A withdrawal names the type of what it withdraws.
+        // A withdrawal names the type of what it withdraws, or the type.
+        Declaration::Withdraw(w) if w.kind == DeclarationKind::Type => {
+            return vec![w.name.as_str().into()];
+        }
         Declaration::Withdraw(_) => return stands(&declaration_key(d)).into_iter().collect(),
         _ => return Vec::new(),
     };
