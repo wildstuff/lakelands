@@ -6,10 +6,13 @@
 //! already exists, and a lake the host withholds a type from never holds
 //! it. A vocabulary naming a type under `sys.link.`, or one of the four
 //! names the store keeps for its own readers, is refused at the writer's
-//! open, naming the type, and nothing is appended.
+//! open, naming the type, and nothing is appended. A type the lake holds
+//! without fields the vocabulary has since added is declared again by a
+//! writer's open, and refused to a reader's until one has; a vocabulary
+//! that changes a held type in any other way is refused at the open.
 
 use lakelands_api::error::Case;
-use lakelands_api::ontology::StorageKind;
+use lakelands_api::ontology::{ConstraintDecl, FieldDecl, StorageKind, TypeDecl};
 use lakelands_api::seam::Seams;
 use lakelands_api::{Access, LakeStore, ReadAt, TypeName};
 use serde_json::json;
@@ -18,7 +21,7 @@ use crate::conformance::fixture::{
     Lake, Must, declare, describe_type, doors, field, field_access, get_at, invalid_case,
     invalid_like, owner, type_decl, write_verb,
 };
-use crate::conformance::{Failure, Held, Reopen, Store, backing};
+use crate::conformance::{Failure, Given, Held, Reopen, Store, backing};
 
 check!(
     HOST_TYPES_AT_OPEN = a_host_type_is_declared_when_a_writer_opens_the_lake,
@@ -42,6 +45,19 @@ check!(
     TOOL_NAME_REFUSES_OPEN =
         a_vocabulary_whose_tools_would_bear_anothers_names_refuses_the_writers_open,
     "027, extended (lakelands#893), and seams, SystemVocabulary: no door leaves a lake with a problem among its tools' names, a writer's open among them: a host vocabulary with a type whose tools would bear the names of a declared type's, with one whose tool a verb is named as, and with two of its own that would share their tools' names, is refused at the writer's open as `tool_names`, naming both sides; nothing is appended and the lake holds no type of that vocabulary; it then takes a plain type from its owner and from one kept from the declared type, its tools are generated, and it opens with the same vocabulary once the type is withheld from it",
+    reopens
+);
+
+check!(
+    HOST_TYPE_GAINS_A_FIELD = a_host_type_that_gains_a_field_is_declared_again_at_a_writers_open,
+    "003, extended (lakelands#1293), and seams, SystemVocabulary: a lake that holds a host's type without an optional field the host's vocabulary has since added between two it holds, its description changed beside it, is refused to a reader as `vocabulary_upgrade_owed`, naming the lake and the type; a writer's open declares the type again with the field, in its version after the one held: the record written before reads the same, a write of the new field is applied, a reader then opens the lake, and the next writer's open declares nothing again; a vocabulary that only reorders the type's fields and annotates it is read by a reader as held and declared again by a writer's open, and one whose annotation key no door takes is refused at the writer's open as a door refuses it",
+    given
+);
+
+check!(
+    HOST_TYPE_RESHAPED_REFUSES_OPEN =
+        a_vocabulary_that_reshapes_a_held_type_refuses_the_writers_open,
+    "003, extended (lakelands#1293), and seams, SystemVocabulary: a host vocabulary that removes a field of a type the lake holds, retypes one, adds a required one, changes its key, or adds a constraint to it, alone or beside an optional field added, is refused at the writer's open as invalid, `vocabulary_changed`, naming the type and the change; nothing is appended, and the lake holds the type and its record as before",
     reopens
 );
 
@@ -123,6 +139,273 @@ async fn a_host_type_is_declared_when_a_writer_opens_the_lake(
         "the vocabulary still withholds `sys.host_hidden`; the lake holds it after the \
          second open"
     );
+    Ok(())
+}
+
+/// The seams of a host whose vocabulary is `types`.
+fn hosting(types: Vec<lakelands_api::ontology::TypeDecl>) -> Seams {
+    Seams {
+        backings: backing::backings(),
+        vocabulary: Some(backing::vocabulary(types, &[])),
+        ..Seams::default()
+    }
+}
+
+async fn a_host_type_that_gains_a_field_is_declared_again_at_a_writers_open(
+    store: Store,
+    given: Given,
+) -> Held {
+    use lakelands_api::engine::OpenMode;
+    use lakelands_api::error::Situation;
+    const NOTE: &str = "sys.host_note";
+    let text = || field("text", StorageKind::Text);
+    let tone = || field("tone", StorageKind::Text);
+    let size = || field("size", StorageKind::Text);
+    let before = hosting(vec![type_decl(NOTE, vec![text(), size()])]);
+    let worded = Some("A note the host keeps.".to_string());
+    let after = TypeDecl {
+        description: worded,
+        ..type_decl(NOTE, vec![text(), tone(), size()])
+    };
+    let after = hosting(vec![after]);
+    let store = (given.reopen)(store, before)
+        .await
+        .map_err(|e| reopened("of `sys.host_note`", e))?;
+    let l = Lake::of(store.as_ref());
+    l.upsert(NOTE, "n", json!({"text": "kept"})).await?;
+    let held = l.describe_type(NOTE).await?.lifecycle.version;
+    let lake = store.lake().clone();
+    let none = || -> crate::conformance::Lines { Box::new(|_, _| (Vec::new(), 0)) };
+    let read = (given.continued)(
+        Some(store),
+        lake.clone(),
+        none(),
+        OpenMode::Read,
+        after.clone(),
+    );
+    let read = read
+        .await
+        .map_err(|e| Failure::new(format!("opening the lake read-only: {e}")))?;
+    let refused = read.opened.err();
+    ensure!(
+        matches!(refused.as_ref().and_then(|e| e.situation()),
+            Some(Situation::VocabularyUpgradeOwed { lake: l, ty })
+            if *l == lake.to_string() && ty.as_str() == NOTE),
+        "a reader whose vocabulary adds `tone` to `{NOTE}`, which the lake holds without it, is \
+         refused as `vocabulary_upgrade_owed`, naming the lake and the type; it answered \
+         {refused:?}"
+    );
+    let write = (given.continued)(None, lake.clone(), none(), OpenMode::Write, after.clone());
+    let write = write
+        .await
+        .map_err(|e| Failure::new(format!("opening the lake for writing: {e}")))?;
+    let store = write
+        .opened
+        .map_err(|e| reopened("that adds `tone` to `sys.host_note`", e))?;
+    let l = Lake::of(store.as_ref());
+    let told = l.describe_type(NOTE).await?;
+    let fields: Vec<_> = told.fields.iter().map(|f| f.name.as_str()).collect();
+    ensure!(
+        fields.contains(&"tone") && told.lifecycle.version == held + 1,
+        "a writer's open whose vocabulary adds `tone` to `{NOTE}` declares it again, in the \
+         version after {held}; it is described with {fields:?}, at version {}",
+        told.lifecycle.version
+    );
+    let kept = l.read(NOTE, "n").await?;
+    ensure!(
+        kept.fields.get("text") == Some(&json!("kept")) && !kept.fields.contains_key("tone"),
+        "`{NOTE}` `n`, written before the field was added, reads the same; it reads {kept:?}"
+    );
+    l.upsert(NOTE, "n", json!({"tone": "dry"})).await?;
+    let toned = l.read(NOTE, "n").await?;
+    ensure!(
+        toned.fields.get("tone") == Some(&json!("dry"))
+            && toned.fields.get("text") == Some(&json!("kept")),
+        "a write of the new field `tone` is applied; `n` reads {toned:?}"
+    );
+    let head = store.head().await.must("reading the head")?;
+    let read = (given.continued)(
+        Some(store),
+        lake.clone(),
+        none(),
+        OpenMode::Read,
+        after.clone(),
+    );
+    let read = read
+        .await
+        .map_err(|e| Failure::new(format!("opening the lake read-only: {e}")))?;
+    read.opened
+        .map_err(|e| Failure::new(format!("a reader's open after the upgrade: {e}")))?;
+    let write = (given.continued)(None, lake.clone(), none(), OpenMode::Write, after);
+    let write = write
+        .await
+        .map_err(|e| Failure::new(format!("opening the lake for writing: {e}")))?;
+    let store = write
+        .opened
+        .map_err(|e| reopened("once more with `tone`", e))?;
+    let again = store.head().await.must("reading the head")?;
+    ensure!(
+        again == head.next(),
+        "a type the lake holds as the vocabulary declares it is not declared again: the head \
+         was {head}, and after the next writer's open, which takes the lease (one event), it \
+         is {again}"
+    );
+    let marked = |key: &str| TypeDecl {
+        annotations: [(key.to_string(), json!("note"))].into(),
+        ..type_decl(NOTE, vec![size(), text(), tone()])
+    };
+    let read = (given.continued)(
+        Some(store),
+        lake.clone(),
+        none(),
+        OpenMode::Read,
+        hosting(vec![marked("acme.icon")]),
+    );
+    let read = read
+        .await
+        .map_err(|e| Failure::new(format!("opening the lake read-only: {e}")))?;
+    read.opened.map_err(|e| {
+        Failure::new(format!(
+            "a reader whose vocabulary reorders `{NOTE}`'s fields and annotates it reads it as \
+             held; it was refused: {e}"
+        ))
+    })?;
+    let opened =
+        |vocabulary| (given.continued)(None, lake.clone(), none(), OpenMode::Write, vocabulary);
+    let wrong = opened(hosting(vec![marked("icon")])).await;
+    let wrong = wrong
+        .map_err(|e| Failure::new(format!("opening the lake for writing: {e}")))?
+        .opened
+        .err();
+    ensure!(
+        matches!(
+            wrong.as_ref().and_then(invalid_case),
+            Some(Case::AnnotationKeyForm)
+        ),
+        "a writer's open whose vocabulary annotates `{NOTE}` with a key no door takes, `icon`, \
+         is refused as a door refuses it, `annotation_key_form`; it answered {wrong:?}"
+    );
+    let write = opened(hosting(vec![marked("acme.icon")]))
+        .await
+        .map_err(|e| Failure::new(format!("opening the lake for writing: {e}")))?;
+    let store = write
+        .opened
+        .map_err(|e| reopened("that reorders and annotates `sys.host_note`", e))?;
+    let told = Lake::of(store.as_ref()).describe_type(NOTE).await?;
+    ensure!(
+        told.annotations.get("acme.icon") == Some(&json!("note"))
+            && told.lifecycle.version == held + 2,
+        "a writer's open whose vocabulary only reorders `{NOTE}`'s fields and annotates it \
+         declares it again, not refused, in the version after {}; it is described at version \
+         {} with {:?}",
+        held + 1,
+        told.lifecycle.version,
+        told.annotations
+    );
+    Ok(())
+}
+
+async fn a_vocabulary_that_reshapes_a_held_type_refuses_the_writers_open(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    use lakelands_api::error::Revision;
+    const NOTE: &str = "sys.host_note";
+    let text = |kind| field("text", kind);
+    let tone = || field("tone", StorageKind::Text);
+    let held = hosting(vec![type_decl(NOTE, vec![text(StorageKind::Text), tone()])]);
+    let mut store = reopen(store, held.clone())
+        .await
+        .map_err(|e| reopened("of `sys.host_note`", e))?;
+    Lake::of(store.as_ref())
+        .upsert(NOTE, "n", json!({"text": "kept", "tone": "dry"}))
+        .await?;
+    let note = |fields| type_decl(NOTE, fields);
+    let mood = |required| FieldDecl {
+        required,
+        ..field("mood", StorageKind::Text)
+    };
+    let plain = || ConstraintDecl {
+        name: "plain".into(),
+        holds: "text = 'other'".into(),
+        description: None,
+        at_ingest: Default::default(),
+    };
+    let constrained = |fields| TypeDecl {
+        constraints: vec![plain()],
+        ..note(fields)
+    };
+    let keyed = TypeDecl {
+        key: vec!["text".into()],
+        ..note(vec![text(StorageKind::Text), tone()])
+    };
+    let removes: fn(&Revision) -> bool =
+        |r| matches!(r, Revision::FieldRemoved { field, .. } if field == "text");
+    let retypes: fn(&Revision) -> bool =
+        |r| matches!(r, Revision::FieldRetyped { field, .. } if field == "text");
+    let requires: fn(&Revision) -> bool =
+        |r| matches!(r, Revision::FieldAdded { field, required: true, .. } if field == "mood");
+    let rekeys: fn(&Revision) -> bool = |r| matches!(r, Revision::KeyChanged { .. });
+    let constrains: fn(&Revision) -> bool =
+        |r| matches!(r, Revision::Otherwise { part } if part == "`constraints`");
+    for (changed, decl, reason, names) in [
+        (
+            "removes `text`",
+            note(vec![tone()]),
+            "field_removed",
+            removes,
+        ),
+        (
+            "retypes `text`",
+            note(vec![text(StorageKind::Boolean), tone()]),
+            "field_retyped",
+            retypes,
+        ),
+        (
+            "adds a required `mood`",
+            note(vec![text(StorageKind::Text), tone(), mood(true)]),
+            "field_added",
+            requires,
+        ),
+        ("keys by `text`", keyed, "key_changed", rekeys),
+        (
+            "adds a constraint beside an optional `mood`",
+            constrained(vec![text(StorageKind::Text), tone(), mood(false)]),
+            "otherwise",
+            constrains,
+        ),
+        (
+            "adds a constraint",
+            constrained(vec![text(StorageKind::Text), tone()]),
+            "otherwise",
+            constrains,
+        ),
+    ] {
+        let before = store.head().await.must("reading the head")?;
+        let answer = reopen(store.clone(), hosting(vec![decl])).await;
+        let told = answer.as_ref().err().map(|e| format!("{e:?}"));
+        ensure!(
+            matches!(answer.as_ref().err().and_then(invalid_case),
+                Some(Case::VocabularyChanged { ty, reasons })
+                if ty.as_str() == NOTE && matches!(reasons.as_slice(), [r] if names(r))),
+            "a vocabulary that changes `{NOTE}`, which the lake holds, as it {changed} is \
+             refused at the writer's open as `vocabulary_changed`, naming the type and `{reason}`; it \
+             answered {told:?}"
+        );
+        store = reopen(store.clone(), held.clone())
+            .await
+            .map_err(|e| reopened("as the lake holds it", e))?;
+        let after = store.head().await.must("reading the head")?;
+        let kept = Lake::of(store.as_ref()).read(NOTE, "n").await?;
+        ensure!(
+            after == before.next()
+                && kept.fields.get("text") == Some(&json!("kept"))
+                && kept.fields.get("tone") == Some(&json!("dry")),
+            "a refused open appends nothing and leaves the type as it was: the head was \
+             {before} before it and is {after} after the next open, which takes the lease (one \
+             event), and `n` reads {kept:?}"
+        );
+    }
     Ok(())
 }
 

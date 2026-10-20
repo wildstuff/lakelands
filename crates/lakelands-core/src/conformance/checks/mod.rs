@@ -818,6 +818,8 @@ pub const ALL: &[Check] = &[
     vocabulary::TOOL_NAME_REFUSES_OPEN,
     vocabulary::HOST_VIEW_KEY,
     vocabulary::HOST_EXTERNAL_VERB,
+    vocabulary::HOST_TYPE_GAINS_A_FIELD,
+    vocabulary::HOST_TYPE_RESHAPED_REFUSES_OPEN,
     backings::FAILURE_RETRIED,
     embeddings::EMBED_SEARCH_OTHER_BACKEND,
     embeddings::EMBED_SEARCH_JUDGED_FIRST,

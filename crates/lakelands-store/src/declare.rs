@@ -1014,6 +1014,186 @@ pub fn check_vocabulary_type(t: &TypeDecl) -> Result<()> {
     Err(invalid(Case::VocabularyReserved { ty, link }))
 }
 
+/// How the lake holds a type of the host's vocabulary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Held {
+    /// Not at all, or as the vocabulary declares it.
+    Same,
+    /// Otherwise only in what no record and no door's check reads: its
+    /// descriptions, labels, annotations and the order of its fields. A
+    /// writer's open declares it again; a reader reads it as held.
+    Reworded,
+    /// Without optional fields the vocabulary has since added, and
+    /// otherwise only as `Reworded`. A writer's open declares it again,
+    /// and a reader is refused until then.
+    Older,
+}
+
+/// How the lake holds a host vocabulary's type: as the vocabulary declares
+/// it, reworded, or in an older form, one the vocabulary only adds optional
+/// fields to, which reshapes no record and asks nothing of the records
+/// held. A type the vocabulary changes in any other way, beside a field
+/// added or without one, is refused, naming the type and each difference:
+/// an open makes no migration and judges no change as a door does, so it
+/// applies none. Annotations changed are judged as a door judges them.
+pub(crate) fn vocabulary_held(o: &Ontology, t: &TypeDecl) -> Result<Held> {
+    use lakelands_api::error::Revision;
+    let Some(held) = o.types.get(&t.name) else {
+        return Ok(Held::Same);
+    };
+    let held = &held.decl;
+    let (mut bare, mut reasons, mut added) = (t.clone(), Vec::new(), false);
+    for r in shape::differences(held, t) {
+        let Revision::FieldAdded {
+            field,
+            relation,
+            required: false,
+        } = &r
+        else {
+            reasons.push(r);
+            continue;
+        };
+        added = true;
+        let fields = match relation {
+            None => &mut bare.fields,
+            Some(n) => match bare.relations.iter_mut().find(|x| &x.name == n) {
+                Some(x) => &mut x.fields,
+                None => continue,
+            },
+        };
+        fields.retain(|f| &f.name != field);
+    }
+    let parts = otherwise(held, &bare, &reasons);
+    reasons.extend(parts.into_iter().map(|part| Revision::Otherwise { part }));
+    if !reasons.is_empty() {
+        let ty = t.name.clone();
+        return Err(invalid(Case::VocabularyChanged { ty, reasons }));
+    }
+    if annotations(held) != annotations(t)
+        && let Some(fault) = Declaration::Type(t.clone()).annotation_fault()
+    {
+        return Err(fault.into());
+    }
+    Ok(match (added, held == t) {
+        (true, _) => Held::Older,
+        (false, true) => Held::Same,
+        (false, false) => Held::Reworded,
+    })
+}
+
+/// What `t`, a host's type with the optional fields it adds taken out,
+/// declares otherwise than the lake holds it as `held`, beyond the shape
+/// `shaped` already names and beyond what `worded` takes out; the order of
+/// the fields is not compared, as no record and no check reads it.
+fn otherwise(
+    held: &TypeDecl,
+    t: &TypeDecl,
+    shaped: &[lakelands_api::error::Revision],
+) -> Vec<String> {
+    use lakelands_api::error::Revision;
+    let (a, b) = (worded(held), worded(t));
+    let fields = |a: &[FieldDecl], b: &[FieldDecl], of: &str| {
+        let mut parts = Vec::new();
+        for f in a {
+            let Some(g) = b.iter().find(|g| g.name == f.name) else {
+                continue;
+            };
+            let (ty, required) = (f.ty.clone(), f.required);
+            if *f
+                != (FieldDecl {
+                    ty,
+                    required,
+                    ..g.clone()
+                })
+            {
+                parts.push(format!("field `{}`{of}", f.name));
+            }
+        }
+        parts
+    };
+    let mut parts = fields(&a.fields, &b.fields, "");
+    for r in &a.relations {
+        let Some(s) = b.relations.iter().find(|s| s.name == r.name) else {
+            continue;
+        };
+        parts.extend(fields(
+            &r.fields,
+            &s.fields,
+            &format!(" of relation `{}`", r.name),
+        ));
+        let (target, cardinality, fields) = (r.target.clone(), r.cardinality, r.fields.clone());
+        if *r
+            != (RelationDecl {
+                target,
+                cardinality,
+                fields,
+                ..s.clone()
+            })
+        {
+            parts.push(format!("relation `{}`", r.name));
+        }
+    }
+    let keyed = shaped
+        .iter()
+        .any(|r| matches!(r, Revision::KeyChanged { .. }));
+    let viewed = shaped.iter().any(|r| {
+        let view = [
+            Revision::ViewChanged,
+            Revision::BecameView,
+            Revision::StoppedBeingView,
+        ];
+        view.contains(r)
+    });
+    for (part, differs) in [
+        ("`key`", !keyed && a.key != b.key),
+        ("`view`", !viewed && a.view != b.view),
+        ("`valid_from`", a.valid_from != b.valid_from),
+        ("`valid_to`", a.valid_to != b.valid_to),
+        ("`language`", a.language != b.language),
+        ("`field_meta`", a.field_meta != b.field_meta),
+        ("`insert_only`", a.insert_only != b.insert_only),
+        ("`retired_by`", a.retired_by != b.retired_by),
+        ("`constraints`", a.constraints != b.constraints),
+    ] {
+        if differs {
+            parts.push(part.into());
+        }
+    }
+    parts
+}
+
+/// Every annotation map `t` holds: its own, its fields', its relations'
+/// and their fields'.
+fn annotations(t: &TypeDecl) -> Vec<&lakelands_api::ontology::Annotations> {
+    let mut all = vec![&t.annotations];
+    all.extend(t.fields.iter().map(|f| &f.annotations));
+    for r in &t.relations {
+        all.push(&r.annotations);
+        all.extend(r.fields.iter().map(|f| &f.annotations));
+    }
+    all
+}
+
+/// `t` without what people and the host read: its, its fields', its
+/// relations' and its constraints' descriptions, labels and annotations.
+fn worded(t: &TypeDecl) -> TypeDecl {
+    let mut t = t.clone();
+    (t.description, t.label) = (None, None);
+    t.annotations.clear();
+    let unword = |f: &mut FieldDecl| {
+        (f.description, f.label) = (None, None);
+        f.annotations.clear();
+    };
+    t.fields.iter_mut().for_each(unword);
+    for r in &mut t.relations {
+        r.description = None;
+        r.annotations.clear();
+        r.fields.iter_mut().for_each(unword);
+    }
+    t.constraints.iter_mut().for_each(|c| c.description = None);
+    t
+}
+
 /// Whether `ty` is a type of a host's vocabulary: a system type that is
 /// neither a link type nor one of the store's own four. No caller declares
 /// a system type, and the writer's open refuses those from a vocabulary,

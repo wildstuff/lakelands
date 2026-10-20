@@ -88,6 +88,23 @@ pub fn reshapes(reason: &Reason) -> bool {
 /// `Declare { changes: [] }`. When `before` is a view nothing is stored, so
 /// every change is declared, a view becoming a stored type included.
 pub fn classify(before: &TypeDecl, after: &TypeDecl) -> Change {
+    let all = differences(before, after);
+    // A view stores nothing, whatever it becomes: no change of it reshapes
+    // a stored record.
+    let stores_nothing = before.view.is_some();
+    let (reasons, changes): (Vec<Reason>, Vec<Reason>) = all
+        .into_iter()
+        .partition(|r| !stores_nothing && reshapes(r));
+    if reasons.is_empty() {
+        Change::Declare { changes }
+    } else {
+        Change::Migrate { reasons }
+    }
+}
+
+/// Every difference in shape between two declarations of one type, those
+/// that reshape and those that do not, fields first.
+pub fn differences(before: &TypeDecl, after: &TypeDecl) -> Vec<Reason> {
     let mut all = Vec::new();
     diff_fields(&before.fields, &after.fields, None, &mut all);
     if before.key_fields() != after.key_fields() {
@@ -111,18 +128,7 @@ pub fn classify(before: &TypeDecl, after: &TypeDecl) -> Change {
             }
         }
     }
-
-    // A view stores nothing, whatever it becomes: no change of it reshapes
-    // a stored record.
-    let stores_nothing = before.view.is_some();
-    let (reasons, changes): (Vec<Reason>, Vec<Reason>) = all
-        .into_iter()
-        .partition(|r| !stores_nothing && reshapes(r));
-    if reasons.is_empty() {
-        Change::Declare { changes }
-    } else {
-        Change::Migrate { reasons }
-    }
+    all
 }
 
 fn by_name(fields: &[FieldDecl]) -> BTreeMap<&FieldName, &FieldDecl> {

@@ -51,6 +51,44 @@ external verb: write access to its type (006). A `write` effect on such
 a type stays `reserved`: the host writes its own system type through
 `upsert`, under the grant it gives.
 
+### A host's type gains fields between its releases
+
+A host's next release may add optional fields to a type of its
+vocabulary, anywhere among the fields it holds. Where the lake holds
+the type without them, a writer's open declares it again in the host's
+form, in the append that takes the lease, as it does the store's own
+types: a field added reshapes no record, so the records written before
+read as they did, and a write may give the new field from then on. A
+reader is refused such a lake, naming the lake and the type, until a
+writer has opened it, as it is refused a lake in an older log format:
+what it would read is not what its vocabulary declares.
+
+A host may also reword a type: its descriptions and labels, its
+annotations and the order of its fields. None of these is read by a
+stored record, and none by a door's check beyond the one a door runs on
+annotations themselves: a key in a namespace and of a length a door
+takes, outside `sys.` and `lakelands.`, no `null`, integers a log
+writes, and their size. A writer's open declares a reworded type again,
+with an added field or alone, and refuses annotations that check would
+refuse, as a door does; a reader reads a reworded type as the lake
+holds it.
+
+Any other change to a type the lake holds is refused at the open,
+writer's or reader's, naming the type and each difference, before
+anything is appended, whether a field is added beside it or not: a
+field removed, retyped or renamed, a field added as required or made
+optional, any other member of a field or a relation changed, the key,
+a relation added or removed, a constraint, the type's language, its
+valid time, `insert_only`, `retired_by` or `field_meta`. The open
+compares the host's type with the one the lake holds whole, the added
+optional fields and the rewording taken out, and declares it again
+only where nothing else differs. Each other change reshapes stored
+records, or asks what a door would judge against them, a constraint
+the records held may break among them; the open makes no migration and
+judges no change as a door does, so it applies none of them, and none
+in part. Whether a host may declare a migration with its vocabulary is
+not decided here.
+
 ## Why
 
 A roster of reserved names has to be kept in step with every place that
@@ -63,6 +101,17 @@ declared.
 Keeping Lakelands' own reservation to the types its own readers are
 written for, and the link types it derives itself, keeps the store from
 carrying another product's vocabulary.
+
+An upgrade of a host must not leave its lakes behind. Without the
+second declaration a lake written by the host's earlier release keeps
+the older form of its type and refuses the new field, and the host
+migrates the lake by hand or starts a new one. A field added, wherever
+it stands, and a rewording are the changes the open can make alone,
+since nothing stored moves and no door's check asks anything of the
+records; refusing a rewording would strand a host for a word. Every
+other change would reshape what the lake holds, or ask what a door
+judges, and a lake opened with it would not answer as its vocabulary
+says. So the open refuses it whole rather than applying what it can.
 
 ## What it is not
 
@@ -89,3 +138,8 @@ carrying another product's vocabulary.
   host's vocabulary; before, every verb on a system type other than a
   link type was refused as `reserved`, and a host's open sequence that
   applied its external verbs failed (lakelands#966).
+- A type of the host's vocabulary that gains optional fields is
+  declared again at a writer's open, and a reader waits for it; any
+  other change to a held type is refused at the open. Before, the open
+  declared only the types the lake did not hold, so a field a host's
+  release added never reached its earlier lakes (lakelands#1293).

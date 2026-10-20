@@ -582,6 +582,18 @@
    "type": "t"
   },
   {
+   "code": "vocabulary_changed",
+   "reasons": [
+    {
+     "field": "f",
+     "reason": "field_added",
+     "relation": "r",
+     "required": true
+    }
+   ],
+   "type": "t"
+  },
+  {
    "code": "watches_via_links",
    "owner": "t",
    "relation": "r",
