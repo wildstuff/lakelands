@@ -85,10 +85,9 @@ setting for the lake, with the value the lake holds and its default, and
 each one the lake holds for a type, with the lake's value as its
 default. It tells no other reader any: a setting says how the lake is
 built, which is the business of whoever may change it. A holder of
-`schema` kept from a type or a field is told the settings as were the
-type or the field absent: nothing of a type it is not shown, and of one
-it is shown only the fields it reads, a setting left naming none not
-told at all. A host's own keys
+`schema` kept from a type is told the settings as were the type absent,
+and a setting that names the fields of a type it is shown is told whole
+or not at all, as its record is (below). A host's own keys
 it has not declared are not told there; a reader reads them through
 `sys.setting` under its grants, as any record.
 
@@ -97,24 +96,26 @@ it has not declared are not told there; a reader reads them through
 A lake setting for a type is a record of `sys.setting`, and its key
 names the type. So every door that reads that record tells it as
 `describe` tells the setting (lakelands#1198): to a reader kept from the
-type, the record is not there; to one kept from a field the value
-names, the value names only the fields it reads, and a record left
-naming none is not there. The fields a value names are the arrays of
-the index settings and the members of `search_weights` that name
-fields, `fields` and `text_fields` (lakelands#1230); a write keeps
-those its writer is not told, as it keeps an index's. The records are told so as the engine hands
-them to the read, before anything reads them, so it holds for `get`,
-`find` with its `where`, its order, its total and an aggregate, a
-query's pages, a read as of a position, and a proposal's write; and for
-`setting('<key>')` in every expression a read evaluates for its reader:
-a `where`, a field computed at the read, a view computed for it. A
-view whose computation names a setting, or reads `sys.setting` or such
-a view, is computed, never served kept, for a reader the settings are
-narrowed to, so it answers what its computation answers. A reader kept
-from `secret` reads `sys.setting` as in a lake where `secret` was never
-declared. A proposal's write is told as of where it was proposed: one
-that tells a reader nothing of a record it was not told then is not
-there to it, whatever became of the record since.
+type, the record is not there. A setting that names the type's fields
+is told whole or not at all (lakelands#1250): it is there only to a
+reader that reads the type whole, whose grants keep no field of the
+type back, by the type's default or by name, and that reads every field
+the type declares. To any other reader it is not there. The settings
+that name fields are the index settings and `search_weights`, whose
+`fields` and `text_fields` name them (lakelands#1230). The records are
+told so as the engine hands them to the read, before anything reads
+them, so it holds for `get`, `find` with its `where`, its order, its
+total and an aggregate, a query's pages, a read as of a position, and a
+proposal's write; and for `setting('<key>')` in every expression a read
+evaluates for its reader: a `where`, a field computed at the read, a
+view computed for it. A view whose computation names a setting, or reads
+`sys.setting` or such a view, is computed, never served kept, for a
+reader a setting may be withheld from, so it answers what its
+computation answers. A reader kept from `secret` reads `sys.setting` as
+in a lake where `secret` was never declared. A proposal's write is told
+as of where it was proposed: one that tells a reader nothing of a record
+it was not told then is not there to it, whatever became of the record
+since.
 
 A setting for a source names no type, and a source may feed any type:
 the lake keeps no list of what each one feeds. So `key_period.<source>`
@@ -126,9 +127,9 @@ period for the source. The lake's own `key_period` names no source and
 is told as any setting for the lake. Each source's period is a record of
 its own, so no other source's entry shares it. A writer from whom
 something is held may not write it, retire it or propose either: each
-is refused as not granted before the record is read, alike in a lake
-that holds it and in one that does not, since the version a write
-answers would tell that it exists.
+is refused as not granted before anything of the record is judged,
+alike in a lake that holds it and in one that does not, since the
+version a write answers would tell that it exists.
 
 A change notification of such a record compares what its reader is told
 of it before the change and after: a change to what it is not told
@@ -143,36 +144,51 @@ never told it. That departs from the twin, which would tell a
 condition that reads no setting narrowed to its reader; it tells less,
 never more.
 
-A write by that reader never drops what it is not told. A write of the
-setting keeps the entries of the stored value that name a field it is
-kept from, after the ones it writes, in their order: the owner's
-`["due", "salary"]`, written `["due", "x"]` by a writer kept from
-`salary`, holds `["due", "x", "salary"]`, and the writer reads
-`["due", "x"]`, as its twin would. A null it writes is no value, and
-is refused as a null over its twin is. Its retire clears only what it
-is told: the record keeps the rest, and is not there to it after. A write or a
-retire it proposes is proposed as that write, merged with what stands
-then: it is listed to it as it wrote it, and its accept is refused once
-the record changed, as a pinned proposal's is. Every setting proposal
-by a proposer who does not read every field is pinned so, whether or
-not anything was merged into it. Its write is judged as it wrote it,
-before its expected version is, so a type or field it is
-not shown is refused as one that is not declared, whatever version it
-expects. A record it is not told is none to its write: its expected
-version is judged as at a key never set, and a write that leaves its
-value is refused as a write without a value is. What a write answers
-is the record's own: its version counts every write of the key, the
-ones the writer is not told too. So the version, and the refusal of
-an accept pinned to it, tell such a writer that the record changed;
-and every reader's version of the record, as `get` and `find` answer
-it, its value's provenance (`known_at`, `position`, `writer`), and the
-`latest` order and the orders by those move with a change to entries
-it is not told. They tell that the record changed, when and by whom,
-never what: one record per setting and type would end that, a change
-of the log's form (lakelands#1250). An empty list it writes over
-entries it is not told departs from the twin, which tells `[]`: the entries
-stay, so the record names only fields the writer is kept from and is
-not there to it, and a proposal of it is listed to it as a retire.
+A reader not told such a setting may not write it, retire it or propose
+either: each is refused as not granted, naming no field, whatever value
+and version it gives, before anything of the record is judged. The rule
+is judged from its grants and the type, never from the record, so a lake
+that holds the setting and its twin without the field, or without the
+setting, answer it alike. Telling it a part of the record could not be
+made alike: the record's version, its value's provenance (`known_at`,
+`position`, `writer`) and the `latest` order move with every write of
+the key, the parts it is not told too, and a write it made over them
+would answer a version its twin does not. Keeping the record whole from
+it tells it nothing a twin would not; such a setting is the lake's
+tuning of a type its writer does not read whole, so it is asked of one
+that does. The record stays one per setting and type, and the log keeps
+its form.
+
+What the lake does with such a setting is not its record. `describe`
+names in the type's lifecycle the fields an index setting sorts or
+indexes only to a reader told the setting, and to any other as were it
+absent. A search ranks by `search_weights` whoever reads, and names the
+weight of each axis its reader is shown, as
+`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`
+says of a restricted setting: the weight of a field the reader is shown,
+never the record's version, its provenance or a field kept from it.
+
+A proposal of such a setting made before this rule, by a proposer that
+does not read the type whole, is no longer listed to that proposer, and
+accepting it is refused as not granted, since an accept judges it as its
+proposer; a reviewer it is listed to may reject it, and one that reads
+the type whole may propose it again.
+
+A host that grants by allow-list loses these settings too. A principal
+whose grants give a type the default `none`, by its grant for the type
+or by their own default, and then name every field it may read, does
+not read the type whole, however many fields it names: what decides is
+whether anything is kept back, and a default of `none` keeps back every
+field the type may come to declare. A grant that keeps back by name a
+field the type no longer declares does not either, since a field may be
+declared again under that name. Such a principal is told nothing of the
+type's settings that name fields, and its writes, retires and proposals
+of them are refused as not granted. Its host gives it a reading default
+for the type and names no field it may not read.
+
+A write of a type's setting by a writer it is told to is judged as it
+wrote it, before its expected version is, so a type it is not shown is
+refused as one that is not declared, whatever version it expects.
 
 What the store computes at a write, a derived field stored and a view
 kept, reads every setting, as the lake does; a record's grants show it.

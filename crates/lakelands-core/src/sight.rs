@@ -176,8 +176,8 @@ impl<'o> Sight<'o> {
         !self.withheld(r) && self.admit(ty).holds(&r.fields)
     }
 
-    /// Whether its principal may be told some records of `ty` narrowed or
-    /// not at all, as [`Self::setting`] tells them: `ty` is `sys.setting`
+    /// Whether its principal may not be told some records of `ty`, as
+    /// [`Self::setting`] tells them: `ty` is `sys.setting`
     /// and something is held from the principal.
     pub fn narrows(&self, ty: &TypeName) -> bool {
         ty.as_str() == lakelands_api::seam::SETTING_TYPE && !self.holds_all()
@@ -190,8 +190,8 @@ impl<'o> Sight<'o> {
     }
 
     /// The value of the setting `key` as its principal is told it: one of
-    /// a type it is not shown is not told, and one that names fields only
-    /// those it reads, none left being not told
+    /// a type it is not shown is not told, and one that names fields is
+    /// told whole or not at all, as [`Self::setting_told`] says
     /// (`docs/decisions/063-every-setting-is-in-one-list.md`). One for a
     /// source is told only where nothing is held from it, since a source
     /// may feed any type and the lake keeps no list of what it feeds
@@ -201,8 +201,7 @@ impl<'o> Sight<'o> {
             return None;
         }
         let shown = |ty: &str| self.ty(&ty.into()).is_ok();
-        let reads = |ty: &str, f: &str| self.reads(&ty.into(), &f.into());
-        lakelands_api::settings::narrowed(key, value, &shown, &reads)
+        lakelands_api::settings::narrowed(key, value, &shown, &|_, _| true)
     }
 
     /// `r` as its principal is told it: a record of `sys.setting` with its
@@ -239,14 +238,35 @@ impl<'o> Sight<'o> {
         Cow::Owned(told.collect())
     }
 
-    /// Whether its principal is told the setting `key` at all by its
-    /// layer: any but one for a source, and that one where nothing is held
-    /// from it ([`Self::setting`]).
+    /// Whether its principal is told the setting `key` at all, before its
+    /// value is read: one for a source where nothing is held from it
+    /// ([`Self::setting`]); one naming fields of a type it is shown where
+    /// it reads that type whole ([`Self::reads_whole`]), so its version
+    /// counts no entry it is not told; any other.
     pub fn setting_told(&self, key: &str) -> bool {
         use lakelands_api::settings::{PerType, lake_setting};
-        let source =
-            lake_setting(key).is_some_and(|(s, on)| on.is_some() && s.per_type == PerType::Source);
-        !source || self.holds_all()
+        match lake_setting(key) {
+            Some((s, Some(_))) if s.per_type == PerType::Source => self.holds_all(),
+            Some((_, Some(ty))) if names_fields(key) => {
+                let ty = TypeName::from(ty);
+                self.ty(&ty).is_err() || self.reads_whole(&ty)
+            }
+            _ => true,
+        }
+    }
+
+    /// Whether its principal reads `ty` whole: its grants keep no field of
+    /// the type back, by the type's default or by name, whatever the type
+    /// declares, and it reads every field the type declares.
+    fn reads_whole(&self, ty: &TypeName) -> bool {
+        let grants = self.who.grants.types.get(ty);
+        let default = grants
+            .and_then(|t| t.default)
+            .unwrap_or(self.who.grants.default);
+        let named = grants.is_none_or(|t| t.fields.values().all(|a| a.reads()));
+        let declared = self.force.ty(ty).map(|t| &t.fields);
+        let fields = declared.into_iter().flatten();
+        default.reads() && named && fields.into_iter().all(|f| self.reads(ty, &f.name))
     }
 
     /// Whether a link of `decl` is judged by its ends for its principal:
@@ -332,6 +352,21 @@ impl<'o> Sight<'o> {
                 _ => false,
             }
     }
+}
+
+/// Whether the setting `key` names fields of its type in its value: the
+/// index settings and `search_weights` (063).
+fn names_fields(key: &str) -> bool {
+    use lakelands_api::seam::{
+        LOOKUP_INDEX_SETTING, SEARCH_WEIGHTS_SETTING, SORT_INDEX_SETTING, VECTOR_INDEX_SETTING,
+    };
+    let naming = [
+        SORT_INDEX_SETTING,
+        VECTOR_INDEX_SETTING,
+        LOOKUP_INDEX_SETTING,
+        SEARCH_WEIGHTS_SETTING,
+    ];
+    naming.iter().any(|p| key.starts_with(p))
 }
 
 #[cfg(test)]

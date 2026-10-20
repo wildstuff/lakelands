@@ -393,9 +393,9 @@ pub(crate) fn refused(reason: Refusal) -> Error {
 }
 
 /// Refuse a write or retire of a setting its writer is not told whether it
-/// exists, a source's (063), before anything of it is read: the same in a
-/// lake that holds it and in one that does not, a proposal's and an
-/// ingest's too.
+/// exists, a source's or one naming fields of a type it does not read
+/// whole (063), before anything of it is judged: the same in a lake that
+/// holds it and in one that does not, a proposal's and an ingest's too.
 pub(crate) fn untold_setting(sees: &Sight<'_>, decl: &TypeDecl, key: &RecordKey) -> Result<()> {
     granted(decl.name.as_str() != SETTING_TYPE || sees.setting_told(key.as_str()))
 }
@@ -877,15 +877,6 @@ fn at_head<R>(view: &dyn ProjectionView, max: u32, f: impl FnOnce(Heads<'_>) -> 
         link: &link,
         max,
     })
-}
-
-/// Whether a field of a type is declared and kept from the principal of
-/// `sees`: what a write of a setting naming it keeps (063).
-fn hidden_from<'a>(sees: &'a Sight, o: &'a Ontology) -> impl Fn(&str, &str) -> bool + 'a {
-    move |ty, f| {
-        let declared = |t: &TypeDecl| t.fields.iter().any(|d| d.name.as_str() == f);
-        o.ty(&ty.into()).is_ok_and(declared) && !sees.reads(&ty.into(), &f.into())
-    }
 }
 
 /// The preflight of `m` over the stored records of `decl`'s type, retired
@@ -2605,19 +2596,6 @@ impl Decide<'_> {
         }
         untold_setting(&Sight::held(self.who, &self.w.ontology), decl, key)?;
         let before = self.reached(decl, key, expected)?;
-        // A setting naming what its writer is not told keeps that: the rest
-        // of it is cleared, and the setting is not told to it after (063).
-        let sees = Sight::held(self.who, &self.w.ontology);
-        let stored = before.fields.get("value").filter(|_| sees.narrows(ty));
-        let hidden = hidden_from(&sees, &self.w.ontology);
-        let kept =
-            stored.map(|v| lakelands_api::settings::kept(key.as_str(), v, Value::Null, &hidden));
-        if kept.is_some_and(|k| !k.is_null()) {
-            let patch = Patch::from([("value".into(), Value::Null)]);
-            let (patch, t) = (self.checked(decl, key, &patch)?, self.target(decl, key)?);
-            let plan = self.write_as(decl, key, t, patch, expected, true)?;
-            return self.planned(plan);
-        }
         let own = self.draft(retirement(ty, key, before.version));
         let (drafts, after) = (self.retiring(&before, own)?, None);
         Ok(Plan { drafts, after })
@@ -2847,22 +2825,8 @@ impl Decide<'_> {
         decl: &TypeDecl,
         key: &RecordKey,
         t: Target,
-        patch: Patch,
-        expected: Option<Version>,
-    ) -> Result<RecordPlan> {
-        self.write_as(decl, key, t, patch, expected, false)
-    }
-
-    /// [`Self::write`], or, `clearing`, a retire's write of a setting that
-    /// keeps what its writer is not told: its null value clears the rest.
-    fn write_as(
-        &self,
-        decl: &TypeDecl,
-        key: &RecordKey,
-        t: Target,
         mut patch: Patch,
         expected: Option<Version>,
-        clearing: bool,
     ) -> Result<RecordPlan> {
         let (w, view, who) = (self.w, self.view, self.who);
         let sees = Sight::held(who, &w.ontology);
@@ -2887,26 +2851,14 @@ impl Decide<'_> {
             let before = live.map(|b| &b.fields);
             stamped(&w.ontology, decl, key, before, &told, &mut patch)?;
         }
-        // A setting keeps what its writer is not told of the value it
-        // replaces, after what it writes, and is judged as it was written,
-        // before its version is: one of a type it is not shown is answered
-        // as one never declared (063).
+        // A setting is judged as it was written, before its version is: one
+        // of a type it is not shown is answered as one never declared (063).
         let declared = |t: &TypeName| w.ontology.ty(t).ok();
         let shown = |t: &TypeName| sees.describe_type(t);
-        let (mut written, mut untold) = (None, false);
-        if sees.narrows(&decl.name) {
-            let value = patch.get("value").cloned();
-            lakelands_api::seam::check_setting(key.as_str(), value.as_ref(), &declared, &shown)?;
-            // A record it is not told is none to its write, its version too.
-            untold = live.is_some_and(|b| sees.told(b).is_none());
-            // A null it writes is no value: refused as a null over its twin is.
-            let merged = clearing || value.as_ref().is_none_or(|v| !v.is_null());
-            written = Some(value);
-            if let (Some(b), Some(v), true) = (live, patch.get_mut("value"), merged) {
-                let stored = b.fields.get("value").unwrap_or(&Value::Null);
-                let hidden = hidden_from(&sees, &w.ontology);
-                *v = lakelands_api::settings::kept(key.as_str(), stored, v.take(), &hidden);
-            }
+        let judged_early = sees.narrows(&decl.name);
+        if judged_early {
+            let value = patch.get("value");
+            lakelands_api::seam::check_setting(key.as_str(), value, &declared, &shown)?;
         }
         check_key_agrees(decl, key, live, &patch)?;
         // An authored write of a link has both ends live and answered
@@ -2924,17 +2876,7 @@ impl Decide<'_> {
             let (pending, o) = (&self.pending, &w.ontology);
             check_references(view, pending, o, &decl.name, key, judged, who)?;
         }
-        cas(expected, t.own().filter(|_| !untold))?;
-        // One that leaves the value of a record it is not told is refused
-        // as a write without a value is.
-        if untold && written.as_ref().is_some_and(Option::is_none) {
-            let (ty, field) = (decl.name.clone(), FieldName::from("value"));
-            let case = Case::Required {
-                ty,
-                field: field.clone(),
-            };
-            return Err(constraint(Some(field), case));
-        }
+        cas(expected, t.own())?;
         let sent: Vec<FieldName> = patch.keys().cloned().collect();
         let version = Version(t.before.as_ref().map_or(0, |b| b.version.0) + 1);
         // Said once, here, of what this writer holds, its own drafts too.
@@ -2965,7 +2907,7 @@ impl Decide<'_> {
                 .map_err(|(field, said)| invalid_field(&field, *said))?;
             crate::aging::check_authority(who, &w.ontology, &rule)?;
         }
-        if after.ty.as_str() == SETTING_TYPE && written.is_none() {
+        if after.ty.as_str() == SETTING_TYPE && !judged_early {
             let value = after.fields.get("value");
             lakelands_api::seam::check_setting(after.key.as_str(), value, &declared, &shown)?;
         }
@@ -3579,16 +3521,10 @@ impl Call<'_> {
         // A holder of `only` changes no shape, and proposes no write that
         // anything but the write itself could move off its pairs (051).
         granted(!write.is_schema() || !rights::holds_only(self.who))?;
-        // A setting its proposer may be told narrowed, as one who does not
-        // read every field may, is proposed merged with what stands then,
-        // so its accept is refused once that changed (063). A source's
-        // setting is refused whole to one not told it, so nothing is merged
-        // into it.
         let pin = |ty: &TypeName| {
             ordinary_door(ty)?;
             let sees = Sight::held(self.who, &w.ontology);
-            let narrowed = sees.narrows(ty) && !rights::reads_all(self.who);
-            Ok::<_, Error>(self.pin(&w, sees.ty(ty)?, None)? || narrowed)
+            self.pin(&w, sees.ty(ty)?, None)
         };
         let mut d = self.decide(&w, view.as_ref(), now, 1);
         let mut pinned = false;
@@ -3606,7 +3542,6 @@ impl Call<'_> {
         };
         // A re-key's sections of the other types, for the outcome (062).
         let mut others = Vec::new();
-        let mut instead = None;
         // A bundle wholly in force, answered as `apply` answers it.
         let mut in_force = None;
         match &mut write {
@@ -3633,20 +3568,7 @@ impl Call<'_> {
             }
             ProposedWrite::Retire { ty, key, opts } => {
                 pinned = pin(ty)?;
-                let mut plan = d.plan(Op::Retire(ty, key), opts.expected_version)?;
-                // A retire of a setting that keeps what its proposer is not
-                // told is proposed as the write it is, its group stamped at
-                // the accept (063).
-                if let EventBody::RecordUpserted { mut patch, .. } = plan.drafts.remove(0).body {
-                    patch.remove("group");
-                    let (ty, key, opts) = (ty.clone(), key.clone(), opts.clone());
-                    instead = Some(ProposedWrite::Upsert {
-                        ty,
-                        key,
-                        patch,
-                        opts,
-                    });
-                }
+                d.plan(Op::Retire(ty, key), opts.expected_version)?;
             }
             ProposedWrite::Call {
                 verb,
@@ -3744,7 +3666,6 @@ impl Call<'_> {
             }
             return Ok(outcome);
         }
-        let write = instead.unwrap_or(write);
         let d = self.proposal(&w, now, (write, why, pinned), &key_opt);
         drop(view);
         let events = self.lake.append(&mut w, vec![d])?;

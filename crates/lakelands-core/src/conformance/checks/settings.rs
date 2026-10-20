@@ -12,7 +12,7 @@ use serde_json::json;
 use crate::conformance::fixture::{
     Lake, Must, all_found, derived, field, find_where, principal, read_at, restrict, type_decl,
 };
-use crate::conformance::{Failure, Held, Reopen, Store};
+use crate::conformance::{Failure, Given, Held, Reopen, Store};
 
 check!(
     SETTING_AS_OF = a_setting_is_read_as_it_stood_at_the_position_read,
@@ -226,7 +226,7 @@ async fn a_view_kept_setting_holds_true_or_false(store: Store) -> Held {
 
 check!(
     SETTINGS_TOLD = describe_tells_the_lake_s_settings_to_a_holder_of_schema,
-    "063 (lakelands#1172): `describe` tells a holder of `schema` each listed lake setting for the lake, with what the lake holds and its default, and each one the lake holds for a type, with the lake's value as its default, and none of a host's own keys; it tells no other reader any; to a holder of `schema` kept from a type or a field, a setting is told as were the type or the field absent: nothing of the type, and of a type it is shown only the fields it reads, as of the type's twin without the field; a key under a listed setting's prefix that names none of them is refused, naming the key and the prefix, appending nothing"
+    "063 (lakelands#1172): `describe` tells a holder of `schema` each listed lake setting for the lake, with what the lake holds and its default, and each one the lake holds for a type, with the lake's value as its default, and none of a host's own keys; it tells no other reader any; to a holder of `schema` kept from a type, a setting is told as were the type absent, and one naming the fields of a type it is shown is told whole to one that reads the type whole, else not at all; a key under a listed setting's prefix that names none of them is refused, naming the key and the prefix, appending nothing"
 );
 
 async fn describe_tells_the_lake_s_settings_to_a_holder_of_schema(store: Store) -> Held {
@@ -237,7 +237,6 @@ async fn describe_tells_the_lake_s_settings_to_a_holder_of_schema(store: Store) 
     use serde_json::Value;
     let l = Lake::of(store.as_ref());
     let number = |n: &str| field(n, StorageKind::Number);
-    // `bare` is `row` without `m`: the twin of `row` to one kept from `m`.
     for (ty, fields) in [
         ("row", vec!["n", "m"]),
         ("bare", vec!["n"]),
@@ -279,8 +278,7 @@ async fn describe_tells_the_lake_s_settings_to_a_holder_of_schema(store: Store) 
          `schema` is told {theirs:?}, where nothing"
     );
     // A holder of `schema` kept from `secret` and from `row.m` is told
-    // `row` as the owner is told its twin `bare`, and nothing of `secret`,
-    // as were the type absent.
+    // nothing of either, and `bare` whole.
     let arch = holder(
         store.as_ref(),
         "arch",
@@ -289,19 +287,12 @@ async fn describe_tells_the_lake_s_settings_to_a_holder_of_schema(store: Store) 
     );
     let arch = l.cat.describe(&arch, Default::default()).await;
     let arch = told(arch.must("describing the lake to arch")?.data);
-    let twin = (owner.iter())
-        .find(|(k, ..)| k == "sort_index.bare")
-        .map(|(_, v, _)| v.clone());
     let mut as_absent = wide;
     as_absent.push(typed("bare", json!(["n"])));
-    as_absent.push(typed("row", json!(["n"])));
-    let row = (arch.iter())
-        .find(|(k, ..)| k == "sort_index.row")
-        .map(|(_, v, _)| v.clone());
     ensure!(
-        arch == as_absent && row == twin,
+        arch == as_absent,
         "a holder of `schema` kept from `secret` and `row.m` is told {arch:?}, where \
-         {as_absent:?}: `row` as its twin `bare` ({twin:?}), and nothing of `secret`"
+         {as_absent:?}: nothing of `row` or of `secret`"
     );
     let head = store.head().await.must("reading the head")?;
     let (ty, key) = (lakelands_api::seam::SETTING_TYPE, "sort_index");
@@ -329,17 +320,16 @@ async fn describe_tells_the_lake_s_settings_to_a_holder_of_schema(store: Store) 
 
 check!(
     SETTING_RECORDS_TOLD = a_setting_record_is_told_as_were_the_hidden_absent,
-    "063 (lakelands#1198): a record of `sys.setting` for a type is answered to a reader kept from the type, or from a field it names, as were the type or the field absent, at every read door: `find` with its total, `get`, `setting('…')` in a read's `where`, and a proposal's write; nothing of the type, and of a type it is shown only the fields it reads, none left being no record; a `where` over the records reads each value as told; a write by that reader keeps the fields it is not told after those it writes, and a null it writes is no value; its retire clears only what it is told, accepted from its proposal too, which is listed to it as a retire and refused at the accept once the record changed; a write without a value of a record it is not told is refused whatever version it expects; its write is judged as written before its version, so an expected version tells nothing of a type it is not shown"
+    "063 (lakelands#1198, lakelands#1250): a record of `sys.setting` for a type is answered to a reader kept from the type as were the type absent, and one that names the type's fields is told whole or not at all: to a reader kept from any field of the type it is no record, at every read door: `find` with its total, `get`, `setting('…')` in a read's `where`, and the proposals listed to it; that reader's write, retire or proposal of such a setting is refused as not granted, naming no field, whatever value or version it gives, before the record is read; a write of a type's setting by a writer not shown the type is judged as written before its version, so an expected version tells nothing of it"
 );
 
 async fn a_setting_record_is_told_as_were_the_hidden_absent(store: Store) -> Held {
-    use super::only::holder;
-    use crate::conformance::fixture::{get_at, upsert};
+    use super::only::{holder, not_found, not_granted};
+    use crate::conformance::fixture::{get_at, head_unmoved, patch};
     use lakelands_api::write::{ProposalFilter, ProposedWrite};
-    use lakelands_api::{Error, RecordKey, TypeName};
+    use lakelands_api::{RecordKey, TypeName, WriteOpts};
     let l = Lake::of(store.as_ref());
     let number = |n: &str| field(n, StorageKind::Number);
-    // `bare` is `row` without `m`: the twin of `row` to one kept from `m`.
     l.declare(type_decl(
         "row",
         vec![number("k"), number("n"), field("m", StorageKind::Text)],
@@ -364,310 +354,99 @@ async fn a_setting_record_is_told_as_were_the_hidden_absent(store: Store) -> Hel
         json!({"default": "write", "review": true, "types": {
             "secret": {"default": "none"}, "row": {"fields": {"m": "none"}}}}),
     );
-    let ty = "sys.setting";
-    let listed = |rows: Vec<lakelands_api::Record>| -> Vec<(String, Option<serde_json::Value>)> {
-        let value = |r: &lakelands_api::Record| r.fields.get("value").cloned();
-        rows.iter().map(|r| (r.key.0.clone(), value(r))).collect()
-    };
+    let ty = TypeName::from("sys.setting");
     let counted = Find {
         total: true,
         ..Find::default()
     };
-    let total = |who| {
-        let (cat, counted) = (l.cat.clone(), counted.clone());
-        async move {
-            let found = cat.find(who, &TypeName::from(ty), counted).await;
-            match found.must("finding the settings with their total")?.data {
-                lakelands_api::Found::Records { total, .. } => Ok::<_, Failure>(total),
-                _ => Ok(None),
-            }
+    let total = async |who| {
+        let found = l.cat.find(who, &ty, counted.clone()).await;
+        match found.must("finding the settings with their total")?.data {
+            lakelands_api::Found::Records { total, .. } => Ok::<_, Failure>(total),
+            _ => Ok(None),
         }
     };
-    // As were `secret` and `row.m` absent: `row` told as its twin `bare`.
-    let theirs = listed(all_found(l.cat.as_ref(), &arch, ty, Find::default()).await?);
-    let want = vec![
-        ("sort_index.bare".to_owned(), Some(json!(["n"]))),
-        ("sort_index.row".to_owned(), Some(json!(["n"]))),
-        ("threshold".to_owned(), Some(json!(1))),
-    ];
+    let theirs = all_found(l.cat.as_ref(), &arch, "sys.setting", Find::default()).await?;
+    let theirs: Vec<_> = theirs.into_iter().map(|r| r.key.0).collect();
     let counts = (total(&arch).await?, total(&l.own).await?);
     ensure!(
-        theirs == want && counts == (Some(3), Some(5)),
-        "a reader kept from `secret` and `row.m` finds the settings {theirs:?}, where {want:?}, \
-         and is counted {counts:?} of them beside the owner, where (Some(3), Some(5))"
+        theirs == ["sort_index.bare", "threshold"] && counts == (Some(2), Some(5)),
+        "a reader kept from `secret` and `row.m` finds the settings {theirs:?}, where \
+         `sort_index.bare` and `threshold`, and is counted {counts:?} of them beside the \
+         owner, where (Some(2), Some(5))"
     );
-    let get = |key: &str| get_at(key, None);
-    for key in ["sort_index.secret", "lookup_index.row"] {
-        let got = l.cat.get(&arch, &TypeName::from(ty), get(key)).await;
-        let never = l
-            .cat
-            .get(&arch, &TypeName::from(ty), get("sort_index.never"))
-            .await;
-        ensure!(
-            matches!(
-                (&got, &never),
-                (Err(Error::NotFound { .. }), Err(Error::NotFound { .. }))
-            ),
-            "`get` of `{key}` answers the reader kept from what it names {got:?}, where as \
-             for a key never set ({never:?})"
-        );
-    }
-    for (filter, owner, reader) in [
-        ("setting('sort_index.secret') is not null", 1, 0),
-        ("setting('lookup_index.row') is not null", 1, 0),
-        (
-            "setting('sort_index.row') = setting('sort_index.bare')",
-            0,
-            1,
-        ),
-    ] {
-        let by = find_where(filter);
+    let hidden = ["sort_index.secret", "lookup_index.row", "sort_index.row"];
+    for key in hidden {
+        let got = l.cat.get(&arch, &ty, get_at(key, None)).await;
+        not_found(&format!("`get` of `{key}` by the reader kept from it"), got)?;
+        let by = find_where(&format!("setting('{key}') is not null"));
         let got = (
             l.all_found("bare", by.clone()).await?.len(),
             all_found(l.cat.as_ref(), &arch, "bare", by).await?.len(),
         );
         ensure!(
-            got == (owner, reader),
-            "`where {filter}` over `bare` answers the owner and the reader kept from `secret` \
-             and `row.m` {got:?} records, where ({owner}, {reader})"
+            got == (1, 0),
+            "`where setting('{key}') is not null` over `bare` answers the owner and the reader \
+             kept from it {got:?} records, where (1, 0)"
         );
     }
-    // A `where` over the records reads each value as it is told.
-    let by = find_where("value = setting('sort_index.bare')");
-    let keys = |rows: Vec<lakelands_api::Record>| -> Vec<String> {
-        rows.into_iter().map(|r| r.key.0).collect()
+    let upsert = |key: &str, value: serde_json::Value| ProposedWrite::Upsert {
+        ty: ty.clone(),
+        key: RecordKey::from(key),
+        patch: patch(json!({"key": key, "value": value})),
+        opts: Default::default(),
     };
-    let got = (
-        keys(l.all_found(ty, by.clone()).await?),
-        keys(all_found(l.cat.as_ref(), &arch, ty, by).await?),
-    );
-    let want = (
-        vec!["sort_index.bare".to_owned()],
-        vec!["sort_index.bare".to_owned(), "sort_index.row".to_owned()],
-    );
-    ensure!(
-        got == want,
-        "`where value = setting('sort_index.bare')` over the settings finds the owner and the \
-         reader kept from `row.m` {got:?}, where {want:?}: each value as it is told"
-    );
-    // A proposal is told as its write would be: nothing of `secret`, and
-    // of `row` only what the reader reads, none left being nothing.
-    for (key, value) in [
-        ("sort_index.secret", json!([])),
-        ("lookup_index.row", json!(["m"])),
-        ("sort_index.row", json!(["k", "m"])),
-    ] {
-        let write = ProposedWrite::Upsert {
-            ty: TypeName::from(ty),
-            key: RecordKey::from(key),
-            patch: crate::conformance::fixture::patch(json!({"key": key, "value": value})),
-            opts: Default::default(),
-        };
-        l.cat
-            .propose(&l.own, write, "an index".into())
-            .await
-            .must("proposing a setting")?;
+    for key in hidden {
+        let proposed = l
+            .cat
+            .propose(&l.own, upsert(key, json!([])), "an index".into());
+        proposed.await.must("proposing a setting")?;
     }
     let told = l.cat.proposals(&arch, ProposalFilter::default()).await;
-    let told: Vec<_> = (told.must("listing the proposals")?.data.into_iter())
-        .map(|p| match p.write {
-            Some(ProposedWrite::Upsert { key, patch, .. }) => {
-                Some((key.0, patch.get("value").cloned()))
-            }
-            _ => None,
-        })
-        .collect();
-    let want = [Some(("sort_index.row".to_owned(), Some(json!(["k"]))))];
+    let told = told.must("listing the proposals")?.data;
     ensure!(
-        told == want,
-        "the owner proposed `sort_index.secret`, `lookup_index.row` naming `m` and \
-         `sort_index.row` naming `k` and `m`; the reader kept from `secret` and `m` is told \
-         {told:?}, where {want:?}"
+        told.is_empty(),
+        "the owner proposed {hidden:?}; the reader kept from them is listed {told:?}, where none"
     );
-    // A write keeps what its writer is not told, after what it writes; a
-    // retire clears only what it is told.
-    upsert(
-        l.cat.as_ref(),
-        &arch,
-        ty,
-        "sort_index.row",
-        json!({"key": "sort_index.row", "value": ["k", "n"]}),
-    )
-    .await?;
-    let owner = l
-        .read(ty, "sort_index.row")
-        .await?
-        .fields
-        .get("value")
-        .cloned();
-    let read =
-        crate::conformance::fixture::read(l.cat.as_ref(), &arch, ty, "sort_index.row").await?;
-    let theirs = read.fields.get("value").cloned();
-    let want = (Some(json!(["k", "n", "m"])), Some(json!(["k", "n"])));
-    ensure!(
-        (owner.clone(), theirs.clone()) == want,
-        "the owner's `sort_index.row` named `n` and `m`; the reader kept from `m` wrote `k` and \
-         `n`: the owner reads {owner:?} and the reader {theirs:?}, where {want:?}"
-    );
-    // A null it writes is no value, as over its twin, whatever it is not told.
-    let null = |key: &str| {
-        let fields = crate::conformance::fixture::patch(json!({"key": key, "value": null}));
-        let (cat, arch, t, k) = (l.cat.clone(), arch.clone(), TypeName::from(ty), key.into());
-        async move { cat.upsert(&arch, &t, &k, fields, Default::default()).await }
-    };
-    let (said, twin) = (null("sort_index.row").await, null("sort_index.bare").await);
-    let alike = |e: &lakelands_api::Result<lakelands_api::Outcome>| {
-        format!("{e:?}").replace("sort_index.bare", "sort_index.row")
-    };
-    ensure!(
-        said.is_err() && alike(&said) == alike(&twin),
-        "a null `value` written by the reader kept from `m` over `sort_index.row` answers \
-         {said:?}, where as over its twin `sort_index.bare`: {twin:?}"
-    );
-    let retired = l
-        .cat
-        .retire(
-            &arch,
-            &TypeName::from(ty),
-            &RecordKey::from("sort_index.row"),
-            Default::default(),
-        )
-        .await;
-    retired.must("retiring `sort_index.row` as the reader kept from `m`")?;
-    let owner = l
-        .read(ty, "sort_index.row")
-        .await?
-        .fields
-        .get("value")
-        .cloned();
-    let theirs = l
-        .cat
-        .get(&arch, &TypeName::from(ty), get("sort_index.row"))
-        .await;
-    ensure!(
-        owner == Some(json!(["m"])) && matches!(theirs, Err(Error::NotFound { .. })),
-        "the reader kept from `m` retired `sort_index.row`: the owner reads {owner:?}, where \
-         [\"m\"], and the reader {theirs:?}, where no record"
-    );
-    // A retire it proposes is listed to it as a retire, is refused at the
-    // accept once the record changed, and, accepted, clears only what it
-    // is told too.
-    l.set("sort_index.row", json!(["n", "m"])).await?;
-    let propose = || {
-        let retire = ProposedWrite::Retire {
-            ty: ty.into(),
-            key: "sort_index.row".into(),
-            opts: Default::default(),
-        };
-        let (cat, arch) = (l.cat.clone(), arch.clone());
-        async move {
-            let proposed = cat.propose(&arch, retire, "no index".into()).await;
-            match proposed.must("proposing the retire of `sort_index.row`")? {
-                lakelands_api::Outcome::Proposed { proposal, .. } => Ok(proposal),
-                other => Err(Failure::new(format!("proposing answered {other:?}"))),
-            }
-        }
-    };
-    let id = propose().await?;
-    let mine = l.cat.proposals(&arch, ProposalFilter::default()).await;
-    let mine: Vec<_> = (mine.must("listing the proposals")?.data.into_iter())
-        .filter(|p| p.id == id)
-        .map(|p| matches!(p.write, Some(ProposedWrite::Retire { .. })))
-        .collect();
-    l.set("sort_index.row", json!(["m", "n"])).await?;
-    let stale = l.cat.accept(&l.own, &id).await;
-    ensure!(
-        mine == [true] && format!("{stale:?}").contains("WriteChangedSinceProposed"),
-        "the reader kept from `m` proposed the retire of `sort_index.row`: it is listed as \
-         a retire ({mine:?}, where [true]), and its accept after the owner wrote the record \
-         answers {stale:?}, where refused as changed since proposed"
-    );
-    let id = propose().await?;
-    let accepted = l.cat.accept(&l.own, &id).await;
-    let owner = l
-        .read(ty, "sort_index.row")
-        .await?
-        .fields
-        .get("value")
-        .cloned();
-    ensure!(
-        accepted.is_ok() && owner == Some(json!(["m"])),
-        "the reader kept from `m` proposed the retire of `sort_index.row` naming `n` and `m`, \
-         and the owner accepted it ({accepted:?}): the owner reads {owner:?}, where [\"m\"]"
-    );
-    // A record it is not told is none to its write: one without a value
-    // is refused, whatever version it expects, as at a key never set.
+    // Each write of a setting naming `row`'s fields is refused it whole,
+    // before the record is read.
+    let head = store.head().await.must("reading the head")?;
+    let (row, key) = (RecordKey::from("sort_index.row"), "sort_index.row");
     for expected in [None, Some(0), Some(1), Some(5)] {
-        let write = |key: &str| {
-            let opts = lakelands_api::WriteOpts {
-                expected_version: expected.map(lakelands_api::Version),
-                ..Default::default()
-            };
-            let fields = crate::conformance::fixture::patch(json!({"key": key}));
-            let (cat, arch) = (l.cat.clone(), arch.clone());
-            let (t, k) = (TypeName::from(ty), RecordKey::from(key));
-            async move { cat.upsert(&arch, &t, &k, fields, opts).await }
-        };
-        let (said, never) = (
-            write("lookup_index.row").await,
-            write("lookup_index.bare").await,
-        );
-        let alike = |e: &lakelands_api::Result<lakelands_api::Outcome>| {
-            format!("{e:?}").replace("lookup_index.bare", "lookup_index.row")
-        };
-        ensure!(
-            said.is_err() && alike(&said) == alike(&never),
-            "a write without a value of `lookup_index.row`, naming only `m`, expecting \
-             {expected:?} by the reader kept from `m` answers {said:?}, where as at a key never \
-             set: {never:?}"
-        );
-    }
-    // Written, it expects the version of a key never set, and keeps `m`.
-    let valued = |key: &str, expected: u64| {
-        let opts = lakelands_api::WriteOpts {
-            expected_version: Some(lakelands_api::Version(expected)),
+        let opts = WriteOpts {
+            expected_version: expected.map(lakelands_api::Version),
             ..Default::default()
         };
-        let fields = crate::conformance::fixture::patch(json!({"key": key, "value": []}));
-        let (cat, arch) = (l.cat.clone(), arch.clone());
-        let (t, k) = (TypeName::from(ty), RecordKey::from(key));
-        async move { cat.upsert(&arch, &t, &k, fields, opts).await }
+        for value in [json!(["k", "n"]), json!(null)] {
+            let fields = patch(json!({"key": key, "value": value}));
+            let said = l.cat.upsert(&arch, &ty, &row, fields, opts.clone()).await;
+            not_granted(&format!("arch's `{value}` expecting {expected:?}"), said)?;
+        }
+        let said = l.cat.retire(&arch, &ty, &row, opts).await;
+        not_granted(&format!("arch's retire expecting {expected:?}"), said)?;
+    }
+    let retire = ProposedWrite::Retire {
+        ty: ty.clone(),
+        key: row.clone(),
+        opts: Default::default(),
     };
-    let (said, never) = (
-        valued("lookup_index.row", 1).await,
-        valued("lookup_index.bare", 1).await,
-    );
-    let alike = |e: &lakelands_api::Result<lakelands_api::Outcome>| {
-        format!("{e:?}").replace("lookup_index.bare", "lookup_index.row")
-    };
-    let written = valued("lookup_index.row", 0).await;
-    let owner = l
-        .read(ty, "lookup_index.row")
-        .await?
-        .fields
-        .get("value")
-        .cloned();
-    ensure!(
-        said.is_err()
-            && alike(&said) == alike(&never)
-            && written.is_ok()
-            && owner == Some(json!(["m"])),
-        "the reader kept from `m` writing `[]` to `lookup_index.row`, naming only `m`, \
-         expecting its version 1 answers {said:?}, where as at a key never set: {never:?}; \
-         expecting 0 it answers {written:?} and the owner reads {owner:?}, where [\"m\"]"
-    );
+    for write in [upsert(key, json!(["k"])), retire] {
+        not_granted(
+            "arch's proposal",
+            l.cat.propose(&arch, write, "an index".into()).await,
+        )?;
+    }
+    head_unmoved(store.as_ref(), head, "a setting refused its writer").await?;
     // Judged as written before its version: an expected version tells
     // nothing of a type it is not shown.
     for expected in [None, Some(0), Some(1)] {
-        let write = |key: &str| {
-            let opts = lakelands_api::WriteOpts {
+        let write = async |key: &str| {
+            let opts = WriteOpts {
                 expected_version: expected.map(lakelands_api::Version),
                 ..Default::default()
             };
-            let fields = crate::conformance::fixture::patch(json!({"key": key, "value": ["x"]}));
-            let (cat, arch) = (l.cat.clone(), arch.clone());
-            let (t, k) = (TypeName::from(ty), RecordKey::from(key));
-            async move { cat.upsert(&arch, &t, &k, fields, opts).await }
+            let fields = patch(json!({"key": key, "value": ["x"]}));
+            l.cat.upsert(&arch, &ty, &key.into(), fields, opts).await
         };
         let (said, never) = (
             write("sort_index.secret").await,
@@ -686,27 +465,42 @@ async fn a_setting_record_is_told_as_were_the_hidden_absent(store: Store) -> Hel
 }
 
 check!(
-    SETTING_RECORDS_PAGED = settings_are_paged_counted_and_proposed_as_told,
-    "063 (lakelands#1198): to a reader kept from a type or a field, the records of `sys.setting` are paged, counted and proposed as were these absent: a graph from `sys.setting` pages through each record it is told, at every limit, cut exactly where another page follows; a kept view counting them by group counts what a `find` tells it; a proposal is listed as the write it is told, with nothing left out of it: one over a record it is not told as over a key never set, its own too, a narrowed one whole, and one that leaves a record it is told none as a retire, also once that record is retired; the version a write answers over a record it is not told counts the writes it is not told (a stated limit, lakelands#1250)"
+    SETTING_RECORDS_PAGED = settings_are_paged_counted_and_written_as_told,
+    "063 (lakelands#1198, lakelands#1250): to a reader kept from a type or a field, the records of `sys.setting` are paged and counted as were the ones not told absent: a graph from `sys.setting` pages through each record it is told, at every limit, cut exactly where another page follows, and a kept view counting them by group counts what a `find` tells it; a setting naming fields of a type its writer does not read whole answers that writer as in a twin lake where the field was never declared, or the setting never written: a write expecting no version, and one expecting version 0, are refused alike in both, as not granted, and a `get` is not found in both, while the type's lifecycle names what it sorts and indexes as the twin's does",
+    given
 );
 
-async fn settings_are_paged_counted_and_proposed_as_told(store: Store) -> Held {
+async fn settings_are_paged_counted_and_written_as_told(store: Store, given: Given) -> Held {
     use super::only::holder;
-    use crate::conformance::fixture::{count_view, patch, upsert};
+    use crate::conformance::fixture::{count_view, get_at, patch};
     use lakelands_api::query::{Pattern, QueryResult};
-    use lakelands_api::write::{ProposalFilter, ProposedWrite};
-    use lakelands_api::{Outcome, RecordKey, TypeName, Version};
+    use lakelands_api::{TypeName, Version, WriteOpts};
     use std::collections::BTreeMap;
-    let l = Lake::of(store.as_ref());
     let number = |n: &str| field(n, StorageKind::Number);
-    let text = |n: &str| field(n, StorageKind::Text);
-    let row = vec![text("k"), number("n"), text("m")];
-    l.declare(type_decl("row", row)).await?;
+    // `row` keeps `m` from `arch`, `col` masks `n` from `mask`; the twin
+    // never declared `row.m` and holds no setting.
+    let lakes = async |s: &dyn LakeStore, m: bool| {
+        let l = Lake::of(s);
+        let mut row = vec![field("k", StorageKind::Text), number("n")];
+        if m {
+            row.push(field("m", StorageKind::Text));
+        }
+        l.declare(type_decl("row", row)).await?;
+        let col = vec![number("k"), number("n"), number("m")];
+        l.declare(type_decl("col", col)).await?;
+        Ok::<_, Failure>(l)
+    };
+    let l = lakes(store.as_ref(), true).await?;
+    let twin = (given.twin)(store.lake().clone(), Default::default()).await;
+    let twin = twin.map_err(|e| Failure::new(format!("the harness opened no twin: {e}")))?;
+    let t = lakes(twin.as_ref(), false).await?;
     l.declare(type_decl("secret", vec![number("x")])).await?;
-    // A record it is not told after each it is told: `lookup_index.row`
-    // names only `m`, `sort_index.secret` a type it is not shown.
+    l.declare(type_decl("bare", vec![number("n")])).await?;
+    // Records it is not told around each it is told.
     for (key, value) in [
         ("lookup_index.row", json!(["m"])),
+        ("sort_index.bare", json!(["n"])),
+        ("sort_index.col", json!(["n"])),
         ("sort_index.row", json!(["n", "m"])),
         ("sort_index.secret", json!(["x"])),
         ("threshold", json!(1)),
@@ -716,8 +510,13 @@ async fn settings_are_paged_counted_and_proposed_as_told(store: Store) -> Held {
     let arch = holder(
         store.as_ref(),
         "arch",
-        json!({"default": "write", "review": true, "types": {
+        json!({"default": "write", "types": {
             "secret": {"default": "none"}, "row": {"fields": {"m": "none"}}}}),
+    );
+    let mask = holder(
+        store.as_ref(),
+        "mask",
+        json!({"default": "write", "types": {"col": {"fields": {"n": "masked"}}}}),
     );
     let ty = "sys.setting";
     let keys = |rows: &[lakelands_api::Record]| -> Vec<String> {
@@ -725,6 +524,10 @@ async fn settings_are_paged_counted_and_proposed_as_told(store: Store) -> Held {
     };
     let found = all_found(l.cat.as_ref(), &arch, ty, Find::default()).await?;
     let told = keys(&found);
+    ensure!(
+        told == ["sort_index.bare", "sort_index.col", "threshold"],
+        "the reader kept from `secret` and `row.m` finds the settings {told:?}"
+    );
     // Paged a record at a time and two at a time, each page cut while
     // another follows.
     for limit in [1, 2] {
@@ -784,91 +587,62 @@ async fn settings_are_paged_counted_and_proposed_as_told(store: Store) -> Held {
         "the kept view `tally` counts the settings by group to the reader kept from `secret` \
          and `row.m` as {got:?}; its `find` tells it {want:?}"
     );
-    // Each proposal as the write it is told, nothing more left out.
-    let proposal = |key: &str, value: serde_json::Value| ProposedWrite::Upsert {
-        ty: TypeName::from(ty),
-        key: RecordKey::from(key),
-        patch: patch(json!({"key": key, "value": value})),
-        opts: Default::default(),
+    // A setting naming a field its writer is not shown, or shown masked,
+    // answers it as the twin does, where the field or the setting is not.
+    let (ty, mut wrong) = (TypeName::from(ty), Vec::new());
+    let refused = lakelands_api::Error::Refused {
+        field: None,
+        reason: lakelands_api::Refusal::NotGranted,
     };
-    let mut ids = Vec::new();
-    for (who, key, value) in [
-        (&l.own, "lookup_index.row", json!(["k", "m"])),
-        (&l.own, "sort_index.row", json!(["k", "m"])),
-        (&l.own, "sort_index.row", json!(["m"])),
-        (&arch, "lookup_index.row", json!(["k"])),
+    for (who, key, value, described) in [
+        (&arch, "lookup_index.row", json!(["k"]), "row"),
+        (&mask, "sort_index.col", json!(["m"]), "col"),
     ] {
-        let proposed = l.cat.propose(who, proposal(key, value), "an index".into());
-        match proposed.await.must("proposing a setting")? {
-            Outcome::Proposed { proposal, .. } => ids.push(proposal),
-            other => return Err(Failure::new(format!("proposing answered {other:?}"))),
+        for expected in [None, Some(Version(0))] {
+            let write = async |l: &Lake| {
+                let fields = patch(json!({"key": key, "value": value}));
+                let opts = WriteOpts {
+                    expected_version: expected,
+                    ..Default::default()
+                };
+                l.cat.upsert(who, &ty, &key.into(), fields, opts).await
+            };
+            let (here, there) = (write(&l).await, write(&t).await);
+            if here.as_ref().err() != Some(&refused) || format!("{here:?}") != format!("{there:?}")
+            {
+                wrong.push(format!(
+                    "`{}` expecting {expected:?}: {here:?}; twin: {there:?}",
+                    who.id
+                ));
+            }
+        }
+        let get = async |l: &Lake| {
+            let got = l.cat.get(who, &ty, get_at(key, None)).await;
+            matches!(got, Err(lakelands_api::Error::NotFound { .. }))
+        };
+        if !(get(&l).await && get(&t).await) {
+            wrong.push(format!("`{}` reads `{key}`", who.id));
+        }
+        // Its type's lifecycle names what the setting sorts or indexes as
+        // the twin's does.
+        let described = TypeName::from(described);
+        let named = async |l: &Lake| {
+            let d = l.cat.describe_type(who, &described, read_at(None));
+            let d = d.await.must("describing the type")?.data.lifecycle;
+            Ok::<_, Failure>((d.sorted, d.indexed))
+        };
+        let (here, there) = (named(&l).await?, named(&t).await?);
+        if here != there {
+            wrong.push(format!(
+                "`{}` is told `{described}` sorts and indexes {here:?}; twin: {there:?}",
+                who.id
+            ));
         }
     }
-    let listing = || async {
-        let listed = l.cat.proposals(&arch, ProposalFilter::default()).await;
-        let listed =
-            (listed.must("listing the proposals")?.data.into_iter()).map(|p| match p.write {
-                Some(ProposedWrite::Upsert { key, patch, .. }) => {
-                    (key.0, patch.get("value").cloned(), p.more)
-                }
-                Some(ProposedWrite::Retire { key, .. }) => (key.0, None, p.more),
-                other => (format!("{other:?}"), None, p.more),
-            });
-        Ok::<_, Failure>(listed.collect::<Vec<_>>())
-    };
-    let listed = listing().await?;
-    // Newest first.
-    let want = vec![
-        ("lookup_index.row".to_owned(), Some(json!(["k"])), false),
-        ("sort_index.row".to_owned(), None, false),
-        ("sort_index.row".to_owned(), Some(json!(["k"])), false),
-        ("lookup_index.row".to_owned(), Some(json!(["k"])), false),
-    ];
     ensure!(
-        listed == want,
-        "the owner proposed `lookup_index.row` naming `k` and `m` over one naming `m`, \
-         `sort_index.row` naming `k` and `m` and then `m` alone, and the reader kept from `m` \
-         `lookup_index.row` naming `k`: the reader is listed {listed:?} (key, value, more), \
-         where {want:?}"
-    );
-    // Listed as it was proposed, whatever became of the record since: the
-    // owner's `["m"]` accepted, the record is not told to the reader.
-    let accepted = l.cat.accept(&l.own, &ids[2]).await;
-    accepted.must("accepting the owner's `sort_index.row` naming `m`")?;
-    let after = listing().await?;
-    ensure!(
-        after == want,
-        "the owner accepted its `sort_index.row` naming only `m`, listed to the reader kept \
-         from `m` as a retire: the reader is listed {after:?}, where as before, {want:?}"
-    );
-    // And so once the owner retires that record: a retired record is a
-    // free key, as one never set (lakelands#1198).
-    l.retire(ty, "sort_index.row").await?;
-    let retired = listing().await?;
-    ensure!(
-        retired == want,
-        "the owner retired `sort_index.row`, which the reader kept from `m` is not told: the \
-         reader is listed {retired:?}, where as before, {want:?}"
-    );
-    // Its write over a record it is not told answers the record's version,
-    // which counts the owner's write: pinned until lakelands#1250.
-    let written = upsert(
-        l.cat.as_ref(),
-        &arch,
-        ty,
-        "lookup_index.row",
-        json!({"key": "lookup_index.row", "value": ["k"]}),
-    )
-    .await?;
-    let version = match written {
-        Outcome::Applied { version, .. } => version,
-        _ => None,
-    };
-    ensure!(
-        version == Some(Version(2)),
-        "the reader kept from `m` wrote `lookup_index.row` over the owner's, naming only `m`: \
-         it answers {version:?}, where Some(Version(2)), the record's own (063 states this \
-         limit; lakelands#1250 ends it)"
+        wrong.is_empty(),
+        "a setting naming a field its writer does not read must answer it as its twin, \
+         refused as not granted: {wrong:?}"
     );
     Ok(())
 }

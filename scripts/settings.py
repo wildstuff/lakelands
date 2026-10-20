@@ -153,9 +153,9 @@ def page(settings, bound):
         "none of them is refused. A host may declare its own keys in the lake, with a kind, "
         "a unit, a meaning and a group (`lakelands settings` lists them for a lake). Any "
         "expression reads any setting, whatever its reader's grants, save a lake setting for "
-        "a type, which a read tells its reader as were the types and fields it is kept from "
-        "absent: a value that must be kept from a reader, a secret above all, is never a "
-        "setting.",
+        "a type, which a read tells only a reader shown the type, and one naming a type's "
+        "fields only whole, to a reader that reads the type whole: a value that must be "
+        "kept from a reader, a secret above all, is never a setting.",
     ]
     for layer, (title, intro) in LAYERS.items():
         lines += ["", f"## {title}", "", intro]
