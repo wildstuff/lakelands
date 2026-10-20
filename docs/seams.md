@@ -1796,6 +1796,16 @@ and the lake does not hold yet, as system declarations in one append
 (at creation, together with `sys.setting`). A type the host adds later
 reaches an existing lake the next time a writer opens it.
 
+A type the lake holds is declared again where the host's form only adds
+optional fields to it, in the same append: a field added reshapes no
+record, so the records written before read as they did. A reader's open
+of such a lake is refused as `unavailable`, `vocabulary_upgrade_owed`,
+naming the lake and the type, until a writer has opened it. A vocabulary
+that changes a held type in any other way (a field removed, retyped or
+added as required, the key, a relation) is refused at every open as
+`invalid`, `vocabulary_changed`, naming the type and each difference;
+nothing is appended (`docs/decisions/003-reservation-by-namespace.md`).
+
 Two kinds of name are not a host's to take, and a vocabulary that names
 one is refused when a writer opens the lake. The name is reserved
 (`docs/decisions/003-reservation-by-namespace.md`), and the refusal is

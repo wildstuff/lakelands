@@ -549,6 +549,19 @@ impl Lake {
         let mut lake = Lake::assemble(location, seams, engine, lease.clone());
         lake.rebuilt_at_open = rebuilt_at_open;
         lake.catch_up()?;
+        // A reader is refused a lake that holds a type of its vocabulary
+        // in an older form, as one written in an older format is: only a
+        // writer's open declares it again.
+        if mode == OpenMode::Read {
+            let w = lake.writer();
+            for t in lake.vocabulary() {
+                if crate::declare::vocabulary_older(&w.ontology, &t)? {
+                    let (lake, ty) = (lake.id.to_string(), t.name);
+                    let situation = Situation::VocabularyUpgradeOwed { lake, ty };
+                    return Err(Error::unavailable(situation));
+                }
+            }
+        }
         if rebuilds {
             let folded = lake.writer().tip.as_ref().map_or(0, |t| t.0.0);
             lake.measured(began, folded);
@@ -590,21 +603,21 @@ impl Lake {
             // declared on every open for writing, so a host type added after
             // the lake was created reaches it too.
             let mut types = vec![setting_type(), aging_rule_type()];
-            if let Some(v) = &lake.seams.vocabulary {
-                let held: Vec<lakelands_api::ontology::TypeDecl> = v
-                    .types()
-                    .into_iter()
-                    .filter(|t| v.may_hold(&lake.id, &t.name))
-                    .collect();
-                // Every vocabulary type is checked before anything is
-                // appended, held already or not: a process whose
-                // vocabulary collides with the store's own names must not
-                // write.
-                for t in &held {
-                    crate::declare::check_vocabulary_type(t)?;
+            let held = lake.vocabulary();
+            // Every vocabulary type is checked before anything is appended,
+            // held already or not: a process whose vocabulary collides with
+            // the store's own names must not write, nor one that changes a
+            // type the lake holds beyond adding fields to it. One the lake
+            // holds without fields the vocabulary has since added is
+            // declared again, as the store's own are below.
+            let mut again = BTreeSet::new();
+            for t in &held {
+                crate::declare::check_vocabulary_type(t)?;
+                if crate::declare::vocabulary_older(&w.ontology, t)? {
+                    again.insert(t.name.clone());
                 }
-                types.extend(held);
             }
+            types.extend(held);
             // The store's own types are declared again where the lake holds
             // an older form, one without a field they have since gained: a
             // field added, which reshapes no record (063, extended).
@@ -620,7 +633,11 @@ impl Lake {
                     !t.fields.iter().all(has)
                 })
             };
-            types.retain(|t| !w.ontology.types.contains_key(&t.name) || (own(t) && older(t)));
+            types.retain(|t| {
+                !w.ontology.types.contains_key(&t.name)
+                    || (own(t) && older(t))
+                    || again.contains(&t.name)
+            });
             // No door leaves a lake with a problem among its tools' names,
             // and this is one (027, extended): each type is judged beside
             // the lake and the types before it, before anything is
@@ -686,6 +703,15 @@ impl Lake {
             }
         }
         Ok(lake)
+    }
+
+    /// The types of the host's vocabulary this lake may hold.
+    fn vocabulary(&self) -> Vec<TypeDecl> {
+        let Some(v) = &self.seams.vocabulary else {
+            return Vec::new();
+        };
+        let types = v.types().into_iter();
+        types.filter(|t| v.may_hold(&self.id, &t.name)).collect()
     }
 
     /// A lake over `engine`, holding `lease` if one was taken, before

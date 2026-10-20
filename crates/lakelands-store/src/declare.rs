@@ -1014,6 +1014,29 @@ pub fn check_vocabulary_type(t: &TypeDecl) -> Result<()> {
     Err(invalid(Case::VocabularyReserved { ty, link }))
 }
 
+/// Whether the lake holds a host vocabulary's type in an older form, one
+/// the vocabulary only adds optional fields to: that reshapes no record,
+/// so a writer's open declares it again. A type the lake holds as the
+/// vocabulary declares it, in shape, or does not hold, is not. One the
+/// vocabulary changes in any other way is refused, naming the type and
+/// what differs: no open makes a migration, nor applies part of one.
+pub(crate) fn vocabulary_older(o: &Ontology, t: &TypeDecl) -> Result<bool> {
+    use lakelands_api::error::Revision;
+    let Some(held) = o.types.get(&t.name) else {
+        return Ok(false);
+    };
+    let added = |r: &Revision| matches!(r, Revision::FieldAdded { .. });
+    let reasons = match shape::classify(&held.decl, t) {
+        Change::Declare { changes } if changes.iter().all(added) => {
+            return Ok(!changes.is_empty());
+        }
+        Change::Declare { changes } => changes.into_iter().filter(|r| !added(r)).collect(),
+        Change::Migrate { reasons } => reasons,
+    };
+    let ty = t.name.clone();
+    Err(invalid(Case::VocabularyChanged { ty, reasons }))
+}
+
 /// Whether `ty` is a type of a host's vocabulary: a system type that is
 /// neither a link type nor one of the store's own four. No caller declares
 /// a system type, and the writer's open refuses those from a vocabulary,

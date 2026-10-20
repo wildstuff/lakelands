@@ -225,7 +225,9 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
 - **`SystemVocabulary`.** The host registers its own `sys.*` types and
   says which lakes may hold them; each time a writer opens a lake, the
   store declares the allowed types it does not hold yet, and its own
-  `sys.*` types again where the lake holds an older form of them.
+  `sys.*` types and the host's again where the lake holds an older form
+  of them, one without fields they have since gained (below, what a
+  host may change between its releases).
   Lakelands reserves only the types its own fold reads; today those are
   `sys.setting` and `sys.aging_rule`, and the other two are reserved
   ahead of their readers. See `docs/decisions/003-reservation-by-namespace.md`.
@@ -723,6 +725,21 @@ release with real installations, to it (`docs/log-format.md` §6;
   upgraded is refused before anything is read, naming the way
   (`log_upgrade_owed` in `docs/refusals.md`); so is a mirror of such a
   source, whose open is a reader's.
+- **A host's vocabulary may gain fields, and nothing else.** Between
+  its releases a host may add optional fields to a type of its
+  vocabulary the lake holds. The first writer's open declares the type
+  again with them, in the append that takes its lease; the records
+  written before read as they did, without the new fields, and the next
+  write may give them. A reader's open is refused until then, naming the
+  lake and the type (`vocabulary_upgrade_owed`). Any other change to a
+  held type is refused at every open, naming the type and what differs
+  (`vocabulary_changed`): a field removed, retyped or renamed, a field
+  added as required, a field made optional, the key changed, a relation
+  added, removed or changed. Nothing of it is applied, and the lake
+  opens with the vocabulary of the release that wrote it. A change of
+  meaning alone (a description, a label) is neither refused nor
+  declared. A type the host adds reaches the lake at the next writer's
+  open, and one it leaves out stays in the lake as it was.
 - **An export of an older release imports**, and the import upgrades
   the new lake the same way, by a writer's open after the events are in.
   Should that open fail, the events stay and a second import is refused

@@ -51,6 +51,29 @@ external verb: write access to its type (006). A `write` effect on such
 a type stays `reserved`: the host writes its own system type through
 `upsert`, under the grant it gives.
 
+### A host's type gains fields between its releases
+
+A host's next release may add optional fields to a type of its
+vocabulary. Where the lake holds the type without them, a writer's open
+declares it again in the host's form, in the append that takes the
+lease, as it does the store's own types: a field added reshapes no
+record, so the records written before read as they did, and a write
+may give the new field from then on. A reader is refused such a lake,
+naming the lake and the type, until a writer has opened it, as it is
+refused a lake in an older log format: what it would read is not what
+its vocabulary declares.
+
+Any other change to a type the lake holds is refused at the open,
+writer's or reader's, naming the type and each difference, before
+anything is appended: a field removed, retyped or renamed, a field
+added as required or made optional, the key changed, a relation added,
+removed or changed. Each of these reshapes stored records, or brings
+what a door would judge, and the open makes no migration and judges
+nothing as a door does. It applies none of it, and none in part.
+Whether a host may declare a migration with its vocabulary is not
+decided here. A change of meaning alone, a description or a label,
+moves no shape and is not declared.
+
 ## Why
 
 A roster of reserved names has to be kept in step with every place that
@@ -63,6 +86,15 @@ declared.
 Keeping Lakelands' own reservation to the types its own readers are
 written for, and the link types it derives itself, keeps the store from
 carrying another product's vocabulary.
+
+An upgrade of a host must not leave its lakes behind. Without the
+second declaration a lake written by the host's earlier release keeps
+the older form of its type and refuses the new field, and the host
+migrates the lake by hand or starts a new one. A field added is the one
+change the open can make alone, since nothing stored moves; every other
+change would reshape what the lake holds, and a lake opened with it
+would not answer as its vocabulary says. So the open refuses it whole
+rather than applying what it can.
 
 ## What it is not
 
@@ -89,3 +121,8 @@ carrying another product's vocabulary.
   host's vocabulary; before, every verb on a system type other than a
   link type was refused as `reserved`, and a host's open sequence that
   applied its external verbs failed (lakelands#966).
+- A type of the host's vocabulary that gains optional fields is
+  declared again at a writer's open, and a reader waits for it; any
+  other change to a held type is refused at the open. Before, the open
+  declared only the types the lake did not hold, so a field a host's
+  release added never reached its earlier lakes (lakelands#1293).

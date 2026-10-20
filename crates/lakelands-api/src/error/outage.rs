@@ -895,6 +895,8 @@ catalog! {
         LogFormat { lake: String, found: u64, reads: u64, oldest: Option<u64> } => "lake `{lake}` is written in log format {found}, and this release reads log format[s {oldest} to] {reads} and writes {reads}; nothing was read from it and nothing appended",
         /// The lake's log is written in an older format this release reads, and only a writer's open upgrades it.
         LogUpgradeOwed { lake: String, found: u64, reads: u64 } => "lake `{lake}` is written in log format {found}, and this release writes format {reads}: a writer's open upgrades it, so open it once for writing or run `lakelands upgrade {lake}`, and it is read; nothing was read from it",
+        /// The lake holds a type of the host's vocabulary in an older form, one without fields the vocabulary has since added, and only a writer's open declares it again.
+        VocabularyUpgradeOwed { lake: String, #[serde(rename = "type")] ty: TypeName } => "lake `{lake}` holds `{ty}` without fields the host vocabulary has since added to it: a writer's open declares it again, so open it once for writing, and it is read; nothing was read from it",
         /// The lake could not be compacted while a reader holds a snapshot.
         Busy { lake: String } => "lake `{lake}` could not be compacted: a reader holds a snapshot of its projection; nothing a read answers has changed, so compact again when the reader is done",
         /// The projection is behind the log and could not catch up; nothing was appended.
