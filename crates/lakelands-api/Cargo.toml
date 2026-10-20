@@ -13,6 +13,8 @@ async-trait.workspace = true
 futures-core.workspace = true
 # The shortest round-trip digits of a double, for the canonical number form.
 ryu.workspace = true
+# Whether a number literal is one the evaluator holds exactly.
+rust_decimal.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # Where in a declaration a member it does not know sits.

@@ -757,9 +757,11 @@ A host that already has a store of its own moves in four steps.
    fails before it and passes after. The pure helpers a host needs
    beside the seams are there too: `schema_hash` in
    `lakelands_api::shape`, the key rule with `link_key` and
-   `key_components` in `lakelands_api::key`, and the canonical bytes in
-   `lakelands_api::canonical`; `lakelands-core` is not a surface a host
-   builds on.
+   `key_components` in `lakelands_api::key`, the canonical bytes in
+   `lakelands_api::canonical`, an expression checked for where it is
+   evaluated in `Condition::checked`, and a constraint judged as
+   `declare` judges it in `TypeDecl::constraint_reach`;
+   `lakelands-core` is not a surface a host builds on.
 3. **Cut over in one step.** Consumers re-point to Lakelands, pinned by
    tag, never by bare revision. Any contract the host exposes to its own
    plugins is adapted onto `lakelands-api`. The old store and the

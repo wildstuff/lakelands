@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Case, Place, Said};
+use crate::error::{Beyond, Case, Place, Said};
 use crate::expr::{Condition, Func};
 use crate::id::{
     ConstraintName, FieldName, ParamName, RelationName, SourceId, TriggerName, TypeName,
@@ -832,6 +832,62 @@ impl TypeDecl {
             let case = computed_at_problem(&self.fields, f, &function)?;
             said(&[ty()], f, case)
         })
+    }
+
+    /// `c`, one of this type's constraints, in its typed form, checked
+    /// as `declare` checks it: parsed and checked in a guard's place, then
+    /// refused where it reads what can change without a write of its
+    /// record — a path across a reference or a link, `in_set`, `setting`,
+    /// the clock, `exists`, a field computed at the read or one computed
+    /// outside the lake (an embedding, or a field of a function whose
+    /// backing is not `expr`), the first of these that holds — and then
+    /// where it reads a field the type does not declare. `function` names
+    /// the declared functions. A constraint is judged on the write of its
+    /// own record alone, so what it reads must move only with that write;
+    /// a host that authors one asks here and gets the store's answer.
+    pub fn constraint_reach<'f>(
+        &self,
+        c: &ConstraintDecl,
+        function: impl Fn(&str) -> Option<&'f crate::write::FunctionDecl>,
+    ) -> Result<crate::expr::Expr, Case> {
+        let e = c.holds.checked(crate::expr::Place::Guard)?;
+        let mut paths = Vec::new();
+        crate::expr::paths(&e, &mut paths);
+        let backed = |n: &str| function(n).is_some_and(|f| f.backing != "expr");
+        let beyond = if paths.iter().any(|p| p.len() > 1) {
+            Some(Beyond::Path)
+        } else if e.calls(&[Func::InSet]) {
+            Some(Beyond::InSet)
+        } else if e.calls(&[Func::Setting]) {
+            Some(Beyond::Setting)
+        } else if e.reads_clock() {
+            Some(Beyond::Clock)
+        } else if e.calls(&[Func::Exists]) {
+            Some(Beyond::Exists)
+        } else {
+            e.fields_read().into_iter().find_map(|n| {
+                let f = self.fields.iter().find(|f| &f.name == n)?;
+                let field = n.clone();
+                if f.at_read() {
+                    Some(Beyond::ComputedAtRead { field })
+                } else if f.embed.is_some() || f.function.as_deref().is_some_and(backed) {
+                    Some(Beyond::ComputedOutside { field })
+                } else {
+                    None
+                }
+            })
+        };
+        if let Some(reads) = beyond {
+            let constraint = c.name.clone();
+            let reads = Box::new(reads);
+            return Err(Case::ConstraintReadsBeyond { constraint, reads });
+        }
+        let declared = |n: &&FieldName| self.fields.iter().any(|f| &f.name == *n);
+        if let Some(n) = e.fields_read().into_iter().find(|n| !declared(n)) {
+            let (ty, field) = (self.name.clone(), n.clone());
+            return Err(Case::UnknownField { ty, field });
+        }
+        Ok(e)
     }
 }
 

@@ -7,3 +7,5 @@
 # (docs/decisions/056-the-host-surface-changes-by-one-release-of-deprecation.md).
 baseline v0.16.0
 lakelands-api	trait_method_added	trait method ProjectionStore::drop_states
+lakelands-core	enum_missing	enum lakelands_core::expr::Place
+lakelands-core	function_missing	function lakelands_core::expr::check
