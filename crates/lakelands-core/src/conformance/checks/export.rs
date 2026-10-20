@@ -146,7 +146,7 @@ fn read(dir: &Path, file: &str) -> Result<Vec<u8>, Failure> {
 }
 
 /// The files under `log/`, sorted.
-fn files(dir: &Path) -> Result<Vec<String>, Failure> {
+pub(super) fn files(dir: &Path) -> Result<Vec<String>, Failure> {
     let mut out: Vec<String> = fs::read_dir(dir.join("log"))
         .map_err(|e| Failure::new(format!("listing the export's log/: {e}")))?
         .filter_map(|e| e.ok())
@@ -380,7 +380,7 @@ fn refused_at(dir: &Path, position: Position, damage: &str) -> Held {
 }
 
 /// A file's lines, without their line feeds.
-fn lines_of(dir: &Path, file: &str) -> Result<Vec<Vec<u8>>, Failure> {
+pub(super) fn lines_of(dir: &Path, file: &str) -> Result<Vec<Vec<u8>>, Failure> {
     let bytes = read(dir, file)?;
     Ok(bytes
         .strip_suffix(b"\n")
@@ -391,7 +391,7 @@ fn lines_of(dir: &Path, file: &str) -> Result<Vec<Vec<u8>>, Failure> {
 }
 
 /// Writes `lines` as `file`, each with its line feed.
-fn rewrite(dir: &Path, file: &str, lines: &[Vec<u8>]) -> Held {
+pub(super) fn rewrite(dir: &Path, file: &str, lines: &[Vec<u8>]) -> Held {
     let mut bytes = lines.join(&b'\n');
     bytes.push(b'\n');
     fs::write(dir.join(file), bytes).map_err(|e| Failure::new(format!("damaging {file}: {e}")))
@@ -399,7 +399,7 @@ fn rewrite(dir: &Path, file: &str, lines: &[Vec<u8>]) -> Held {
 
 /// `line` with `change` applied to its object and its hash computed
 /// again, so only the change is wrong.
-fn rehashed(line: &[u8], change: impl FnOnce(&mut Value)) -> Result<Vec<u8>, Failure> {
+pub(super) fn rehashed(line: &[u8], change: impl FnOnce(&mut Value)) -> Result<Vec<u8>, Failure> {
     let mut event: Value = serde_json::from_slice(line)
         .map_err(|e| Failure::new(format!("an exported line is not JSON: {e}")))?;
     change(&mut event);

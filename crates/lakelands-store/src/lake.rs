@@ -1883,8 +1883,7 @@ impl Lake {
         let (mut erased, mut dropped) = (Vec::new(), false);
         let source = (e.sealed.as_ref()).and_then(|s| s.source.as_ref().or(e.source.as_ref()));
         // The index keeps the source as the log names it, before an erasure
-        // takes the seal away: an ingest's is its envelope's, as forgetting
-        // walks it, and any other event's the one its seal names first.
+        // takes the seal away (`indexed`).
         let indexed = indexed(e);
         // A value sealed apart and erased by its apart key alone still
         // tells the version it sealed with, whose first use it may be: the
@@ -3592,15 +3591,13 @@ fn last_act(view: &dyn ProjectionView) -> Result<Position> {
 }
 
 /// The source the feed index keeps an event under, as the log names it
-/// before an erasure takes the seal away: an ingest's is its envelope's,
-/// as forgetting walks it, and any other event's the one its seal names
-/// first.
+/// before an erasure takes the seal away: the one its seal names first,
+/// else its envelope's. An ingest's seal names no other source than its
+/// envelope's; a reader refuses one that does
+/// (`lakelands_core::log::misplaced`).
 pub(crate) fn indexed(e: &Event) -> Option<SourceId> {
     let sealed = e.sealed.as_ref().and_then(|s| s.source.as_ref());
-    match &e.body {
-        EventBody::RecordIngested { .. } => e.source.clone(),
-        _ => sealed.or(e.source.as_ref()).cloned(),
-    }
+    sealed.or(e.source.as_ref()).cloned()
 }
 
 /// Whether the fold of an event reads a record: such an event is folded

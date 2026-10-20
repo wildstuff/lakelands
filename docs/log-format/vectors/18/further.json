@@ -453,6 +453,11 @@
       "shows": "delivery_on_another_kind",
       "about": "`delivery` on an event that is not a `record_ingested`, which a reader refuses.",
       "line": "{\"body\":{\"key\":\"r1\",\"kind\":\"record_retired\",\"type\":\"reading\",\"version\":2},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"delivery\":\"batch-7\",\"fence\":1,\"hash\":\"f62cd0cf2500013e1a6095b53d770687281e65daf605f137864d694fe3b631d1\",\"id\":\"710183001aa81e61bd20094ab98d5da5\",\"known_at\":\"2026-09-25T08:00:03.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":11,\"prev\":\"1ebb328c2eec80da5d7d06c56097028b248dfe7cae4ec98aeaa26c5e073830f4\",\"v\":18,\"writer\":\"human:owner\"}"
+    },
+    {
+      "shows": "sealed_for_another_source",
+      "about": "`sealed` on a `record_ingested` naming another source than its envelope, which a reader refuses.",
+      "line": "{\"body\":{\"key\":\"c1\",\"kind\":\"record_ingested\",\"made\":true,\"patch\":{\"email\":\"7UznJB/dSYmb/ymD7WMsqVK99xq5zyUwORU0Knp96RoL\",\"id\":\"c1\"},\"type\":\"contact\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"943e4305e3d33c05f4c82ac174eecb1abf5f1aa0ea35212545f608b768a04d11\",\"id\":\"2c936f69cf5a059a0662dd7875cf8886\",\"known_at\":\"2026-10-05T09:00:13.000000Z\",\"lake\":\"vectors\",\"origin\":\"source\",\"position\":42,\"prev\":\"4b792c4366c52f61ea44e2928753a89419d4d1aaa5c7870e5e4083672824a07d\",\"sealed\":{\"fields\":[\"email\"],\"key\":\"1\",\"source\":\"web\"},\"source\":\"crm\",\"v\":18,\"writer\":\"service:crm\"}"
     }
   ]
 }

@@ -193,7 +193,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 587, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 592, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -474,12 +474,13 @@ const LAST: u64 = 78;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
-const MISPLACED: [&str; 5] = [
+const MISPLACED: [&str; 6] = [
     "upstream_on_another_kind",
     "cause_in_context",
     "output_twice",
     "sealed_on_another_kind",
     "delivery_on_another_kind",
+    "sealed_for_another_source",
 ];
 
 /// Whether the event is what its entry of `further.json` says it shows,
@@ -887,6 +888,12 @@ fn every_misplaced_line_is_refused_for_the_member_it_misplaces() {
             "output_twice" => assert_eq!(flaw, Flaw::OutputOnce),
             "sealed_on_another_kind" => assert!(why.contains("carries `sealed`"), "{why}"),
             "delivery_on_another_kind" => assert!(why.contains("carries `delivery`"), "{why}"),
+            "sealed_for_another_source" => assert_eq!(
+                flaw,
+                Flaw::SealsAnother {
+                    sealed: "web".into()
+                }
+            ),
             other => panic!("`further.json` misplaces `{other}`, which this test has no check for"),
         }
     }

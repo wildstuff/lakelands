@@ -762,6 +762,19 @@ release with real installations, to it (`docs/log-format.md` §6;
   Should that open fail, the events stay and a second import is refused
   as `import_not_empty`: the lake is whole, and the next writer's open,
   or `lakelands upgrade`, finishes the upgrade.
+- **A lake made from an edited export is refused at its first 0.17.0
+  open.** A `record_ingested` whose `sealed` names another source than
+  its envelope's is written by no writer, so a lake holds one only
+  through an import of an export someone edited. 0.17.0 rebuilds the
+  projection at that open and refuses the lake as damaged, naming the
+  event (`seals_another` in `docs/refusals.md`); `lakelands rebuild`
+  meets the same line and refuses it the same way. The way out is to
+  import the export as its writer wrote it, or to restore a backup taken
+  before that import: a backup taken after it holds the same line.
+  Until then the release before still opens and exports the lake once
+  its own `lakelands rebuild` has run, since the refused open already
+  laid the projection out anew: before that rebuild it refuses the
+  projection's layout.
 - **A format this release does not read**, older than 14 or newer than
   the release, is refused at the open in every mode, naming the lake,
   the formats read and the one written (`log_format`). The store reads
