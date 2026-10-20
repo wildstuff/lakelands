@@ -607,9 +607,9 @@ impl Lake {
             // Every vocabulary type is checked before anything is appended,
             // held already or not: a process whose vocabulary collides with
             // the store's own names must not write, nor one that changes a
-            // type the lake holds beyond adding fields to it. One the lake
-            // holds without fields the vocabulary has since added is
-            // declared again, as the store's own are below.
+            // type the lake holds beyond adding optional fields to it. One
+            // the lake holds without fields the vocabulary has since added
+            // is declared again, as the store's own are below.
             let mut again = BTreeSet::new();
             for t in &held {
                 crate::declare::check_vocabulary_type(t)?;

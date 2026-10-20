@@ -65,14 +65,21 @@ its vocabulary declares.
 
 Any other change to a type the lake holds is refused at the open,
 writer's or reader's, naming the type and each difference, before
-anything is appended: a field removed, retyped or renamed, a field
-added as required or made optional, the key changed, a relation added,
-removed or changed. Each of these reshapes stored records, or brings
-what a door would judge, and the open makes no migration and judges
-nothing as a door does. It applies none of it, and none in part.
-Whether a host may declare a migration with its vocabulary is not
-decided here. A change of meaning alone, a description or a label,
-moves no shape and is not declared.
+anything is appended, whether a field is added beside it or not: a
+field removed, retyped or renamed, a field added as required or made
+optional, any other member of a field or a relation changed, the key,
+a relation added or removed, a constraint, the type's language, its
+valid time, `insert_only`, `retired_by`, `field_meta`, its annotations
+or the order of its fields. The open compares the host's type with the
+one the lake holds whole, the added optional fields taken out, and
+declares it again only where nothing else differs. Each other change
+reshapes stored records, or asks what a door would judge against
+them, a constraint the records held may break among them; the open
+makes no migration and judges no change as a door does, so it applies
+none of them, and none in part. Whether a host may declare a migration
+with its vocabulary is not decided here. Descriptions and labels move
+no shape and ask nothing of a record: alone they are not declared, and
+beside an added field they are declared with it.
 
 ## Why
 

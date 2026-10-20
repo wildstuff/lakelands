@@ -33,6 +33,6 @@
 mod compat;
 mod convert;
 
-pub use compat::{Change, Reason, classify, reshapes};
+pub use compat::{Change, Reason, classify, differences, reshapes};
 pub use convert::{Conversion, convert, fits, migrate_record, preflight, referring};
 pub use lakelands_api::shape::schema_hash;

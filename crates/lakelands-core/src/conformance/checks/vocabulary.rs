@@ -12,7 +12,7 @@
 //! that changes a held type in any other way is refused at the open.
 
 use lakelands_api::error::Case;
-use lakelands_api::ontology::StorageKind;
+use lakelands_api::ontology::{ConstraintDecl, FieldDecl, StorageKind, TypeDecl};
 use lakelands_api::seam::Seams;
 use lakelands_api::{Access, LakeStore, ReadAt, TypeName};
 use serde_json::json;
@@ -50,14 +50,14 @@ check!(
 
 check!(
     HOST_TYPE_GAINS_A_FIELD = a_host_type_that_gains_a_field_is_declared_again_at_a_writers_open,
-    "003, extended (lakelands#1293), and seams, SystemVocabulary: a lake that holds a host's type without an optional field the host's vocabulary has since added is refused to a reader as `vocabulary_upgrade_owed`, naming the lake and the type; a writer's open declares the type again with the field, in its version after the one held: the record written before reads the same, a write of the new field is applied, a reader then opens the lake, and the next writer's open declares nothing again",
+    "003, extended (lakelands#1293), and seams, SystemVocabulary: a lake that holds a host's type without an optional field the host's vocabulary has since added, its description changed beside it, is refused to a reader as `vocabulary_upgrade_owed`, naming the lake and the type; a writer's open declares the type again with the field, in its version after the one held: the record written before reads the same, a write of the new field is applied, a reader then opens the lake, and the next writer's open declares nothing again",
     given
 );
 
 check!(
     HOST_TYPE_RESHAPED_REFUSES_OPEN =
         a_vocabulary_that_reshapes_a_held_type_refuses_the_writers_open,
-    "003, extended (lakelands#1293), and seams, SystemVocabulary: a host vocabulary that removes a field of a type the lake holds, or retypes one, is refused at the writer's open as invalid, `vocabulary_changed`, naming the type and the change; nothing is appended, and the lake holds the type and its record as before",
+    "003, extended (lakelands#1293), and seams, SystemVocabulary: a host vocabulary that removes a field of a type the lake holds, retypes one, adds a required one, changes its key, or adds a constraint to it, alone or beside an optional field added, is refused at the writer's open as invalid, `vocabulary_changed`, naming the type and the change; nothing is appended, and the lake holds the type and its record as before",
     reopens
 );
 
@@ -161,7 +161,12 @@ async fn a_host_type_that_gains_a_field_is_declared_again_at_a_writers_open(
     let text = || field("text", StorageKind::Text);
     let tone = || field("tone", StorageKind::Text);
     let before = hosting(vec![type_decl(NOTE, vec![text()])]);
-    let after = hosting(vec![type_decl(NOTE, vec![text(), tone()])]);
+    let worded = Some("A note the host keeps.".to_string());
+    let after = TypeDecl {
+        description: worded,
+        ..type_decl(NOTE, vec![text(), tone()])
+    };
+    let after = hosting(vec![after]);
     let store = (given.reopen)(store, before)
         .await
         .map_err(|e| reopened("of `sys.host_note`", e))?;
@@ -262,25 +267,76 @@ async fn a_vocabulary_that_reshapes_a_held_type_refuses_the_writers_open(
     Lake::of(store.as_ref())
         .upsert(NOTE, "n", json!({"text": "kept", "tone": "dry"}))
         .await?;
-    let removed = vec![tone()];
-    let retyped = vec![text(StorageKind::Boolean), tone()];
+    let note = |fields| type_decl(NOTE, fields);
+    let mood = |required| FieldDecl {
+        required,
+        ..field("mood", StorageKind::Text)
+    };
+    let plain = || ConstraintDecl {
+        name: "plain".into(),
+        holds: "text = 'other'".into(),
+        description: None,
+        at_ingest: Default::default(),
+    };
+    let constrained = |fields| TypeDecl {
+        constraints: vec![plain()],
+        ..note(fields)
+    };
+    let keyed = TypeDecl {
+        key: vec!["text".into()],
+        ..note(vec![text(StorageKind::Text), tone()])
+    };
     let removes: fn(&Revision) -> bool =
         |r| matches!(r, Revision::FieldRemoved { field, .. } if field == "text");
     let retypes: fn(&Revision) -> bool =
         |r| matches!(r, Revision::FieldRetyped { field, .. } if field == "text");
-    for (changed, fields, reason, names) in [
-        ("removes `text`", removed, "field_removed", removes),
-        ("retypes `text`", retyped, "field_retyped", retypes),
+    let requires: fn(&Revision) -> bool =
+        |r| matches!(r, Revision::FieldAdded { field, required: true, .. } if field == "mood");
+    let rekeys: fn(&Revision) -> bool = |r| matches!(r, Revision::KeyChanged { .. });
+    let constrains: fn(&Revision) -> bool =
+        |r| matches!(r, Revision::Otherwise { part } if part == "`constraints`");
+    for (changed, decl, reason, names) in [
+        (
+            "removes `text`",
+            note(vec![tone()]),
+            "field_removed",
+            removes,
+        ),
+        (
+            "retypes `text`",
+            note(vec![text(StorageKind::Boolean), tone()]),
+            "field_retyped",
+            retypes,
+        ),
+        (
+            "adds a required `mood`",
+            note(vec![text(StorageKind::Text), tone(), mood(true)]),
+            "field_added",
+            requires,
+        ),
+        ("keys by `text`", keyed, "key_changed", rekeys),
+        (
+            "adds a constraint beside an optional `mood`",
+            constrained(vec![text(StorageKind::Text), tone(), mood(false)]),
+            "otherwise",
+            constrains,
+        ),
+        (
+            "adds a constraint",
+            constrained(vec![text(StorageKind::Text), tone()]),
+            "otherwise",
+            constrains,
+        ),
     ] {
         let before = store.head().await.must("reading the head")?;
-        let answer = reopen(store.clone(), hosting(vec![type_decl(NOTE, fields)])).await;
+        let answer = reopen(store.clone(), hosting(vec![decl])).await;
         let told = answer.as_ref().err().map(|e| format!("{e:?}"));
         ensure!(
             matches!(answer.as_ref().err().and_then(invalid_case),
                 Some(Case::VocabularyChanged { ty, reasons })
                 if ty.as_str() == NOTE && matches!(reasons.as_slice(), [r] if names(r))),
-            "a vocabulary that {changed} of `{NOTE}`, which the lake holds, is refused at the \
-             writer's open as `vocabulary_changed`, naming the type and `{reason}`; it \
+            "a vocabulary that changes `{NOTE}`, which the lake holds, as it {changed} is \
+             refused at the writer's open as `vocabulary_changed`, naming the type and `{reason}`; it \
              answered {told:?}"
         );
         store = reopen(store.clone(), held.clone())

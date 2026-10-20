@@ -732,14 +732,27 @@ release with real installations, to it (`docs/log-format.md` §6;
   written before read as they did, without the new fields, and the next
   write may give them. A reader's open is refused until then, naming the
   lake and the type (`vocabulary_upgrade_owed`). Any other change to a
-  held type is refused at every open, naming the type and what differs
-  (`vocabulary_changed`): a field removed, retyped or renamed, a field
-  added as required, a field made optional, the key changed, a relation
-  added, removed or changed. Nothing of it is applied, and the lake
-  opens with the vocabulary of the release that wrote it. A change of
-  meaning alone (a description, a label) is neither refused nor
-  declared. A type the host adds reaches the lake at the next writer's
-  open, and one it leaves out stays in the lake as it was.
+  held type is refused at every open, alone or beside a field added,
+  naming the type and each difference (`vocabulary_changed`): a field
+  removed, retyped or renamed, a field added as required or made
+  optional, any other member of a field changed (its authority, its
+  derivation, `sensitive`, `searchable`, `erasable`, `embed`), the key,
+  a relation added, removed or changed, a constraint added, changed or
+  removed, the type's `language`, `valid_from` or `valid_to`,
+  `field_meta`, `insert_only`, `retired_by`, its annotations, or the
+  order of its fields. Nothing of it is applied, and the lake opens
+  with the vocabulary of the release that wrote it. Descriptions and
+  labels may change: alone they are not declared, and beside a field
+  added they are declared with it. A type the host adds reaches the
+  lake at the next writer's open, and one it leaves out stays in the
+  lake as it was.
+- **A rolling deploy refuses readers between releases.** A reader of
+  the new release that opens before the new writer has is refused as
+  `vocabulary_upgrade_owed`; a reader of the release before that opens
+  after it is refused as `vocabulary_changed`, since its vocabulary
+  lacks the fields the lake now holds. Upgrade the writer first and the
+  readers right after it, and let a refused reader retry once it runs
+  the new release.
 - **An export of an older release imports**, and the import upgrades
   the new lake the same way, by a writer's open after the events are in.
   Should that open fail, the events stay and a second import is refused
