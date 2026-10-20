@@ -1034,7 +1034,7 @@ catalog! {
         ViewValueNoField { field: FieldName } => "its view computes `{field}`, which has no declared field to land in; a view declares a field for each value it computes, of the kind it holds",
         /// A host vocabulary's type under a name the store keeps.
         VocabularyReserved { #[serde(rename = "type")] ty: TypeName, link: bool } => "the host vocabulary's type `{ty}` is reserved: [{?link}the store derives the link types under `sys.link.` from relations itself|the store keeps it for its own reader]; nothing was appended, and the lake is not opened for writing until the vocabulary names it otherwise",
-        /// A host vocabulary's type the lake holds in a form the vocabulary changes beyond adding fields.
+        /// A host vocabulary's type the lake holds in a form the vocabulary changes beyond adding optional fields.
         VocabularyChanged { #[serde(rename = "type")] ty: TypeName, #[serde(with = "closed::list")] reasons: Vec<Revision> } => "the host vocabulary declares `{ty}` otherwise than the lake holds it ({reasons}); between releases a vocabulary only adds optional fields to a type it declared, so the lake is not opened until the vocabulary declares `{ty}` as the lake holds it, or with optional fields added and nothing else changed but descriptions and labels",
         /// A trigger on a link type of a relation carried by a reference.
         WatchesViaLinks { #[serde(rename = "type")] ty: TypeName, relation: RelationName, via: FieldName, owner: Box<TypeName> } => "it watches `{ty}`, but `{relation}` is carried by a reference field, not by link records; watch `{owner}` with `changed({via})`",
