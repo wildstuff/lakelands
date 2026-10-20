@@ -2716,7 +2716,8 @@ impl<'a> Reader<'a> {
     /// `describe` does not name the verb, and the entry would tell that
     /// its `requires` held (024, extended). Nor is a call there whose
     /// verb, as the lake declares it now or, withdrawn since, did at the
-    /// proposal, asks a grant of its own its reader does not hold (070).
+    /// proposal, asks a grant of its own its reader does not hold (070),
+    /// or reads a setting its reader is not told (063, extended).
     /// A migration's report counts
     /// every owner's records, so a holder of `only` is listed none (051).
     /// A read the engine fails is the listing's error, never an entry
@@ -2897,6 +2898,11 @@ impl<'a> Reader<'a> {
                 let on = o.ty(&v.on);
                 let far = |n: &TypeName| o.ty(n).ok();
                 if on.is_ok_and(|on| !rights::reads_what_verb_reads(sees.who(), on, v, &far)) {
+                    return Ok(None);
+                }
+                // Nor to one not told a setting the verb reads: what its
+                // `requires` decided is the lake's (063, extended).
+                if !sees.told_verb(v) {
                     return Ok(None);
                 }
                 named.push(v.on.clone());

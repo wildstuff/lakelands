@@ -218,9 +218,16 @@ is answered as in a lake that never held it:
   that the set is not declared, as for a set over a field it may not
   read;
 - a verb is not described to it, and its call is refused as not
-  granted, before the record is read;
-- its write of an aging rule is refused as not granted, naming no field,
-  since the run moves records every reader reads.
+  granted, before the record is read; a proposed call of it is not
+  listed to it and is not found when it accepts it;
+- an aging rule's `when` that reads a setting kept for one type or one
+  source is refused as invalid for every author, naming the setting:
+  the run moves records every reader reads, and the author's grants,
+  which would say whether they are told it, are not in the log when
+  the rule runs. A rule written before this is skipped at its run, and
+  the report names the setting as the reason, as it names any other
+  rule that no longer fits. The host's and the lake's own settings are
+  told to everyone and stay readable there.
 
 Telling it a narrowed answer could not be made alike: the condition
 held or not as the lake holds the setting, and nothing it decided can
@@ -229,10 +236,16 @@ tells no more than a direct read of `sys.setting`, which tells such a
 reader no record. A condition evaluated at a read, a view's `where`
 among them, reads the settings as its reader is told them (above). A
 constraint reads no setting, which is refused at its declaration; a
-field derived at the write is the record's (above). An aging rule
-written before this rule is not judged again: its author's grants are
-not in the log, so an operator reads `sys.aging_rule` for one whose
-`when` reads a setting for a type or a source.
+field derived at the write is the record's (above).
+
+The reader's own write still tells it that something reacted: the
+answer's `through` and the position the write lands at cover what the
+write set off, a firing withheld from it among them, since positions
+are no secret
+(`docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`).
+As for a condition over a field it may not read, it learns that
+something reacted, never what: not which trigger or set, nor which
+setting or its value.
 
 ### `lakelands settings` shows them and writes only the lake's
 

@@ -4,9 +4,11 @@
 //!
 //! A rule is a `sys.aging_rule` record, checked by [`check`] when it is
 //! written and again when it runs: the type or its field may have changed
-//! since, and a rule that no longer fits is skipped with the reason, never
-//! run half. Its author's rights are checked once, when it is written
-//! ([`check_authority`]); the run carries them. [`run`] holds the writer's lock for the whole date and reads
+//! since, or a rule written before its condition was held to read no
+//! setting kept for a type or a source may read one, and a rule that no
+//! longer fits is skipped with the reason, never run half. Its author's
+//! rights are checked once, when it is written ([`check_authority`]); the
+//! run carries them. [`run`] holds the writer's lock for the whole date and reads
 //! every live record of a rule's type at the head, restricted ones
 //! included: aging is the host's maintenance, not a principal's read.
 //!
@@ -136,6 +138,15 @@ pub fn check(
         let said = e.case().cloned().expect("a condition's refusal");
         ("when".into(), Box::new(said))
     })?;
+    // The run reads a setting as the lake holds it, for every reader: one
+    // kept for a type or a source is not told to all of them (063).
+    let mut keys = std::collections::BTreeSet::new();
+    derive::settings(&when, &mut keys);
+    let scoped =
+        |k: &String| matches!(lakelands_api::settings::lake_setting(k), Some((_, Some(_))));
+    if let Some(key) = keys.into_iter().find(scoped) {
+        return Err(wrong("when", Case::AgingScopedSetting { key }));
+    }
     Ok(Rule {
         on,
         field,
@@ -149,19 +160,15 @@ pub fn check(
 /// `field` as the system, so the author must hold write on it; and `when`
 /// decides, record by record, whether a field is moved, so every field it
 /// reads is probed and needs the author's right to read it
-/// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`),
-/// and every setting it reads to be told the author, since the run reads
-/// it as the lake holds it (063, extended). Refused as not granted, naming
-/// the field of `on`, or naming none for a setting.
+/// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
+/// Refused as not granted, naming the field of `on`.
 pub fn check_authority(who: &Principal, ontology: &Ontology, rule: &Rule) -> Result<()> {
     let decl = ontology.ty(&rule.on)?;
     // A rule moves every owner's records: never one a holder of `only` writes (051).
     crate::writes::granted(!rights::only_holder(who, decl, ontology))?;
     let patch: Patch = [(rule.field.clone(), rule.to.clone())].into();
     rights::check_write(who, decl, (Door::Verb, None), &patch)?;
-    rights::check_probe(who, decl, derive::reads(&rule.when).iter())?;
-    let sees = lakelands_core::sight::Sight::held(who, ontology);
-    crate::writes::granted(sees.told_settings(&rule.when))
+    rights::check_probe(who, decl, derive::reads(&rule.when).iter())
 }
 
 /// Counts a move the lake refused in `ran`, and lists it while the list

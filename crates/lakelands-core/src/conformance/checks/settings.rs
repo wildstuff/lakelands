@@ -649,7 +649,7 @@ async fn settings_are_paged_counted_and_written_as_told(store: Store, given: Giv
 
 check!(
     SETTING_IN_A_CONDITION = a_condition_reads_a_setting_as_its_reader_is_told_it,
-    "063, extended: a condition judged once for every reader reads `setting('…')` as the lake holds it, and what it decides is told only to a principal told every setting it reads: to a reader kept from `secret`, a lake whose `sort_index.secret` it is not told answers as a twin that never set it a trigger's firing over a type it reads and over a kept view whose `where` reads the setting, a set's membership in a write's answer and in `in_set`, the view read, a verb's `requires` and a value it sets, and an aging rule's `when`, while the owner's write fires both triggers",
+    "063, extended: a condition judged once for every reader reads `setting('…')` as the lake holds it, and what it decides is told only to a principal told every setting it reads: to a reader kept from `secret`, a lake whose `sort_index.secret` it is not told answers as a twin that never set it a trigger's firing over a type it reads and over a kept view whose `where` reads the setting, a set's membership in a write's answer (fired, joined and left; not its position) and in `in_set`, the view read, a verb's `requires` and a value it sets, the owner's proposed call of that verb listed and accepted by the reader, and an aging rule whose `when` reads it, refused for every author, while the owner's write fires both triggers",
     given
 );
 
@@ -725,11 +725,13 @@ async fn conditions_told(
         Outcome::Applied { set_off, .. } => set_off.fired.iter().map(|t| t.to_string()).collect(),
         _ => Vec::new(),
     };
-    let grants =
-        json!({"default": "write", "restricted": true, "types": {"secret": {"default": "none"}}});
+    let grants = json!({"default": "write", "restricted": true, "review": true,
+        "types": {"secret": {"default": "none"}}});
     let (arch, cat) = (holder(s, "arch", grants), l.cat.as_ref());
     let said = |r: lakelands_api::Result<Outcome>| match r {
-        Ok(Outcome::Applied { set_off, .. }) => format!("{:?} {:?}", set_off.fired, set_off.joined),
+        Ok(Outcome::Applied { set_off: s, .. }) => {
+            format!("{:?} {:?} {:?}", s.fired, s.joined, s.left)
+        }
         r => format!("{:?}", r.err()),
     };
     let found = async |ty: &str, filter: &str| {
@@ -763,6 +765,20 @@ async fn conditions_told(
         told.push(said(called.await));
     }
     told.push(found("bare", "m = 'y'").await);
+    // The owner's proposed call of `v`, which the twin refuses to propose:
+    // not listed, and not found to accept.
+    let call = lakelands_api::write::ProposedWrite::Call {
+        verb: "v".into(),
+        key: Some("o".into()),
+        payload: patch(json!({})),
+        opts: Default::default(),
+    };
+    let accepted = match cat.propose(&l.own, call, "why".into()).await {
+        Ok(Outcome::Proposed { proposal, .. }) => cat.accept(&arch, &proposal).await.is_ok(),
+        _ => false,
+    };
+    let listed = cat.proposals(&arch, Default::default()).await;
+    told.push(format!("{:?} {accepted}", listed.map(|p| p.data.len())));
     let rule =
         json!({"name": "r", "on": "bare", "field": "m", "from": "a", "to": "b", "when": READ});
     let ruled = try_upsert(cat, &arch, lakelands_api::seam::AGING_RULE_TYPE, "r", rule).await;

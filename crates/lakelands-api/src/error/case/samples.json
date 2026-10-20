@@ -1586,6 +1586,10 @@
    "code": "aging_same_value"
   },
   {
+   "code": "aging_scoped_setting",
+   "key": "s"
+  },
+  {
    "code": "aging_system_type",
    "type": "t"
   },
