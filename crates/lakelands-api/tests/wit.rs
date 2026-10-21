@@ -1692,8 +1692,10 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
         use lakelands_api::write::Selection;
         fn guard(s: &Selection) {
             match s {
-                Selection::WrittenBefore(_) | Selection::Delivery(_) | Selection::SeenBefore(_) => {
-                }
+                Selection::WrittenBefore(_)
+                | Selection::Delivery(_)
+                | Selection::SeenBefore(_)
+                | Selection::Deliveries(_) => {}
             }
         }
         let _ = guard;
@@ -1702,6 +1704,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             Selection::WrittenBefore(t),
             Selection::Delivery("d".into()),
             Selection::SeenBefore(t),
+            Selection::Deliveries(Vec::new()),
         ];
         checks.push(("selection", case_names(&all, None)));
     }

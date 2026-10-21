@@ -22,7 +22,13 @@ check!(
 
 check!(
     REMOVED_DELIVERY = a_delivery_taken_back_reads_as_erased_and_a_later_one_stays,
-    "065: `remove_values` of one delivery, by the caller's id or by the store's own, takes what its events wrote and nothing else: a record the same source wrote again in a later delivery keeps those values from that event on and reads as erased before it, a record only that delivery wrote is retired, a redelivery of the same values under another id appended nothing and so selects nothing, and a later delivery under the same id stays, until the act is asked again, which takes that delivery and only it"
+    "065: `remove_values` of one delivery, by the caller's id or by the store's own, takes what its events wrote and nothing else: a record the same source wrote again in a later delivery keeps those values from that event on and reads as erased before it, a record only that delivery wrote is retired, a redelivery of the same values under another id appended nothing and so selects nothing, and a later delivery under the same id stays, until the act is asked again, which takes that delivery and only it; a set of deliveries is one act that takes each as its single act would, an id the log never held selecting nothing and the empty set nothing at all, appending nothing"
+);
+
+check!(
+    REMOVED_SET = a_set_of_deliveries_counts_as_its_single_acts,
+    "065 (twins): `tracker` delivers `mon`, writing `v1` and `v2`, and `tue`, writing `v1` again with a place and `v3`, which an author's note keeps; taking back the set in one lake and `mon` then `tue` in its twin leaves each record read alike; the set counts the events and values the single acts sum to, 4 events, `duration` 4 and `place` 1, a record reached by both once, 3 against 4, retires what the last single act leaves retired, `v1` and `v2`, and keeps `v3` alone, which the single acts count with `v1`, 1 against 2",
+    given
 );
 
 check!(
@@ -510,6 +516,107 @@ async fn a_delivery_taken_back_reads_as_erased_and_a_later_one_stays(store: Stor
         again.events == 1 && v5.is_none(),
         "taking `b1` back again selects the one later event, and retires `v5`: {again:?}, \
          {v5:?}"
+    );
+    let head = store.head().await.must("reading the head")?;
+    let empty = Selection::Deliveries(vec![]);
+    let said = store.remove_values_preflight(&tracker, &empty).await;
+    let said = said.must("the preflight of the empty set")?;
+    let done = store.remove_values(&tracker, &empty, false, None).await;
+    let done = done.must("removing the empty set")?;
+    let after = store.head().await.must("reading the head")?;
+    ensure!(
+        said.events == 0 && done.events == 0 && after == head,
+        "the empty set selects nothing and appends nothing: {said:?}, {done:?}, the head moved \
+         from {head} to {after}"
+    );
+    // A set of deliveries is one act: an id the log never held selects
+    // nothing, and the rest are taken as their single acts would take them.
+    let (b4, _) = deliver(Some("b4"), &[("v6", v("v6", 60))]).await?;
+    let set = Selection::Deliveries(["b2", "never", "b4"].map(DeliveryId::from).to_vec());
+    let said = store.remove_values_preflight(&tracker, &set).await;
+    let said = said.must("the preflight of b2, never and b4")?;
+    let report = store.remove_values(&tracker, &set, false, None).await;
+    let report = report.must("removing b2, never and b4")?;
+    let left = (
+        read_all(&l, None).await?,
+        acts(store.as_ref(), b4).await?.len(),
+    );
+    ensure!(
+        said.events == 3 && report.events == 3 && left == (vec![json!(null); 6], 1),
+        "the set selects `b2`'s two events and `b4`'s one in one act, and retires `v1`, `v3` and \
+         `v6`: the preflight {said:?}, the act {report:?}, then every visit and the acts after \
+         `b4` {left:?}"
+    );
+    Ok(())
+}
+
+async fn a_set_of_deliveries_counts_as_its_single_acts(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    store.head().await.must("reading the head")?;
+    let twin = (given.twin)(store.lake().clone(), Default::default()).await;
+    let twin = twin.map_err(|e| Failure::new(format!("the harness opened no twin: {e}")))?;
+    let tracker: SourceId = "tracker".into();
+    let v = |k: &str, f: Value| source_record("visit", k, f);
+    for s in [&store, &twin] {
+        let l = Lake::of(s.as_ref());
+        visits(&l).await?;
+        let mon = vec![
+            v("v1", json!({"id": "v1", "duration": 10})),
+            v("v2", json!({"id": "v2", "duration": 20})),
+        ];
+        let tue = vec![
+            v("v1", json!({"id": "v1", "duration": 10, "place": "Rome"})),
+            v("v3", json!({"id": "v3", "duration": 30})),
+        ];
+        for (id, records) in [("mon", mon), ("tue", tue)] {
+            let opts = IngestOpts {
+                delivery: Some(id.into()),
+                ..IngestOpts::default()
+            };
+            let said = lakelands_api::ingest_all_with(&*l.cat, &l.own, &tracker, opts, records);
+            said.await.must("ingesting a delivery")?;
+        }
+        l.upsert("visit", "v3", json!({"note": "seen"})).await?;
+    }
+    let set = Selection::Deliveries(["mon", "tue"].map(DeliveryId::from).to_vec());
+    let whole = store.remove_values(&tracker, &set, false, None).await;
+    let whole = [whole.must("removing the set")?];
+    let mut singles = Vec::new();
+    for d in ["mon", "tue"] {
+        let one = Selection::Delivery(d.into());
+        let done = twin.remove_values(&tracker, &one, false, None).await;
+        singles.push(done.must("removing one delivery")?);
+    }
+    // What the reports count, summed.
+    let tally = |rs: &[RemoveReport]| {
+        let mut values = std::collections::BTreeMap::<&str, u64>::new();
+        for f in rs.iter().flat_map(|r| &r.fields) {
+            *values.entry(f.field.as_str()).or_default() += f.redacted;
+        }
+        let sum = |n: fn(&RemoveReport) -> u64| rs.iter().map(n).sum::<u64>();
+        json!({
+            "events": sum(|r| r.events),
+            "values": values,
+            "records": sum(|r| r.types.iter().map(|t| t.records).sum()),
+            "retired": sum(|r| r.retired.iter().map(|t| u64::from(t.retired)).sum()),
+            "kept": sum(|r| r.kept.iter().map(|t| t.records).sum()),
+        })
+    };
+    let counts = |records: u64, kept: u64| {
+        json!({"events": 4, "values": {"duration": 4, "place": 1}, "records": records,
+               "retired": 2, "kept": kept})
+    };
+    let (one, two) = (
+        read_all(&Lake::of(store.as_ref()), None).await?,
+        read_all(&Lake::of(twin.as_ref()), None).await?,
+    );
+    let (set, acts) = (tally(&whole), tally(&singles));
+    ensure!(
+        one == two && set == counts(3, 1) && acts == counts(4, 2),
+        "the set leaves each record as its single acts leave it, and counts a record they both \
+         reach once: the set {set}, the single acts {acts}; read {one:?} and {two:?}"
     );
     Ok(())
 }

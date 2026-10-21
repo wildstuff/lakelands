@@ -1070,7 +1070,9 @@ A lake reads the backend `Seams::embed` brings at open, or the one a
 host binds later on the open lake with `LakeStore::bind_embed`, which
 replaces it whatever its model
 (`docs/decisions/022-functions-are-declarations.md`, extended). A bind
-appends nothing and makes nothing due. A batch reads the bound backend
+appends nothing itself; it, and a writer's open with the backend, makes
+what waits on its model in a task of its own, a recorded failure aside.
+A batch reads the bound backend
 when it asks and holds it until it is answered, so a bind meanwhile
 reaches the next batch. `bind_embed` is the host's alone: the
 network doors answer it `Unbound` as a host operation, no tool of the
@@ -1141,9 +1143,10 @@ record (`docs/decisions/022-functions-are-declarations.md`, extended):
   since declared unchanged it makes nothing due; `recompute` of the type
   always needs one. A due embedding whose backend is
   gone, or names another model or other dimensions, when the call would
-  be made is not made; the field waits. It is made when its record is
-  written again, or `recompute` names its type, with the backend bound;
-  opening the lake calls nothing, and neither does a bind. A retried embedding waits the
+  be made is not made; the field waits. It is made, with the backend
+  bound, when its record is written again, `recompute` names its type,
+  or a writer's open or a bind brings that backend, which make the
+  waiting calls and call no failure again. A retried embedding waits the
   same way: it reads as waiting (no value, no metadata) though the
   log's latest output for its text is still the failure.
 - The text is the `from` fields' values, in declared order, joined with
@@ -2336,12 +2339,12 @@ a facade that does not carry them, as `lakelands-client` does.
 
 `LakeStore::remove_values(source, selection, require_shredded,
 report_id)` takes back what a source wrote before a time, in one
-delivery, or of what it observed before a time
+delivery or a set of them, or of what it observed before a time
 (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`), in the
 same steps and with the same answer of an owed reclaim;
 `remove_values_preflight` answers its report, appending nothing. It is
 no door's either. The CLI's `lakelands values remove --source <id>
-(--before <instant> | --delivery <id> | --seen-before <instant>)
+(--before <instant> | --delivery <id>… | --seen-before <instant>)
 [--require-shredded]
 [--preflight | --report <id>]` runs it. A mirror that meets
 `values_removed` stops each mapped type with a field its reader reads

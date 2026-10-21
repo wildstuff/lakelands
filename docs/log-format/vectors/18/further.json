@@ -426,6 +426,12 @@
       "about": "A `declared` verb `void` on `voucher`, `granted` (070): only a caller whose grants on `voucher` name `void` calls it, proposes it or is shown it. A form format 18 holds and 17 does not.",
       "line": "{\"body\":{\"declaration\":{\"declare\":\"verb\",\"effect\":\"retire\",\"granted\":true,\"name\":\"void\",\"on\":\"voucher\",\"risk\":\"low\"},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"dd1439eaf61c85f17b0ce0bbb1683ea58132ea26abca66912df516f775d0cf78\",\"id\":\"0000000000000000000000000000004e\",\"known_at\":\"2026-10-05T09:00:43.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":78,\"prev\":\"dfb8d1f7c23c2310e3aef344cf37ff53e8095d5c195826c72330c2414c3fe8e8\",\"v\":18,\"writer\":\"agent:agent\"}",
       "hash": "dd1439eaf61c85f17b0ce0bbb1683ea58132ea26abca66912df516f775d0cf78"
+    },
+    {
+      "shows": "removed_deliveries",
+      "about": "A `values_removed` taking back `erp`'s deliveries `batch-7` and `d68` in one act (065, lakelands#1290): the set's ids in order, each once, and no `before`. The acts at 66 and 69 took both deliveries' values, so it destroys no key and retires nothing. A selection format 18 holds and 17 does not.",
+      "line": "{\"body\":{\"kind\":\"values_removed\",\"selection\":{\"deliveries\":[\"batch-7\",\"d68\"]},\"source\":\"erp\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"edf954e3b1ed5475c9299dbabde4ab29c042e944f37e5f3aa6702c178fb905f0\",\"id\":\"0000000000000000000000000000004f\",\"known_at\":\"2026-10-05T09:00:44.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":79,\"prev\":\"dd1439eaf61c85f17b0ce0bbb1683ea58132ea26abca66912df516f775d0cf78\",\"v\":18,\"writer\":\"system:lakelands\"}",
+      "hash": "edf954e3b1ed5475c9299dbabde4ab29c042e944f37e5f3aa6702c178fb905f0"
     }
   ],
   "misplaced": [

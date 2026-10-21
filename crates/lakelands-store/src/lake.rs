@@ -1755,6 +1755,7 @@ impl Lake {
             let sweep = Of::Sweep {
                 after: None,
                 retried: (!renames).then(BTreeSet::new),
+                waiting: false,
             };
             w.owed.push(Owed::new(event, ty, sweep));
         }

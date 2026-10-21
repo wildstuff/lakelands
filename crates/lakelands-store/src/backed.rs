@@ -44,6 +44,7 @@ use std::sync::Arc;
 use lakelands_api::engine::{After, ProjectionView, Scan};
 use lakelands_api::error::{Case, Exchange, Flaw, Part, Remote, Situation};
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
+use lakelands_api::expr::Expr;
 use lakelands_api::ontology::{EmbedDecl, FieldDecl, TypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, Patch};
 use lakelands_api::seam::{Accepted, CallCause, EmbedBackend, FunctionCall};
@@ -932,6 +933,11 @@ pub enum Of {
         /// The calls whose failure it called again; `None` after a value
         /// type's rename, whose sweep makes the waiting calls and no other.
         retried: Option<BTreeSet<(String, Digest)>>,
+        /// Whether it reads only the records an embedding of the bound
+        /// backend's model and dimensions is empty on, and makes those
+        /// embeddings' waiting calls alone: what fell due while no backend
+        /// made it ([`make_waiting`]).
+        waiting: bool,
     },
 }
 
@@ -974,6 +980,7 @@ impl Owed {
                 let of = Of::Sweep {
                     after: None,
                     retried: Some(BTreeSet::new()),
+                    waiting: false,
                 };
                 (ty, function, None, of)
             }
@@ -1087,7 +1094,9 @@ fn bound(lake: &Lake, call: &Call) -> bool {
 /// page ends the entry. Read under the writer taken for a write, released
 /// after the page. A record owes what [`settle_fields`] makes due over it
 /// as it stands, forced in a sweep, and a waiting field whose output is
-/// recorded. An entry whose type is gone ends.
+/// recorded; a waiting sweep reads only the records an embedding of the
+/// bound backend is empty on, and owes those embeddings alone. An entry
+/// whose type is gone ends.
 #[allow(clippy::type_complexity)]
 pub fn page(lake: &Lake, o: &Owed) -> Result<(Vec<(RecordKey, Vec<(Due, Option<Value>)>)>, bool)> {
     let w = lake.for_write()?;
@@ -1095,16 +1104,23 @@ pub fn page(lake: &Lake, o: &Owed) -> Result<(Vec<(RecordKey, Vec<(Due, Option<V
     let Ok(decl) = w.ontology.ty(&o.ty) else {
         return Ok((Vec::new(), true));
     };
+    let made = match o.of {
+        Of::Sweep { waiting: true, .. } => made_here(lake, decl),
+        _ => Vec::new(),
+    };
     let (rows, end) = match &o.of {
         Of::Record(key) => (view.get(&o.ty, key)?.into_iter().collect(), true),
+        Of::Sweep { waiting: true, .. } if made.is_empty() => (Vec::new(), true),
         Of::Sweep { after, .. } => {
             let after = after.clone().map(|key| After {
                 values: vec![],
                 key,
             });
+            let filter = (!made.is_empty()).then(|| empty_on(&made));
             let scan = Scan {
                 limit: EMBED_BATCH as u32,
                 after,
+                filter,
                 ..crate::lake::every(false)
             };
             let rows = view.scan(&o.ty, &scan)?;
@@ -1150,6 +1166,9 @@ pub fn page(lake: &Lake, o: &Owed) -> Result<(Vec<(RecordKey, Vec<(Due, Option<V
                 sweep,
                 &mut outputs,
             )?;
+            if !made.is_empty() {
+                due.retain(|d| made.contains(&d.field));
+            }
         }
         let mut owes = Vec::new();
         for mut d in due {
@@ -1221,6 +1240,156 @@ impl Batch {
         (self.calls.first())
             .is_some_and(|(_, d, _)| model(&d.call).is_none() || self.calls.len() >= EMBED_BATCH)
     }
+}
+
+/// The embedding fields of `decl` the backend bound now makes.
+fn made_here(lake: &Lake, decl: &TypeDecl) -> Vec<FieldName> {
+    let Some(e) = lake.embed() else {
+        return Vec::new();
+    };
+    let makes = |f: &&FieldDecl| {
+        f.embed.as_ref().is_some_and(|m| m.model == e.model())
+            && f.ty.dimensions == Some(e.dimensions())
+    };
+    decl.fields
+        .iter()
+        .filter(makes)
+        .map(|f| f.name.clone())
+        .collect()
+}
+
+/// A record that holds no value of one of `fields` or more.
+fn empty_on(fields: &[FieldName]) -> Expr {
+    let empty = fields.iter().map(|f| Expr::IsNull {
+        arg: Box::new(Expr::Path {
+            path: vec![f.clone()],
+        }),
+    });
+    Expr::Or {
+        args: empty.collect(),
+    }
+}
+
+/// Make what fell due to the embedding backend bound now while none made
+/// it: on a writer, each type with an embedding of its model and
+/// dimensions that a live record holds none of is owed a sweep of those
+/// records, unless a sweep of the type is owed already (one that waits
+/// reads from the first record again, for the backend bound now), and a
+/// task of its own makes the
+/// waiting calls, a batch at a time, while the lake is open. A call that
+/// failed is not made again; `recompute` makes it. Outside a runtime the
+/// sweeps stay owed, made as orphans by the writes after. A handle the
+/// host drops gives its lease up once the batch in flight is recorded.
+pub fn make_waiting(lake: &Arc<Lake>) {
+    let own = match owe_waiting(lake) {
+        Ok(own) if !own.is_empty() => own,
+        _ => return,
+    };
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let weak = Arc::downgrade(lake);
+    runtime.spawn(async move {
+        let mine = |o: &Owed| own.contains(&o.cause);
+        while let Some(lake) = weak.upgrade() {
+            let _waits = Waits::new(&lake, &own);
+            let _lane = lake.calls.lock().await;
+            if !lake.writer().owed.iter().any(mine) {
+                return;
+            }
+            let Ok(batch) = take(&lake, &mine).await else {
+                return;
+            };
+            if make(&lake, batch).await.is_err() {
+                return;
+            }
+        }
+    });
+}
+
+/// The sweeps [`make_waiting`] owes, each caused by its type's
+/// declaration in force, and those causes.
+fn owe_waiting(lake: &Lake) -> Result<BTreeSet<Position>> {
+    let mut own = BTreeSet::new();
+    if !lake.is_writer() || lake.embed().is_none() {
+        return Ok(own);
+    }
+    let view = lake.engine.view(None)?;
+    let mut w = lake.writer();
+    let mut owed = Vec::new();
+    let w = &mut *w;
+    for (ty, entry) in &w.ontology.types {
+        let made = made_here(lake, &entry.decl);
+        let mut swept = false;
+        for o in w.owed.iter_mut().filter(|o| o.ty == *ty) {
+            if let Of::Sweep { after, waiting, .. } = &mut o.of {
+                swept = true;
+                if *waiting {
+                    *after = None;
+                }
+            }
+        }
+        if made.is_empty() || swept {
+            continue;
+        }
+        let mut scan = Scan {
+            filter: Some(empty_on(&made)),
+            limit: EMBED_BATCH as u32,
+            ..crate::lake::every(false)
+        };
+        let waits = loop {
+            let rows = view.scan(ty, &scan)?;
+            let text = |r: &lakelands_api::record::StoredRecord| {
+                (entry.decl.fields.iter())
+                    .filter(|f| {
+                        made.contains(&f.name) && r.fields.get(&f.name).is_none_or(Value::is_null)
+                    })
+                    .any(|f| {
+                        f.embed
+                            .as_ref()
+                            .and_then(|e| embed_text(e, &r.fields))
+                            .is_some()
+                    })
+            };
+            if rows.iter().any(text) {
+                break true;
+            }
+            match rows.last() {
+                Some(last) if rows.len() == EMBED_BATCH => {
+                    scan.after = Some(After {
+                        values: vec![],
+                        key: last.key.clone(),
+                    });
+                }
+                _ => break false,
+            }
+        };
+        if !waits {
+            continue;
+        }
+        let by = By {
+            at: entry.since,
+            writer: "system:lakelands".to_owned(),
+            source: None,
+        };
+        owed.push(Owed {
+            ty: ty.clone(),
+            cause: entry.since,
+            context: WriteContext::default(),
+            of: Of::Sweep {
+                after: None,
+                retried: None,
+                waiting: true,
+            },
+            moved: 0,
+            by,
+            decided: None,
+            proposing: BTreeMap::new(),
+        });
+        own.insert(entry.since);
+    }
+    w.owed.extend(owed);
+    Ok(own)
 }
 
 /// Call the backings for what the write behind `own` owes, and record each

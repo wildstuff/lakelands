@@ -45,6 +45,12 @@ check!(
 );
 
 check!(
+    APART_DELIVERIES = a_set_of_deliveries_shreds_what_it_takes_whole,
+    "065 (lakelands#1290): `crm` writes `p1` in the delivery `mon` and `p2` in `tue` under its one version, and `p3` in `late`, sealed apart; the preflight of taking back `mon` alone names no version and counts its name redacted only, while the set of `mon`, `tue` and `late` names the version and `late`'s key and counts `name` 3 redacted, 3 shredded and none redacted only; with `require_shredded` the set's act destroys both, the key store holding no version of `crm` and no key apart",
+    reopens
+);
+
+check!(
     APART_STREAMING = a_call_writing_past_an_act_takes_a_new_key_apart,
     "065 (lakelands#1214): an ingest of the delivery `late`, sealed apart, writes `p2` in its first window and then waits; an act taking `late` back lands before its next window, its key store failing to destroy `late`'s key, so the act answers the failure with the key held; the call then writes `p3`, whose `sealed.apart` names a new key, not the one the act named, since the act did not select it; after the writer's next open finishes the act, `p2` reads its name erased and `p3` reads Cy, as do a writer opened again and a rebuild",
     reopens
@@ -648,6 +654,59 @@ impl futures_core::Stream for Gate {
         }
         std::task::Poll::Ready(held.rest.next())
     }
+}
+
+async fn a_set_of_deliveries_shreds_what_it_takes_whole(store: Store, reopen: Reopen) -> Held {
+    let keys = Arc::new(Keys::default());
+    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(person()).await?;
+    let crm: SourceId = "crm".into();
+    let p = |k: &str, name: &str| source_record("person", k, json!({"id": k, "name": name}));
+    for (id, record) in [("mon", p("p1", "Ada")), ("tue", p("p2", "Bea"))] {
+        let opts = IngestOpts {
+            delivery: Some(id.into()),
+            sealed_apart: false,
+        };
+        let said = lakelands_api::ingest_all_with(&*l.cat, &l.own, &crm, opts, vec![record]);
+        said.await.must("ingesting a delivery")?;
+    }
+    let v1 = first(&keys, store.as_ref(), "crm")?;
+    apart(&l, "late", vec![p("p3", "Cy")]).await?;
+    let a = keys.apart(store.lake(), &crm);
+    let mon = Selection::Delivery("mon".into());
+    let alone = store.remove_values_preflight(&crm, &mon).await;
+    let alone = alone.must("the preflight of `mon`")?;
+    let set = Selection::Deliveries(["mon", "tue", "late"].map(Into::into).to_vec());
+    let report = store.remove_values_preflight(&crm, &set).await;
+    let report = report.must("the preflight of the set")?;
+    let fields: Vec<_> = (report.fields.iter())
+        .map(|f| (f.field.as_str(), f.redacted, f.shredded))
+        .collect();
+    ensure!(
+        alone.keys.is_empty()
+            && alone.unshredded == 1
+            && report.keys == [v1.clone()]
+            && report.apart == a
+            && a.len() == 1
+            && fields == [("name", 3, 3)]
+            && report.unshredded == 0,
+        "`mon` alone destroys no version and leaves its name redacted only: {alone:?}; the set \
+         destroys {v1} and the key apart {a:?}, counting `name` 3 redacted, 3 shredded: {report:?}"
+    );
+    store
+        .remove_values(&crm, &set, true, None)
+        .await
+        .must("taking the set back, shredded")?;
+    let ids = keys
+        .ids(store.lake(), &crm)
+        .must("listing crm's versions")?;
+    let left = keys.apart(store.lake(), &crm);
+    ensure!(
+        ids.is_empty() && left.is_empty(),
+        "the act destroys {v1} and {a:?}: the key store holds {ids:?} and {left:?}"
+    );
+    Ok(())
 }
 
 async fn a_call_writing_past_an_act_takes_a_new_key_apart(store: Store, reopen: Reopen) -> Held {

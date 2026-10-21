@@ -401,7 +401,8 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   report_id)` takes what a
   source wrote before a time (`Selection::WrittenBefore`, the log's
   clock), in one delivery (`Selection::Delivery`, the id `ingest`
-  answered) or of what it says it observed before a time
+  answered) or any of a set of them in one act
+  (`Selection::Deliveries`), or of what it says it observed before a time
   (`Selection::SeenBefore`, its `seen_at`), and nothing another hand
   wrote. It appends `values_removed`, retires each record the source
   made left holding nothing of another hand, rebuilds and reclaims, all
@@ -412,7 +413,8 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   (a breach of `required` naming the field), and how long it expects to
   hold the lock. `RemoveReport::said` says it in sentences. The CLI's
   `lakelands values remove --source <id> (--before <instant> |
-  --delivery <id> | --seen-before <instant>) [--require-shredded]`
+  --delivery <id>… | --seen-before <instant>) [--require-shredded]`,
+  `--delivery` given once or more,
   prints those sentences, and acts only with `--report <id>`, the
   preflight's, as `forget` does. What the host is told:
   - **a redacted value** is read by no door at any position, `as_of`
@@ -1104,9 +1106,11 @@ A host that already has a store of its own moves in four steps.
   again as in force, or grown beside its embedding, is admitted, and one
   grown turns the embedding's recorded failures into waiting fields,
   their `error` gone, until the bind and `recompute`. The
-  bind appends nothing and makes nothing due: after it, call `recompute`
-  for each type whose `vector_coverage` shows records due, which also
-  calls again for a failure recorded while the model was away. A second
+  bind, as a writer's open with the model, makes what waited on it in a
+  task of its own, and `vector_coverage` counts those records due until
+  it is through (lakelands#1296). It does not call again for a failure
+  recorded while the model was away: call `recompute` for each type
+  whose `vector_coverage` still shows records due. A second
   bind replaces the first, whatever its model; a field of the old model
   then waits, and a search over it is refused as `Unbound`, until its
   type is declared with the new one. Over the network doors `bind_embed`

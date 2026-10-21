@@ -1026,6 +1026,24 @@ async fn vec_of(l: &Lake, key: &str) -> Option<Value> {
     got.expect("the note").data.fields.get("vec").cloned()
 }
 
+/// The one request the open of a lake of [`waiting`] makes.
+fn made() -> Vec<String> {
+    ["a", "b", "c"].map(str::to_owned).to_vec()
+}
+
+/// Returns once `store` owes no embedding of `note`: what its open made
+/// due is made in a task of the open's own.
+async fn settled(store: &dyn LakeStore) {
+    for _ in 0..600 {
+        let covered = store.vector_coverage(&"note".into()).await.unwrap();
+        if covered.iter().all(|c| c.due == 0) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("`note` still owes an embedding");
+}
+
 /// The lake `name` on `opener` with `counting` bound as its embedding
 /// backend.
 async fn embedded(
@@ -1091,9 +1109,9 @@ async fn waiting(name: &str, dir: &std::path::Path) -> (Arc<Probe>, MemoryOpener
 }
 
 /// Row 14. A fold of the log makes no call due (lakelands#604): a writer
-/// that opens over the whole log, its rebuild and an import hold none, and
-/// the backend is called for nothing of the log. The next write on the
-/// import is the one call.
+/// that opens over the whole log, its rebuild and an import hold none. The
+/// store's open of the import makes what waits, by one request of the
+/// three texts (lakelands#1296), and the next write is the one call after.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_fold_of_the_log_makes_no_call_due() {
     let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
@@ -1116,16 +1134,20 @@ async fn a_fold_of_the_log_makes_no_call_due() {
     let imported = lakelands_store::import(location, seams(other.clone()), dir.clone()).await;
     imported.expect("the import");
     let store = embedded("behind-of-the-log", other, &counting).await;
+    settled(store.as_ref()).await;
     let l = Lake::of(store.as_ref());
     applied(noted(&l, "z", None).await);
-    assert_eq!(*counting.texts.lock().unwrap(), [vec!["z".to_owned()]]);
-    assert_eq!(vec_of(&l, "a").await, None, "`a` waits");
+    assert_eq!(
+        *counting.texts.lock().unwrap(),
+        [made(), vec!["z".to_owned()]]
+    );
+    assert!(vec_of(&l, "a").await.is_some(), "`a` is made");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Row 15. A rebuild that stops is continued by the next write, and that
-/// write's catch-up makes no call due: the backend is called for the write
-/// alone.
+/// write's catch-up makes no call due: after the open made what waited,
+/// the backend is called for the write alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_write_that_continues_a_stopped_rebuild_calls_for_itself_alone() {
     let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
@@ -1141,13 +1163,17 @@ async fn a_write_that_continues_a_stopped_rebuild_calls_for_itself_alone() {
     };
     let opened = lakelands_store::open(Location::memory("behind-stopped"), seams, OpenMode::Write);
     let store = opened.await.expect("the lake, for writing");
+    settled(store.as_ref()).await;
     *probe.refuse_commit.lock().unwrap() = Some(1);
     store.rebuild().await.expect_err("the rebuild stops");
     let l = Lake::of(store.as_ref());
     applied(noted(&l, "z", None).await);
-    assert_eq!(*counting.texts.lock().unwrap(), [vec!["z".to_owned()]]);
+    assert_eq!(
+        *counting.texts.lock().unwrap(),
+        [made(), vec!["z".to_owned()]]
+    );
     assert_eq!(vec_of(&l, "z").await, Some(json!([1, 0])));
-    assert_eq!(vec_of(&l, "a").await, None, "`a` waits");
+    assert!(vec_of(&l, "a").await.is_some(), "`a` is made");
 }
 
 /// Row 16. The one fold of the log that makes calls due is the one that

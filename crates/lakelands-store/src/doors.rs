@@ -48,9 +48,14 @@ type Clocked = (ReadAt, Option<Timestamp>);
 /// (and any seams it binds) in `seams`; the store depends on no engine.
 pub async fn open(location: Location, seams: Seams, mode: OpenMode) -> Result<Arc<dyn LakeStore>> {
     let lake = exec::run(move || Lake::open(&location, seams, mode)).await?;
-    Ok(Arc::new(Store {
-        lake: Arc::new(lake),
-    }))
+    let lake = Arc::new(lake);
+    let owing = lake.clone();
+    exec::run(move || {
+        crate::backed::make_waiting(&owing);
+        Ok(())
+    })
+    .await?;
+    Ok(Arc::new(Store { lake }))
 }
 
 /// The log format the newest event of the lake at `location` is written
@@ -1074,6 +1079,16 @@ impl LakeStore for Store {
 
     fn bind_embed(&self, backend: Arc<dyn lakelands_api::seam::EmbedBackend>) -> Result<()> {
         self.lake.bind_embed(backend);
+        // The sweep reads the lake: on the blocking pool, so the bind
+        // answers at once.
+        let lake = self.lake.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => drop(runtime.spawn(exec::run(move || {
+                crate::backed::make_waiting(&lake);
+                Ok(())
+            }))),
+            Err(_) => crate::backed::make_waiting(&lake),
+        }
         Ok(())
     }
 

@@ -3,15 +3,16 @@
 ## What is decided
 
 Decided by the operator on lakelands#1153; it is built in 0.16.0, and a
-delivery sealed apart and a selection by the time the source observed in
-0.17.0 (lakelands#1214, lakelands#1166). It
+delivery sealed apart, a selection by the time the source observed and a
+set of deliveries in one act in 0.17.0 (lakelands#1214, lakelands#1166,
+lakelands#1290). It
 stands beside 039, which retracts a source as one, and 058, which
 forgets a source whole.
 
-### A host takes back part of a source: what it wrote before a time, one delivery, or what it saw before a time
+### A host takes back part of a source: what it wrote before a time, in one delivery or a set of them, or what it saw before a time
 
 `remove_values(source, selection)` removes the values the source wrote
-in the selection from the records they live in. There are three
+in the selection from the records they live in. There are four
 selections:
 - **`written_before: T`:** the source's `record_ingested` events whose
   `known_at` is before `T`. The log's clock never falls, so this is every
@@ -23,6 +24,17 @@ selections:
   gave, or the store's own (`d` and the position of its first event),
   answered by `ingest`. An event from before format 17 carries none, so
   no delivery selects it, and the report counts such events.
+- **`deliveries: [D, …]`:** the source's events of any of a set of
+  deliveries, in one act (lakelands#1290). A host taking back many
+  deliveries would otherwise pay the walk of the log and the rebuild once
+  for each; the set pays them once. It takes what the acts taking each
+  back in turn would take, and appends one event, which names the set's
+  ids in order, each once. An id the log never held selects nothing, and
+  an empty set nothing at all. The report adds
+  up as theirs would: the events and the values selected are the sum of
+  each delivery's, while a record two of them reach is counted once, and
+  retired or kept as the last of those acts would leave it. What it
+  shreds is decided over the set as one selection, by the rules below.
 - **`seen_before: T`:** the source's events whose `seen_at`, the time
   the source says it observed the values, is before `T`
   (lakelands#1166). That time is the source's word, not the log's: it
@@ -267,8 +279,8 @@ and appends nothing. It reads on any handle and takes no lease. The
 report gives, in counts and the first keys:
 - the selection, and for a time of the log's clock the first position
   it does not reach;
-- the events selected, and for a delivery the source's events from
-  before format 17, which carry no delivery and so are never selected;
+- the events selected, and for a delivery or a set of them the source's
+  events from before format 17, which carry no delivery and so are never selected;
   for a time seen, the source's events that state no `seen_at`, which it
   never selects;
 - per type, the records reached; per field, the values taken, and of
@@ -316,8 +328,8 @@ A repeat of the act finishes it and appends nothing.
 
 What an earlier act took is not taken again. The act asked again, once
 the earlier one is done, takes only what the source wrote since in the
-selection, a later delivery under the same id for one, and appends
-nothing where that is nothing.
+selection, a later delivery under its id or under one of the set's,
+and appends nothing where that is nothing.
 
 From its append on, a version the act names seals nothing, whether the
 key store has destroyed it yet or not: a value sealed under it would be
@@ -341,7 +353,8 @@ the host's process, on the host's lake.
 
 - **The CLI.** `lakelands values remove --source <id>` with
   `--before <instant>` (RFC 3339, or a date at midnight UTC),
-  `--delivery <id>` or `--seen-before <instant>`, one of the three, and
+  `--delivery <id>`, given once or more, the set as one act, or
+  `--seen-before <instant>`, one of the three, and
   `--require-shredded`, as `forget` is shaped: without
   `--report`, as with `--preflight`, it prints the report's sentences and
   the id, appending nothing, and only `--report <id>` acts. The server
@@ -448,3 +461,5 @@ whole log, which the preflight says; a scoped refold is lakelands#1120.
 - A selection by the time the source observed, `seen_before`, whose
   events stand anywhere in the log, shredded only where a version or a
   delivery's key apart seals nothing outside it (lakelands#1166).
+- A set of deliveries taken back in one act, with one walk of the log
+  and one rebuild (lakelands#1290).
