@@ -265,9 +265,9 @@ release deprecated, nor a line of `scripts/release/surface-accepted`
 (`docs/decisions/056-the-host-surface-changes-by-one-release-of-deprecation.md`).
 The notes of a minor release name what the list holds; once its tag
 stands, the next pull request sets the file's `baseline` to it and
-empties the list. The job pins `cargo-semver-checks` and its compiler (the build toolchain) together
-(`ci.yml`, `host-surface`): the tool reads only the rustdoc formats it
-ships, so one moves with the other, in one pull request that shows the
+empties the list. The job pins `cargo-semver-checks` and its compiler
+(the one `rust-toolchain.toml` pins) together (`ci.yml`, `host-surface`):
+the tool reads only the rustdoc formats it ships, so one moves with the other, in one pull request that shows the
 job green on both. The job judges a pull request merged into develop as
 develop stood when its CI ran, so before a merge
 `scripts/release/surface-fresh.sh <n>` asks whether that judgement still
