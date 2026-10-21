@@ -1521,6 +1521,8 @@ catalog! {
         AgingNotText { member: FieldName } => "an aging rule's `{member}` is text",
         /// An aging rule that moves a value to itself.
         AgingSameValue => "`to` equals `from`; a rule moves a value to another",
+        /// An aging rule whose condition reads a setting for a type or a source.
+        AgingScopedSetting { key: String } => "it reads the setting `{key}`, which is kept for one type or source and not told to every reader; a rule's condition is judged once for every reader",
         /// An aging rule on a system type.
         AgingSystemType { #[serde(rename = "type")] ty: TypeName } => "`{ty}` is a system type; aging never moves it",
 

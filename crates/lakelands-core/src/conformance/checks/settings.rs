@@ -646,3 +646,145 @@ async fn settings_are_paged_counted_and_written_as_told(store: Store, given: Giv
     );
     Ok(())
 }
+
+check!(
+    SETTING_IN_A_CONDITION = a_condition_reads_a_setting_as_its_reader_is_told_it,
+    "063, extended: a condition judged once for every reader reads `setting('…')` as the lake holds it, and what it decides is told only to a principal told every setting it reads: to a reader kept from `secret`, a lake whose `sort_index.secret` it is not told answers as a twin that never set it a trigger's firing over a type it reads and over a kept view whose `where` reads the setting, a set's membership in a write's answer (fired, joined and left; not its position) and in `in_set`, the view read, a verb's `requires` and a value it sets, the owner's proposed call of that verb listed and accepted by the reader, and an aging rule whose `when` reads it, refused for every author, while the owner's write fires both triggers",
+    given
+);
+
+async fn a_condition_reads_a_setting_as_its_reader_is_told_it(store: Store, given: Given) -> Held {
+    // The lake first: a store that answers nothing says so before a twin
+    // is asked for.
+    let (here, fired) = conditions_told(store.as_ref(), true).await?;
+    let twin = (given.twin)(store.lake().clone(), Default::default()).await;
+    let twin = twin.map_err(|e| Failure::new(format!("the harness opened no twin: {e}")))?;
+    let (there, _) = conditions_told(twin.as_ref(), false).await?;
+    ensure!(
+        fired == ["t", "tv"],
+        "the owner's write of `bare` fires {fired:?}, where `t` and `tv`"
+    );
+    ensure!(
+        here == there,
+        "a reader kept from `secret` is answered {here:?} where the lake holds \
+         `sort_index.secret`; twin: {there:?}"
+    );
+    Ok(())
+}
+
+/// What a reader kept from `secret` is answered of conditions that read
+/// `sort_index.secret`, which the lake holds where `held`; and what the
+/// owner's write of `bare` fires.
+async fn conditions_told(
+    s: &dyn LakeStore,
+    held: bool,
+) -> Result<(Vec<String>, Vec<String>), Failure> {
+    use super::only::holder;
+    use crate::conformance::fixture::{
+        object_set_on, patch, trigger_on, try_upsert, view_of, write_verb,
+    };
+    use lakelands_api::write::{Declaration, Outcome};
+    const READ: &str = "setting('sort_index.secret') is not null";
+    let l = Lake::of(s);
+    let text = |n: &str| field(n, StorageKind::Text);
+    l.declare(type_decl("secret", vec![text("x")])).await?;
+    l.declare(type_decl("bare", vec![text("m")])).await?;
+    let n = field("n", StorageKind::Number);
+    let mut vw = view_of(
+        "vw",
+        "bare",
+        &["m"],
+        vec![text("m"), n],
+        &[("n", "count()")],
+    );
+    if let Some(v) = vw.view.as_mut() {
+        v.r#where = Some(READ.into());
+    }
+    l.declare(vw).await?;
+    l.set("view_kept.vw", json!(true)).await?;
+    // `v` requires the setting; `w` sets a value read from it.
+    let mut v = write_verb("v", "bare", "m", "'c'");
+    if let Declaration::Verb(v) = &mut v {
+        v.requires = Some(READ.into());
+    }
+    let w = write_verb("w", "bare", "m", &format!("if({READ}, 'y', 'n')"));
+    let set = object_set_on("s", "bare", READ);
+    for d in [
+        trigger_on("t", "bare", Some(READ)),
+        trigger_on("tv", "vw", None),
+        set,
+        v,
+        w,
+    ] {
+        l.declare_as(d, "a reaction").await?;
+    }
+    if held {
+        l.set("sort_index.secret", json!(["x"])).await?;
+    }
+    let fired = match l.upsert("bare", "o", json!({"m": "a"})).await? {
+        Outcome::Applied { set_off, .. } => set_off.fired.iter().map(|t| t.to_string()).collect(),
+        _ => Vec::new(),
+    };
+    let grants = json!({"default": "write", "restricted": true, "review": true,
+        "types": {"secret": {"default": "none"}}});
+    let (arch, cat) = (holder(s, "arch", grants), l.cat.as_ref());
+    let said = |r: lakelands_api::Result<Outcome>| match r {
+        Ok(Outcome::Applied { set_off: s, .. }) => {
+            format!("{:?} {:?} {:?}", s.fired, s.joined, s.left)
+        }
+        r => format!("{:?}", r.err()),
+    };
+    let found = async |ty: &str, filter: &str| {
+        let f = cat.find(&arch, &ty.into(), find_where(filter)).await;
+        f.map(|f| format!("{:?}", f.data))
+            .unwrap_or_else(|e| format!("{e:?}"))
+    };
+    let mut told = vec![said(
+        try_upsert(cat, &arch, "bare", "a", json!({"m": "a"})).await,
+    )];
+    told.push(found("bare", "in_set('s')").await);
+    told.push(found("vw", "n > 0").await);
+    let d = cat
+        .describe(&arch, Default::default())
+        .await
+        .must("describing the lake")?
+        .data;
+    let names = (d.triggers.iter().map(|t| t.name.to_string()))
+        .chain(d.object_sets.iter().map(|s| s.name.clone()))
+        .chain(d.verbs.iter().map(|v| v.name.to_string()));
+    told.push(format!("{:?}", names.collect::<Vec<_>>()));
+    for (verb, key) in [("v", "o"), ("w", "o")] {
+        let (verb, key) = (verb.into(), key.into());
+        let called = cat.call(
+            &arch,
+            &verb,
+            Some(&key),
+            patch(json!({})),
+            Default::default(),
+        );
+        told.push(said(called.await));
+    }
+    told.push(found("bare", "m = 'y'").await);
+    // The owner's proposed call of `v`, which the twin refuses to propose:
+    // not listed, and not found to accept.
+    let call = lakelands_api::write::ProposedWrite::Call {
+        verb: "v".into(),
+        key: Some("o".into()),
+        payload: patch(json!({})),
+        opts: Default::default(),
+    };
+    let accepted = match cat.propose(&l.own, call, "why".into()).await {
+        Ok(Outcome::Proposed { proposal, .. }) => cat.accept(&arch, &proposal).await.is_ok(),
+        _ => false,
+    };
+    let listed = cat.proposals(&arch, Default::default()).await;
+    told.push(format!("{:?} {accepted}", listed.map(|p| p.data.len())));
+    let rule =
+        json!({"name": "r", "on": "bare", "field": "m", "from": "a", "to": "b", "when": READ});
+    let ruled = try_upsert(cat, &arch, lakelands_api::seam::AGING_RULE_TYPE, "r", rule).await;
+    told.push(said(ruled));
+    let today = lakelands_api::time::Timestamp::from_date(2026, 3, 1).expect("a date");
+    s.age(today).await.must("aging")?;
+    told.push(found("bare", "m = 'b'").await);
+    Ok((told, fired))
+}

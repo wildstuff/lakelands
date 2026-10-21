@@ -2084,7 +2084,7 @@ fn requires(
     // Naming a part tells that every part before it held.
     let mut read = BTreeSet::new();
     for p in &parts[..=at] {
-        crate::kept::settings_named(p, &mut read);
+        lakelands_core::derive::settings(p, &mut read);
     }
     let part = parts[at];
     let shown = read.iter().all(|k| told(k));

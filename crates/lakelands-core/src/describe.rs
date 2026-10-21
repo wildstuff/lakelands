@@ -383,8 +383,9 @@ impl Sight<'_> {
 
     /// Whether nothing a set's `where` or a trigger's `when` over `ty`
     /// reads across an edge, with the sets it names, is held from its
-    /// principal: decided for no reader, what such a condition holds for a
-    /// record tells what it reads there (055, extended).
+    /// principal, and it is told every setting they read: decided for no
+    /// reader, what such a condition holds for a record tells what it
+    /// reads there (055 and 063, extended).
     fn across_unheld(&self, c: Option<&Condition>, ty: &TypeName, all: &[Declared]) -> bool {
         let Some(on) = self.force.ty(ty) else {
             return true;
@@ -399,22 +400,31 @@ impl Sight<'_> {
         let Some(c) = c else {
             return true;
         };
+        let mut told = true;
+        gather(c, &sets_of(all), &mut Vec::new(), &mut |e| {
+            told &= self.told_settings(e)
+        });
         let paths = paths_named(c, &sets_of(all));
         let ty = |n: &TypeName| self.force.ty(n);
-        paths.is_some_and(|p| crate::rights::holds_nothing_across(self.who(), on, &p, &ty))
+        told && paths.is_some_and(|p| crate::rights::holds_nothing_across(self.who(), on, &p, &ty))
     }
 
     /// Whether nothing of the records the view `v` reads is held from its
     /// principal: decided for no reader, a membership over the view's
     /// whole face tells what each of them adds (lakelands#1185). It holds
     /// `restricted`, no `only` on a source at any depth nor, of a link
-    /// type, on its ends, and reads every field a source's `where`,
-    /// grouping and measures read. `inside` are the views judged so far.
+    /// type, on its ends, and reads every field and is told every setting
+    /// a source's `where`, grouping and measures read. `inside` are the
+    /// views judged so far.
     fn unheld_under<'v>(&'v self, v: &'v ViewDecl, inside: &mut Vec<&'v ViewDecl>) -> bool {
         let who = self.who();
         let ty = |n: &TypeName| self.force.ty(n);
         inside.push(v);
+        let sources = std::iter::once((v.r#where.as_ref(), &v.measures));
+        let sources = sources.chain(v.merge.iter().map(|m| (m.r#where.as_ref(), &m.measures)));
+        let mut read = sources.flat_map(|(w, ms)| w.into_iter().chain(ms.iter().map(|m| &m.expr)));
         who.grants.restricted
+            && read.all(|c| parsed(c).is_some_and(|e| self.told_settings(&e)))
             && view_reads(v).is_some_and(|reads| {
                 reads.iter().all(|(from, names)| {
                     let Some(t) = ty(from) else { return false };

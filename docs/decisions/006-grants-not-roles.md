@@ -1051,8 +1051,11 @@ written in the text form a condition is declared in. A part that read
 a field its caller may not read would be left out; by the rule above
 there is none: a caller who may not read every field the
 `requires` reads is refused `not_granted` before the record is read,
-and a reviewer who may not is not shown the proposal, so whoever is
-told `requires_unmet` may read every part of it. A part that reads
+and so is one not told every setting it, or a value the verb sets,
+reads (`docs/decisions/063-every-setting-is-in-one-list.md`); a
+reviewer who may not, or is not told such a setting, is not shown the
+proposal, so whoever is told
+`requires_unmet` may read every part of it. A part that reads
 `setting('<key>')` is left out where its caller is not shown that
 setting, and so is a part after one that reads a setting its caller
 is not shown, since naming a part tells that every part before it
