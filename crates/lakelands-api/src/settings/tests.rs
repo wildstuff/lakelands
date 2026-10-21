@@ -125,6 +125,7 @@ fn a_setting_is_told_as_its_reader_sees_the_type() {
 /// after what it writes; a host's key and a setting naming nothing hidden
 /// take what is written.
 #[test]
+#[allow(deprecated)]
 fn a_write_keeps_what_its_writer_is_not_told() {
     let hidden = |_: &str, f: &str| f == "m";
     let kept = |key: &str, stored: Value, written: Value| kept(key, &stored, written, &hidden);
@@ -184,17 +185,6 @@ fn a_search_weight_out_of_range_weighs_nothing() {
     assert_eq!(
         super::narrowed("search_weights.row", narrowed, &told, &reads),
         Some(json!({"text_weight": 0.5}))
-    );
-    let hidden = |_: &str, f: &str| f == "m";
-    let stored = json!({"text_fields": {"m": 2.0, "n": 1.0}});
-    assert_eq!(
-        kept(
-            "search_weights.row",
-            &stored,
-            json!({"fields": {"v": 1.0}}),
-            &hidden
-        ),
-        json!({"fields": {"v": 1.0}, "text_fields": {"m": 2.0}})
     );
 }
 

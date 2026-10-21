@@ -22,8 +22,9 @@
 //!
 //! [`verify`] reads only `log/`, a line at a time: canonical lines,
 //! consecutive positions, the hash chain from 64 zeros, every checkpoint
-//! against the files before it, and every line in the one format version
-//! this release reads.
+//! against the files before it, every line in the one format version
+//! this release reads, and no member where a reader of the lake refuses
+//! it (`crate::log::misplaced`), so an import refuses it before it writes.
 
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write as _};
@@ -284,7 +285,8 @@ impl Chain {
             let (expected, found) = (at, Some(event.position));
             return damaged(at, Flaw::Position { expected, found });
         }
-        if let Some(flaw) = crate::log::created_in_another(&event) {
+        let flaw = crate::log::misplaced(&event);
+        if let Some(flaw) = flaw.or_else(|| crate::log::created_in_another(&event)) {
             return damaged(at, flaw);
         }
         if let Some(flaw) = self.formats.next(&event) {

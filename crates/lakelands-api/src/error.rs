@@ -348,6 +348,13 @@ impl Error {
 pub enum Refusal {
     /// The principal holds no grant for it.
     NotGranted,
+    /// The call needs the grant it names, which the principal does not
+    /// hold, whatever the lake holds: a change of the lake's types is made
+    /// by a holder of `restricted` alone (062).
+    GrantNeeded {
+        /// The grant, as `Grants` names it.
+        grant: String,
+    },
     /// The field is written by another authority, through another door
     /// (a source field through `upsert`, a derived field by anyone, an
     /// authored field by a source it does not admit or over another
@@ -463,6 +470,7 @@ impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Refusal::NotGranted => write!(f, "you hold no grant for this"),
+            Refusal::GrantNeeded { grant } => write!(f, "this needs the `{grant}` grant"),
             Refusal::WrongDoor => write!(f, "another authority does this, through another door"),
             Refusal::VerbsOnly { verbs } => {
                 let named: Vec<String> = verbs.iter().map(|v| format!("`{v}`")).collect();

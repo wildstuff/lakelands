@@ -148,8 +148,9 @@ terrain Lakelands is built for, and where it is not the right tool.
 
 **Choose something else when:**
 
-- **many writers hammer one dataset at once.** A lake has one writer;
-  throughput comes from many lakes, not from one.
+- **many writers hammer one dataset at once.** A lake has one writing
+  process per lake, any number of concurrent callers; throughput comes
+  from many lakes, not from one.
 - **you need queries across tenants.** There is no query across lakes;
   data crosses only as a mirror that carries its provenance.
 - **the work is heavy graph analytics.** Walks have ceilings, and a walk
@@ -160,42 +161,58 @@ terrain Lakelands is built for, and where it is not the right tool.
   map first. An agent can draw it over MCP (`declare_type`, `add_field`),
   but there is always a map.
 
-> **Status: `0.16.0`.** Lakelands `0.16.0` is the `lakelands` CLI, its
+> **Status: `0.17.0`.** Lakelands `0.17.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (716 checks through the doors and 72 through the
-> engine seam), with 67 decision records and the event log at format
-> version 17, installable from the release. Its budgets: the store
-> facade and engine traits hold 71 of 110 methods, the core crates'
-> product code 72 241 of 74 000 lines and their specification 107 360 of
-> 108 000, and 6 of 20 `cfg(feature)` sites. A ceiling rises only by a
+> conformance suite (769 checks through the doors and 74 through the
+> engine seam), with 70 decision records and the event log at format
+> version 18, installable from the release. Its budgets: the store
+> facade and engine traits hold 76 of 110 methods, the core crates'
+> product code 76 977 of 80 000 lines and their specification 114 591 of
+> 115 000, and 6 of 20 `cfg(feature)` sites. A ceiling rises only by a
 > recorded rule (decision 047): the operator set the round's ceilings at
-> 68 000 and 98 000 and raised them twice, measured, to 74 000 and
-> 108 000. Beside what `0.15.1` held, part of a source may be taken
-> back, what it wrote before a time or one delivery, from records
-> another hand also writes: its values read as erased, and a key version
-> whose values are all taken is destroyed (decision 065). A change to
-> the ontology tells its plan before it lands, and a proposal carries it
-> (decision 062). A field may be one only declared verbs write, and a
-> type's records ones only its verbs retire. A trigger, a verb, an
-> object set or a function may be withdrawn; a trigger past its depth
-> drops instead of firing, says what kind of change fired it, and may
-> fail closed on a field the record does not hold. A function that
-> reaches outside the lake runs by its declared risk (decision 064).
-> Every setting is in one list, with its kind, meaning and group
-> (decision 063); a set may hold a kept view (decision 066); a search
-> may take a second stage (decision 067), and a lexical search may weigh
-> one field above another (decision 025). A query vector names the model
-> that made it, a host's executor may decline a call by policy and say
-> so, and forgetting a source walks the log once. A reaction set off by
-> a value an act erased since is marked overruled on the feed, and not
-> told again. The projection's commit on PostgreSQL waits for no flush
-> of its own (decision 061). `lakelands verify` checks a lake's log, and
-> `lakelands init` makes a first lake and an agent's MCP configuration
-> in one command. A writer's open upgrades a lake of format 14, 15 or 16
-> to 17 by appending, and the lake this release writes, a part of a
-> source taken back and a destroyed key version among it, is kept beside
-> those of the releases before.
+> 80 000 and 115 000, and no row has raised them since. Beside what
+> `0.16.0` held, several sources, or several deliveries of one, are
+> forgotten or taken back in one act and one rebuild, and the scrub is
+> incremental: it no longer holds the writer for a whole rebuild or
+> walks the log twice (lakelands#1120, lakelands#1183, lakelands#1282,
+> lakelands#1290), and taking a source back no longer retires a row
+> whose only author value is an initial (lakelands#1278). One delivery may be sealed apart under a key of its
+> own, so it can be shredded alone, and part of a source may be taken
+> back by the time the source saw it (lakelands#1214, lakelands#1166).
+> A field may admit one named source into an authored type, a verb may
+> be kept to the callers granted it, and a refused `requires` names the
+> condition the record failed (lakelands#1264, lakelands#1287,
+> lakelands#1286). A set may be declared over a kept view and a trigger
+> may follow one, and a set whose `where` reads `now()` is decided as it
+> is read (lakelands#1185, lakelands#1223). A step may reach several
+> types and read a field they declare alike, a search may weigh a
+> searchable text field, an order by a field computed at the read is
+> served, and the lake chooses an order index from what is ordered by
+> (lakelands#1186, lakelands#1237, lakelands#1189, lakelands#1131). A
+> host may ask whether a constraint reads beyond its record, learn what
+> a renamed type or relation was called at an earlier position, take a
+> type a migration emptied out of force, and is told the references a
+> migration leaves naming no live record (lakelands#1227,
+> lakelands#1291, lakelands#1292, lakelands#1140). A proposal of what is
+> already in force is not filed, and a record whose embedding fell due
+> with no backend bound says so (lakelands#1187, lakelands#1267,
+> lakelands#1296). A host's vocabulary type that gained a field is
+> declared again on open (lakelands#1293), a computed field's metadata
+> names what computed it (lakelands#1191), a call a host declined by
+> policy carries its reason in the recorded answer (lakelands#1284), and
+> `forget_preflight` counts a lake's derived fields and kept views
+> (lakelands#1283). Four rules of what a reader is told are tighter:
+> a setting that names a type's fields is told and written only whole,
+> a condition that reads a setting tells what it decides only to a
+> reader told that setting, changing the lake's types and accepting a
+> change of the ontology need the `restricted` grant, and an ingest's
+> seal must name the source of its own envelope. The build toolchain is
+> pinned in the repository (lakelands#1246), and a patch release carries
+> fixes only (lakelands#1259). A writer's open upgrades a lake of format
+> 14, 15, 16 or 17 to 18 by appending, and the lake this release writes,
+> deliveries sealed apart and taken back among it, is kept beside those
+> of the releases before.
 
 ## Try it
 

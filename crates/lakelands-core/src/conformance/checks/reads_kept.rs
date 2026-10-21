@@ -211,7 +211,7 @@ async fn a_relation_stays_while_a_verb_is_declared_on_its_link_type(store: Store
     // neither the link type nor a verb. It is told that a declaration
     // stands on the link type its relation names, and not which: at every
     // door, beside the owner, who is named the verb.
-    let grants = json!({"default": "write", "schema": true, "review": true,
+    let grants = json!({"default": "write", "schema": true, "review": true, "restricted": true,
         "types": {LT: {"default": "none"}}});
     let grants = serde_json::from_value(grants).expect("grants read");
     let kept = principal(store.as_ref(), PrincipalKind::Agent, "kept", grants);
@@ -384,7 +384,7 @@ async fn a_relation_stays_while_another_relation_targets_its_link_type(store: St
     // relation, whose target it is kept from. Each is told that a
     // relation targets the link type, and not which, at every door.
     let schema = |name: &str, none: &str| {
-        let grants = json!({"default": "write", "schema": true, "review": true,
+        let grants = json!({"default": "write", "schema": true, "review": true, "restricted": true,
             "types": {none: {"default": "none"}}});
         let grants = serde_json::from_value(grants).expect("grants read");
         principal(store.as_ref(), PrincipalKind::Agent, name, grants)

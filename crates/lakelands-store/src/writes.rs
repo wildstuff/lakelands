@@ -394,9 +394,9 @@ pub(crate) fn refused(reason: Refusal) -> Error {
 }
 
 /// Refuse a write or retire of a setting its writer is not told whether it
-/// exists, a source's (063), before anything of it is read: the same in a
-/// lake that holds it and in one that does not, a proposal's and an
-/// ingest's too.
+/// exists, a source's or one naming fields of a type it does not read
+/// whole (063), before anything of it is judged: the same in a lake that
+/// holds it and in one that does not, a proposal's and an ingest's too.
 pub(crate) fn untold_setting(sees: &Sight<'_>, decl: &TypeDecl, key: &RecordKey) -> Result<()> {
     granted(decl.name.as_str() != SETTING_TYPE || sees.setting_told(key.as_str()))
 }
@@ -878,15 +878,6 @@ fn at_head<R>(view: &dyn ProjectionView, max: u32, f: impl FnOnce(Heads<'_>) -> 
         link: &link,
         max,
     })
-}
-
-/// Whether a field of a type is declared and kept from the principal of
-/// `sees`: what a write of a setting naming it keeps (063).
-fn hidden_from<'a>(sees: &'a Sight, o: &'a Ontology) -> impl Fn(&str, &str) -> bool + 'a {
-    move |ty, f| {
-        let declared = |t: &TypeDecl| t.fields.iter().any(|d| d.name.as_str() == f);
-        o.ty(&ty.into()).is_ok_and(declared) && !sees.reads(&ty.into(), &f.into())
-    }
 }
 
 /// The preflight of `m` over the stored records of `decl`'s type, retired
@@ -2093,7 +2084,7 @@ fn requires(
     // Naming a part tells that every part before it held.
     let mut read = BTreeSet::new();
     for p in &parts[..=at] {
-        crate::kept::settings_named(p, &mut read);
+        lakelands_core::derive::settings(p, &mut read);
     }
     let part = parts[at];
     let shown = read.iter().all(|k| told(k));
@@ -2606,19 +2597,6 @@ impl Decide<'_> {
         }
         untold_setting(&Sight::held(self.who, &self.w.ontology), decl, key)?;
         let before = self.reached(decl, key, expected)?;
-        // A setting naming what its writer is not told keeps that: the rest
-        // of it is cleared, and the setting is not told to it after (063).
-        let sees = Sight::held(self.who, &self.w.ontology);
-        let stored = before.fields.get("value").filter(|_| sees.narrows(ty));
-        let hidden = hidden_from(&sees, &self.w.ontology);
-        let kept =
-            stored.map(|v| lakelands_api::settings::kept(key.as_str(), v, Value::Null, &hidden));
-        if kept.is_some_and(|k| !k.is_null()) {
-            let patch = Patch::from([("value".into(), Value::Null)]);
-            let (patch, t) = (self.checked(decl, key, &patch)?, self.target(decl, key)?);
-            let plan = self.write_as(decl, key, t, patch, expected, true)?;
-            return self.planned(plan);
-        }
         let own = self.draft(retirement(ty, key, before.version));
         let (drafts, after) = (self.retiring(&before, own)?, None);
         Ok(Plan { drafts, after })
@@ -2848,22 +2826,8 @@ impl Decide<'_> {
         decl: &TypeDecl,
         key: &RecordKey,
         t: Target,
-        patch: Patch,
-        expected: Option<Version>,
-    ) -> Result<RecordPlan> {
-        self.write_as(decl, key, t, patch, expected, false)
-    }
-
-    /// [`Self::write`], or, `clearing`, a retire's write of a setting that
-    /// keeps what its writer is not told: its null value clears the rest.
-    fn write_as(
-        &self,
-        decl: &TypeDecl,
-        key: &RecordKey,
-        t: Target,
         mut patch: Patch,
         expected: Option<Version>,
-        clearing: bool,
     ) -> Result<RecordPlan> {
         let (w, view, who) = (self.w, self.view, self.who);
         let sees = Sight::held(who, &w.ontology);
@@ -2888,26 +2852,14 @@ impl Decide<'_> {
             let before = live.map(|b| &b.fields);
             stamped(&w.ontology, decl, key, before, &told, &mut patch)?;
         }
-        // A setting keeps what its writer is not told of the value it
-        // replaces, after what it writes, and is judged as it was written,
-        // before its version is: one of a type it is not shown is answered
-        // as one never declared (063).
+        // A setting is judged as it was written, before its version is: one
+        // of a type it is not shown is answered as one never declared (063).
         let declared = |t: &TypeName| w.ontology.ty(t).ok();
         let shown = |t: &TypeName| sees.describe_type(t);
-        let (mut written, mut untold) = (None, false);
-        if sees.narrows(&decl.name) {
-            let value = patch.get("value").cloned();
-            lakelands_api::seam::check_setting(key.as_str(), value.as_ref(), &declared, &shown)?;
-            // A record it is not told is none to its write, its version too.
-            untold = live.is_some_and(|b| sees.told(b).is_none());
-            // A null it writes is no value: refused as a null over its twin is.
-            let merged = clearing || value.as_ref().is_none_or(|v| !v.is_null());
-            written = Some(value);
-            if let (Some(b), Some(v), true) = (live, patch.get_mut("value"), merged) {
-                let stored = b.fields.get("value").unwrap_or(&Value::Null);
-                let hidden = hidden_from(&sees, &w.ontology);
-                *v = lakelands_api::settings::kept(key.as_str(), stored, v.take(), &hidden);
-            }
+        let judged_early = sees.narrows(&decl.name);
+        if judged_early {
+            let value = patch.get("value");
+            lakelands_api::seam::check_setting(key.as_str(), value, &declared, &shown)?;
         }
         check_key_agrees(decl, key, live, &patch)?;
         // An authored write of a link has both ends live and answered
@@ -2925,17 +2877,7 @@ impl Decide<'_> {
             let (pending, o) = (&self.pending, &w.ontology);
             check_references(view, pending, o, &decl.name, key, judged, who)?;
         }
-        cas(expected, t.own().filter(|_| !untold))?;
-        // One that leaves the value of a record it is not told is refused
-        // as a write without a value is.
-        if untold && written.as_ref().is_some_and(Option::is_none) {
-            let (ty, field) = (decl.name.clone(), FieldName::from("value"));
-            let case = Case::Required {
-                ty,
-                field: field.clone(),
-            };
-            return Err(constraint(Some(field), case));
-        }
+        cas(expected, t.own())?;
         let sent: Vec<FieldName> = patch.keys().cloned().collect();
         let version = Version(t.before.as_ref().map_or(0, |b| b.version.0) + 1);
         // Said once, here, of what this writer holds, its own drafts too.
@@ -2966,7 +2908,7 @@ impl Decide<'_> {
                 .map_err(|(field, said)| invalid_field(&field, *said))?;
             crate::aging::check_authority(who, &w.ontology, &rule)?;
         }
-        if after.ty.as_str() == SETTING_TYPE && written.is_none() {
+        if after.ty.as_str() == SETTING_TYPE && !judged_early {
             let value = after.fields.get("value");
             lakelands_api::seam::check_setting(after.key.as_str(), value, &declared, &shown)?;
         }
@@ -3580,16 +3522,10 @@ impl Call<'_> {
         // A holder of `only` changes no shape, and proposes no write that
         // anything but the write itself could move off its pairs (051).
         granted(!write.is_schema() || !rights::holds_only(self.who))?;
-        // A setting its proposer may be told narrowed, as one who does not
-        // read every field may, is proposed merged with what stands then,
-        // so its accept is refused once that changed (063). A source's
-        // setting is refused whole to one not told it, so nothing is merged
-        // into it.
         let pin = |ty: &TypeName| {
             ordinary_door(ty)?;
             let sees = Sight::held(self.who, &w.ontology);
-            let narrowed = sees.narrows(ty) && !rights::reads_all(self.who);
-            Ok::<_, Error>(self.pin(&w, sees.ty(ty)?, None)? || narrowed)
+            self.pin(&w, sees.ty(ty)?, None)
         };
         let mut d = self.decide(&w, view.as_ref(), now, 1);
         let mut pinned = false;
@@ -3607,7 +3543,6 @@ impl Call<'_> {
         };
         // A re-key's sections of the other types, for the outcome (062).
         let mut others = Vec::new();
-        let mut instead = None;
         // A bundle wholly in force, answered as `apply` answers it.
         let mut in_force = None;
         match &mut write {
@@ -3634,20 +3569,7 @@ impl Call<'_> {
             }
             ProposedWrite::Retire { ty, key, opts } => {
                 pinned = pin(ty)?;
-                let mut plan = d.plan(Op::Retire(ty, key), opts.expected_version)?;
-                // A retire of a setting that keeps what its proposer is not
-                // told is proposed as the write it is, its group stamped at
-                // the accept (063).
-                if let EventBody::RecordUpserted { mut patch, .. } = plan.drafts.remove(0).body {
-                    patch.remove("group");
-                    let (ty, key, opts) = (ty.clone(), key.clone(), opts.clone());
-                    instead = Some(ProposedWrite::Upsert {
-                        ty,
-                        key,
-                        patch,
-                        opts,
-                    });
-                }
+                d.plan(Op::Retire(ty, key), opts.expected_version)?;
             }
             ProposedWrite::Call {
                 verb,
@@ -3684,12 +3606,14 @@ impl Call<'_> {
                 let author = self.authored(&w.ontology, migration)?;
                 // A retarget converts as its author is answered (lakelands#1071).
                 let judged = (&**migration, author.as_ref(), Some(self.who));
-                let planned = as_plain.preflight_plan(&w, view.as_ref(), judged, None)?;
+                let planned = as_plain.preflight_plan(&w, view.as_ref(), judged, (None, true))?;
                 // One whose target is in force changes nothing: answered as
                 // a declaration in force is, and not filed (027, extended).
                 if unchanged(&w.ontology, migration, &planned) {
                     in_force = Some(vec![Declaration::Type(migration.to.clone())]);
                 }
+                // Refused as lossy only by what its proposer is told of, as
+                // a proposal of declarations is: the accept judges the rest.
                 let found = planned.report;
                 if !found.lossless {
                     return Err(self.lossy(&w, migration, found));
@@ -3706,8 +3630,10 @@ impl Call<'_> {
                     to: (**to).clone(),
                     renames: renames.clone(),
                 };
-                let found = self
-                    .preflight_value_type(&w, view.as_ref(), &m, None)?
+                // Refused by a constraint left broken only on what its
+                // proposer is told of, as a migration is.
+                let found = as_plain
+                    .preflight_value_type(&w, view.as_ref(), &m, (None, true))?
                     .report;
                 self.renames_shown(&w.ontology, &m, &found)?;
                 **report = fits(found, false)?;
@@ -3745,7 +3671,6 @@ impl Call<'_> {
             }
             return Ok(outcome);
         }
-        let write = instead.unwrap_or(write);
         let d = self.proposal(&w, now, (write, why, pinned), &key_opt);
         drop(view);
         let events = self.lake.append(&mut w, vec![d])?;
@@ -3943,6 +3868,10 @@ impl Call<'_> {
             return Err(lakelands_core::damaged(Part::Projection, None, flaw));
         };
         granted(!write.is_schema() || self.who.grants.schema)?;
+        // And `restricted`, as its act's own door needs (062).
+        if write.is_schema() {
+            self.restricted_to_act()?;
+        }
         // Accepted against a plan: the plan of its change made now, as the
         // reviewer is shown it, by `plan`'s own path, is that one (062).
         if let Some(id) = plan_id {
@@ -4152,7 +4081,7 @@ impl Call<'_> {
                 // Judged as its author's at the proposal: the lake's own
                 // names are judged again.
                 let judged = (&**migration, None, Some(&proposer));
-                let plan = self.preflight_plan(&w, view.as_ref(), judged, Some(now))?;
+                let plan = self.preflight_plan(&w, view.as_ref(), judged, (Some(now), false))?;
                 // So would it take away a mark set since, which the hash
                 // does not cover: it restates what its report said, no more.
                 if plan.report.restated != report.restated {
@@ -4187,7 +4116,7 @@ impl Call<'_> {
                     to: (**to).clone(),
                     renames: renames.clone(),
                 };
-                let plan = self.preflight_value_type(&w, view.as_ref(), &m, Some(now))?;
+                let plan = self.preflight_value_type(&w, view.as_ref(), &m, (Some(now), false))?;
                 // Renames reach only the fields the proposal's report named:
                 // one that came to use the value type since would be
                 // rewritten unseen by the proposer and the reviewer.
@@ -4511,8 +4440,7 @@ impl Call<'_> {
 
     /// `declare`.
     pub fn declare(&self, declaration: Declaration) -> Result<Outcome> {
-        check_context(self.lake, &self.context)?;
-        granted(self.who.grants.schema && !rights::holds_only(self.who))?;
+        self.enacting()?;
         self.declare_granted(declaration)
     }
 
@@ -4559,6 +4487,7 @@ impl Call<'_> {
     /// what it does at any `declared` of it (022, extended). A deliberate
     /// act: nothing is compared, and the log shows it.
     pub fn recompute(&self, what: &Recompute) -> Result<Outcome> {
+        self.enacting()?;
         let what = what.clone();
         self.make(
             lakelands_api::write::Change::Recompute { what },
@@ -4599,6 +4528,7 @@ impl Call<'_> {
     /// one refusal names them all. Of a set that is admitted, what is in
     /// force before it is not appended again (027, extended).
     pub fn apply(&self, declarations: Vec<Declaration>) -> Result<Outcome> {
+        self.enacting()?;
         let change = lakelands_api::write::Change::Declare { declarations };
         self.make(change, Against::default())
     }
@@ -5543,6 +5473,7 @@ impl Call<'_> {
 
     /// `add_field`.
     pub fn add_field(&self, ty: &TypeName, field: FieldDecl) -> Result<Outcome> {
+        self.enacting()?;
         let (ty, field) = (ty.clone(), Box::new(field));
         self.make(
             lakelands_api::write::Change::AddField { ty, field },
@@ -5570,7 +5501,7 @@ impl Call<'_> {
         let mut m = m.clone();
         let author = self.authored(&w.ontology, &mut m)?;
         let report = self
-            .preflight_plan(w, view, (&m, author.as_ref(), None), None)?
+            .preflight_plan(w, view, (&m, author.as_ref(), None), (None, self.tells()))?
             .report;
         self.shown(w, &m, report)
     }
@@ -5614,12 +5545,15 @@ impl Call<'_> {
     /// preflight makes anyway. Past the lake's `max_set_changes` it decides
     /// no further, and the plan holds one change too many: a stale report
     /// and a migration that is not lossless are refused before that is.
+    /// Where `telling`, as a proposal's, a constraint left broken is lossy
+    /// only by a record its reader is told of, and is not refused
+    /// `constraint_left_broken` (062).
     pub(crate) fn preflight_plan(
         &self,
         w: &Writer,
         view: &dyn ProjectionView,
         (m, author, judged): (&Migration, Option<&Authored>, Option<&Principal>),
-        now: Option<Timestamp>,
+        (now, telling): (Option<Timestamp>, bool),
     ) -> Result<MigrationPlan> {
         let before = w.ontology.ty(&m.to.name)?.clone();
         // A migration reshapes stored records, and a view stores none. A
@@ -6204,7 +6138,10 @@ impl Call<'_> {
             })?;
         }
         for (c, _, records, sample_keys, _) in breaking.into_iter().filter(|b| b.4) {
-            report.lossless &= !c.at_ingest.refuses();
+            // A proposal only tells: a record held from its proposer moves
+            // nothing it is answered, so it makes the report lossy only at
+            // the accept, which judges every record (062).
+            report.lossless &= !c.at_ingest.refuses() || (telling && records == 0);
             if records == 0 {
                 continue;
             }
@@ -6254,7 +6191,10 @@ impl Call<'_> {
                     });
                 }
             }
-            report.breaches.extend(walked.kept(false)?.0);
+            // As its own type's: a proposal is lossy by what it is told of.
+            let (breaches, lossless) = walked.kept(telling)?;
+            report.breaches.extend(breaches);
+            report.lossless &= lossless;
         }
         // With moves the memberships are decided again, under the keys and
         // the references the moves leave: a second walk.
@@ -6284,7 +6224,12 @@ impl Call<'_> {
             // The live links at each end, by the record there: a page of
             // the links at a time, the ends kept.
             let mut ends: [BTreeMap<String, u32>; 2] = Default::default();
+            // Told, a link held from its reader is no more one than a
+            // retired link is (062).
             live(view, &lt, |l| {
+                if telling && sees.withheld(l) {
+                    return Ok(());
+                }
                 for (seen, at) in ends.iter_mut().zip([links::FROM, links::TO]) {
                     let key = l.fields.get(at).and_then(Value::as_str).unwrap_or_default();
                     *seen.entry(key.to_owned()).or_default() += 1;
@@ -6429,6 +6374,10 @@ impl Call<'_> {
         report.rekeyed = plan.rekeyed.clone();
         report.references = plan.references.clone();
         report.sample_collisions = plan.collisions.clone();
+        // A record that would not convert, or would collide or lack its new
+        // key, makes the report lossy to every reader alike, a proposer's
+        // too: retired ones are converted and keyed with the rest, so one
+        // held from its reader tells nothing that a retired one would not.
         report.lossless &= plan.lossless;
         let listed = plan.listed();
         report.report_id = report_id(&report, view.position());
@@ -6483,6 +6432,7 @@ impl Call<'_> {
     /// fills no record (050), after every refusal, a stale report among
     /// them (027, extended).
     pub fn migrate_apply(&self, m: Migration, report_id: &str) -> Result<Outcome> {
+        self.enacting()?;
         let against = Against {
             plan: None,
             report: Some(report_id),
@@ -6697,13 +6647,15 @@ impl Call<'_> {
     /// `schema`, a proposal for none. Given `now`, the time of an apply, it
     /// decides each record's set memberships as the step leaves the record,
     /// with what reads a renamed value computed again and the new
-    /// declaration in force.
+    /// declaration in force. Where `telling`, as a proposal's, a constraint
+    /// left broken refuses only by a record its reader is told of (062); a
+    /// misfit counts every record alike, a retired one too.
     pub(crate) fn preflight_value_type(
         &self,
         w: &Writer,
         view: &dyn ProjectionView,
         m: &ValueTypeMigration,
-        now: Option<Timestamp>,
+        (now, telling): (Option<Timestamp>, bool),
     ) -> Result<ValueTypePlan> {
         let to = &m.to;
         let current = w
@@ -6962,7 +6914,20 @@ impl Call<'_> {
                 }
                 Ok(())
             })?;
-            report.breaches.extend(walked.kept(false)?.0);
+            let (breaches, lossless) = walked.kept(telling)?;
+            let refuses = |b: &&Breach| {
+                let c = decl.constraints.iter().find(|c| c.name == b.constraint);
+                c.is_some_and(|c| c.at_ingest.refuses())
+            };
+            if let Some(b) = breaches.iter().find(refuses).filter(|_| !lossless) {
+                let case = Case::ConstraintLeftBroken {
+                    constraint: b.constraint.clone(),
+                    ty: name.clone(),
+                    records: b.records,
+                };
+                return Err(constraint(None, case));
+            }
+            report.breaches.extend(breaches);
             for (used, first) in used {
                 let room = 10 - report.first.len();
                 report.first.extend(first.into_iter().take(room));
@@ -7013,6 +6978,7 @@ impl Call<'_> {
         m: ValueTypeMigration,
         report_id: &str,
     ) -> Result<Outcome> {
+        self.enacting()?;
         let against = Against {
             plan: None,
             report: Some(report_id),

@@ -137,13 +137,15 @@ pub struct Grants {
     /// May the principal call `accept` and `reject` on proposals.
     #[serde(default)]
     pub review: bool,
-    /// May the principal declare types, add fields and migrate.
+    /// May the principal declare types, add fields and migrate; making
+    /// such a change, or accepting one, needs `restricted` too.
     #[serde(default)]
     pub schema: bool,
     /// May the principal feed the lake through `ingest`.
     #[serde(default)]
     pub ingest: bool,
-    /// May the principal see records withheld from ordinary reads.
+    /// May the principal see records withheld from ordinary reads, and,
+    /// with `schema`, make or accept a change of the lake's types.
     #[serde(default)]
     pub restricted: bool,
 }

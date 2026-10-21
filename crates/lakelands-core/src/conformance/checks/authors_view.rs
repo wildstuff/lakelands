@@ -46,7 +46,7 @@ fn invoice(fields: &[&str]) -> TypeDecl {
 /// not know of.
 fn without_salary(store: &dyn LakeStore, id: &str, schema: bool) -> Principal {
     let mut who = field_access(store, id, "invoice", &[("salary", Access::None)]);
-    who.grants.schema = schema;
+    (who.grants.schema, who.grants.restricted) = (schema, schema);
     who
 }
 
@@ -95,8 +95,10 @@ async fn a_migration_keeps_the_fields_its_author_may_not_know_of(store: Store) -
     let all = json!({"no": "1", "note": "n", "salary": "100", "team": "t"});
     l.upsert("invoice", "i1", all).await?;
 
-    // Applied: a principal with the schema grant removes `team`.
-    let schemer = without_salary(store.as_ref(), "schemer", true);
+    // Applied: a principal with the schema grant removes `team`, holding
+    // `restricted` as making a migration needs (062).
+    let mut schemer = without_salary(store.as_ref(), "schemer", true);
+    schemer.grants.restricted = true;
     let to = migration(invoice(&["no", "note"]));
     let report = cat.migrate(&schemer, to.clone()).await;
     let report = report.must("the preflight of removing `team`")?.data;
@@ -504,7 +506,7 @@ async fn a_shape_names_no_field_its_author_may_not_know_of(store: Store) -> Held
         ..Default::default()
     };
     (who.grants.types).insert("payroll".into(), none);
-    who.grants.schema = true;
+    (who.grants.schema, who.grants.restricted) = (true, true);
     // A valid time over a field its author may not know of is not named
     // to it, and a read at a valid time answers as for a type with none.
     use lakelands_api::{Find, ReadAt, Timestamp};
@@ -851,7 +853,7 @@ async fn a_trigger_or_a_verb_under_a_name_its_author_is_not_shown_is_not_granted
     // name; `caller` reads it and may not call `seal`.
     let kept = |id: &str, both: bool, vault: serde_json::Value| {
         let types = json!({"vault": vault});
-        let grants = json!({"default": "read", "schema": both, "review": both, "types": types});
+        let grants = json!({"default": "read", "schema": both, "restricted": both, "review": both, "types": types});
         super::only::holder(s, id, grants)
     };
     let none = || json!({"default": "none"});
@@ -1088,7 +1090,7 @@ async fn a_tool_name_taken_by_what_its_author_is_not_shown_is_not_granted(store:
     }
     let kept = |id: &str, both: bool| {
         let types = json!({"vault": {"default": "none"}});
-        let grants = json!({"default": "read", "schema": both, "review": both, "types": types});
+        let grants = json!({"default": "read", "schema": both, "restricted": both, "review": both, "types": types});
         super::only::holder(s, id, grants)
     };
     let (author, proposer) = (kept("author", true), kept("proposer", false));
@@ -1249,8 +1251,7 @@ async fn no_door_leaves_a_lake_with_a_tool_name_problem(store: Store) -> Held {
         |relation: &str| tool_base(link_type_name(&"desk".into(), &relation.into()).as_str());
     l.declare(shape(&base("far"), &[])).await?;
     let long = "r".repeat(48);
-    let grants =
-        json!({"default": "read", "schema": true, "types": {"vault": {"default": "none"}}});
+    let grants = json!({"default": "read", "schema": true, "restricted": true, "types": {"vault": {"default": "none"}}});
     let kept = super::only::holder(s, "author", grants);
     let (mut told, mut whole, mut free) = (Vec::new(), Vec::new(), Vec::new());
     for relation in ["far", &long] {
@@ -1365,7 +1366,7 @@ async fn a_bundle_takes_no_place_declared_since_it_was_proposed(store: Store) ->
     // `carol` and `blind` are kept from `vault` and from `cell`.
     let reviewer = |id: &str, kept: serde_json::Value| {
         let types = json!({"vault": kept, "cell": kept});
-        let grants = json!({"default": "read", "schema": true, "review": true, "types": types});
+        let grants = json!({"default": "read", "schema": true, "restricted": true, "review": true, "types": types});
         super::only::holder(s, id, grants)
     };
     let none = || json!({"default": "none"});
@@ -1519,7 +1520,7 @@ async fn a_bundle_takes_no_place_declared_since_it_was_proposed(store: Store) ->
     let mid = super::only::holder(
         s,
         "mid",
-        json!({"default": "read", "schema": true, "review": true,
+        json!({"default": "read", "schema": true, "restricted": true, "review": true,
         "types": {"safe": {"fields": {"secret": "none"}}}}),
     );
     let listed = l.cat.proposals(&mid, ProposalFilter::default()).await;
@@ -1628,6 +1629,7 @@ async fn a_declaration_in_force_listed_to_no_one_is_declared_again_by_no_one(
     let mut grants = lakelands_api::Grants {
         default: Access::Write,
         schema: true,
+        restricted: true,
         ..Default::default()
     };
     grants.types.insert(

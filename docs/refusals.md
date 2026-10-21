@@ -600,6 +600,7 @@ What a refusal is about.
 | `aging_not_a_value` | `type` (TypeName), `field` (FieldName), `cause` (Error) | not a value of `{type}`.`{field}`: {cause} | An aging rule's value that its field does not take. |
 | `aging_not_text` | `member` (FieldName) | an aging rule's `{member}` is text | An aging rule's member that is no text. |
 | `aging_same_value` | — | `to` equals `from`; a rule moves a value to another | An aging rule that moves a value to itself. |
+| `aging_scoped_setting` | `key` (String) | it reads the setting `{key}`, which is kept for one type or source and not told to every reader; a rule's condition is judged once for every reader | An aging rule whose condition reads a setting for a type or a source. |
 | `aging_system_type` | `type` (TypeName) | `{type}` is a system type; aging never moves it | An aging rule on a system type. |
 | `lookup_index_at_read` | `field` (FieldName) | `{field}` is computed at the read; an exact-text index keeps stored values | An exact-text index of a field computed at the read. |
 | `lookup_index_kind` | `field` (FieldName), `kind` (StorageKind) | `{field}` is of kind {kind}; an exact-text index keeps text fields | An exact-text index of a field that is no text. |
@@ -929,6 +930,7 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `cause_in_context` | — | `context` carries `cause`, which the envelope carries | `context` carries `cause`, which the envelope carries. |
 | `initial_origin` | — | the envelope carries the origin `initial`, a field's alone | The envelope carries the origin `initial`, a field's alone. |
 | `sealed_on` | `kind` (String) | a `{kind}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries | An event other than `record_ingested` and `output_recorded` carries `sealed`. |
+| `seals_another` | `sealed` (SourceId) | a `record_ingested` carries `sealed` naming the source `{sealed}`, which is not its own: an ingest is sealed under its own source's key | A `record_ingested` whose `sealed` names another source than its envelope. |
 | `sealed_before` | `v` (u32) | an event of format {v} carries `sealed`, which format 16 added | An event of a format before 16 carries `sealed`. |
 | `forgotten_before` | `v` (u32) | an event of format {v} is a `source_forgotten`, which format 16 added | A `source_forgotten` in a format before the one that added it. |
 | `change_before` | `v` (u32) | a `trigger_fired` of format {v} carries `change` or `created`, which format 17 added | A `trigger_fired` before format 17 carries `change` or `created`. |

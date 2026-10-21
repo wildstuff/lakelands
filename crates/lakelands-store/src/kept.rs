@@ -12,7 +12,7 @@ use std::ops::Bound::{Excluded, Included, Unbounded};
 use lakelands_api::canonical::hex;
 use lakelands_api::engine::{After, ProjectionStore, ProjectionView, Scan};
 use lakelands_api::event::{Event, EventBody};
-use lakelands_api::expr::{Condition, Expr, Func, Literal};
+use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::{Measure, TypeDecl, ViewDecl};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::{VIEW_KEPT_SETTING as SETTING, kept_name, order_name};
@@ -160,7 +160,7 @@ impl Kept {
                 let measures: Result<Vec<(FieldName, Expr)>> = m.iter().map(measured).collect();
                 let measures = measures.ok()?;
                 let read = filter.iter().chain(measures.iter().map(|(_, e)| e));
-                read.for_each(|e| settings_named(e, &mut settings));
+                read.for_each(|e| lakelands_core::derive::settings(e, &mut settings));
                 Some(Src {
                     ty: ty.clone(),
                     view: o.ty(ty).is_ok_and(|t| t.view.is_some()),
@@ -214,21 +214,6 @@ pub(crate) fn names_settings(o: &Ontology, decl: &TypeDecl) -> bool {
 /// fold would keep it.
 pub(crate) fn settings_read(o: &Ontology, decl: &TypeDecl) -> BTreeSet<String> {
     Kept::of(o, decl).map(|k| k.settings).unwrap_or_default()
-}
-
-/// The settings `e` names.
-pub(crate) fn settings_named(e: &Expr, named: &mut BTreeSet<String>) {
-    if let Expr::Call {
-        func: Func::Setting,
-        args,
-    } = e
-        && let Some(Expr::Lit {
-            value: Literal::Text(key),
-        }) = args.first()
-    {
-        named.insert(key.clone());
-    }
-    lakelands_api::expr::children(e).for_each(|c| settings_named(c, named));
 }
 
 /// What a kept record carries beside its group's fields, in [`FOLDS`].

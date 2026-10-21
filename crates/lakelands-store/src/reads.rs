@@ -742,7 +742,7 @@ impl<'a> Reader<'a> {
 
     /// Whether the store evaluates `e` over records of `decl` itself: it
     /// needs the store, or reads a field computed at the read, which no
-    /// engine holds, or a setting its reader may be told narrowed.
+    /// engine holds, or a setting its reader may not be told.
     fn store_only(&self, decl: &TypeDecl, e: &Expr) -> bool {
         let at_read = |n: &&FieldName| decl.fields.iter().any(|f| &f.name == *n && f.at_read());
         needs_store(e) || e.fields_read().iter().any(at_read) || self.sight.narrows(&decl.name)
@@ -1250,15 +1250,14 @@ impl<'a> Reader<'a> {
             });
         let host: Vec<_> = host.collect();
         if self.who.grants.schema {
-            // A setting of a type it is not shown, or naming a field it
-            // does not read, is told as were the type or the field absent,
-            // and one for a source only where nothing is held from it.
+            // A setting of a type it is not shown is told as were the type
+            // absent, one naming fields of a type whole or not at all, and
+            // one for a source only where nothing is held from it.
             let shown = |ty: &str| self.sight.ty(&ty.into()).is_ok();
-            let reads = |ty: &str, f: &str| self.sight.reads(&ty.into(), &f.into());
             let told = lakelands_api::settings::told(&self.shape.settings).into_iter();
             lake.settings = told
                 .filter(|s| self.sight.setting_told(&s.key))
-                .filter_map(|s| lakelands_api::settings::seen(s, &shown, &reads))
+                .filter_map(|s| lakelands_api::settings::seen(s, &shown, &|_, _| true))
                 .collect();
         }
         lake.settings.extend(host);
@@ -1307,8 +1306,8 @@ impl<'a> Reader<'a> {
     /// Name in a type's lifecycle the fields the lake keeps an order index
     /// for and the vector fields it asks an index for, as its
     /// `sort_index.<type>` and `vector_index.<type>` settings ask, of those
-    /// the principal sees; and for a view whether it is kept, as its
-    /// `view_kept.<type>` setting asks.
+    /// the principal sees and where it is told the setting; and for a view
+    /// whether it is kept, as its `view_kept.<type>` setting asks.
     fn name_sorted(&self, t: &mut TypeDescription) {
         let Ok(decl) = self.shape.ontology.ty(&t.name) else {
             return;
@@ -1320,7 +1319,9 @@ impl<'a> Reader<'a> {
             Some(_) => lakelands_api::seam::kept_name(&t.name),
             None => t.name.clone(),
         };
-        let setting = settings.get(&core_engines::sort_index_key(&ordered));
+        // A setting its reader is not told is named as were it absent.
+        let set = |key: String| settings.get(&key).filter(|_| self.sight.setting_told(&key));
+        let setting = set(core_engines::sort_index_key(&ordered));
         t.lifecycle.sorted = core_engines::sorted_fields(&ordered, decl, setting);
         t.lifecycle.sorted.retain(seen);
         // What the lake chose by itself, told like the pages it sorted
@@ -1353,7 +1354,7 @@ impl<'a> Reader<'a> {
                 millis: micros / 1000,
             })
             .collect();
-        let setting = settings.get(&core_engines::vector_index_key(&t.name));
+        let setting = set(core_engines::vector_index_key(&t.name));
         t.lifecycle.indexed = core_engines::indexed_fields(decl, setting);
         t.lifecycle.indexed.retain(seen);
         if let Some(view) = decl.view.as_deref() {
@@ -2393,7 +2394,7 @@ impl<'a> Reader<'a> {
             page(after, limit + 1)?.into_iter().map(row).collect()
         } else if decl.view.is_some() || self.sight.narrows(&decl.name) {
             // A view's records are computed from its source, whole, and
-            // settings a reader may be told narrowed are ordered as told.
+            // settings a reader may not be told are ordered as told.
             let all = self.records(&decl, filter.as_ref())?;
             let mut keyed: Vec<_> = all.into_iter().map(row).collect();
             keyed.sort_by(|a, b| Self::compare(&find.order_by, &a.0, &b.0));
@@ -2747,7 +2748,8 @@ impl<'a> Reader<'a> {
     /// `describe` does not name the verb, and the entry would tell that
     /// its `requires` held (024, extended). Nor is a call there whose
     /// verb, as the lake declares it now or, withdrawn since, did at the
-    /// proposal, asks a grant of its own its reader does not hold (070).
+    /// proposal, asks a grant of its own its reader does not hold (070),
+    /// or reads a setting its reader is not told (063, extended).
     /// A migration's report counts
     /// every owner's records, so a holder of `only` is listed none (051).
     /// A read the engine fails is the listing's error, never an entry
@@ -2930,6 +2932,11 @@ impl<'a> Reader<'a> {
                 if on.is_ok_and(|on| !rights::reads_what_verb_reads(sees.who(), on, v, &far)) {
                     return Ok(None);
                 }
+                // Nor to one not told a setting the verb reads: what its
+                // `requires` decided is the lake's (063, extended).
+                if !sees.told_verb(v) {
+                    return Ok(None);
+                }
                 named.push(v.on.clone());
             }
         }
@@ -3014,10 +3021,10 @@ impl<'a> Reader<'a> {
                 }
             }
         }
-        // A setting's write as its reader is told it: a retire, or one
-        // that leaves a record it is told none, of a record it was not told
-        // where it was proposed is not there to it, as in its twin, whatever
-        // became of the record since (063).
+        // A setting's write as its reader is told it: a retire, or a write
+        // it is not told, of a record it was not told where it was proposed
+        // is not there to it, as in its twin, whatever became of the record
+        // since (063).
         let mut told = logged.clone();
         self.told_setting(&mut told);
         if let ProposedWrite::Retire { ty, key, .. } = &told
@@ -3080,9 +3087,8 @@ impl<'a> Reader<'a> {
         Ok(Some((shown, more)))
     }
 
-    /// `write`, where it is a setting's upsert its reader may be told
-    /// narrowed, as it is told it ([`Sight::setting`]): its value narrowed,
-    /// or its retire where none is left.
+    /// `write`, where it is a setting's upsert its reader is not told
+    /// ([`Sight::setting`]), as its retire: one it is told is told whole.
     fn told_setting(&self, write: &mut ProposedWrite) {
         let ProposedWrite::Upsert {
             ty,
@@ -3093,17 +3099,10 @@ impl<'a> Reader<'a> {
         else {
             return;
         };
-        if !self.sight.narrows(ty) {
-            return;
-        }
         let value = patch.get("value").cloned().unwrap_or(Value::Null);
-        let Some(told) = self.sight.setting(key.as_str(), value) else {
+        if self.sight.narrows(ty) && self.sight.setting(key.as_str(), value).is_none() {
             let (ty, key, opts) = (ty.clone(), key.clone(), opts.clone());
             *write = ProposedWrite::Retire { ty, key, opts };
-            return;
-        };
-        if let Some(v) = patch.get_mut("value") {
-            *v = told;
         }
     }
 

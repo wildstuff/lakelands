@@ -216,7 +216,10 @@ its parameters and `message`.
   JSON-RPC protocol errors of MCP, which are the protocol's, not a
   refusal. A `not_granted` refusal carries no case on purpose: it never
   says which grant is missing, and its door words say only how to
-  authenticate. A door's advice (`todo`) is a function of the case.
+  authenticate. `grant_needed` names one, where a door needs it of
+  every caller whatever the lake holds, so naming it tells nothing of
+  the data: `restricted`, for changing the lake's types (062). A door's
+  advice (`todo`) is a function of the case.
 
 ## Why
 
@@ -276,3 +279,4 @@ engine will never produce.
 - A refusal's reason gained `declined`, with the case `call_declined`, for a call a host's executor declines by policy (lakelands#812).
 - `call_declined` gained an optional `reason`, a `Detail` of the host's own words, scrubbed and kept short by the host, which neither the gate nor the store checks or bounds (lakelands#1284).
 - `verbs_only` also answers a retirement of a type only its verbs retire, with no field, and its sentence and `wrong_door`'s no longer say "field" (lakelands#1148).
+- A refusal's reason gained `grant_needed`, naming the grant a door needs of every caller: `restricted`, for changing the lake's types (062).

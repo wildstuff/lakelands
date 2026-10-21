@@ -63,6 +63,11 @@ can change after a rule is written: its type or field gone, the field
 no longer written by `upsert`, `from` no longer a value of it. Such a
 rule moves nothing, the report names it with the reason, and the other
 rules run, so one stale rule neither stops the day nor goes unnoticed.
+So is a rule whose `when` reads a setting kept for one type or one
+source, refused at its write since the run judges it once for every
+reader
+(`docs/decisions/063-every-setting-is-in-one-list.md`, extended): one
+written before that refusal is skipped, naming the setting.
 A move the store would refuse for one record leaves that record and is
 counted with the failed guards, for the reason a failed guard does,
 except two refusals, which are counted as refused (below): a constraint

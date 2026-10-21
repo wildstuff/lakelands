@@ -9544,8 +9544,9 @@ pub async fn a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight(
 /// A `sort_index.<type>` setting asks for the order index on fields its
 /// type declares with a scalar kind, a view's of its kept records, and is
 /// refused naming anything else; `describe_type` names the fields
-/// indexed, of those the principal sees
-/// (`docs/decisions/041-a-sorted-page-reads-its-page.md`).
+/// indexed to a principal told the setting, and to any other as were it
+/// absent (`docs/decisions/041-a-sorted-page-reads-its-page.md`,
+/// `docs/decisions/063-every-setting-is-in-one-list.md`).
 pub async fn a_sort_index_setting_names_declared_scalar_fields_and_describe_shows_them(
     store: Arc<dyn LakeStore>,
 ) {
@@ -9636,10 +9637,9 @@ pub async fn a_sort_index_setting_names_declared_scalar_fields_and_describe_show
         sorted(owner).await,
         vec![FieldName::from("amount"), FieldName::from("status")]
     );
-    assert_eq!(
-        sorted(&f.cast.stranger).await,
-        vec![FieldName::from("status")],
-        "a principal is told of the indexed fields it sees"
+    assert!(
+        sorted(&f.cast.stranger).await.is_empty(),
+        "a principal that does not read the type whole is told no setting"
     );
     set("sort_index.invoice", json!(["status"]))
         .await
@@ -9961,11 +9961,12 @@ fn answered<T: std::fmt::Debug>(r: Result<T, Error>) -> String {
 /// the grant on `sys.setting` (024, extended). One who may not write a
 /// setting gets the grant's answer under every key. To one who may, a
 /// type it is not shown is a name that is not declared, under every
-/// value, and a field it is not shown is one the type does not declare; a
-/// view it is shown without its definition cannot be kept, and nothing
-/// says why. `propose` answers as `upsert` does. A standing setting is
-/// told to a writer as were what it is not shown absent, and its write
-/// keeps what it is not told (lakelands#1198).
+/// value; a setting naming the fields of a type it does not read whole is
+/// refused it as not granted, naming no field, whatever it names; a view
+/// it is shown without its definition cannot be kept, and nothing says
+/// why. `propose` answers as `upsert` does. A standing setting of such a
+/// type is no record to that writer, and it may neither write nor retire
+/// it (063).
 pub async fn a_setting_is_judged_by_what_its_writer_is_shown(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let (c, owner, tuner) = (&f.catalog, &f.cast.owner, &f.cast.tuner);
@@ -10032,20 +10033,24 @@ pub async fn a_setting_is_judged_by_what_its_writer_is_shown(store: Arc<dyn Lake
         }
     }
 
-    // (iii) A field that is not shown answers as one the type does not
-    // declare; one shown masked is named with its kind, as `describe` has it.
+    // (iii) A setting naming the fields of a type the tuner does not read
+    // whole is refused it as not granted, naming no field, whatever it
+    // names: one it is not shown, one shown masked, one it reads, none.
+    let not_granted = Error::Refused {
+        field: None,
+        reason: Refusal::NotGranted,
+    };
     for k in ["sort_index.invoice", "vector_index.invoice"] {
-        let none = answered(set_as(c, tuner, k, json!(["nope"])).await);
-        assert!(none.contains("UnknownField"), "{none}");
-        let answer =
-            answered(set_as(c, tuner, k, json!(["secret"])).await).replace("secret", "nope");
-        assert_eq!(answer, none, "`{k}`: `secret` answers as `nope` does");
+        for value in [
+            json!(["nope"]),
+            json!(["secret"]),
+            json!(["note"]),
+            json!(["status"]),
+        ] {
+            let e = set_as(c, tuner, k, value.clone()).await;
+            assert_eq!(e.err(), Some(not_granted.clone()), "`{k}` = {value}");
+        }
     }
-    let masked = answered(set_as(c, tuner, "vector_index.invoice", json!(["note"])).await);
-    assert!(
-        masked.contains("VectorIndexKind"),
-        "`note` is shown: {masked}"
-    );
 
     // (iv) A view shown without its definition: that it cannot be kept,
     // and nothing of the measure, the call or what it reads.
@@ -10081,29 +10086,35 @@ pub async fn a_setting_is_judged_by_what_its_writer_is_shown(store: Arc<dyn Lake
         assert_eq!(proposed, written, "`{k}` is refused when it is proposed");
     }
 
-    // (vi) A standing setting that names only what the tuner is not shown
-    // is, to the tuner, no setting (lakelands#1198): a write naming what
-    // it is not shown is refused as one naming what is not declared, a
-    // write beside the value as one without a value, a retire as of no
-    // record; its own write keeps what it is not told, after its own.
+    // (vi) A standing setting of a type the tuner does not read whole is,
+    // to the tuner, no record (063): it is not found, and a write, a write
+    // beside the value and a retire are each refused as not granted.
     let k = "sort_index.invoice";
     let stands = set_as(c, owner, k, json!(["secret"])).await;
     stands.expect("the owner indexes `secret`");
-    let none = answered(set_as(c, tuner, k, json!(["nope", "status"])).await);
-    let more = set_as(c, tuner, k, json!(["secret", "status"])).await;
-    assert_eq!(answered(more).replace("secret", "nope"), none);
-    let beside = patch(&[("key", json!(k))]);
     let (setting, opts) = (ty("sys.setting"), WriteOpts::default);
-    let beside = c.upsert(tuner, &setting, &key(k), beside, opts()).await;
-    let beside = answered(beside);
-    assert!(beside.contains("Required"), "{beside}");
-    let retired = c.retire(tuner, &setting, &key(k), opts()).await;
+    let get = || Get {
+        key: key(k),
+        with_meta: false,
+        params: Default::default(),
+        at: Default::default(),
+    };
+    let told = c.get(tuner, &setting, get()).await;
     assert!(
-        answered(retired).contains("NotFound"),
-        "no record to retire"
+        matches!(told, Err(Error::NotFound { .. })),
+        "the tuner is not told it: {told:?}"
     );
-    let own = set_as(c, tuner, k, json!(["status"])).await;
-    own.expect("the tuner indexes what it is shown");
+    let beside = patch(&[("key", json!(k))]);
+    let beside = c.upsert(tuner, &setting, &key(k), beside, opts()).await;
+    let retired = c.retire(tuner, &setting, &key(k), opts()).await;
+    let more = set_as(c, tuner, k, json!(["status"])).await;
+    for (what, e) in [
+        ("beside", beside.err()),
+        ("retire", retired.err()),
+        ("write", more.err()),
+    ] {
+        assert_eq!(e, Some(not_granted.clone()), "{what}");
+    }
     let get = Get {
         key: key(k),
         with_meta: false,
@@ -10116,8 +10127,8 @@ pub async fn a_setting_is_judged_by_what_its_writer_is_shown(store: Arc<dyn Lake
         .expect("the owner reads it");
     assert_eq!(
         held.data.fields.get("value"),
-        Some(&json!(["status", "secret"])),
-        "the tuner's write keeps `secret`, after its own"
+        Some(&json!(["secret"])),
+        "the owner's setting stands as it wrote it"
     );
 }
 
@@ -13703,7 +13714,7 @@ pub async fn a_shape_names_no_field_its_author_may_not_know_of(store: Arc<dyn La
         wrote.await.expect("the owner writes `s1`");
     }
     let held = json!({"fields": {"veiled": "none", "cloak": "none"}});
-    let grants = json!({"default": "write", "schema": true, "types": {
+    let grants = json!({"default": "write", "schema": true, "restricted": true, "types": {
         "ev": held, "stamped": held, "plain": held, "payroll": {"default": "none"}}});
     let grants = serde_json::from_value(grants).expect("grants read");
     let author = &principal(store.lake(), PrincipalKind::Agent, "author", grants);
@@ -14410,8 +14421,7 @@ pub async fn a_relation_carried_by_a_hidden_field_answers_nothing_of_it(store: A
         }
     }
     // An author held from `tgt` who sends `r` again declares it twice.
-    let grants =
-        json!({"default": "read", "schema": true, "types": {"wk": {"fields": {"tgt": "none"}}}});
+    let grants = json!({"default": "read", "schema": true, "restricted": true, "types": {"wk": {"fields": {"tgt": "none"}}}});
     let grants = serde_json::from_value(grants).expect("grants read");
     let author = &principal(store.lake(), PrincipalKind::Agent, "author", grants);
     let sent = json!({"declare": "type", "name": "wk", "fields": [{"name": "no", "type": {"kind": "text"}}],

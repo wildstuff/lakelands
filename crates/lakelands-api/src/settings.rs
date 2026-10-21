@@ -603,7 +603,13 @@ const FIELD_MEMBERS: [&str; 2] = ["fields", "text_fields"];
 /// `stored` names that is hidden stays, after those written, so a write
 /// drops nothing its writer is not told; one the writer names itself (a
 /// field it is shown masked) stands once, as written. `written` as it is
-/// where `stored` names none.
+/// where `stored` names none. The store calls it no longer: a setting
+/// naming fields is told whole or not at all, and refused whole to a
+/// writer it is not told (063).
+#[deprecated(
+    since = "0.17.0",
+    note = "a writer is told such a setting whole or is refused it; write the value as told"
+)]
 pub fn kept(
     key: &str,
     stored: &Value,

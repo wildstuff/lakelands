@@ -555,6 +555,7 @@ async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
     let author = Principal {
         grants: Grants {
             schema: true,
+            restricted: true,
             ..shown.grants.clone()
         },
         ..shown

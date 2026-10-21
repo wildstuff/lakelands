@@ -1,10 +1,11 @@
 # Contributing to Lakelands
 
-Thank you for considering a contribution. A contribution is a pull
-request against `develop`, every commit signed off (below). The pages
-under `docs/` are the specification, and the conformance suite holds the
-code to them, so a change of behaviour changes a page and a check along
-with the code.
+Thank you for considering a contribution. The code is here: 0.17.0 is
+released, and 0.18.0 is being built on `develop`. A contribution is a
+pull request against `develop`, every commit signed off (below). The
+pages under `docs/` are the specification, and the conformance suite
+holds the code to them, so a change of behaviour changes a page and a
+check along with the code.
 
 Start from an issue. A small fix may come straight as a pull request;
 anything larger is talked through on its issue first, so the work fits

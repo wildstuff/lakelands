@@ -4,9 +4,11 @@
 //!
 //! A rule is a `sys.aging_rule` record, checked by [`check`] when it is
 //! written and again when it runs: the type or its field may have changed
-//! since, and a rule that no longer fits is skipped with the reason, never
-//! run half. Its author's rights are checked once, when it is written
-//! ([`check_authority`]); the run carries them. [`run`] holds the writer's lock for the whole date and reads
+//! since, or a rule written before its condition was held to read no
+//! setting kept for a type or a source may read one, and a rule that no
+//! longer fits is skipped with the reason, never run half. Its author's
+//! rights are checked once, when it is written ([`check_authority`]); the
+//! run carries them. [`run`] holds the writer's lock for the whole date and reads
 //! every live record of a rule's type at the head, restricted ones
 //! included: aging is the host's maintenance, not a principal's read.
 //!
@@ -136,6 +138,15 @@ pub fn check(
         let said = e.case().cloned().expect("a condition's refusal");
         ("when".into(), Box::new(said))
     })?;
+    // The run reads a setting as the lake holds it, for every reader: one
+    // kept for a type or a source is not told to all of them (063).
+    let mut keys = std::collections::BTreeSet::new();
+    derive::settings(&when, &mut keys);
+    let scoped =
+        |k: &String| matches!(lakelands_api::settings::lake_setting(k), Some((_, Some(_))));
+    if let Some(key) = keys.into_iter().find(scoped) {
+        return Err(wrong("when", Case::AgingScopedSetting { key }));
+    }
     Ok(Rule {
         on,
         field,

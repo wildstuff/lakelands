@@ -47,7 +47,7 @@ this page says only how a request reaches it.
 
   | Error | Status |
   |---|---|
-  | `refused`: `not_granted`, `wrong_door`, `verbs_only`, `reserved`, `declined` | 403 (401 for a missing or unknown key) |
+  | `refused`: `not_granted`, `grant_needed`, `wrong_door`, `verbs_only`, `reserved`, `declined` | 403 (401 for a missing or unknown key) |
   | `refused`: `invalid`, `constraint`, `precondition`, `too_deep`, `too_large`, `migration`, `out_of_range` | 422 (400 for a request the server cannot read, 404 for no route, 405 for a method the route does not take, 413 for a body over 4 MiB, 415 for a body of another media type) |
   | `refused`: `decided`, `unanswered` | 409 |
   | `not_found` | 404 |

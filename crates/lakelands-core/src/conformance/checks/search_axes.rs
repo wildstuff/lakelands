@@ -13,13 +13,13 @@ use lakelands_api::ontology::StorageKind;
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{Hits, Search};
 use lakelands_api::seam::Seams;
-use lakelands_api::{Access, LakeStore, Outcome, Principal};
+use lakelands_api::{Access, LakeStore, Outcome, Principal, Refusal};
 use serde_json::{Value, json};
 
 use super::fusion::docs;
 use crate::conformance::fixture::{
-    Lake, Must, alike_renamed, field, field_access, field_writer, is_invalid, limits,
-    no_such_field, restrict, searchable, try_upsert, type_decl, vector,
+    Lake, Must, field, field_access, field_writer, is_invalid, limits, no_such_field, reason,
+    refused_on, restrict, searchable, try_upsert, type_decl, vector,
 };
 use crate::conformance::{Failure, Given, Held, Store};
 
@@ -41,7 +41,7 @@ check!(
 
 check!(
     WEIGHTS_SET = a_types_setting_weighs_what_a_search_does_not,
-    "046, extended (lakelands#561): the setting `search_weights.<type>` weighs each ranking a fused search gives no weight, a vector field's by `fields` and the text's by `text_weight`, the search's own weight winning, and the axes name the weight that ranked; a read as of a position before the setting ranks without it; a field the setting names that a migration removed weighs nothing and is no error, and declared again it takes its weight again; the setting is refused as invalid for a field the type does not declare, one that is no vector, a weight a search could not give, a member it does not know, and an object or `fields` that names nothing; a reader not shown a weighted field is answered a search naming it as before the setting, and a writer of the setting not shown a field it names is refused as for a field the type does not declare (024)"
+    "046, extended (lakelands#561): the setting `search_weights.<type>` weighs each ranking a fused search gives no weight, a vector field's by `fields` and the text's by `text_weight`, the search's own weight winning, and the axes name the weight that ranked; a read as of a position before the setting ranks without it; a field the setting names that a migration removed weighs nothing and is no error, and declared again it takes its weight again; the setting is refused as invalid for a field the type does not declare, one that is no vector, a weight a search could not give, a member it does not know, and an object or `fields` that names nothing; a reader not shown a weighted field is answered a search naming it as before the setting, and a writer of the setting not shown a field of the type is refused it as not granted, naming no field, whatever it names (024, 063)"
 );
 
 /// `doc`: `held`, `out` and `a` say "harbour", `b` and `c` do not; `held`
@@ -243,7 +243,13 @@ async fn a_types_setting_weighs_what_a_search_does_not(store: Store) -> Held {
             "not shown `w`: `{weighed}`, before the setting `{unweighed}`"
         ));
     }
-    let hidden = weigh(&l, &tuner, &json!({"fields": {"w": 1}})).await;
+    // A writer not shown `w` is refused the setting whole, whatever it names.
+    for value in [json!({"fields": {"w": 1}}), json!({"fields": {"v": 1}})] {
+        let answer = weigh(&l, &tuner, &value).await;
+        if reason(&answer) != Some(&Refusal::NotGranted) || refused_on(&answer).is_some() {
+            wrong.push(format!("not shown `w`, the setting {value}: {answer:?}"));
+        }
+    }
     // The setting's weights rank as the search's own: the same bits.
     let mut given = hybrid("harbour");
     (given["weight"], given["text_weight"]) = (json!(0.5), json!(0.25));
@@ -269,18 +275,6 @@ async fn a_types_setting_weighs_what_a_search_does_not(store: Store) -> Held {
         .await?;
     if axes(&l, &l.own, hybrid("harbour")).await?.0 != "lexical:3@0.25 vector(v):5@0.5" {
         wrong.push("a search after `w` was removed".into());
-    }
-    // To a writer not shown it, `w` was a field `doc` does not declare.
-    let undeclared = weigh(&l, &l.own, &json!({"fields": {"w": 1}})).await;
-    match (&hidden, &undeclared) {
-        (Err(h), Err(u)) => {
-            if let Err(f) = alike_renamed("not shown `w`, its setting", h, u, ("", "")) {
-                wrong.push(f.message);
-            }
-        }
-        _ => wrong.push(format!(
-            "not shown `w`, its setting: {hidden:?}; undeclared: {undeclared:?}"
-        )),
     }
     for value in [
         json!({"fields": {"w": 1}}),

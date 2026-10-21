@@ -1152,7 +1152,7 @@ async fn a_pattern_is_refused_for_what_it_says_and_a_step_reads_what_it_keeps(
         "outsider",
         grants.clone(),
     );
-    grants.schema = true;
+    (grants.schema, grants.restricted) = (true, true);
     let architect = principal(store.as_ref(), PrincipalKind::Human, "architect", grants);
     let mut told = Vec::new();
     for who in [&outsider, own] {

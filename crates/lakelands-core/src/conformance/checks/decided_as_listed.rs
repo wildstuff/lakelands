@@ -231,7 +231,8 @@ async fn an_entry_is_decided_as_its_reviewer_is_listed_it(store: Store) -> Held 
     };
     let (mut apart, mut got) = (Vec::new(), Vec::new());
     for (name, more, want) in GRID {
-        let mut grants = json!({"default": "read", "review": true, "schema": true});
+        let mut grants =
+            json!({"default": "read", "review": true, "schema": true, "restricted": true});
         let more: Value = serde_json::from_str(more).expect("the grid's grants read");
         if let (Some(g), Value::Object(more)) = (grants.as_object_mut(), more) {
             g.extend(more);

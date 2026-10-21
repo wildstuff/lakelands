@@ -1,5 +1,5 @@
 //! The drift check between this crate and the WIT package in `wit/`
-//! (`lakelands:data@0.16.0`). The crate is the source; the WIT mirrors it,
+//! (`lakelands:data@0.17.0`). The crate is the source; the WIT mirrors it,
 //! and this test fails as soon as the two disagree.
 //!
 //! Three things are compared:
@@ -1808,6 +1808,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     fn refusals(r: &Refusal) {
         match r {
             Refusal::NotGranted
+            | Refusal::GrantNeeded { .. }
             | Refusal::WrongDoor
             | Refusal::VerbsOnly { .. }
             | Refusal::Reserved
@@ -1832,6 +1833,9 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
         case_names(
             &[
                 Refusal::NotGranted,
+                Refusal::GrantNeeded {
+                    grant: "restricted".into(),
+                },
                 Refusal::WrongDoor,
                 Refusal::VerbsOnly { verbs: vec![] },
                 Refusal::Reserved,

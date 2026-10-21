@@ -429,7 +429,7 @@ pub fn principal(
     }
 }
 
-/// A reviewer holding `review`, and `schema` when asked.
+/// A reviewer holding `review`, and `schema` with `restricted` when asked.
 pub fn reviewer(store: &dyn LakeStore, schema: bool) -> Principal {
     principal(
         store,
@@ -439,6 +439,7 @@ pub fn reviewer(store: &dyn LakeStore, schema: bool) -> Principal {
             default: Access::Read,
             review: true,
             schema,
+            restricted: schema,
             ..Grants::default()
         },
     )
