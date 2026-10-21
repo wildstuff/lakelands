@@ -37,7 +37,10 @@ the result before you push.
 The tree is built and tested on Linux in CI, and it builds and passes
 its tests on macOS as well. You need:
 
-- Rust stable, at least the workspace's `rust-version` (1.88);
+- Rust: the toolchain comes from `rust-toolchain.toml`, which rustup
+  installs on first use. The workspace's `rust-version` (1.88) is the
+  floor the `msrv` job proves. A toolchain bump is one pull request that
+  moves the file and the CI pins (`ci.yml`, `release.yml`) together;
 - `cargo-nextest`, which `scripts/conformance.sh` runs
   (`cargo install cargo-nextest --locked`);
 - for the PostgreSQL engine's suite, a PostgreSQL you run yourself,
