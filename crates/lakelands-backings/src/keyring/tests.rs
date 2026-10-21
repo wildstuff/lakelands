@@ -143,6 +143,21 @@ fn the_kept_lake_of_format_17s_key_file_is_read_as_written() {
     );
 }
 
+/// The key file of the kept lake of format 18 is read as written too:
+/// `ledger`'s second version and `hr`'s key are given, `web`'s and
+/// `ledger`'s first are not.
+#[test]
+fn the_kept_lake_of_format_18s_key_file_is_read_as_written() {
+    let (ring, kept18, sealed) = kept_lake_sealed(18);
+    let given = |s: &str, g: bool| (s.to_owned(), g);
+    assert!(sealed.contains(&given("hr", true)));
+    assert!(sealed.contains(&given("ledger", true)));
+    assert!(sealed.contains(&given("ledger", false)));
+    let ids = |s: &str| ring.ids(&kept18, &SourceId::from(s)).unwrap();
+    assert_eq!(ids("ledger").len(), 1);
+    assert!(ids("web").is_empty());
+}
+
 /// A version destroyed goes with every older one, from another keyring
 /// over the same directory too; the newer ones still open, a version not
 /// held is refused, and the source is given a key again.
