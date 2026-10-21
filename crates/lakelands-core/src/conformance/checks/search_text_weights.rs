@@ -18,8 +18,8 @@ use lakelands_api::{Access, Principal, Refusal};
 use serde_json::{Value, json};
 
 use crate::conformance::fixture::{
-    Lake, Must, alike_renamed, embedding, field, field_access, invalid_like, pattern, read,
-    refused_on, searchable, try_upsert, type_decl, vector,
+    Lake, Must, alike_renamed, embedding, field, field_access, get_at, invalid_like, pattern,
+    reason, refused_on, searchable, try_upsert, type_decl, vector,
 };
 use crate::conformance::{Failure, Given, Held, Reopen, Store, backing};
 use lakelands_api::ontology::{StorageKind, TypeDecl};
@@ -42,7 +42,7 @@ check!(
 
 check!(
     WEIGHTS_TEXT_HIDDEN = a_text_weight_of_a_field_not_shown_is_answered_as_never_declared,
-    "025 and 024, extended (lakelands#1230): to a reader not shown a weighed field, or shown it masked, a lexical search and a hybrid one, page by page, and the setting as told, are answered as in a twin lake that never declared the field; a writer of the setting not shown it is refused as in the twin, before its weight is judged, and its write keeps the weight it is not told of",
+    "025 and 024, extended (lakelands#1230): to a reader not shown a weighed field, or shown it masked, a lexical search and a hybrid one, page by page, and the setting, are answered as in a twin lake that never declared the field; the setting is told to neither, and a writer of the setting not shown it is refused it as not granted, as in the twin, whatever it names (063)",
     given
 );
 
@@ -334,8 +334,9 @@ async fn told(l: &Lake, who: &Principal, own: &Value) -> Result<Vec<String>, Fai
             s["cursor"] = json!(next);
         }
     }
-    let setting = read(l.cat.as_ref(), who, "sys.setting", "search_weights.memo").await?;
-    told.push(format!("{:?}", setting.fields.get("value")));
+    let key = get_at("search_weights.memo", None);
+    let setting = l.cat.get(who, &"sys.setting".into(), key).await;
+    told.push(format!("{:?}", setting.map(|r| r.data.fields)));
     Ok(told)
 }
 
@@ -370,6 +371,14 @@ async fn a_text_weight_of_a_field_not_shown_is_answered_as_never_declared(
                 "`title` {title:?}: {here:?}; never declared: {there:?}"
             ));
         }
+        let get = async |l: &Lake| {
+            let key = get_at("search_weights.memo", None);
+            let got = l.cat.get(&reader, &"sys.setting".into(), key).await;
+            matches!(got, Err(lakelands_api::Error::NotFound { .. }))
+        };
+        if !(get(&l).await && get(&t).await) {
+            wrong.push(format!("`title` {title:?}: the setting is told"));
+        }
     }
     let weigh = async |l: &Lake, value: Value| {
         let set = json!({"key": "search_weights.memo", "value": value});
@@ -382,23 +391,22 @@ async fn a_text_weight_of_a_field_not_shown_is_answered_as_never_declared(
         )
         .await
     };
-    let zero = json!({"text_fields": {"title": 0}});
-    match (weigh(&l, zero.clone()).await, weigh(&t, zero).await) {
-        (Err(h), Err(u)) => {
-            if let Err(f) = alike_renamed("not shown `title`, its weight", &h, &u, ("", "")) {
-                wrong.push(f.message);
-            }
+    // Not reading `memo` whole, it is refused the setting in both lakes.
+    for value in [
+        json!({"text_fields": {"title": 0}}),
+        json!({"text_fields": {"heading": 3}}),
+    ] {
+        let (here, there) = (
+            weigh(&l, value.clone()).await,
+            weigh(&t, value.clone()).await,
+        );
+        if reason(&here) != Some(&Refusal::NotGranted)
+            || format!("{here:?}") != format!("{there:?}")
+        {
+            wrong.push(format!(
+                "not shown `title`, the setting {value}: {here:?}; never declared: {there:?}"
+            ));
         }
-        other => wrong.push(format!("not shown `title`, a weight of 0: {other:?}")),
-    }
-    // A write of what it is told keeps the weight it is not.
-    weigh(&l, json!({"text_fields": {"heading": 3}}))
-        .await
-        .must("writing the weights told")?;
-    let kept = l.read("sys.setting", "search_weights.memo").await?;
-    let whole = json!({"text_fields": {"heading": 3, "title": 4}});
-    if kept.fields.get("value") != Some(&whole) {
-        wrong.push(format!("the write kept {:?}", kept.fields.get("value")));
     }
     ensure!(
         wrong.is_empty(),

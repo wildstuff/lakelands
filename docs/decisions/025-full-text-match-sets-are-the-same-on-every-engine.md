@@ -245,9 +245,10 @@ in its title no higher than one mentioning it in a note.
   the writer is shown in `text_fields`, and every weight is one a search
   may give, above 0 and at most 1 000 000. Anything else, an unknown
   member, an empty object or empty `fields` or `text_fields`, is
-  refused when it is written, naming the member; a field the writer is
-  not shown is refused as one the type does not declare, before its
-  weight is judged.
+  refused when it is written, naming the member. A writer that does not
+  read the type whole is refused the setting as not granted, naming no
+  field, before anything of it is judged
+  (`docs/decisions/063-every-setting-is-in-one-list.md`).
 - **`text_fields` weighs every ranking of text,** a lexical search's
   and a hybrid search's lexical half alike, and its fallback to the
   text: it weighs a match by the field it is in, inside the ranking,

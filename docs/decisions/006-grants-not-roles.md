@@ -915,25 +915,28 @@ shown:
 - A type that is not shown is a name that is not declared, under every
   value: `null` and `false` change nothing, and would otherwise tell a
   declared type from none.
-- A field the description does not name is one the type does not
-  declare. A field it names masked or write-only is judged by its kind:
-  the description says the kind already, and an index changes no answer.
+- A setting that names a type's fields reaches the judge only from a
+  writer that reads the type whole (below), so no field it names is one
+  the writer is not shown, masked or write-only.
 - A view shown without its definition cannot be kept, and the refusal
   says no more: the reason names a measure, a call and a field of the
   source, and is said to one shown the view as declared, as `kept` says
   it.
-- The judge reads the value as its writer writes it. A setting for a
-  type is told to its writer as were what it is not shown absent, and
-  its write keeps the names it is not told after its own
-  (`docs/decisions/063-every-setting-is-in-one-list.md`), so a standing
-  name the writer is not shown is neither judged nor dropped. Its retire
-  is judged as the write it is: it clears only what its writer is told.
+- The judge reads the value as its writer writes it. A setting that
+  names a type's fields is told, and may be written, retired or
+  proposed, only by a writer that reads the type whole; any other is
+  refused it as not granted before anything of the record is judged
+  (`docs/decisions/063-every-setting-is-in-one-list.md`), so no standing
+  name the writer is not shown is judged, dropped or counted in what
+  its write answers.
 
 The judge once read the value the write leaves, standing names too: a
 principal extended or patched a setting only while shown everything it
 named. That left the setting to one who sees more, and the refusal told
-the principal that the setting names something it is not shown; judged
-as written, the setting is the one its twin without those names holds.
+the principal that the setting names something it is not shown. It was
+then judged as written, over a record told narrowed, whose version still
+counted the names its writer was not told; the setting is now told and
+written whole or not at all.
 
 #### Every door that writes a record asks first whether its writer is shown the type
 

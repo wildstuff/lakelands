@@ -251,7 +251,7 @@ pub(super) fn not_granted<T: Debug>(what: &str, answer: lakelands_api::Result<T>
     let refused = Error::Refused { field, reason };
     ensure!(
         answer.as_ref().err() == Some(&refused),
-        "{what} by a holder of `only` must be refused as not granted, naming no field; it answered {answer:?}"
+        "{what} must be refused as not granted, naming no field; it answered {answer:?}"
     );
     Ok(())
 }

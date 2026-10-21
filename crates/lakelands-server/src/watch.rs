@@ -39,7 +39,7 @@
 //!   field it may not read, or reads masked, is never probed this way
 //!   (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
 //!   A condition over `sys.setting` is told only to one from whom nothing
-//!   is held, the only principal no setting is told narrowed or withheld.
+//!   is held, the only principal no setting is withheld from.
 //!   One the feed names overruled, decided over a value an act erased
 //!   since, is told to no one
 //!   (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
@@ -744,8 +744,8 @@ impl<'a> View<'a> {
         if let Some(w) = self.whole.get(ty) {
             return Ok(*w);
         }
-        // A setting may be told narrowed, or not at all, to one from whom
-        // something is held, so a condition over it is never its (063).
+        // A setting may be withheld from one from whom something is held,
+        // so a condition over it is never its (063).
         if ty.as_str() == SETTING_TYPE && !self.who.grants.reads_everything() {
             self.whole.insert(ty.clone(), false);
             return Ok(false);
