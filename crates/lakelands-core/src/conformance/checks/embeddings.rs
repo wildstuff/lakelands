@@ -991,7 +991,7 @@ async fn a_hybrid_search_is_judged_for_its_caller_before_its_model_or_its_text(
 
 check!(
     EMBED_WAITS = a_due_embedding_waits_while_no_backend_makes_it,
-    "seams, EmbedBackend: a due embedding whose backend is gone or makes another model or other dimensions is not made; the field waits, with neither a value nor metadata, until its record is written again or `recompute` names its type, with the backend bound",
+    "seams, EmbedBackend and 022, extended: a due embedding whose backend is gone or makes another model or other dimensions is not made; the field waits, with neither a value nor metadata, `vector_coverage` counting it due, and a writer's open with such a backend sends its text nowhere; a writer's open with the backend bound makes every waiting embedding of its model, each text sent once, and `vector_coverage` counts none due after",
     reopens
 );
 
@@ -1030,44 +1030,58 @@ async fn a_due_embedding_waits_while_no_backend_makes_it(store: Store, reopen: R
             embedded(&text)
         );
     }
-    // The backend is back. Opening the lake calls nothing, and neither
-    // does a write to another record: a waiting field is made when its
-    // record is written again or the door names its type.
+    let keys = ["gone", "other", "wider"];
+    let texts = keys.map(|k| format!("Waiting {k} bollard"));
+    let gone = vec_of(store.as_ref(), "gone").await?;
+    let owed = store.vector_coverage(&"note".into()).await;
+    let owed = owed.must("asking vector_coverage of `note`")?;
+    let owed: Vec<u64> = owed.iter().map(|c| c.due).collect();
+    ensure!(
+        gone.is_none() && embedded(&texts[0]) == 0 && owed == [3],
+        "the opens with a backend of another model and of other dimensions make nothing \
+         of `gone`'s waiting `vec`, and `note` owes the three: it reads {gone:?}, its text \
+         sent {} times, `vector_coverage` due {owed:?}",
+        embedded(&texts[0])
+    );
+    // The backend is back: the writer's open makes what waits.
     store = reopen(store, with_embedder(Some(backing::embedder())))
         .await
         .map_err(|e| reopen_failed("with the suite's embedding backend again", e))?;
-    let l = Lake::of(store.as_ref());
-    l.upsert("note", "later", json!({"title": "Later quay"}))
-        .await?;
-    let still = vec_of(store.as_ref(), "gone").await?;
+    let coverage = settled(store.as_ref()).await?;
+    let mut made = Vec::new();
+    for k in keys {
+        made.push(vec_of(store.as_ref(), k).await?);
+    }
+    let sent = texts.each_ref().map(|t| embedded(t));
     ensure!(
-        still.is_none(),
-        "opening the lake and writing another record call nothing for `gone`, whose \
-         `vec` waits; it reads {still:?}"
-    );
-    l.upsert("note", "gone", json!({"body": "touched"})).await?;
-    let touched = vec_of(store.as_ref(), "gone").await?;
-    ensure!(
-        is_east(&touched),
-        "`gone` was written again with its backend bound, so its waiting `vec` is made; \
-         it reads {touched:?}"
-    );
-    recomputed(&l).await?;
-    let (other, wider) = (
-        vec_of(store.as_ref(), "other").await?,
-        vec_of(store.as_ref(), "wider").await?,
-    );
-    ensure!(
-        is_east(&other) && is_east(&wider),
-        "`recompute` of `note`, its backend bound, makes every waiting `vec`; `other` \
-         and `wider` read {other:?} and {wider:?}"
+        coverage.due == 0 && made.iter().all(is_east) && sent == [1, 1, 1],
+        "the writer's open with the backend bound makes every waiting `vec` once: \
+         coverage {coverage:?}, `gone`, `other` and `wider` read {made:?}, their texts \
+         sent {sent:?} times"
     );
     Ok(())
 }
 
+/// The coverage of `note.vec` once nothing of it is due, or as it stands
+/// after asking for half a minute.
+async fn settled(store: &dyn LakeStore) -> Result<lakelands_api::read::VectorCoverage, Failure> {
+    let mut asked = 0;
+    loop {
+        let c = store.vector_coverage(&"note".into()).await;
+        let c = c.must("asking vector_coverage of `note`")?;
+        let vec = c.into_iter().find(|c| c.field.as_str() == "vec");
+        let vec = vec.ok_or_else(|| Failure::new("`vec` in the coverage of `note`"))?;
+        asked += 1;
+        if vec.due == 0 || asked == 600 {
+            return Ok(vec);
+        }
+        crate::conformance::fixture::pause(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 check!(
     EMBED_BOUND_LATE = a_backend_bound_after_open_is_read_from_then_on,
-    "lakelands#641 and seams, EmbedBackend: `bind_embed` on an open lake appends nothing, and from then on a declaration of its model is admitted, a write's embedding is made and a hybrid search embeds its text; a vector that fell due while none was bound waits until `recompute` names its type; a later bind replaces the backend, whatever its model",
+    "lakelands#641, lakelands#1296 and seams, EmbedBackend: `bind_embed` on an open lake appends nothing where nothing of its model waits, and from then on a declaration of its model is admitted, a write's embedding is made and a hybrid search embeds its text; a vector that fell due while none was bound is made once, in a task of the bind's own, `vector_coverage` counting none due after; a later bind replaces the backend, whatever its model",
     reopens
 );
 
@@ -1155,45 +1169,41 @@ async fn a_backend_bound_after_open_is_read_from_then_on(store: Store, reopen: R
     l.upsert("note", "early", json!({"title": early})).await?;
     let before = quay(store.as_ref(), None);
     let before = before.await.must("a hybrid search with none bound")?;
-    let head = store.head().await.must("reading the head")?;
     store
         .bind_embed(backing::embedder())
         .must("binding the suite's backend")?;
-    let after = store.head().await.must("reading the head")?;
+    let coverage = settled(store.as_ref()).await?;
+    let made = vec_of(store.as_ref(), "early").await?;
     ensure!(
-        after == head,
-        "a bind appends nothing; the head moved from {head} to {after}"
+        coverage.due == 0 && is_east(&made) && embedded(early) == 1,
+        "the bind makes `early`'s `vec`, due before it, once: coverage {coverage:?}, \
+         `early` reads {made:?}, its text sent {} times",
+        embedded(early)
     );
     l.upsert("note", "late", json!({"title": "Bound late later quay"}))
         .await?;
     let searched = quay(store.as_ref(), None);
     let searched = searched.await.must("a hybrid search once bound")?;
-    let (late, waits) = (
-        vec_of(store.as_ref(), "late").await?,
-        vec_of(store.as_ref(), "early").await?,
-    );
+    let late = vec_of(store.as_ref(), "late").await?;
     ensure!(
         before.ranked_by.starts_with("lexical")
             && searched.ranked_by.starts_with("hybrid")
-            && is_east(&late)
-            && waits.is_none(),
+            && is_east(&late),
         "a hybrid search ranks lexically with none bound and embeds its text once bound \
-         (they said {:?} and {:?}), and a write's `vec` is made then while `early`, due \
-         before the bind, waits: `late` reads {late:?}, `early` {waits:?}",
+         (they said {:?} and {:?}), and a write's `vec` is made then: `late` reads {late:?}",
         before.ranked_by,
         searched.ranked_by
     );
-    recomputed(&l).await?;
-    let made = vec_of(store.as_ref(), "early").await?;
-    ensure!(
-        is_east(&made) && embedded(early) == 1,
-        "`recompute` of `note` after the bind makes `early`'s `vec` once; it reads \
-         {made:?}, its text sent {} times",
-        embedded(early)
-    );
+    let head = store.head().await.must("reading the head")?;
     store
         .bind_embed(backing::embedder_as("another-model", 2))
         .must("binding a backend of another model")?;
+    let after = store.head().await.must("reading the head")?;
+    ensure!(
+        after == head,
+        "a bind of a model nothing waits on appends nothing; the head moved from {head} \
+         to {after}"
+    );
     let search = quay(store.as_ref(), None).await;
     let other = l.try_declare(notes_by(&["title", "body"], "another-model", 2));
     let other = other.await;

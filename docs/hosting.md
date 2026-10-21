@@ -1106,9 +1106,11 @@ A host that already has a store of its own moves in four steps.
   again as in force, or grown beside its embedding, is admitted, and one
   grown turns the embedding's recorded failures into waiting fields,
   their `error` gone, until the bind and `recompute`. The
-  bind appends nothing and makes nothing due: after it, call `recompute`
-  for each type whose `vector_coverage` shows records due, which also
-  calls again for a failure recorded while the model was away. A second
+  bind, as a writer's open with the model, makes what waited on it in a
+  task of its own, and `vector_coverage` counts those records due until
+  it is through (lakelands#1296). It does not call again for a failure
+  recorded while the model was away: call `recompute` for each type
+  whose `vector_coverage` still shows records due. A second
   bind replaces the first, whatever its model; a field of the old model
   then waits, and a search over it is refused as `Unbound`, until its
   type is declared with the new one. Over the network doors `bind_embed`

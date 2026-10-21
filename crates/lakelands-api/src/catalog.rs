@@ -612,8 +612,10 @@ pub trait LakeStore: Send + Sync {
     /// searches read from now on, in place of the one bound at open or
     /// by an earlier bind, whatever its model. Nothing is recorded: the
     /// binding is the host's configuration, not a fact of the log. What
-    /// fell due while none was bound waits until its record is written
-    /// again or `recompute` names its type
+    /// fell due while none of its model was bound is made in a task of
+    /// the bind's own, as a writer's open with the backend makes it, a
+    /// recorded failure aside, which `recompute` calls again;
+    /// [`Self::vector_coverage`] counts it due until then
     /// (`docs/decisions/022-functions-are-declarations.md`, extended).
     fn bind_embed(&self, backend: Arc<dyn crate::seam::EmbedBackend>) -> Result<()>;
 
