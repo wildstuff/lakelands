@@ -4893,6 +4893,7 @@ impl Call<'_> {
             .iter()
             .map(lakelands_core::engines::declaration_key)
             .collect();
+        let own = types_withdrawn(declarations);
         let mut problems: Vec<(Place, Error)> = Vec::new();
         for (i, id) in identities.iter().enumerate() {
             if identities[..i].contains(id) {
@@ -4917,7 +4918,7 @@ impl Call<'_> {
                         t.fields.retain(|f| has(seen, f) || !has(&h.decl, f));
                         Some(t)
                     };
-                    put_as_appended(probe.to_mut(), other, shown);
+                    put_leaving(probe.to_mut(), other, shown, &own);
                 }
             }
             let checked = declare::check_declaration(&probe, d, false);
@@ -5039,12 +5040,7 @@ impl Call<'_> {
             });
         // The types it withdraws itself, whose withdrawals the lake does not
         // append again beside a type's.
-        let withdrawn: BTreeSet<String> = (declarations.iter())
-            .filter_map(|d| match d {
-                Declaration::Withdraw(x) if x.kind == DeclarationKind::Type => Some(x.name.clone()),
-                _ => None,
-            })
-            .collect();
+        let withdrawn = types_withdrawn(&declarations);
         for declaration in declarations {
             let declared = position_after(w, first + drafts.len());
             // A type's hash and link types, or the memberships a set decides.
@@ -7456,18 +7452,52 @@ fn judged_by<'o>(
 }
 
 /// Puts `d` into `o` as an append leaves it: a type with the link types
-/// its relations call for, each as `brings` admits it (035).
+/// its relations call for, each as `brings` admits it (035), and a type
+/// withdrawn without the link types in force it carries (027).
 pub(crate) fn put_as_appended(
     o: &mut Ontology,
     d: &Declaration,
     brings: impl Fn(TypeDecl) -> Option<TypeDecl>,
 ) {
-    let with = match d {
-        Declaration::Type(t) => links::link_types_of(t),
-        _ => Vec::new(),
+    put_leaving(o, d, brings, &BTreeSet::new());
+}
+
+/// [`put_as_appended`], leaving a link type in `own`, one the set
+/// withdraws itself, to its own withdrawal.
+fn put_leaving(
+    o: &mut Ontology,
+    d: &Declaration,
+    brings: impl Fn(TypeDecl) -> Option<TypeDecl>,
+    own: &BTreeSet<String>,
+) {
+    let (with, gone) = match d {
+        Declaration::Type(t) => (links::link_types_of(t), Vec::new()),
+        Declaration::Withdraw(x) if x.kind == DeclarationKind::Type => {
+            let ty = o.types.get(&TypeName::from(x.name.as_str()));
+            let links = ty
+                .map(|e| links::link_types_of(&e.decl))
+                .unwrap_or_default();
+            let links = (links.into_iter())
+                .filter(|l| o.types.contains_key(&l.name) && !own.contains(l.name.as_str()));
+            let gone = links.map(|l| {
+                let name = l.name.as_str().to_owned();
+                Declaration::Withdraw(Withdrawal { kind: x.kind, name })
+            });
+            (Vec::new(), gone.collect())
+        }
+        _ => (Vec::new(), Vec::new()),
     };
     let with = with.into_iter().filter_map(brings).map(Declaration::Type);
-    with.chain([d.clone()]).for_each(|d| o.put(d, 0, None));
+    (with.chain([d.clone()]).chain(gone)).for_each(|d| o.put(d, 0, None));
+}
+
+/// The names of the types `declarations` withdraws.
+fn types_withdrawn(declarations: &[Declaration]) -> BTreeSet<String> {
+    let names = declarations.iter().filter_map(|d| match d {
+        Declaration::Withdraw(x) if x.kind == DeclarationKind::Type => Some(x.name.clone()),
+        _ => None,
+    });
+    names.collect()
 }
 
 /// The system's `declared` of a declaration, at its next version.

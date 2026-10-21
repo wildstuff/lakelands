@@ -38,7 +38,7 @@ check!(
 
 check!(
     WITHDRAWN_TYPE = a_type_is_withdrawn_once_it_holds_no_live_record_and_nothing_names_it,
-    "027, extended (lakelands#1292): a type whose link type another's field points at is refused `withdrawn_in_use`, naming that field, appending nothing; so is one an object set is of, naming the set, a link type its relation carries, naming the relation, and a type the lake reserves, naming the lake; the type that pointed withdrawn by `declare` at the next version and the set withdrawn, the type holding a live record is refused, naming its records; the record retired, it is withdrawn, its relation's link type with it, one `declared` each, both gone from `describe` and there as of before; declared again it is refused `withdrawn_name_held` while the lake keeps its retired record, and the type that pointed, which held none, declared again continues its version"
+    "027, extended (lakelands#1292): a type is refused `withdrawn_in_use`, appending nothing, naming in turn what holds it, each withdrawn at its next version before the next refusal: a field of another type pointing at its link type, a view computed from it, a verb on it, a verb whose payload points at it, an object set of it, a trigger on it; then its live record, which is retired; a link type its relation carries is refused naming the relation, and a type the lake reserves naming the lake; then a relation of another type pointing at it is named, and the two withdrawn by one `apply`, it first and its link type by name, leave with the other's link type, one `declared` each, all gone from `describe` and there as of before; declared again it is refused `withdrawn_name_held` while the lake keeps its retired record, and the type that pointed, which held none, declared again continues its version"
 );
 
 check!(
@@ -371,6 +371,7 @@ async fn a_function_is_withdrawn_once_no_field_names_it(store: Store) -> Held {
 async fn a_type_is_withdrawn_once_it_holds_no_live_record_and_nothing_names_it(
     store: Store,
 ) -> Held {
+    use DeclarationKind::{ObjectSet, Trigger, Type, Verb};
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     let leg = RelationDecl {
         name: "leg".into(),
@@ -378,37 +379,73 @@ async fn a_type_is_withdrawn_once_it_holds_no_live_record_and_nothing_names_it(
         fields: vec![field("n", StorageKind::Number)],
         ..RelationDecl::default()
     };
+    let to = RelationDecl {
+        name: "to".into(),
+        ..leg.clone()
+    };
     let mut ledger = type_decl("ledger", vec![field("n", StorageKind::Number)]);
     ledger.relations.push(leg);
     l.declare(ledger.clone()).await?;
     let link = "sys.link.ledger.leg";
     l.declare(type_decl("entry", vec![reference("of", link)]))
         .await?;
-    (l.cat
-        .declare(&l.own, object_set_on("big", "ledger", "n > 1"))
-        .await)
-        .must("declaring `big`")?;
-    l.upsert("ledger", "l1", json!({"n": 2})).await?;
+    let n = json!({"name": "n", "type": {"kind": "number"}});
+    l.declare_json(
+        json!({"declare": "type", "name": "gauge", "key": ["n"], "fields": [n],
+        "view": {"source": "ledger", "group_by": ["n"], "measures": []}}),
+    )
+    .await?;
+    l.declare(type_decl("hold", vec![field("n", StorageKind::Number)]))
+        .await?;
+    l.declare_json(
+        json!({"declare": "verb", "name": "vg", "on": "hold", "risk": "low",
+        "effect": "write", "set": [{"field": "n", "value": "1"}],
+        "payload": [{"name": "of", "type": {"kind": "reference", "target": "ledger"}}]}),
+    )
+    .await?;
+    for d in [
+        write_verb("ve", "ledger", "n", "1"),
+        object_set_on("big", "ledger", "n > 1"),
+        trigger_on("tr", "ledger", None),
+    ] {
+        (l.cat.declare(&l.own, d).await).must("declaring what names `ledger`")?;
+    }
     let in_use = |name: &str, by: &str| {
         let case = json!({"code": "withdrawn_in_use", "kind": "type", "name": name, "by": by});
-        (withdraw(DeclarationKind::Type, name), case)
+        (withdraw(Type, name), case)
     };
     let refusals = vec![
-        in_use("ledger", "the field `of` of `entry`"),
         in_use(link, "the relation `leg` of `ledger`"),
         in_use("sys.setting", "the lake"),
     ];
     refused_each(&l, s, refusals).await?;
-    withdrawn_at(&l, s, DeclarationKind::Type, "entry", 2).await?;
-    refused_each(&l, s, vec![in_use("ledger", "the object set `big`")]).await?;
-    withdrawn_at(&l, s, DeclarationKind::ObjectSet, "big", 2).await?;
+    for (by, kind, name) in [
+        ("the field `of` of `entry`", Type, "entry"),
+        ("the view `gauge`", Type, "gauge"),
+        ("the verb `ve`", Verb, "ve"),
+        ("the verb `vg`", Verb, "vg"),
+        ("the object set `big`", ObjectSet, "big"),
+        ("the trigger `tr`", Trigger, "tr"),
+    ] {
+        refused_each(&l, s, vec![in_use("ledger", by)]).await?;
+        withdrawn_at(&l, s, kind, name, 2).await?;
+    }
+    l.upsert("ledger", "l1", json!({"n": 2})).await?;
     refused_each(&l, s, vec![in_use("ledger", "its records")]).await?;
     l.retire("ledger", "l1").await?;
+    let mut fan = type_decl("fan", vec![]);
+    fan.relations.push(to);
+    l.declare(fan).await?;
+    refused_each(&l, s, vec![in_use("ledger", "the relation `to` of `fan`")]).await?;
+    // The two leave by one call, the pointed-at first, `fan`'s link type
+    // with it, `ledger`'s by its own withdrawal.
     let before = s.head().await.must("reading the head")?;
-    (l.cat
-        .declare(&l.own, withdraw(DeclarationKind::Type, "ledger"))
-        .await)
-        .must("withdrawing `ledger`")?;
+    let both = vec![
+        withdraw(Type, "ledger"),
+        withdraw(Type, link),
+        withdraw(Type, "fan"),
+    ];
+    (l.cat.apply(&l.own, both).await).must("withdrawing `fan` and `ledger`")?;
     let events = events_after(s, before).await?;
     let gone = events.iter().filter_map(|e| match &e.body {
         EventBody::Declared {
@@ -418,12 +455,13 @@ async fn a_type_is_withdrawn_once_it_holds_no_live_record_and_nothing_names_it(
         _ => None,
     });
     let gone: Vec<&str> = gone.collect();
+    let names = ["ledger", link, "fan", "sys.link.fan.to"];
     ensure!(
-        gone == ["ledger", link] && events.len() == 2,
-        "withdrawing `ledger` must append its `declared` and its link type's: {events:?}"
+        gone == names && events.len() == 4,
+        "withdrawing `fan` and `ledger` must append their `declared` and their link types': {events:?}"
     );
-    for name in ["ledger", link] {
-        gone_since(&l, DeclarationKind::Type, name, events[0].position).await?;
+    for name in names {
+        gone_since(&l, Type, name, events[0].position).await?;
     }
     let held = json!({"code": "withdrawn_name_held", "type": "ledger"});
     refused_each(&l, s, vec![(Declaration::Type(ledger), held)]).await?;

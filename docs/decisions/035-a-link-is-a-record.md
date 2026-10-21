@@ -261,8 +261,8 @@ rename, `relation_renames`, old name to new:
   link type stands under the old one, so it could not tell a relation
   renamed since from one declared since. `describe` and `describe_type`
   as of a position tell each type they describe the entries of the
-  lake's list of renames that named it again after that position,
-  oldest first, under `lineage.renamed`: the same list the grants
+  lake's list of renames that named it again at that position or
+  after, oldest first, under `lineage.renamed`: the same list the grants
   follow, never a copy. The last entry's `to` is its name at the head.
   A type not described there was not declared there, or is not the
   reader's to see. At the head nothing is told: there is nothing after

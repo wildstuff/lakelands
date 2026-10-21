@@ -1274,8 +1274,8 @@ impl<'a> Reader<'a> {
         Ok(t)
     }
 
-    /// Tell each type described as of a position the names it bore after
-    /// it, from the lake's list of renames at the head, where `asked`, its
+    /// Tell each type described as of a position the names it bore from
+    /// it on, from the lake's list of renames at the head, where `asked`, its
     /// grants named there, is shown it under its last name: a name is told
     /// only to a reader shown the type at both positions (006, extended).
     fn renamed_since(&self, asked: &Principal, types: &mut [TypeDescription]) -> Result<()> {
@@ -1286,7 +1286,9 @@ impl<'a> Reader<'a> {
         let shape = self.lake.shape(view.as_ref())?;
         let list = &shape.renames;
         let (head, _) = (self.lake).sight(asked.clone(), None, Some(list), shape.as_ref())?;
-        let since = list.iter().filter(|r| r.at > self.position);
+        // One at the position itself is told: the link type stands there
+        // under its old name, and its links walk by the new one.
+        let since = list.iter().filter(|r| r.at >= self.position);
         for t in types {
             let (mut last, mut renamed) = (t.name.clone(), Vec::new());
             for r in since.clone() {

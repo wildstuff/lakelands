@@ -1162,7 +1162,7 @@ interface types {
         /// Who retires its records: only its verbs, or its authors too.
         retired-by: retired-by,
         view-of: option<type-name>,
-        /// As of a position: the names the type bore after it, oldest
+        /// As of a position: the names the type bore from it on, oldest
         /// first, the last `to` its name at the head. Empty at the head.
         renamed: list<renamed>,
     }

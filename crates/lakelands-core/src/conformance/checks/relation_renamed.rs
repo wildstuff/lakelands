@@ -316,7 +316,7 @@ async fn a_grant_on_a_link_type_follows_its_relations_rename(store: Store) -> He
 
 check!(
     RENAMED_LINEAGE = describe_as_of_before_a_rename_tells_the_name_at_the_head,
-    "035 and 006, extended (lakelands#1291): `describe` as of a position before a relation's rename tells its old link type the rename, at the position of the `migrated`, and its new name, and so does `describe_type`; as of after the rename neither link type is told one, the old standing empty, and as of before the declaration neither is described; a reader shown the old link type as of before by a permission on the old name, which the head does not show the new one, is told no rename, and one kept from it is described neither"
+    "035 and 006, extended (lakelands#1291): `describe` as of a position before a relation's rename, and as of the rename's own, tells its old link type the rename, at the position of the `migrated`, and its new name, and so does `describe_type`; as of after the rename neither link type is told one, the old standing empty, and as of before the declaration neither is described; a reader shown the old link type as of before by a permission on the old name, which the head does not show the new one, is told no rename, and one kept from it is described neither"
 );
 
 /// The link types of `approved_by` that `who` is described as of `at`,
@@ -359,15 +359,16 @@ async fn describe_as_of_before_a_rename_tells_the_name_at_the_head(store: Store)
         .renamed;
     let got = [
         told(&l, &l.own, before).await?,
+        told(&l, &l.own, migrated).await?,
         told(&l, &l.own, after).await?,
         told(&l, &l.own, empty).await?,
         told(&l, &permitted(s), before).await?,
         told(&l, &kept, before).await?,
     ];
-    let want: [&[&str]; 5] = [&[&was], &[OLD, NEW], &[], &[OLD], &[]];
+    let want: [&[&str]; 6] = [&[&was], &[&was], &[OLD, NEW], &[], &[OLD], &[]];
     ensure!(
         got.iter().zip(want).all(|(g, w)| g == w) && one.len() == 1,
-        "as of before, after, before the declaration, to a permission on the old name and \
+        "as of before, at the rename, after, before the declaration, to a permission on the old name and \
          to one kept from it, `describe` must tell {want:?}; it tells {got:?}, and \
          `describe_type` {one:?}"
     );

@@ -664,17 +664,20 @@ A type is withdrawn by the same declaration, `{"declare": "withdraw",
 longer lists it from the withdrawal on, a read as of before still
 does, and declared again its version continues. The link types its
 relations carry leave with it, each by a `declared` of its own the
-lake appends after the type's. A type in use is refused
-`withdrawn_in_use`, naming the first thing that holds it, in this
-order:
+lake appends after the type's, or by its own withdrawal in the same
+call. A call that withdraws a type and the one its relation points at
+withdraws both, in either order: each is checked with the other and
+its link types gone. A type in use is refused `withdrawn_in_use`,
+naming the first thing that holds it, in this order:
 
 - a type the lake reserves, `sys.` and not a link type, by the lake;
   a link type a relation in force carries, by that relation, which
   leaves only with its type or by a migration;
 - a field or a relation of another type that points at it or at one
-  of its link types, or a view computed from it, the author's types before the lake's own; then a
-  verb on it or on one of its link types, or whose payload points at
-  it; then an object set of one of them, then a trigger on one;
+  of its link types, or a view computed from it, the author's types
+  before the lake's own; then a verb on it or on one of its link
+  types, or whose payload points at it; then an object set of one of
+  them, then a trigger on one;
 - a live record, retired ones not counting, restricted ones counting:
   `its records`, or `the links of its relation` for a link type that
   would leave with it.
@@ -686,10 +689,9 @@ record, and a read as of before answers them. Declared again while
 the lake keeps one of them, retired, it is refused
 `withdrawn_name_held`, as a link type it would bring is: those records
 were written to the shape that left, and the new one would read them
-as its own. A count of records its
-author is not answered is not its to learn, so where it is not
-answered one of them the refusal is not granted, as a function's is
-that only fields hidden from it read.
+as its own. A count of records its author is not answered is not its
+to learn, so where it is not answered one of them the refusal is not
+granted, as a function's is that only fields hidden from it read.
 
 Before, a type once declared stood in every description for good: an
 author who declared one by mistake, or whose use for it had ended, had
