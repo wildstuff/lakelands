@@ -310,7 +310,7 @@ fn command() -> Command {
                 .subcommand_required(true)
                 .subcommand(
                     Command::new("remove")
-                        .about("Take back what one source wrote before a time, in one delivery, or of what it observed before a time: its values read as erased at every position, as one act")
+                        .about("Take back what one source wrote before a time, in one or more deliveries, or of what it observed before a time: its values read as erased at every position, as one act")
                         .arg(
                             Arg::new("source")
                                 .long("source")
@@ -320,7 +320,7 @@ fn command() -> Command {
                                 .help("The source whose values are taken back"),
                         )
                         .arg(Arg::new("before").long("before").value_name("RFC3339").value_parser(|s: &str| lakelands_api::Timestamp::parse(s).map_err(|e| e.to_string())).help("Take back what the source wrote before this instant: RFC 3339, or a date at midnight UTC"))
-                        .arg(Arg::new("delivery").long("delivery").value_name("ID").value_parser(clap::builder::NonEmptyStringValueParser::new()).help("Take back what the source wrote in this one delivery"))
+                        .arg(Arg::new("delivery").long("delivery").value_name("ID").action(ArgAction::Append).value_parser(clap::builder::NonEmptyStringValueParser::new()).help("Take back what the source wrote in this delivery; repeated, in any of them, as one act"))
                         .arg(Arg::new("seen-before").long("seen-before").value_name("RFC3339").value_parser(|s: &str| lakelands_api::Timestamp::parse(s).map_err(|e| e.to_string())).help("Take back what the source wrote of what it says it observed before this instant (its seen_at): RFC 3339, or a date at midnight UTC"))
                         .group(clap::ArgGroup::new("selection").args(["before", "delivery", "seen-before"]).required(true))
                         .arg(Arg::new("require-shredded").long("require-shredded").action(ArgAction::SetTrue).help("Refuse while a value of an erasable field would be redacted only, its key version not destroyed"))
@@ -632,9 +632,18 @@ async fn dispatch(
             let selection = match (at("before"), at("seen-before")) {
                 (Some(t), _) => lakelands_api::write::Selection::WrittenBefore(t),
                 (_, Some(t)) => lakelands_api::write::Selection::SeenBefore(t),
-                _ => lakelands_api::write::Selection::Delivery(
-                    text(of, "delivery").unwrap_or_default().into(),
-                ),
+                _ => {
+                    let mut set: Vec<lakelands_api::DeliveryId> = (of
+                        .get_many::<String>("delivery"))
+                    .into_iter()
+                    .flatten()
+                    .map(|d| d.as_str().into())
+                    .collect();
+                    match set.len() {
+                        1 => lakelands_api::write::Selection::Delivery(set.remove(0)),
+                        _ => lakelands_api::write::Selection::Deliveries(set),
+                    }
+                }
             };
             let (shredded, report) = (of.get_flag("require-shredded"), text(of, "report"));
             let act = (shredded, report.as_deref().map(Some));

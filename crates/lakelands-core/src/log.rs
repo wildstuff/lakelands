@@ -126,7 +126,8 @@ pub fn reads_format(v: u64) -> bool {
 const SEALED_FROM: u32 = 16;
 
 /// The log format that first holds `apart`, a delivery's key outside its
-/// source's versions, and a selection by `seen_before` (065).
+/// source's versions, and a selection by `seen_before` or by `deliveries`
+/// (065).
 const APART_FROM: u32 = 18;
 
 /// An event as log format `v` wrote it, its members as the format this
@@ -268,7 +269,7 @@ pub fn created_in_another(event: &Event) -> Option<Flaw> {
 /// (`docs/log-format.md` §1.1); and a `trigger_dropped`, or a
 /// `trigger_fired`'s `change` or `created`, before format 17; and `apart`,
 /// in `sealed` or on a `values_removed`, and a `values_removed` selecting
-/// by `seen_before`, before format 18 (065).
+/// by `seen_before` or by `deliveries`, before format 18 (065).
 /// No door
 /// puts any there; a reader holds the rule for a log written by something
 /// else.
@@ -316,14 +317,18 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
         let v = event.v;
         return Some(Flaw::ApartBefore { v });
     }
-    if let EventBody::ValuesRemoved {
-        selection: Selection::SeenBefore(_),
-        ..
-    } = &event.body
+    if let EventBody::ValuesRemoved { selection, .. } = &event.body
         && event.v < APART_FROM
     {
-        let v = event.v;
-        return Some(Flaw::SelectsSeenBefore { v });
+        let by = match selection {
+            Selection::SeenBefore(_) => "seen_before",
+            Selection::Deliveries(_) => "deliveries",
+            _ => "",
+        };
+        if !by.is_empty() {
+            let (v, by) = (event.v, by.to_owned());
+            return Some(Flaw::SelectsLater { v, by });
+        }
     }
     let told = |c: &Option<_>, m: &Option<bool>| c.is_some() || m.is_some();
     if let EventBody::TriggerFired {

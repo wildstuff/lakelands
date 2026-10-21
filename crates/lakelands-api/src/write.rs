@@ -1913,6 +1913,9 @@ pub enum Selection {
     WrittenBefore(Timestamp),
     /// What it wrote in one delivery.
     Delivery(DeliveryId),
+    /// What it wrote in any of a set of deliveries, in one act: as the acts
+    /// taking each back would take them, with one walk and one rebuild.
+    Deliveries(Vec<DeliveryId>),
     /// What it wrote of what it says it observed before a time: each event
     /// whose `seen_at` is before it, wherever in the log it stands.
     SeenBefore(Timestamp),
@@ -1948,8 +1951,8 @@ pub struct RemoveReport {
     pub before: Option<Position>,
     /// The source's `record_ingested` events selected.
     pub events: u64,
-    /// For a delivery, the source's events written before the log kept
-    /// deliveries, which it cannot select.
+    /// For a delivery or a set of them, the source's events written
+    /// before the log kept deliveries, which it cannot select.
     pub undelivered: u64,
     /// For a time the source observed, the source's events that state no
     /// `seen_at`, which it cannot select.
@@ -2018,6 +2021,22 @@ impl RemoveReport {
             }
             (Selection::WrittenBefore(t), None) => format!("written before {t}"),
             (Selection::Delivery(d), _) => format!("of delivery `{d}`"),
+            (Selection::Deliveries(ds), _) if ds.is_empty() => "of no delivery".to_owned(),
+            (Selection::Deliveries(ds), _) => {
+                let named: Vec<String> = ds.iter().take(5).map(|d| format!("`{d}`")).collect();
+                let more = ds.len().saturating_sub(5);
+                let more = if more > 0 {
+                    format!(" and {more} more")
+                } else {
+                    String::new()
+                };
+                let n = if ds.len() == 1 {
+                    "delivery"
+                } else {
+                    "deliveries"
+                };
+                format!("of {} {n} ({}{more})", ds.len(), named.join(", "))
+            }
             (Selection::SeenBefore(t), _) => format!("seen before {t}"),
         };
         let (events, are) = (counted(self.events, "event"), be(self.events));

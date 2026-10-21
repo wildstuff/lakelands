@@ -2033,7 +2033,8 @@ fn forget_erases_a_sources_values_and_prints_what_it_did() {
 /// refused in the store's words, and so is `--require-shredded` while a
 /// value of an erasable field would be redacted only, naming the count;
 /// `--before`, `--delivery` and `--seen-before` are one selection, given
-/// once, and `--seen-before` counts the events that state no `seen_at`
+/// once, `--delivery` repeated a set of them (lakelands#1290), and
+/// `--seen-before` counts the events that state no `seen_at`
 /// apart (lakelands#1166); the act
 /// under the preflight's id takes the values back and says through which
 /// position, and, where its reclaim fails, that the reclaim is owed and
@@ -2118,6 +2119,16 @@ fn values_remove_takes_back_part_of_a_source_and_prints_what_it_did() {
             "{backend:?}: {} {}",
             unseen.out,
             unseen.err
+        );
+        let set = remove(&["--delivery", "a", "--delivery", "b", "--preflight"]);
+        assert!(
+            set.code == 0
+                && set
+                    .out
+                    .starts_with("0 events of `tracker` of 2 deliveries (`a`, `b`) are selected."),
+            "{backend:?}: {} {}",
+            set.out,
+            set.err
         );
         for usage in [
             remove(&[]),

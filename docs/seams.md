@@ -2336,12 +2336,12 @@ a facade that does not carry them, as `lakelands-client` does.
 
 `LakeStore::remove_values(source, selection, require_shredded,
 report_id)` takes back what a source wrote before a time, in one
-delivery, or of what it observed before a time
+delivery or a set of them, or of what it observed before a time
 (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`), in the
 same steps and with the same answer of an owed reclaim;
 `remove_values_preflight` answers its report, appending nothing. It is
 no door's either. The CLI's `lakelands values remove --source <id>
-(--before <instant> | --delivery <id> | --seen-before <instant>)
+(--before <instant> | --delivery <id>… | --seen-before <instant>)
 [--require-shredded]
 [--preflight | --report <id>]` runs it. A mirror that meets
 `values_removed` stops each mapped type with a field its reader reads

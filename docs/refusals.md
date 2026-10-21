@@ -935,7 +935,7 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `delivery_on` | `kind` (String), `v` (u32) | a `{kind}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries | An event other than a `record_ingested` of format 17 on carries `delivery`. |
 | `removed_before` | `v` (u32) | an event of format {v} is a `values_removed`, which format 17 added | A `values_removed` event in a format before the one that added it. |
 | `apart_before` | `v` (u32) | an event of format {v} carries `apart`, which format 18 added | An event of a format before 18 carries `apart`. |
-| `selects_seen_before` | `v` (u32) | a `values_removed` of format {v} selects by `seen_before`, which format 18 added | A `values_removed` of a format before 18 selects by `seen_before`. |
+| `selects_later` | `v` (u32), `by` (String) | a `values_removed` of format {v} selects by `{by}`, which format 18 added | A `values_removed` of a format before 18 selects by `seen_before` or by a set of deliveries. |
 | `upstream_on` | `kind` (String) | a `{kind}` event carries `upstream`, which only a `record_ingested` event carries | An event other than `record_ingested` carries `upstream`. |
 | `hash_mismatch` | — | the hash does not match the event | The hash does not match the event. |
 | `disagrees` | — | the engine's record of the event disagrees with its bytes | The engine's record of the event disagrees with its bytes. |

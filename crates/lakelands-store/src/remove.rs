@@ -121,7 +121,7 @@ impl Removal {
         else {
             return None;
         };
-        let (source, selection, before) = (source.clone(), selection.clone(), *before);
+        let (source, selection, before) = (source.clone(), settled(selection.clone()), *before);
         Some(Removal {
             at: e.position,
             source,
@@ -142,16 +142,19 @@ impl Removal {
 
     /// Whether it selects `e`: a `record_ingested` of its source before
     /// it, below its position for a time of the log's clock, of its
-    /// delivery for one, stating a `seen_at` before the time for a time
-    /// the source observed.
+    /// delivery, or of one of its set, for those, stating a `seen_at`
+    /// before the time for a time the source observed.
     pub(crate) fn selects(&self, e: &Event) -> bool {
         let ingested = matches!(e.body, EventBody::RecordIngested { .. });
-        let picked = match &self.selection {
+        let picked = || match &self.selection {
             Selection::WrittenBefore(_) => self.before.is_some_and(|b| e.position < b),
             Selection::Delivery(d) => e.delivery.as_ref() == Some(d),
+            Selection::Deliveries(ds) => {
+                (e.delivery.as_ref()).is_some_and(|d| ds.binary_search(d).is_ok())
+            }
             Selection::SeenBefore(t) => e.seen_at.is_some_and(|s| s < *t),
         };
-        ingested && e.position < self.at && e.source.as_ref() == Some(&self.source) && picked
+        ingested && e.position < self.at && e.source.as_ref() == Some(&self.source) && picked()
     }
 
     /// Whether it takes the value of `field` of `ty` an event at `at`
@@ -266,7 +269,7 @@ fn found(
             Some(p) => p.next(),
             None => Position::GENESIS,
         }),
-        Selection::Delivery(_) | Selection::SeenBefore(_) => None,
+        Selection::Delivery(_) | Selection::Deliveries(_) | Selection::SeenBefore(_) => None,
     };
     let act = Removal {
         at: at.unwrap_or(head.map_or(Position::GENESIS, Position::next)),
@@ -371,7 +374,7 @@ fn found(
         keys.contains(k) || a.iter().any(|a| apart.contains(a)) || forgot
     };
     // Each selection counts only the events it cannot select.
-    if !matches!(selection, Selection::Delivery(_)) {
+    if !matches!(selection, Selection::Delivery(_) | Selection::Deliveries(_)) {
         undelivered = 0;
     }
     if !matches!(selection, Selection::SeenBefore(_)) {
@@ -588,22 +591,35 @@ fn id(source: &SourceId, selection: &Selection, head: Option<Position>) -> Strin
     lakelands_core::canonical::sha256_hex(&of)
 }
 
-/// Refuse a time the log cannot write: one outside the years 0000 to
-/// 9999.
-fn checked(selection: &Selection) -> Result<()> {
+/// `selection` as the act takes it, a time the log cannot write, one
+/// outside the years 0000 to 9999, refused.
+fn checked(selection: &Selection) -> Result<Selection> {
     match selection {
         Selection::WrittenBefore(t) | Selection::SeenBefore(t) if !t.in_years() => {
             let value = t.to_string();
             Err(invalid(Case::NotDateTime { value }))
         }
-        _ => Ok(()),
+        _ => Ok(settled(selection.clone())),
+    }
+}
+
+/// `selection` with a set's ids in order, each once: an event's delivery
+/// is found in it by a binary search, as the fold asks of every event.
+fn settled(selection: Selection) -> Selection {
+    match selection {
+        Selection::Deliveries(mut ds) => {
+            ds.sort_unstable();
+            ds.dedup();
+            Selection::Deliveries(ds)
+        }
+        other => other,
     }
 }
 
 /// What [`run`] would do, appending nothing, under the id the act may
 /// repeat.
 pub fn preflight(lake: &Lake, source: &SourceId, selection: &Selection) -> Result<RemoveReport> {
-    checked(selection)?;
+    let selection = &checked(selection)?;
     let began = std::time::Instant::now();
     let view = lake.engine.view(None)?;
     let w = lake.reading(view.as_ref())?;
@@ -631,7 +647,7 @@ pub fn run(
     selection: &Selection,
     (shredded, report_id): (bool, Option<&str>),
 ) -> Result<RemoveReport> {
-    checked(selection)?;
+    let selection = &checked(selection)?;
     let mut w = lake.for_write()?;
     let view = lake.engine.view(None)?;
     // The same act in the log, still owed: its repeat finishes what a

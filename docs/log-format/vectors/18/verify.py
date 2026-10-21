@@ -21,7 +21,7 @@ the hash chain from 64 zeros, every checkpoint against the position,
 the hash and the files before it, every line in the one format, `cause`
 never inside `context`, `upstream` only on a `record_ingested` event,
 `sealed` only on a `record_ingested` or an `output_recorded`, `apart`
-and a selection by `seen_before` only from format 18 on,
+and a selection by `seen_before` or `deliveries` only from format 18 on,
 and every `known_at` in its one form and never before the `known_at`
 before it (log-format §1.3). It prints one line per file and the last
 position and hash, or the position where the files stop being the log,
@@ -363,6 +363,10 @@ SHOWS = {
         lambda e: e["body"]["kind"] == "values_removed" and e["body"].get("source") == "erp"
         and set(e["body"].get("selection", {})) == {"seen_before"} and "before" not in e["body"]
         and "keys" not in e["body"] and "apart" not in e["body"]),
+    "removed_deliveries": shows("a `values_removed` taking back a set of a source's deliveries, its ids in order, naming no position")(
+        lambda e: e["body"]["kind"] == "values_removed" and e["body"].get("source") == "erp"
+        and e["body"].get("selection") == {"deliveries": ["batch-7", "d68"]} and "before" not in e["body"]
+        and "keys" not in e["body"] and "apart" not in e["body"]),
     "removal_apart_retires": shows("the `record_retired` of a record only the delivery sealed apart wrote")(
         lambda e: e["body"]["kind"] == "record_retired" and e["body"].get("key") == "c5"),
     "removal_by_time_retires": shows("the `record_retired` of a record only what was taken back by time wrote")(
@@ -484,8 +488,9 @@ def verify_dir(root):
             apart = bool(event.get("sealed", {}).get("apart")) or (
                 event["body"].get("kind") == "values_removed" and bool(event["body"].get("apart")))
             need(not apart or v >= 18, f"an event of format {v} carries `apart`, which format 18 added")
-            seen = event["body"].get("kind") == "values_removed" and "seen_before" in event["body"].get("selection", {})
-            need(not seen or v >= 18, f"a `values_removed` of format {v} selects by `seen_before`, which format 18 added")
+            for by in ("seen_before", "deliveries"):
+                later = event["body"].get("kind") == "values_removed" and by in event["body"].get("selection", {})
+                need(not later or v >= 18, f"a `values_removed` of format {v} selects by `{by}`, which format 18 added")
             # known_at in its one form (§1.3), whose text orders as its
             # instant does, and never before the event before it.
             k = event.get("known_at")

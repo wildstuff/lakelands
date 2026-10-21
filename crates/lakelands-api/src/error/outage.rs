@@ -698,8 +698,9 @@ catalog! {
         RemovedBefore { v: u32 } => "an event of format {v} is a `values_removed`, which format 17 added",
         /// An event of a format before 18 carries `apart`.
         ApartBefore { v: u32 } => "an event of format {v} carries `apart`, which format 18 added",
-        /// A `values_removed` of a format before 18 selects by `seen_before`.
-        SelectsSeenBefore { v: u32 } => "a `values_removed` of format {v} selects by `seen_before`, which format 18 added",
+        /// A `values_removed` of a format before 18 selects by `seen_before`
+        /// or by a set of deliveries.
+        SelectsLater { v: u32, by: String } => "a `values_removed` of format {v} selects by `{by}`, which format 18 added",
         /// An event other than `record_ingested` carries `upstream`.
         UpstreamOn { kind: String } => "a `{kind}` event carries `upstream`, which only a `record_ingested` event carries",
         /// The hash does not match the event.
