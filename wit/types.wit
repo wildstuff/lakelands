@@ -438,8 +438,10 @@ interface types {
         withdraw(withdrawal),
     }
 
-    /// A trigger, a verb, an object set or a function taken out of force
-    /// from the withdrawal's position on; a read as of before still sees it.
+    /// A type, a trigger, a verb, an object set or a function taken out of
+    /// force from the withdrawal's position on; a read as of before still
+    /// sees it. A type leaves once it holds no live record and nothing in
+    /// force names it, the link types of its relations with it.
     record withdrawal {
         kind: declaration-kind,
         name: string,
@@ -1160,6 +1162,19 @@ interface types {
         /// Who retires its records: only its verbs, or its authors too.
         retired-by: retired-by,
         view-of: option<type-name>,
+        /// As of a position: the names the type bore from it on, oldest
+        /// first, the last `to` its name at the head. Empty at the head.
+        renamed: list<renamed>,
+    }
+
+    /// An entry of the lake's list of renames: one migration's renames of
+    /// a type's fields, or a type's new name (a link type's, when its
+    /// relation is renamed), with the position it took effect at.
+    record renamed {
+        at: position,
+        %type: type-name,
+        renames: list<tuple<field-name, field-name>>,
+        to: option<type-name>,
     }
 
     record type-lifecycle {

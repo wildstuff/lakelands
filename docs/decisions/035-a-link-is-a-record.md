@@ -256,6 +256,17 @@ rename, `relation_renames`, old name to new:
 - **Grants follow the link type** as they follow a field
   (`docs/decisions/006-grants-not-roles.md`, extended): a restriction in
   both directions of time, a permission never.
+- **A read as of before is told the names since.** A host knows a
+  relation by its name at the head, and as of an earlier position the
+  link type stands under the old one, so it could not tell a relation
+  renamed since from one declared since. `describe` and `describe_type`
+  as of a position tell each type they describe the entries of the
+  lake's list of renames that named it again at that position or
+  after, oldest first, under `lineage.renamed`: the same list the grants
+  follow, never a copy. The last entry's `to` is its name at the head.
+  A type not described there was not declared there, or is not the
+  reader's to see. At the head nothing is told: there is nothing after
+  it. Who is told is `006`'s.
 - **The log's format** takes `relation_renames` as a member of a
   `migrated` event; a migration that renames no relation leaves it out.
 
@@ -359,3 +370,4 @@ doors that check the relation's authority and cardinality.
   sentence that the log format does not change, untrue since
   lakelands#429, left.
 - A trigger on a relation fires on each link a source ingests, link by link: "per window" said of it what no answer turns on (lakelands#886).
+- Extended: `describe` as of a position tells a link type the names its relation's renames gave it since (lakelands#1291).

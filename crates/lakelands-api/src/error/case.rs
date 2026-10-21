@@ -889,8 +889,10 @@ catalog! {
         WithdrawnInUse { kind: Naming, name: String, by: String } => "the {kind} `{name}` is in use by {by}, so it is not withdrawn",
         /// A withdrawal of a name not in force.
         WithdrawnUndeclared { kind: Naming, name: String } => "the {kind} `{name}` is not declared, so it is not withdrawn",
+        /// A type declared again where the lake keeps records of the one withdrawn.
+        WithdrawnNameHeld { #[serde(rename = "type")] ty: TypeName } => "the lake keeps the records of the withdrawn type `{ty}`; take another name",
         /// A withdrawal of a kind that leaves force another way.
-        WithdrawnKind { kind: Naming } => "a {kind} is not withdrawn: a trigger, a verb, an object set or a function is; a type leaves by `migrate`, and a setting by its record",
+        WithdrawnKind { kind: Naming } => "a {kind} is not withdrawn: a type, a trigger, a verb, an object set or a function is, and a setting leaves by its record",
         /// A view grouped by a field no key may be.
         GroupUnkeyable { field: FieldName } => "it groups by `{field}`, whose kind cannot be part of a key",
         /// An `initial` value on a field its inputs clear.

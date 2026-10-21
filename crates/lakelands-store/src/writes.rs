@@ -51,9 +51,10 @@ use lakelands_api::principal::WriteContext;
 use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::seam::VerbExecutor;
 use lakelands_api::write::{
-    Breach, Carried, Carrier, Declaration, FieldFill, InForce, Migration, MigrationReport, Misfit,
-    ObjectSetDecl, Outcome, ProposalState, ProposedWrite, Recompute, RelationRename, SettingDecl,
-    ValueRenamed, ValueTypeMigration, ValueTypeReport, ValueTypeUse, WriteOpts,
+    Breach, Carried, Carrier, Declaration, DeclarationKind, FieldFill, InForce, Migration,
+    MigrationReport, Misfit, ObjectSetDecl, Outcome, ProposalState, ProposedWrite, Recompute,
+    RelationRename, SettingDecl, ValueRenamed, ValueTypeMigration, ValueTypeReport, ValueTypeUse,
+    Withdrawal, WriteOpts,
 };
 use lakelands_api::{
     Access, ConstraintName, Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal,
@@ -4892,6 +4893,7 @@ impl Call<'_> {
             .iter()
             .map(lakelands_core::engines::declaration_key)
             .collect();
+        let own = types_withdrawn(declarations);
         let mut problems: Vec<(Place, Error)> = Vec::new();
         for (i, id) in identities.iter().enumerate() {
             if identities[..i].contains(id) {
@@ -4916,7 +4918,7 @@ impl Call<'_> {
                         t.fields.retain(|f| has(seen, f) || !has(&h.decl, f));
                         Some(t)
                     };
-                    put_as_appended(probe.to_mut(), other, shown);
+                    put_leaving(probe.to_mut(), other, shown, &own);
                 }
             }
             let checked = declare::check_declaration(&probe, d, false);
@@ -4945,7 +4947,8 @@ impl Call<'_> {
     /// version, with the link types its relations need; and the sections
     /// of its plan, of the types it computes again (062). Where `telling`,
     /// as a proposal's plan, its sections alone: nothing it finds refuses
-    /// it, and its sets are not decided.
+    /// it but the records a type withdrawn or declared again finds held,
+    /// and its sets are not decided.
     pub(crate) fn bundle_drafts(
         &self,
         w: &Writer,
@@ -5035,11 +5038,15 @@ impl Call<'_> {
                 (declarations.iter()).for_each(|d| whole.put(d.clone(), 0, None));
                 whole
             });
+        // The types it withdraws itself, whose withdrawals the lake does not
+        // append again beside a type's.
+        let withdrawn = types_withdrawn(&declarations);
         for declaration in declarations {
             let declared = position_after(w, first + drafts.len());
             // A type's hash and link types, or the memberships a set decides.
             let (schema_hash, with) = match &declaration {
                 Declaration::Type(t) => {
+                    self.name_held(w, t)?;
                     let hash = shape::schema_hash(t).map_err(invalid)?;
                     (Some(hash), link_type_drafts(&w.ontology, t, now)?)
                 }
@@ -5065,6 +5072,9 @@ impl Call<'_> {
                 Declaration::Setting(s) => {
                     let whole = (settled.as_ref()).expect("a bundle with a setting has its copy");
                     (None, self.restamped((w, whole), s, now)?)
+                }
+                Declaration::Withdraw(x) if x.kind == DeclarationKind::Type => {
+                    (None, self.type_withdrawn(w, (&x.name, &withdrawn), now)?)
                 }
                 _ => (None, Vec::new()),
             };
@@ -5119,6 +5129,76 @@ impl Call<'_> {
             drafts.extend(changes);
         }
         Ok(Bundled { drafts, types })
+    }
+
+    /// The withdrawals of the link types the type `name` takes out of force
+    /// with it, its relations' (lakelands#1292). Refused while it or one of
+    /// them holds a live record, restricted or not: naming them to one
+    /// answered one of them, not granted to another (024).
+    fn type_withdrawn(
+        &self,
+        w: &Writer,
+        (name, withdrawn): (&str, &BTreeSet<String>),
+        now: Timestamp,
+    ) -> Result<Vec<Draft>> {
+        let ty = TypeName::from(name);
+        let o = &w.ontology;
+        let links = o.types.get(&ty).map(|e| links::link_types_of(&e.decl));
+        let links = links.unwrap_or_default().into_iter().map(|l| l.name);
+        let links = links.filter(|l| o.types.contains_key(l) && !withdrawn.contains(l.as_str()));
+        let links: Vec<TypeName> = links.collect();
+        let view = self.lake.engine.view(None)?;
+        let sees = Sight::held(self.who, o);
+        for t in std::iter::once(&ty).chain(&links) {
+            if view.count(t, &every(false))? == 0 {
+                continue;
+            }
+            let mut told = self.who.grants.reads_everything();
+            if !told {
+                live(view.as_ref(), t, |r| {
+                    told |= sees.answers(t, r);
+                    Ok(())
+                })?;
+            }
+            granted(told)?;
+            let by = match links::link_type_parts(t) {
+                Some((_, r)) if t != &ty => format!("the links of its relation `{r}`"),
+                _ => "its records".to_owned(),
+            };
+            let (kind, name) = (Naming::Type, name.to_owned());
+            return Err(invalid(Case::WithdrawnInUse { kind, name, by }));
+        }
+        let kind = DeclarationKind::Type;
+        let gone = |l: TypeName| {
+            Declaration::Withdraw(Withdrawal {
+                kind,
+                name: l.as_str().to_owned(),
+            })
+        };
+        (links.into_iter())
+            .map(|l| system_declared(o, gone(l), now))
+            .collect()
+    }
+
+    /// Refuse `t` declared again where it, or a link type it brings, was
+    /// withdrawn and the lake keeps records of it: they were written to the
+    /// shape that left, and would read as the new one's (lakelands#1292).
+    fn name_held(&self, w: &Writer, t: &TypeDecl) -> Result<()> {
+        let o = &w.ontology;
+        let names = std::iter::once(t.clone()).chain(links::link_types_of(t));
+        let names = names.filter(|d| !o.types.contains_key(&d.name));
+        let names = names.filter(|d| o.next_version(&Declaration::Type(d.clone())) > 1);
+        let names: Vec<TypeName> = names.map(|d| d.name).collect();
+        if names.is_empty() {
+            return Ok(());
+        }
+        let view = self.lake.engine.view(None)?;
+        for ty in names {
+            if stored(view.as_ref(), &ty)? > 0 {
+                return Err(invalid(Case::WithdrawnNameHeld { ty }));
+            }
+        }
+        Ok(())
     }
 
     /// The record of a host's setting the lake holds, stamped again in the
@@ -7372,18 +7452,52 @@ fn judged_by<'o>(
 }
 
 /// Puts `d` into `o` as an append leaves it: a type with the link types
-/// its relations call for, each as `brings` admits it (035).
+/// its relations call for, each as `brings` admits it (035), and a type
+/// withdrawn without the link types in force it carries (027).
 pub(crate) fn put_as_appended(
     o: &mut Ontology,
     d: &Declaration,
     brings: impl Fn(TypeDecl) -> Option<TypeDecl>,
 ) {
-    let with = match d {
-        Declaration::Type(t) => links::link_types_of(t),
-        _ => Vec::new(),
+    put_leaving(o, d, brings, &BTreeSet::new());
+}
+
+/// [`put_as_appended`], leaving a link type in `own`, one the set
+/// withdraws itself, to its own withdrawal.
+fn put_leaving(
+    o: &mut Ontology,
+    d: &Declaration,
+    brings: impl Fn(TypeDecl) -> Option<TypeDecl>,
+    own: &BTreeSet<String>,
+) {
+    let (with, gone) = match d {
+        Declaration::Type(t) => (links::link_types_of(t), Vec::new()),
+        Declaration::Withdraw(x) if x.kind == DeclarationKind::Type => {
+            let ty = o.types.get(&TypeName::from(x.name.as_str()));
+            let links = ty
+                .map(|e| links::link_types_of(&e.decl))
+                .unwrap_or_default();
+            let links = (links.into_iter())
+                .filter(|l| o.types.contains_key(&l.name) && !own.contains(l.name.as_str()));
+            let gone = links.map(|l| {
+                let name = l.name.as_str().to_owned();
+                Declaration::Withdraw(Withdrawal { kind: x.kind, name })
+            });
+            (Vec::new(), gone.collect())
+        }
+        _ => (Vec::new(), Vec::new()),
     };
     let with = with.into_iter().filter_map(brings).map(Declaration::Type);
-    with.chain([d.clone()]).for_each(|d| o.put(d, 0, None));
+    (with.chain([d.clone()]).chain(gone)).for_each(|d| o.put(d, 0, None));
+}
+
+/// The names of the types `declarations` withdraws.
+fn types_withdrawn(declarations: &[Declaration]) -> BTreeSet<String> {
+    let names = declarations.iter().filter_map(|d| match d {
+        Declaration::Withdraw(x) if x.kind == DeclarationKind::Type => Some(x.name.clone()),
+        _ => None,
+    });
+    names.collect()
 }
 
 /// The system's `declared` of a declaration, at its next version.

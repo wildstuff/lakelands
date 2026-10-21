@@ -1225,12 +1225,13 @@ impl<'a> Reader<'a> {
         Ok(Some(e))
     }
 
-    /// `describe`.
-    pub fn describe(&self) -> LakeDescription {
+    /// `describe`, as `asked` asked it.
+    pub fn describe(&self, asked: &Principal) -> Result<LakeDescription> {
         let mut lake = self.sight.describe(&self.lake.id);
         for t in &mut lake.types {
             self.name_sorted(t);
         }
+        self.renamed_since(asked, &mut lake.types)?;
         // Whether the host binds a verb's executor is the binding now, at
         // any position: it is not in the log.
         let executors = &self.lake.seams.executors;
@@ -1261,15 +1262,46 @@ impl<'a> Reader<'a> {
                 .collect();
         }
         lake.settings.extend(host);
-        lake
+        Ok(lake)
     }
 
-    /// `describe_type`.
-    pub fn describe_type(&self, ty: &TypeName) -> Result<TypeDescription> {
+    /// `describe_type`, as `asked` asked it.
+    pub fn describe_type(&self, asked: &Principal, ty: &TypeName) -> Result<TypeDescription> {
         let missing = Missing::Type { name: ty.clone() };
         let mut t = (self.sight.describe_type(ty)).ok_or(Error::NotFound { missing })?;
         self.name_sorted(&mut t);
+        self.renamed_since(asked, std::slice::from_mut(&mut t))?;
         Ok(t)
+    }
+
+    /// Tell each type described as of a position the names it bore from
+    /// it on, from the lake's list of renames at the head, where `asked`, its
+    /// grants named there, is shown it under its last name: a name is told
+    /// only to a reader shown the type at both positions (006, extended).
+    fn renamed_since(&self, asked: &Principal, types: &mut [TypeDescription]) -> Result<()> {
+        if self.at_head {
+            return Ok(());
+        }
+        let view = self.lake.engine.view(None)?;
+        let shape = self.lake.shape(view.as_ref())?;
+        let list = &shape.renames;
+        let (head, _) = (self.lake).sight(asked.clone(), None, Some(list), shape.as_ref())?;
+        // One at the position itself is told: the link type stands there
+        // under its old name, and its links walk by the new one.
+        let since = list.iter().filter(|r| r.at >= self.position);
+        for t in types {
+            let (mut last, mut renamed) = (t.name.clone(), Vec::new());
+            for r in since.clone() {
+                if let Some(to) = r.to.as_ref().filter(|_| r.ty == last) {
+                    renamed.push(r.clone());
+                    last = to.clone();
+                }
+            }
+            if head.ty(&last).is_ok() {
+                t.lineage.renamed = renamed;
+            }
+        }
+        Ok(())
     }
 
     /// Name in a type's lifecycle the fields the lake keeps an order index
