@@ -415,6 +415,8 @@ MISPLACED = {
         lambda e: "delivery" in e and e["body"]["kind"] != "record_ingested"),
     "output_twice": shows("both `output` and `output_at`, which a reader refuses")(
         lambda e: e["body"]["kind"] == "output_recorded" and "output" in e["body"] and "output_at" in e["body"]),
+    "sealed_for_another_source": shows("`sealed` on a `record_ingested` naming another source than its envelope, which a reader refuses")(
+        lambda e: e["body"]["kind"] == "record_ingested" and e["sealed"].get("source", e.get("source")) != e.get("source")),
 }
 
 
@@ -479,6 +481,9 @@ def verify_dir(root):
             need("sealed" not in event or event["body"].get("kind") in SEALS,
                  f"a `{event['body'].get('kind')}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries")
             need("sealed" not in event or v >= 16, f"an event of format {v} carries `sealed`, which format 16 added")
+            named = event.get("sealed", {}).get("source")
+            need(event["body"].get("kind") != "record_ingested" or named in (None, event.get("source")),
+                 f"a `record_ingested` of `{event.get('source')}` carries `sealed` naming `{named}`, which is not its own source")
             need("delivery" not in event or (event["body"].get("kind") == "record_ingested" and v >= 17),
                  f"a `{event['body'].get('kind')}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries")
             need(event["body"].get("kind") != "source_forgotten" or v >= 16,

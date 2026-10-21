@@ -12,6 +12,7 @@ use lakelands_api::engine::{
     CanonicalEvent, EngineOpener, Lease, OpenMode, ProjectionStore, ProjectionView, Ranked,
     Rankings, VectorIndex,
 };
+use lakelands_api::error::{Flaw, Situation};
 use lakelands_api::event::{Digest, Event, EventBody, SegmentDigest};
 use lakelands_api::id::KeyId;
 use lakelands_api::ontology::{FieldDecl, StorageKind};
@@ -47,7 +48,7 @@ check!(
 
 check!(
     FORGET_IMPORT = an_export_imports_with_its_keys_or_with_its_forgetting,
-    "058: an export holds a source's values sealed; imported with no key store it is refused as unbound, and with a key store that lacks the key as missing, each before anything is written; imported with the key store it reads them plain; once the source is forgotten, its export imports with no key store, and the values arrive erased, provenance saying so; imported with a backup of the key store from before the act, the import finishes the act: the backup's keys are destroyed, and the first read answers the values erased",
+    "058: an export holds a source's values sealed; imported with no key store it is refused as unbound, and with a key store that lacks the key as missing, each before anything is written; one whose ingest's seal names another source than its own, its hash made right, is refused naming the line, with nothing appended; imported with the key store it reads them plain; once the source is forgotten, its export imports with no key store, and the values arrive erased, provenance saying so; imported with a backup of the key store from before the act, the import finishes the act: the backup's keys are destroyed, and the first read answers the values erased",
     given
 );
 
@@ -580,6 +581,30 @@ async fn an_export_imports_with_its_keys_or_with_its_forgetting(
         ),
         "an export holding crm's sealed values, imported with a key store that lacks its key, is refused as missing; it answered {:?}",
         lacking.as_ref().map(|_| ())
+    );
+    // Its last line, crm's sealed ingest, its seal naming `web`, its hash
+    // made right: refused naming the line, with nothing appended, since
+    // the export as written imports below into the same lake.
+    let (misplaced, head) = (
+        export("misplaced"),
+        store.head().await.must("reading the head")?,
+    );
+    crate::export::write(store.as_ref(), &misplaced)
+        .await
+        .must("exporting again")?;
+    let file = super::export::files(&misplaced)?.pop().unwrap_or_default();
+    let mut lines = super::export::lines_of(&misplaced, &file)?;
+    let last = lines.len() - 1;
+    lines[last] = super::export::rehashed(&lines[last], |e| e["sealed"]["source"] = json!("web"))?;
+    super::export::rewrite(&misplaced, &file, &lines)?;
+    let refused = import(misplaced, with(&keys)).await;
+    let sealed = SourceId::from("web");
+    ensure!(
+        matches!(refused.as_ref().err().and_then(Error::situation),
+            Some(Situation::Damaged { position: Some(p), flaw: Flaw::SealsAnother { sealed: s }, .. })
+                if *p == head && *s == sealed),
+        "an export whose ingest of crm at {head} is sealed naming `web` is refused naming that line, with nothing appended; it answered {:?}",
+        refused.as_ref().map(|_| ())
     );
     let keyed = import(export("sealed"), with(&keys)).await;
     let keyed = keyed.map_err(|e| Failure::new(format!("importing with the key store: {e}")))?;

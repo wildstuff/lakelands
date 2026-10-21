@@ -264,7 +264,9 @@ pub fn created_in_another(event: &Event) -> Option<Flaw> {
 /// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`); and
 /// `sealed` on any kind but `record_ingested` and `output_recorded`, or
 /// on an event of a format before 16
-/// (`docs/decisions/058-a-source-may-be-forgotten.md`); and `delivery` on
+/// (`docs/decisions/058-a-source-may-be-forgotten.md`); and a
+/// `record_ingested` whose `sealed` names another source than its own,
+/// whose values would be kept under that source's key (058); and `delivery` on
 /// any kind but `record_ingested`, or before format 17
 /// (`docs/log-format.md` §1.1); and a `trigger_dropped`, or a
 /// `trigger_fired`'s `change` or `created`, before format 17; and `apart`,
@@ -299,6 +301,13 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
     if event.sealed.is_some() && event.v < SEALED_FROM {
         let v = event.v;
         return Some(Flaw::SealedBefore { v });
+    }
+    let named = event.sealed.as_ref().and_then(|s| s.source.as_ref());
+    if let (EventBody::RecordIngested { .. }, Some(sealed)) = (&event.body, named)
+        && event.source.as_ref() != Some(sealed)
+    {
+        let sealed = sealed.clone();
+        return Some(Flaw::SealsAnother { sealed });
     }
     if matches!(event.body, EventBody::SourceForgotten { .. }) && event.v < SEALED_FROM {
         let v = event.v;

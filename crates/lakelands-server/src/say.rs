@@ -7,7 +7,7 @@
 
 use std::fmt;
 
-use lakelands_api::error::{Case, Error, Refusal, Said, Situation};
+use lakelands_api::error::{Case, Error, Flaw, Refusal, Said, Situation};
 use lakelands_api::id::RecordKey;
 use lakelands_api::write::Plan;
 
@@ -221,6 +221,19 @@ impl From<Error> for Failure {
                  where it says the executor was not handed the call"
                     .to_owned()
             }
+            // A line no writer writes came in by an edited export; the
+            // log holds it, so a rebuild meets it again.
+            Error::Unavailable { situation }
+                if matches!(
+                    **situation,
+                    Situation::Damaged { flaw: Flaw::SealsAnother { .. }, .. }
+                ) =>
+            {
+                "the line came from an edited export, and `lakelands rebuild` meets it again: \
+                 import the export as its writer wrote it, or restore the lake from a backup \
+                 taken before that import"
+                    .to_owned()
+            }
             // Waiting mends no damage. A projection is made anew from
             // the log; what the log lost comes back only from a backup.
             Error::Unavailable { situation }
@@ -408,6 +421,24 @@ mod tests {
         let todo = Failure::from(Error::unavailable(damaged)).todo;
         assert!(
             todo.starts_with("restore") && !todo.contains("retry"),
+            "{todo}"
+        );
+    }
+
+    /// A line no writer writes is met again by a rebuild: the hint names
+    /// the export as its writer wrote it, or a backup from before the import.
+    #[test]
+    fn a_seal_naming_another_source_is_advised_the_export_as_written() {
+        use lakelands_api::error::{Flaw, Part};
+        let sealed = "web".into();
+        let damaged = Situation::Damaged {
+            part: Part::Log,
+            position: None,
+            flaw: Flaw::SealsAnother { sealed },
+        };
+        let todo = Failure::from(Error::unavailable(damaged)).todo;
+        assert!(
+            todo.contains("as its writer wrote it") && todo.contains("before that import"),
             "{todo}"
         );
     }

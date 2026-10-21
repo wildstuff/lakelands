@@ -142,6 +142,7 @@ opens the values with the key store (lakelands#1042).
 - An export carries the log, so one made after the feature holds the source's values only as ciphertext, and the destroyed key covers it.
 - Importing an export needs the key store. Without one, an export that holds the act imports, and the forgotten source's values arrive erased; one that holds a sealed value of any other source is refused as unbound before anything is written, since its values would be lost (lakelands#1042).
 - An export made before the feature, or of plaintext data, is out of reach. The act cannot know where it went.
+- **An ingest is sealed under its own source's key.** Its `sealed` names no other source: one that did would have its values kept under that source's key, and forgetting the source that wrote them would leave them readable. No writer writes one, so a line holding one was made by hand. An import refuses it before anything is written, naming the line, and a reader of the log refuses it wherever it reads it (`docs/log-format.md` §1.1). A held lake holds one only through such an import: its first open by this release's writer rebuilds the projection, and refuses the lake as damaged, naming the event. No step of the upgrade mends it: the line is in an append-only log, and no store wrote it.
 
 **Mirrors:**
 - A mirror writes its copies into another lake through `ingest`, as that lake's source `mirror:<lake>:<type>` (042). There an erasable field is encrypted under that mirror source's key.

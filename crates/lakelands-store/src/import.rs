@@ -10,11 +10,13 @@
 //! **Everything is read before anything is written.** The export is
 //! verified whole (`lakelands_core::export::verify`: canonical lines, consecutive
 //! positions, the hash chain, every checkpoint against the files before
-//! it, the one format), then read once more for what only an import needs:
-//! every event belongs to the lake the location names, and every fence is
-//! the one its writer held (`docs/log-format.md` §4.1: 0 at position 0,
-//! each `lease_taken` carrying the fence it names, every other event the
-//! fence of the `lease_taken` before it). A fault in the files refuses the
+//! it, the one format, no member where a reader refuses it: an ingest
+//! sealed under another source's key among them), then read once more
+//! for what only an import needs: every event belongs to the lake the
+//! location names, and every fence is the one its writer held
+//! (`docs/log-format.md` §4.1: 0 at position 0, each `lease_taken`
+//! carrying the fence it names, every other event the fence of the
+//! `lease_taken` before it). A fault in the files refuses the
 //! import before the new lake holds anything.
 //!
 //! **The target must be empty,** and a lake that is there is not opened.

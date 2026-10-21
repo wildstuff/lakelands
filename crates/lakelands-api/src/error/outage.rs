@@ -684,6 +684,8 @@ catalog! {
         InitialOrigin => "the envelope carries the origin `initial`, a field's alone",
         /// An event other than `record_ingested` and `output_recorded` carries `sealed`.
         SealedOn { kind: String } => "a `{kind}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries",
+        /// A `record_ingested` whose `sealed` names another source than its envelope.
+        SealsAnother { sealed: SourceId } => "a `record_ingested` carries `sealed` naming the source `{sealed}`, which is not its own: an ingest is sealed under its own source's key",
         /// An event of a format before 16 carries `sealed`.
         SealedBefore { v: u32 } => "an event of format {v} carries `sealed`, which format 16 added",
         /// A `source_forgotten` in a format before the one that added it.
