@@ -834,6 +834,7 @@ async fn a_verb_or_set_withdrawal_tells_a_reader_not_shown_it_nothing(store: Sto
     let mut grants = Grants {
         default: Access::Read,
         schema: true,
+        restricted: true,
         review: true,
         ..Grants::default()
     };
@@ -928,6 +929,7 @@ async fn a_withdrawal_tells_a_reader_not_shown_its_type_nothing(store: Store) ->
     let mut grants = Grants {
         default: Access::Read,
         schema: true,
+        restricted: true,
         review: true,
         ..Grants::default()
     };

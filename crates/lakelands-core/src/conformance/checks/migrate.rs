@@ -22,7 +22,7 @@ check!(
 
 check!(
     FILL_IN_FORCE = a_fill_alone_fills_the_type_in_force,
-    "050 and 027, extended (lakelands#1104): a migration to the type in force that names a field in `fill` fills each live record holding none, through `migrate_apply` and through an accepted proposal alike, with origin `initial` at its position, a record held from its author too, whose preview counts and names only the records that author is shown (062); the type's version and schema hash move as a fill inside a changing migration moves them; the same migration again counts no record and its apply appends nothing"
+    "050 and 027, extended (lakelands#1104): a migration to the type in force that names a field in `fill` fills each live record holding none, through `migrate_apply` and through an accepted proposal alike, with origin `initial` at its position, a record held from its author too, whose preview counts and names only the records that author is shown, the apply that author's to refuse `grant_needed` and a holder of `restricted`'s to make (062); the type's version and schema hash move as a fill inside a changing migration moves them; the same migration again counts no record and its apply appends nothing"
 );
 
 check!(
@@ -847,9 +847,14 @@ async fn a_fill_alone_fills_the_type_in_force(store: Store) -> Held {
     let before = life().await?;
     let report = preview(&l, &author, fill("status")).await?;
     let told = json!(report.filled).to_string();
-    let applied = l
+    let refused = l
         .cat
         .migrate_apply(&author, fill("status"), &report.report_id);
+    let refused = reason(&refused.await).cloned();
+    let report = preview(&l, &l.own, fill("status")).await?;
+    let applied = l
+        .cat
+        .migrate_apply(&l.own, fill("status"), &report.report_id);
     let Outcome::Applied { position: at, .. } = applied.await.must("the fill's apply")? else {
         return Err(Failure::new("the fill's apply answered no position"));
     };
@@ -893,10 +898,11 @@ async fn a_fill_alone_fills_the_type_in_force(store: Store) -> Held {
             && got == want
             && again.filled.iter().all(|f| f.records == 0)
             && unmoved
-            && moved == [(1, true), (2, true)],
-        "a fill alone fills `t`: the author is told {told}, the records read {got:?}, the \
-         version moved by and the hash stayed {moved:?}, and again it counts {:?} and its \
-         apply answers {twice:?}",
+            && moved == [(1, true), (2, true)]
+            && matches!(refused, Some(Refusal::GrantNeeded { .. })),
+        "a fill alone fills `t`: the author is told {told} and refused {refused:?}, the \
+         records read {got:?}, the version moved by and the hash stayed {moved:?}, and again \
+         it counts {:?} and its apply answers {twice:?}",
         again.filled
     );
     Ok(())

@@ -1401,7 +1401,9 @@ is never logged:
 A report's id is made over what its reader is shown (above), so a
 preview read trimmed is applied by the id it carried, and whether the
 migration is lossless is decided over the whole report: the trim changes
-what is read, not what is decided.
+what is read, not what is decided. A proposal and its listing only
+tell: a proposal's report is lossless as its proposer is told it, and
+the proposal is refused as lossy only by that (below).
 
 **`more`.** A report says `more` where an entry was left out of it, or
 where a count is larger than the keys named beside it: a field's
@@ -1588,10 +1590,12 @@ know of the field:
 - **`references`**: the fields the reader may know of, of types it may
   see.
 
-The totals and `lossless` stay whole, and the entry says `more` when
-anything was left out. The two schema hashes are those of the shapes
-its reader is shown, and the report's id is made over what it is shown
-(above). A logged report is lossless, so it names no record that would
+The totals stay whole, and the entry says `more` when anything was
+left out. `lossless` is the proposer's: a filed report is lossless as
+its proposer was told it, by the records and constraints it was told
+of, so it is lossless to every reader. The two schema hashes are those
+of the shapes its reader is shown, and the report's id is made over
+what it is shown (above). A logged report is lossless, so it names no record that would
 not convert or would collide. A migration of a type its reader may not
 see is not there (below).
 
@@ -1785,12 +1789,14 @@ listed nothing that names it, which is not there to it. A holder of
 each definition in force, so it accepts a set of a verb that sets a
 field it is kept from. And the direct door is wider than the accept: a
 holder of `schema` kept from a field declares and migrates the type
-itself, its view carried back
+itself, the act needing `restricted` too (062), its view carried
+back
 (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`), and
 may not accept the same migration from another. What it authors it has
 seen; what another proposes may touch what it has not.
 
-Accepting a change of the ontology needs `schema` as well as `review`.
+Accepting a change of the ontology needs `schema` and `restricted` as
+well as `review`, `restricted` as the act's own door needs it (062).
 For a record write, the proposer's own grants were the check when it was
 proposed, and its reviewer decides whether it happens, where the entry
 is its to decide: a holder of `only` is judged by its own pairs too, and
@@ -2135,6 +2141,13 @@ refusal), an engine that cannot read answers its outage, as at every
 other door (lakelands#927).
 
 What the other records say of a held record follows from that. An
+answer that only tells, a proposal or a listing, says whether a change
+is lossless by what its reader is told of: a held record that the
+change would leave breaking a constraint that refuses makes it no
+lossier than a retired one, which the change does not judge, so twins
+that differ only in which of the two it is are answered alike. The
+accept judges every record and refuses there
+(`docs/decisions/062-a-change-plans-before-it-acts.md`). An
 engine's full-text and vector candidates include restricted records, and
 the store applies the principal's grants to the hits
 (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`),
@@ -2798,3 +2811,13 @@ Of `only`:
   a caller whose grants on its type name it (lakelands#1287).
 - Extended: a type described as of a position is told its names since
   only where its reader is shown it at the head too (lakelands#1291).
+- A proposed migration, of a type or of a value type, was refused by a
+  restricted record that it would leave breaking a constraint that
+  refuses, of its own type or of another whose references a re-key
+  rewrites; it is now judged by what its proposer is told of, and the
+  accept judges every record.
+- Changing the lake's types (`enact`, `declare`, `apply`, `add_field`,
+  `recompute`, `migrate_apply`, `migrate_value_type_apply`, and `accept`
+  of such a change) needs `restricted` beside `schema`, refused `grant_needed`
+  whatever the lake holds; to a caller without it, a change's plan and
+  preview are judged as it is told, as a proposal's are (062).

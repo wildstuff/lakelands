@@ -91,7 +91,7 @@ async fn a_write_that_waited_behind_a_rename_is_sent_again() {
             };
             let view = lake.engine.view(None).expect("a view");
             let now = lake.clock(&mut w);
-            let plan = call.preflight_plan(&w, view.as_ref(), (&m, None, None), Some(now));
+            let plan = call.preflight_plan(&w, view.as_ref(), (&m, None, None), (Some(now), false));
             let drafts = call.migration_drafts(&w, m, plan.expect("the plan"), now, 0);
             drop(view);
             (lake.append(&mut w, drafts.expect("the drafts"))).expect("the migration is appended");
@@ -182,7 +182,7 @@ async fn a_link_that_waited_behind_a_relations_rename_is_sent_again() {
             };
             let view = lake.engine.view(None).expect("a view");
             let now = lake.clock(&mut w);
-            let plan = call.preflight_plan(&w, view.as_ref(), (&m, None, None), Some(now));
+            let plan = call.preflight_plan(&w, view.as_ref(), (&m, None, None), (Some(now), false));
             let drafts = call.migration_drafts(&w, m, plan.expect("the plan"), now, 0);
             drop(view);
             (lake.append(&mut w, drafts.expect("the drafts"))).expect("the rename is appended");
@@ -385,7 +385,7 @@ async fn a_write_that_waited_while_the_types_moved_is_sent_again() {
             let m = Migration::to(payroll(&["code"]));
             let view = lake.engine.view(None).expect("a view");
             let now = lake.clock(&mut w);
-            let plan = call.preflight_plan(&w, view.as_ref(), (&m, None, None), Some(now));
+            let plan = call.preflight_plan(&w, view.as_ref(), (&m, None, None), (Some(now), false));
             let drafts = call.migration_drafts(&w, m, plan.expect("the plan"), now, 0);
             drop(view);
             (lake.append(&mut w, drafts.expect("the drafts"))).expect("the migration is appended");
