@@ -6,12 +6,35 @@ in `scripts/gates/`:
 | Budget | Gate | Holds |
 |---|---|---|
 | product | `core-size` | the core crates' product code, in lines |
-| specification | `core-size` | the core crates' conformance suite and unit tests, in lines |
+| specification | `core-size` | the core crates' conformance suite, unit tests and integration tests, in lines |
 | seam width | `seam-width` | the methods of the store facade and the engine traits |
 | cfg(feature) sites | `cfg-budget` | the `cfg(feature)` sites of the workspace |
 
-A budget goes down by itself. A pull request that cuts lines lowers a
-ratchet base, and the base stays lowered.
+**What is counted.** The core crates are the contract crate
+(`lakelands-api`), `lakelands-core`, `lakelands-store` and the three
+engines (memory, SQLite, PostgreSQL); `core-size.sh` names them. Every
+tracked `.rs` file under a core crate's `src/` and `tests/` is counted.
+The specification is the conformance suite (`src/conformance/**`), the
+unit tests (every `tests.rs`, and everything under a `tests/` directory
+inside `src/`) and the integration tests (everything under the `tests/`
+directory beside `src/`); the product is every other file under `src/`,
+doc comments included. The seam width is the methods of the store
+facade (`LakeStore`) and of every `pub trait` in the contract crate's
+`engine.rs`; `Catalog`, the caller's surface, is governed by the
+four-doors rule instead, and the host's seams in `seam.rs` are not
+counted.
+
+A budget goes down by itself: a count, a ratchet base or a ceiling may
+fall in any pull request without a row.
+
+**The ratchet runs at the release.** The release pull request lowers
+each ratchet base to its count, rounded up to the next 500, with a row
+wherever the lowered base then differs from its ceiling. Between
+releases a base stays where it is, so a pull request that only takes
+develop stays green, and a cut in a round makes room inside that round
+unless its own pull request lowers the base by the cut. The round's
+reserve is the room between the count and the ceiling the release left,
+plus what the operator grants for the round.
 
 A ceiling, or a ratchet base above where it stood, is raised only by the
 rule of `docs/decisions/047-a-ceiling-is-raised-by-a-recorded-rule.md`:
@@ -24,12 +47,18 @@ rule of `docs/decisions/047-a-ceiling-is-raised-by-a-recorded-rule.md`:
 - **The raise is sized to the need:** the measured lines of the pull
   requests it is for, rounded up to the next 500.
 - **It is recorded,** as one row below. A maintainer's word names the raise on
-  its issue, or the operator sets a ceiling by a decision on lakelands#20.
+  its issue, or the operator sets a ceiling by a decision on lakelands#20,
+  or grants a round its reserve on the round's issue.
 
 The budget gates are red when a number is higher than on the pull
 request's base commit, unless the same pull request adds the row whose
 "to" is that number. A raise can ride in the pull request of the code it
 is for, or stand alone.
+
+**Known, and left as it is:** the gates compare against the tip of the
+branch a pull request targets, not against the commit it branched from.
+A pull request opened before the release, after the release lowered a
+base under its own count, is red until it merges develop.
 
 ## Raises
 
@@ -128,3 +157,5 @@ is for, or stand alone.
 | 2026-10-17 | specification | 100 000 → 108 000 | lakelands#1165 | The operator's decision (2026-10-17, recorded on lakelands#1165 issuecomment-6231190654), by rule 4: the same growth for the round's checks. develop `9eb47431` stands at 97 966, and the four open pull requests bring it to about 100 400, past the ceiling already; every leak closed this round adds its twin rows, and the items still to come add their checks after them. No row inside the reserve until it is spent. |
 | 2026-10-18 | product | 74 000 → 80 000 | lakelands#1256 | The operator's decision (2026-10-18, recorded on lakelands#1256 issuecomment-6251446380), by rule 4: a reserve for the round of 0.17.0, as 0.11.0 and every round since had one, sized so the whole milestone can land. develop `e0ad2a76` stands at 72 241. The two branches already built, the lake that chooses its order index (lakelands#1131) and a trigger on a kept view (lakelands#1185 B), measured about +1 850 on an older base. The rest of the milestone is estimated at +5 000 to +6 000 with the incremental scrub (lakelands#1120): forgetting several sources in one act, one delivery sealed apart, part of a source taken back by when it was seen, and the declare, read and ingest items. Each pull request cuts first and names its measured delta. No row inside the reserve until it is spent. |
 | 2026-10-18 | specification | 108 000 → 115 000 | lakelands#1256 | The operator's decision (2026-10-18, recorded on lakelands#1256 issuecomment-6251446380), by rule 4: the same reserve for the round's checks. develop `e0ad2a76` stands at 107 360. The two built branches measured about +2 100. The rest is estimated at +6 000 to +7 000: the rows of every item on every engine, the twins of what a forgetting, a sealing apart and a take-back tell, and the crash and mirror rows of the forget items. No row inside the reserve until it is spent. |
+| 2026-10-22 | product | 80 000 → 83 000 | lakelands#1317, lakelands#1320 | The operator's decision (2026-10-22, recorded on lakelands#1320: https://github.com/wildstuff/lakelands/issues/1320#issuecomment-6331849060), by rule 4. Decisive: the count did not hold what it claimed, since the memory engine was not counted (lakelands#1317). Cutting first: this row cuts nothing and needs no room of its own; the refusal constructors (lakelands#1331) landed before it and are in the count. Measured on this pull request's head, with the memory engine counted and its inline tests moved into `tests.rs`: 79 023. The ceiling is that count plus the round's reserve of 3 500, rounded up to the next 500; the ratchet base rises with it and falls at the release. No row inside the reserve until it is spent. |
+| 2026-10-22 | specification | 115 000 → 154 500 | lakelands#1317, lakelands#1320 | The operator's decision (2026-10-22, recorded on lakelands#1320: https://github.com/wildstuff/lakelands/issues/1320#issuecomment-6331849060), by rule 4. Decisive: the count did not hold what it claimed, since the `tests/` directories beside `src/` (about 32 000 lines) and the memory engine's tests were not counted (lakelands#1317). Cutting first: this row cuts nothing and needs no room of its own; the spec cut (lakelands#1315) comes after it and lowers the base by its cut in its own pull request, so it makes no room for the round. Measured on this pull request's head: 148 112. The ceiling is that count plus the round's reserve of 6 000, rounded up to the next 500; the ratchet base rises with it and falls at the release. No row inside the reserve until it is spent. |

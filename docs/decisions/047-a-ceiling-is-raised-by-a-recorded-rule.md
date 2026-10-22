@@ -10,7 +10,11 @@ The core's budgets are four:
 
 ### A budget goes down by itself
 
-A budget goes down by itself. A pull request that cuts lines lowers a ratchet base, and the base stays lowered.
+A budget goes down by itself: a count, a ratchet base or a ceiling may fall in any pull request without a row.
+
+### The ratchet runs at the release
+
+The release pull request lowers each ratchet base to its count, rounded up to the next 500, with a row in `docs/budgets.md` wherever the lowered base then differs from its ceiling. Between releases a base stays where it is; a pull request may lower one by its own cut, and the gate does not ask it to.
 
 ### A ceiling is raised, and a ratchet base raised with it, only when all of this holds
 
@@ -24,7 +28,7 @@ A ceiling is raised, and a ratchet base raised with it, only when all of this ho
    Convenience is not a reason, nor is a feature no host asked for, nor code a shared helper would replace.
 2. **Cutting came first.** The newest diet inventory for that budget is on record, and it does not yield the room.
 3. **The raise is sized to the need:** the measured lines of the pull requests it is for, rounded up to the next 500.
-4. **It is recorded.** A maintainer's word on the issue names the raise, and the raise is one row in `docs/budgets.md`: the date, the budget, from → to, the issues it is for, and the reason in one sentence. The operator may set any ceiling by a decision on lakelands#20, and that decision is a row too.
+4. **It is recorded.** A maintainer's word on the issue names the raise, and the raise is one row in `docs/budgets.md`: the date, the budget, from → to, the issues it is for, and the reason in one sentence. The operator may set any ceiling by a decision on lakelands#20, or grant a round its reserve on the round's issue, and that decision is a row too.
 5. **The gate holds it.** `core-size`, `seam-width` and `cfg-budget` are red when a ceiling or a ratchet base is higher than on the pull request's base commit, unless the same pull request adds the row whose "to" is the new number.
 
 ### The raises are the rows of the table in `docs/budgets.md`
@@ -58,8 +62,9 @@ The budgets keep the core small enough for one reader to hold. They have done th
 ## What it is not
 
 - **It is not a second budget.** The ceilings remain the limits, and the ratchet bases still follow every cut down.
-- **It is not a way to defer a diet.** A raise names the pull requests it is for, and its size is theirs, not a reserve.
-- **It does not change how lines are counted** (`scripts/gates/core-size.sh`).
+- **It is not a way to defer a diet.** A raise names the pull requests it is for, and its size is theirs. The one reserve is the round's, granted by the operator and measured; the release takes back what the round did not spend.
+- **It is not a gate on the room left.** No pull request is red for the distance between a count and its ceiling; the ratchet at the release closes it.
+- **It does not change how lines are counted** (`scripts/gates/core-size.sh`, `scripts/gates/seam-width.sh`).
 
 ## How it came to be
 
@@ -67,3 +72,4 @@ The budgets keep the core small enough for one reader to hold. They have done th
 - Each raise after it was written here beside its row, to the thirtieth.
 - The list of raises left for the table in `docs/budgets.md`, which holds every raise as a row; what a row does not say of its raise stayed (lakelands#817).
 - Corrected at the rewrite (lakelands#817): the thirtieth raise's own numbers ("444 lines as measured after 15 were cut, on a develop that stood 173 under the ceiling, 271 over it") contradicted its itemised row in `docs/budgets.md`, written in the same change: 509 lines after 51 were cut, on a develop that stood 17 under the ceiling, 492 over it. The row decides, so the record says "Its measure is its row's".
+- The count made honest, and the ratchet moved to the release (lakelands#1317): every base had been raised to its ceiling, and the count had left out the `tests/` directories beside `src/`, the memory engine and two engine traits. The bases followed no cut down, so the room under a ceiling could be spent with no row; the release now lowers them.

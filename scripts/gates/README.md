@@ -24,8 +24,8 @@ what it counts.
 | `cfg-budget` | at most `BUDGET` (in the script) `cfg(feature)` sites; features are engine names only, never `default`, and an optional dependency hides behind `dep:` |
 | `vocabulary` | the platform's words stay out of `src/` and every `.rs` under `crates/`; one of them stays out of the repository and its commit messages |
 | `single-catalog` | tool names come only from the generator in `lakelands-api`; the generic names are read from the generator's `GENERIC_TOOLS`, so the gate keeps no list of its own |
-| `seam-width` | the store facade (`LakeStore`) and the engine traits have at most `BUDGET` (in the script) methods together, each defined once |
-| `core-size` | the core crates (the script's `CRATES`) in two budgets, each a ratchet base under a ceiling: the product code within `core-size.product.base` and `PRODUCT_CEILING`, and the specification within `core-size.spec.base` and `SPEC_CEILING`. The specification is `src/conformance/**`, every `tests.rs` and everything under a `tests/` directory in `src/`; a product file holding a test, or a `#[cfg(test)]` other than before `mod tests;`, is red. `docs/budgets.md` records every raise |
+| `seam-width` | the store facade (`LakeStore`) and every `pub trait` in `crates/lakelands-api/src/engine.rs` have at most `BUDGET` (in the script) methods together, each defined once; `Catalog` and the seams of `seam.rs` are not counted |
+| `core-size` | the core crates (the script's `CRATES`) in two budgets, each a ratchet base under a ceiling: the product code within `core-size.product.base` and `PRODUCT_CEILING`, and the specification within `core-size.spec.base` and `SPEC_CEILING`. Every tracked `.rs` under a crate's `src/` and `tests/` is counted. The specification is `src/conformance/**`, every `tests.rs`, everything under a `tests/` directory in `src/` and everything under the `tests/` directory beside `src/`; a product file holding a test, or a `#[cfg(test)]` other than before `mod tests;`, is red. `docs/budgets.md` records every raise |
 | `conformance-required` | every engine crate is on `conformance/roster`, and CI runs the suite for every required one |
 | `dco` | every commit but a merge carries a `Signed-off-by:` naming its author exactly (`CONTRIBUTING.md`) |
 | `no-external-decisions` | no citation of the originating platform's decision records or planning threads, and no bare `#` followed by four or more digits (`lakelands#N` and full URLs are fine), in any tracked file or commit message; GitHub's own merge subject on a message's first line is exempt |
@@ -42,7 +42,9 @@ The three budget gates (`core-size`, `seam-width`, `cfg-budget`) let a
 number go down by itself. A ceiling or a ratchet base that is higher
 than on the pull request's base commit is red, unless the same pull
 request adds the row to `docs/budgets.md` that raises it to that number
-(`docs/decisions/047-a-ceiling-is-raised-by-a-recorded-rule.md`).
+(`docs/decisions/047-a-ceiling-is-raised-by-a-recorded-rule.md`). The
+ratchet bases are lowered to their counts at the release, not per pull
+request (`docs/budgets.md`).
 
 A gate that has never been red may be blind. A new gate lands with a
 planted violation shown red in its pull request before it goes green.
