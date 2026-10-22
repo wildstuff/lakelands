@@ -47,15 +47,29 @@ folds the new projection, and the old one and the scratch are gone.
 
 On SQLite the swap renames the scratch over `projection.db`. Both files
 are in one directory, so the rename is atomic. A handle that still has
-the old file open would go on reading it after the rename. The swap
-therefore takes the old file's exclusive lock first, and is refused
-`swap_busy` while another handle reads it. On PostgreSQL the swap is one
-transaction: it drops the projection's tables, moves the scratch's into
-the lake's schema, replaces the projection's rows of `meta` with the
-scratch's, and drops the scratch's schema. The log shares the lake's
-schema, so the tables move and the schema does not: every reader goes on
-naming the same schema, and sees the old projection or the new one,
-never neither.
+the old file open would go on reading it after the rename, and so would
+one that connected to it while the swap ran. Every handle onto the
+projection therefore holds a shared lock on the lake's name file, taken
+before it connects and kept while it lives. The swap takes that lock
+exclusively, so it is refused `swap_busy` while another handle holds
+the projection, and a handle that opens during the swap waits for it
+and connects to the file put in place. A process of a release before
+this one takes no such lock. The swap keeps it out only while it has
+the file open, by taking the projection out of its write-ahead journal
+(which SQLite allows to the one connection that has it open), so the
+old release is stopped before the swap.
+
+On PostgreSQL the swap is one transaction: it drops the projection's
+tables, moves the scratch's into the lake's schema, replaces the
+projection's rows of `meta` with the scratch's, and drops the scratch's
+schema. The log shares the lake's schema, so the tables move and the
+schema does not: every reader goes on naming the same schema, and each
+statement sees the old projection or the new one, never neither. A
+transaction that read some of the old tables before the swap and reads
+another after it may read that one new, as it may across a rebuild's
+`clear`; only `ranked`, which takes every table it reads before its
+snapshot, is kept from that. A layout that drops or renames a table
+names the old one among the retired tables, so the swap drops it too.
 
 ## Why
 
@@ -84,7 +98,10 @@ the writer's log ends at.
 
 - It is not a rebuild without a pause. The swap needs the writer's
   lease, so it waits for the process that holds it, and on SQLite for
-  every reader of the old file, to let go.
+  every other handle onto the old file, to let go.
+- It does not remove a build ahead it cannot use. A scratch marked by
+  another layout's build is kept while the log holds its mark, for that
+  build to swap in; removing it is the operator's.
 - It does not let an older projection be read. A reader's open of a
   projection of another layout is refused as before; only the scratch's
   handle opens beside one, and it never reads it.

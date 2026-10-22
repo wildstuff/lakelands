@@ -961,14 +961,14 @@ catalog! {
         Rebuilding { lake: String } => "lake `{lake}`'s projection is being built beside it by another handle; nothing was changed, so try again once that build has ended",
         /// No projection built beside the lake's is marked built for this lake by this build.
         NoScratch { lake: String } => "no projection built beside lake `{lake}`'s is marked built for this lake and this build's layout; nothing was changed",
-        /// The projection built beside the lake's is not marked through the log's tip and its hash.
+        /// The projection built beside the lake's does not reach the log's tip and its hash.
         ScratchBehind {
             lake: String,
             #[serde(default, skip_serializing_if = "Option::is_none")]
             marked: Option<Position>,
             #[serde(default, skip_serializing_if = "Option::is_none")]
             tip: Option<Position>,
-        } => "the projection built beside lake `{lake}`'s is marked built [through position {marked}|through no position], and the log [ends at position {tip}|is empty] or holds another hash there; nothing was changed: fold the scratch to the log's end and mark it again",
+        } => "the projection built beside lake `{lake}`'s reaches [position {marked}|no position], and the log [ends at position {tip}|is empty] or holds another hash there; nothing was changed: fold the scratch to the log's end and mark it built",
         /// Another handle reads the projection a swap would replace.
         SwapBusy { lake: String } => "lake `{lake}`'s projection is open on another handle, so the one built beside it was not put in its place; nothing was changed, so swap again once that handle is closed",
         /// Every event was imported, and folding the projection failed.

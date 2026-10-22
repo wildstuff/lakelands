@@ -176,9 +176,11 @@ fn a_scratch_marked_built_is_kept_while_the_log_holds_its_mark(
         .append(&lease, &events[..3])
         .must("appending three events")?;
     fold_one(engine, 1, record("t", "a", json!({}), 1))?;
-    let Ok(built) = harness.scratch(lake) else {
+    let built = harness.scratch(lake);
+    if is_unbound(&built) {
         return Ok(());
-    };
+    }
+    let built = built.map_err(|e| Failure::new(format!("opening the scratch: {e}")))?;
     fold_one(built.as_ref(), 2, record("t", "b", json!({}), 2))?;
     built.mark_built().must("marking the scratch built")?;
     drop(built);

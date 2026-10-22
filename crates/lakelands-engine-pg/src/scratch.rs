@@ -25,7 +25,7 @@ use lakelands_api::id::{LakeId, Position};
 
 use crate::connect::{Db, Target};
 use crate::log;
-use crate::projection::{self, Names, PROJECTION_TABLES};
+use crate::projection::{self, Names, PROJECTION_TABLES, RETIRED_TABLES};
 
 /// The rows of `meta` the log keeps: everything else is the projection's.
 const LOG_KEYS: &str = "'lake', 'imported', 'import_fence'";
@@ -112,7 +112,7 @@ pub(crate) fn sweep(db: &mut Db, target: &Target, live: &Names, lake: &LakeId) -
 /// `scratch` keeps in the place of the projection `live` keeps.
 pub(crate) fn swap_sql(live: &Names, scratch: &Names) -> String {
     let mut sql = String::new();
-    for t in PROJECTION_TABLES {
+    for t in PROJECTION_TABLES.iter().chain(RETIRED_TABLES) {
         sql += &format!("DROP TABLE IF EXISTS {} CASCADE; ", live.t(t));
     }
     for t in PROJECTION_TABLES {

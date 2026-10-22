@@ -1,13 +1,17 @@
 //! A rebuild beside the projection, on the SQLite engine (lakelands#1322):
 //! a builder killed halfway leaves the projection answering and its
-//! scratch for the next writer's open to remove; a swap is refused while
-//! another handle reads the projection it would replace; and a scratch is
-//! built beside a projection of an older layout, under a writer's lease,
-//! without opening that projection.
+//! scratch for the next writer's open to remove; a scratch is built beside
+//! a projection it never opens; a swap is refused while another handle
+//! holds the projection it would replace, and a handle that opens during
+//! one reads the projection put in place; a mark the log does not reach
+//! keeps no scratch.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc;
+use std::time::Duration;
 
+use fs4::FileExt;
 use lakelands_api::engine::{EngineOpener, LakeEngine, Lease, OpenMode};
 use lakelands_api::error::Situation;
 use lakelands_api::event::Digest;
@@ -25,12 +29,18 @@ fn dir(name: &str) -> PathBuf {
     dir
 }
 
+fn at(dir: &Path) -> Location {
+    Location::sqlite("beside", dir)
+}
+
+fn open(dir: &Path, mode: OpenMode) -> lakelands_api::Result<Box<dyn LakeEngine>> {
+    SqliteOpener.open(&at(dir), mode)
+}
+
 /// A lake of five events with its projection folded through 1, and the
 /// writer's lease.
 fn lake(dir: &Path) -> (Box<dyn LakeEngine>, Lease) {
-    let writer = SqliteOpener
-        .open(&Location::sqlite("beside", dir), OpenMode::Create)
-        .unwrap();
+    let writer = open(dir, OpenMode::Create).unwrap();
     let lease = writer.take_lease("writer").unwrap();
     writer
         .append(&lease, &chain(0, 5, &Digest::zero(), &lease))
@@ -46,7 +56,18 @@ fn fold(engine: &dyn LakeEngine, through: u64) {
 }
 
 fn scratch(dir: &Path) -> lakelands_api::Result<Box<dyn LakeEngine>> {
-    SqliteOpener.open_scratch(&Location::sqlite("beside", dir))
+    SqliteOpener.open_scratch(&at(dir))
+}
+
+/// A scratch folded through 4 and marked built, its handle dropped.
+fn built(dir: &Path) {
+    let built = scratch(dir).unwrap();
+    fold(built.as_ref(), 4);
+    assert_eq!(built.mark_built().unwrap(), Some(Position(4)));
+}
+
+fn folded(engine: &dyn LakeEngine) -> Option<Position> {
+    engine.projection().folded_through().unwrap()
 }
 
 fn left(dir: &Path) -> Vec<String> {
@@ -57,6 +78,13 @@ fn left(dir: &Path) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+fn refused<T: std::fmt::Debug>(
+    answer: lakelands_api::Result<T>,
+    is: impl Fn(&Situation) -> bool,
+) -> bool {
+    matches!(&answer, Err(Error::Unavailable { situation }) if is(situation))
 }
 
 /// The child: folds into the scratch and dies before it marks it.
@@ -85,86 +113,135 @@ fn a_builder_killed_halfway_leaves_the_projection_answering() {
         "the builder left its scratch: {:?}",
         left(&dir)
     );
-    assert_eq!(
-        writer.projection().folded_through().unwrap(),
-        Some(Position(1))
-    );
-    let reader = SqliteOpener
-        .open(&Location::sqlite("beside", &dir), OpenMode::Read)
-        .unwrap();
-    assert_eq!(
-        reader.projection().folded_through().unwrap(),
-        Some(Position(1))
-    );
+    assert_eq!(folded(writer.as_ref()), Some(Position(1)));
+    let reader = open(&dir, OpenMode::Read).unwrap();
+    assert_eq!(folded(reader.as_ref()), Some(Position(1)));
     let swapped = writer.swap(&lease);
     assert!(
-        matches!(&swapped, Err(Error::Unavailable { situation }) if matches!(**situation, Situation::NoScratch { .. })),
-        "{swapped:?}"
+        refused(swapped, |s| matches!(s, Situation::NoScratch { .. })),
+        "a scratch never marked is not swapped in"
     );
     drop(reader);
     drop(writer);
-    let again = SqliteOpener
-        .open(&Location::sqlite("beside", &dir), OpenMode::Write)
-        .unwrap();
+    let again = open(&dir, OpenMode::Write).unwrap();
     assert_eq!(
         left(&dir),
         Vec::<String>::new(),
         "the next writer's open removes it"
     );
-    assert_eq!(
-        again.projection().folded_through().unwrap(),
-        Some(Position(1))
-    );
+    assert_eq!(folded(again.as_ref()), Some(Position(1)));
 }
 
 #[test]
-fn a_swap_waits_for_no_reader_and_reads_nothing_of_an_older_layout() {
-    let dir = dir("older");
-    let (writer, lease) = lake(&dir);
+fn a_scratch_is_built_beside_a_projection_that_is_no_database() {
+    let dir = dir("garbage");
+    drop(lake(&dir));
     let projection = dir.join("projection.db");
-    rusqlite::Connection::open(&projection)
-        .and_then(|db| db.execute("UPDATE meta SET v = v - 1 WHERE k = 'layout'", []))
-        .unwrap();
-    let reader = SqliteOpener.open(&Location::sqlite("beside", &dir), OpenMode::Read);
-    assert!(reader.is_err(), "a reader's open refuses the older layout");
-    let before = std::fs::read(&projection).unwrap();
+    for end in ["-wal", "-shm"] {
+        let _ = std::fs::remove_file(dir.join(format!("projection.db{end}")));
+    }
+    std::fs::write(&projection, b"not a database, so no open of it succeeds").unwrap();
     let built = scratch(&dir).unwrap();
-    assert!(built.take_lease("scratch").is_err());
     fold(built.as_ref(), 4);
     assert_eq!(built.mark_built().unwrap(), Some(Position(4)));
     drop(built);
     assert_eq!(
         std::fs::read(&projection).unwrap(),
-        before,
-        "the scratch never wrote it"
+        b"not a database, so no open of it succeeds"
     );
+    assert!(
+        open(&dir, OpenMode::Read).is_err(),
+        "a reader opens what is no database"
+    );
+}
+
+#[test]
+fn a_swap_from_a_rebuild_handle_over_an_older_layout_waits_for_every_other_handle() {
+    let dir = dir("older");
+    let (writer, _) = lake(&dir);
+    drop(writer);
+    rusqlite::Connection::open(dir.join("projection.db"))
+        .and_then(|db| db.execute("UPDATE meta SET v = v - 1 WHERE k = 'layout'", []))
+        .unwrap();
+    assert!(
+        open(&dir, OpenMode::Read).is_err(),
+        "a reader's open refuses the older layout"
+    );
+    let rebuilder = open(&dir, OpenMode::Rebuild).unwrap();
+    let lease = rebuilder.take_lease("rebuilder").unwrap();
+    built(&dir);
     assert_eq!(
         left(&dir),
         ["projection.db.rebuild", "projection.db.rebuild.mark"],
         "a marked scratch outlives its handle, and its journal is in its file"
     );
-    // A handle onto the projection keeps it from being replaced.
-    let other = SqliteOpener
-        .open(&Location::sqlite("beside", &dir), OpenMode::Rebuild)
-        .unwrap();
-    let swapped = writer.swap(&lease);
-    assert!(
-        matches!(&swapped, Err(Error::Unavailable { situation }) if matches!(**situation, Situation::SwapBusy { .. })),
-        "{swapped:?}"
-    );
-    assert_eq!(
-        writer.projection().folded_through().unwrap(),
-        Some(Position(1))
-    );
+    let other = open(&dir, OpenMode::Rebuild).unwrap();
+    assert!(refused(rebuilder.swap(&lease), |s| matches!(
+        s,
+        Situation::SwapBusy { .. }
+    )));
     drop(other);
-    assert_eq!(writer.swap(&lease).unwrap(), Some(Position(4)));
+    assert_eq!(rebuilder.swap(&lease).unwrap(), Some(Position(4)));
     assert_eq!(left(&dir), Vec::<String>::new());
-    let reader = SqliteOpener
-        .open(&Location::sqlite("beside", &dir), OpenMode::Read)
+    assert_eq!(folded(rebuilder.as_ref()), Some(Position(4)));
+    // An idle reader keeps the next swap out as well.
+    let reader = open(&dir, OpenMode::Read).unwrap();
+    assert_eq!(folded(reader.as_ref()), Some(Position(4)));
+    built(&dir);
+    assert!(refused(rebuilder.swap(&lease), |s| matches!(
+        s,
+        Situation::SwapBusy { .. }
+    )));
+    assert_eq!(folded(reader.as_ref()), Some(Position(4)));
+    drop(reader);
+    assert_eq!(rebuilder.swap(&lease).unwrap(), Some(Position(4)));
+    fold(rebuilder.as_ref(), 4);
+}
+
+#[test]
+fn a_reader_that_opens_during_a_swap_reads_the_projection_put_in_place() {
+    let dir = dir("during");
+    let (writer, _) = lake(&dir);
+    built(&dir);
+    drop(writer);
+    let scratch = dir.join("projection.db.rebuild");
+    rusqlite::Connection::open(&scratch)
+        .and_then(|db| db.query_row("PRAGMA journal_mode = DELETE", [], |_| Ok(())))
         .unwrap();
-    assert_eq!(
-        reader.projection().folded_through().unwrap(),
-        Some(Position(4))
-    );
-    fold(writer.as_ref(), 4);
+    // The test stands where a swap does: it holds the projection, replaces
+    // the file and lets go.
+    let swap = std::fs::File::open(dir.join("lake")).unwrap();
+    FileExt::lock(&swap).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let opening = dir.clone();
+    let reader = std::thread::spawn(move || {
+        let reader = open(&opening, OpenMode::Read).unwrap();
+        tx.send(folded(reader.as_ref())).unwrap();
+        reader
+    });
+    let early = rx.recv_timeout(Duration::from_millis(500));
+    assert!(early.is_err(), "a reader opened during the swap: {early:?}");
+    for end in ["-wal", "-shm"] {
+        let _ = std::fs::remove_file(dir.join(format!("projection.db{end}")));
+    }
+    std::fs::rename(&scratch, dir.join("projection.db")).unwrap();
+    FileExt::unlock(&swap).unwrap();
+    assert_eq!(rx.recv().unwrap(), Some(Position(4)));
+    drop(reader.join().unwrap());
+}
+
+#[test]
+fn a_mark_past_the_logs_end_keeps_no_scratch() {
+    let dir = dir("past");
+    let (writer, lease) = lake(&dir);
+    built(&dir);
+    let mark = dir.join("projection.db.rebuild.mark");
+    let text = std::fs::read_to_string(&mark).unwrap();
+    std::fs::write(&mark, text.replace("\"position\":4", "\"position\":99")).unwrap();
+    assert!(refused(writer.swap(&lease), |s| matches!(
+        s,
+        Situation::NoScratch { .. }
+    )));
+    assert_eq!(folded(writer.as_ref()), Some(Position(1)));
+    assert_eq!(folded(scratch(&dir).unwrap().as_ref()), None);
 }

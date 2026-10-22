@@ -15,7 +15,8 @@
 //! # A lake directory
 //!
 //! ```text
-//! <dir>/lake                  the lake's name
+//! <dir>/lake                  the lake's name; every handle onto the
+//!                             projection holds it locked shared (handle.rs)
 //! <dir>/lease                 the fencing token and its holder (lease.rs)
 //! <dir>/log/<first>.jsonl     the log's segments (docs/log-format.md §4.2)
 //! <dir>/index/<first>.idx     each event's members beside its bytes (log.rs)

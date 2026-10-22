@@ -8,10 +8,12 @@
 //! read-only refuses the lease, every append and every seal.
 
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
+use fs4::{FileExt, TryLockError};
 use lakelands_api::engine::{
     Applied, CanonicalEvent, Choose, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
     ProjectionView, Ranked, Rankings, Reclaimed, StatesOf, VectorIndex,
@@ -71,6 +73,8 @@ pub struct SqliteLake {
     tuning: SqliteTuning,
     /// On a handle onto the scratch, its lock and mark (`scratch.rs`).
     building: Mutex<Option<Building>>,
+    /// On a handle onto the projection, its hold on it ([`hold`]).
+    opened: Option<File>,
 }
 
 /// How long a statement waits for another connection's lock.
@@ -114,6 +118,18 @@ fn connect(path: &std::path::Path, tuning: &SqliteTuning, writer: bool) -> Resul
     Ok(conn)
 }
 
+/// Hold the projection in `dir` against a swap: a shared lock on the
+/// lake's name file, which every handle onto `projection.db` takes before
+/// it connects and keeps while it lives, and a swap takes exclusively. A
+/// handle that opens while a swap holds it waits for the swap, and then
+/// connects to the file the swap put in place. The name file is there in
+/// every lake, so a reader's hold makes nothing.
+fn hold(dir: &std::path::Path) -> Result<File> {
+    let file = File::open(dir.join("lake")).map_err(|e| io_error(Doing::Open, Part::File, e))?;
+    FileExt::lock_shared(&file).map_err(|e| io_error(Doing::Lock, Part::Projection, e))?;
+    Ok(file)
+}
+
 impl SqliteLake {
     pub(crate) fn open(
         lake: LakeId,
@@ -142,6 +158,7 @@ impl SqliteLake {
         if mode != OpenMode::Read {
             scratch::sweep(&dir, &lake, &mut log)?;
         }
+        let opened = hold(&dir)?;
         let path = dir.join("projection.db");
         let no_projection = || {
             let lake = lake.to_string();
@@ -195,6 +212,7 @@ impl SqliteLake {
             dir,
             tuning,
             building: Mutex::new(None),
+            opened: Some(opened),
         })
     }
 
@@ -237,6 +255,7 @@ impl SqliteLake {
             dir,
             tuning,
             building: Mutex::new(Some(building)),
+            opened: None,
         })
     }
 
@@ -260,10 +279,13 @@ impl SqliteLake {
     }
 
     /// Put the scratch in the projection's place, checked as
-    /// [`LakeEngine::swap`] says. The projection is taken out of its
-    /// write-ahead journal first, which SQLite allows only to the one
-    /// connection that has it open: so no other handle reads it when it is
-    /// replaced. The rename is one step of the directory, synced.
+    /// [`LakeEngine::swap`] says. The swap takes the projection's hold
+    /// ([`hold`]) exclusively, so no other handle of this engine has the
+    /// file open when it is replaced, and none connects until it is in
+    /// place. A process that takes no hold (a release before this one) is
+    /// kept out as far as SQLite can: the projection is taken out of its
+    /// write-ahead journal, which SQLite allows only to the one connection
+    /// that has it open. The rename is one step of the directory, synced.
     fn swapping(&self, lease: &Lease) -> Result<Option<Position>> {
         let _held = self.check_lease(lease)?;
         let mut building =
@@ -290,6 +312,17 @@ impl SqliteLake {
         building.settle(&self.lake)?;
         self.disconnect()?;
         let replaced = (|| {
+            let opened = self.opened.as_ref().ok_or_else(|| self.read_only())?;
+            match FileExt::try_lock(opened) {
+                Ok(()) => {}
+                Err(TryLockError::WouldBlock) => {
+                    let lake = self.lake.to_string();
+                    return Err(Error::unavailable(Situation::SwapBusy { lake }));
+                }
+                Err(TryLockError::Error(e)) => {
+                    return Err(io_error(Doing::Lock, Part::Projection, e));
+                }
+            }
             let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
             let live = Connection::open_with_flags(&self.path, flags).map_err(sql)?;
             live.busy_timeout(Duration::ZERO).map_err(sql)?;
@@ -311,6 +344,11 @@ impl SqliteLake {
             drop(live);
             building.set(None)
         })();
+        // Taking the hold exclusively may have given up the shared one,
+        // whether it was taken or not: it is taken again.
+        if let Some(opened) = &self.opened {
+            FileExt::lock_shared(opened).map_err(|e| io_error(Doing::Lock, Part::Projection, e))?;
+        }
         self.reconnect()?;
         replaced?;
         drop(building);

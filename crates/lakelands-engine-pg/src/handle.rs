@@ -44,7 +44,7 @@ use lakelands_api::write::{Declaration, Proposal};
 use lakelands_core::engines::{self, vector_bytes, vector_of};
 
 use crate::connect::{self, Db, Target};
-use crate::projection::{self, Buffer, HeadTypes, Names, PROJECTION_TABLES};
+use crate::projection::{self, Buffer, HeadTypes, Names, PROJECTION_TABLES, RETIRED_TABLES};
 use crate::scratch;
 use crate::vector_index::{self, Pgvector};
 use crate::view::PgView;
@@ -109,7 +109,7 @@ impl PgLake {
     pub(crate) fn open(lake: LakeId, target: Target, mode: OpenMode) -> Result<PgLake> {
         let names = Names::new(target.quoted_schema()?);
         let mut reader = connect::connect(&target)?;
-        let exists = matches!(shape(&mut reader, &target.schema)?, Shape::Lake);
+        let exists = matches!(shape(&mut reader, &target.schema, false)?, Shape::Lake);
         if !exists && mode != OpenMode::Create {
             let (lake, schema) = (lake.to_string(), Some(target.schema.clone()));
             return Err(Error::unavailable(Situation::NoLake { lake, schema }));
@@ -183,7 +183,9 @@ impl PgLake {
     pub(crate) fn open_scratch(lake: LakeId, target: Target) -> Result<PgLake> {
         let live = Names::new(target.quoted_schema()?);
         let mut reader = connect::connect(&target)?;
-        if !matches!(shape(&mut reader, &target.schema)?, Shape::Lake) {
+        // The projection's tables are another layout's, perhaps: only the
+        // log's are judged.
+        if !matches!(shape(&mut reader, &target.schema, true)?, Shape::Lake) {
             let (lake, schema) = (lake.to_string(), Some(target.schema.clone()));
             return Err(Error::unavailable(Situation::NoLake { lake, schema }));
         }
@@ -404,7 +406,7 @@ impl PgLake {
 pub(crate) fn log_ends(target: &Target) -> Result<Option<(CanonicalEvent, CanonicalEvent)>> {
     let names = Names::new(target.quoted_schema()?);
     let mut db = connect::connect(target)?;
-    if !matches!(shape(&mut db, &target.schema)?, Shape::Lake) {
+    if !matches!(shape(&mut db, &target.schema, false)?, Shape::Lake) {
         return Ok(None);
     }
     let Some((tip, _)) = log::tip(&mut db, &names)? else {
@@ -423,8 +425,10 @@ enum Shape {
 }
 
 /// Look at the schema: empty, a lake's, or something else, which is
-/// refused. One schema holds one lake and nothing beside it.
-fn shape(db: &mut Db, schema: &str) -> Result<Shape> {
+/// refused. One schema holds one lake and nothing beside it. `beside`, for
+/// a scratch's open, which reads the log and nothing of the projection,
+/// leaves tables this build does not know to the layout that made them.
+fn shape(db: &mut Db, schema: &str, beside: bool) -> Result<Shape> {
     let tables: Vec<String> = db.column(
         "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = $1 ORDER BY tablename",
         &[&schema],
@@ -434,7 +438,8 @@ fn shape(db: &mut Db, schema: &str) -> Result<Shape> {
     }
     let foreign: Vec<&String> = tables
         .iter()
-        .filter(|t| !projection::LAKE_TABLES.contains(&t.as_str()))
+        .filter(|t| !beside && !projection::LAKE_TABLES.contains(&t.as_str()))
+        .filter(|t| !RETIRED_TABLES.contains(&t.as_str()))
         .collect();
     if !tables.iter().any(|t| t == "meta") || !foreign.is_empty() {
         let tables = (!foreign.is_empty()).then(|| foreign.into_iter().collect());
@@ -921,6 +926,7 @@ impl ProjectionStore for PgLake {
         let _ = db.batch("ROLLBACK");
         let dropped: String = PROJECTION_TABLES
             .iter()
+            .chain(RETIRED_TABLES)
             .map(|t| format!("DROP TABLE IF EXISTS {} CASCADE;", self.names.t(t)))
             .collect();
         let vectors = match &self.pgvector {
@@ -1162,7 +1168,7 @@ pub fn export(location: &lakelands_api::Location, dir: &std::path::Path) -> Resu
     let target = crate::target(location)?;
     let names = Names::new(target.quoted_schema()?);
     let mut db = connect::connect(&target)?;
-    if !matches!(shape(&mut db, &target.schema)?, Shape::Lake) {
+    if !matches!(shape(&mut db, &target.schema, false)?, Shape::Lake) {
         let (lake, schema) = (location.lake.to_string(), Some(target.schema.clone()));
         return Err(Error::unavailable(Situation::NoLake { lake, schema }));
     }
