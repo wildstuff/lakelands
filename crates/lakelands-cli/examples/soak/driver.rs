@@ -555,7 +555,8 @@ impl Server {
 
     /// The server's resident memory in KiB: the whole, what is its own
     /// (`RssAnon`: the heap, the engine's page cache) and what maps a file
-    /// (`RssFile`: the binary, a projection read through `mmap`).
+    /// (`RssFile`: the binary, a projection read through `mmap`). Read from
+    /// `/proc`, so on Linux only: elsewhere each field is null.
     fn memory(&self) -> serde_json::Value {
         let status = std::fs::read_to_string(format!("/proc/{}/status", self.pid));
         let status = status.unwrap_or_default();
