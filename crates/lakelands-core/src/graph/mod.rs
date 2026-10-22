@@ -59,9 +59,8 @@ use std::slice;
 
 use lakelands_api::engine::ProjectionView;
 use lakelands_api::query::{Depth, Edge, Step, Walk};
-use lakelands_api::{RecordKey, RelationName, Result, TypeName};
+use lakelands_api::{Error, RecordKey, RelationName, Result, TypeName};
 
-use crate::invalid;
 use lakelands_api::error::Case;
 
 /// A record's identity: its type and its key. Ordered by type, then key.
@@ -171,23 +170,19 @@ fn edges_of<S: EdgeSource + ?Sized>(
 pub fn check_depth(depth: Depth, max_depth: u32) -> Result<()> {
     if depth.max > max_depth {
         let (max, asked) = (max_depth, depth.max);
-        return Err(invalid(Case::StepTooDeep { max, asked }));
+        return Err(Error::invalid(Case::StepTooDeep { max, asked }));
     }
     if depth.min > depth.max {
         let (min, max) = (depth.min, depth.max);
-        return Err(invalid(Case::DepthEmpty { min, max }));
+        return Err(Error::invalid(Case::DepthEmpty { min, max }));
     }
     Ok(())
 }
 
 /// What a walk that would hold more than `max` records is refused with,
 /// never cut (026).
-fn too_large(max: u32) -> lakelands_api::Error {
-    let reason = lakelands_api::Refusal::TooLarge { max };
-    lakelands_api::Error::Refused {
-        field: None,
-        reason,
-    }
+fn too_large(max: u32) -> Error {
+    Error::refused(None, lakelands_api::Refusal::TooLarge { max })
 }
 
 /// The identity of a link, for deduplication and ordering:

@@ -130,7 +130,7 @@ pub struct Imported {
 /// one it can make a lake from, and asking again changes nothing.
 fn precondition(said: impl Into<Said>) -> Error {
     let said = Box::new(said.into());
-    crate::writes::refused(lakelands_api::Refusal::Precondition(said))
+    Error::refused(None, lakelands_api::Refusal::Precondition(said))
 }
 
 /// The export's files failed `doing`; the path is the operator's, not

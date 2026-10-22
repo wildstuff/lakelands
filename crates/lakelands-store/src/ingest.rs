@@ -42,7 +42,9 @@ use lakelands_api::principal::WriteContext;
 use lakelands_api::record::Origin;
 use lakelands_api::seam::DataKey;
 use lakelands_api::write::Committed;
-use lakelands_api::{DeliveryId, Principal, RecordKey, Result, SourceId, SourceRecord, Timestamp};
+use lakelands_api::{
+    DeliveryId, Error, Principal, RecordKey, Result, SourceId, SourceRecord, Timestamp,
+};
 use lakelands_core::rights::Door;
 
 use crate::exec;
@@ -242,13 +244,13 @@ fn judge(
             let relation = (links::is_link_type(&r.ty)).then(|| links::relation_of(types, &r.ty));
             if let Some(None) = relation {
                 let ty = r.ty.clone();
-                return Err(lakelands_core::invalid(Case::UnclaimedLinkType { ty }));
+                return Err(Error::invalid(Case::UnclaimedLinkType { ty }));
             }
             let other = t.own().is_none() && t.before.is_some();
             let version_before = t.before.as_ref().map_or(0, |b| b.version.0);
             if forgotten.contains_key(source) {
                 let source = source.clone();
-                return Err(lakelands_core::invalid(Case::SourceForgotten { source }));
+                return Err(Error::invalid(Case::SourceForgotten { source }));
             }
             // Its values of an erasable field enter the log sealed under its
             // key, and its id is the sealed patch's: no digest of a plaintext
@@ -309,7 +311,7 @@ fn judge(
                 return Ok(());
             }
             if patch.is_empty() {
-                return Err(lakelands_core::invalid(Case::PatchEmpty));
+                return Err(Error::invalid(Case::PatchEmpty));
             }
             // An authored field it is admitted to, only where no other
             // hand's value stands (069).
@@ -325,10 +327,7 @@ fn judge(
             let stands = t.before.is_some() && !other;
             if decl.insert_only && (stands || !once.insert((r.ty.clone(), r.key.clone()))) {
                 let (ty, key) = (r.ty.clone(), r.key.clone());
-                return Err(crate::writes::constraint(
-                    None,
-                    Case::WrittenOnce { ty, key },
-                ));
+                return Err(Error::constraint(None, Case::WrittenOnce { ty, key }));
             }
             // The record is applied as the source states it, so a guard reads
             // the `seen_at` the fold keeps.
@@ -406,7 +405,7 @@ fn ingested(
 fn stated(r: &SourceRecord) -> Result<()> {
     let at = |path: &str, case: Case| {
         let path = path.to_owned();
-        Err(lakelands_core::invalid(
+        Err(Error::invalid(
             Said::from(case).within(Place::Member { path }),
         ))
     };

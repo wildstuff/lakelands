@@ -49,7 +49,6 @@ use lakelands_api::write::{Declaration, DeclarationKind, Proposal, ProposalFilte
 
 pub use crate::expr::order::{cmp_values, sort_key};
 use crate::expr::{RecordScope, holds};
-use crate::invalid;
 
 /// The clock an engine evaluates a filter with. The store hands an engine
 /// only filters that do not read the clock, so any fixed instant will do.
@@ -61,7 +60,7 @@ const NO_CLOCK: Timestamp = Timestamp(0);
 pub fn head_only(name: &TypeName) -> Result<()> {
     match lakelands_api::seam::is_head_only(name) {
         true => Ok(()),
-        false => Err(invalid(Case::NotHeadOnly { ty: name.clone() })),
+        false => Err(Error::invalid(Case::NotHeadOnly { ty: name.clone() })),
     }
 }
 
@@ -1476,24 +1475,24 @@ pub fn append_fault(
 ) -> Result<()> {
     for (expected, event) in (first..).zip(events) {
         if let Some(why) = fence_fault(event, lease, floor) {
-            return Err(invalid(why));
+            return Err(Error::invalid(why));
         }
         floor = event.fence;
         let position = event.position;
         if position.0 != expected {
             let next = expected;
-            return Err(invalid(Case::AppendNotNext { position, next }));
+            return Err(Error::invalid(Case::AppendNotNext { position, next }));
         }
         if event.prev != prev {
             let (named, hash) = (event.prev.0.clone(), prev.0.clone());
-            return Err(invalid(Case::AppendPrev {
+            return Err(Error::invalid(Case::AppendPrev {
                 position,
                 named,
                 hash,
             }));
         }
         if event.bytes.contains(&b'\n') {
-            return Err(invalid(Case::AppendLineFeed { position }));
+            return Err(Error::invalid(Case::AppendLineFeed { position }));
         }
         prev = event.hash.clone();
     }
@@ -1519,7 +1518,7 @@ pub fn first_of_next(
     let events = first(sealed)?;
     if events.is_empty() {
         let after = sealed.last;
-        return Err(invalid(Case::SealNoFirst { after }));
+        return Err(Error::invalid(Case::SealNoFirst { after }));
     }
     Ok(events)
 }
@@ -1556,7 +1555,7 @@ pub fn dimensions(query: usize, held: usize, ty: &TypeName, field: &str) -> Erro
     let case = Case::QueryDimensions { query, held };
     let (name, field) = (ty.clone(), field.into());
     let at = Said::from(case).within(At::Field { name: field });
-    invalid(at.within(At::Type { name }))
+    Error::invalid(at.within(At::Type { name }))
 }
 
 /// The refusal of a query vector the caller says `query` made, where
@@ -1567,7 +1566,7 @@ pub fn model(query: &str, held: &str, ty: &TypeName, field: &str) -> Error {
     let case = Case::QueryModel { query, held };
     let (name, field) = (ty.clone(), field.into());
     let at = Said::from(case).within(At::Field { name: field });
-    invalid(at.within(At::Type { name }))
+    Error::invalid(at.within(At::Type { name }))
 }
 
 /// Best first by score, ties by key, at most `k`.
@@ -1866,12 +1865,12 @@ pub fn view_at(as_of: Option<Position>, folded: Option<Position>) -> Result<Opti
     match (as_of, folded) {
         (None, folded) => Ok(folded),
         (Some(p), Some(head)) if p <= head => Ok(Some(p)),
-        (Some(_), head) => Err(Error::Refused {
-            field: None,
-            reason: Refusal::OutOfRange {
+        (Some(_), head) => Err(Error::refused(
+            None,
+            Refusal::OutOfRange {
                 head: head.unwrap_or_default(),
             },
-        }),
+        )),
     }
 }
 
@@ -1884,15 +1883,15 @@ pub fn commit_refusal(
     through: Position,
 ) -> Option<Error> {
     if let Some(folded) = folded.filter(|f| *f > through) {
-        return Some(invalid(Case::CommitBehind { folded, through }));
+        return Some(Error::invalid(Case::CommitBehind { folded, through }));
     }
     let late = late.filter(|p| *p > through)?;
-    Some(invalid(Case::CommitLate { late, through }))
+    Some(Error::invalid(Case::CommitLate { late, through }))
 }
 
 /// The refusal of a put made outside a transaction of the fold.
 pub fn unstaged() -> Error {
-    invalid(Case::NotStaged)
+    Error::invalid(Case::NotStaged)
 }
 
 #[cfg(test)]

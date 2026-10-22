@@ -100,7 +100,7 @@ pub fn check(
         return Err(wrong("on", Case::IsAView { ty }));
     }
     let field = FieldName::from(text("field")?.as_str());
-    let Some(f) = decl.fields.iter().find(|f| f.name == field) else {
+    let Some(f) = decl.field(&field) else {
         return Err(wrong("field", Case::UnknownField { ty, field }));
     };
     if !matches!(
@@ -187,7 +187,7 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
     // `today` is a date: a time other than UTC midnight is refused.
     if today.0.rem_euclid(MICROS_PER_DAY) != 0 {
         let case = Case::AgingNotADate { today };
-        return Err(declare::invalid_field(&"today".into(), case));
+        return Err(Error::invalid_at(&"today".into(), case));
     }
     let system = lake.system("lakelands");
     let call = Call {

@@ -36,8 +36,7 @@ use lakelands_api::record::{Origin, StoredRecord, Value};
 use lakelands_api::write::{
     Breach, ForgetRecords, RecordField, RemoveReport, RemovedField, Selection, TypeRetired,
 };
-use lakelands_api::{FieldName, Position, RecordKey, Result, SourceId, Timestamp, TypeName};
-use lakelands_core::invalid;
+use lakelands_api::{Error, FieldName, Position, RecordKey, Result, SourceId, Timestamp, TypeName};
 use lakelands_core::sight::Sight;
 
 use crate::forget::{History, each_of, named_now};
@@ -167,7 +166,7 @@ impl Removal {
 /// Whether a field of `decl` may be taken: neither a key field nor a
 /// reference, which identify records.
 pub(crate) fn takeable(decl: &TypeDecl, f: &FieldName) -> bool {
-    let field = decl.fields.iter().find(|d| &d.name == f);
+    let field = decl.field(f);
     !decl.key.contains(f) && field.is_some_and(|d| d.ty.target.is_none())
 }
 
@@ -504,10 +503,7 @@ fn found(
     let fields: Vec<RemovedField> = (fields.into_iter())
         .map(|((ty, field), (redacted, sealed))| {
             let shredded = sealed.iter().filter(|(k, _)| gone(k)).map(|(_, n)| n).sum();
-            let erasable = ontology
-                .ty(&ty)
-                .ok()
-                .and_then(|d| d.fields.iter().find(|f| f.name == field));
+            let erasable = ontology.ty(&ty).ok().and_then(|d| d.field(&field));
             if erasable.is_some_and(|f| f.erasable) {
                 unshredded += redacted - shredded;
             }
@@ -597,7 +593,7 @@ fn checked(selection: &Selection) -> Result<Selection> {
     match selection {
         Selection::WrittenBefore(t) | Selection::SeenBefore(t) if !t.in_years() => {
             let value = t.to_string();
-            Err(invalid(Case::NotDateTime { value }))
+            Err(Error::invalid(Case::NotDateTime { value }))
         }
         _ => Ok(settled(selection.clone())),
     }
@@ -670,7 +666,7 @@ pub fn run(
         return Ok(report);
     }
     if report_id.is_some_and(|given| given != id(source, selection, view.position())) {
-        return Err(invalid(Case::RemoveReportStale));
+        return Err(Error::invalid(Case::RemoveReportStale));
     }
     // What an earlier act took is not taken again: a repeat that selects
     // nothing more appends nothing.
@@ -681,7 +677,7 @@ pub fn run(
     }
     if shredded && report.unshredded > 0 {
         let (source, count) = (source.clone(), report.unshredded);
-        return Err(invalid(Case::RemoveNotShredded { source, count }));
+        return Err(Error::invalid(Case::RemoveNotShredded { source, count }));
     }
     let now = lake.clock(&mut w);
     let removed = EventBody::ValuesRemoved {

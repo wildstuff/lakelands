@@ -84,9 +84,7 @@ pub(super) fn reaches<'d>(o: &'d Ontology, on: &'d TypeDecl, e: &Expr) -> Vec<Re
     let mut out = Vec::new();
     for p in paths {
         let link = on.relations.iter().find(|r| {
-            r.carried_by_links()
-                && r.name.as_str() == p[0].as_str()
-                && !on.fields.iter().any(|f| f.name == p[0])
+            r.carried_by_links() && r.name.as_str() == p[0].as_str() && !on.has_field(&p[0])
         });
         // Where the path begins at the condition's own record, its first
         // step reads there; from a link or a match it reads the far record.
@@ -428,7 +426,7 @@ impl Decide<'_> {
                     let shown = decl.is_some_and(|d| Sight::held(self.call.who, o).shows(&d));
                     let field = shown.then(|| name.into());
                     let reason = Refusal::TooLarge { max: max as u32 };
-                    return Err(Error::Refused { field, reason });
+                    return Err(Error::refused(field, reason));
                 }
             }
         }

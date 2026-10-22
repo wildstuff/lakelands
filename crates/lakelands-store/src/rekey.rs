@@ -26,8 +26,8 @@ use lakelands_api::engine::ProjectionView;
 use lakelands_api::error::Case;
 use lakelands_api::ontology::{StorageKind, TypeDecl};
 use lakelands_api::write::{RecordRef, ReferenceRewrite, Rekey, Rekeyed};
-use lakelands_api::{FieldName, RecordKey, Result, TypeName, Value};
-use lakelands_core::{invalid, links};
+use lakelands_api::{Error, FieldName, RecordKey, Result, TypeName, Value};
+use lakelands_core::links;
 
 use crate::ontology::Ontology;
 
@@ -200,11 +200,11 @@ pub fn plan(
         let (name, decl) = (name.clone(), decl.clone());
         if decl.view.is_some() {
             let (ty, view) = (migrated.clone(), name);
-            return Err(invalid(Case::RekeyView { ty, view }));
+            return Err(Error::invalid(Case::RekeyView { ty, view }));
         }
         if name.as_str().starts_with("sys.") && !links::is_link_type(&name) {
             let (ty, system) = (migrated.clone(), name);
-            return Err(invalid(Case::RekeySystem { ty, system }));
+            return Err(Error::invalid(Case::RekeySystem { ty, system }));
         }
         let mut keyed = Vec::new();
         crate::lake::walk(view, &name, true, |r| {
@@ -227,7 +227,7 @@ pub fn plan(
     }
     if !ring.is_empty() {
         let (ty, ring) = (migrated.clone(), ring.into_iter().collect());
-        return Err(invalid(Case::RekeyRing { ty, ring }));
+        return Err(Error::invalid(Case::RekeyRing { ty, ring }));
     }
     // The reference fields, in any type, that hold a moved key.
     for (name, entry) in &after.types {

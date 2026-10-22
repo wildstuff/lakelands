@@ -567,6 +567,21 @@ pub struct EmbedDecl {
 }
 
 impl TypeDecl {
+    /// The field it declares as `name`.
+    pub fn field(&self, name: &FieldName) -> Option<&FieldDecl> {
+        self.fields.iter().find(|f| &f.name == name)
+    }
+
+    /// Whether it declares a field `name`.
+    pub fn has_field(&self, name: &FieldName) -> bool {
+        self.fields.iter().any(|f| &f.name == name)
+    }
+
+    /// The relation it declares as `name`.
+    pub fn relation(&self, name: &RelationName) -> Option<&RelationDecl> {
+        self.relations.iter().find(|r| &r.name == name)
+    }
+
     /// The fields a path reads, each with the type it is a field of: its
     /// first segment here, and while the field so read is a reference and
     /// the path goes on, the next segment on the reference's target as `ty`
@@ -582,7 +597,7 @@ impl TypeDecl {
     ) -> Vec<(&'d TypeDecl, &'d FieldDecl)> {
         let (mut on, mut read) = (Some(self), Vec::new());
         let named = |r: &&RelationDecl| r.carried_by_links() && r.name.as_str() == path[0].as_str();
-        let first = path.len() > 1 && !self.fields.iter().any(|f| f.name == path[0]);
+        let first = path.len() > 1 && !self.has_field(&path[0]);
         let link = (first.then(|| self.relations.iter().find(named)).flatten())
             .and_then(|r| ty(&crate::key::link_type_name(&self.name, &r.name)));
         let from = |lt: &'d TypeDecl| {
@@ -592,7 +607,7 @@ impl TypeDecl {
             (on, read) = (Some(step.0), vec![step]);
         }
         for (i, name) in path.iter().enumerate().skip(read.len()) {
-            let field = on.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == name)?)));
+            let field = on.and_then(|t| Some((t, t.field(name)?)));
             let Some((t, f)) = field else { break };
             read.push((t, f));
             let further = f.ty.target.as_ref().filter(|_| i + 1 < path.len());
@@ -604,7 +619,7 @@ impl TypeDecl {
     /// The derived relation a path's first segment `n` names, where the
     /// type has no field of that name.
     pub fn derived_step(&self, n: &FieldName) -> Option<&RelationDecl> {
-        let field = self.fields.iter().any(|f| &f.name == n);
+        let field = self.has_field(n);
         let named = |r: &&RelationDecl| r.derived.is_some() && r.name.as_str() == n.as_str();
         self.relations.iter().find(named).filter(|_| !field)
     }
@@ -626,7 +641,7 @@ impl TypeDecl {
                 && let Some(target) = ty(&r.target)
             {
                 let [from, to] = r.derived.as_ref().map(Derived::reads).unwrap_or_default();
-                let field = |t: &'d TypeDecl, n: &FieldName| t.fields.iter().find(|f| &f.name == n);
+                let field = |t: &'d TypeDecl, n: &FieldName| t.field(n);
                 let own = from.iter().filter_map(|n| Some((on, field(on, n)?)));
                 let there = to.iter().filter_map(|n| Some((target, field(target, n)?)));
                 let rest = target.stepped(&p[1..], ty);
@@ -635,7 +650,7 @@ impl TypeDecl {
             // `exists` over a relation carried by links reads its link's
             // `from`, as a path through the link does.
             if let [n] = p.as_slice() {
-                let field = on.fields.iter().any(|f| &f.name == n);
+                let field = on.has_field(n);
                 let named = |r: &&RelationDecl| {
                     !field && r.carried_by_links() && r.name.as_str() == n.as_str()
                 };
@@ -866,7 +881,7 @@ impl TypeDecl {
             Some(Beyond::Exists)
         } else {
             e.fields_read().into_iter().find_map(|n| {
-                let f = self.fields.iter().find(|f| &f.name == n)?;
+                let f = self.field(n)?;
                 let field = n.clone();
                 if f.at_read() {
                     Some(Beyond::ComputedAtRead { field })
@@ -882,7 +897,7 @@ impl TypeDecl {
             let reads = Box::new(reads);
             return Err(Case::ConstraintReadsBeyond { constraint, reads });
         }
-        let declared = |n: &&FieldName| self.fields.iter().any(|f| &f.name == *n);
+        let declared = |n: &&FieldName| self.has_field(n);
         if let Some(n) = e.fields_read().into_iter().find(|n| !declared(n)) {
             let (ty, field) = (self.name.clone(), n.clone());
             return Err(Case::UnknownField { ty, field });
@@ -1010,7 +1025,7 @@ fn embedding_problem(t: &TypeDecl, f: &FieldDecl) -> Option<Case> {
             return Some(Case::EmbedFromItself);
         }
         // Not one of the type's fields: as one it does not have.
-        let Some(source) = t.fields.iter().find(|d| &d.name == name) else {
+        let Some(source) = t.field(name) else {
             let ty = t.name.clone();
             return Some(Case::UnknownField { ty, field });
         };

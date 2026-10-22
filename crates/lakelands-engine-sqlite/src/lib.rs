@@ -55,7 +55,7 @@ pub(crate) const NAME: &str = "sqlite";
 /// build on the development machine (lakelands#1042).
 pub(crate) const REBUILD_RATE: u64 = 17_000;
 
-pub(crate) use lakelands_core::{damaged, invalid, lock};
+pub(crate) use lakelands_core::{damaged, lock};
 
 /// A failed file operation, for the host.
 pub(crate) fn io_error(doing: Doing, part: Part, e: std::io::Error) -> Error {
@@ -126,7 +126,7 @@ fn kept_in(location: &Location) -> Result<(&std::path::PathBuf, &SqliteTuning)> 
     let EngineConfig::Sqlite { dir, tuning } = &location.engine else {
         let lake = Box::new(location.lake.clone());
         let (engine, location) = (NAME.to_owned(), "sqlite".to_owned());
-        return Err(invalid(Case::EngineOtherLocation {
+        return Err(Error::invalid(Case::EngineOtherLocation {
             engine,
             location,
             lake,

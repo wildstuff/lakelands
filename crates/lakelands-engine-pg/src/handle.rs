@@ -47,7 +47,7 @@ use crate::connect::{self, Db, Target};
 use crate::projection::{self, Buffer, HeadTypes, Names, PROJECTION_TABLES};
 use crate::vector_index::{self, Pgvector};
 use crate::view::PgView;
-use crate::{NAME, REBUILD_RATE, invalid, lease, lock, log};
+use crate::{NAME, REBUILD_RATE, lease, lock, log};
 
 /// The open transaction of the fold: the latest position a put in it
 /// names, which the commit must reach, the head declarations it read, and
@@ -307,7 +307,7 @@ fn shape(db: &mut Db, schema: &str) -> Result<Shape> {
     if !tables.iter().any(|t| t == "meta") || !foreign.is_empty() {
         let tables = (!foreign.is_empty()).then(|| foreign.into_iter().collect());
         let schema = schema.to_owned();
-        return Err(invalid(Case::SchemaNotALake { schema, tables }));
+        return Err(Error::invalid(Case::SchemaNotALake { schema, tables }));
     }
     // The columns the engine reads must be those it wrote.
     let columns: i64 = db
@@ -321,7 +321,7 @@ fn shape(db: &mut Db, schema: &str) -> Result<Shape> {
     let lease_table = tables.iter().any(|t| t == "lease");
     if columns != if lease_table { 6 } else { 3 } {
         let schema = schema.to_owned();
-        return Err(invalid(Case::SchemaMetaForeign { schema }));
+        return Err(Error::invalid(Case::SchemaMetaForeign { schema }));
     }
     Ok(Shape::Lake)
 }
@@ -367,7 +367,7 @@ fn check_name(db: &mut Db, names: &Names, schema: &str, lake: &LakeId) -> Result
         Some(name) if name == lake.as_str() => Ok(()),
         Some(held) => {
             let (schema, lake) = (Some(schema.to_owned()), Box::new(lake.clone()));
-            Err(invalid(Case::LakeOther { schema, held, lake }))
+            Err(Error::invalid(Case::LakeOther { schema, held, lake }))
         }
         None => Err(Error::unavailable(Situation::Unmade { part: Part::Name })),
     }
@@ -573,7 +573,7 @@ impl ProjectionStore for PgLake {
         let mut transaction = lock(&self.transaction);
         let t = transaction
             .take()
-            .ok_or_else(|| invalid(Case::CommitUnbegun))?;
+            .ok_or_else(|| Error::invalid(Case::CommitUnbegun))?;
         let mut db = self.projecting(writing)?;
         // After a page the server refused, this read fails too: the
         // transaction is taken by now, so its session is rolled back here.
@@ -763,7 +763,7 @@ impl ProjectionStore for PgLake {
         let writing = self.writing()?;
         let transaction = lock(&self.transaction);
         if transaction.is_some() {
-            return Err(invalid(Case::CompactInTransaction));
+            return Err(Error::invalid(Case::CompactInTransaction));
         }
         let tables: Vec<&str> = PROJECTION_TABLES.iter().copied().chain(["meta"]).collect();
         let mut db = self.projecting(writing)?;
@@ -789,7 +789,7 @@ impl ProjectionStore for PgLake {
         let writing = self.writing()?;
         let transaction = lock(&self.transaction);
         if transaction.is_some() {
-            return Err(invalid(Case::CompactInTransaction));
+            return Err(Error::invalid(Case::CompactInTransaction));
         }
         let mut db = self.projecting(writing)?;
         let _ = db.batch("ROLLBACK");

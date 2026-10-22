@@ -35,11 +35,11 @@ use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::{Origin, StoredRecord, Value};
 use lakelands_api::write::{PurgeMoved, PurgeReference, PurgeReport, RecordRef, TypeRetired};
 use lakelands_api::{
-    FieldMeta, FieldName, Position, RecordKey, RelationName, Result, SourceId, TypeName,
+    Error, FieldMeta, FieldName, Position, RecordKey, RelationName, Result, SourceId, TypeName,
     WriteContext,
 };
 
-use lakelands_core::{invalid, links};
+use lakelands_core::links;
 
 use crate::lake::{Lake, PAGE, every};
 use crate::log::Draft;
@@ -127,10 +127,10 @@ pub(crate) fn made_by(
 fn named(ontology: &Ontology, ty: &TypeName) -> Result<BTreeSet<TypeName>> {
     let decl = ontology.ty(ty)?;
     if decl.view.is_some() {
-        return Err(invalid(Case::IsAView { ty: ty.clone() }));
+        return Err(Error::invalid(Case::IsAView { ty: ty.clone() }));
     }
     if !decl.field_meta {
-        return Err(invalid(Case::NoProvenance { ty: ty.clone() }));
+        return Err(Error::invalid(Case::NoProvenance { ty: ty.clone() }));
     }
     let carried = decl.relations.iter().filter(|r| r.carried_by_links());
     let links = carried.map(|r| links::link_type_name(ty, &r.name));
@@ -179,7 +179,7 @@ fn selection(
         let count = shared.len();
         shared.truncate(NAMED);
         let (source, ty, first) = (source.clone(), ty.cloned(), shared);
-        return Err(invalid(Case::PurgeShared {
+        return Err(Error::invalid(Case::PurgeShared {
             source,
             ty,
             count,
@@ -376,7 +376,7 @@ pub fn run(
     let mut w = lake.for_write()?;
     let view = lake.engine.view(None)?;
     if report_id.is_some_and(|given| given != id(source, ty, view.position())) {
-        return Err(invalid(Case::PurgeReportStale));
+        return Err(Error::invalid(Case::PurgeReportStale));
     }
     let (purged, unsearched) = selection(lake, view.as_ref(), &w.ontology, source, ty)?;
     let mut report = report(

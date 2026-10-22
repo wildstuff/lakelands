@@ -15,7 +15,13 @@
 # and when one outside the client reads a closed set (an `Error`, a
 # `Situation`, a `Detail`, a case or a place of any set) from JSON by
 # name, which would make free text of whatever the JSON says. (A read whose type is only inferred is not seen here; 015
-# states that limit.)
+# states that limit.) And when a product file of the contract, the core,
+# the store or an engine builds a refusal by hand, `Error::Refused {` as
+# a value: a refusal is made by `Error::invalid`, `invalid_at`,
+# `constraint`, `not_granted` or `refused`, so that its shape is written
+# once (`error.rs` is where). The same words as a pattern, after
+# `=>`, `if`, `|`, or the `=` or `else` of a `let`, are the way a refusal
+# is read and are not seen.
 . "$(dirname "$0")/lib.sh"
 
 # file|why its words are safe
@@ -46,6 +52,21 @@ while IFS= read -r line; do
     [ -n "$line" ] || continue
     fail "$line reads an error from JSON outside the client, which makes free text of it"
 done <<< "$reads"
+
+built=$(git ls-files -- 'crates/lakelands-api/src/*.rs' 'crates/lakelands-core/src/*.rs' \
+    'crates/lakelands-store/src/*.rs' 'crates/lakelands-engine-*/src/*.rs' \
+    | grep -v -E '^crates/lakelands-api/src/error(/|\.rs$)|/tests\.rs$|/tests/|/conformance/' \
+    | tr '\n' '\0' | LC_ALL=C xargs -0 perl -0777 -ne '
+        while (/Error::Refused\s*(\{(?:[^{}]++|(?1))*\})/g) {
+            my ($at, $after) = ($-[0], substr($_, $+[0], 80));
+            next if $after =~ /\A\s*(?:,?\s*\))*\s*(?:=>|\||if\b|=(?!=)|else\b)/;
+            my $line = 1 + (substr($_, 0, $at) =~ tr/\n//);
+            print "$ARGV:$line\n";
+        }' || true)
+while IFS= read -r site; do
+    [ -n "$site" ] || continue
+    fail "$site builds an Error::Refused by hand; use Error::invalid, invalid_at, constraint, not_granted or refused"
+done <<< "$built"
 
 # Each list is read from a string, never a pipe: `grep -q` stops at its
 # first match, and under `pipefail` the writer it leaves behind dies of a

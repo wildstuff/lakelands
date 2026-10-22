@@ -80,8 +80,6 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-pub(crate) use lakelands_core::invalid;
-
 /// Finds the in-memory engine by name and opens lakes held in memory. The
 /// lakes are this opener's: its clones share them, another opener holds
 /// its own.
@@ -122,7 +120,7 @@ impl EngineOpener for MemoryOpener {
         if !matches!(location.engine, EngineConfig::Memory) {
             let lake = Box::new(location.lake.clone());
             let (engine, location) = (NAME.to_owned(), "memory".to_owned());
-            return Err(invalid(Case::EngineOtherLocation {
+            return Err(Error::invalid(Case::EngineOtherLocation {
                 engine,
                 location,
                 lake,

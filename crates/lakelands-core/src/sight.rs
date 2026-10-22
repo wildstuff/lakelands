@@ -154,7 +154,7 @@ impl<'o> Sight<'o> {
     /// declares, of a type it is shown.
     pub fn reads(&self, ty: &TypeName, field: &FieldName) -> bool {
         let t = self.ty(ty).ok();
-        let f = t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)));
+        let f = t.and_then(|t| Some((t, t.field(field)?)));
         f.is_some_and(|(t, f)| rights::field_access(&self.who, t, f).reads())
     }
 

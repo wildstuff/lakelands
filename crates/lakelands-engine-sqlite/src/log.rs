@@ -121,7 +121,7 @@ use sha2::{Digest as _, Sha256};
 
 use lakelands_api::error::{Case, Detail, Doing, Error, Flaw, Left, Part, Situation};
 
-use crate::{damaged as damaged_at, invalid, io_error};
+use crate::{damaged as damaged_at, io_error};
 
 /// How much of an index file's end is read at once.
 const BLOCK: u64 = 64 * 1024;
@@ -803,7 +803,7 @@ impl Log {
         // first event takes; one named otherwise is not this log's.
         if active.count == 0 && events[0].position.0 != active.first {
             let (named, position) = (Position(active.first), events[0].position);
-            return Err(invalid(Case::ActiveSegmentNamed { named, position }));
+            return Err(Error::invalid(Case::ActiveSegmentNamed { named, position }));
         }
         let (lines, index) = lines_of(events, active.end);
         let parts = [

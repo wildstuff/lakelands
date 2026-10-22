@@ -49,7 +49,7 @@ use postgres::{Client, NoTls, Row, SimpleQueryMessage, Statement};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
-use crate::{invalid, sql};
+use crate::sql;
 
 /// The oldest server the engine supports, as `server_version_num` says it.
 pub const MIN_SERVER_VERSION: i32 = 160_000;
@@ -83,7 +83,7 @@ impl Target {
         let s = &self.schema;
         if s.is_empty() || s.len() > 63 || s.contains('\0') {
             let schema = s.clone();
-            return Err(invalid(Case::SchemaName { schema }));
+            return Err(Error::invalid(Case::SchemaName { schema }));
         }
         Ok(format!("\"{}\"", s.replace('"', "\"\"")))
     }
@@ -306,7 +306,7 @@ fn tls_config_with(tls: &PgTls, bundles: &[&str]) -> Result<rustls::ClientConfig
                 .with_client_auth_cert(chain, key_der)
                 .map_err(|e| tls_failed(Tls::CertUnusable, Some(Detail::scrubbed(e))))
         }
-        _ => Err(invalid(Case::ClientCertHalf)),
+        _ => Err(Error::invalid(Case::ClientCertHalf)),
     }
 }
 
@@ -315,17 +315,17 @@ pub(crate) fn connect(target: &Target) -> Result<Db> {
     for key in TLS_KEYS {
         if target.url.contains(&format!("{key}=")) {
             let key = key.to_owned();
-            return Err(invalid(Case::LocationUrlTls { key }));
+            return Err(Error::invalid(Case::LocationUrlTls { key }));
         }
     }
     let mut config: postgres::Config = target.url.parse().map_err(|e| {
         let detail = Detail::scrubbed(e);
-        invalid(Case::LocationUrlUnparsed { detail })
+        Error::invalid(Case::LocationUrlUnparsed { detail })
     })?;
     // Without a user the driver would take the operating system's: the
     // location names who connects.
     if config.get_user().is_none() {
-        return Err(invalid(Case::LocationUrlNoUser));
+        return Err(Error::invalid(Case::LocationUrlNoUser));
     }
     config.connect_timeout(Duration::from_secs(u64::from(
         target.tuning.connect_timeout_secs.max(1),

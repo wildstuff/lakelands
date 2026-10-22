@@ -22,7 +22,7 @@ use lakelands_api::write::{Declaration, Proposal};
 use crate::projection::Put;
 use crate::vectors::Indexed;
 use crate::view::MemView;
-use crate::{Lake, NAME, REBUILD_RATE, invalid, lock};
+use crate::{Lake, NAME, REBUILD_RATE, lock};
 
 /// One handle onto a lake held in memory.
 pub struct MemoryLake {
@@ -219,7 +219,7 @@ impl ProjectionStore for MemoryLake {
     fn commit(&self, through: Position) -> Result<()> {
         let puts = lock(&self.pending)
             .take()
-            .ok_or_else(|| invalid(Case::CommitUnbegun))?;
+            .ok_or_else(|| Error::invalid(Case::CommitUnbegun))?;
         let vectors = std::mem::take(&mut *lock(&self.indexing));
         let mut lake = lock(&self.shared);
         lake.projection.commit(puts, through)?;
