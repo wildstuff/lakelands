@@ -231,9 +231,13 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   Lakelands reserves only the types its own fold reads; today those are
   `sys.setting` and `sys.aging_rule`, and the other two are reserved
   ahead of their readers. See `docs/decisions/003-reservation-by-namespace.md`.
-  A value that must be kept from a reader is not put into a setting:
-  any reader's expression reads `setting('<key>')`, whatever its grant
-  on `sys.setting` and whether or not the setting is restricted.
+  An expression reads `setting('<key>')` whatever its reader's grant on
+  `sys.setting`, save a lake setting for a type or a source: a condition
+  evaluated at a read reads that as its reader is told it, and one
+  judged once for every reader tells what it decides only to a reader
+  told it (`docs/decisions/063-every-setting-is-in-one-list.md`). So a
+  value that must be kept from a reader is not put into a setting of
+  the host's own.
   The settings the store itself reads, with those of a lake's location
   and of the root's `lakelands.json`, are listed in `docs/settings.md`
   with what each changes, its default and where it is kept, and the
@@ -821,6 +825,19 @@ A host that already has a store of its own moves in four steps.
    cover shows up here, and it is fixed in Lakelands, not worked around
    in the host.
 
+## Editing a record
+
+A record's version is one number for the whole record, so two people
+editing different fields of it collide by design: the second write is
+refused with 412 `conflict`. A write's answer carries the version it
+made (`ETag` over REST), so an editor that edits twice sends it back
+without reading in between. On a 412 the editor reads the record again
+with `with_meta`, compares the `meta.position` of each field it edits
+with the position it read them at, and retries against the new version
+only if none moved; a field that moved is shown to its person, who
+decides. A create is `If-None-Match: *`, refused the same way when the
+key exists. `docs/rest.md`, "Editing a record", has the steps.
+
 ## Rules the host inherits
 
 - **One tool surface.** The catalog is the only tool surface. A host
@@ -832,128 +849,84 @@ A host that already has a store of its own moves in four steps.
   `docs/decisions/012-writes-touch-only-their-fields.md`.
 - **`schema` is for a principal that reads everything it may declare
   over.** A principal with `schema` is shown every definition, and a
-  write answers `through`, the position its consequences reach. The lake
-  refuses a declaration that reads a field its author may not read, and
-  names a trigger or an object set in a write's answer only to one who
-  reads what its condition reads; it cannot hide from such a principal
-  that something reacted to its own write. So a host does not hand
-  `schema` to a principal it keeps from a field or a type. See
-  `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
-  extended.
-- **A schema hash is that of the shape its reader is shown.** A principal
-  kept from a field is answered, by `describe` and in a migration's
-  report, the hash of the type without that field, not the stored one,
-  and so is a host that declares as such a principal. Nothing breaks: a
-  declaration identical to the one in force appends nothing. A hash
+  write answers `through`, the position its consequences reach, so such a
+  principal learns that something reacted to its own write. A host does
+  not hand `schema` to a principal it keeps from a field or a type. See
+  `docs/decisions/006-grants-not-roles.md`, "Some things are still told, on purpose".
+- **A schema hash is that of the shape its reader is shown.** A hash
   compares only between readers shown the same shape; the host's own
   comparison before it applies describes as one shown everything, and
-  the log and the feed carry the whole hash. A report's id is made over
-  the report as its reader is shown it. See
-  `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
-  extended (lakelands#644).
-- **A grant by name holds a field through its renames.** A field's
-  access is the lowest of what a principal's grants say under every name
-  the field has borne. A restriction follows the field, at the head and
-  in a read as of before the rename; a permission stays with its name.
-  So a host that does nothing stays closed, and a host that wants a
-  renamed field read or written by a principal names the new name and
-  drops the restriction on the old. A migration's answer names what it
-  renamed (`renamed`), and the feed's `migrated` event carries it. Two
-  fields that have borne one name (after a swap, or when a name is taken
-  again) are restricted together by it; grant by a name only one of them
-  has borne. A lake made before this finds its renames at its next open
-  from the declarations it keeps, not from its log; until a writer has
-  opened it once, each read-only open finds them again. See
-  `docs/decisions/006-grants-not-roles.md`, extended.
+  the log and the feed carry the whole hash. See
+  `docs/decisions/006-grants-not-roles.md`, "A schema hash is that of the shape its
+  reader is shown".
+- **A grant by name holds a field through its renames.** A restriction
+  follows the field, at the head and in a read as of before the rename;
+  a permission stays with its name, so a host that wants a renamed field
+  read or written names the new name and drops the restriction on the
+  old. Two fields that have borne one name are restricted together by
+  it; grant by a name only one of them has borne. See
+  `docs/decisions/006-grants-not-roles.md`, "A grant holds a field through its
+  renames".
 - **A grant may admit only some records.** `only` on a type, pairs of a
   text or reference field the principal may read and a text value,
   admits the records that hold every pair at every read door. That
   principal writes those records alone, another's being to its write a
-  key that is free; a proposal, a verb above low risk and every change
-  of shape still go through the host. `only` is a function
-  of `Principal.id` within a lake: give each owner its own id, and never
-  give one id `only` on some calls and not on others, since a retry is
-  answered its first outcome before the grants are asked. A grant whose
-  pairs cannot be applied refuses the reads that name the type until it
-  is fixed. See `docs/decisions/051-a-grant-may-admit-only-some-records.md`.
+  key that is free, and proposes writes to its own records, pinned to
+  them; a schema door, an aging rule and a migration's proposal stay
+  refused. `only` is a function of `Principal.id` within a lake: give
+  each owner its own id, and never give one id `only` on some calls and
+  not on others, since a retry is answered its first outcome before the
+  grants are asked. A grant whose pairs cannot be applied refuses the
+  doors that name the type as invalid until it is fixed. See
+  `docs/decisions/006-grants-not-roles.md`, "A grant may admit only the records that
+  hold its pairs".
 - **A verb may be kept to the callers granted it.** A verb declared
   `granted` is called, proposed, accepted and described only by a
   principal whose `TypeGrants.verbs` on the verb's type name it, its
-  field rights on top. The resolver names the verbs; `Grants::owner()`
-  names none, so give the owner the grant or declare the verb without
-  the flag. A grant is by the type's name and is not carried by a rename.
-  A retry is answered its first outcome before the grant is asked. See
+  field rights on top. `Grants::owner()` names none, so give the owner
+  the grant or declare the verb without the flag. See
   `docs/decisions/070-a-verb-may-be-kept-to-the-callers-granted-it.md`.
 - **What a host reads before it applies a migration.** The preflight's
-  report says, each in one member: whether the apply is admitted
-  (`lossless`: every value the migration keeps converts, every record a
-  re-key moves takes a key of its own, and no live record breaks a
-  constraint that refuses at ingest; it says nothing of what the
-  migration removes); what goes (`dropped`: each removed field with
-  the records that hold a value, each removed relation with its live
-  links; the apply discards the values and retires the links, each by
-  an event of its own, so a host that asks "is anything lost?" sums
-  the counts, `MigrationReport::discards()` in Rust); what
-  moves (`rekeyed`, `references`, `sample_collisions`); a relation's
-  rename (`relations`, `carried`, the entry below); and every other
-  member `to` states otherwise (`restated`, the entry after it). A
-  removal is the migration's intent and is consented to by repeating the
-  report's id, so `lossless: true` with a count above zero in `dropped`
-  is an apply that is admitted and discards values. See
+  report says whether the apply is admitted (`lossless`, which says
+  nothing of what the migration removes), what goes (`dropped`), what
+  moves (`rekeyed`, `references`, `sample_collisions`), a relation's
+  rename (`relations`, `carried`) and every other member `to` states
+  otherwise (`restated`). A removal is the migration's intent and is
+  consented to by repeating the report's id, so `lossless: true` with a
+  count above zero in `dropped` is an apply that is admitted and
+  discards values; a host that asks "is anything lost?" sums the counts
+  (`MigrationReport::discards()` in Rust). See
   `docs/decisions/027-shape-changes-are-declared-or-migrated.md`.
 - **A migration may rename a relation, and the relation keeps its
-  edges.** `relation_renames` pairs an old name with a new one. A
-  relation carried by a `via` field or derived from matching values is
-  only named anew. One carried by link records moves them: its links
-  become records of `sys.link.<type>.<new>`, with their versions, fields
-  and provenance, and a read as of before answers them under the old
-  name. The preflight's report lists each renamed relation with the
-  links that move (`relations`), and what the lake declares again
-  because it names the old link type (`carried`): a trigger or a verb on
-  it, an object set of it, a view that reads it. A rename changes no
-  link field and re-keys nothing; those are migrations of their own, and
-  a rename is refused while a reference field or a relation of another
-  type names the link type, or while a set, a trigger or a verb reads a
-  field of the new name's standing link type that the relation lacks. A
-  consumer of the feed that follows the old or the new link
-  type is handed the `migrated` event. The old link type stays declared,
-  for the reads as of before: it holds no record and takes none, so a
-  source that still sends links under the old name is refused, naming it.
+  edges.** `relation_renames` pairs an old name with a new one; links
+  carried by link records move to the link type of the new name, and a
+  read as of before answers them under the old one. See
+  `docs/decisions/035-a-link-is-a-record.md`, "A renamed relation keeps its edges".
 - **A migration's `to` is the type's whole declaration; read `restated`
-  before you apply.** A `to` built from a reduced view (a field's name
-  and type, nothing else) takes away every mark it does not restate:
-  `sensitive`, `searchable`, a label, annotations, an expression. The
-  migration is lossless, since no stored value changes, and its
-  preflight lists each such member in `restated` with what was declared
-  and what `to` states; `dropped` names every removed relation, with 0
-  where it holds no live link. Build `to` from `describe`'s answer for
-  the type and change what you mean to change; a report whose `restated`
-  is not what you meant is the signal. A field you may not read is
-  described and reported by its shape alone: your preview says `more`
-  where it leaves a member out, and a reviewer who reads the field sees
-  the rest. A proposed migration is refused
-  at its accept ("propose it again") where the type gained or lost a
-  member since that the proposal's report does not restate
-  (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
-  extended).
+  before you apply.** A `to` built from a reduced view takes away every
+  mark it does not restate (`sensitive`, `searchable`, a label,
+  annotations, an expression); the migration is lossless, since no
+  stored value changes, and its preflight lists each such member in
+  `restated`. Build `to` from `describe`'s answer for the type and
+  change what you mean to change. A proposed migration is refused at
+  its accept ("propose it again") where the type gained or lost a member
+  since that the proposal's report does not restate. See
+  `docs/decisions/027-shape-changes-are-declared-or-migrated.md`, "The report says
+  every difference between the declaration in force and `to`".
 - **A grant on a link type follows the relation's rename, as a grant on
-  a field follows the field's.** A field of the link type is as closed
-  as the lowest of what a principal's grants say under every name the
-  link type has borne: its grant, else its default. So
-  `sys.link.invoice.signed_by: {default: none}` holds for
-  `sys.link.invoice.approved_by` after the rename, and a grant on the new
-  name holds for the old one in a read as of before. A permission stays
-  with its name: a host that wants the links read under the new name
-  names the new link type. A mirror's mapping that names the old link
-  type stops applying at the rename and is stated again.
+  a field follows the field's.** A restriction holds for the renamed
+  link type, a permission stays with its name, and a mirror's mapping
+  that names the old link type is stated again. See
+  `docs/decisions/035-a-link-is-a-record.md`.
 - **A key is shown to whoever is shown the record.** A principal that
   is shown a type finds and gets its records, also where it reads no
   field of them: each with its key, its version and the names of the
-  fields it sees masked. A key made of fields holds their values,
-  whatever is granted on those fields, so a host does not key a type by
-  a field it hides; and a principal that is not to list a type's records
-  is granted nothing of the type. See
-  `docs/decisions/006-grants-not-roles.md`, extended.
+  fields it sees masked. A key made of fields holds their values, so a
+  type keyed by a field its principal may not know of is not shown to
+  it; holding a key field at `none` hides the type. A principal that is
+  not to list a type's records is granted nothing of the type. See
+  `docs/decisions/006-grants-not-roles.md`, "A type keyed by a field its principal
+  may not know of is not shown".
 - **One writer per lake.** A lake has one writing process at a time,
   held by a lease; one process may write many lakes. See
   `docs/decisions/008-one-writer-per-lake.md`.

@@ -148,6 +148,7 @@
 > {"status":"held"}
 < 200
 < content-type: application/json
+< etag: "2"
 < lakelands-position: 10
 < {"outcome":"applied","position":10,"version":2}
 
@@ -159,6 +160,7 @@
 > {"status":"held"}
 < 200
 < content-type: application/json
+< etag: "2"
 < lakelands-position: 10
 < {"outcome":"applied","position":10,"version":2}
 
@@ -217,7 +219,7 @@
 < 412
 < content-type: application/json
 < lakelands-position: 10
-< {"actual":2,"error":"conflict","expected":0,"message":"the record changed: expected version 0, found 2","todo":"read the record again and retry against its current version","what":"the record changed: expected version 0, found 2"}
+< {"actual":2,"error":"conflict","expected":0,"message":"a record with this key already exists","todo":"write with `If-Match: <version>` to change it, or under another key to create one","what":"a record with this key already exists"}
 
 > PUT /lakes/finance/types/invoice/records/INV-2
 > authorization: Bearer k-owner
@@ -225,6 +227,7 @@
 > {"status":"open"}
 < 200
 < content-type: application/json
+< etag: "1"
 < lakelands-position: 11
 < {"outcome":"applied","position":11,"version":1}
 
@@ -256,6 +259,7 @@
 > authorization: Bearer k-clerk
 < 200
 < content-type: application/json
+< etag: "2"
 < lakelands-position: 13
 < {"outcome":"applied","position":13,"version":2}
 
@@ -279,6 +283,7 @@
 > authorization: Bearer k-owner
 < 200
 < content-type: application/json
+< etag: "3"
 < lakelands-position: 17
 < {"outcome":"applied","position":17,"version":3}
 
@@ -380,6 +385,7 @@
 > idempotency-key: retire-1
 < 200
 < content-type: application/json
+< etag: "3"
 < lakelands-position: 20
 < {"outcome":"applied","position":20,"version":3}
 
@@ -389,6 +395,7 @@
 > idempotency-key: retire-1
 < 200
 < content-type: application/json
+< etag: "3"
 < lakelands-position: 20
 < {"outcome":"applied","position":20,"version":3}
 
@@ -544,6 +551,7 @@
 > {"name":"Acme"}
 < 200
 < content-type: application/json
+< etag: "1"
 < lakelands-position: 32
 < {"outcome":"applied","position":32,"version":1}
 
@@ -553,6 +561,7 @@
 > {"title":"Supply"}
 < 200
 < content-type: application/json
+< etag: "1"
 < lakelands-position: 33
 < {"outcome":"applied","position":33,"version":1}
 
@@ -562,6 +571,7 @@
 > {"since":"2026"}
 < 200
 < content-type: application/json
+< etag: "1"
 < lakelands-position: 34
 < {"outcome":"applied","position":34,"version":1}
 
@@ -572,6 +582,7 @@
 > {"since":"2027"}
 < 200
 < content-type: application/json
+< etag: "2"
 < lakelands-position: 35
 < {"outcome":"applied","position":35,"version":2}
 
@@ -640,7 +651,7 @@
 < 412
 < content-type: application/json
 < lakelands-position: 35
-< {"actual":2,"error":"conflict","expected":0,"message":"the record changed: expected version 0, found 2","todo":"read the record again and retry against its current version","what":"the record changed: expected version 0, found 2"}
+< {"actual":2,"error":"conflict","expected":0,"message":"a record with this key already exists","todo":"write with `If-Match: <version>` to change it, or under another key to create one","what":"a record with this key already exists"}
 
 # A link route takes PUT and DELETE only.
 > GET /lakes/finance/types/contract/records/C-1/links/signed_by/P-1
@@ -656,6 +667,7 @@
 > authorization: Bearer k-owner
 < 200
 < content-type: application/json
+< etag: "3"
 < lakelands-position: 36
 < {"outcome":"applied","position":36,"version":3}
 
@@ -761,6 +773,7 @@
 > {"name":"Birch"}
 < 200
 < content-type: application/json
+< etag: "1"
 < lakelands-position: 45
 < {"outcome":"applied","position":45,"version":1}
 
@@ -770,6 +783,7 @@
 > {"unit":"4B"}
 < 200
 < content-type: application/json
+< etag: "1"
 < lakelands-position: 46
 < {"outcome":"applied","position":46,"version":1}
 
@@ -779,6 +793,7 @@
 > {}
 < 200
 < content-type: application/json
+< etag: "1"
 < lakelands-position: 47
 < {"outcome":"applied","position":47,"version":1}
 

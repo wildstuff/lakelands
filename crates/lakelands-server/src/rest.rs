@@ -18,7 +18,8 @@
 //!   the case's sentence and `todo` its advice ([`Failure::of`]).
 //! - A write takes `If-Match: <version>` and `Idempotency-Key`; `PUT` also
 //!   takes `If-None-Match: *` for a record that must not exist yet. A read
-//!   of one record answers its version as `ETag`.
+//!   of one record answers its version as `ETag`, and so does a write that
+//!   made a version.
 //! - `POST …/ingest/<source>` takes NDJSON and answers NDJSON, one line
 //!   per commit window as it becomes durable.
 //! - `GET …/feed` is the change feed as server-sent events, each event's
@@ -868,9 +869,13 @@ async fn door(
         StatusCode::OK
     };
     let mut answer = json_reply(status, &v);
-    if let Door::Get { .. } = r.door
-        && let Some(version) = v["data"]["version"].as_u64()
-    {
+    // A read answers the record's version in `data`, a write the version
+    // it made in the outcome.
+    let version = match r.door {
+        Door::Get { .. } => v["data"]["version"].as_u64(),
+        _ => v["version"].as_u64(),
+    };
+    if let Some(version) = version {
         answer.headers_mut().insert(
             "etag",
             HeaderValue::from_str(&format!("\"{version}\"")).expect("digits are a header value"),

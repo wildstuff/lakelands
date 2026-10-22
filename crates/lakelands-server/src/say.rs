@@ -8,7 +8,7 @@
 use std::fmt;
 
 use lakelands_api::error::{Case, Error, Flaw, Refusal, Said, Situation};
-use lakelands_api::id::RecordKey;
+use lakelands_api::id::{RecordKey, Version};
 use lakelands_api::write::Plan;
 
 /// A failure, for a person.
@@ -198,6 +198,11 @@ impl From<Error> for Failure {
             Error::NotFound { .. } => {
                 "check the name, or apply the declaration that introduces it first".to_owned()
             }
+            Error::Conflict {
+                expected: Version(0),
+                ..
+            } => "write with `If-Match: <version>` to change it, or under another key to create one"
+                .to_owned(),
             Error::Conflict { .. } => {
                 "read the record again and retry against its current version".to_owned()
             }
