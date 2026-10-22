@@ -79,18 +79,7 @@ const DAYS: &str = "with.days >= 10";
 /// The refusal of `verb` on the deal `key` whose `requires` is unmet at
 /// `part`.
 fn unmet(verb: &str, key: &str, part: &str) -> Result<&'static str, Error> {
-    let (verb, ty, key) = (verb.into(), "deal".into(), key.into());
-    let part = Some(Box::new(Printed(part.into())));
-    let case = Case::RequiresUnmet {
-        verb,
-        ty,
-        key,
-        part,
-    };
-    Err(Error::Refused {
-        field: None,
-        reason: Refusal::Precondition(Box::new(case.into())),
-    })
+    requires_unmet(verb, "deal", key, Some(part))
 }
 
 /// The refusal of a verb that is not its caller's.

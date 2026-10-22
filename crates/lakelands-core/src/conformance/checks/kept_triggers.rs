@@ -360,13 +360,7 @@ async fn what_a_trigger_on_a_kept_view_fires_is_held_to_the_ceiling(
 ) -> Held {
     let l = Lake::of(store.as_ref());
     lake(&l).await?;
-    let lower = Limits {
-        max_set_changes: 1,
-        ..limits()
-    };
-    let store = (given.relimit)(store, Seams::default(), lower)
-        .await
-        .map_err(|e| Failure::new(format!("opening at a ceiling of one: {e}")))?;
+    let store = at_one_set_change(&given, store, "opening at a ceiling of one").await?;
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     let before = s.head().await.must("the head")?;
     let (ty, key) = (TypeName::from("invoice"), "i1".into());

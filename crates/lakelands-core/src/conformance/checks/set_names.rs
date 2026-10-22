@@ -238,13 +238,8 @@ async fn a_set_that_cannot_be_named_and_a_path_that_cannot_be_walked_are_refused
     );
     // `open` without `i5` changes one membership of `open` and one of
     // `both`: two, past a ceiling of one, which `both` passes.
-    let lower = Limits {
-        max_set_changes: 1,
-        ..limits()
-    };
-    let store = (given.relimit)(store, Seams::default(), lower)
-        .await
-        .map_err(|e| Failure::new(format!("opening the lake again with a lower ceiling: {e}")))?;
+    let store =
+        at_one_set_change(&given, store, "opening the lake again with a lower ceiling").await?;
     let l = Lake::of(store.as_ref());
     let before = store.head().await.must("the head")?;
     let narrower = set("open", "status = 'open' and amount < 900");

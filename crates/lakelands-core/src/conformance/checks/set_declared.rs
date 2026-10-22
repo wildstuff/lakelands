@@ -126,13 +126,8 @@ async fn a_sets_declaration_decides_the_membership_of_the_records_there(
     }
     l.declare(type_of("memo", &[("n", Text)])).await?;
     // `i1` and `i2` would join `still_open`: two changes, past a ceiling of one.
-    let lower = Limits {
-        max_set_changes: 1,
-        ..limits()
-    };
-    let store = (given.relimit)(store, Seams::default(), lower)
-        .await
-        .map_err(|e| Failure::new(format!("opening the lake again with a lower ceiling: {e}")))?;
+    let store =
+        at_one_set_change(&given, store, "opening the lake again with a lower ceiling").await?;
     let (l, before) = (
         Lake::of(store.as_ref()),
         store.head().await.must("the head")?,
@@ -190,12 +185,7 @@ async fn a_type_declared_again_decides_the_sets_its_computed_fields_move(
     }
     // Twice now `amount`: `b1` leaves both sets, two changes; past a
     // ceiling of one, the declaration is refused and appends nothing.
-    let lower = Limits {
-        max_set_changes: 1,
-        ..limits()
-    };
-    let opened = (given.relimit)(store, Seams::default(), lower).await;
-    let store = opened.map_err(|e| Failure::new(format!("opening at a ceiling of one: {e}")))?;
+    let store = at_one_set_change(&given, store, "opening at a ceiling of one").await?;
     let (l, before) = (
         Lake::of(store.as_ref()),
         store.head().await.must("the head")?,

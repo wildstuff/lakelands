@@ -7,7 +7,7 @@
 
 use lakelands_api::IngestOpts;
 
-use super::erasable::{Keys, again, first, person, with};
+use super::erasable::{again, first, keyed, person, with};
 use super::removed::{acts, at, erased};
 use crate::conformance::fixture::source_record;
 use crate::conformance::prelude::*;
@@ -183,8 +183,7 @@ async fn a_time_seen_shreds_only_where_a_key_seals_nothing_else(
     store: Store,
     reopen: Reopen,
 ) -> Held {
-    let keys = Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let (keys, store) = keyed(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let crm: SourceId = "crm".into();
@@ -288,8 +287,7 @@ async fn a_time_seen_keeps_a_newer_version_while_an_older_seals_a_value_it_leave
     store: Store,
     reopen: Reopen,
 ) -> Held {
-    let keys = Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let (keys, store) = keyed(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let crm: SourceId = "crm".into();

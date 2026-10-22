@@ -146,13 +146,8 @@ async fn a_migration_decides_the_membership_of_the_records_it_migrates(
          them; its append changed {got:?} and it answered {answer:?}"
     );
     // A boolean again: four changes, past a ceiling of one.
-    let lower = Limits {
-        max_set_changes: 1,
-        ..limits()
-    };
-    let store = (given.relimit)(store, Seams::default(), lower)
-        .await
-        .map_err(|e| Failure::new(format!("opening the lake again with a lower ceiling: {e}")))?;
+    let store =
+        at_one_set_change(&given, store, "opening the lake again with a lower ceiling").await?;
     let l = Lake::of(store.as_ref());
     let m = migration(linked(Boolean));
     // Past the ceiling too, a stale report and a record that does not

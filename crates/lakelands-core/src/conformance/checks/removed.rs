@@ -835,11 +835,10 @@ async fn a_version_whose_values_are_all_taken_is_destroyed_and_the_rest_redacted
     store: Store,
     reopen: crate::conformance::Reopen,
 ) -> Held {
-    use super::erasable::{Keys, again, person, with};
+    use super::erasable::{again, keyed, person, with};
     use lakelands_api::seam::KeyStore;
-    use std::sync::Arc;
-    let keys = Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+
+    let (keys, store) = keyed(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let crm: SourceId = "crm".into();
@@ -999,11 +998,10 @@ async fn a_shredding_act_imports_erased_and_destroys_a_backups_versions(
     store: Store,
     given: crate::conformance::Given,
 ) -> Held {
-    use super::erasable::{Keys, again, person, with};
+    use super::erasable::{keyed, person, with};
     use lakelands_api::seam::KeyStore;
     use std::sync::Arc;
-    let keys = Arc::new(Keys::default());
-    let store = again(&given.reopen, store, with(&keys), "with a key store").await?;
+    let (keys, store) = keyed(&given.reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let ada = source_record("person", "p1", json!({"id": "p1", "name": "Ada"}));
@@ -1264,14 +1262,13 @@ async fn an_output_of_a_later_version_replays_after_an_earlier_one_is_destroyed(
     store: Store,
     reopen: crate::conformance::Reopen,
 ) -> Held {
-    use super::erasable::{Keys, again, person, with};
+    use super::erasable::{again, keyed, person, with};
     use crate::conformance::backing;
     use lakelands_api::ontology::StorageKind;
     use lakelands_api::seam::KeyStore;
-    use std::sync::Arc;
+
     const TOKEN: &str = "removed_replayed";
-    let keys = Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let (keys, store) = keyed(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare_json(
         json!({"declare": "function", "name": "shout", "backing": backing::KIND,

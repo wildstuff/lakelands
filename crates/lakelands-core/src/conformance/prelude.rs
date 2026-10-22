@@ -4,14 +4,14 @@
 //! few checks use, is imported by that check.
 
 pub use super::fixture::{
-    Caller, Lake, Must, agg, aggregate, alike_renamed, all, all_found, computed_by, count_view,
-    dec, decimal, declare, describe_type, embedding, events_after, events_from, field,
-    field_access, field_writer, find_at, find_where, followed, head_unmoved, invalid_case,
-    invalid_like, invalid_said, is_invalid, join_all, limits, log_events, migration, no_such_field,
-    object_set_on, outputs_from, patch, pattern, pause, principal, reactive, read_at, reads_all,
-    reason, refused_alike, refused_like, refused_on, refused_unmoved, restrict, searchable,
-    sourced, trigger_on, try_upsert, type_decl, value, value_type, vector, view_of,
-    windows_reach_head, write_verb,
+    Caller, Lake, Must, agg, aggregate, alike_renamed, all, all_found, at_one_set_change,
+    computed_by, count_view, dec, decimal, declare, describe_type, embedding, events_after,
+    events_from, field, field_access, field_writer, find_at, find_where, followed, head_unmoved,
+    invalid_case, invalid_like, invalid_said, is_invalid, join_all, limits, log_events, migration,
+    no_such_field, object_set_on, outputs_from, patch, pattern, pause, principal, reactive,
+    read_at, reads_all, reason, refused_alike, refused_like, refused_on, refused_unmoved,
+    requires_unmet, restrict, searchable, sourced, trigger_on, try_upsert, type_decl, value,
+    value_type, vector, view_of, windows_reach_head, write_verb,
 };
 pub use super::{Failure, Given, Held, Reopen, Store, backing};
 pub use crate::links::{link_key, link_type_name};

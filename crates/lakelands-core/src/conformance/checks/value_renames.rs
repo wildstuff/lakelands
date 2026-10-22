@@ -499,13 +499,8 @@ async fn a_value_rename_decides_set_membership_in_its_append(
     l.upsert("task", "t4", json!({"state": "done"})).await?;
     let m = renamed(&["active", "finished"], &[("done", "finished")]);
     let id = propose(&l, &m).await?;
-    let lower = lakelands_api::location::Limits {
-        max_set_changes: 1,
-        ..crate::conformance::fixture::limits()
-    };
-    let store = (given.relimit)(store, lakelands_api::seam::Seams::default(), lower)
-        .await
-        .map_err(|e| Failure::new(format!("opening the lake again with a lower ceiling: {e}")))?;
+    let store =
+        at_one_set_change(&given, store, "opening the lake again with a lower ceiling").await?;
     let l = Lake::of(store.as_ref());
     let before = store.head().await.must("reading the head")?;
     let accepted = l.cat.accept(&l.own, &id).await;

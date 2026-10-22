@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
-use lakelands_api::error::{Case, Said};
+use lakelands_api::error::{Case, Printed, Said};
 use lakelands_api::ontology::{
     Authority, EmbedDecl, FieldDecl, Measure, StorageKind, TypeDecl, ViewDecl, ViewParam,
 };
@@ -29,7 +29,7 @@ use lakelands_api::{
 };
 use rust_decimal::Decimal;
 
-use super::{Failure, Held};
+use super::{Failure, Given, Held, Store};
 
 /// An answer a refusal may be in: an error, or a result that may hold one.
 pub trait Answer {
@@ -237,11 +237,38 @@ impl<T: Debug> Must<T> for lakelands_api::Result<T> {
     }
 }
 
+/// The refusal of `verb` on the `ty` `key` whose `requires` is unmet at
+/// `part`, which a reader not shown it is not told.
+pub fn requires_unmet<T>(verb: &str, ty: &str, key: &str, part: Option<&str>) -> Result<T, Error> {
+    let case = Case::RequiresUnmet {
+        verb: verb.into(),
+        ty: ty.into(),
+        key: key.into(),
+        part: part.map(|p| Box::new(Printed(p.into()))),
+    };
+    Err(Error::Refused {
+        field: None,
+        reason: Refusal::Precondition(Box::new(case.into())),
+    })
+}
+
 /// The limits every lake of the suite is opened with: the defaults, as
 /// [`Harness`](super::Harness) requires. A check that meets one reads it
 /// here; [`default_limits`] holds every lake to it before any check runs.
 pub fn limits() -> lakelands_api::location::Limits {
     lakelands_api::location::Limits::default()
+}
+
+/// The lake opened again with a ceiling of one membership change per
+/// write, naming `what` if that fails.
+pub async fn at_one_set_change(given: &Given, store: Store, what: &str) -> Result<Store, Failure> {
+    let lower = lakelands_api::location::Limits {
+        max_set_changes: 1,
+        ..limits()
+    };
+    (given.relimit)(store, lakelands_api::seam::Seams::default(), lower)
+        .await
+        .map_err(|e| Failure::new(format!("{what}: {e}")))
 }
 
 /// Fail unless `store` was opened with the default limits, so a harness

@@ -438,3 +438,26 @@ fn a_catalog_that_carries_no_delivery_refuses_one() {
     let case = apart.err().and_then(|e| e.case().map(|s| s.case.clone()));
     assert_eq!(case, Some(Case::SealedApartNotCarried));
 }
+
+/// `requires_unmet` is, by value, the refusal the checks built by hand.
+#[test]
+fn requires_unmet_equals_the_refusal_built_by_hand() {
+    use lakelands_api::Refusal;
+    use lakelands_api::error::{Case, Printed};
+    let by_hand = |part: Option<&str>| {
+        let case = Case::RequiresUnmet {
+            verb: "vet".into(),
+            ty: "invoice".into(),
+            key: "i1".into(),
+            part: part.map(|p| Box::new(Printed(p.into()))),
+        };
+        Error::Refused {
+            field: None,
+            reason: Refusal::Precondition(Box::new(case.into())),
+        }
+    };
+    for part in [None, Some("status = 'open'")] {
+        let got = super::fixture::requires_unmet::<()>("vet", "invoice", "i1", part);
+        assert_eq!(got, Err(by_hand(part)));
+    }
+}

@@ -474,13 +474,7 @@ async fn a_plan_refuses_what_its_act_refuses(store: Store, given: Given) -> Held
     for k in ["z1", "z2"] {
         l.upsert("z", k, json!({"c": "a"})).await?;
     }
-    let lower = lakelands_api::location::Limits {
-        max_set_changes: 1,
-        ..crate::conformance::fixture::limits()
-    };
-    let store = (given.relimit)(store, lakelands_api::seam::Seams::default(), lower)
-        .await
-        .map_err(|e| Failure::new(format!("opening at a ceiling of one: {e}")))?;
+    let store = at_one_set_change(&given, store, "opening at a ceiling of one").await?;
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     let to = de(
         json!({"name": "bill", "fields": [{"name": "amount", "type": num},

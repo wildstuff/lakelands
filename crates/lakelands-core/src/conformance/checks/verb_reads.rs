@@ -126,20 +126,7 @@ async fn a_verb_that_reads_a_field_its_caller_may_not_read_is_not_its_to_call(
         field: None,
         reason: Refusal::NotGranted,
     });
-    let unmet = |verb: &str, key: &str| {
-        let (verb, ty, key) = (verb.into(), "memo".into(), key.into());
-        let part = Some(Box::new(Printed("secret = 'x'".into())));
-        let case = Case::RequiresUnmet {
-            verb,
-            ty,
-            key,
-            part,
-        };
-        Err(Error::Refused {
-            field: None,
-            reason: Refusal::Precondition(Box::new(case.into())),
-        })
-    };
+    let unmet = |verb: &str, key: &str| requires_unmet(verb, "memo", key, Some("secret = 'x'"));
     let (applied, proposed) = (Ok("applied"), Ok("proposed"));
     let refused = || {
         let mut want = vec![nope.clone(); 8];

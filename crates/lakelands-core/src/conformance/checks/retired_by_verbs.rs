@@ -150,16 +150,8 @@ async fn a_type_only_its_verbs_retire_is_refused_at_retire(store: Store) -> Held
     head_unmoved(s, before, "a retirement of a type only its verbs retire").await?;
     // Its verbs retire: under `requires`, by the call's own events.
     let unmet = call(&l, &l.own, "archive", "o1").await;
-    let case = Case::RequiresUnmet {
-        verb: "archive".into(),
-        ty: "order".into(),
-        key: "o1".into(),
-        part: Some(Box::new(Printed("status = 'closed'".into()))),
-    };
-    let precondition = Error::Refused {
-        field: None,
-        reason: Refusal::Precondition(Box::new(case.into())),
-    };
+    let precondition =
+        requires_unmet::<()>("archive", "order", "o1", Some("status = 'closed'")).unwrap_err();
     ensure!(
         unmet.as_ref().err() == Some(&precondition) && live(&l, "o1").await?,
         "`archive` of o1, still open, is refused as a precondition: {unmet:?}"

@@ -689,9 +689,8 @@ async fn a_proposed_call_holds_no_value_a_forgotten_source_sealed(
     store: Store,
     reopen: Reopen,
 ) -> Held {
-    use super::erasable::{Keys, again, person, with};
-    let keys = std::sync::Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    use super::erasable::{keyed, person};
+    let (_, store) = keyed(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     let text = json!({"kind": "text"});
     let config = json!({"token": "call_proposal_holds_no_inputs", "echo": "name"});
