@@ -97,6 +97,26 @@ impl EngineHarness for Pg {
         rebuilt.expect("rebuilding as a writer without the chosen fields");
         true
     }
+
+    fn scratch(&self, lake: &LakeId) -> lakelands_api::Result<Box<dyn LakeEngine>> {
+        PgOpener.open_scratch(&self.location(lake.as_str()))
+    }
+
+    fn forge_scratch_mark(&self, lake: &LakeId) -> bool {
+        let schema = self.schemas.lock().unwrap()[lake.as_str()].clone();
+        let (url, scratch) = (self.url.clone(), common::scratch_of(&schema));
+        let forged = std::thread::spawn(move || {
+            let mut db = postgres::Client::connect(&url, postgres::NoTls)?;
+            db.batch_execute(&format!(
+                "UPDATE \"{scratch}\".meta SET t = repeat('0', 64) WHERE k = 'built'"
+            ))
+        });
+        forged
+            .join()
+            .expect("the forging thread")
+            .expect("forging the mark");
+        true
+    }
 }
 
 #[test]

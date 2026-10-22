@@ -957,6 +957,20 @@ catalog! {
         SealedNotRead { last: Position, cause: Box<Error> } => "the segment through position {last} is sealed and the next one is in the log's files, synced; this handle then failed to read on: {cause}",
         /// A compaction failed, and the projection is as it was.
         CompactFailed { lake: String, detail: Detail } => "lake `{lake}` could not be compacted, and its projection is as it was: {detail}",
+        /// Another handle has the projection being built beside the lake's open.
+        Rebuilding { lake: String } => "lake `{lake}`'s projection is being built beside it by another handle; nothing was changed, so try again once that build has ended",
+        /// No projection built beside the lake's is marked built for this lake by this build.
+        NoScratch { lake: String } => "no projection built beside lake `{lake}`'s is marked built for this lake and this build's layout; nothing was changed",
+        /// The projection built beside the lake's is not marked through the log's tip and its hash.
+        ScratchBehind {
+            lake: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            marked: Option<Position>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            tip: Option<Position>,
+        } => "the projection built beside lake `{lake}`'s is marked built [through position {marked}|through no position], and the log [ends at position {tip}|is empty] or holds another hash there; nothing was changed: fold the scratch to the log's end and mark it again",
+        /// Another handle reads the projection a swap would replace.
+        SwapBusy { lake: String } => "lake `{lake}`'s projection is open on another handle, so the one built beside it was not put in its place; nothing was changed, so swap again once that handle is closed",
         /// Every event was imported, and folding the projection failed.
         ImportNotFolded { cause: Box<Error> } => "every event was imported, and folding the projection failed: {cause}; a writer's open folds it again",
         /// An import stopped part way, at the position it reached.

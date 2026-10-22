@@ -45,6 +45,7 @@ use lakelands_core::engines::{self, vector_bytes, vector_of};
 
 use crate::connect::{self, Db, Target};
 use crate::projection::{self, Buffer, HeadTypes, Names, PROJECTION_TABLES};
+use crate::scratch;
 use crate::vector_index::{self, Pgvector};
 use crate::view::PgView;
 use crate::{NAME, REBUILD_RATE, lease, lock, log};
@@ -99,6 +100,9 @@ pub struct PgLake {
     /// pgvector, when the server has it: the vector index a lake asks for
     /// lives there (`crate::vector_index`).
     pgvector: Option<Pgvector>,
+    /// On a handle onto the scratch, its schema, unquoted (`scratch.rs`);
+    /// the lease connection holds the builder's lock.
+    scratch: Option<String>,
 }
 
 impl PgLake {
@@ -126,6 +130,7 @@ impl PgLake {
                 let mut projection = connect::connect(&target)?;
                 prepare(&mut projection, &names, &target.schema, &lake, mode)?;
                 projection::catch_up_sorted(&mut projection, &names)?;
+                scratch::sweep(&mut projection, &target, &names, &lake)?;
                 let found = vector_index::find(&mut projection, true);
                 if let Ok(v) = &found {
                     vector_index::prepare(&mut projection, &names, v)?;
@@ -146,6 +151,7 @@ impl PgLake {
             OpenMode::Rebuild => {
                 let lease = connect::session_keeping_state(&target)?;
                 let mut projection = connect::connect(&target)?;
+                scratch::sweep(&mut projection, &target, &names, &lake)?;
                 let found = vector_index::find(&mut projection, true).ok();
                 let writing = Writing {
                     lease: Mutex::new(lease),
@@ -166,7 +172,139 @@ impl PgLake {
             transaction: Mutex::new(None),
             heads: Mutex::new(None),
             pgvector,
+            scratch: None,
         })
+    }
+
+    /// A handle onto the scratch beside the lake in the target's schema:
+    /// it reads the log as a reader does, and folds into the scratch,
+    /// never the projection. A scratch unfit to keep is removed and made
+    /// anew.
+    pub(crate) fn open_scratch(lake: LakeId, target: Target) -> Result<PgLake> {
+        let live = Names::new(target.quoted_schema()?);
+        let mut reader = connect::connect(&target)?;
+        if !matches!(shape(&mut reader, &target.schema)?, Shape::Lake) {
+            let (lake, schema) = (lake.to_string(), Some(target.schema.clone()));
+            return Err(Error::unavailable(Situation::NoLake { lake, schema }));
+        }
+        check_name(&mut reader, &live, &target.schema, &lake)?;
+        let bare = target.scratch_schema();
+        let names = Names::beside(Target::quote(&bare), &live);
+        let mut lease = connect::session_keeping_state(&target)?;
+        if !scratch::lock(&mut lease, &target.schema, true)? {
+            return Err(Error::unavailable(Situation::Rebuilding {
+                lake: lake.to_string(),
+            }));
+        }
+        let mut projection = connect::connect(&target)?;
+        projection.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
+            if scratch::fit(db, &names, &bare, &lake, false)?.is_none() {
+                db.batch(&scratch::remove_sql(&names))?;
+            }
+            db.batch(&names.schema_sql())?;
+            db.execute(
+                &format!(
+                    "INSERT INTO {m} (k, n) VALUES ('layout', {layout}) ON CONFLICT DO NOTHING; ",
+                    m = names.t("meta"),
+                    layout = projection::LAYOUT
+                ),
+                &[],
+            )?;
+            db.execute(
+                &format!(
+                    "INSERT INTO {} (k, t) VALUES ('lake', $1) ON CONFLICT DO NOTHING",
+                    names.t("meta")
+                ),
+                &[&lake.as_str()],
+            )
+        })?;
+        projection::catch_up_sorted(&mut projection, &names)?;
+        let found = vector_index::find(&mut projection, true);
+        if let Ok(v) = &found {
+            vector_index::prepare(&mut projection, &names, v)?;
+        }
+        vector_index::catch_up(
+            &mut projection,
+            &names,
+            found.as_ref().map_err(String::as_str),
+            lake.as_str(),
+        )?;
+        Ok(PgLake {
+            lake,
+            target,
+            names,
+            reader: Mutex::new(reader),
+            writing: Some(Writing {
+                lease: Mutex::new(lease),
+                projection: Mutex::new(projection),
+                unanalysed: AtomicU64::new(0),
+            }),
+            held: Mutex::new(None),
+            transaction: Mutex::new(None),
+            heads: Mutex::new(None),
+            pgvector: found.ok(),
+            scratch: Some(bare),
+        })
+    }
+
+    /// The refusal of the lease, or a write of the log, through a handle
+    /// opened read-only or onto the scratch.
+    fn read_only(&self) -> Error {
+        let (lake, leased_elsewhere) = (Some(self.lake.to_string()), false);
+        Error::unavailable(Situation::ReadOnly {
+            lake,
+            leased_elsewhere,
+        })
+    }
+
+    /// Put the scratch in the projection's place, checked as
+    /// [`LakeEngine::swap`] says, in one transaction (`scratch.rs`). A
+    /// reader's statement waits for it, and reads the projection it put in
+    /// place once it commits.
+    fn swapping(&self, lease: &Lease) -> Result<Option<Position>> {
+        let writing = self.writing()?;
+        if self.scratch.is_some() || lock(&self.held).as_ref() != Some(lease) {
+            let (fence, undone) = (Some(lease.fence), None);
+            return Err(Error::unavailable(Situation::LeaseNotHeld {
+                fence,
+                undone,
+            }));
+        }
+        *lock(&self.transaction) = None;
+        let mut db = self.projecting(writing)?;
+        let _ = db.batch("ROLLBACK");
+        let bare = self.target.scratch_schema();
+        let names = Names::beside(Target::quote(&bare), &self.names);
+        let lake = self.lake.to_string();
+        let swapped = db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
+            if !scratch::lock(db, &self.target.schema, false)? {
+                return Err(Error::unavailable(Situation::Rebuilding {
+                    lake: lake.clone(),
+                }));
+            }
+            let Some(marked) = scratch::fit(db, &names, &bare, &self.lake, false)? else {
+                return Err(Error::unavailable(Situation::NoScratch {
+                    lake: lake.clone(),
+                }));
+            };
+            // The mark's hash is the log's there (`fit`): it is the tip's
+            // where it is the tip's position.
+            let tip = log::tip(db, &self.names)?.map(|(p, _)| p);
+            if tip != Some(marked) {
+                let marked = Some(marked);
+                return Err(Error::unavailable(Situation::ScratchBehind {
+                    lake: lake.clone(),
+                    marked,
+                    tip,
+                }));
+            }
+            db.batch(&scratch::swap_sql(&self.names, &names))?;
+            Ok(Some(marked))
+        });
+        let swapped = self.lost(&db, None, swapped, None)?;
+        *lock(&self.heads) = None;
+        writing.unanalysed.store(0, Ordering::Relaxed);
+        Ok(swapped)
     }
 
     /// Run `f` on the reader. A connection the server or the network
@@ -222,13 +360,7 @@ impl PgLake {
     }
 
     fn writing(&self) -> Result<&Writing> {
-        self.writing.as_ref().ok_or_else(|| {
-            let (lake, leased_elsewhere) = (Some(self.lake.to_string()), false);
-            Error::unavailable(Situation::ReadOnly {
-                lake,
-                leased_elsewhere,
-            })
-        })
+        self.writing.as_ref().ok_or_else(|| self.read_only())
     }
 
     /// The lease connection, when this handle holds `lease`; otherwise
@@ -381,6 +513,18 @@ impl Drop for PgLake {
         if let Some(lease) = held {
             let _ = self.release_lease(&lease);
         }
+        // A scratch not marked built through what it folded is removed
+        // before its lock goes with the session.
+        if let (Some(bare), Some(writing)) = (&self.scratch, &self.writing) {
+            let mut db = lock(&writing.projection);
+            let _ = db.batch("ROLLBACK");
+            if !matches!(
+                scratch::fit(&mut db, &self.names, bare, &self.lake, false),
+                Ok(Some(_))
+            ) {
+                let _ = db.batch(&scratch::remove_sql(&self.names));
+            }
+        }
     }
 }
 
@@ -399,6 +543,9 @@ impl LakeEngine for PgLake {
 
     fn take_lease(&self, holder: &str) -> Result<Lease> {
         let writing = self.writing()?;
+        if self.scratch.is_some() {
+            return Err(self.read_only());
+        }
         // The locks go in one order: `held`, the transaction, the lease's
         // connection, the projection's.
         let mut held = lock(&self.held);
@@ -501,6 +648,49 @@ impl LakeEngine for PgLake {
 
     fn vectors(&self) -> Option<&dyn VectorIndex> {
         Some(self)
+    }
+
+    /// Writes the mark in a transaction of its own, beside the position
+    /// folded through.
+    fn mark_built(&self) -> Result<Option<Position>> {
+        let (Some(_), Ok(writing)) = (&self.scratch, self.writing()) else {
+            let lake = self.lake.to_string();
+            return Err(Error::unavailable(Situation::NoScratch { lake }));
+        };
+        *lock(&self.transaction) = None;
+        let mut db = self.projecting(writing)?;
+        let _ = db.batch("ROLLBACK");
+        let meta = self.names.t("meta");
+        let marked = db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
+            let folded = db.query_opt(&format!("SELECT n FROM {meta} WHERE k = 'folded'"), &[])?;
+            let folded = folded
+                .and_then(|r| r.get::<_, Option<i64>>(0))
+                .map(|n| Position(n as u64));
+            db.execute(&format!("DELETE FROM {meta} WHERE k = 'built'"), &[])?;
+            let Some(at) = folded else {
+                return Ok(None);
+            };
+            let Some(e) = log::read(db, &self.names, at, 1)?
+                .pop()
+                .filter(|e| e.position == at)
+            else {
+                let tip = log::tip(db, &self.names)?.map(|(p, _)| p);
+                let lake = self.lake.to_string();
+                return Err(Error::unavailable(Situation::ScratchBehind {
+                    lake,
+                    marked: folded,
+                    tip,
+                }));
+            };
+            let mark = format!("INSERT INTO {meta} (k, n, t) VALUES ('built', $1, $2)");
+            db.execute(&mark, &[&(at.0 as i64), &e.hash.0])?;
+            Ok(folded)
+        });
+        self.lost(&db, None, marked, None)
+    }
+
+    fn swap(&self, lease: &Lease) -> Result<Option<Position>> {
+        self.swapping(lease)
     }
 }
 

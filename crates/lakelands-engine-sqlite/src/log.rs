@@ -435,7 +435,7 @@ fn names(dir: &Path) -> Result<Vec<String>> {
 }
 
 /// Sync a directory, so a file created in it survives a crash.
-fn sync_dir(dir: &Path) -> io::Result<()> {
+pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
     File::open(dir)?.sync_all()?;
     #[cfg(not(unix))]

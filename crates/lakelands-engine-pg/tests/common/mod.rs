@@ -39,6 +39,17 @@ pub fn prefix() -> String {
 }
 
 /// A fresh schema name for this process.
+/// The schema a rebuild of the lake in `schema` builds its scratch in, as
+/// the engine names it.
+pub fn scratch_of(schema: &str) -> String {
+    use sha2::{Digest as _, Sha256};
+    let digest = Sha256::digest(schema.as_bytes());
+    format!(
+        "lakelands_rebuild_{}",
+        lakelands_core::canonical::hex(&digest[..8])
+    )
+}
+
 pub fn fresh_schema() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     format!("{}{}", prefix(), NEXT.fetch_add(1, Ordering::Relaxed))
@@ -78,7 +89,10 @@ pub fn drop_schemas(url: &str) {
         };
         for row in rows {
             let name: String = row.get(0);
-            let _ = client.batch_execute(&format!("DROP SCHEMA \"{name}\" CASCADE"));
+            let scratch = scratch_of(&name);
+            let _ = client.batch_execute(&format!(
+                "DROP SCHEMA \"{name}\" CASCADE; DROP SCHEMA IF EXISTS \"{scratch}\" CASCADE"
+            ));
         }
     })
     .join();

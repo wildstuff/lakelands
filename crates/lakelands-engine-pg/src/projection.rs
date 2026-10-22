@@ -63,17 +63,44 @@ use crate::connect::Db;
 #[derive(Clone, Debug)]
 pub(crate) struct Names {
     schema: String,
+    /// For a scratch, the lake's schema, which keeps the log's tables.
+    log: Option<String>,
 }
+
+/// The tables of the log and the lease, which a scratch reads in the
+/// lake's schema.
+const LOG_TABLES: [&str; 3] = ["lease", "segments", "log"];
 
 impl Names {
     /// The tables of the schema written as `quoted`.
     pub(crate) fn new(quoted: String) -> Names {
-        Names { schema: quoted }
+        Names {
+            schema: quoted,
+            log: None,
+        }
+    }
+
+    /// The tables of a scratch in the schema written as `quoted`, beside
+    /// the lake `live` names: the projection's and `meta` there, the log's
+    /// and the lease in the lake's schema (`scratch.rs`).
+    pub(crate) fn beside(quoted: String, live: &Names) -> Names {
+        Names {
+            schema: quoted,
+            log: Some(live.schema.clone()),
+        }
+    }
+
+    /// The schema, as SQL writes it.
+    pub(crate) fn schema(&self) -> &str {
+        &self.schema
     }
 
     /// One table, schema-qualified.
     pub(crate) fn t(&self, table: &str) -> String {
-        format!("{}.{table}", self.schema)
+        match &self.log {
+            Some(log) if LOG_TABLES.contains(&table) => format!("{log}.{table}"),
+            _ => format!("{}.{table}", self.schema),
+        }
     }
 
     /// The statements that create the lake's tables, if absent.

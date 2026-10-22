@@ -25,6 +25,10 @@
 //!              the head indexes that find candidates
 //! ```
 //!
+//! Beside it, while a rebuild builds a projection, a schema
+//! `lakelands_rebuild_<digest>` holds that projection's tables and `meta`
+//! until they are moved into the lake's schema (scratch.rs).
+//!
 //! Every statement names its tables with the schema; no connection's
 //! `search_path` is set. `PgLake::export` writes the log's segments as
 //! the files `docs/log-format.md` §4.2 describes.
@@ -44,6 +48,7 @@ mod handle;
 mod lease;
 mod log;
 mod projection;
+mod scratch;
 mod vector_index;
 mod view;
 
@@ -122,6 +127,14 @@ impl EngineOpener for PgOpener {
             target(location)?,
             mode,
         )?))
+    }
+
+    /// Opens the log in the location's schema as `Read` does, and the
+    /// scratch beside its projection, a schema of its own; the
+    /// projection's tables are not read.
+    fn open_scratch(&self, location: &Location) -> Result<Box<dyn LakeEngine>> {
+        let lake = location.lake.clone();
+        Ok(Box::new(PgLake::open_scratch(lake, target(location)?)?))
     }
 }
 
