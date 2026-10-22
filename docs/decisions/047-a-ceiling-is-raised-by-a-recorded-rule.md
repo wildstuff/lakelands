@@ -27,7 +27,7 @@ A ceiling is raised, and a ratchet base raised with it, only when all of this ho
 
    Convenience is not a reason, nor is a feature no host asked for, nor code a shared helper would replace.
 2. **Cutting came first.** The newest diet inventory for that budget is on record, and it does not yield the room.
-3. **The raise is sized to the need:** the measured lines of the pull requests it is for, rounded up to the next 500.
+3. **The raise is sized to the need:** the measured lines of the pull requests it is for, rounded up to the next 500. A round's reserve is sized instead from the count measured on the pull request that records it and the operator's estimate of the round's tasks, rounded up the same way.
 4. **It is recorded.** A maintainer's word on the issue names the raise, and the raise is one row in `docs/budgets.md`: the date, the budget, from → to, the issues it is for, and the reason in one sentence. The operator may set any ceiling by a decision on lakelands#20, or grant a round its reserve on the round's issue, and that decision is a row too.
 5. **The gate holds it.** `core-size`, `seam-width` and `cfg-budget` are red when a ceiling or a ratchet base is higher than on the pull request's base commit, unless the same pull request adds the row whose "to" is the new number.
 
@@ -61,7 +61,7 @@ The budgets keep the core small enough for one reader to hold. They have done th
 
 ## What it is not
 
-- **It is not a second budget.** The ceilings remain the limits, and the ratchet bases still follow every cut down.
+- **It is not a second budget.** The ceilings remain the limits, and the release brings each ratchet base back down to its count.
 - **It is not a way to defer a diet.** A raise names the pull requests it is for, and its size is theirs. The one reserve is the round's, granted by the operator and measured; the release takes back what the round did not spend.
 - **It is not a gate on the room left.** No pull request is red for the distance between a count and its ceiling; the ratchet at the release closes it.
 - **It does not change how lines are counted** (`scripts/gates/core-size.sh`, `scripts/gates/seam-width.sh`).

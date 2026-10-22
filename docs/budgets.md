@@ -45,7 +45,9 @@ rule of `docs/decisions/047-a-ceiling-is-raised-by-a-recorded-rule.md`:
 - **Cutting came first,** and the newest diet inventory for that budget
   does not yield the room.
 - **The raise is sized to the need:** the measured lines of the pull
-  requests it is for, rounded up to the next 500.
+  requests it is for, rounded up to the next 500. A round's reserve is
+  sized from the count measured on the pull request that records it and
+  the operator's estimate of the round's tasks, rounded up the same way.
 - **It is recorded,** as one row below. A maintainer's word names the raise on
   its issue, or the operator sets a ceiling by a decision on lakelands#20,
   or grants a round its reserve on the round's issue.
