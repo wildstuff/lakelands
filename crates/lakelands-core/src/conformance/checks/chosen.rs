@@ -6,18 +6,10 @@
 //! chooses, what changes in its answers (nothing), what it logs (nothing),
 //! who is told, and who wins.
 
-use std::time::Duration;
+use lakelands_api::read::{Find, Found};
 
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::read::{Direction, Find, Found, OrderBy};
-use lakelands_api::seam::Seams;
-use lakelands_api::{LakeStore, Principal};
-use serde_json::json;
-
-use crate::conformance::fixture::{
-    Lake, Must, limits, order, pause, principal, source_record, sourced, type_decl,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture::{order, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     CHOSEN_ORDER_INDEX =

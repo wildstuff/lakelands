@@ -1,17 +1,10 @@
 //! A change to the ontology plans before it acts
 //! (`docs/decisions/062-a-change-plans-before-it-acts.md`).
 
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::ValueTypeDecl;
-use lakelands_api::write::{
-    Change, Declaration, Migration, Plan, ProposedWrite, Recompute, ValueTypeMigration, WriteOpts,
-};
-use lakelands_api::{Principal, RecordKey};
-use serde_json::{Value, json};
+use lakelands_api::write::{Change, Plan, ValueTypeMigration, WriteOpts};
 
 use super::only::{de, holder};
-use crate::conformance::fixture::{Lake, Must, log_events, patch, restrict};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     PLAN_TELLS = a_change_tells_its_plan_before_it_acts,
@@ -481,13 +474,7 @@ async fn a_plan_refuses_what_its_act_refuses(store: Store, given: Given) -> Held
     for k in ["z1", "z2"] {
         l.upsert("z", k, json!({"c": "a"})).await?;
     }
-    let lower = lakelands_api::location::Limits {
-        max_set_changes: 1,
-        ..crate::conformance::fixture::limits()
-    };
-    let store = (given.relimit)(store, lakelands_api::seam::Seams::default(), lower)
-        .await
-        .map_err(|e| Failure::new(format!("opening at a ceiling of one: {e}")))?;
+    let store = at_one_set_change(&given, store, "opening at a ceiling of one").await?;
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     let to = de(
         json!({"name": "bill", "fields": [{"name": "amount", "type": num},

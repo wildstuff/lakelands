@@ -6,18 +6,10 @@
 //! ingests. A relation carried by a reference field has no link type; its
 //! links change with the field, which `changed(<field>)` watches.
 
-use lakelands_api::error::Case;
-use lakelands_api::event::{Event, EventBody};
-use lakelands_api::ontology::{Authority, Cardinality, FieldDecl, RelationDecl, StorageKind};
 use lakelands_api::write::WriteOpts;
-use lakelands_api::{Error, Position, Refusal};
-use serde_json::json;
 
-use crate::conformance::fixture::{
-    Lake, Must, events_from, field, patch, reference, source_record, trigger_on, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
-use crate::links::{link_key, link_type_name};
+use crate::conformance::fixture::{reference, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     LINK_TRIGGER_FIRES = a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest,

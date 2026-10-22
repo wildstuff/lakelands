@@ -1,17 +1,8 @@
 //! A cursor is bound to the position of its first page
 //! (`docs/glossary.md`, `docs/decisions/009-every-response-carries-its-position.md`).
 
-use lakelands_api::error::Case;
-use lakelands_api::ontology::{FieldDecl, StorageKind};
-use lakelands_api::query::{Projection, QueryResult, Search, SearchMode};
-use lakelands_api::read::{Direction, OrderBy};
-use lakelands_api::{Cursor, Find, Found, ReadAt, TypeName};
-use serde_json::json;
-
-use crate::conformance::fixture::{
-    Lake, Must, count_view, field, invalid_case, order, pattern, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::order;
+use crate::conformance::prelude::*;
 
 check!(
     CURSOR_ONE_ANSWER = a_cursor_continues_only_the_answer_it_was_handed_out_for,

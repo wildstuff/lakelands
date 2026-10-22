@@ -38,7 +38,7 @@ mod derived_relations;
 mod describe;
 mod durations;
 mod embeddings;
-mod erasable;
+pub(in crate::conformance) mod erasable;
 mod export;
 mod feed;
 mod fields;

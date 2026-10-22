@@ -8,25 +8,12 @@
 //! backing ([`crate::conformance::backing`]) was called with, and read the
 //! cause each call named.
 
-use lakelands_api::error::Case;
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{Risk, StorageKind};
+use lakelands_api::ontology::Risk;
 use lakelands_api::record::SourceRecord;
-use lakelands_api::seam::Seams;
-use lakelands_api::write::{
-    Outcome, Proposal, ProposalFilter, ProposalState, ProposedWrite, Recompute,
-};
-use lakelands_api::{
-    Access, Error, Grants, LakeStore, Position, Principal, PrincipalKind, ProposalId,
-};
-use serde_json::{Value, json};
+use lakelands_api::write::Outcome;
 
 use crate::conformance::backing::{KIND, causes, made};
-use crate::conformance::fixture::{
-    Lake, Must, computed_by, events_after, field, head_unmoved, invalid_case, log_events,
-    outputs_from, patch, principal, reactive, restrict, sourced, type_decl, value,
-};
-use crate::conformance::{Failure, Held, Reopen, Store};
+use crate::conformance::prelude::*;
 
 check!(
     CALL_RUNS_BY_RISK = a_call_above_low_is_proposed_and_made_when_accepted,
@@ -702,9 +689,8 @@ async fn a_proposed_call_holds_no_value_a_forgotten_source_sealed(
     store: Store,
     reopen: Reopen,
 ) -> Held {
-    use super::erasable::{Keys, again, person, with};
-    let keys = std::sync::Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    use super::erasable::person;
+    let (_, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     let text = json!({"kind": "text"});
     let config = json!({"token": "call_proposal_holds_no_inputs", "echo": "name"});

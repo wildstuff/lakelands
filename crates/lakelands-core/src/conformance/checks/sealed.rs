@@ -10,21 +10,12 @@
 //! through, and names no place: a row here is red when only the seal
 //! holds.
 
-use lakelands_api::error::{Case, Place, Situation};
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::StorageKind;
 use lakelands_api::record::Upstream;
-use lakelands_api::write::{Declaration, ProposedWrite};
-use lakelands_api::{Error, LakeStore, Position, Refusal, Timestamp, WriteOpts};
-use serde_json::{Value, json};
 
 use crate::canonical::integer_too_large;
 use crate::conformance::backing::{EMBED_MODEL, EXECUTOR, KIND, VAST, executed};
-use crate::conformance::fixture::{
-    Answer, Lake, Must, computed_by, embedding, field, head_unmoved, invalid_said, log_events,
-    outputs_from, patch, source_record, sourced, type_decl, value,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{Answer, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     SEEN_AT_IN_THE_YEARS = an_ingest_whose_seen_at_leaves_the_years_is_refused_naming_it,

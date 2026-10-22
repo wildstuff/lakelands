@@ -12,26 +12,12 @@
 //! the `schema` grant, as they stand at the read position.
 
 use lakelands_api::describe::{FieldDescription, LakeDescription, TypeDescription};
-use lakelands_api::error::Case;
-use lakelands_api::expr::Condition;
-use lakelands_api::ontology::{
-    Authority, Derived, EmbedDecl, FieldDecl, FieldType, FunctionInput, MatchPair, RelationDecl,
-    StorageKind, TriggerDecl, TypeDecl,
-};
-use lakelands_api::write::{
-    Declaration, FunctionDecl, Migration, ObjectSetDecl, ProposalFilter, ProposedWrite,
-};
-
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::{Access, Catalog, Grants, LakeStore, Principal, PrincipalKind, ReadAt};
-use serde_json::json;
+use lakelands_api::ontology::{EmbedDecl, FunctionInput, TriggerDecl};
+use lakelands_api::write::{FunctionDecl, ObjectSetDecl};
 
 use crate::conformance::backing::EMBED_MODEL;
-use crate::conformance::fixture::{
-    Lake, Must, all, describe_type, doors, field, field_access, invalid_case, owner, principal,
-    type_decl, upsert, view_of,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{doors, owner, upsert};
+use crate::conformance::prelude::*;
 
 check!(
     DESCRIBE_IS_THE_DECLARATION = describe_answers_the_declaration_whole,

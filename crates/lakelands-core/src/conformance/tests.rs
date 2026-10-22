@@ -25,8 +25,8 @@ use lakelands_api::{
 
 use super::fixture::Must;
 use super::{
-    Check, Failure, Fault, FreshLake, Harness, Held, Relimit, Reopen, Report, Store, Tally, checks,
-    run_all, run_checks, run_one,
+    Check, Failure, Fault, FreshLake, Given, Harness, Held, Relimit, Reopen, Report, Store, Tally,
+    checks, run_all, run_checks, run_one,
 };
 
 /// Drives a future to completion on this thread. Everything the tests
@@ -437,4 +437,92 @@ fn a_catalog_that_carries_no_delivery_refuses_one() {
     let apart = block_on(cat.ingest_with(&who, &src, apart, super::fixture::stream(vec![])));
     let case = apart.err().and_then(|e| e.case().map(|s| s.case.clone()));
     assert_eq!(case, Some(Case::SealedApartNotCarried));
+}
+
+/// `requires_unmet` is, by value, the refusal the checks built by hand.
+#[test]
+fn requires_unmet_equals_the_refusal_built_by_hand() {
+    use lakelands_api::Refusal;
+    use lakelands_api::error::{Case, Printed};
+    let by_hand = |part: Option<&str>| {
+        let case = Case::RequiresUnmet {
+            verb: "vet".into(),
+            ty: "invoice".into(),
+            key: "i1".into(),
+            part: part.map(|p| Box::new(Printed(p.into()))),
+        };
+        Error::Refused {
+            field: None,
+            reason: Refusal::Precondition(Box::new(case.into())),
+        }
+    };
+    for part in [None, Some("status = 'open'")] {
+        let got = super::fixture::requires_unmet::<()>("vet", "invoice", "i1", part);
+        assert_eq!(got, Err(by_hand(part)));
+    }
+}
+
+/// A [`Given`] of the down harness whose reopen and relimit are the ones given.
+fn given_of(reopen: Reopen, relimit: Relimit) -> Given {
+    let h = DownHarness;
+    Given {
+        reopen,
+        relimit,
+        scratch: h.scratch(),
+        meter: h.meter(),
+        large_lake: h.large_lake(),
+        harness: h.name().to_owned(),
+        import: h.importer(),
+        continued: h.continuer(),
+        twin: h.twinner(),
+        fault: h.faulter(),
+    }
+}
+
+fn a_store() -> Store {
+    Arc::new(DownStore(LakeId::from("conformance")))
+}
+
+/// `at_one_set_change` opens the lake again with the default limits but
+/// one membership change per write, and the default seams.
+#[test]
+fn at_one_set_change_relimits_as_the_checks_did_by_hand() {
+    use lakelands_api::location::Limits;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let relimit: Relimit = Arc::new(move |store, _, limits| {
+        log.lock().unwrap().push(limits);
+        Box::pin(async move { Ok(store) })
+    });
+    let given = given_of(DownHarness.reopener(), relimit);
+    block_on(super::fixture::at_one_set_change(&given, a_store(), "x")).unwrap();
+    let by_hand = Limits {
+        max_set_changes: 1,
+        ..Limits::default()
+    };
+    assert_eq!(*seen.lock().unwrap(), [by_hand]);
+    let failing = given_of(DownHarness.reopener(), DownHarness.relimiter());
+    let got = block_on(super::fixture::at_one_set_change(&failing, a_store(), "x"));
+    assert_eq!(got.err().unwrap().to_string(), format!("x: {}", down()));
+}
+
+/// `reopen_with_keys` hands the lake a new, empty key store and answers
+/// that same store.
+#[test]
+fn reopen_with_keys_opens_with_a_new_key_store_and_answers_it() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let reopen: Reopen = Arc::new(move |store, seams| {
+        log.lock().unwrap().push(seams.keys);
+        Box::pin(async move { Ok(store) })
+    });
+    let (keys, _) = block_on(super::fixture::reopen_with_keys(&reopen, a_store(), "x")).unwrap();
+    assert!(keys.is_new());
+    let seen = seen.lock().unwrap();
+    let given = seen[0].as_ref().expect("the seams carry a key store");
+    assert_eq!(
+        Arc::as_ptr(given).cast::<()>(),
+        Arc::as_ptr(&keys).cast::<()>()
+    );
+    assert_eq!(seen.len(), 1);
 }

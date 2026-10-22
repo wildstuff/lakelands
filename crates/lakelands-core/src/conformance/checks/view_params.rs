@@ -6,18 +6,12 @@
 //! account's payments in the seven days up to its `anchor` and counts
 //! those on the anchor's last day.
 
-use lakelands_api::error::Case;
-use lakelands_api::ontology::{Derived, MatchPair, RelationDecl, StorageKind, TypeDecl, ViewDecl};
-use lakelands_api::query::{Pattern, Projection, QueryResult, Walk};
+use lakelands_api::ontology::ViewDecl;
 use lakelands_api::read::{Find, Found, Get};
-use lakelands_api::{LakeStore, Params, Value};
-use serde_json::json;
+use lakelands_api::{Params, Value};
 
-use crate::conformance::fixture::{
-    Lake, Must, bound, field, find_where, invalid_case, invalid_like, param, pattern, step,
-    type_decl, view_of,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{bound, param, step};
+use crate::conformance::prelude::*;
 
 check!(
     TWO_ANCHORS = the_same_view_read_at_two_anchors_answers_two_windows,

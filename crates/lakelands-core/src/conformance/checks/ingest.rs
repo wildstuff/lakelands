@@ -8,16 +8,8 @@
 //! only source fields, an author only authored ones, and a record or
 //! patch that crosses the line is refused whole.
 
-use lakelands_api::ontology::{StorageKind, TypeDecl};
-use lakelands_api::{Error, Refusal, SourceId, SourceRecord, TypeName, Version};
-use serde_json::json;
-
-use crate::conformance::fixture::{
-    Lake, Must, all, committed, delivered, events_from, field, get_at, head_unmoved, log_events,
-    read, refused_on, refused_unmoved, source_record, sourced, try_upsert, type_decl, value,
-    windows_reach_head,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{committed, delivered, get_at, read, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     SAME_CONTENT_TWICE = the_same_content_ingested_twice_appends_nothing_the_second_time,

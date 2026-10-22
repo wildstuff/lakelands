@@ -4,20 +4,11 @@
 
 use std::cmp::Ordering;
 
-use lakelands_api::error::Case;
-use lakelands_api::ontology::{
-    Authority, ComputedAt, FieldDecl, FieldType, StorageKind, ValueTypeDecl,
-};
-use lakelands_api::read::{Direction, OrderBy};
-use lakelands_api::write::{Declaration, ProposedWrite, WriteOpts};
-use lakelands_api::{Find, LakeStore, Record, Refusal};
-use serde_json::{Value, json};
+use lakelands_api::ontology::ComputedAt;
+use lakelands_api::write::WriteOpts;
 
-use crate::conformance::fixture::{
-    Lake, Must, derived, doors, field, head_unmoved, order, owner, patch, refused_on,
-    source_record, try_upsert, type_decl, value, value_type,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{derived, doors, order, owner, source_record};
+use crate::conformance::prelude::*;
 use crate::expr::order::cmp_values;
 
 check!(

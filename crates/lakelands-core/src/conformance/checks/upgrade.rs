@@ -5,21 +5,18 @@
 //! small lake's log as the release that wrote that format left it, so they
 //! are imported here on every engine, as an operator imports an export.
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
+use std::sync::atomic::AtomicU32;
 
+use lakelands_api::Location;
 use lakelands_api::engine::{CanonicalEvent, EngineOpener, LakeEngine, OpenMode};
-use lakelands_api::error::{Seam, Situation};
-use lakelands_api::event::{EventBody, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT};
+use lakelands_api::event::{LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT};
 use lakelands_api::ontology::StorageKind::Number;
 use lakelands_api::read::ReadAt;
-use lakelands_api::seam::Seams;
-use lakelands_api::{Error, Location, RecordKey, TypeName};
-use serde_json::json;
 
-use crate::conformance::fixture::{Lake, Must, all, field, log_events, owner, type_decl};
-use crate::conformance::{Failure, Given, Held, ImportedLake, Store};
+use crate::conformance::ImportedLake;
+use crate::conformance::fixture::owner;
+use crate::conformance::prelude::*;
 
 check!(
     FORMAT_14_UPGRADED = a_lake_of_format_14_is_upgraded_and_read,

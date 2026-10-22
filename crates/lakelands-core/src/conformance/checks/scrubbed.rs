@@ -4,25 +4,13 @@
 //! log; one forgets by the scoped refold and the other by the rebuild its
 //! host asks for, and each read is compared at every position.
 
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
-
-use lakelands_api::event::EventBody;
-use lakelands_api::location::Limits;
-use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
-use lakelands_api::query::{Search, SearchMode};
-use lakelands_api::read::{Direction, Find, OrderBy, ReadAt};
+use lakelands_api::read::{Find, ReadAt};
 use lakelands_api::write::ForgetWay;
-use lakelands_api::{Error, LakeStore, Position, SourceId, TypeName};
-use serde_json::{Value, json};
 
 use super::erasable::{Keys, person, with};
 use super::forgotten::{Fails, failing};
-use crate::conformance::fixture::{
-    Lake, Must, events_after, find_at, get_at, limits, order, refused_like, source_record, sourced,
-    type_decl, vector,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture::{get_at, order, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     SCRUBBED = a_scoped_refold_answers_as_the_rebuild_at_every_position,

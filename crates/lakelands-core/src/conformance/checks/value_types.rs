@@ -11,21 +11,10 @@
 //! `scale` is neither. A migration that renames values is in
 //! `value_renames.rs`.
 
-use lakelands_api::error::Case;
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind, ValueTypeDecl};
-use lakelands_api::write::{Declaration, ProposedWrite, ValueTypeReport};
-use lakelands_api::{
-    Access, Error, Grants, LakeStore, Principal, PrincipalKind, Refusal, WriteOpts,
-};
-use serde_json::{Value, json};
+use lakelands_api::write::ValueTypeReport;
 
-use crate::conformance::fixture::{
-    Lake, Must, describe_type, events_after, field, field_access, head_unmoved, invalid_case,
-    invalid_like, log_events, object_set_on, principal, reason, refused_on, reviewer, trigger_on,
-    try_upsert, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::reviewer;
+use crate::conformance::prelude::*;
 
 check!(
     VERSIONS_KEY_A_TYPE = a_value_types_version_is_answered_with_the_types_that_use_it,

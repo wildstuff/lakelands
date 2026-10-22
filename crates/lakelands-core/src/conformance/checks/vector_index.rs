@@ -19,14 +19,12 @@
 //! towards another centre with their group moved, and 200 records added.
 //! 50 queries lie near the centres or between two of them.
 
-use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
-use lakelands_api::query::{Search, SearchMode, VectorTerm};
-use lakelands_api::{LakeStore, Position, Principal, SourceRecord, TypeName};
-use serde_json::json;
+use lakelands_api::query::VectorTerm;
 
 use super::search::doc_search;
-use crate::conformance::fixture::{self, Lake, Must, doors, field, read_at, type_decl, vector};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture;
+use crate::conformance::fixture::doors;
+use crate::conformance::prelude::*;
 
 check!(
     VECTOR_INDEX_RECALL = an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_floor,

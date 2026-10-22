@@ -3,19 +3,10 @@
 //! `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
 //! `docs/decisions/010-provenance-per-field.md`).
 
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::query::{Projection, QueryResult};
-use lakelands_api::read::{AggFunc, Aggregate, Direction, OrderBy};
 use lakelands_api::seam::SETTING_TYPE;
-use lakelands_api::{Find, LakeStore, Refusal, Timestamp};
-use serde_json::json;
 
-use crate::conformance::fixture::{
-    Lake, Must, agg, alike_renamed, computed_by, field, field_writer, find_where, no_such_field,
-    object_set_on, order, pattern, refused_on, source_record, sourced, try_upsert, type_decl,
-    value, view_of, windows_reach_head,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{order, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     ABSENT_NEVER_MATCHES = absent_fields_never_match_not_even_not_equal,

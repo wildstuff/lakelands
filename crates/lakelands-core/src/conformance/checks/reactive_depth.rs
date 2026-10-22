@@ -8,19 +8,10 @@
 //! there. The check plays that host, over the feed, with the ceiling the
 //! lake was opened with.
 
-use std::sync::Arc;
-
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::StorageKind;
 use lakelands_api::principal::{WriteContext, WriteOrigin};
-use lakelands_api::seam::FeedFilter;
-use lakelands_api::{Catalog, Error, LakeStore, Position, RecordKey, Refusal, TypeName, WriteOpts};
-use serde_json::json;
 
-use crate::conformance::fixture::{
-    Must, declare, doors, field, head_unmoved, limits, owner, patch, reason, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{doors, owner};
+use crate::conformance::prelude::*;
 
 check!(
     TOO_DEEP = a_chain_of_reactions_past_the_lakes_ceiling_is_refused_too_deep_and_appends_nothing,

@@ -9,18 +9,10 @@
 //! bucket starts at midnight UTC: the day, Monday of the ISO week, the
 //! first of the month, of the quarter and of the year.
 
-use lakelands_api::error::Case;
-use lakelands_api::expr::Condition;
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::read::{AggFunc, Aggregate, GroupKey};
-use lakelands_api::write::Declaration;
-use lakelands_api::{Find, Found, LakeStore, TypeName, Value};
-use serde_json::json;
+use lakelands_api::Value;
 
-use crate::conformance::fixture::{
-    Lake, Must, agg, dec, decimal, doors, find_where, invalid_case, invalid_like, owner, type_of,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{doors, owner, type_of};
+use crate::conformance::prelude::*;
 
 check!(
     GROUPS = find_groups_records_by_date_bucket_for_every_unit,

@@ -2,19 +2,13 @@
 //! the record and its type as they stood, and decides the proposals it is
 //! shown whole (`docs/decisions/051-a-grant-may-admit-only-some-records.md`).
 
-use lakelands_api::error::Case;
-use lakelands_api::event::EventBody;
+use lakelands_api::VerbName;
 use lakelands_api::ontology::StorageKind::{Number, Text};
-use lakelands_api::write::{Outcome, Recompute};
-use lakelands_api::{Error, Principal, ProposalId, RecordKey, Refusal, VerbName};
-use serde_json::{Value, json};
+use lakelands_api::write::Outcome;
 
 use super::only::{alice, claims, de, holder, said};
 use crate::conformance::backing::{KIND, plug, unplug};
-use crate::conformance::fixture::{
-    Lake, Must, alike_renamed, computed_by, events_from, field, head_unmoved, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     ONLY_PROPOSES = a_holder_of_only_proposes_its_own_records,

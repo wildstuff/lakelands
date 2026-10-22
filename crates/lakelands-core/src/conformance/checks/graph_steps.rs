@@ -2,23 +2,13 @@
 //! direction, depth, `type` and `where`, a page at a time
 //! (`docs/decisions/018-one-pattern-query.md`, lakelands#556).
 
-use lakelands_api::error::Case;
-use lakelands_api::location::Limits;
-use lakelands_api::ontology::{RelationDecl, StorageKind};
+use lakelands_api::Value;
+use lakelands_api::query::Depth;
 use lakelands_api::query::Walk::{Both, In, Out};
-use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Step, Walk};
-use lakelands_api::read::{AggFunc, Aggregate, Direction, OrderBy};
-use lakelands_api::seam::Seams;
 use lakelands_api::write::WriteOpts;
-use lakelands_api::{Access, Catalog, Cursor, Find, LakeStore, Principal, Refusal, Value};
-use serde_json::json;
-use std::collections::BTreeMap;
 
-use crate::conformance::fixture::{
-    Lake, Must, agg, doors, field, field_access, invalid_case, is_invalid, order, owner, patch,
-    pattern, reads_all, reason, reference, restrict, type_decl,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture::{doors, order, owner, reference};
+use crate::conformance::prelude::*;
 
 check!(
     ROW_DEPTH = a_row_says_the_hops_each_step_took_and_a_graph_each_nodes_depth,

@@ -5,25 +5,13 @@
 //! every type it reached, in one append, as `retire` would retire each; a
 //! record another hand made or also wrote refuses the whole purge.
 
-use lakelands_api::error::{Case, RecordName};
-use lakelands_api::event::EventBody;
-use lakelands_api::expr::Condition;
-use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind};
-use lakelands_api::query::{Projection, QueryResult, Walk};
+use lakelands_api::WriteOrigin;
+use lakelands_api::error::RecordName;
 use lakelands_api::seam::AGING_RULE_TYPE;
-use lakelands_api::write::{Declaration, ObjectSetDecl, PurgeReference, PurgeReport};
-use lakelands_api::{
-    Error, LakeStore, Origin, Position, Refusal, SourceId, Timestamp, TypeName, WriteOrigin,
-};
-use serde_json::{Value, json};
+use lakelands_api::write::{ObjectSetDecl, PurgeReference, PurgeReport};
 
-use crate::conformance::fixture::{
-    Lake, Must, computed_by, count_view, derived, events_after, field, get_at, head_unmoved,
-    ingest, invalid_case, pattern, refused_like, refused_on, source_record, sourced, step,
-    trigger_on, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
-use crate::links::{link_key, link_type_name};
+use crate::conformance::fixture::{derived, get_at, ingest, source_record, step};
+use crate::conformance::prelude::*;
 
 check!(
     RETIRES_WHAT_IT_BROUGHT = a_purge_retires_every_record_the_source_brought_in_and_no_other,

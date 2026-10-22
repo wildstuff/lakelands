@@ -2,17 +2,8 @@
 //! and only when it is lossless
 //! (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
 
-use lakelands_api::error::Case;
-use lakelands_api::ontology::{FieldType, StorageKind, TypeDecl};
-use lakelands_api::write::{Migration, MigrationReport};
-use lakelands_api::{LakeStore, Refusal};
-use serde_json::json;
-
-use crate::conformance::fixture::{
-    Lake, Must, count_view, declare, doors, field, head_unmoved, invalid_case, invalid_like,
-    measure, migration, owner, reason, type_decl, value,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{doors, measure, owner};
+use crate::conformance::prelude::*;
 
 check!(
     FILLED = a_migration_fills_a_fields_initial_into_the_records_that_hold_none,

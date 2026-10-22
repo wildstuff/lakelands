@@ -5,15 +5,11 @@
 //! hand is retired, and a record another hand also wrote keeps that
 //! hand's values.
 
-use lakelands_api::event::{Event, EventBody};
-use lakelands_api::write::{RemoveReport, Selection};
-use lakelands_api::{DeliveryId, IngestOpts, LakeStore, Position, SourceId, Timestamp};
-use serde_json::{Value, json};
+use lakelands_api::write::RemoveReport;
+use lakelands_api::{DeliveryId, IngestOpts};
 
-use crate::conformance::fixture::{
-    Lake, Must, count_view, events_after, events_from, get_at, refused_like, source_record,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{get_at, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     REMOVED_BEFORE = a_sources_values_before_a_time_read_as_erased_at_every_position,
@@ -839,11 +835,10 @@ async fn a_version_whose_values_are_all_taken_is_destroyed_and_the_rest_redacted
     store: Store,
     reopen: crate::conformance::Reopen,
 ) -> Held {
-    use super::erasable::{Keys, again, person, with};
+    use super::erasable::{again, person, with};
     use lakelands_api::seam::KeyStore;
-    use std::sync::Arc;
-    let keys = Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let crm: SourceId = "crm".into();
@@ -1003,11 +998,10 @@ async fn a_shredding_act_imports_erased_and_destroys_a_backups_versions(
     store: Store,
     given: crate::conformance::Given,
 ) -> Held {
-    use super::erasable::{Keys, again, person, with};
+    use super::erasable::{person, with};
     use lakelands_api::seam::KeyStore;
     use std::sync::Arc;
-    let keys = Arc::new(Keys::default());
-    let store = again(&given.reopen, store, with(&keys), "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let ada = source_record("person", "p1", json!({"id": "p1", "name": "Ada"}));
@@ -1268,14 +1262,13 @@ async fn an_output_of_a_later_version_replays_after_an_earlier_one_is_destroyed(
     store: Store,
     reopen: crate::conformance::Reopen,
 ) -> Held {
-    use super::erasable::{Keys, again, person, with};
+    use super::erasable::{again, person, with};
     use crate::conformance::backing;
     use lakelands_api::ontology::StorageKind;
     use lakelands_api::seam::KeyStore;
-    use std::sync::Arc;
+
     const TOKEN: &str = "removed_replayed";
-    let keys = Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare_json(
         json!({"declare": "function", "name": "shout", "backing": backing::KIND,

@@ -3,16 +3,9 @@
 //! narrowed (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
 //! `docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
 
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::query::{Hits, SearchMode};
-use lakelands_api::{Error, LakeStore, Principal, Refusal};
-use serde_json::json;
-
 use super::search::{doc_search, keys, masking, refused};
-use crate::conformance::fixture::{
-    Lake, Must, doors, embedding, field, owner, searchable, type_decl, vector,
-};
-use crate::conformance::{Failure, Held, Reopen, Store, backing};
+use crate::conformance::fixture::{doors, owner};
+use crate::conformance::prelude::*;
 
 check!(
     FIELDS_NARROW_THE_MATCH = a_search_limited_to_named_fields_matches_and_ranks_in_those_only,

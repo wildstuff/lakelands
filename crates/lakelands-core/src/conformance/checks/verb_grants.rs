@@ -2,16 +2,13 @@
 //! is callable, proposable, accepted and described only where the
 //! caller's grants on its type name it, the field rights on top.
 
-use lakelands_api::error::{Case, Missing};
-use lakelands_api::tools::{Door, tools};
-use lakelands_api::write::ProposedWrite;
-use lakelands_api::{Error, Principal, ReadAt, Refusal, WriteOpts};
-use serde_json::{Value, json};
+use lakelands_api::error::Missing;
+use lakelands_api::tools::Door;
 
 use super::only::holder;
 use super::paths::{accept, call, lake, proposal_of, unlisted, verb};
-use crate::conformance::fixture::{Lake, Must, invalid_case, patch, try_upsert, upsert};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::upsert;
+use crate::conformance::prelude::*;
 
 check!(
     VERB_GRANTED = a_verb_declared_granted_is_kept_to_the_callers_granted_it,

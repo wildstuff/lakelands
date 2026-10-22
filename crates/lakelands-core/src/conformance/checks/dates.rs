@@ -2,17 +2,11 @@
 //! as `YYYY-MM-DD` (`docs/decisions/011-storage-kind-and-value-type.md`,
 //! extended; `docs/log-format.md` §1.3).
 
-use lakelands_api::error::Case;
 use lakelands_api::ontology::StorageKind::{Date, DateTime, Number, Text};
-use lakelands_api::read::{Direction, OrderBy};
-use lakelands_api::{Find, Params, Refusal, Value};
-use serde_json::json;
+use lakelands_api::{Params, Value};
 
-use crate::conformance::fixture::{
-    Lake, Must, bound, derived, describe_type, field, find_where, migration, order, param,
-    reference, refused_on, try_upsert, type_decl, view_of,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{bound, derived, order, param, reference};
+use crate::conformance::prelude::*;
 
 check!(
     DATE_KIND = a_date_is_read_as_its_day_and_compares_as_its_midnight,

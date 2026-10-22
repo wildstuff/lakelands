@@ -5,24 +5,11 @@
 //! `docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 //! `docs/decisions/028-authoring-is-strict-and-whole.md`).
 
-use lakelands_api::error::Case;
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl, ValueTypeDecl};
-use lakelands_api::seam::Seams;
-use lakelands_api::tools::{Door, GENERIC_TOOLS, MAX_TOOL_NAME, ToolSpec, tools};
-use lakelands_api::write::{
-    Declaration, DeclarationKind, InForce, Migration, Outcome, ProposedWrite, Recompute,
-    ValueTypeMigration,
-};
-use lakelands_api::{Access, Error, Grants, LakeStore, PrincipalKind, ReadAt, Refusal, TypeName};
-use serde_json::{Value, json};
+use lakelands_api::tools::{Door, GENERIC_TOOLS, MAX_TOOL_NAME, ToolSpec};
+use lakelands_api::write::{DeclarationKind, InForce, Outcome, ValueTypeMigration};
 
-use crate::conformance::fixture::{
-    Lake, Must, computed_by, count_view, dec, decimal, events_after, field, field_access,
-    head_unmoved, invalid_case, is_invalid, migration, object_set_on, principal, reason,
-    refused_unmoved, reviewer, trigger_on, type_decl, value, value_type, view_of, write_verb,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture::reviewer;
+use crate::conformance::prelude::*;
 
 check!(
     ADD_FIELD_GRANT_FIRST =

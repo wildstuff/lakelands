@@ -10,28 +10,16 @@
 //! checks that ask for it. It makes every text `(1, 0)` and counts how often
 //! each text was sent; each check uses texts of its own.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-use lakelands_api::error::{Case, Seam};
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{Authority, FieldDecl, FieldType, StorageKind};
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::query::{Search, SearchMode};
-use lakelands_api::seam::Seams;
-use lakelands_api::{Access, Error, Grants, LakeStore, Outcome, Principal, PrincipalKind, Refusal};
-use serde_json::{Value, json};
+use std::sync::atomic::AtomicBool;
 
 use super::search::doc_search;
 use crate::conformance::backing::{
     EMBED_MODEL, UNREACHABLE, embedded, plug_text, release, unplug_text,
 };
 use crate::conformance::fixture::{
-    Caller, Lake, Must, derived, doors, embedding, field, field_access, get_at, head_unmoved,
-    invalid_case, join_all, migration, outputs_from, owner, patch, principal, read,
-    recorded_outputs, refused_on, source_record, sourced, type_decl, value,
+    derived, doors, get_at, owner, read, recorded_outputs, source_record,
 };
-use crate::conformance::{Failure, Given, Held, Reopen, Store, backing};
+use crate::conformance::prelude::*;
 
 check!(
     VECTOR_COVERAGE = vector_coverage_counts_embedded_and_due_records_at_the_head,

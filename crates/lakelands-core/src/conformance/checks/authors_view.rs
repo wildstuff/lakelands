@@ -3,19 +3,8 @@
 //! `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
 //! each extended): what the author may not know of is not its to remove.
 
-use lakelands_api::error::Case;
-use lakelands_api::ontology::{Derived, MatchPair, RelationDecl, StorageKind, TypeDecl};
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::write::{Declaration, Migration, ProposalFilter, ProposedWrite};
-use lakelands_api::{Access, Catalog, FieldName, LakeStore, Outcome, Principal, ProposalId};
-use serde_json::json;
-
-use crate::conformance::fixture::{
-    Lake, Must, alike_renamed, derived, field, field_access, invalid_case, invalid_like, migration,
-    reference, refused_on, type_of, value,
-};
-use crate::conformance::{Failure, Held, Store};
-use crate::links::link_type_name;
+use crate::conformance::fixture::{derived, reference, type_of};
+use crate::conformance::prelude::*;
 
 check!(
     DECLARED_SINCE_NOT_TAKEN = a_bundle_takes_no_place_declared_since_it_was_proposed,
