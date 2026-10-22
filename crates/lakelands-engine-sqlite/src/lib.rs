@@ -22,7 +22,7 @@
 //! <dir>/index/<first>.idx     each event's members beside its bytes (log.rs)
 //! <dir>/projection.db         the projection, with its kept history
 //! <dir>/projection.db.rebuild the projection a rebuild builds beside it (scratch.rs)
-//! <dir>/projection.db.rebuild.mark  its lock, and its mark once built
+//! <dir>/projection.db.rebuild.mark  its lock, and its mark once built; emptied, kept
 //! ```
 //!
 //! The log is the truth: the projection and the index hold nothing the log

@@ -117,7 +117,7 @@ pub(crate) fn swap_sql(live: &Names, scratch: &Names) -> String {
     }
     for t in PROJECTION_TABLES {
         sql += &format!(
-            "ALTER TABLE IF EXISTS {} SET SCHEMA {}; ",
+            "ALTER TABLE {} SET SCHEMA {}; ",
             scratch.t(t),
             live.schema()
         );

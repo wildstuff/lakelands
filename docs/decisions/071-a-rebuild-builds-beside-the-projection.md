@@ -57,7 +57,9 @@ and connects to the file put in place. A process of a release before
 this one takes no such lock. The swap keeps it out only while it has
 the file open, by taking the projection out of its write-ahead journal
 (which SQLite allows to the one connection that has it open), so the
-old release is stopped before the swap.
+old release is stopped before the swap. The lock is the operating
+system's file lock, so a lake on a file system that keeps none (some
+network and user-space mounts) no longer opens, even to be read.
 
 On PostgreSQL the swap is one transaction: it drops the projection's
 tables, moves the scratch's into the lake's schema, replaces the
@@ -70,6 +72,9 @@ another after it may read that one new, as it may across a rebuild's
 `clear`; only `ranked`, which takes every table it reads before its
 snapshot, is kept from that. A layout that drops or renames a table
 names the old one among the retired tables, so the swap drops it too.
+The swap waits for the locks of transactions reading the old tables,
+and readers that begin after it wait behind it, so a long reader
+stalls the lake for as long as it reads.
 
 ## Why
 

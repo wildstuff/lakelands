@@ -70,9 +70,11 @@ fn folded(engine: &dyn LakeEngine) -> Option<Position> {
     engine.projection().folded_through().unwrap()
 }
 
+/// The scratch's files left in `dir`, but an empty mark file, which is kept.
 fn left(dir: &Path) -> Vec<String> {
     let names = std::fs::read_dir(dir).unwrap().flatten();
     let mut names: Vec<_> = names
+        .filter(|e| e.metadata().is_ok_and(|m| m.len() > 0))
         .filter_map(|e| e.file_name().into_string().ok())
         .filter(|n| n.contains("rebuild"))
         .collect();

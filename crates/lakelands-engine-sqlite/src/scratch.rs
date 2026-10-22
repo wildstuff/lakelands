@@ -8,7 +8,9 @@
 //! keeps locked, as the lease file is locked, and holds the scratch's mark
 //! once it is built: the lake, the layout, the position the scratch is
 //! folded through and the log's hash there, as one JSON object. A mark that
-//! is empty or does not parse marks nothing. The mark is written after the
+//! is empty or does not parse marks nothing. The file is emptied, never
+//! removed: a builder that removed it would let one that opened it before
+//! the removal take its lock while a third locks a new file at its name. The mark is written after the
 //! scratch's journal is checkpointed into its file, so a mark that is there
 //! names a scratch whole at it; one folded on since is no longer what the
 //! mark names, and is removed as an unmarked one is.
@@ -74,11 +76,11 @@ pub(crate) struct Building {
     dir: PathBuf,
 }
 
-/// Unlocks, and takes the mark file with it where no scratch is left.
+/// Unlocks, and empties the mark where no scratch is left.
 impl Drop for Building {
     fn drop(&mut self) {
         if !self.path().exists() {
-            let _ = std::fs::remove_file(self.dir.join(MARK));
+            let _ = self.set(None);
         }
         let _ = FileExt::unlock(&self.file);
     }
@@ -90,9 +92,10 @@ pub(crate) fn rebuilding(lake: &LakeId) -> Error {
     Error::unavailable(Situation::Rebuilding { lake })
 }
 
-/// Whether a scratch, or its mark, is left in `dir`.
+/// Whether a scratch, or a mark, is left in `dir`.
 pub(crate) fn left(dir: &Path) -> bool {
-    dir.join(SCRATCH).exists() || dir.join(MARK).exists()
+    let marked = std::fs::metadata(dir.join(MARK)).is_ok_and(|m| m.len() > 0);
+    dir.join(SCRATCH).exists() || marked
 }
 
 /// Lock the scratch of the lake in `dir`; none while another handle has it.

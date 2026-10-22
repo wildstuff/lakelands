@@ -213,7 +213,8 @@ pub trait LakeEngine: Send + Sync {
     /// and its hash. Refused as unavailable otherwise, the projection and
     /// the scratch both left as they were. Afterwards this handle reads and
     /// folds the projection it put in place, the one it replaced is gone,
-    /// and so is the scratch; an open transaction is abandoned. Answers the
+    /// and so is the scratch. An open transaction is abandoned, by a swap
+    /// refused as well as one done, so none is held across it. Answers the
     /// position the projection is folded through. A disk engine may also
     /// refuse while another handle reads the projection it would replace.
     /// An engine that keeps no scratch refuses as unbound, as this default
