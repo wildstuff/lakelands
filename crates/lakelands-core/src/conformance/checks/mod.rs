@@ -121,6 +121,7 @@ mod sets_across;
 mod settings;
 mod shown_hash;
 mod sorted_whole;
+mod stored_vectors;
 mod streaming;
 mod trigger_firing;
 mod triggers;
@@ -868,6 +869,10 @@ pub const ALL: &[Check] = &[
     batched::KEY_PER_PRINCIPAL,
     batched::ONE_LINK_LANDS,
     batched::SETTING_WHOLE,
+    stored_vectors::VECTOR_BITS_KEPT,
+    stored_vectors::VECTOR_WIDENED_KEPT,
+    stored_vectors::VECTOR_LINK_KEPT,
+    stored_vectors::VECTOR_ERASED_KEPT,
     purge::CO_OWNED_COUNTED,
     purge::BACKED_NO_OWNER,
     purge::INITIAL_NO_OWNER,
