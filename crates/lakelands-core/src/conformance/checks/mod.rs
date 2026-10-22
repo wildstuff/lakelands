@@ -18,6 +18,7 @@ mod annotations;
 mod authored_reads;
 mod authors_view;
 mod backings;
+mod batched;
 mod bundles;
 mod chosen;
 mod compact;
@@ -859,6 +860,14 @@ pub const ALL: &[Check] = &[
     aging::REFUSED_BY_CONSTRAINT,
     aging::REFUSALS_BOUNDED,
     concurrency::AGE_UNDER_WRITES,
+    batched::ONE_WINNER_ON_A_VERSION,
+    batched::ONE_KEY_ONE_WRITE,
+    batched::DEEP_CONTEXT_ALONE,
+    batched::BELOW_SET_CEILING,
+    batched::BACKED_OWN_FILL,
+    batched::KEY_PER_PRINCIPAL,
+    batched::ONE_LINK_LANDS,
+    batched::SETTING_WHOLE,
     purge::CO_OWNED_COUNTED,
     purge::BACKED_NO_OWNER,
     purge::INITIAL_NO_OWNER,

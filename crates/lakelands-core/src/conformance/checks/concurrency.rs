@@ -53,7 +53,7 @@ check!(
 const WRITERS: usize = 8;
 const EACH: usize = 25;
 
-async fn items(store: &dyn LakeStore) -> Result<Lake, Failure> {
+pub(super) async fn items(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     l.declare(type_of("item", &[("n", Number), ("by", Text)]))
         .await?;
@@ -151,6 +151,17 @@ async fn concurrent_writes_each_land_once_in_one_order_of_the_log(store: Store) 
         .map(|w| writer(cat.clone(), own.clone(), w, EACH, 2))
         .collect();
     callers.extend((0..WRITERS).map(|w| sharer(cat.clone(), own.clone(), w, 15)));
+    // One caller among them writes a value its type refuses: that write
+    // alone is refused, and the rest land as if it had not been made.
+    let (rcat, rown) = (cat.clone(), own.clone());
+    callers.push(Box::pin(async move {
+        let bad = try_upsert(rcat.as_ref(), &rown, "item", "bad", json!({"n": "no"})).await;
+        ensure!(
+            matches!(refused_on(&bad), Some(("n", Refusal::Constraint(..)))),
+            "a write of a text to `n`, a number, among the others answered {bad:?}; it is refused as a constraint on `n`"
+        );
+        Ok(Vec::new())
+    }));
     let mut written = Vec::new();
     for r in join_all(callers).await {
         written.extend(r?);
@@ -263,6 +274,12 @@ async fn concurrent_writes_each_land_once_in_one_order_of_the_log(store: Store) 
             there.map(|e| (e.position, e.body.kind()))
         );
     }
+    ensure!(
+        !log.iter().any(
+            |e| matches!(&e.body, EventBody::RecordUpserted { key, .. } if key.as_str() == "bad")
+        ),
+        "the refused write of `bad` landed in the log"
+    );
     let fut = store.verify(None, None);
     fut.await
         .must("verifying the hash chain after the concurrent writes")?;
