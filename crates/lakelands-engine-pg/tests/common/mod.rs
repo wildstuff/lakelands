@@ -39,6 +39,11 @@ pub fn prefix() -> String {
 }
 
 /// A fresh schema name for this process.
+pub fn fresh_schema() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!("{}{}", prefix(), NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
 /// The schema a rebuild of the lake in `schema` builds its scratch in, as
 /// the engine names it.
 pub fn scratch_of(schema: &str) -> String {
@@ -48,11 +53,6 @@ pub fn scratch_of(schema: &str) -> String {
         "lakelands_rebuild_{}",
         lakelands_core::canonical::hex(&digest[..8])
     )
-}
-
-pub fn fresh_schema() -> String {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    format!("{}{}", prefix(), NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
 /// A lake on the test server, in `schema`, over plaintext (the test
