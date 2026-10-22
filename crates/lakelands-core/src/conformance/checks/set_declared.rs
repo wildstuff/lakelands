@@ -1,20 +1,11 @@
 //! A set's declaration decides the membership of the records already
 //! there (`docs/decisions/004-the-change-feed-is-the-log.md`, extended).
 
-use lakelands_api::error::Case;
-use lakelands_api::event::EventBody;
-use lakelands_api::location::Limits;
 use lakelands_api::ontology::StorageKind::{Number, Text};
-use lakelands_api::seam::Seams;
-use lakelands_api::tools::{Door, tools};
-use lakelands_api::write::{Declaration, ProposedWrite};
-use lakelands_api::{Outcome, Refusal};
-use serde_json::json;
+use lakelands_api::tools::Door;
 
-use crate::conformance::fixture::{
-    Lake, Must, events_from, head_unmoved, invalid_case, limits, object_set_on, refused_on, type_of,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture::type_of;
+use crate::conformance::prelude::*;
 
 check!(
     SET_DECLARED_OVER_RECORDS = a_sets_declaration_decides_the_membership_of_the_records_there,

@@ -12,17 +12,8 @@
 //! field's weight winning over the setting's (lakelands#1237), judged as
 //! the setting's are, at the search.
 
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::query::{Hits, Projection, QueryResult, Search};
-use lakelands_api::{Access, Principal, Refusal};
-use serde_json::{Value, json};
-
-use crate::conformance::fixture::{
-    Lake, Must, alike_renamed, embedding, field, field_access, get_at, invalid_like, pattern,
-    reason, refused_on, searchable, try_upsert, type_decl, vector,
-};
-use crate::conformance::{Failure, Given, Held, Reopen, Store, backing};
-use lakelands_api::ontology::{StorageKind, TypeDecl};
+use crate::conformance::fixture::get_at;
+use crate::conformance::prelude::*;
 
 check!(
     WEIGHTS_TEXT = a_types_text_fields_weigh_each_token_at_its_heaviest_field,

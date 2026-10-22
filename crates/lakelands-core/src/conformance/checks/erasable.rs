@@ -6,21 +6,14 @@
 //! answer as for any other value. The checks bring their own key store,
 //! [`Keys`], since a key store is the host's.
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
-use lakelands_api::error::{Case, Seam, Situation};
-use lakelands_api::event::{Event, EventBody};
+use lakelands_api::LakeId;
 use lakelands_api::id::KeyId;
-use lakelands_api::ontology::{Authority, FieldDecl, FieldType, StorageKind};
-use lakelands_api::seam::{DataKey, KeyStore, Seams};
-use lakelands_api::{Error, LakeId, LakeStore, Position, SourceId};
-use serde_json::{Value, json};
+use lakelands_api::seam::DataKey;
 
-use crate::conformance::fixture::{
-    Lake, Must, events_after, field, head_unmoved, refused_like, source_record, sourced, type_decl,
-};
-use crate::conformance::{Failure, Held, Reopen, Store};
+use crate::conformance::fixture::source_record;
+use crate::conformance::prelude::*;
 
 check!(
     SEALED_IN_THE_LOG = a_sources_value_of_an_erasable_field_is_sealed_in_the_log_and_read_plain,

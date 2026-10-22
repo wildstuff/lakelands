@@ -1,28 +1,14 @@
 //! A migration renames a relation and keeps its edges
 //! (`docs/decisions/035-a-link-is-a-record.md`, extended, lakelands#429).
 
-use lakelands_api::error::Case;
-use lakelands_api::event::{Event, EventBody};
-use lakelands_api::ontology::{
-    Authority, Cardinality, Derived, MatchPair, RelationDecl, StorageKind,
-};
-use lakelands_api::principal::{Renamed, TypeGrants};
-use lakelands_api::query::{Edge, Projection, QueryResult, Search, SearchMode, Walk};
+use lakelands_api::principal::Renamed;
+use lakelands_api::query::Edge;
 use lakelands_api::read::Found;
-use lakelands_api::seam::FeedFilter;
-use lakelands_api::write::{
-    Carried, Carrier, Migration, Outcome, ProposedWrite, RelationRename, WriteOpts,
-};
-use lakelands_api::{Access, Error, Find, Grants, LakeStore, Position, Principal, PrincipalKind};
-use serde_json::json;
+use lakelands_api::write::{Carried, Carrier, Outcome, RelationRename, WriteOpts};
 
 use super::links::{SEPT, dated, invoice, lake, link_ok, pairs};
-use crate::conformance::fixture::{
-    Lake, Must, derived, events_after, field, find_at, followed, get_at, head_unmoved,
-    invalid_case, invalid_like, object_set_on, patch, pattern, principal, read_at, reference,
-    source_record, sourced, step, trigger_on, type_decl, vector,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{derived, get_at, reference, source_record, step};
+use crate::conformance::prelude::*;
 
 const OLD: &str = "sys.link.invoice.approved_by";
 const NEW: &str = "sys.link.invoice.signed_by";

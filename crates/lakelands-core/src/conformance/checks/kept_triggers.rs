@@ -2,18 +2,9 @@
 //! group's row, in that write's own append, where its `when` holds over the
 //! row after (`docs/decisions/066-a-set-holds-a-kept-view.md`).
 
-use lakelands_api::event::{ChangeKind, EventBody};
-use lakelands_api::location::Limits;
-use lakelands_api::seam::Seams;
-use lakelands_api::{
-    Access, Grants, LakeStore, Position, PrincipalKind, Refusal, TypeName, WriteOpts,
-};
-use serde_json::{Value, json};
+use lakelands_api::event::ChangeKind;
 
-use crate::conformance::fixture::{
-    Lake, Must, events_from, head_unmoved, limits, migration, patch, principal, refused_like,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     KEPT_TRIGGER = a_trigger_on_a_kept_view_fires_where_a_groups_row_is_put,

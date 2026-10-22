@@ -3,17 +3,10 @@
 //! record at most, for callers the target holds nothing from
 //! (`docs/decisions/055-a-path-steps-through-a-reference.md`, extended).
 
-use lakelands_api::ontology::MatchPair;
-use lakelands_api::{Error, Find, ReadAt, Refusal};
-use serde_json::{Value, json};
-
 use super::conditional_edges::{DISCOUNTABLE, LATER, by_terms, invoice, lake, terms};
 use super::only::holder;
 use super::paths::{accept, call, proposal_of, unlisted, unmet};
-use crate::conformance::fixture::{
-    Lake, Must, field_access, head_unmoved, migration, refused_like, restrict,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     SKONTO = a_verb_reads_a_conditional_edge_onto_its_targets_key,

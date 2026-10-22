@@ -2,19 +2,11 @@
 //! (`docs/decisions/050-a-field-declares-its-initial-value.md`,
 //! lakelands#551).
 
-use lakelands_api::error::Case;
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl, ValueTypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, SourceRecord, Upstream};
-use lakelands_api::write::{Declaration, Outcome, ProposedWrite};
-use lakelands_api::{Access, Position, PrincipalKind, Record, Refusal, Timestamp};
-use serde_json::{Value, json};
+use lakelands_api::write::Outcome;
 
-use crate::conformance::fixture::{
-    Lake, Must, committed, field, field_access, invalid_case, log_events, migration, principal,
-    refused_on, reviewer, source_record, trigger_on, value_type, write_verb,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{committed, reviewer, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     FILLED_AT_CREATION = a_record_takes_its_initial_values_when_it_comes_to_exist,

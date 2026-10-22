@@ -3,24 +3,10 @@
 //! of the view would answer the set's condition
 //! (`docs/decisions/066-a-set-holds-a-kept-view.md`).
 
-use std::collections::{BTreeMap, BTreeSet};
+use lakelands_api::seam::AGING_RULE_TYPE;
 
-use lakelands_api::event::EventBody;
-use lakelands_api::location::Limits;
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::seam::{AGING_RULE_TYPE, Seams};
-use lakelands_api::write::ProposedWrite;
-use lakelands_api::{
-    Access, Grants, LakeStore, Outcome, Position, PrincipalKind, Refusal, SourceId, Timestamp,
-    TypeName, WriteOpts,
-};
-use serde_json::{Value, json};
-
-use crate::conformance::fixture::{
-    Lake, Must, all_found, events_from, find_where, head_unmoved, ingest, limits, migration, patch,
-    principal, refused_on, restrict, source_record,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture::{ingest, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     KEPT_SET = a_set_of_a_kept_view_moves_in_the_append_of_every_write_that_moves_its_group,

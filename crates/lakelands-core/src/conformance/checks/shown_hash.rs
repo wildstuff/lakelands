@@ -4,15 +4,7 @@
 //! report's id is made over what the report shows, so that neither says
 //! that a type has a field its reader may not know of.
 
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::TypeDecl;
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::write::{Migration, MigrationReport, ProposalFilter, ProposedWrite};
-use lakelands_api::{Access, Outcome, Principal, ProposalId};
-use serde_json::{Value, json};
-
-use crate::conformance::fixture::{Lake, Must, describe_type, events_after, field_access};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     HASH_OF_THE_SHOWN_SHAPE = a_schema_hash_is_that_of_the_shape_its_reader_is_shown,

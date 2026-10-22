@@ -4,21 +4,11 @@
 //! or not its declaration lists them in `depends_on`.
 
 use lakelands_api::describe::FieldDescription;
-use lakelands_api::event::EventBody;
 use lakelands_api::principal::Grants;
-use lakelands_api::query::{Projection, Search, SearchMode};
-use lakelands_api::read::{AggFunc, Direction, OrderBy};
-use lakelands_api::seam::Seams;
-use lakelands_api::write::{Migration, ProposedWrite};
-use lakelands_api::{Access, Find, LakeStore, Position, Principal};
-use serde_json::{Value, json};
 
-use crate::conformance::backing::{self, KIND};
-use crate::conformance::fixture::{
-    Lake, Must, agg, aggregate, events_after, field_access, find_where, get_at, log_events, order,
-    pattern, read_at,
-};
-use crate::conformance::{Failure, Held, Reopen, Store};
+use crate::conformance::backing::KIND;
+use crate::conformance::fixture::{get_at, order};
+use crate::conformance::prelude::*;
 
 check!(
     COMPUTED_AS_ITS_INPUTS = a_computed_field_is_read_no_further_than_what_it_is_computed_from,

@@ -2,16 +2,11 @@
 //! (`docs/decisions/009-every-response-carries-its-position.md`,
 //! `docs/decisions/010-provenance-per-field.md`, `docs/glossary.md`).
 
-use lakelands_api::error::Case;
-use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
+use lakelands_api::Get;
 use lakelands_api::record::Origin;
-use lakelands_api::{Error, Find, Get, Missing, Position, ReadAt, SourceId, Timestamp, TypeName};
-use serde_json::json;
 
-use crate::conformance::fixture::{
-    Lake, Must, field, field_writer, source_record, type_decl, upsert, windows_reach_head,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{source_record, upsert};
+use crate::conformance::prelude::*;
 
 check!(
     VALID_TIME_IS_A_DATE_TIME = a_valid_time_names_a_stored_date_time_field,

@@ -2,21 +2,9 @@
 //! period that seals each period's values under a version of their own
 //! (`docs/decisions/058-a-source-may-be-forgotten.md`, lakelands#1153).
 
-use std::sync::Arc;
-
-use lakelands_api::Error;
-use lakelands_api::error::{Case, Situation};
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{FieldDecl, StorageKind};
-use lakelands_api::seam::KeyStore;
-use serde_json::json;
-
 use super::erasable::{Keys, again, person, read, with};
-use crate::conformance::fixture::{
-    Lake, Must, events_after, field, head_unmoved, invalid_case, refused_on, source_record,
-    sourced, try_upsert,
-};
-use crate::conformance::{Failure, Held, Reopen, Store};
+use crate::conformance::fixture::source_record;
+use crate::conformance::prelude::*;
 
 check!(
     VERSION_DESTROYED = a_destroyed_version_takes_the_outputs_of_its_values,

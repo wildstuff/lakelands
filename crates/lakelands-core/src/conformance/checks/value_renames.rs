@@ -12,22 +12,10 @@
 //! computed again, the sets decide again, and a field's `initial` that
 //! names an old value is declared again with the new one.
 
-use lakelands_api::error::Case;
-use lakelands_api::event::{Event, EventBody};
-use lakelands_api::ontology::{StorageKind, ValueTypeDecl};
-use lakelands_api::seam::{FeedFilter, Seams};
-use lakelands_api::write::{
-    Declaration, Migration, Outcome, ProposedWrite, ValueTypeMigration, ValueTypeReport,
-};
-use lakelands_api::{Access, LakeStore, Position, Refusal, TypeName};
-use serde_json::{Value, json};
+use lakelands_api::write::{Outcome, ValueTypeMigration, ValueTypeReport};
 
-use crate::conformance::fixture::{
-    Lake, Must, all_found, computed_by, derived, events_after, field, field_access, find_at,
-    followed, get_at, head_unmoved, migration, object_set_on, outputs_from, reason, refused_like,
-    restrict, reviewer, trigger_on, try_upsert, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{derived, get_at, reviewer};
+use crate::conformance::prelude::*;
 
 check!(
     RENAMES_IN_ONE_STEP = a_value_type_migration_renames_a_value_in_every_record_in_one_event,

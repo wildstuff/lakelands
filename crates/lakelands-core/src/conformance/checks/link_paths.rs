@@ -3,22 +3,12 @@
 //! the link's fields and, through its `to`, the far record's (055,
 //! extended).
 
-use lakelands_api::error::{Case, Printed};
 use lakelands_api::key::link_key;
-use lakelands_api::ontology::{
-    Cardinality, Derived, MatchPair, RelationDecl, StorageKind, TypeDecl,
-};
-use lakelands_api::write::{Declaration, ProposalFilter, ProposedWrite};
-use lakelands_api::{Access, Error, Find, Outcome, Principal, ReadAt, Refusal, Version, WriteOpts};
-use serde_json::{Value, json};
 
 use super::only::holder;
 use super::paths::{accept, call, proposal_of, unlisted};
-use crate::conformance::fixture::{
-    Lake, Must, field, field_access, head_unmoved, limits, migration, patch, reference,
-    refused_like, restrict, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::reference;
+use crate::conformance::prelude::*;
 
 const LT: &str = "sys.link.deal.with";
 

@@ -3,19 +3,10 @@
 //! its event, else the wall clock; one clock wherever the read evaluates
 //! `now()` and `today()`, and one for every page a cursor continues.
 
-use std::collections::BTreeSet;
-use std::time::Duration;
-
-use lakelands_api::query::{Projection, QueryResult, Search, SearchMode};
-use lakelands_api::read::{AggFunc, Found, GroupKey};
-use lakelands_api::{Catalog, Cursor, Find, Position, Principal, ReadAt, Record, Timestamp};
-use serde_json::{Value, json};
+use lakelands_api::read::Found;
 
 use super::only::{de, holder};
-use crate::conformance::fixture::{
-    Lake, Must, agg, aggregate, all_found, log_events, pattern, pause, restrict,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     READ_CLOCK = a_read_takes_its_clock_from_the_instant_or_the_position_it_names,

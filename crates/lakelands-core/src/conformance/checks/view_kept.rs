@@ -23,26 +23,14 @@
 //! its first `says ... kept` on a lake that keeps no view, and each row is
 //! red where a kept record answers something else than its twin.
 
-use std::collections::BTreeSet;
-
 use lakelands_api::describe::{Kept, NotKept};
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::query::{Projection, Walk};
-use lakelands_api::read::{AggFunc, Direction, OrderBy};
-use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING, Seams, VIEW_KEPT_SETTING};
-use lakelands_api::write::Declaration;
-use lakelands_api::{
-    Access, Catalog, Find, Found, LakeStore, Position, Principal, ReadAt, Record, Reply, SourceId,
-    Timestamp, TypeName, Value, WriteOpts,
-};
-use serde_json::json;
+use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING, VIEW_KEPT_SETTING};
+use lakelands_api::{Reply, Value};
 
 use super::export::Scratch;
-use crate::conformance::fixture::{
-    Lake, Must, agg, aggregate, doors, get_at, ingest, order, owner, patch, pattern, reads_all,
-    restrict, source_record, step, try_upsert,
-};
-use crate::conformance::{Failure, Given, Held, ImportedLake, Store};
+use crate::conformance::ImportedLake;
+use crate::conformance::fixture::{doors, get_at, ingest, order, owner, source_record, step};
+use crate::conformance::prelude::*;
 
 check!(
     KEPT_SHAPES = a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes,

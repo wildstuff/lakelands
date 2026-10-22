@@ -3,24 +3,12 @@
 //! (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 //! extended): in the shape's own lists, or in `restated`.
 
-use std::path::PathBuf;
-
-use lakelands_api::error::Case;
 use lakelands_api::id::ProposalId;
-use lakelands_api::ontology::{FieldDecl, RelationDecl, TypeDecl};
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::write::{Migration, ProposalFilter, ProposedWrite};
-use lakelands_api::{Access, Outcome, Principal};
-use serde_json::{Value, json};
 
 use super::export::Scratch;
 use super::report_names::{preview, refused};
 use crate::conformance::backing::EMBED_MODEL;
-use crate::conformance::fixture::{
-    Lake, Must, describe_type, field_access, invalid_case, is_invalid, log_events,
-};
-use crate::conformance::{Failure, Held, Store};
-use crate::links::link_type_name;
+use crate::conformance::prelude::*;
 
 check!(
     EVERY_MEMBER = a_migration_reports_every_member_its_to_states_otherwise,

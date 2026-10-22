@@ -5,20 +5,14 @@
 //! with every such key, and taking the delivery back destroys its key and
 //! no version.
 
-use std::sync::Arc;
-
-use lakelands_api::error::Seam;
-use lakelands_api::event::{Event, EventBody, Sealed};
+use lakelands_api::IngestOpts;
+use lakelands_api::event::Sealed;
 use lakelands_api::id::KeyId;
-use lakelands_api::seam::{KeyStore, Seams};
-use lakelands_api::write::Selection;
-use lakelands_api::{Error, IngestOpts, LakeStore, Position, SourceId, SourceRecord};
-use serde_json::json;
 
 use super::erasable::{Keys, again, first, person, with};
 use super::removed::{Whole, acts, at, erased};
-use crate::conformance::fixture::{Lake, Must, events_after, events_from, source_record};
-use crate::conformance::{Failure, Held, Reopen, Store, backing};
+use crate::conformance::fixture::source_record;
+use crate::conformance::prelude::*;
 
 check!(
     APART_SHREDDED = a_delivery_sealed_apart_is_shredded_alone,

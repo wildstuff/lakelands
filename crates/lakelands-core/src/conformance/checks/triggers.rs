@@ -9,22 +9,11 @@
 //! creation. A trigger may cap the depth of the reactions that name its
 //! firing as their cause, below the lake's own ceiling.
 
-use lakelands_api::error::Case;
-use lakelands_api::event::EventBody;
-use lakelands_api::expr::Condition;
-use lakelands_api::location::Limits;
-use lakelands_api::ontology::{StorageKind, TriggerDecl};
+use lakelands_api::ontology::TriggerDecl;
 use lakelands_api::principal::WriteContext;
-use lakelands_api::seam::Seams;
-use lakelands_api::write::{Declaration, ProposedWrite};
-use lakelands_api::{LakeStore, Outcome, Position, Refusal, TypeName};
-use serde_json::json;
 
-use crate::conformance::fixture::{
-    Lake, Must, events_after, field, find_where, head_unmoved, limits, reactive, reason,
-    refused_like, refused_on, source_record, sourced, try_upsert, type_decl,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture::source_record;
+use crate::conformance::prelude::*;
 
 check!(
     TRANSITION = a_transition_guard_fires_on_open_to_closed_only,

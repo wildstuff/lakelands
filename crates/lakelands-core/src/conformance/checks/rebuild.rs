@@ -8,15 +8,10 @@
 //! cannot reproduce would be lost on the first rebuild, which is why the
 //! check reads everything before and after and compares.
 
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::{LakeStore, Position, Principal, ReadAt, Record, TypeName};
-use serde_json::json;
-
 use crate::conformance::fixture::{
-    Lake, Must, all_found, derived, doors, field, find_at, find_where, get_at, owner, pattern,
-    reference, source_record, sourced, step, type_decl, type_of, vector, view_of,
+    derived, doors, get_at, owner, reference, source_record, step, type_of,
 };
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     REBUILD_ANSWERS_AS_BEFORE = a_rebuilt_projection_answers_every_read_as_the_live_one_did,

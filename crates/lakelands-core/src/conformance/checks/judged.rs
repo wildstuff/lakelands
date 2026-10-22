@@ -4,23 +4,14 @@
 //! assignments and an aging rule's guard read `seen_at` and `known_at` as
 //! a read's `where` does.
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use lakelands_api::LakeStore;
-use lakelands_api::error::{Case, Place};
-use lakelands_api::event::EventBody;
+use lakelands_api::ontology::OnInputChange;
 use lakelands_api::ontology::StorageKind::{Boolean, DateTime, Number, Text};
-use lakelands_api::ontology::{FieldDecl, OnInputChange, TypeDecl};
 use lakelands_api::seam::AGING_RULE_TYPE;
-use lakelands_api::write::{Declaration, ProposedWrite, WriteOpts};
-use serde_json::{Value, json};
+use lakelands_api::write::WriteOpts;
 
 use crate::conformance::backing::KIND;
-use crate::conformance::fixture::{
-    Lake, Must, computed_by, derived, field, find_where, invalid_case, invalid_said, log_events,
-    object_set_on, refused_on, source_record, sourced, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{derived, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     NO_RECORD_NO_PROVENANCE = provenance_is_refused_where_no_record_stands,

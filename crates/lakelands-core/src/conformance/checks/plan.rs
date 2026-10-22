@@ -1,17 +1,10 @@
 //! A change to the ontology plans before it acts
 //! (`docs/decisions/062-a-change-plans-before-it-acts.md`).
 
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::ValueTypeDecl;
-use lakelands_api::write::{
-    Change, Declaration, Migration, Plan, ProposedWrite, Recompute, ValueTypeMigration, WriteOpts,
-};
-use lakelands_api::{Principal, RecordKey};
-use serde_json::{Value, json};
+use lakelands_api::write::{Change, Plan, ValueTypeMigration, WriteOpts};
 
 use super::only::{de, holder};
-use crate::conformance::fixture::{Lake, Must, log_events, patch, restrict};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     PLAN_TELLS = a_change_tells_its_plan_before_it_acts,

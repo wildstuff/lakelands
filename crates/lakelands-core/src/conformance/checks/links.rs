@@ -10,23 +10,12 @@
 //! cardinality over live links, live ends, and the doors each link goes
 //! through.
 
-use lakelands_api::error::Case;
-use lakelands_api::ontology::{
-    Authority, Cardinality, FieldDecl, RelationDecl, StorageKind, TypeDecl,
-};
 use lakelands_api::principal::PrincipalKind;
-use lakelands_api::query::{Edge, Projection, QueryResult, Walk};
-use lakelands_api::write::{Outcome, ProposedWrite, WriteOpts};
-use lakelands_api::{Catalog, Error, LakeStore, Position, Principal, Refusal};
-use serde_json::{Value, json};
+use lakelands_api::query::Edge;
+use lakelands_api::write::{Outcome, WriteOpts};
 
-use crate::conformance::fixture::{
-    Lake, Must, all, doors, fed, field, field_writer, head_unmoved, invalid_case, migration,
-    no_such_field, patch, pattern, principal, reads_all, reason, reference, refused_on, restrict,
-    source_record, step, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
-use crate::links::{link_key, link_type_name};
+use crate::conformance::fixture::{doors, fed, reference, source_record, step};
+use crate::conformance::prelude::*;
 
 check!(
     WRITTEN_AND_WALKED = a_link_is_written_and_walked_with_its_fields,

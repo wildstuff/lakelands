@@ -5,15 +5,11 @@
 //! hand is retired, and a record another hand also wrote keeps that
 //! hand's values.
 
-use lakelands_api::event::{Event, EventBody};
-use lakelands_api::write::{RemoveReport, Selection};
-use lakelands_api::{DeliveryId, IngestOpts, LakeStore, Position, SourceId, Timestamp};
-use serde_json::{Value, json};
+use lakelands_api::write::RemoveReport;
+use lakelands_api::{DeliveryId, IngestOpts};
 
-use crate::conformance::fixture::{
-    Lake, Must, count_view, events_after, events_from, get_at, refused_like, source_record,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{get_at, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     REMOVED_BEFORE = a_sources_values_before_a_time_read_as_erased_at_every_position,

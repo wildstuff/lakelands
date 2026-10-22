@@ -8,20 +8,8 @@
 //! matches. A search of one axis reads no further than its page, and
 //! counts nothing.
 
-use lakelands_api::location::Limits;
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::query::{Hits, Search};
-use lakelands_api::seam::Seams;
-use lakelands_api::{Access, LakeStore, Outcome, Principal, Refusal};
-use serde_json::{Value, json};
-
 use super::fusion::docs;
-use crate::conformance::fixture::{
-    Lake, Must, field, field_access, field_writer, is_invalid, limits, no_such_field, reason,
-    refused_on, restrict, searchable, try_upsert, type_decl, vector,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     AXES_SAID = a_search_lists_its_axes_and_counts_them_where_it_fuses,

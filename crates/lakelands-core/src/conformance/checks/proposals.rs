@@ -3,24 +3,10 @@
 //! `docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
 //! `docs/decisions/004-the-change-feed-is-the-log.md`).
 
-use lakelands_api::error::{Case, Seam};
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::write::{Proposal, ProposalFilter, ProposalState, ProposedWrite};
-use lakelands_api::{
-    Error, LakeStore, Missing, Outcome, Position, Principal, ProposalId, RecordKey, Refusal,
-    Version, WriteOpts,
-};
-use serde_json::{Value, json};
-
 use super::only::{alice, claim_with, claims, de, holder};
 use crate::conformance::backing::EXECUTOR;
-use crate::conformance::fixture::{
-    Lake, Must, doors, events_from, field, field_writer, head_unmoved, invalid_case, log_events,
-    outputs_from, owner, patch, reactive, read, reason, refused_on, reviewer, try_upsert,
-    type_decl, value,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{doors, owner, read, reviewer};
+use crate::conformance::prelude::*;
 
 check!(
     VERB_BY_RISK = a_low_verb_runs_and_a_higher_one_is_proposed,

@@ -9,21 +9,12 @@
 //! overruled where the history without it does not make it: the feed
 //! names it, and a replayed write does not tell it (lakelands#1238).
 
-use std::sync::Arc;
-
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::TypeDecl;
-use lakelands_api::seam::FeedFilter;
-use lakelands_api::write::{ForgetReport, Outcome, RemoveReport, Selection, WriteOpts};
-use lakelands_api::{LakeStore, Position, SourceId, Timestamp};
-use serde_json::{Value, json};
+use lakelands_api::write::{ForgetReport, Outcome, RemoveReport, WriteOpts};
 
 use super::erasable::{Keys, again, person, with};
 use super::removed::{at, erased};
-use crate::conformance::fixture::{
-    Lake, Must, events_after, events_from, find_at, object_set_on, patch, source_record, trigger_on,
-};
-use crate::conformance::{Failure, Held, Reopen, Store};
+use crate::conformance::fixture::source_record;
+use crate::conformance::prelude::*;
 
 check!(
     REMOVED_REKEYED = a_value_taken_back_is_followed_through_a_rekeying,

@@ -4,24 +4,11 @@
 //! (`docs/decisions/055-a-path-steps-through-a-reference.md`, extended).
 
 use lakelands_api::engine::OpenMode;
-use lakelands_api::event::EventBody;
-use lakelands_api::location::Limits;
-use lakelands_api::ontology::{Cardinality, Derived, MatchPair, RelationDecl, StorageKind};
 use lakelands_api::principal::Grants;
-use lakelands_api::seam::{AGING_RULE_TYPE, Seams};
-use lakelands_api::write::{Declaration, ProposedWrite};
-use lakelands_api::{
-    Access, LakeStore, Outcome, Position, Principal, PrincipalKind, Refusal, SourceId, Timestamp,
-    TypeName, WriteOpts,
-};
-use serde_json::json;
+use lakelands_api::seam::AGING_RULE_TYPE;
 
-use crate::conformance::fixture::{
-    Lake, Must, events_from, field, find_at, find_where, head_unmoved, ingest, limits, migration,
-    object_set_on, patch, principal, reads_all, reference, refused_like, refused_on, restrict,
-    source_record, sourced, trigger_on, type_decl,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture::{ingest, reference, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     SET_ACROSS = a_sets_where_reads_a_field_across_an_edge,

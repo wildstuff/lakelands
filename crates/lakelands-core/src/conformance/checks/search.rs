@@ -3,21 +3,12 @@
 //! `docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`,
 //! `docs/decisions/029-every-answer-has-one-order.md`).
 
-use lakelands_api::error::Case;
 use lakelands_api::key::link_key;
-use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
 use lakelands_api::principal::PrincipalKind;
-use lakelands_api::query::{Hits, Projection, QueryResult, Search, SearchMode};
-use lakelands_api::write::{Recompute, WriteOpts};
-use lakelands_api::{Access, Error, LakeStore, Position, Principal, ReadAt, Refusal, TypeName};
-use serde_json::json;
+use lakelands_api::write::WriteOpts;
 
-use crate::conformance::fixture::{
-    Lake, Must, doors, embedding, field, field_access, field_writer, get_at, invalid_case,
-    invalid_like, no_such_field, owner, patch, pattern, principal, read_at, refused_alike,
-    refused_on, restrict, searchable, type_decl, vector,
-};
-use crate::conformance::{Failure, Held, Reopen, Store, backing};
+use crate::conformance::fixture::{doors, get_at, owner};
+use crate::conformance::prelude::*;
 
 check!(
     MATCH_SET = full_text_matches_words_whatever_their_case_inflection_or_accents,

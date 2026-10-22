@@ -9,17 +9,12 @@
 //! that would break it.
 
 use lakelands_api::describe::TypeDescription;
-use lakelands_api::error::{Beyond, Case};
-use lakelands_api::ontology::{AtIngest, TypeDecl};
-use lakelands_api::write::{Declaration, Migration, Outcome};
-use lakelands_api::{Access, Error, Refusal};
-use serde_json::{Value, json};
+use lakelands_api::error::Beyond;
+use lakelands_api::ontology::AtIngest;
+use lakelands_api::write::Outcome;
 
-use crate::conformance::fixture::{
-    Answer, Lake, Must, describe_type, field_access, head_unmoved, ingest, invalid_case, patch,
-    reactive, reason, reviewer, source_record, try_upsert, write_verb,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{Answer, ingest, reviewer, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     CONSTRAINT_HELD_AT_EVERY_DOOR = a_constraint_holds_at_every_write_door,

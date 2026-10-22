@@ -11,22 +11,10 @@
 //! and in a relation's link fields alike. Keys carry a namespace, two are
 //! reserved, and one declaration holds a bounded amount.
 
-use std::collections::BTreeMap;
-
 use lakelands_api::describe::TypeDescription;
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{
-    ANNOTATIONS_MAX_BYTES, Annotations, RelationDecl, StorageKind, TypeDecl, ValueTypeDecl,
-};
-use lakelands_api::write::Declaration;
-use lakelands_api::{Access, LakeStore, Position, ReadAt, Refusal, TypeName};
-use serde_json::{Value, json};
+use lakelands_api::ontology::{ANNOTATIONS_MAX_BYTES, Annotations};
 
-use crate::conformance::fixture::{
-    Lake, Must, events_from, field, field_access, head_unmoved, invalid_like, reason, refused_on,
-    type_decl, value_type,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     ROUND_TRIP = annotations_round_trip_through_declare_the_feed_and_describe,

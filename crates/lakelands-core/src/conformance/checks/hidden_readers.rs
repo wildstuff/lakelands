@@ -3,17 +3,10 @@
 //! refused on that field, before any check that would name the hidden
 //! part.
 
-use lakelands_api::ontology::{FieldDecl, RelationDecl, StorageKind, TypeDecl};
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::write::{Declaration, Migration, ProposedWrite};
-use lakelands_api::{Access, Catalog, Principal};
-use serde_json::json;
-
 use super::embeddings::{reopen_failed, with_embedder};
 use crate::conformance::backing::{EMBED_MODEL, embedder_as};
-use crate::conformance::fixture::{Lake, Must, derived, embedding, field, field_access, type_of};
-use crate::conformance::{Held, Reopen, Store};
-use crate::links::link_type_name;
+use crate::conformance::fixture::{derived, type_of};
+use crate::conformance::prelude::*;
 
 check!(
     HIDDEN_READER_STANDS = a_field_a_hidden_part_reads_stands_to_its_author,

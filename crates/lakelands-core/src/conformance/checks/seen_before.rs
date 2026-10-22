@@ -5,18 +5,12 @@
 //! and a value is shredded only where every value its key seals is
 //! selected, as is every older version's.
 
-use std::sync::Arc;
-
-use lakelands_api::event::EventBody;
-use lakelands_api::seam::KeyStore;
-use lakelands_api::write::Selection;
-use lakelands_api::{IngestOpts, SourceId, SourceRecord, Timestamp};
-use serde_json::json;
+use lakelands_api::IngestOpts;
 
 use super::erasable::{Keys, again, first, person, with};
 use super::removed::{acts, at, erased};
-use crate::conformance::fixture::{Lake, Must, refused_like, source_record};
-use crate::conformance::{Failure, Held, Reopen, Store};
+use crate::conformance::fixture::source_record;
+use crate::conformance::prelude::*;
 
 check!(
     SEEN_BEFORE = a_late_delivery_of_old_observations_is_taken_back_by_the_time_seen,

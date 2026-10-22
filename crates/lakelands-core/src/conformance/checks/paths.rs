@@ -2,23 +2,11 @@
 //! a field there: a verb's `requires` and the values it sets read so, at
 //! the call, the record as a write that sends the reference would find it.
 
-use lakelands_api::error::{Case, Missing, Printed};
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{Cardinality, FieldDecl, RelationDecl, StorageKind};
-use lakelands_api::write::ProposalFilter;
-use lakelands_api::{
-    Access, Error, Find, LakeStore, Outcome, Principal, ProposalId, ReadAt, Record, Refusal,
-    Version, WriteOpts,
-};
-use serde_json::{Value, json};
+use lakelands_api::error::Missing;
 
 use super::only::holder;
-use crate::conformance::fixture::{
-    Lake, Must, derived, events_after, field, field_access, get_at, head_unmoved, invalid_case,
-    limits, migration, patch, reference, refused_like, refused_on, restrict, source_record,
-    sourced, try_upsert, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{derived, get_at, reference, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     PATH_STEPS = a_verbs_condition_reads_a_field_of_the_record_a_reference_names,

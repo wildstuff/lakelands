@@ -6,22 +6,13 @@
 //! and 12 hours after it was due, `open` is not paid. Every number below
 //! is counted by hand from that.
 
-use lakelands_api::error::Case;
-use lakelands_api::expr::Condition;
-use lakelands_api::ontology::StorageKind::{self, *};
+use lakelands_api::Value;
+use lakelands_api::ontology::StorageKind::*;
 use lakelands_api::principal::Access;
-use lakelands_api::query::Projection;
-use lakelands_api::read::{AggFunc, Aggregate, GroupKey};
-use lakelands_api::{Find, Found, LakeStore, TypeName, Value};
 use rust_decimal::Decimal;
-use serde_json::json;
 
-use crate::conformance::fixture::{
-    Lake, Must, agg, computed_by, dec, decimal, derived, field, field_access, find_where,
-    migration, no_such_field, object_set_on, pattern, refused_alike, refused_like, refused_on,
-    trigger_on, type_decl, value, view_of, write_verb,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::derived;
+use crate::conformance::prelude::*;
 
 check!(
     DAYS = a_duration_divided_by_a_unit_is_a_number,

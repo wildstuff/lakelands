@@ -5,19 +5,13 @@
 //! them, as the system. A refusal names the retire verbs its writer is
 //! shown and may call, and none it is not, whatever the key.
 
-use lakelands_api::error::{Case, Printed};
-use lakelands_api::event::EventBody;
 use lakelands_api::ontology::RetiredBy;
-use lakelands_api::write::{ProposedWrite, WriteOpts};
-use lakelands_api::{Error, Outcome, Principal, Refusal};
-use serde_json::{Value, json};
+use lakelands_api::write::WriteOpts;
 
 use super::only::holder;
 use super::paths::{accept, call, proposal_of};
-use crate::conformance::fixture::{
-    Lake, Must, describe_type, events_after, get_at, head_unmoved, ingest, source_record, upsert,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{get_at, ingest, source_record, upsert};
+use crate::conformance::prelude::*;
 
 check!(
     RETIRED_BY_VERBS = a_type_only_its_verbs_retire_is_refused_at_retire,
