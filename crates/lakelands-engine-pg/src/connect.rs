@@ -85,7 +85,26 @@ impl Target {
             let schema = s.clone();
             return Err(Error::invalid(Case::SchemaName { schema }));
         }
-        Ok(format!("\"{}\"", s.replace('"', "\"\"")))
+        Ok(Target::quote(s))
+    }
+
+    /// `name` as SQL writes an identifier: quoted, so it is taken exactly
+    /// as written.
+    pub(crate) fn quote(name: &str) -> String {
+        format!("\"{}\"", name.replace('"', "\"\""))
+    }
+
+    /// The schema the projection a rebuild builds beside this one's lives
+    /// in (`scratch.rs`): named from it by a digest, so it is the same for
+    /// every handle onto the lake, fits an identifier however long the
+    /// lake's schema is, and is found by no other lake.
+    pub(crate) fn scratch_schema(&self) -> String {
+        use sha2::{Digest as _, Sha256};
+        let digest = Sha256::digest(self.schema.as_bytes());
+        format!(
+            "lakelands_rebuild_{}",
+            lakelands_core::canonical::hex(&digest[..8])
+        )
     }
 }
 

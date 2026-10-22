@@ -187,6 +187,44 @@ pub trait LakeEngine: Send + Sync {
 
     /// The engine's vector index, if it keeps one.
     fn vectors(&self) -> Option<&dyn VectorIndex>;
+
+    /// On a handle [`EngineOpener::open_scratch`] opened: mark its
+    /// projection built through the position it is folded through, with the
+    /// log's hash there, so that the scratch outlives this handle and the
+    /// next to open it, or [`swap`](Self::swap) it in, checks it against the
+    /// log (`docs/decisions/071-a-rebuild-builds-beside-the-projection.md`).
+    /// The mark holds while the scratch stays folded through that position;
+    /// a scratch folded on and not marked again is removed when its handle
+    /// is dropped. An open transaction is abandoned. Answers the position
+    /// marked, none for a scratch that folded nothing, which no mark keeps.
+    /// Refused as unavailable on any other handle and where
+    /// the log does not hold the position folded through; an engine that
+    /// keeps no scratch refuses as unbound, as this default does.
+    fn mark_built(&self) -> Result<Option<Position>> {
+        Err(crate::Error::unbound(crate::error::Seam::Operation {
+            op: "mark_built".to_owned(),
+        }))
+    }
+
+    /// Put the projection built beside this lake's in its place, in one
+    /// step, once it is checked: this handle holds `lease`, no handle has
+    /// the scratch open, it is this lake's, laid out by this build, marked
+    /// built, still folded through its mark, and the mark is the log's tip
+    /// and its hash. Refused as unavailable otherwise, the projection and
+    /// the scratch both left as they were. Afterwards this handle reads and
+    /// folds the projection it put in place, the one it replaced is gone,
+    /// and so is the scratch. An open transaction is abandoned, by a swap
+    /// refused as well as one done, so none is held across it. Answers the
+    /// position the projection is folded through. A disk engine may also
+    /// refuse while another handle reads the projection it would replace.
+    /// An engine that keeps no scratch refuses as unbound, as this default
+    /// does.
+    fn swap(&self, lease: &Lease) -> Result<Option<Position>> {
+        let _ = lease;
+        Err(crate::Error::unbound(crate::error::Seam::Operation {
+            op: "swap".to_owned(),
+        }))
+    }
 }
 
 /// The projection's write side. The fold calls it inside one transaction
@@ -647,6 +685,25 @@ pub trait EngineOpener: Send + Sync {
     /// writer takes it afterwards with `take_lease`, and a reader opened
     /// [`OpenMode::Read`] never can.
     fn open(&self, location: &Location, mode: OpenMode) -> Result<Box<dyn LakeEngine>>;
+
+    /// Open the lake at `location` to build its projection beside the one
+    /// it answers from, into a scratch
+    /// (`docs/decisions/071-a-rebuild-builds-beside-the-projection.md`).
+    /// The handle reads the log as one opened [`OpenMode::Read`] does and
+    /// never takes the lease or appends; its projection, view, rankings
+    /// and vector index are the scratch's. The projection the lake answers
+    /// from is not opened, whatever layout made it. A scratch marked built
+    /// for this lake and this build's layout, still folded through its mark,
+    /// whose mark the log holds, is opened as it is, so a fold continues
+    /// from its mark; any other is removed and made anew, empty. Refused as
+    /// unavailable while another handle has the scratch open. An engine
+    /// that keeps no scratch refuses as unbound, as this default does.
+    fn open_scratch(&self, location: &Location) -> Result<Box<dyn LakeEngine>> {
+        let _ = location;
+        Err(crate::Error::unbound(crate::error::Seam::Operation {
+            op: "open_scratch".to_owned(),
+        }))
+    }
 }
 
 /// Compile-time proof that the engine seam is `dyn`-compatible.

@@ -8,10 +8,12 @@
 //! read-only refuses the lease, every append and every seal.
 
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
+use fs4::{FileExt, TryLockError};
 use lakelands_api::engine::{
     Applied, CanonicalEvent, Choose, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
     ProjectionView, Ranked, Rankings, Reclaimed, StatesOf, VectorIndex,
@@ -28,6 +30,7 @@ use rusqlite::{Connection, OpenFlags, params};
 use crate::lease::{Held, LeaseFile};
 use crate::log::Log;
 use crate::projection::{self, MEMBERS, OUTPUTS, PROPOSALS};
+use crate::scratch::{self, Building, Mark};
 use crate::view::SqliteView;
 use lakelands_api::error::{Case, Detail, Doing, Error, Part, Situation};
 
@@ -64,6 +67,14 @@ pub struct SqliteLake {
     /// The head's declarations as the last commit left them, and the
     /// position it folded through, for the next one's relook.
     heads: Mutex<Option<(Position, engines::Heads)>>,
+    /// The lake's directory and the tuning its connections are made with,
+    /// for a swap that connects again.
+    dir: PathBuf,
+    tuning: SqliteTuning,
+    /// On a handle onto the scratch, its lock and mark (`scratch.rs`).
+    building: Mutex<Option<Building>>,
+    /// On a handle onto the projection, its hold on it ([`hold`]).
+    opened: Option<File>,
 }
 
 /// How long a statement waits for another connection's lock.
@@ -107,6 +118,18 @@ fn connect(path: &std::path::Path, tuning: &SqliteTuning, writer: bool) -> Resul
     Ok(conn)
 }
 
+/// Hold the projection in `dir` against a swap: a shared lock on the
+/// lake's name file, which every handle onto `projection.db` takes before
+/// it connects and keeps while it lives, and a swap takes exclusively. A
+/// handle that opens while a swap holds it waits for the swap, and then
+/// connects to the file the swap put in place. The name file is there in
+/// every lake, so a reader's hold makes nothing.
+fn hold(dir: &std::path::Path) -> Result<File> {
+    let file = File::open(dir.join("lake")).map_err(|e| io_error(Doing::Open, Part::File, e))?;
+    FileExt::lock_shared(&file).map_err(|e| io_error(Doing::Lock, Part::Projection, e))?;
+    Ok(file)
+}
+
 impl SqliteLake {
     pub(crate) fn open(
         lake: LakeId,
@@ -118,7 +141,7 @@ impl SqliteLake {
         // A log that is there is judged before anything is made beside
         // it, and a directory with no segment file holds no lake: only an
         // open to create makes anything in it.
-        let log = if crate::log::kept(&dir)? {
+        let mut log = if crate::log::kept(&dir)? {
             let log = Log::open(&dir, false)?;
             check_name(&dir, &lake, create)?;
             log
@@ -130,6 +153,12 @@ impl SqliteLake {
             let (lake, schema) = (lake.to_string(), None);
             return Err(Error::unavailable(Situation::NoLake { lake, schema }));
         };
+        // A scratch an earlier builder left unfit to swap in is removed by
+        // the next writer, before it opens the projection.
+        if mode != OpenMode::Read {
+            scratch::sweep(&dir, &lake, &mut log)?;
+        }
+        let opened = hold(&dir)?;
         let path = dir.join("projection.db");
         let no_projection = || {
             let lake = lake.to_string();
@@ -180,7 +209,150 @@ impl SqliteLake {
             reader: Mutex::new(reader),
             transaction: Mutex::new(None),
             heads: Mutex::new(None),
+            dir,
+            tuning,
+            building: Mutex::new(None),
+            opened: Some(opened),
         })
+    }
+
+    /// A handle onto the scratch of the lake in `dir`: it reads the log as
+    /// a reader does, and folds into the scratch, never the projection.
+    /// A scratch unfit to keep is removed and made anew.
+    pub(crate) fn open_scratch(
+        lake: LakeId,
+        dir: PathBuf,
+        tuning: SqliteTuning,
+    ) -> Result<SqliteLake> {
+        if !crate::log::kept(&dir)? {
+            let (lake, schema) = (lake.to_string(), None);
+            return Err(Error::unavailable(Situation::NoLake { lake, schema }));
+        }
+        let mut log = Log::open(&dir, false)?;
+        check_name(&dir, &lake, false)?;
+        let mut building = scratch::lock(&dir)?.ok_or_else(|| scratch::rebuilding(&lake))?;
+        if building.fit(&lake, &mut log, false)?.is_none() {
+            building.remove()?;
+        }
+        let path = building.path();
+        let conn = connect(&path, &tuning, true)?;
+        let (schema, mark) = (projection::SCHEMA, projection::mark());
+        conn.execute_batch(&format!("BEGIN IMMEDIATE; {schema} {mark} COMMIT;"))
+            .map_err(sql)?;
+        projection::catch_up_sorted(&conn)?;
+        let reader = connect(&path, &tuning, false)?;
+        Ok(SqliteLake {
+            lease_file: LeaseFile::new(&dir),
+            lake,
+            mode: OpenMode::Read,
+            path,
+            log: Mutex::new(log),
+            held: Mutex::new(None),
+            writer: Mutex::new(Some(conn)),
+            reader: Mutex::new(reader),
+            transaction: Mutex::new(None),
+            heads: Mutex::new(None),
+            dir,
+            tuning,
+            building: Mutex::new(Some(building)),
+            opened: None,
+        })
+    }
+
+    /// Close this handle's connections to its projection, so that its file
+    /// can be replaced or removed; the reader is left on an empty database
+    /// until [`reconnect`](Self::reconnect).
+    fn disconnect(&self) -> Result<()> {
+        *lock(&self.transaction) = None;
+        *lock(&self.heads) = None;
+        drop(lock(&self.writer).take());
+        *lock(&self.reader) = Connection::open_in_memory().map_err(sql)?;
+        Ok(())
+    }
+
+    /// Connect this handle to its projection again, after
+    /// [`disconnect`](Self::disconnect).
+    fn reconnect(&self) -> Result<()> {
+        *lock(&self.writer) = Some(connect(&self.path, &self.tuning, true)?);
+        *lock(&self.reader) = connect(&self.path, &self.tuning, false)?;
+        Ok(())
+    }
+
+    /// Put the scratch in the projection's place, checked as
+    /// [`LakeEngine::swap`] says. The swap takes the projection's hold
+    /// ([`hold`]) exclusively, so no other handle of this engine has the
+    /// file open when it is replaced, and none connects until it is in
+    /// place. A process that takes no hold (a release before this one) is
+    /// kept out as far as SQLite can: the projection is taken out of its
+    /// write-ahead journal, which SQLite allows only to the one connection
+    /// that has it open. The rename is one step of the directory, synced.
+    fn swapping(&self, lease: &Lease) -> Result<Option<Position>> {
+        let _held = self.check_lease(lease)?;
+        let mut building =
+            scratch::lock(&self.dir)?.ok_or_else(|| scratch::rebuilding(&self.lake))?;
+        let no_scratch = || {
+            Error::unavailable(Situation::NoScratch {
+                lake: self.lake.to_string(),
+            })
+        };
+        let mut log = lock(&self.log);
+        log.refresh()?;
+        let mark = building
+            .fit(&self.lake, &mut log, false)?
+            .ok_or_else(no_scratch)?;
+        let tip = log.tip();
+        drop(log);
+        if Mark::of_tip(&self.lake, tip.as_ref()) != mark {
+            return Err(Error::unavailable(Situation::ScratchBehind {
+                lake: self.lake.to_string(),
+                marked: mark.position.map(Position),
+                tip: tip.map(|(p, _)| p),
+            }));
+        }
+        building.settle(&self.lake)?;
+        self.disconnect()?;
+        let replaced = (|| {
+            let opened = self.opened.as_ref().ok_or_else(|| self.read_only())?;
+            match FileExt::try_lock(opened) {
+                Ok(()) => {}
+                Err(TryLockError::WouldBlock) => {
+                    let lake = self.lake.to_string();
+                    return Err(Error::unavailable(Situation::SwapBusy { lake }));
+                }
+                Err(TryLockError::Error(e)) => {
+                    return Err(io_error(Doing::Lock, Part::Projection, e));
+                }
+            }
+            let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+            let live = Connection::open_with_flags(&self.path, flags).map_err(sql)?;
+            live.busy_timeout(Duration::ZERO).map_err(sql)?;
+            let mode = live.query_row("PRAGMA journal_mode = DELETE", [], |r| {
+                r.get::<_, String>(0)
+            });
+            if mode.ok().as_deref() != Some("delete")
+                || live.execute_batch("BEGIN EXCLUSIVE").is_err()
+            {
+                let lake = self.lake.to_string();
+                return Err(Error::unavailable(Situation::SwapBusy { lake }));
+            }
+            for end in ["-wal", "-shm"] {
+                let _ = std::fs::remove_file(self.dir.join(format!("projection.db{end}")));
+            }
+            std::fs::rename(building.path(), &self.path)
+                .and_then(|()| crate::log::sync_dir(&self.dir))
+                .map_err(|e| io_error(Doing::Rename, Part::Projection, e))?;
+            drop(live);
+            building.set(None)
+        })();
+        // Taking the hold exclusively may have given up the shared one,
+        // whether it was taken or not: it is taken again.
+        if let Some(opened) = &self.opened {
+            FileExt::lock_shared(opened).map_err(|e| io_error(Doing::Lock, Part::Projection, e))?;
+        }
+        self.reconnect()?;
+        replaced?;
+        drop(building);
+        projection::folded(&lock(&self.reader))
     }
 
     /// Run `f` on the writer connection; a handle opened read-only has
@@ -310,10 +482,21 @@ fn check_name(dir: &std::path::Path, lake: &LakeId, create: bool) -> Result<()> 
 
 impl Drop for SqliteLake {
     /// A handle that is dropped gives up the lease it holds, as a process
-    /// that ends does.
+    /// that ends does, and a handle onto the scratch removes it unless it
+    /// is marked built through the position it is folded through.
     fn drop(&mut self) {
         if let Some(held) = lock(&self.held).take() {
             let _ = self.lease_file.release(held);
+        }
+        if let Some(mut building) = lock(&self.building).take() {
+            let _ = self.disconnect();
+            let log = self
+                .log
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !matches!(building.fit(&self.lake, log, false), Ok(Some(_))) {
+                let _ = building.remove();
+            }
         }
     }
 }
@@ -446,6 +629,49 @@ impl LakeEngine for SqliteLake {
 
     fn vectors(&self) -> Option<&dyn VectorIndex> {
         Some(self)
+    }
+
+    /// Checkpoints the scratch's journal into its file, then writes the
+    /// mark: a mark that is there names a scratch whole through it.
+    fn mark_built(&self) -> Result<Option<Position>> {
+        let mut building = lock(&self.building);
+        let Some(building) = building.as_mut() else {
+            let lake = self.lake.to_string();
+            return Err(Error::unavailable(Situation::NoScratch { lake }));
+        };
+        *lock(&self.transaction) = None;
+        let folded = self.write(|conn| {
+            abandon(conn)?;
+            if !truncate_journal(conn)? {
+                let lake = self.lake.to_string();
+                return Err(Error::unavailable(Situation::Busy { lake }));
+            }
+            projection::folded(conn)
+        })?;
+        let at = match folded {
+            Some(p) => {
+                let at = lock(&self.log)
+                    .read(p, 1)?
+                    .pop()
+                    .filter(|e| e.position == p);
+                let tip = || lock(&self.log).tip().map(|(p, _)| p);
+                let lake = self.lake.to_string();
+                Some(at.ok_or_else(|| {
+                    Error::unavailable(Situation::ScratchBehind {
+                        lake,
+                        marked: folded,
+                        tip: tip(),
+                    })
+                })?)
+            }
+            None => None,
+        };
+        building.set(Some(&Mark::of(&self.lake, at.as_ref())))?;
+        Ok(folded)
+    }
+
+    fn swap(&self, lease: &Lease) -> Result<Option<Position>> {
+        self.swapping(lease)
     }
 }
 

@@ -1363,6 +1363,11 @@ belongs in the suite, not beside one engine:
 - `clear_empties_the_projection_and_the_vector_index` — seams §ProjectionStore: clear deletes every state, kept history and the vector index included, and leaves nothing folded, for a rebuild from the log
 - `a_projection_of_another_layout_is_refused_until_it_is_rebuilt` — 004 and seams §EngineOpener (lakelands#678): a disk engine marks a projection with the layout it was made with; a writer's open, a creator's and a reader's refuse one marked with another or with none, naming the layout found, the one wanted and `lakelands rebuild`, since a table it lacks would answer wrongly without failing; one opened for a rebuild is neither read nor made before `clear` makes it anew at the engine's layout, and every open then reads what was folded since
 
+**rebuild**
+
+- `a_rebuild_leaves_the_projection_answering_until_the_swap` — 071 and seams §EngineOpener (lakelands#1322): a scratch opened for a rebuild folds beside the projection, which every handle reads as it was until the swap; a second scratch handle, a swap while one is open and a swap of a scratch not marked built are refused, leaving both as they were; an unmarked scratch whose handle is dropped is gone; the swap of a marked one puts it in place whole, and the scratch is gone after it. An engine that keeps no scratch answers each of these as unbound
+- `a_scratch_marked_built_is_kept_while_the_log_holds_its_mark` — 071 (lakelands#1322): a scratch marked built is opened again as it was, and a swap of it is refused while the log has moved past its mark, until it is folded on and marked again; a mark the log does not hold is discarded; a scratch is opened, folded and swapped in beside a projection of another layout while a writer holds the lease
+
 **reads**
 
 - `mixed_kinds_sort_the_same_on_every_engine` — 029: a scan orders numbers, then instants, then text, then booleans, then JSON, a missing value last in either direction, ties by key, so every engine puts the same records in the same places

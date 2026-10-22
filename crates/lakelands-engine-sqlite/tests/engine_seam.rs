@@ -63,6 +63,22 @@ impl EngineHarness for Sqlite {
             .expect("folding as a writer without the chosen fields");
         true
     }
+
+    fn scratch(&self, lake: &LakeId) -> lakelands_api::Result<Box<dyn LakeEngine>> {
+        SqliteOpener.open_scratch(&self.location(lake.as_str()))
+    }
+
+    fn forge_scratch_mark(&self, lake: &LakeId) -> bool {
+        let path = self
+            .root
+            .join(lake.as_str())
+            .join("projection.db.rebuild.mark");
+        let text = std::fs::read_to_string(&path).expect("reading the scratch's mark");
+        let mut mark: serde_json::Value = serde_json::from_str(&text).expect("a mark");
+        mark["hash"] = serde_json::Value::String("0".repeat(64));
+        std::fs::write(&path, mark.to_string()).expect("forging the mark");
+        true
+    }
 }
 
 #[test]
