@@ -634,6 +634,12 @@ impl fmt::Display for Error {
                 }
             }
             Error::NotFound { missing } => write!(f, "{missing}"),
+            Error::Conflict {
+                expected: Version(0),
+                ..
+            } => {
+                write!(f, "a record with this key already exists")
+            }
             Error::Conflict { expected, actual } => write!(
                 f,
                 "the record changed: expected version {expected}, found {actual}"
