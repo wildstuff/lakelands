@@ -127,13 +127,13 @@ jobs:
             server: pgvector
     # A throwaway PostgreSQL for the `pg` engine only: an empty image
     # starts no container for the other engines. The image comes from
-    # the public ECR mirror of Docker's official one: it is pulled with
+    # Google's public mirror of Docker's official one (the public ECR one answered "Data limit exceeded" on CI runners): it is pulled with
     # no token, so Docker Hub's pull limit cannot turn the job red and a
     # fork's pull request starts it as any other. Its password guards
     # nothing but this job's own database, so it is not a secret.
     services:
       postgres:
-        image: ${{ matrix.engine == 'pg' && 'public.ecr.aws/docker/library/postgres:16' || '' }}
+        image: ${{ matrix.engine == 'pg' && 'mirror.gcr.io/library/postgres:16' || '' }}
         env:
           POSTGRES_USER: lakelands
           POSTGRES_PASSWORD: lakelands
@@ -154,7 +154,7 @@ jobs:
       - name: add pgvector to the server
         if: matrix.engine == 'pg' && matrix.server == 'pgvector'
         run: |
-          docker exec "$(docker ps --filter ancestor=public.ecr.aws/docker/library/postgres:16 --format '{{.ID}}')" \
+          docker exec "$(docker ps --filter ancestor=mirror.gcr.io/library/postgres:16 --format '{{.ID}}')" \
             sh -c 'apt-get update && apt-get install -y postgresql-16-pgvector'
       - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
