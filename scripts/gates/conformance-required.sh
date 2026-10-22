@@ -8,7 +8,7 @@
 #     `required` / `deferred`;
 #   - a required engine has no `tests/conformance.rs` entry point, or its
 #     crate holds source beyond its crate doc and the entry point does not
-#     call the suite's runner (`run_all(` outside a `//` comment) — an
+#     call the suite's runner (`run_all(` or `run_checks(` outside a `//` comment) — an
 #     imported engine is checked, never passed on zero tests;
 #   - an engine that is required on the pull request's base commit is
 #     deferred or gone (the roster only grows);
@@ -49,11 +49,11 @@ for engine in "${!status[@]}"; do
     entry="crates/lakelands-engine-$engine/tests/conformance.rs"
     code="$(git ls-files -z -- "crates/lakelands-engine-$engine/src" | xargs -0 -r cat \
         | { grep -v -E '^[[:space:]]*(//|$)' || true; } | wc -l | tr -d ' ')"
-    # A call, not a mention: `run_all(` outside a `//` comment. grep reads
+    # A call, not a mention: `run_all(` or `run_checks(` outside a `//` comment. grep reads
     # to the end (no -q): stopping at the first match would cut sed off,
     # and under pipefail its broken pipe would fail the pipeline.
     if [ "$code" -gt 0 ] && [ -f "$entry" ] \
-        && ! sed 's|//.*||' "$entry" | grep 'run_all[[:space:]]*(' >/dev/null; then
+        && ! sed 's|//.*||' "$entry" | grep -E 'run_(all|checks)[[:space:]]*\(' >/dev/null; then
         fail "required engine \`$engine\` has $code line(s) of source, and $entry does not run the suite"
     fi
 done

@@ -614,14 +614,20 @@ pub async fn run_one(harness: &dyn Harness, name: &str) -> Option<Result<(), Fai
     Some(run_check(harness, check).await)
 }
 
-/// Runs `checks` in order, never stopping at a failure.
-async fn run_checks(harness: &dyn Harness, checks: &[Check]) -> Report {
+/// Runs `checks` in order, never stopping at a failure, and prints what
+/// each asserted, one line per check (`tally <evaluations> <sites>
+/// <check>`), for a change to the suite to compare before and after.
+pub async fn run_checks<'a>(
+    harness: &dyn Harness,
+    checks: impl IntoIterator<Item = &'a Check>,
+) -> Report {
     let mut report = Report {
         harness: harness.name().to_owned(),
         ..Report::default()
     };
     for check in checks {
         let (outcome, tally) = counted(run_check(harness, check)).await;
+        println!("tally {} {} {}", tally.evaluations, tally.sites, check.name);
         report.tallies.push((check.name, tally));
         match outcome {
             Ok(()) => report.passed.push(check.name),

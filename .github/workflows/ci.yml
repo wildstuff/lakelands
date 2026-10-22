@@ -126,11 +126,14 @@ jobs:
           - engine: pg
             server: pgvector
     # A throwaway PostgreSQL for the `pg` engine only: an empty image
-    # starts no container for the other engines. Its password guards
+    # starts no container for the other engines. The image comes from
+    # the public ECR mirror of Docker's official one: it is pulled with
+    # no token, so Docker Hub's pull limit cannot turn the job red and a
+    # fork's pull request starts it as any other. Its password guards
     # nothing but this job's own database, so it is not a secret.
     services:
       postgres:
-        image: ${{ matrix.engine == 'pg' && (matrix.server == 'pgvector' && 'pgvector/pgvector:pg16' || 'postgres:16') || '' }}
+        image: ${{ matrix.engine == 'pg' && 'public.ecr.aws/docker/library/postgres:16' || '' }}
         env:
           POSTGRES_USER: lakelands
           POSTGRES_PASSWORD: lakelands
@@ -146,6 +149,13 @@ jobs:
       LAKELANDS_TEST_PG_URL: ${{ matrix.engine == 'pg' && 'postgres://lakelands:lakelands@localhost:5432/lakelands' || '' }}
     steps:
       - uses: actions/checkout@v4
+      # The pgvector run adds the extension to the running server, no
+      # restart: the lake asks for `CREATE EXTENSION` itself.
+      - name: add pgvector to the server
+        if: matrix.engine == 'pg' && matrix.server == 'pgvector'
+        run: |
+          docker exec "$(docker ps --filter ancestor=public.ecr.aws/docker/library/postgres:16 --format '{{.ID}}')" \
+            sh -c 'apt-get update && apt-get install -y postgresql-16-pgvector'
       - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
@@ -269,6 +279,14 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      # The matrix is read from the merge ref but the checkout is the PR
+      # head: a head that predates a gate has no script for it.
+      - name: the gate exists at this head
+        run: |
+          [ -x "scripts/gates/$G.sh" ] || { echo "::error::the PR head predates gate $G: rebase onto develop"; exit 1; }
+        env:
+          G: ${{ matrix.gate }}
       - run: scripts/gates/${{ matrix.gate }}.sh
         env:
           GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          PR_TITLE: ${{ github.event.pull_request.title }}

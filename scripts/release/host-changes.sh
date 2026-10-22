@@ -498,7 +498,7 @@ named() {
     local before='(^|[^A-Za-z0-9_:.])'
     [ "${2:-}" = qualified ] && before='(^|[^A-Za-z0-9_:.]|::)'
     [ "${#lines[@]}" -gt 0 ] &&
-        printf '%s\n' "${lines[@]}" | grep -Eq "$before${1//./\\.}([^A-Za-z0-9_]|$)"
+        grep -Eq -- "$before${1//./\\.}([^A-Za-z0-9_]|$)" <<<"$(printf '%s\n' "${lines[@]}")"
 }
 
 # The three comparisons, each over what one file held and what it holds:
