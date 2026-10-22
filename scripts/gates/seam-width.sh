@@ -10,14 +10,23 @@
 # A method is an `fn` item directly in the trait body; default bodies
 # count once.
 #
-# TRAITS: the store facade (`LakeStore`) and the engine traits. `Catalog`
-# is not counted: it is the caller's surface, not a seam an engine ports,
-# and its width is governed by the four-doors rule
-# (docs/decisions/014-four-doors-per-type-one-name-generator.md).
+# TRAITS: the store facade (`LakeStore`, in `catalog.rs`) and every
+# `pub trait` in the contract crate's `engine.rs`, read from the file, so
+# a new engine trait is counted the day it lands. `Catalog` is not
+# counted: it is the caller's surface, not a seam an engine ports, and
+# its width is governed by the four-doors rule
+# (docs/decisions/014-four-doors-per-type-one-name-generator.md). The
+# seams of `seam.rs` are not counted either: each reaches outside the
+# deterministic core and has a default, so a new engine ports none of
+# them.
 . "$(dirname "$0")/lib.sh"
 
 BUDGET=110
-TRAITS=(LakeStore LakeEngine ProjectionStore ProjectionView)
+ENGINE=crates/lakelands-api/src/engine.rs
+[ -f "$ENGINE" ] || die "$ENGINE is missing"
+mapfile -t engine_traits < <(sed -n 's/^[[:space:]]*pub trait \([A-Za-z_][A-Za-z0-9_]*\).*/\1/p' "$ENGINE")
+[ "${#engine_traits[@]}" -ge 1 ] || die "$ENGINE defines no pub trait"
+TRAITS=(LakeStore "${engine_traits[@]}")
 
 total=0
 report=""
