@@ -829,13 +829,14 @@ A host that already has a store of its own moves in four steps.
 
 A record's version is one number for the whole record, so two people
 editing different fields of it collide by design: the second write is
-refused with 412 `conflict`. A write's answer carries the version it
-made (`ETag` over REST), so an editor that edits twice sends it back
-without reading in between. On a 412 the editor reads the record again
+refused with 412 `conflict`. A `PUT` or `DELETE` of a record answers the
+record's new version (`ETag` over REST), so an editor that edits twice
+sends it back without reading in between; a link answers its own
+record's version, which is not the record's. On a 412 the editor reads the record again
 with `with_meta`, compares the `meta.position` of each field it edits
 with the position it read them at, and retries against the new version
 only if none moved; a field that moved is shown to its person, who
-decides. A create is `If-None-Match: *`, refused the same way when the
+decides. Over REST a create is `If-None-Match: *`, refused the same way when the
 key exists. `docs/rest.md`, "Editing a record", has the steps.
 
 ## Rules the host inherits

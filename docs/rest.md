@@ -58,10 +58,13 @@ this page says only how a request reaches it.
 
 - **Editing a record.** A record's version is one number for the whole
   record, not one per field: a write that changes any field moves it. A
-  read of one record answers it as `ETag`, and so does every `PUT`,
-  `DELETE`, link and verb that made a version, so a client that edits
-  twice sends the `ETag` of its last answer as the next `If-Match`
-  without reading in between.
+  read of one record answers it as `ETag`. So does a `PUT` or `DELETE`
+  of a record, and its `ETag` is that record's next `If-Match`: a client
+  that edits twice sends it without reading in between. A link or an
+  unlink answers the version of the link record, not of either end, so
+  it is not the next `If-Match` of the record it was made from. A verb
+  answers the version of the record write it made, where it made one,
+  and none otherwise.
 
   Two people editing different fields of one record therefore collide
   by design: the second write answers 412. A client that edits only its
