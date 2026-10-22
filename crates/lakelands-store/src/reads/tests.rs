@@ -140,7 +140,7 @@ fn only_a_reads_open_reads_the_wall_clock() {
         // `Reader::open`: a read at the head.
         ("store/reads.rs", 1),
         // A write's clock, never before the last `known_at`.
-        ("store/writes.rs", 1),
+        ("store/writes/propose.rs", 1),
     ]
     .map(|(f, n)| (f.to_owned(), n))
     .into();
