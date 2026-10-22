@@ -2,7 +2,7 @@
 # Runs the conformance suite against one engine, or against every
 # required engine of conformance/roster when none is named. An engine
 # whose entry point runs the suite fails on zero tests; only an empty
-# engine, whose entry point does not call the runner yet (`run_all(`
+# engine, whose entry point does not call the runner yet (`run_all(` or `run_checks(`
 # outside a `//` comment), passes on none. An engine with
 # tests/engine_seam.rs runs the engine-seam harness in the same job.
 # Usage: scripts/conformance.sh [engine]      (--list prints the roster)
@@ -15,11 +15,11 @@ required() { awk '!/^[[:space:]]*(#|$)/ && $2 == "required" { print $1 }' confor
 # do: its harness reads LAKELANDS_TEST_PG_URL.
 needs_server() { [ "$1" = pg ]; }
 
-# Whether an entry point calls the suite's runner: `run_all(` outside a
+# Whether an entry point calls the suite's runner: `run_all(` or `run_checks(` outside a
 # `//` comment. A mention in a comment is not a call. grep reads to the
 # end (no -q): stopping at the first match would cut sed off, and under
 # pipefail its broken pipe would fail the pipeline.
-runs_suite() { sed 's|//.*||' "$1" | grep 'run_all[[:space:]]*(' >/dev/null; }
+runs_suite() { sed 's|//.*||' "$1" | grep -E 'run_(all|checks)[[:space:]]*\(' >/dev/null; }
 
 if [ "${1:-}" = "--list" ]; then
     required

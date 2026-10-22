@@ -13,10 +13,11 @@ use std::sync::Arc;
 use lakelands_api::engine::OpenMode;
 use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
+use lakelands_core::conformance::Check;
 use lakelands_core::conformance::checks::ALL;
 use lakelands_core::conformance::{
     Continue, Continued, Fault, FreshLake, Harness, Import, ImportedLake, Meter, Relimit, Reopen,
-    Twin, below, continue_below, run_all, run_one,
+    Twin, below, continue_below, run_checks, run_one,
 };
 use lakelands_engine_pg::PgOpener;
 use peak_alloc::PeakAlloc;
@@ -245,20 +246,66 @@ const LONG_RUN: u32 = 25_000;
 /// size.
 const SHORT_RUN: u32 = 1_100;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn every_registered_check_passes_on_the_pg_engine() {
+/// How many tests share the registered checks. Each runs in its own
+/// process under nextest, with its own connections and its own schemas.
+const SHARDS: usize = 4;
+
+/// The checks of shard `k`: those at registry positions `i % SHARDS == k`.
+fn shard(k: usize) -> impl Iterator<Item = &'static Check> {
+    ALL.iter()
+        .enumerate()
+        .filter(move |(i, _)| i % SHARDS == k)
+        .map(|(_, c)| c)
+}
+
+/// Runs shard `k` against the server. The shards are separate tests so
+/// that the job takes the longest shard's time, not all of them in a row.
+/// They stand on one process each (nextest): in one process they would
+/// share the heap meter and each would drop the others' schemas.
+async fn run_shard(k: usize) {
     let Some(url) = common::url_or_skip("the pg conformance suite") else {
         return;
     };
-    assert!(!ALL.is_empty(), "no conformance check is registered");
-    let report = run_all(&Pg {
-        url: url.clone(),
-        large: SHORT_RUN,
-    })
+    let report = run_checks(
+        &Pg {
+            url: url.clone(),
+            large: SHORT_RUN,
+        },
+        shard(k),
+    )
     .await;
     common::drop_schemas(&url);
     assert!(report.is_green(), "{report}");
-    assert_eq!(report.passed.len(), ALL.len());
+    assert_eq!(report.passed.len(), shard(k).count());
+}
+
+macro_rules! shards {
+    ($($name:ident => $k:expr),* $(,)?) => {$(
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn $name() {
+            run_shard($k).await;
+        }
+    )*};
+}
+
+shards! {
+    every_registered_check_passes_on_the_pg_engine_shard_0 => 0,
+    every_registered_check_passes_on_the_pg_engine_shard_1 => 1,
+    every_registered_check_passes_on_the_pg_engine_shard_2 => 2,
+    every_registered_check_passes_on_the_pg_engine_shard_3 => 3,
+}
+
+#[test]
+fn every_registered_check_is_in_exactly_one_pg_shard() {
+    assert!(!ALL.is_empty(), "no conformance check is registered");
+    let mut seen: Vec<&str> = (0..SHARDS).flat_map(shard).map(|c| c.name).collect();
+    seen.sort_unstable();
+    let mut all: Vec<&str> = ALL.iter().map(|c| c.name).collect();
+    all.sort_unstable();
+    assert_eq!(
+        seen, all,
+        "the shards' union is not ALL, or a check is in two"
+    );
 }
 
 /// The streaming check at 25 000 and 100 000 records, by hand:
