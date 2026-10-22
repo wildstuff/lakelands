@@ -308,10 +308,9 @@ async fn a_holder_of_only_proposes_its_own_records(store: Store) -> Held {
     );
     let moved = |key: &str| {
         let (ty, key) = ("bill".into(), Some(key.into()));
-        said::<()>(Err(crate::invalid(Case::WriteChangedSinceProposed {
-            ty,
-            key,
-        })))
+        said::<()>(Err(lakelands_api::Error::invalid(
+            Case::WriteChangedSinceProposed { ty, key },
+        )))
     };
     let own = &l.own;
     let accept = |p: ProposalId| async move { said(cat.accept(own, &p).await) };
@@ -384,10 +383,9 @@ async fn a_holder_of_only_proposes_its_own_records(store: Store) -> Held {
     };
     l.upsert("claim", "c1", json!({"owner": "bob"})).await?;
     let (ty, key) = (on_trip, Some(link));
-    let ended = said::<()>(Err(crate::invalid(Case::WriteChangedSinceProposed {
-        ty,
-        key,
-    })));
+    let ended = said::<()>(Err(lakelands_api::Error::invalid(
+        Case::WriteChangedSinceProposed { ty, key },
+    )));
     row(
         "after `c1`, her link's end, is handed to bob",
         accept(proposal).await,

@@ -120,10 +120,7 @@ impl Sight<'_> {
     /// `ty`: the field, or, where `ty` has none of that name, the relation,
     /// which it is shown (055, extended).
     pub fn reads_from(&self, ty: &TypeName, n: &FieldName) -> bool {
-        let t = self
-            .force
-            .ty(ty)
-            .filter(|t| !t.fields.iter().any(|f| &f.name == n));
+        let t = self.force.ty(ty).filter(|t| !t.has_field(n));
         let mut named = t
             .into_iter()
             .flat_map(|t| t.relations.iter().map(move |r| (t, r)));
@@ -299,8 +296,7 @@ impl Sight<'_> {
                 let far = on.and_then(|on| v.reads_across(on, &|n| self.force.ty(n)));
                 let far =
                     far.is_some_and(|f| f.iter().all(|(t, f)| field_access(who, t, f).reads()));
-                let field =
-                    |n: &FieldName| on.is_some_and(|t| t.fields.iter().any(|f| &f.name == n));
+                let field = |n: &FieldName| on.is_some_and(|t| t.has_field(n));
                 let from = |p: &Vec<FieldName>| field(&p[0]) || self.reads_from(&v.on, &p[0]);
                 if !far || !v.record_paths().is_some_and(|p| p.iter().all(from)) {
                     return false;
@@ -310,7 +306,7 @@ impl Sight<'_> {
                 };
                 let known = |n: &FieldName| {
                     let t = self.force.ty(&v.on);
-                    let f = t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == n)?)));
+                    let f = t.and_then(|t| Some((t, t.field(n)?)));
                     f.is_some_and(|(t, f)| field_access(who, t, f) != Access::None)
                 };
                 // In a value `payload.<name>` is the call's and no field.
@@ -839,7 +835,7 @@ pub(crate) fn relation_shown<'a>(
         return false;
     };
     let known = |t: &TypeDecl, n: &FieldName| {
-        let f = t.fields.iter().find(|f| &f.name == n);
+        let f = t.field(n);
         f.is_some_and(|f| field_access(who, t, f) != Access::None)
     };
     let [from, to] = r.derived.as_ref().map(Derived::reads).unwrap_or_default();
@@ -895,7 +891,7 @@ fn create_closed(
     value_types: &[ValueTypeDecl],
     broken: &[(&ConstraintDecl, BTreeSet<FieldName>)],
 ) -> bool {
-    let field = |n: &FieldName| t.fields.iter().find(|f| &f.name == n);
+    let field = |n: &FieldName| t.field(n);
     let sends = |f: &FieldDecl| {
         matches!(f.authority, Authority::Authored | Authority::Shared)
             && field_access(who, t, f).writes()

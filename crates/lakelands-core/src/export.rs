@@ -96,10 +96,10 @@ pub async fn write(store: &dyn LakeStore, dir: &Path) -> Result<Manifest> {
         Ok(mut entries) => {
             if entries.next().is_some() {
                 let said = Box::new(Case::ExportNotEmpty.into());
-                return Err(Error::Refused {
-                    field: None,
-                    reason: lakelands_api::Refusal::Precondition(said),
-                });
+                return Err(Error::refused(
+                    None,
+                    lakelands_api::Refusal::Precondition(said),
+                ));
             }
             true
         }

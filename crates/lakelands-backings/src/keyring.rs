@@ -141,7 +141,7 @@ impl FileKeyring {
             let versions = ring.sources.entry(source.clone()).or_default();
             if versions.destroyed {
                 let source = source.clone();
-                return Err(lakelands_core::invalid(Case::KeyDestroyed { source }));
+                return Err(lakelands_api::Error::invalid(Case::KeyDestroyed { source }));
             }
             match apart {
                 true => versions.apart.push((id.clone(), hex)),
@@ -205,7 +205,7 @@ impl KeyStore for FileKeyring {
                 .and_then(|k| k.iter().position(|(i, _)| i == id));
             let (Some(keys), Some(i)) = (keys, at) else {
                 let (source, key) = (source.clone(), id.clone());
-                return Err(lakelands_core::invalid(Case::KeyVersionNotHeld {
+                return Err(lakelands_api::Error::invalid(Case::KeyVersionNotHeld {
                     source,
                     key,
                 }));

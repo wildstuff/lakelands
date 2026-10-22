@@ -152,7 +152,7 @@ const OUTSIDE: &[Func] = &[
 fn decided(ty: &TypeDecl, e: &Expr) -> bool {
     let computed = order(ty).unwrap_or_default();
     let outside = |n: &FieldName| {
-        let f = ty.fields.iter().find(|f| &f.name == n);
+        let f = ty.field(n);
         f.is_some_and(|f| f.embed.is_some() || (f.function.is_some() && f.derived.is_none()))
     };
     let mut seen = BTreeSet::new();

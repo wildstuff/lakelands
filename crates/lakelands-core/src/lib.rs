@@ -49,15 +49,8 @@ mod stem;
 pub mod valid_time;
 pub mod value;
 
-use lakelands_api::error::{Detail, Doing, Flaw, Part, Said, Situation};
+use lakelands_api::error::{Detail, Doing, Flaw, Part, Situation};
 use lakelands_api::{Error, Position};
-
-/// A refusal of what the caller asked for as not well-formed, naming no
-/// field.
-#[doc(hidden)]
-pub fn invalid(said: impl Into<Said>) -> Error {
-    Error::invalid(said)
-}
 
 /// Stored or exported events, or the files that hold them, are damaged:
 /// `part`, at `position` if one, by `flaw`.

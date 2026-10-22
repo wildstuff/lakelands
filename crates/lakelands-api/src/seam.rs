@@ -581,7 +581,7 @@ pub fn check_setting<'a>(
     let refused = |member: &str, said: Said| {
         let reason = Refusal::Invalid(Box::new(said.within(at())));
         let field = Some(member.into());
-        Err(crate::Error::Refused { field, reason })
+        Err(crate::Error::refused(field, reason))
     };
     let known = |ty: &str| Some((shown(&ty.into())?, declared(&ty.into())?));
     if let Some(prefix) = crate::settings::unlisted(key) {

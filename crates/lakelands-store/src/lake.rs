@@ -310,10 +310,7 @@ pub(crate) fn opener(
     // before anything is made (067).
     if location.limits.max_rerank_top == 0 {
         let case = lakelands_api::error::Case::RerankNoWindow;
-        return Err(Error::Refused {
-            field: Some("limits.max_rerank_top".into()),
-            reason: Refusal::Invalid(Box::new(case.into())),
-        });
+        return Err(Error::invalid_at(&"limits.max_rerank_top".into(), case));
     }
     let name: String = match &location.engine {
         EngineConfig::Sqlite { .. } => "sqlite".into(),
@@ -628,9 +625,7 @@ impl Lake {
             let older = |t: &lakelands_api::ontology::TypeDecl| {
                 let held = w.ontology.types.get(&t.name);
                 held.is_some_and(|h| {
-                    let has = |f: &lakelands_api::ontology::FieldDecl| {
-                        h.decl.fields.iter().any(|g| g.name == f.name)
-                    };
+                    let has = |f: &lakelands_api::ontology::FieldDecl| h.decl.has_field(&f.name);
                     !t.fields.iter().all(has)
                 })
             };
@@ -1228,7 +1223,7 @@ impl Lake {
             .find(|c| Some(*c) > head)
         {
             let case = lakelands_api::error::Case::CausePastHead { cause, head };
-            return Err(lakelands_core::invalid(case));
+            return Err(Error::invalid(case));
         }
         // A reaction that names a trigger's firing as its cause is bound by
         // that trigger's own ceiling too, as the head declares it (021).
@@ -1258,7 +1253,7 @@ impl Lake {
             }
             let (event, canon, fault) = log::seal_judged(&self.id, position, &prev_hash, fence, d);
             if let Some(case) = fault {
-                return Err(lakelands_core::invalid(case));
+                return Err(Error::invalid(case));
             }
             prev_pos = Some(position);
             prev_hash = event.hash.clone();
@@ -1361,10 +1356,10 @@ impl Lake {
             && context.depth > m
             && !self.withdrawn_since(trigger.as_str(), cause)?
         {
-            return Err(Error::Refused {
-                field: Some(trigger.as_str().into()),
-                reason: Refusal::TooDeep { max: m },
-            });
+            return Err(Error::refused(
+                Some(trigger.as_str().into()),
+                Refusal::TooDeep { max: m },
+            ));
         }
         Ok(())
     }
@@ -2956,7 +2951,7 @@ impl Lake {
             }
         }
         let last =
-            last.ok_or_else(|| crate::writes::refused(Refusal::OutOfRange { head: self.head() }))?;
+            last.ok_or_else(|| Error::refused(None, Refusal::OutOfRange { head: self.head() }))?;
         // A writer's `lease_taken` that raised the format at the head, with
         // no `lake_upgraded` after it.
         if let Some(flaw) = formats.unmarked().filter(|_| last.position == self.head()) {
@@ -3768,7 +3763,7 @@ pub(crate) fn fields_again(o: &Ontology, declaration: &Declaration) -> Vec<(Type
             };
             (t.fields.iter().filter(|f| computed(f)))
                 .filter(|f| {
-                    let was = old.decl.fields.iter().find(|x| x.name == f.name);
+                    let was = old.decl.field(&f.name);
                     was.is_none_or(|was| how(was) != how(f))
                         || outside
                             && (f.embed.is_some() || f.function.as_deref().is_some_and(backed))
@@ -4011,7 +4006,7 @@ impl Migrated {
                 None => old,
             };
             // An erased value's provenance stays with its field (058).
-            let declared = |f: &FieldName| self.migration.to.fields.iter().any(|d| &d.name == f);
+            let declared = |f: &FieldName| self.migration.to.has_field(f);
             r.meta = (std::mem::take(&mut r.meta).into_iter())
                 .map(|(old, meta)| (renamed(old), meta))
                 .filter(|(new, m)| converted.contains_key(new) || m.erased && declared(new))

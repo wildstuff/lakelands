@@ -49,7 +49,7 @@ use lakelands_api::event::{Event, EventBody, Procedure};
 use lakelands_api::expr::Expr;
 use lakelands_api::ontology::{OnInputChange, TypeDecl, ValueTypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
-use lakelands_api::{FieldName, Position, Result, TypeName, Value};
+use lakelands_api::{Error, FieldName, Position, Result, TypeName, Value};
 use lakelands_core::rights::Door;
 use lakelands_core::{damaged, derive, value};
 
@@ -293,7 +293,7 @@ pub fn apply(
 
     let mut written = BTreeSet::new();
     for (name, value) in patch {
-        let Some(field) = raw.fields.iter().find(|f| &f.name == name) else {
+        let Some(field) = raw.field(name) else {
             continue;
         };
         if !door.admits(field, event.source.as_ref()) {
@@ -489,10 +489,7 @@ fn compute(
 ) -> Result<BTreeSet<FieldName>> {
     let plan = outputs.plans.get(ontology, raw);
     let order = plan.derived.as_ref().map_err(|e| {
-        let (ty, cause) = (
-            raw.name.clone(),
-            Box::new(lakelands_core::invalid(e.clone())),
-        );
+        let (ty, cause) = (raw.name.clone(), Box::new(Error::invalid(e.clone())));
         damaged(Part::Projection, None, Flaw::CannotDerive { ty, cause })
     })?;
     let mut changed = BTreeSet::new();
@@ -563,7 +560,7 @@ pub fn check_required(decl: &TypeDecl, fields: &BTreeMap<FieldName, Value>) -> R
         if fields.get(&f.name).is_none_or(Value::is_null) {
             let (ty, field) = (decl.name.clone(), f.name.clone());
             let case = lakelands_api::error::Case::Required { ty, field };
-            return Err(crate::writes::constraint(Some(f.name.clone()), case));
+            return Err(Error::constraint(Some(f.name.clone()), case));
         }
     }
     Ok(())

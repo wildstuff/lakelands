@@ -32,7 +32,7 @@ use lakelands_api::{
 };
 
 use lakelands_api::error::{Case, Exchange, Remote, Seam, Situation};
-use lakelands_core::{feed, invalid, rights};
+use lakelands_core::{feed, rights};
 
 use crate::exec;
 use crate::ingest;
@@ -89,7 +89,7 @@ fn same_lake(lake: &Lake, who: &Principal) -> Result<()> {
     // The writer is a part of an authored event's id, whose parts NUL
     // separates.
     if who.id.contains('\0') {
-        return Err(invalid(Case::WriterNul));
+        return Err(Error::invalid(Case::WriterNul));
     }
     Ok(())
 }
@@ -422,9 +422,7 @@ impl Doors {
         // holds such a number is not recorded. The executor ran, so its
         // answer is lost but for this sentence, and a retry is unanswered.
         if let Some(n) = lakelands_core::canonical::integer_too_large(&output) {
-            let cause = Box::new(lakelands_core::invalid(Case::IntegerTooLarge {
-                n: n.clone(),
-            }));
+            let cause = Box::new(Error::invalid(Case::IntegerTooLarge { n: n.clone() }));
             let answered = output.clone();
             return Err(Error::unavailable(Situation::AnswerLost {
                 answered,
@@ -900,7 +898,7 @@ fn cursor_at(mut at: ReadAt, cursor: Option<&lakelands_api::Cursor>) -> Result<C
         })
         .collect();
     let a = bytes.and_then(|b| serde_json::from_slice::<At>(&b).ok());
-    let a = a.ok_or_else(|| invalid(lakelands_api::error::Case::CursorForeign))?;
+    let a = a.ok_or_else(|| Error::invalid(lakelands_api::error::Case::CursorForeign))?;
     at.as_of = Some(a.at);
     Ok((at, a.now))
 }

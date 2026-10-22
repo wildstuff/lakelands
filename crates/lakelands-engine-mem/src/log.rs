@@ -24,8 +24,6 @@ use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::Position;
 use sha2::{Digest as _, Sha256};
 
-use crate::invalid;
-
 /// One lake's log, lease and segments.
 #[derive(Debug, Default)]
 pub(crate) struct Log {
@@ -110,7 +108,7 @@ impl Log {
         if let Some((tip, _)) = self.tip()
             && self.imported != Some(tip)
         {
-            return Err(invalid(Case::ImportIntoHeld { tip }));
+            return Err(Error::invalid(Case::ImportIntoHeld { tip }));
         }
         self.add(None, events)?;
         if let Some(last) = events.last() {

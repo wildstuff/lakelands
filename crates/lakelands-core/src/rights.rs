@@ -148,7 +148,7 @@ fn built_from<'d>(
         .chain(field.embed.iter().flat_map(|e| &e.from))
         .chain(&measured);
     for name in sources {
-        let Some(source) = decl.fields.iter().find(|f| &f.name == name) else {
+        let Some(source) = decl.field(name) else {
             continue;
         };
         let of_source = match asked.now.get(&source.name) {
@@ -503,12 +503,12 @@ pub fn reads_what_verb_reads<'d>(
     ty: &dyn Fn(&TypeName) -> Option<&'d TypeDecl>,
 ) -> bool {
     let reads = |n: &FieldName| {
-        let field = decl.fields.iter().find(|f| &f.name == n);
+        let field = decl.field(n);
         field.is_none_or(|f| field_access(who, decl, f).reads())
     };
     let far = verb.reads_across(decl, ty);
     let free = |p: &Vec<FieldName>| {
-        let field = decl.fields.iter().any(|f| f.name == p[0]);
+        let field = decl.has_field(&p[0]);
         let r = decl
             .relations
             .iter()
@@ -554,8 +554,7 @@ pub fn holds_nothing_across<'d>(
     // A path leaves the record where it steps through a reference or a
     // relation; into a value of its own it does not.
     let related = |n: &FieldName| {
-        !decl.fields.iter().any(|f| &f.name == n)
-            && decl.relations.iter().any(|r| r.name.as_str() == n.as_str())
+        !decl.has_field(n) && decl.relations.iter().any(|r| r.name.as_str() == n.as_str())
     };
     let leaves = |p: &&Vec<FieldName>| related(&p[0]) || decl.stepped(p, ty).len() > 1;
     let paths: Vec<Vec<FieldName>> = paths.iter().filter(leaves).cloned().collect();
@@ -563,7 +562,7 @@ pub fn holds_nothing_across<'d>(
         return true;
     }
     let far = decl.reads_across(&paths, ty);
-    let first = |p: &Vec<FieldName>| match decl.fields.iter().find(|f| f.name == p[0]) {
+    let first = |p: &Vec<FieldName>| match decl.field(&p[0]) {
         Some(f) => field_access(who, decl, f).reads(),
         None => (decl.relations.iter())
             .filter(|r| r.name.as_str() == p[0].as_str())
@@ -583,7 +582,7 @@ pub fn holds_nothing_across<'d>(
 /// value its `only` names.
 pub fn creates(who: &Principal, decl: &TypeDecl) -> bool {
     own_only(who, &decl.name).iter().all(|(f, v)| {
-        let field = decl.fields.iter().find(|d| &d.name == f);
+        let field = decl.field(f);
         field.is_some_and(|d| match d.authority {
             Authority::Authored | Authority::Shared => field_access(who, decl, d).writes(),
             Authority::Verb => d.initial.as_ref() == Some(v),
@@ -607,7 +606,7 @@ pub fn holds_only(who: &Principal) -> bool {
 pub fn check_only(who: &Principal, decl: &TypeDecl) -> Result<(), Error> {
     use lakelands_api::ontology::StorageKind;
     let applies = |(f, v): &(FieldName, Value)| {
-        let field = decl.fields.iter().find(|d| &d.name == f);
+        let field = decl.field(f);
         field.is_some_and(|d| {
             matches!(d.ty.kind, StorageKind::Text | StorageKind::Reference)
                 && v.is_string()
@@ -619,7 +618,7 @@ pub fn check_only(who: &Principal, decl: &TypeDecl) -> Result<(), Error> {
         return Ok(());
     }
     let ty = decl.name.clone();
-    Err(crate::invalid(Case::OnlyUnappliable { ty }))
+    Err(Error::invalid(Case::OnlyUnappliable { ty }))
 }
 
 /// Refuse a read that probes a field the principal may not read, or a
@@ -634,7 +633,7 @@ pub fn check_probe<'a>(
         let field = field_of(decl, name)?;
         match field_access(who, decl, field) {
             Access::None => return Err(no_field(decl, name)),
-            a if !a.reads() => return Err(refused(Some(name), Refusal::NotGranted)),
+            a if !a.reads() => return Err(Error::refused(Some(name.clone()), Refusal::NotGranted)),
             _ => {}
         }
     }
@@ -676,7 +675,7 @@ pub fn check_search(
     vector_fields: &[&FieldName],
 ) -> Result<(), Error> {
     let vectors = vector_fields.iter().flat_map(|v| {
-        let field = decl.fields.iter().find(|f| &f.name == *v);
+        let field = decl.field(v);
         let embed = field.and_then(|f| f.embed.as_ref());
         embed.into_iter().flat_map(|e| e.from.iter()).chain([*v])
     });
@@ -684,15 +683,14 @@ pub fn check_search(
         return check_probe(who, decl, searched_fields(who, decl).chain(vectors));
     };
     if named.is_empty() {
-        return Err(crate::invalid(Case::SearchFieldsEmpty));
+        return Err(Error::invalid(Case::SearchFieldsEmpty));
     }
     let named: BTreeSet<&FieldName> = named.iter().collect();
     for name in named {
         check_probe(who, decl, [name])?;
         if !decl.fields.iter().any(|f| &f.name == name && f.searchable) {
             let (field, ty) = (name.clone(), decl.name.clone());
-            let said = Box::new(Case::NotSearchable { field, ty }.into());
-            return Err(refused(Some(name), Refusal::Invalid(said)));
+            return Err(Error::invalid_at(name, Case::NotSearchable { field, ty }));
         }
     }
     check_probe(who, decl, vectors)
@@ -710,7 +708,7 @@ pub fn check_text_weights(
     weights: &BTreeMap<FieldName, f64>,
 ) -> Result<(), Error> {
     if weights.is_empty() {
-        return Err(crate::invalid(Case::SearchTextFieldsEmpty));
+        return Err(Error::invalid(Case::SearchTextFieldsEmpty));
     }
     for (name, w) in weights {
         check_probe(who, decl, [name])?;
@@ -722,7 +720,7 @@ pub fn check_text_weights(
         } else {
             continue;
         };
-        return Err(refused(Some(name), Refusal::Invalid(Box::new(case.into()))));
+        return Err(Error::invalid_at(name, case));
     }
     Ok(())
 }
@@ -786,7 +784,7 @@ pub fn check_write(
     patch: &BTreeMap<FieldName, Value>,
 ) -> Result<(), Error> {
     if door == Door::Source && !who.grants.ingest {
-        return Err(refused(None, Refusal::NotGranted));
+        return Err(Error::not_granted());
     }
     not_a_view(decl)?;
     for name in patch.keys() {
@@ -795,10 +793,10 @@ pub fn check_write(
             return Err(no_field(decl, name));
         }
         if !door.admits(field, source) {
-            return Err(refused(Some(name), Refusal::WrongDoor));
+            return Err(Error::refused(Some(name.clone()), Refusal::WrongDoor));
         }
         if !who.grants.access(&decl.name, name).writes() {
-            return Err(refused(Some(name), Refusal::NotGranted));
+            return Err(Error::refused(Some(name.clone()), Refusal::NotGranted));
         }
     }
     Ok(())
@@ -839,7 +837,7 @@ pub fn check_admitted(
         None => live.fields.contains_key(n),
     };
     match patch.keys().find(|n| admitted(n) && others(n)) {
-        Some(name) => Err(refused(Some(name), Refusal::WrongDoor)),
+        Some(name) => Err(Error::refused(Some(name.clone()), Refusal::WrongDoor)),
         None => Ok(()),
     }
 }
@@ -849,19 +847,14 @@ pub fn check_admitted(
 pub fn not_a_view(decl: &TypeDecl) -> Result<(), Error> {
     if decl.view.is_some() {
         let ty = decl.name.clone();
-        return Err(crate::invalid(Case::IsAView { ty }));
+        return Err(Error::invalid(Case::IsAView { ty }));
     }
     Ok(())
 }
 
-fn refused(field: Option<&FieldName>, reason: Refusal) -> Error {
-    let field = field.cloned();
-    Error::Refused { field, reason }
-}
-
 /// The field `decl` declares as `name`, or a refusal naming it.
 fn field_of<'d>(decl: &'d TypeDecl, name: &FieldName) -> Result<&'d FieldDecl, Error> {
-    let field = decl.fields.iter().find(|f| &f.name == name);
+    let field = decl.field(name);
     field.ok_or_else(|| no_field(decl, name))
 }
 
@@ -869,8 +862,7 @@ fn field_of<'d>(decl: &'d TypeDecl, name: &FieldName) -> Result<&'d FieldDecl, E
 /// answer for one the principal may not know of.
 fn no_field(decl: &TypeDecl, name: &FieldName) -> Error {
     let (ty, field) = (decl.name.clone(), name.clone());
-    let said = Box::new(Case::UnknownField { ty, field }.into());
-    refused(Some(name), Refusal::Invalid(said))
+    Error::invalid_at(name, Case::UnknownField { ty, field })
 }
 
 /// A migration that is not in force as `who` may know it: the shape it
@@ -1115,7 +1107,7 @@ pub fn holds(t: &TypeDecl, name: &FieldName) -> bool {
     let relation = |r: &str| t.relations.iter().find(|x| x.name.as_str() == r);
     match name.as_str().split_once('.') {
         Some((r, f)) => relation(r).is_some_and(|x| x.fields.iter().any(|x| x.name.as_str() == f)),
-        None => t.fields.iter().any(|f| &f.name == name) || relation(name.as_str()).is_some(),
+        None => t.has_field(name) || relation(name.as_str()).is_some(),
     }
 }
 
@@ -1189,7 +1181,7 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
         from.all(|(old, _)| holds(&was, old))
     };
     let known = |ty: &TypeName, field: &FieldName| {
-        let found = sees(ty).and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)));
+        let found = sees(ty).and_then(|t| Some((t, t.field(field)?)));
         found.is_some_and(|(t, f)| field_access(who, t, f) != Access::None)
     };
     // A link field's row is judged on its link type (lakelands#1092).
@@ -1261,7 +1253,7 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
         let reads = |f: &FieldName| match own {
             true => read(f),
             false => sees(&b.ty)
-                .and_then(|t| Some((t, t.fields.iter().find(|x| &x.name == f)?)))
+                .and_then(|t| Some((t, t.field(f)?)))
                 .is_some_and(|(t, x)| field_access(who, t, x).reads()),
         };
         e.is_some_and(|e| e.fields_read().into_iter().all(reads))
@@ -1269,12 +1261,7 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
     report.breaches.retain(constraint);
     // A reference left naming no live record, to one who reads it in both
     // shapes and is shown its target type (062).
-    let target = |f: &FieldName| {
-        (m.to.fields.iter().find(|x| &x.name == f))?
-            .ty
-            .target
-            .clone()
-    };
+    let target = |f: &FieldName| (m.to.field(f))?.ty.target.clone();
     report
         .unlive
         .retain(|u| read(&u.field) && target(&u.field).is_some_and(|t| sees(&t).is_some()));

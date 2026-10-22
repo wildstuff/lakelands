@@ -196,7 +196,7 @@ fn wanted(db: &mut Db, names: &Names, decl: &TypeDecl) -> Result<Vec<(FieldName,
         engines::indexed_fields(decl, setting.as_ref().and_then(engines::setting_value))
             .into_iter()
             .filter_map(|f| {
-                let n = decl.fields.iter().find(|d| d.name == f)?.ty.dimensions?;
+                let n = decl.field(&f)?.ty.dimensions?;
                 Some((f, n))
             })
             .collect(),

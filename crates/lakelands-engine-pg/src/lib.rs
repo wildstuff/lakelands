@@ -66,7 +66,7 @@ pub(crate) const NAME: &str = "pg";
 /// build on the development machine (lakelands#1042).
 pub(crate) const REBUILD_RATE: u64 = 2_500;
 
-pub(crate) use lakelands_core::{invalid, lock};
+pub(crate) use lakelands_core::lock;
 
 /// A failed statement, for the host. Of an error the server sends, only
 /// its severity, SQLSTATE and primary message: its `DETAIL`, `HINT`,
@@ -137,7 +137,7 @@ pub(crate) fn target(location: &Location) -> Result<connect::Target> {
     else {
         let (engine, kind) = (NAME.to_owned(), "postgres".to_owned());
         let lake = Box::new(location.lake.clone());
-        return Err(invalid(Case::EngineOtherLocation {
+        return Err(Error::invalid(Case::EngineOtherLocation {
             engine,
             location: kind,
             lake,

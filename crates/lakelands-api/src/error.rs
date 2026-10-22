@@ -211,10 +211,30 @@ impl Error {
     /// no field.
     pub fn invalid(said: impl Into<Said>) -> Error {
         let reason = Refusal::Invalid(Box::new(said.into()));
-        Error::Refused {
-            field: None,
-            reason,
-        }
+        Error::refused(None, reason)
+    }
+
+    /// A refusal of `field`'s value as not well-formed.
+    pub fn invalid_at(field: &FieldName, said: impl Into<Said>) -> Error {
+        let reason = Refusal::Invalid(Box::new(said.into()));
+        Error::refused(Some(field.clone()), reason)
+    }
+
+    /// A refusal of what a constraint does not allow, at `field` if one is
+    /// named.
+    pub fn constraint(field: Option<FieldName>, said: impl Into<Said>) -> Error {
+        let reason = Refusal::Constraint(Box::new(said.into()));
+        Error::refused(field, reason)
+    }
+
+    /// A refusal for want of a grant, naming no field.
+    pub fn not_granted() -> Error {
+        Error::refused(None, Refusal::NotGranted)
+    }
+
+    /// A refusal for `reason`, at `field` if one is named.
+    pub fn refused(field: Option<FieldName>, reason: Refusal) -> Error {
+        Error::Refused { field, reason }
     }
 
     /// The error itself; of a refused record of an ingest, its refusal

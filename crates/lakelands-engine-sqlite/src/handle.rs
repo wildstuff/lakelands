@@ -31,7 +31,7 @@ use crate::projection::{self, MEMBERS, OUTPUTS, PROPOSALS};
 use crate::view::SqliteView;
 use lakelands_api::error::{Case, Detail, Doing, Error, Part, Situation};
 
-use crate::{NAME, REBUILD_RATE, invalid, io_error, lock, sql};
+use crate::{NAME, REBUILD_RATE, io_error, lock, sql};
 
 /// The open transaction of the fold: the latest position a put in it
 /// names, which the commit must reach.
@@ -255,7 +255,7 @@ impl SqliteLake {
         if let Some((tip, _)) = log.tip()
             && self.lease_file.imported(held)? != Some(tip.0)
         {
-            return Err(invalid(Case::ImportIntoHeld { tip }));
+            return Err(Error::invalid(Case::ImportIntoHeld { tip }));
         }
         let (answer, last) = write(&mut log)?;
         if let Some((position, fence)) = last {
@@ -298,7 +298,7 @@ fn check_name(dir: &std::path::Path, lake: &LakeId, create: bool) -> Result<()> 
         Ok(name) if name.trim_end() == lake.as_str() => Ok(()),
         Ok(name) => {
             let (schema, held, lake) = (None, name.trim_end().to_owned(), Box::new(lake.clone()));
-            Err(invalid(Case::LakeOther { schema, held, lake }))
+            Err(Error::invalid(Case::LakeOther { schema, held, lake }))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && create => {
             std::fs::write(&path, format!("{lake}\n"))
@@ -466,7 +466,7 @@ impl ProjectionStore for SqliteLake {
         let mut transaction = lock(&self.transaction);
         let t = transaction
             .take()
-            .ok_or_else(|| invalid(Case::CommitUnbegun))?;
+            .ok_or_else(|| Error::invalid(Case::CommitUnbegun))?;
         let kept = lock(&self.heads).take();
         let heads = self.write(|conn| {
             let folded = projection::folded(conn)?;
@@ -630,7 +630,7 @@ impl ProjectionStore for SqliteLake {
     fn compact(&self) -> Result<Reclaimed> {
         let transaction = lock(&self.transaction);
         if transaction.is_some() {
-            return Err(invalid(Case::CompactInTransaction));
+            return Err(Error::invalid(Case::CompactInTransaction));
         }
         self.write(|conn| {
             // A transaction a failed commit left open is abandoned, as
@@ -666,7 +666,7 @@ impl ProjectionStore for SqliteLake {
     fn choose_order(&self, ty: &TypeName, step: &Choose) -> Result<Option<RecordKey>> {
         let transaction = lock(&self.transaction);
         if transaction.is_some() {
-            return Err(invalid(Case::CompactInTransaction));
+            return Err(Error::invalid(Case::CompactInTransaction));
         }
         self.write(|conn| {
             abandon(conn)?;

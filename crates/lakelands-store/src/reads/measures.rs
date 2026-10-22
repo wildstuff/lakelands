@@ -15,11 +15,11 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use lakelands_api::error::{Case, Place};
 use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Step, Walk};
 use lakelands_api::record::StoredRecord;
-use lakelands_api::{Cursor, Params, RecordKey, RelationName, Result, TypeName, Value};
+use lakelands_api::{Cursor, Error, Params, RecordKey, RelationName, Result, TypeName, Value};
 use lakelands_core::graph::{self, Components, Node};
 use lakelands_core::rights;
 
-use super::{CursorState, Judged, Pulled, Reader, Visible, encode, invalid};
+use super::{CursorState, Judged, Pulled, Reader, Visible, encode};
 
 /// The records a seed page reads at once.
 const PAGE: usize = 256;
@@ -38,28 +38,28 @@ pub(super) fn check(p: &Pattern) -> Result<()> {
     }
     .to_owned();
     if p.to.is_some() {
-        return Err(invalid(Case::MeasureNoTo { measure }));
+        return Err(Error::invalid(Case::MeasureNoTo { measure }));
     }
     if !p.order_by.is_empty() {
-        return Err(invalid(Case::MeasureNoOrder { measure }));
+        return Err(Error::invalid(Case::MeasureNoOrder { measure }));
     }
     if p.steps.is_empty() {
-        return Err(invalid(Case::MeasureNoSteps { measure }));
+        return Err(Error::invalid(Case::MeasureNoSteps { measure }));
     }
     for step in &p.steps {
         if step.depth != Depth::default() {
-            return Err(invalid(Case::MeasureNoDepth { measure }));
+            return Err(Error::invalid(Case::MeasureNoDepth { measure }));
         }
         if step.filter.is_some() {
-            return Err(invalid(Case::MeasureNoWhere { measure }));
+            return Err(Error::invalid(Case::MeasureNoWhere { measure }));
         }
         // It reads every link of a relation, whatever type it reaches.
         if step.ty.is_some() {
-            return Err(invalid(Case::MeasureNoType { measure }));
+            return Err(Error::invalid(Case::MeasureNoType { measure }));
         }
         if p.project == Projection::Components && step.walk != Walk::Both {
             let relation = step.relation.clone();
-            return Err(invalid(Case::ComponentsBothWays { relation }));
+            return Err(Error::invalid(Case::ComponentsBothWays { relation }));
         }
     }
     Ok(())
@@ -73,7 +73,7 @@ impl Reader<'_> {
     /// one some type it is shown declares, or that relation's inverse.
     pub(super) fn untyped(&self, p: &mut Pattern) -> Result<Judged<QueryResult>> {
         let asks = |asks: &str| {
-            invalid(Case::StartNoType {
+            Error::invalid(Case::StartNoType {
                 asks: asks.to_owned(),
             })
         };
@@ -92,7 +92,7 @@ impl Reader<'_> {
         }
         let limit = self.limit(p.limit, true)?;
         if s.named.is_some() || p.steps.iter().any(|s| s.named.is_some()) {
-            return Err(invalid(Case::PatternAsNotRows));
+            return Err(Error::invalid(Case::PatternAsNotRows));
         }
         check(p)?;
         // An inverse names every relation that bears it, each walked as
@@ -102,7 +102,7 @@ impl Reader<'_> {
             let inverses = self.inverses_anywhere(&step.relation);
             if inverses.is_empty() && !self.out_any(&step.relation) {
                 let relation = step.relation.clone();
-                return Err(invalid(Case::NoRelationAnywhere { relation }));
+                return Err(Error::invalid(Case::NoRelationAnywhere { relation }));
             }
             if inverses.is_empty() {
                 reach.push(super::Reach {

@@ -75,12 +75,7 @@ pub(crate) fn others_shown(
 ) -> impl Iterator<Item = MigrationReport> {
     others.into_iter().filter_map(move |mut t| {
         let decl = sight.ty(&t.ty).ok()?;
-        let target = |f: &FieldName| {
-            (decl.fields.iter().find(|x| &x.name == f))?
-                .ty
-                .target
-                .clone()
-        };
+        let target = |f: &FieldName| (decl.field(f))?.ty.target.clone();
         let shows = |f: &FieldName| target(f).is_some_and(|x| sight.ty(&x).is_ok());
         t.unlive
             .retain(|u| sight.reads_from(&t.ty, &u.field) && shows(&u.field));
@@ -143,9 +138,12 @@ impl Call<'_> {
     pub(crate) fn restricted_to_act(&self) -> Result<()> {
         match self.who.grants.restricted {
             true => Ok(()),
-            false => Err(refused(Refusal::GrantNeeded {
-                grant: "restricted".into(),
-            })),
+            false => Err(Error::refused(
+                None,
+                Refusal::GrantNeeded {
+                    grant: "restricted".into(),
+                },
+            )),
         }
     }
 
@@ -226,10 +224,10 @@ impl Call<'_> {
                 let mut t = (Sight::held(self.who, &w.ontology).ty(&ty)?).clone();
                 // The field is added to its author's view of the type (027).
                 rights::known_fields(self.who, &mut t, &|n| w.ontology.ty(n).ok());
-                if t.fields.iter().any(|f| f.name == field.name) {
+                if t.has_field(&field.name) {
                     let (ty, name) = (ty.clone(), field.name.clone());
                     let case = Case::FieldExists { ty, field: name };
-                    return Err(invalid_field(&field.name, case));
+                    return Err(Error::invalid_at(&field.name, case));
                 }
                 t.fields.push(*field);
                 self.declaring_one(w, Declaration::Type(t), when, against)
@@ -326,7 +324,7 @@ impl Call<'_> {
         let preflight = self.preflight_plan(w, view.as_ref(), judged, (Some(now), telling))?;
         let report = self.shown(w, &m, preflight.report.clone())?;
         if against.report.is_some_and(|id| id != report.report_id) {
-            return Err(invalid(Case::MigrationStale));
+            return Err(Error::invalid(Case::MigrationStale));
         }
         // And each type whose references a re-key rewrites, as its author
         // is shown it (062).
@@ -374,7 +372,7 @@ impl Call<'_> {
             .report
             .is_some_and(|id| id != preflight.report.report_id)
         {
-            return Err(invalid(Case::MigrationStale));
+            return Err(Error::invalid(Case::MigrationStale));
         }
         self.renames_shown(&w.ontology, &m, &preflight.report)?;
         let report = self.shown_value_type(&w.ontology, preflight.report.clone());
@@ -400,7 +398,7 @@ impl Call<'_> {
 /// Refused `plan_stale` where the change is made against another plan.
 fn stale(plan: &Plan, against: Against<'_>) -> Result<()> {
     match against.plan {
-        Some(id) if id != plan.report_id => Err(invalid(Case::PlanStale)),
+        Some(id) if id != plan.report_id => Err(Error::invalid(Case::PlanStale)),
         _ => Ok(()),
     }
 }
@@ -418,12 +416,7 @@ pub(crate) fn shown_plan(
     plan.types.retain(|t| sight.ty(&t.ty).is_ok());
     for t in &mut plan.types {
         let decl = sight.ty(&t.ty)?;
-        let target = |f: &FieldName| {
-            (decl.fields.iter().find(|x| &x.name == f))?
-                .ty
-                .target
-                .clone()
-        };
+        let target = |f: &FieldName| (decl.field(f))?.ty.target.clone();
         let shows = |f: &FieldName| target(f).is_some_and(|x| sight.ty(&x).is_ok());
         let reads = |f: &FieldName| sight.reads_from(&t.ty, f);
         t.unlive.retain(|u| reads(&u.field) && shows(&u.field));

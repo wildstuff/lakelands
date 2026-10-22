@@ -43,8 +43,9 @@ use lakelands_api::write::{
     Declaration, ForgetField, ForgetRecords, ForgetReport, ForgetSetReport, ForgetWay, RecordField,
     TypeRetired,
 };
-use lakelands_api::{FieldName, Position, RecordKey, Result, SourceId, TypeName, WriteContext};
-use lakelands_core::invalid;
+use lakelands_api::{
+    Error, FieldName, Position, RecordKey, Result, SourceId, TypeName, WriteContext,
+};
 
 use crate::lake::{Lake, Staged, every, forgotten_list};
 use crate::log::Draft;
@@ -450,10 +451,10 @@ fn set(sources: &[SourceId]) -> Result<Vec<SourceId>> {
     set.sort();
     if let Some(twice) = set.windows(2).find(|w| w[0] == w[1]) {
         let source = twice[0].clone();
-        return Err(invalid(Case::ForgetSourceTwice { source }));
+        return Err(Error::invalid(Case::ForgetSourceTwice { source }));
     }
     match set.is_empty() {
-        true => Err(invalid(Case::ForgetSetEmpty)),
+        true => Err(Error::invalid(Case::ForgetSetEmpty)),
         false => Ok(set),
     }
 }
@@ -552,7 +553,7 @@ fn refuse_unknown(
         let unknown = |(r, seen): &&(ForgetReport, bool)| !seen && !done.contains_key(&r.source);
         if let Some((r, _)) = found.iter().find(unknown) {
             let source = r.source.clone();
-            return Err(invalid(Case::ForgetSourceUnknown { source }));
+            return Err(Error::invalid(Case::ForgetSourceUnknown { source }));
         }
     }
     Ok(found.into_iter().map(|(r, _)| r).collect())
@@ -613,14 +614,14 @@ fn run_of(
         return Ok(report);
     }
     if report_id.is_some_and(|given| given != id(set, view.position())) {
-        return Err(invalid(Case::ForgetReportStale));
+        return Err(Error::invalid(Case::ForgetReportStale));
     }
     let (found, retire) = found(lake, view.as_ref(), &w.ontology, set)?;
     let reports = refuse_unknown(found, view.as_ref(), known)?;
     let owes = |r: &&ForgetReport| owed.contains(&&r.source);
     if let Some(r) = reports.iter().filter(owes).find(|r| r.plaintext > 0) {
         let (source, count) = (r.source.clone(), r.plaintext);
-        return Err(invalid(Case::ForgetPlaintext { source, count }));
+        return Err(Error::invalid(Case::ForgetPlaintext { source, count }));
     }
     let now = lake.clock(&mut w);
     let mut drafts = Vec::new();

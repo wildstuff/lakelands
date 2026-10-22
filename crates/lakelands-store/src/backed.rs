@@ -50,8 +50,8 @@ use lakelands_api::record::{FieldMeta, Origin, Patch};
 use lakelands_api::seam::{Accepted, CallCause, EmbedBackend, FunctionCall};
 use lakelands_api::write::{FunctionDecl, ProposalFilter, ProposalState, ProposedWrite};
 use lakelands_api::{
-    FieldName, LakeId, Position, ProposalId, RecordKey, Result, SourceId, Timestamp, TypeName,
-    Value, WriteContext,
+    Error, FieldName, LakeId, Position, ProposalId, RecordKey, Result, SourceId, Timestamp,
+    TypeName, Value, WriteContext,
 };
 use serde_json::json;
 
@@ -671,10 +671,7 @@ pub fn settle_fields(
     }
     let plan = outputs.plans.get(ontology, decl);
     let order = plan.settled.as_ref().map_err(|why| {
-        let (ty, cause) = (
-            decl.name.clone(),
-            Box::new(lakelands_core::invalid(why.clone())),
-        );
+        let (ty, cause) = (decl.name.clone(), Box::new(Error::invalid(why.clone())));
         lakelands_core::damaged(Part::Projection, None, Flaw::CannotOrder { ty, cause })
     })?;
     let mut waiting: BTreeSet<FieldName> = BTreeSet::new();

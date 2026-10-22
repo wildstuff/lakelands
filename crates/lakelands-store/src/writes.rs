@@ -64,10 +64,10 @@ use lakelands_api::{
 use lakelands_core::expr::{self, Place as Eval, RecordScope, Scope, WriteScope};
 use lakelands_core::rights::{self, Door};
 use lakelands_core::sight::Sight;
-use lakelands_core::{describe, invalid, links, shape, value};
+use lakelands_core::{describe, links, shape, value};
 
 use crate::backed::{Outputs, is_backed};
-use crate::declare::{self, invalid_field};
+use crate::declare::{self};
 use crate::lake::{
     AGING_RULE_TYPE, Lake, SETTING_TYPE, Writer, computes, computes_again, computing_changed,
     every, fields_again, find_proposal,
@@ -122,10 +122,10 @@ fn scoped<'k>(
     let verb_scope = verb.scope;
     let (verb, ty) = (verb.name.clone(), verb.on.clone());
     match (verb_scope, key) {
-        (On::Type, Some(_)) => Err(invalid(Case::VerbTypeTakesNoKey { verb, ty })),
-        (On::Record, None) => Err(invalid(Case::VerbNeedsKey { verb, ty })),
+        (On::Type, Some(_)) => Err(Error::invalid(Case::VerbTypeTakesNoKey { verb, ty })),
+        (On::Record, None) => Err(Error::invalid(Case::VerbNeedsKey { verb, ty })),
         (On::Type, None) if expected.is_some() => {
-            Err(invalid(Case::VerbTypeNoVersion { verb, ty }))
+            Err(Error::invalid(Case::VerbTypeNoVersion { verb, ty }))
         }
         _ => Ok(key),
     }
@@ -267,7 +267,7 @@ impl Walked {
                     ty,
                     records,
                 };
-                return Err(constraint(None, case));
+                return Err(Error::constraint(None, case));
             }
             // A plan only told is lossy by what its reader is told of: a
             // record held from it moves nothing it is answered (062).
@@ -378,21 +378,6 @@ impl Unlived {
     }
 }
 
-/// A refusal of what a constraint does not allow, at `field` if one is named.
-pub(crate) fn constraint(
-    field: Option<FieldName>,
-    said: impl Into<lakelands_api::error::Said>,
-) -> Error {
-    let reason = Refusal::Constraint(Box::new(said.into()));
-    Error::Refused { field, reason }
-}
-
-/// A refusal that names no field.
-pub(crate) fn refused(reason: Refusal) -> Error {
-    let field = None;
-    Error::Refused { field, reason }
-}
-
 /// Refuse a write or retire of a setting its writer is not told whether it
 /// exists, a source's or one naming fields of a type it does not read
 /// whole (063), before anything of it is judged: the same in a lake that
@@ -406,7 +391,7 @@ pub(crate) fn granted(ok: bool) -> Result<()> {
     if ok {
         return Ok(());
     }
-    Err(refused(Refusal::NotGranted))
+    Err(Error::not_granted())
 }
 
 /// Refuse a write whose context is deeper than the lake's reactive
@@ -421,7 +406,7 @@ pub(crate) fn granted(ok: bool) -> Result<()> {
 pub fn check_context(lake: &Lake, context: &WriteContext) -> Result<()> {
     let max = lake.limits.max_reactive_depth;
     if context.depth > max {
-        return Err(refused(Refusal::TooDeep { max }));
+        return Err(Error::refused(None, Refusal::TooDeep { max }));
     }
     Ok(())
 }
@@ -618,7 +603,7 @@ impl Call<'_> {
     ) -> Result<Option<Outcome>> {
         let Some(k) = key else { return Ok(None) };
         if k.as_str().contains('\0') {
-            return Err(invalid(Case::IdempotencyKeyNul));
+            return Err(Error::invalid(Case::IdempotencyKeyNul));
         }
         let id = log::authored_id(&self.who.writer(), k);
         let Some(pos) = view.applied(&id)? else {
@@ -722,7 +707,7 @@ impl Call<'_> {
         view: &dyn ProjectionView,
         proposal: &ProposalId,
     ) -> Result<Outcome> {
-        let decided = || refused(Refusal::Decided);
+        let decided = || Error::refused(None, Refusal::Decided);
         let at = view.applied(&log::accepted_id(&self.lake.id, proposal))?;
         let Some(at) = at else { return Err(decided()) };
         let events = self.appended(w, at)?;
@@ -928,7 +913,7 @@ fn shaped(
     if let Some(e) = failed.into_inner() {
         return Err(e);
     }
-    report.map_err(invalid)
+    report.map_err(Error::invalid)
 }
 
 /// Of each field of `m.to` whose reference target is not the one `decl`
@@ -997,7 +982,7 @@ fn retargeted_fields(decl: &TypeDecl, m: &Migration) -> Vec<(FieldName, FieldNam
             .iter()
             .find(|(_, t)| t == to)
             .map_or(to, |(f, _)| f);
-        decl.fields.iter().find(|f| &f.name == from)
+        decl.field(from)
     };
     (m.to.fields.iter())
         .filter_map(|f| {
@@ -1230,20 +1215,21 @@ pub fn check_values(
     for (name, v) in patch {
         let f = fields.iter().find(|f| &f.name == name).ok_or_else(|| {
             let (ty, field) = (decl.name.clone(), name.clone());
-            invalid_field(name, Case::UnknownField { ty, field })
+            Error::invalid_at(name, Case::UnknownField { ty, field })
         })?;
         let vt =
             f.ty.value_type
                 .as_ref()
                 .and_then(|n| lake_types.value_types.get(n.as_str()))
                 .map(|e| &e.decl);
-        let checked = value::check(v, &f.ty, vt).map_err(|e| constraint(Some(name.clone()), e))?;
+        let checked =
+            value::check(v, &f.ty, vt).map_err(|e| Error::constraint(Some(name.clone()), e))?;
         if let (Some(vt), false) = (vt, checked.is_null())
             && !satisfies(vt, &checked)?
         {
             let value_type = vt.name.clone();
             let case = Case::ValueConstraint { value_type };
-            return Err(constraint(Some(name.clone()), case));
+            return Err(Error::constraint(Some(name.clone()), case));
         }
         out.insert(name.clone(), checked);
     }
@@ -1290,7 +1276,7 @@ fn fill_key_fields(
     if parts.len() != decl.key.len() {
         let (ty, fields, key, parts) =
             (decl.name.clone(), decl.key.len(), key.clone(), parts.len());
-        return Err(invalid(Case::KeyComponents {
+        return Err(Error::invalid(Case::KeyComponents {
             ty,
             fields,
             key,
@@ -1310,7 +1296,7 @@ fn fill_key_fields(
         let kind = f.ty.kind;
         let wrong = |part: &str| {
             let (part, field) = (part.to_owned(), name.clone());
-            invalid(Case::KeyComponentKind { part, kind, field })
+            Error::invalid(Case::KeyComponentKind { part, kind, field })
         };
         let v = match kind {
             lakelands_api::ontology::StorageKind::Number => {
@@ -1345,7 +1331,7 @@ fn check_references(
 ) -> Result<()> {
     let decl = ontology.ty(ty)?;
     for (name, v) in patch {
-        let Some(f) = decl.fields.iter().find(|f| &f.name == name) else {
+        let Some(f) = decl.field(name) else {
             continue;
         };
         let (Some(target), Some(to)) = (&f.ty.target, v.as_str()) else {
@@ -1357,7 +1343,7 @@ fn check_references(
         }
         if live_for(view, pending, ontology, target, &to, who)?.is_none() {
             let (field, ty, key) = (name.clone(), target.clone(), to);
-            return Err(constraint(
+            return Err(Error::constraint(
                 Some(name.clone()),
                 Case::NotLive { field, ty, key },
             ));
@@ -1432,7 +1418,7 @@ fn computed_from<'d>(
         && f.depends_on.iter().any(|d| {
             let new = !seen.contains(&d);
             seen.push(d);
-            let field = decl.fields.iter().find(|x| &x.name == d);
+            let field = decl.field(d);
             sent.contains(d) || new && field.is_some_and(|x| computed_from(decl, x, sent, seen))
         })
 }
@@ -1451,7 +1437,7 @@ fn check_key_agrees(
     match lakelands_core::log::record_key(decl, &fields) {
         Some(derived) if &derived != key => {
             let (key, ty) = (key.clone(), decl.name.clone());
-            Err(invalid(Case::KeyDisagrees { key, ty, derived }))
+            Err(Error::invalid(Case::KeyDisagrees { key, ty, derived }))
         }
         _ => Ok(()),
     }
@@ -1460,7 +1446,7 @@ fn check_key_agrees(
 /// Refuse a key that is empty or holds a NUL character.
 pub(crate) fn check_key(key: &RecordKey) -> Result<()> {
     if key.as_str().is_empty() || key.as_str().contains('\0') {
-        return Err(invalid(Case::KeyEmpty));
+        return Err(Error::invalid(Case::KeyEmpty));
     }
     Ok(())
 }
@@ -1470,7 +1456,7 @@ pub(crate) fn check_key(key: &RecordKey) -> Result<()> {
 pub(crate) fn check_source(source: &SourceId) -> Result<()> {
     match formed(source) {
         true => Ok(()),
-        false => Err(invalid(Case::SourceIdForm)),
+        false => Err(Error::invalid(Case::SourceIdForm)),
     }
 }
 
@@ -1487,7 +1473,7 @@ pub(crate) fn check_delivery(d: &lakelands_api::DeliveryId) -> Result<()> {
         .strip_prefix('d')
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
     if s.is_empty() || s.contains('\0') || own {
-        return Err(invalid(Case::DeliveryIdForm));
+        return Err(Error::invalid(Case::DeliveryIdForm));
     }
     Ok(())
 }
@@ -1727,7 +1713,7 @@ fn stamped(
             key: key.to_string(),
         }];
         let case = Case::SettingGroupStamped;
-        return Err(invalid_field(&field, Said { at, case }));
+        return Err(Error::invalid_at(&field, Said { at, case }));
     }
     if before.and_then(|b| b.get(&field)).unwrap_or(&Value::Null) != &group {
         patch.insert(field, group);
@@ -1935,7 +1921,7 @@ pub(crate) fn reached(
         .into_iter()
         .collect();
     out.extend(refs.iter().filter_map(|(n, v)| {
-        let f = decl.fields.iter().find(|f| &f.name == n)?;
+        let f = decl.field(n)?;
         Some((f.ty.target.clone()?, RecordKey::from(v.as_str()?)))
     }));
     out.extend(across);
@@ -2095,7 +2081,10 @@ fn requires(
         key,
         part,
     };
-    Err(refused(Refusal::Precondition(Box::new(case.into()))))
+    Err(Error::refused(
+        None,
+        Refusal::Precondition(Box::new(case.into())),
+    ))
 }
 
 /// The values a write verb's assignments give `record` for a call with
@@ -2140,7 +2129,7 @@ fn assigned(
         across.reached()?;
         let v = v.map_err(|why| {
             let (verb, field, why) = (verb.name.clone(), a.field.clone(), Box::new(why));
-            invalid(Case::VerbCannotCompute { verb, field, why })
+            Error::invalid(Case::VerbCannotCompute { verb, field, why })
         })?;
         let kind = o
             .ty(&verb.on)?
@@ -2152,7 +2141,7 @@ fn assigned(
             .and_then(|k| expr::eval::to_json(&v, k, None))
             .ok_or_else(|| {
                 let (verb, field) = (verb.name.clone(), a.field.clone());
-                invalid(Case::VerbValueUnfit { verb, field })
+                Error::invalid(Case::VerbValueUnfit { verb, field })
             })?;
         patch.insert(a.field.clone(), json);
     }
@@ -2270,7 +2259,7 @@ impl<'a> Across<'a> {
             // match, which would let a hold grant `not exists` (055).
             let stored = (self.stored)(&named.0, &named.1).ok().flatten();
             if stored.is_some_and(|r| !r.retired) {
-                self.refuse(refused(Refusal::NotGranted));
+                self.refuse(Error::not_granted());
             }
             return None;
         };
@@ -2297,7 +2286,7 @@ impl<'a> Across<'a> {
     fn exists(&self, fields: &BTreeMap<FieldName, Value>, relation: &FieldName) -> bool {
         // The match or the link is a step toward `max_depth`.
         if self.max == 0 {
-            self.refuse(invalid(Case::StepTooDeep { max: 0, asked: 1 }));
+            self.refuse(Error::invalid(Case::StepTooDeep { max: 0, asked: 1 }));
             return false;
         }
         if let Some(r) = self.on.derived_step(relation) {
@@ -2315,7 +2304,7 @@ impl<'a> Across<'a> {
         // Its caller holds nothing of the link from it (055).
         let found = self.reach(&(lt, link)).is_some();
         if !found {
-            self.refuse(refused(Refusal::NotGranted));
+            self.refuse(Error::not_granted());
         }
         found
     }
@@ -2338,7 +2327,7 @@ impl<'a> Across<'a> {
         let asked = steps.len().saturating_sub(1) as u32 + u32::from(derived.is_some());
         let refuse = |e: Error| self.refuse(e);
         if asked > self.max {
-            refuse(invalid(Case::StepTooDeep {
+            refuse(Error::invalid(Case::StepTooDeep {
                 max: self.max,
                 asked,
             }));
@@ -2359,7 +2348,7 @@ impl<'a> Across<'a> {
             // reached anyway is refused as the verb not its, naming nothing.
             let found = reach(&(lt.name.clone(), link));
             if found.is_none() {
-                refuse(refused(Refusal::NotGranted));
+                refuse(Error::not_granted());
             }
             at = Some(found?);
         }
@@ -2370,7 +2359,7 @@ impl<'a> Across<'a> {
             let found = reach(&named);
             if found.is_none() {
                 let (field, ty, key) = (via.clone(), to.clone(), named.1.clone());
-                refuse(constraint(
+                refuse(Error::constraint(
                     Some(via.clone()),
                     Case::NotLive { field, ty, key },
                 ));
@@ -2639,14 +2628,14 @@ impl Decide<'_> {
         let lt = links::link_type_name(ty, relation);
         self.w.ontology.ty(&lt)?;
         if fields.is_some() && r.authority != Authority::Authored {
-            return Err(refused(Refusal::WrongDoor));
+            return Err(Error::refused(None, Refusal::WrongDoor));
         }
         let ends = [links::FROM, links::TO].map(FieldName::from);
         let mut ends = ends
             .iter()
             .filter(|e| fields.is_some_and(|f| f.contains_key(*e)));
         if let Some(end) = ends.next() {
-            return Err(invalid_field(
+            return Err(Error::invalid_at(
                 end,
                 Case::LinkEndAsField { end: end.clone() },
             ));
@@ -2717,10 +2706,7 @@ impl Decide<'_> {
             .map(|v| v.name.clone())
             .collect();
         match decl.fields.iter().any(ours) && !verbs.is_empty() {
-            true => Error::Refused {
-                field: Some(field.clone()),
-                reason: Refusal::VerbsOnly { verbs },
-            },
+            true => Error::refused(Some(field.clone()), Refusal::VerbsOnly { verbs }),
             false => e,
         }
     }
@@ -2736,8 +2722,8 @@ impl Decide<'_> {
             .map(|v| v.name.clone())
             .collect();
         match verbs.is_empty() {
-            true => refused(Refusal::WrongDoor),
-            false => refused(Refusal::VerbsOnly { verbs }),
+            true => Error::refused(None, Refusal::WrongDoor),
+            false => Error::refused(None, Refusal::VerbsOnly { verbs }),
         }
     }
 
@@ -2754,7 +2740,7 @@ impl Decide<'_> {
     ) -> Result<RecordPlan> {
         let decl = self.w.ontology.ty(ty)?;
         if patch.is_empty() {
-            return Err(invalid(Case::PatchEmpty));
+            return Err(Error::invalid(Case::PatchEmpty));
         }
         let patch = self.checked(decl, key, patch)?;
         let t = match reached {
@@ -2813,7 +2799,7 @@ impl Decide<'_> {
                     ty,
                     key,
                 };
-                return Err(refused(Refusal::Constraint(Box::new(case.into()))));
+                return Err(Error::constraint(None, case));
             }
         }
         Ok(())
@@ -2905,7 +2891,7 @@ impl Decide<'_> {
         self.constraints_hold(decl, live.filter(|_| !other), &after, &sent)?;
         if after.ty.as_str() == AGING_RULE_TYPE {
             let rule = crate::aging::check(&w.ontology, &after.fields)
-                .map_err(|(field, said)| invalid_field(&field, *said))?;
+                .map_err(|(field, said)| Error::invalid_at(&field, *said))?;
             crate::aging::check_authority(who, &w.ontology, &rule)?;
         }
         if after.ty.as_str() == SETTING_TYPE && !judged_early {
@@ -3361,7 +3347,7 @@ impl Call<'_> {
         let declared = |n: &&FieldName| verb.payload.iter().any(|f| &f.name == *n);
         if let Some(name) = payload.keys().find(|n| !declared(n)) {
             let (verb, member) = (verb.name.clone(), name.clone());
-            return Err(invalid_field(
+            return Err(Error::invalid_at(
                 name,
                 Case::PayloadUndeclared { verb, member },
             ));
@@ -3371,7 +3357,7 @@ impl Call<'_> {
             if checked.get(&f.name).is_none_or(Value::is_null) {
                 let (verb, member) = (verb.name.clone(), f.name.clone());
                 let case = Case::PayloadRequired { verb, member };
-                return Err(constraint(Some(f.name.clone()), case));
+                return Err(Error::constraint(Some(f.name.clone()), case));
             }
         }
         Ok(checked)
@@ -3815,7 +3801,7 @@ impl Call<'_> {
             return Ok(());
         }
         let (ty, key) = (ty.clone(), key.cloned());
-        Err(invalid(Case::WriteChangedSinceProposed { ty, key }))
+        Err(Error::invalid(Case::WriteChangedSinceProposed { ty, key }))
     }
 
     /// `accept`: apply a pending proposal's write, written as the proposer.
@@ -3877,7 +3863,7 @@ impl Call<'_> {
         if let Some(id) = plan_id {
             let Some(change) = write.change() else {
                 let proposal = proposal.clone();
-                return Err(invalid(Case::ProposalPlansNothing { proposal }));
+                return Err(Error::invalid(Case::ProposalPlansNothing { proposal }));
             };
             let against = Against {
                 plan: Some(id),
@@ -4008,7 +3994,7 @@ impl Call<'_> {
                     .any(|d| matches!(&d.declaration, Declaration::Verb(v) if *v == decl))
                 {
                     let verb = verb.clone();
-                    return Err(invalid(Case::VerbRedeclared { verb }));
+                    return Err(Error::invalid(Case::VerbRedeclared { verb }));
                 }
                 if let VerbEffect::External { executor } = &decl.effect {
                     bound_executor(self.lake, executor)?;
@@ -4039,7 +4025,7 @@ impl Call<'_> {
                 };
                 if let Some(d) = declarations.iter().find(|d| since(d)) {
                     let (what, name) = naming(d);
-                    return Err(invalid(Case::DeclaredSinceProposed { what, name }));
+                    return Err(Error::invalid(Case::DeclaredSinceProposed { what, name }));
                 }
                 // A withdrawal something reads is refused as its reviewer is
                 // shown the lake: naming a reader it is shown, and not
@@ -4074,7 +4060,7 @@ impl Call<'_> {
                 // (013, extended).
                 let ty = &migration.to.name;
                 let head = shape::schema_hash(w.ontology.ty(ty)?).ok();
-                let changed = || invalid(Case::ChangedSinceProposed { ty: ty.clone() });
+                let changed = || Error::invalid(Case::ChangedSinceProposed { ty: ty.clone() });
                 if head.as_ref() != Some(&report.from_schema_hash) {
                     return Err(changed());
                 }
@@ -4107,7 +4093,7 @@ impl Call<'_> {
                 let head = w.ontology.value_types.get(to.name.as_str());
                 let changed = || {
                     let value_type = to.name.clone();
-                    invalid(Case::ValueTypeChangedSinceProposed { value_type })
+                    Error::invalid(Case::ValueTypeChangedSinceProposed { value_type })
                 };
                 if head.map(|v| v.version) != Some(report.from_version) {
                     return Err(changed());
@@ -4195,7 +4181,7 @@ impl Call<'_> {
                     true => Refusal::WrongDoor,
                     false => Refusal::VerbsOnly { verbs },
                 };
-                Error::Refused { field, reason }
+                Error::refused(field, reason)
             }
             e => e,
         };
@@ -4223,7 +4209,7 @@ impl Call<'_> {
         }
         match listed {
             Some(l) if named.shown_by(l, &sees, &read, &requires) => e,
-            _ => invalid(Case::WriteChangedSinceProposed { ty, key }),
+            _ => Error::invalid(Case::WriteChangedSinceProposed { ty, key }),
         }
     }
 
@@ -4276,7 +4262,7 @@ impl Call<'_> {
         let p = find_proposal(view.as_ref(), proposal)?;
         self.decides(&w, &p, &self.listed(&p, asked)?)?;
         if p.state != ProposalState::Pending {
-            return Err(refused(Refusal::Decided));
+            return Err(Error::refused(None, Refusal::Decided));
         }
         let now = self.lake.clock(&mut w);
         // A rejected call that its own record no longer makes is recorded
@@ -4354,7 +4340,7 @@ impl Call<'_> {
             let (depth, max) = (m, self.lake.limits.max_reactive_depth);
             let said = Said::from(Case::TriggerTooDeep { depth, max });
             let name = t.name.clone();
-            return Err(invalid(said.within(Place::Trigger { name })));
+            return Err(Error::invalid(said.within(Place::Trigger { name })));
         }
         let backings = &self.lake.seams.backings;
         if let Declaration::Function(f) = d
@@ -4477,7 +4463,7 @@ impl Call<'_> {
         let sees = Sight::held(self.who, held);
         for (was, t, at) in changed {
             let judged = verbs_judged_again((held, &after), was, t, &|d| sees.shows(d));
-            judged.map_err(|said| invalid(said).within(at))?;
+            judged.map_err(|said| Error::invalid(said).within(at))?;
         }
         Ok(())
     }
@@ -4511,7 +4497,7 @@ impl Call<'_> {
                 let t = Sight::held(self.who, &w.ontology).ty(name)?;
                 if t.view.is_some() || !crate::backed::computed_outside(&w.ontology, t) {
                     let ty = name.clone();
-                    return Err(invalid(Case::NothingComputedOutside { ty }));
+                    return Err(Error::invalid(Case::NothingComputedOutside { ty }));
                 }
                 Declaration::Type(w.ontology.as_declared(name)?)
             }
@@ -4716,7 +4702,7 @@ impl Call<'_> {
                     let read = |f| crate::backed::computed_reads(&after, f);
                     names.extend(x.fields.iter().filter_map(read).flatten());
                 }
-                let has = |n: &&FieldName| t.fields.iter().any(|f| &f.name == *n);
+                let has = |n: &&FieldName| t.has_field(n);
                 rights::check_probe(self.who, t, names.iter().filter(has))?;
             }
         }
@@ -4817,7 +4803,7 @@ impl Call<'_> {
         bound: bool,
     ) -> Result<()> {
         if declarations.is_empty() {
-            return Err(invalid(Case::SetEmpty));
+            return Err(Error::invalid(Case::SetEmpty));
         }
         let identities: Vec<String> = declarations
             .iter()
@@ -4827,7 +4813,7 @@ impl Call<'_> {
         let mut problems: Vec<(Place, Error)> = Vec::new();
         for (i, id) in identities.iter().enumerate() {
             if identities[..i].contains(id) {
-                let twice = invalid(Case::SetDeclaresTwice);
+                let twice = Error::invalid(Case::SetDeclaresTwice);
                 problems.push((declarations[i].place(), twice));
             }
         }
@@ -4843,8 +4829,7 @@ impl Call<'_> {
                             return Some(t);
                         };
                         let seen = &ontology.types.get(&t.name)?.decl;
-                        let has =
-                            |d: &TypeDecl, f: &FieldDecl| d.fields.iter().any(|x| x.name == f.name);
+                        let has = |d: &TypeDecl, f: &FieldDecl| d.has_field(&f.name);
                         t.fields.retain(|f| has(seen, f) || !has(&h.decl, f));
                         Some(t)
                     };
@@ -4868,7 +4853,7 @@ impl Call<'_> {
             }
             count => {
                 let problems = problems.into_iter().map(|(at, e)| e.within(at)).collect();
-                Err(invalid(Case::SetRefused { count, problems }))
+                Err(Error::invalid(Case::SetRefused { count, problems }))
             }
         }
     }
@@ -4977,7 +4962,7 @@ impl Call<'_> {
             let (schema_hash, with) = match &declaration {
                 Declaration::Type(t) => {
                     self.name_held(w, t)?;
-                    let hash = shape::schema_hash(t).map_err(invalid)?;
+                    let hash = shape::schema_hash(t).map_err(Error::invalid)?;
                     (Some(hash), link_type_drafts(&w.ontology, t, now)?)
                 }
                 // A set of a type computed again is decided by its walk, over
@@ -5096,7 +5081,7 @@ impl Call<'_> {
                 _ => "its records".to_owned(),
             };
             let (kind, name) = (Naming::Type, name.to_owned());
-            return Err(invalid(Case::WithdrawnInUse { kind, name, by }));
+            return Err(Error::invalid(Case::WithdrawnInUse { kind, name, by }));
         }
         let kind = DeclarationKind::Type;
         let gone = |l: TypeName| {
@@ -5125,7 +5110,7 @@ impl Call<'_> {
         let view = self.lake.engine.view(None)?;
         for ty in names {
             if stored(view.as_ref(), &ty)? > 0 {
-                return Err(invalid(Case::WithdrawnNameHeld { ty }));
+                return Err(Error::invalid(Case::WithdrawnNameHeld { ty }));
             }
         }
         Ok(())
@@ -5277,12 +5262,7 @@ impl Call<'_> {
             };
             let (breaches, lossless) = walked.kept(telling)?;
             // A reference's count to one who reads it and is shown its target.
-            let target = |f: &FieldName| {
-                (decl.fields.iter().find(|x| &x.name == f))?
-                    .ty
-                    .target
-                    .clone()
-            };
+            let target = |f: &FieldName| (decl.field(f))?.ty.target.clone();
             let shows = |f: &FieldName| target(f).is_some_and(|t| sight.ty(&t).is_ok());
             let reads = |f: &FieldName| sight.reads_from(ty, f);
             let mut unlive = unlived.counted(v, &sight, ty)?;
@@ -5290,7 +5270,7 @@ impl Call<'_> {
             if sight.ty(ty).is_err() || known.is_empty() {
                 continue;
             }
-            let hash = shape::schema_hash(decl).map_err(invalid)?;
+            let hash = shape::schema_hash(decl).map_err(Error::invalid)?;
             let mut report = MigrationReport {
                 ty: ty.clone(),
                 from_schema_hash: hash.clone(),
@@ -5400,7 +5380,7 @@ impl Call<'_> {
                     if out.len() as u64 >= u64::from(max) {
                         let (field, reason) =
                             (Some(s.name.as_str().into()), Refusal::TooLarge { max });
-                        return Err(Error::Refused { field, reason });
+                        return Err(Error::refused(field, reason));
                     }
                     let change = (s.name.clone(), ty.clone(), r.key.clone(), member);
                     out.push(self.changed(change, event.position, now));
@@ -5456,10 +5436,10 @@ impl Call<'_> {
                     let is = member_of((s, after), r, &w.settings, now, heads)?;
                     if held.contains(&r.key) != is {
                         if out.len() as u64 >= u64::from(max) {
-                            return Err(Error::Refused {
-                                field: Some(s.name.as_str().into()),
-                                reason: Refusal::TooLarge { max },
-                            });
+                            return Err(Error::refused(
+                                Some(s.name.as_str().into()),
+                                Refusal::TooLarge { max },
+                            ));
                         }
                         let change = (s.name.clone(), ty.clone(), r.key.clone(), is);
                         out.push(self.changed(change, declared, now));
@@ -5532,9 +5512,12 @@ impl Call<'_> {
     /// the caller may know it.
     fn lossy(&self, w: &Writer, m: &Migration, report: MigrationReport) -> Error {
         match self.shown(w, m, report) {
-            Ok(report) => refused(Refusal::Migration {
-                report: Box::new(report),
-            }),
+            Ok(report) => Error::refused(
+                None,
+                Refusal::Migration {
+                    report: Box::new(report),
+                },
+            ),
             Err(e) => e,
         }
     }
@@ -5562,7 +5545,7 @@ impl Call<'_> {
         // linger beside the computed ones: the view takes another name.
         if before.view.is_some() || m.to.view.is_some() {
             let ty = m.to.name.clone();
-            return Err(invalid(
+            return Err(Error::invalid(
                 match (before.view.is_some(), m.to.view.is_some()) {
                     (true, true) => Case::MigrationOfView { ty },
                     (true, false) => Case::MigrationViewToStored { ty },
@@ -5572,7 +5555,7 @@ impl Call<'_> {
         }
         if !before.key.is_empty() && m.to.key.is_empty() {
             let ty = before.name.clone();
-            return Err(invalid(Case::MigrationTakesKey { ty }));
+            return Err(Error::invalid(Case::MigrationTakesKey { ty }));
         }
         // The fields whose values it moves: those of its type it takes,
         // renames, declares otherwise or fills; where it re-keys, the
@@ -5621,7 +5604,7 @@ impl Call<'_> {
                 if !m.to.fields.iter().any(|f| &f.name == k && f.required) {
                     let said = Said::from(Case::KeyFieldRequired { field: k.clone() });
                     let name = m.to.name.clone();
-                    return Err(invalid_field(k, said.within(Place::Type { name })));
+                    return Err(Error::invalid_at(k, said.within(Place::Type { name })));
                 }
             }
         }
@@ -5641,10 +5624,10 @@ impl Call<'_> {
         after.put(Declaration::Type(m.to.clone()), 0, None);
         // The refusal of a migration that takes away a field `reader` reads:
         // one the type, or a link type of it, has before it and not after.
-        let has = |t: &TypeDecl, n: &FieldName| t.fields.iter().any(|f| &f.name == n);
+        let has = |t: &TypeDecl, n: &FieldName| t.has_field(n);
         let after_it = |said: Said| {
             let name = m.to.name.clone();
-            invalid(said.within(Place::AfterMigration { name }))
+            Error::invalid(said.within(Place::AfterMigration { name }))
         };
         let gone = |reader: Option<Place>,
                     names: &BTreeSet<FieldName>,
@@ -5837,7 +5820,9 @@ impl Call<'_> {
         // it, so its key and its memberships are decided with it (050).
         let convert = |decl: &TypeDecl, m: &Migration, r: &StoredRecord| {
             let fields = shape::migrate_record(decl, m, &r.fields);
-            let mut fields = fields.map_err(invalid)?.unwrap_or_else(|| r.fields.clone());
+            let mut fields = fields
+                .map_err(Error::invalid)?
+                .unwrap_or_else(|| r.fields.clone());
             for f in (m.to.fields.iter()).filter(|f| m.fill.contains(&f.name) && !r.retired) {
                 if !fields.contains_key(&f.name) {
                     fields.extend(record::initial_of(&after, f).map(|v| (f.name.clone(), v)));
@@ -5941,10 +5926,10 @@ impl Call<'_> {
         // here, as an absent one is (lakelands#750).
         // So is what it fills, against the fields it declared itself.
         if let Some(a) = author {
-            a.sent.renamed_fields(&a.known).map_err(invalid)?;
-            a.sent.fills().map_err(invalid)?;
+            a.sent.renamed_fields(&a.known).map_err(Error::invalid)?;
+            a.sent.fills().map_err(Error::invalid)?;
         }
-        m.fills().map_err(invalid)?;
+        m.fills().map_err(Error::invalid)?;
         // Each field the migration fills: the live records that hold no
         // value for it, by the name they hold it under, and the first keys,
         // in key order, of those its reader is answered.
@@ -5959,7 +5944,7 @@ impl Call<'_> {
             to.map_or_else(|| k.clone(), |(_, n)| n.clone())
         };
         let typed = |t: &TypeDecl, k: &FieldName| {
-            let f = t.fields.iter().find(|f| &f.name == k);
+            let f = t.field(k);
             f.map(|f| f.ty.clone())
         };
         let rekeys = before
@@ -6028,7 +6013,8 @@ impl Call<'_> {
             .collect();
         // Each constraint `to` declares: the live records it would leave
         // breaking it, as converted and filled (lakelands#1119).
-        let parse = |c: &ConstraintDecl| declare::typed(&c.holds, Eval::Guard).map_err(invalid);
+        let parse =
+            |c: &ConstraintDecl| declare::typed(&c.holds, Eval::Guard).map_err(Error::invalid);
         // The records told of (a held one only to a holder of
         // `restricted`, 062), the first keys, and whether any breaks it.
         type Breaking<'c> = (
@@ -6246,7 +6232,7 @@ impl Call<'_> {
                     cardinality,
                     count,
                 };
-                return Err(constraint(None, case));
+                return Err(Error::constraint(None, case));
             }
         }
         // The relations carried by link records whose fields change migrate
@@ -6283,9 +6269,9 @@ impl Call<'_> {
         // inferred.
         // So are its relation renames, against the relations it is shown.
         if let Some(a) = author {
-            a.sent.renamed_relations(&a.known).map_err(invalid)?;
+            a.sent.renamed_relations(&a.known).map_err(Error::invalid)?;
         }
-        let pairs = m.renamed_relations(&before).map_err(invalid)?;
+        let pairs = m.renamed_relations(&before).map_err(Error::invalid)?;
         let removed = |r: &&RelationDecl| {
             !m.to.relations.iter().any(|n| n.name == r.name)
                 && !pairs.iter().any(|(was, _)| was.name == r.name)
@@ -6299,7 +6285,7 @@ impl Call<'_> {
             if carried && !plan.moves.is_empty() {
                 let name = r.name.clone();
                 let said = Said::from(Case::RemoveWhileRekeying);
-                return Err(invalid(said.within(Place::Relation { name })));
+                return Err(Error::invalid(said.within(Place::Relation { name })));
             }
             if carried && now.is_some() {
                 live(view, &lt, |l| {
@@ -6328,7 +6314,7 @@ impl Call<'_> {
             if carrier == Carrier::Links {
                 let wrong = |why: Case| {
                     let (from, to) = (was.name.clone(), is.name.clone());
-                    invalid(Said::from(why).within(Place::RelationRename { from, to }))
+                    Error::invalid(Said::from(why).within(Place::RelationRename { from, to }))
                 };
                 if !plan.moves.is_empty() {
                     return Err(wrong(Case::RenameWhileRekeying));
@@ -6468,22 +6454,22 @@ impl Call<'_> {
         // Past the lake's ceiling, naming the set whose change passed it.
         let max = self.lake.limits.max_set_changes;
         if let Some((set, ..)) = members.get(max as usize) {
-            return Err(Error::Refused {
-                field: Some(set.as_str().into()),
-                reason: Refusal::TooLarge { max },
-            });
+            return Err(Error::refused(
+                Some(set.as_str().into()),
+                Refusal::TooLarge { max },
+            ));
         }
         let report_id = report.report_id;
         let moved: Vec<_> = (rekeyed.iter())
             .map(|r| (r.ty.clone(), r.from.clone()))
             .collect();
-        let schema_hash = shape::schema_hash(&m.to).map_err(invalid)?;
+        let schema_hash = shape::schema_hash(&m.to).map_err(Error::invalid)?;
         let version = w.ontology.next_version(&Declaration::Type(m.to.clone()));
         let migrated = position_after(w, first);
         let changes = members.into_iter().map(|c| self.changed(c, migrated, now));
         let mut drafts: Vec<Draft> = changes.collect();
         for (_, new) in changed_link_types(&w.ontology, &m, false) {
-            let hash = shape::schema_hash(&new).map_err(invalid)?;
+            let hash = shape::schema_hash(&new).map_err(Error::invalid)?;
             let version = w.ontology.next_version(&Declaration::Type(new.clone()));
             drafts.push(Draft::system(
                 now,
@@ -6664,20 +6650,21 @@ impl Call<'_> {
             .get(to.name.as_str())
             .ok_or_else(|| {
                 let value_type = to.name.clone();
-                invalid(Case::NoValueType { value_type })
+                Error::invalid(Case::NoValueType { value_type })
             })?;
         match declare::value_type_change(&current.decl, to) {
             declare::ValueTypeChange::Same if m.renames.is_empty() => {
                 let value_type = to.name.clone();
-                return Err(invalid(Case::ValueTypeSame { value_type }));
+                return Err(Error::invalid(Case::ValueTypeSame { value_type }));
             }
             declare::ValueTypeChange::Reshaping => {
                 let value_type = to.name.clone();
-                return Err(invalid(Case::ValueTypeReshapes { value_type }));
+                return Err(Error::invalid(Case::ValueTypeReshapes { value_type }));
             }
             _ => {}
         }
-        m.check_renames(&current.decl, accepts).map_err(invalid)?;
+        m.check_renames(&current.decl, accepts)
+            .map_err(Error::invalid)?;
         // A rename rewrites the values of every field that uses it.
         let named = |f: &&FieldDecl| f.ty.value_type.as_ref() == Some(&to.name);
         let types = w.ontology.types.values().map(|e| &e.decl);
@@ -6785,7 +6772,7 @@ impl Call<'_> {
                     lakelands_core::expr::names_text(c, &|t| renames.contains_key(t))
                 }) {
                     let (ty, field) = (name.clone(), f.name.clone());
-                    return Err(invalid(Case::ComputedHoldsRenamed { ty, field }));
+                    return Err(Error::invalid(Case::ComputedHoldsRenamed { ty, field }));
                 }
             }
             // A field's `initial` that names an old value takes the new one:
@@ -6809,7 +6796,7 @@ impl Call<'_> {
                 check_values(&probe, decl, &patch, &decl.fields).is_err()
             };
             let tally = |f: &&FieldDecl| {
-                let mapped = again.fields.iter().find(|g| g.name == f.name);
+                let mapped = again.field(&f.name);
                 let initial = mapped.and_then(|g| g.initial.as_ref());
                 ValueTypeUse {
                     ty: name.clone(),
@@ -6860,7 +6847,7 @@ impl Call<'_> {
                         (Some(new), true) => {
                             if decl.key.contains(&f.name) {
                                 let (ty, field) = (name.clone(), f.name.clone());
-                                return Err(invalid(Case::KeyHoldsRenamed { ty, field }));
+                                return Err(Error::invalid(Case::KeyHoldsRenamed { ty, field }));
                             }
                             let pair = used.renamed.iter_mut().find(|p| p.from == *v);
                             pair.into_iter().for_each(|p| p.records += 1);
@@ -6925,7 +6912,7 @@ impl Call<'_> {
                     ty: name.clone(),
                     records: b.records,
                 };
-                return Err(constraint(None, case));
+                return Err(Error::constraint(None, case));
             }
             report.breaches.extend(breaches);
             for (used, first) in used {
@@ -7028,10 +7015,10 @@ impl Call<'_> {
         }
         let max = self.lake.limits.max_set_changes;
         if let Some((set, ..)) = plan.members.get(max as usize) {
-            return Err(Error::Refused {
-                field: Some(set.as_str().into()),
-                reason: Refusal::TooLarge { max },
-            });
+            return Err(Error::refused(
+                Some(set.as_str().into()),
+                Refusal::TooLarge { max },
+            ));
         }
         let version = w
             .ontology
@@ -7088,7 +7075,7 @@ fn fits(report: ValueTypeReport, named: bool) -> Result<ValueTypeReport> {
         field: m.field.clone(),
     });
     let (value_type, misfits, first) = (report.value_type, report.misfits, first.collect());
-    Err(invalid(Case::ValueTypeNotTightened {
+    Err(Error::invalid(Case::ValueTypeNotTightened {
         value_type,
         misfits,
         first,
@@ -7164,7 +7151,7 @@ fn as_author(
         let said = Said::from(Case::ValidToAlone {
             field: field.clone(),
         });
-        return Err(invalid_field(&field, said.within(Place::Type { name })));
+        return Err(Error::invalid_at(&field, said.within(Place::Type { name })));
     }
     for (axis, sent, held) in [
         ("valid_from", &mut to.valid_from, &before.valid_from),
@@ -7182,7 +7169,7 @@ fn as_author(
             // twice, as on any type.
             let (name, axis) = (to.name.clone(), axis.to_owned());
             let said = Said::from(Case::ValidTimeStands { axis });
-            return Err(invalid(said.within(Place::Type { name })));
+            return Err(Error::invalid(said.within(Place::Type { name })));
         }
     }
     for r in &mut to.relations {
@@ -7309,7 +7296,7 @@ fn stands<'a>(
     {
         Some(n) => {
             let (field, ty) = (n.clone(), ty.clone());
-            Err(invalid_field(n, Case::FieldReadElsewhere { field, ty }))
+            Err(Error::invalid_at(n, Case::FieldReadElsewhere { field, ty }))
         }
         None => Ok(()),
     }
@@ -7469,7 +7456,7 @@ fn types_withdrawn(declarations: &[Declaration]) -> BTreeSet<String> {
 /// The system's `declared` of a declaration, at its next version.
 fn system_declared(o: &Ontology, declaration: Declaration, now: Timestamp) -> Result<Draft> {
     let schema_hash = match &declaration {
-        Declaration::Type(t) => Some(shape::schema_hash(t).map_err(invalid)?),
+        Declaration::Type(t) => Some(shape::schema_hash(t).map_err(Error::invalid)?),
         _ => None,
     };
     let version = o.next_version(&declaration);
@@ -7508,7 +7495,7 @@ fn arriving(m: &Migration) -> BTreeSet<TypeName> {
 /// Refuse a link type's records at a door other than the link doors.
 fn ordinary_door(ty: &TypeName) -> Result<()> {
     if links::is_link_type(ty) {
-        return Err(refused(Refusal::WrongDoor));
+        return Err(Error::refused(None, Refusal::WrongDoor));
     }
     Ok(())
 }
@@ -7517,7 +7504,7 @@ fn ordinary_door(ty: &TypeName) -> Result<()> {
 /// also the answer for one the caller is not shown.
 fn no_link_relation(ty: &TypeName, relation: &RelationName) -> Error {
     let (ty, relation) = (ty.clone(), relation.clone());
-    invalid(Case::NoLinkRelation { ty, relation })
+    Error::invalid(Case::NoLinkRelation { ty, relation })
 }
 
 /// A record as a write reads it, the head's or its append's.
@@ -7546,7 +7533,7 @@ pub fn cardinality(
     use lakelands_api::query::Walk;
     let (per_from, per_to) = one_per(r.cardinality);
     let (relation, cardinality) = (r.name.clone(), r.cardinality);
-    let broken = |case: Case| constraint(Some(links::TO.into()), case);
+    let broken = |case: Case| Error::constraint(Some(links::TO.into()), case);
     let lt = links::link_type_name(ty, &r.name);
     let head = |t: &TypeName, k: &RecordKey| view.get(t, k);
     let (earlier, get): (&[_], Get) = window.unwrap_or((&[], &head));
@@ -7673,7 +7660,7 @@ pub(crate) fn not_handed(e: Error, not_run: bool, by: MadeDue) -> Error {
 /// way the call got there.
 fn unanswered(position: Position, accepted: bool) -> Error {
     let case = Case::Unanswered { position, accepted };
-    refused(Refusal::Unanswered(Box::new(case.into())))
+    Error::refused(None, Refusal::Unanswered(Box::new(case.into())))
 }
 
 /// An external verb that ran, to be handed to its executor; the store
@@ -7754,7 +7741,7 @@ pub fn restrict(
     let version = Version(before.version.0 + 1);
     let restriction = |already| {
         let (ty, key) = (ty.clone(), key.clone());
-        Err(invalid(Case::Restriction { ty, key, already }))
+        Err(Error::invalid(Case::Restriction { ty, key, already }))
     };
     let body = match (&reason, before.restricted) {
         (Some(_), true) => return restriction(true),

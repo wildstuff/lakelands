@@ -153,7 +153,7 @@ fn a_search_limited_to_named_fields_probes_those_and_judges_reading_first() {
     let (ty, field) = (decl.name.clone(), "nope".into());
     let unknown = invalid("nope", Case::UnknownField { ty, field });
     assert_eq!(search(&decl, &["nope"]), unknown);
-    let empty = Err(crate::invalid(Case::SearchFieldsEmpty));
+    let empty = Err(lakelands_api::Error::invalid(Case::SearchFieldsEmpty));
     assert_eq!(search(&decl, &[]), empty);
     decl.fields[2].searchable = false;
     assert_eq!(

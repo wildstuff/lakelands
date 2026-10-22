@@ -29,6 +29,32 @@ impl Reader<'_> {
         }
     }
 
+    /// The refusal, by `case`, of a change that would leave this reader, a set or a
+    /// trigger, without its rows, to an author shown it: said of it where the
+    /// change moves a source, and of its `of` or `on` where the view would not
+    /// be kept.
+    fn refusal(self, case: Case) -> Error {
+        let (place, member) = match self {
+            Reader::Set(s) => (
+                Place::ObjectSet {
+                    name: s.name.clone(),
+                },
+                "of",
+            ),
+            Reader::Trigger(t) => (
+                Place::Trigger {
+                    name: t.name.clone(),
+                },
+                "on",
+            ),
+        };
+        let said = Said::from(case).within(place);
+        match said.case {
+            Case::ViewSourceStepped { .. } => Error::invalid(said),
+            _ => Error::invalid_at(&member.into(), said),
+        }
+    }
+
     fn declaration(&self) -> Declaration {
         match self {
             Reader::Set(s) => Declaration::ObjectSet((*s).clone()),
@@ -230,8 +256,8 @@ impl Decide<'_> {
                 };
                 let shown = |r: &Reader| sees.shows(&r.declaration());
                 return Err(match readers(&w.ontology).filter(reads).find(shown) {
-                    Some(r) => refused_for(r, Case::ViewKeptForSet { ty: view.clone() }),
-                    None => refused(Refusal::NotGranted),
+                    Some(r) => r.refusal(Case::ViewKeptForSet { ty: view.clone() }),
+                    None => Error::not_granted(),
                 });
             }
         }
@@ -308,7 +334,7 @@ impl Decide<'_> {
                 if self.bound && self.pending.across + out.len() > max {
                     let field = named(s).then(|| s.name.as_str().into());
                     let reason = Refusal::TooLarge { max: max as u32 };
-                    return Err(Error::Refused { field, reason });
+                    return Err(Error::refused(field, reason));
                 }
             }
         }
@@ -324,7 +350,7 @@ impl Decide<'_> {
                 let shown = sees.shows(&Declaration::Trigger(t.clone()));
                 let field = shown.then(|| t.name.as_str().into());
                 let reason = Refusal::TooLarge { max: max as u32 };
-                return Err(Error::Refused { field, reason });
+                return Err(Error::refused(field, reason));
             }
         }
         Ok(())
@@ -381,12 +407,12 @@ impl Call<'_> {
         if let Some((r, source)) = stepped.iter().find(|(r, _)| sees.shows(&r.declaration())) {
             let ty = r.view().clone();
             let source = source.clone();
-            return Err(refused_for(*r, Case::ViewSourceStepped { ty, source }));
+            return Err(r.refusal(Case::ViewSourceStepped { ty, source }));
         }
         if let Some((_, source)) = stepped.into_iter().next() {
             return Err(match declared.contains(&source) {
-                true => invalid(Case::NoLongerDeclarable { ty: source }),
-                false => refused(Refusal::NotGranted),
+                true => Error::invalid(Case::NoLongerDeclarable { ty: source }),
+                false => Error::not_granted(),
             });
         }
         // A view whose setting, or a setting its expressions name, the set
@@ -430,9 +456,9 @@ impl Call<'_> {
                 let was = w.ontology.triggers.get(t.name.as_str());
                 let was = was.is_some_and(|e| e.decl.on == t.on);
                 return Err(match (sees.shows(&r.declaration()), was) {
-                    (false, _) => refused(Refusal::NotGranted),
-                    (true, true) => refused_for(*r, Case::ViewKeptForSet { ty }),
-                    (true, false) => refused_for(*r, Case::WatchesView { ty }),
+                    (false, _) => Error::not_granted(),
+                    (true, true) => r.refusal(Case::ViewKeptForSet { ty }),
+                    (true, false) => r.refusal(Case::WatchesView { ty }),
                 });
             }
         }
@@ -446,9 +472,9 @@ impl Call<'_> {
                 let ty = s.of.clone();
                 let r = Reader::Set(s);
                 return Err(match (shown(s), w.ontology.set(&s.name)) {
-                    (false, _) => refused(Refusal::NotGranted),
-                    (true, Some(_)) => refused_for(r, Case::ViewKeptForSet { ty }),
-                    (true, None) => refused_for(r, Case::SetOfView { ty }),
+                    (false, _) => Error::not_granted(),
+                    (true, Some(_)) => r.refusal(Case::ViewKeptForSet { ty }),
+                    (true, None) => r.refusal(Case::SetOfView { ty }),
                 });
             }
             let names = |m: &&ObjectSetDecl| changed(m) && declare::names_set(after, s, &m.name);
@@ -481,39 +507,13 @@ impl Call<'_> {
                 if out.len() >= max {
                     let field = shown(s).then(|| s.name.as_str().into());
                     let reason = Refusal::TooLarge { max: max as u32 };
-                    return Err(Error::Refused { field, reason });
+                    return Err(Error::refused(field, reason));
                 }
                 let change = (s.name.clone(), s.of.clone(), key, is);
                 out.push(self.changed(change, cause, now));
             }
         }
         Ok(out)
-    }
-}
-
-/// The refusal, by `case`, of a change that would leave `r`, a set or a
-/// trigger, without its rows, to an author shown it: said of it where the
-/// change moves a source, and of its `of` or `on` where the view would not
-/// be kept.
-fn refused_for(r: Reader, case: Case) -> Error {
-    let (place, member) = match r {
-        Reader::Set(s) => (
-            Place::ObjectSet {
-                name: s.name.clone(),
-            },
-            "of",
-        ),
-        Reader::Trigger(t) => (
-            Place::Trigger {
-                name: t.name.clone(),
-            },
-            "on",
-        ),
-    };
-    let said = Said::from(case).within(place);
-    match said.case {
-        Case::ViewSourceStepped { .. } => invalid(said),
-        _ => declare::invalid_field(&member.into(), said),
     }
 }
 
@@ -556,10 +556,7 @@ pub(crate) fn stepped_under(
     who: &Principal,
 ) -> Result<()> {
     let computed = |t: &TypeName, f: &FieldName| {
-        let decl = o
-            .ty(t)
-            .ok()
-            .and_then(|t| t.fields.iter().find(|d| &d.name == f));
+        let decl = o.ty(t).ok().and_then(|t| t.field(f));
         decl.is_some_and(|d| d.derived.is_some() || d.function.is_some() || d.embed.is_some())
     };
     let moves = |t: &TypeName, read: &BTreeSet<FieldName>| match stepped.get(t) {
@@ -579,11 +576,11 @@ pub(crate) fn stepped_under(
     let sees = Sight::held(who, o);
     if let Some((r, source)) = stepped.iter().find(|(r, _)| sees.shows(&r.declaration())) {
         let (ty, source) = (r.view().clone(), source.clone());
-        return Err(refused_for(*r, Case::ViewSourceStepped { ty, source }));
+        return Err(r.refusal(Case::ViewSourceStepped { ty, source }));
     }
     match (stepped.is_empty(), changed) {
         (true, _) => Ok(()),
-        (false, Some(ty)) => Err(invalid(Case::NoLongerDeclarable { ty: ty.clone() })),
-        (false, None) => Err(refused(Refusal::NotGranted)),
+        (false, Some(ty)) => Err(Error::invalid(Case::NoLongerDeclarable { ty: ty.clone() })),
+        (false, None) => Err(Error::not_granted()),
     }
 }

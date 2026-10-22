@@ -828,10 +828,9 @@ impl From<AnnotationFault> for crate::error::Error {
     fn from(f: AnnotationFault) -> crate::error::Error {
         use crate::error::{Error, Refusal};
         match f {
-            AnnotationFault::Reserved { key, .. } => Error::Refused {
-                field: Some(key.into()),
-                reason: Refusal::Reserved,
-            },
+            AnnotationFault::Reserved { key, .. } => {
+                Error::refused(Some(key.into()), Refusal::Reserved)
+            }
             AnnotationFault::Invalid { said } => Error::invalid(said),
         }
     }
@@ -1015,7 +1014,7 @@ impl Migration {
     /// it may not know of is no field to it (lakelands#750). It lives in
     /// the contract; the store and the core's conversion call it.
     pub fn renamed_fields(&self, before: &TypeDecl) -> Result<Vec<(&FieldName, &FieldName)>, Case> {
-        let has = |t: &TypeDecl, n: &FieldName| t.fields.iter().any(|f| &f.name == n);
+        let has = |t: &TypeDecl, n: &FieldName| t.has_field(n);
         let mut out: Vec<(&FieldName, &FieldName)> = Vec::new();
         for (from, to) in &self.renames {
             if !has(before, from) {
@@ -1048,7 +1047,7 @@ impl Migration {
     /// why.
     pub fn fills(&self) -> Result<(), Case> {
         for (i, f) in self.fill.iter().enumerate() {
-            let (field, declared) = (f.clone(), self.to.fields.iter().find(|d| &d.name == f));
+            let (field, declared) = (f.clone(), self.to.field(f));
             let case = match (declared, self.renames.iter().find(|(from, _)| from == f)) {
                 (None, Some((_, to))) => Case::FillRenamed {
                     field,
@@ -1081,7 +1080,7 @@ impl Migration {
                 let (from, to) = (old.clone(), new.clone());
                 Said::from(case).within(Place::RelationRename { from, to })
             };
-            let of = |t: &'a TypeDecl, n| t.relations.iter().find(|r| &r.name == n);
+            let of = |t: &'a TypeDecl, n| t.relation(n);
             let (Some(was), Some(is)) = (of(before, old), of(&self.to, new)) else {
                 return Err(wrong(Case::RelationRenameNamesNone));
             };
@@ -1120,7 +1119,7 @@ impl Migration {
         for r in &self.to.relations {
             let renamed = self.relation_renames.iter().find(|(_, new)| new == &r.name);
             let name = renamed.map_or(&r.name, |(old, _)| old);
-            let was = before.relations.iter().find(|w| &w.name == name);
+            let was = before.relation(name);
             // A rename is said by the report's `relations`, a link field below.
             let (of, said) = (format!("{}.", r.name), ["name", "fields"]);
             differing(Some(r.name.to_string()), was, r, &said, &mut out);

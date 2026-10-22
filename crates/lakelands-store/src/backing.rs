@@ -18,9 +18,8 @@ use async_trait::async_trait;
 use lakelands_api::error::{self, Case};
 use lakelands_api::expr::Condition;
 use lakelands_api::seam::{FunctionBacking, FunctionCall};
-use lakelands_api::{FieldName, Result, Timestamp, Value};
+use lakelands_api::{Error, FieldName, Result, Timestamp, Value};
 use lakelands_core::expr::{self, Place, RecordScope};
-use lakelands_core::invalid;
 
 /// The `expr` backing.
 #[derive(Clone, Copy, Debug, Default)]
@@ -37,7 +36,7 @@ impl ExprBacking {
         let on = [error::Place::Function {
             name: call.function.clone(),
         }];
-        let wrong = |case: Case| invalid(crate::declare::at(&on, case));
+        let wrong = |case: Case| Error::invalid(crate::declare::at(&on, case));
         let condition: Condition = serde_json::from_value(call.config["expr"].clone())
             .map_err(|e| wrong(Case::ExprConfig { fault: (&e).into() }))?;
         let e = crate::declare::condition(&condition, Place::Record, &on)?;

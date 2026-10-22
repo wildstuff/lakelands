@@ -19,10 +19,8 @@ use lakelands_api::error::{Case, Seam};
 use lakelands_api::query::{Axis, Hit, Hits, Pattern, Search, SearchMode};
 use lakelands_api::read::ReadAt;
 use lakelands_api::seam::RerankCandidate;
-use lakelands_api::{
-    Error, FieldName, Params, RecordKey, Refusal, Result, Timestamp, TypeName, Value,
-};
-use lakelands_core::{invalid, rights};
+use lakelands_api::{Error, FieldName, Params, RecordKey, Result, Timestamp, TypeName, Value};
+use lakelands_core::rights;
 use serde::{Deserialize, Serialize};
 
 use super::{CursorState, Judged, Pulled, Reader, encode, resume, same_read, search_read};
@@ -129,10 +127,7 @@ impl Reader<'_> {
         });
         match case {
             None => Ok(Some(r.top as usize)),
-            Some(case) => Err(Error::Refused {
-                field: Some("rerank".into()),
-                reason: Refusal::Invalid(Box::new(case.into())),
-            }),
+            Some(case) => Err(Error::invalid_at(&"rerank".into(), case)),
         }
     }
 
@@ -141,7 +136,7 @@ impl Reader<'_> {
     /// reranker bound as `Unbound` once this answers.
     pub fn rerank_window(&self, s: &Search, carried: Option<Pulled>) -> Result<Judged<Window>> {
         let Some(top) = self.rerank_top(s)? else {
-            return Err(invalid(Case::RerankWithoutSearch));
+            return Err(Error::invalid(Case::RerankWithoutSearch));
         };
         let first = match self.first_stage(s, Some(top), carried)? {
             Ok(first) => first,
@@ -196,9 +191,10 @@ impl Reader<'_> {
             let _ = judged?;
         }
         let Some(mode) = &p.start.search else {
-            let reason = Refusal::Invalid(Box::new(Case::RerankWithoutSearch.into()));
-            let field = Some("rerank".into());
-            return Err(Error::Refused { field, reason });
+            return Err(Error::invalid_at(
+                &"rerank".into(),
+                Case::RerankWithoutSearch,
+            ));
         };
         self.rerank_window(&self.start_search(p, mode)?, carried)
     }
@@ -233,7 +229,7 @@ impl Reader<'_> {
                 same_read(&state, &read)?;
                 // A cursor this lake handed out holds at most the window.
                 let Some(stage) = state.stage.filter(|st| st.order.len() <= top) else {
-                    return Err(invalid(Case::CursorForeign));
+                    return Err(Error::invalid(Case::CursorForeign));
                 };
                 (state.offset as usize, Some(stage))
             }

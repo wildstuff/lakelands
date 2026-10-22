@@ -76,7 +76,7 @@ use lakelands_core::graph::{self, EdgeSource};
 use lakelands_core::rights::Admit;
 use lakelands_core::sight::Sight;
 use lakelands_core::{
-    canonical, derive as core_derive, engines as core_engines, invalid, rights, valid_time,
+    canonical, derive as core_derive, engines as core_engines, rights, valid_time,
 };
 
 use crate::declare::condition;
@@ -400,7 +400,7 @@ fn unbound(ty: &TypeName, p: &lakelands_api::ontology::ViewParam, unbound: bool)
 fn same_read(state: &CursorState, of: &str) -> Result<()> {
     if state.of != of {
         let door = state.door.clone();
-        return Err(invalid(Case::CursorOtherRead { door }));
+        return Err(Error::invalid(Case::CursorOtherRead { door }));
     }
     Ok(())
 }
@@ -409,7 +409,7 @@ fn same_read(state: &CursorState, of: &str) -> Result<()> {
 /// needs (018).
 fn start_type(p: &Pattern) -> Result<&TypeName> {
     let asks = || projection_name(&p.project);
-    (p.start.ty.as_ref()).ok_or_else(|| invalid(Case::StartNoType { asks: asks() }))
+    (p.start.ty.as_ref()).ok_or_else(|| Error::invalid(Case::StartNoType { asks: asks() }))
 }
 
 /// A projection by the name its pattern gives it.
@@ -433,7 +433,7 @@ fn resume(c: &Cursor, door: &str, ty: Option<&TypeName>, params: &Params) -> Res
     if state.door != door || state.ty.as_ref() != ty {
         let (was, was_ty) = (state.door.clone(), state.ty.clone().map(Box::new));
         let (door, ty) = (door.to_owned(), ty.cloned().map(Box::new));
-        return Err(invalid(Case::CursorOtherDoor {
+        return Err(Error::invalid(Case::CursorOtherDoor {
             was,
             was_ty,
             door,
@@ -441,13 +441,13 @@ fn resume(c: &Cursor, door: &str, ty: Option<&TypeName>, params: &Params) -> Res
         }));
     }
     if &state.params != params {
-        return Err(invalid(Case::CursorOtherParams));
+        return Err(Error::invalid(Case::CursorOtherParams));
     }
     Ok(state)
 }
 
 fn decode(c: &Cursor) -> Result<CursorState> {
-    let bad = || invalid(Case::CursorForeign);
+    let bad = || Error::invalid(Case::CursorForeign);
     let bytes: Vec<u8> = (0..c.0.len())
         .step_by(2)
         .map(|i| {
@@ -489,7 +489,7 @@ fn several_types(at: &Place, reached: &BTreeSet<TypeName>, unlike: Option<Unlike
         missing,
         other,
     };
-    invalid(Said::from(case).within(at.clone()))
+    Error::invalid(Said::from(case).within(at.clone()))
 }
 
 /// A field the types a step reaches do not declare alike: the types
@@ -512,10 +512,7 @@ fn of_type(ty: &TypeName, e: Error) -> Error {
         Error::Refused {
             field: Some(f),
             reason,
-        } => Error::Refused {
-            field: Some(FieldName::from(format!("{ty}.{f}"))),
-            reason,
-        },
+        } => Error::refused(Some(FieldName::from(format!("{ty}.{f}"))), reason),
         e => e,
     }
 }
@@ -551,7 +548,7 @@ pub(crate) fn landed(
     measured: impl IntoIterator<Item = (FieldName, Value)>,
 ) -> Result<aggregate::Row, (FieldName, Case)> {
     for (name, v) in measured {
-        let landed = match decl.fields.iter().find(|f| f.name == name) {
+        let landed = match decl.field(&name) {
             Some(f) if !v.is_null() => {
                 let fits = expr::eval::to_json(&expr::eval::from_json(&v), f.ty.kind, None);
                 let judged = lakelands_core::value::check_kind(fits.as_ref().unwrap_or(&v), &f.ty);
@@ -758,7 +755,7 @@ impl<'a> Reader<'a> {
             .any(|f| f.name.as_str() == field && f.at_read())
         {
             let (field, ty) = (field.into(), decl.name.clone());
-            return Err(invalid(Case::OrderAtRead { field, ty }));
+            return Err(Error::invalid(Case::OrderAtRead { field, ty }));
         }
         Ok(())
     }
@@ -837,18 +834,18 @@ impl<'a> Reader<'a> {
             let names: Names = declared.iter().map(|p| &p.name).collect();
             let declared = (!names.0.is_empty()).then_some(names);
             let (ty, name) = (ty.clone(), k.clone());
-            return Err(invalid(Case::ParamUnknown { ty, name, declared }));
+            return Err(Error::invalid(Case::ParamUnknown { ty, name, declared }));
         }
         let mut canonical = Params::new();
         let mut literals = BTreeMap::new();
         for p in declared {
             let Some(v) = given.get(&p.name) else {
-                return Err(invalid(unbound(ty, p, false)));
+                return Err(Error::invalid(unbound(ty, p, false)));
             };
             let wrong = || {
                 let (name, ty, kind, value) =
                     (p.name.clone(), ty.clone(), p.kind, Box::new(v.clone()));
-                invalid(Case::ParamValue {
+                Error::invalid(Case::ParamValue {
                     name,
                     ty,
                     kind,
@@ -1013,7 +1010,7 @@ impl<'a> Reader<'a> {
 
     /// Whether the reader may know of `decl`'s field `name`.
     fn knows(&self, decl: &TypeDecl, name: &FieldName) -> bool {
-        let f = decl.fields.iter().find(|f| &f.name == name);
+        let f = decl.field(name);
         !f.is_some_and(|f| rights::field_access(self.who, decl, f) == lakelands_api::Access::None)
     }
 
@@ -1312,7 +1309,7 @@ impl<'a> Reader<'a> {
         let Ok(decl) = self.shape.ontology.ty(&t.name) else {
             return;
         };
-        let seen = |f: &FieldName| t.fields.iter().any(|d| d.name == *f);
+        let seen = |f: &FieldName| t.fields.iter().any(|d| &d.name == f);
         let settings = &self.shape.settings;
         // A view's order index is its kept records'.
         let ordered = match decl.view {
@@ -1651,7 +1648,7 @@ impl<'a> Reader<'a> {
                 .chain(std::iter::once(&decl.name))
                 .collect();
             let ty = decl.name.clone();
-            return Err(invalid(Case::ViewReadsItself { ty, chain }));
+            return Err(Error::invalid(Case::ViewReadsItself { ty, chain }));
         }
         self.computing.borrow_mut().push(decl.name.clone());
         let records = match self.kept_as(decl, v) {
@@ -1884,7 +1881,7 @@ impl<'a> Reader<'a> {
             None if v.params.is_empty() => BTreeMap::new(),
             // A view reached by no read that binds it: a walk's step, a
             // search.
-            None => return Err(invalid(unbound(&decl.name, &v.params[0], true))),
+            None => return Err(Error::invalid(unbound(&decl.name, &v.params[0], true))),
         };
         // Every source's probes before a record is read, so what a reader
         // is told does not turn on the order of the sources (024).
@@ -1943,7 +1940,7 @@ impl<'a> Reader<'a> {
             let view = Place::View {
                 name: decl.name.clone(),
             };
-            invalid(said.within(Place::Measure { name }).within(view))
+            Error::invalid(said.within(Place::Measure { name }).within(view))
         };
         let measured = |folds: &aggregate::Folds,
                         by: &BTreeMap<FieldName, Value>,
@@ -2008,7 +2005,7 @@ impl<'a> Reader<'a> {
                 let view = Place::View {
                     name: decl.name.clone(),
                 };
-                invalid(said.within(Place::Measure { name }).within(view))
+                Error::invalid(said.within(Place::Measure { name }).within(view))
             })?;
             out.push(StoredRecord {
                 ty: decl.name.clone(),
@@ -2172,7 +2169,7 @@ impl<'a> Reader<'a> {
         // What it reads of the source is what `describe` shows it by; one
         // that cannot be read there is read by no one.
         let probed = lakelands_core::describe::source_reads(filter, group_by, m);
-        let mut probed = probed.ok_or_else(|| crate::writes::refused(Refusal::NotGranted))?;
+        let mut probed = probed.ok_or_else(|| Error::refused(None, Refusal::NotGranted))?;
         // The computation at a valid time filters the source by its
         // valid-time fields besides, which `describe` does not judge by: it
         // probes those its reader may know of (024, lakelands#881). Kept
@@ -2185,7 +2182,7 @@ impl<'a> Reader<'a> {
         // source to a reader `describe` withholds the definition from (024).
         let unnamed = |e| match self.who.grants.schema {
             true => e,
-            false => crate::writes::refused(Refusal::NotGranted),
+            false => Error::refused(None, Refusal::NotGranted),
         };
         rights::check_probe(self.who, &source, probed.iter()).map_err(unnamed)?;
         Ok((source, where_, measures))
@@ -2222,7 +2219,7 @@ impl<'a> Reader<'a> {
         // A read that names no limit asks for nothing out of bounds.
         let l = asked.unwrap_or(limits.default_limit.min(max));
         if l == 0 || l > max {
-            return Err(invalid(Case::LimitRange { max }));
+            return Err(Error::invalid(Case::LimitRange { max }));
         }
         Ok(l as usize)
     }
@@ -2274,18 +2271,18 @@ impl<'a> Reader<'a> {
         for o in &find.order_by {
             if let Some((field, case)) = o.misfit() {
                 let reason = Refusal::Invalid(Box::new(case.into()));
-                return Err(Error::Refused { field, reason });
+                return Err(Error::refused(field, reason));
             }
             // A view's records are computed at the read's position; none
             // has an event of its own to order by, nor a provenance (028,
             // extended).
             if o.by == OrderBy::Latest && decl.view.is_some() {
                 let ty = Some(ty.clone());
-                return Err(invalid(Case::LatestNoChange { ty }));
+                return Err(Error::invalid(Case::LatestNoChange { ty }));
             }
             if o.by != OrderBy::Value && decl.view.is_some() {
                 let case = Case::NoRecordsProvenance;
-                return Err(crate::declare::invalid_field(&o.field, case));
+                return Err(Error::invalid_at(&o.field, case));
             }
         }
         let filter = find
@@ -2308,7 +2305,7 @@ impl<'a> Reader<'a> {
             probed.extend(a.measures.iter().filter_map(|m| m.field.clone()));
             // A field key probes its field; a named key, every field its
             // expression reads (024).
-            let keys = aggregate::group_keys(&a.group_by).map_err(invalid)?;
+            let keys = aggregate::group_keys(&a.group_by).map_err(Error::invalid)?;
             for (name, expr) in keys {
                 match expr {
                     None => probed.push(name),
@@ -2371,7 +2368,7 @@ impl<'a> Reader<'a> {
                     .as_ref()
                     .is_some_and(|(v, _)| v.len() != find.order_by.len())
                 {
-                    return Err(invalid(Case::CursorOtherOrder));
+                    return Err(Error::invalid(Case::CursorOtherOrder));
                 }
                 same_read(&state, &find_read)?;
                 after
@@ -2451,10 +2448,10 @@ impl<'a> Reader<'a> {
     /// (`docs/decisions/045-a-table-reads-a-page-and-its-total.md`).
     fn offset(&self, find: &Find) -> Result<usize> {
         if find.total && find.aggregate.is_some() {
-            return Err(invalid(Case::TotalWithAggregate));
+            return Err(Error::invalid(Case::TotalWithAggregate));
         }
         if find.retired && find.aggregate.is_some() {
-            return Err(invalid(Case::RetiredWithAggregate));
+            return Err(Error::invalid(Case::RetiredWithAggregate));
         }
         let Some(skip) = find.offset else {
             return Ok(0);
@@ -2466,14 +2463,14 @@ impl<'a> Reader<'a> {
         ];
         if let Some((_, other)) = beside.iter().find(|(given, _)| *given) {
             let other = (*other).to_owned();
-            return Err(invalid(Case::OffsetBeside { other }));
+            return Err(Error::invalid(Case::OffsetBeside { other }));
         }
         let max = self.lake.limits.max_offset;
         if skip > max {
-            return Err(Error::Refused {
-                field: Some("offset".into()),
-                reason: Refusal::TooLarge { max },
-            });
+            return Err(Error::refused(
+                Some("offset".into()),
+                Refusal::TooLarge { max },
+            ));
         }
         Ok(skip as usize)
     }
@@ -2508,20 +2505,20 @@ impl<'a> Reader<'a> {
     /// or with a value the key's field cannot hold.
     fn resume_after(&self, decl: &TypeDecl, find: &Find, a: &ReadAfter) -> Result<SortKey> {
         if find.cursor.is_some() {
-            return Err(invalid(Case::AfterWithCursor));
+            return Err(Error::invalid(Case::AfterWithCursor));
         }
         if find.aggregate.is_some() {
-            return Err(invalid(Case::AfterWithAggregate));
+            return Err(Error::invalid(Case::AfterWithAggregate));
         }
         if a.values.len() != find.order_by.len() {
             let (values, keys) = (a.values.len(), find.order_by.len());
-            return Err(invalid(Case::AfterCount { values, keys }));
+            return Err(Error::invalid(Case::AfterCount { values, keys }));
         }
         let mut values = Vec::with_capacity(a.values.len());
         for (i, (v, o)) in a.values.iter().zip(&find.order_by).enumerate() {
             let unfit = |why: Case| {
                 let (index, field, why) = (i, o.field.clone(), Box::new(why));
-                crate::declare::invalid_field(&o.field, Case::AfterUnfit { index, field, why })
+                Error::invalid_at(&o.field, Case::AfterUnfit { index, field, why })
             };
             let v = match (o.by, v) {
                 (_, Value::Null) => Value::Null,
@@ -2537,7 +2534,7 @@ impl<'a> Reader<'a> {
                 (OrderBy::KnownAt | OrderBy::SeenAt, _) => {
                     return Err(unfit(Case::InstantNotText));
                 }
-                (OrderBy::Value, v) => match decl.fields.iter().find(|f| f.name == o.field) {
+                (OrderBy::Value, v) => match decl.field(&o.field) {
                     Some(f) => {
                         let vt =
                             f.ty.value_type
@@ -2558,7 +2555,7 @@ impl<'a> Reader<'a> {
     /// their groups as they are read.
     fn aggregated(&self, decl: &TypeDecl, filter: Option<&Expr>, a: &Aggregate) -> Result<Found> {
         let named = |e: Said| {
-            invalid(e.within(Place::Aggregate {
+            Error::invalid(e.within(Place::Aggregate {
                 name: decl.name.clone(),
             }))
         };
@@ -2578,7 +2575,7 @@ impl<'a> Reader<'a> {
             let Some(scale) = m
                 .field
                 .as_ref()
-                .and_then(|f| decl.fields.iter().find(|d| &d.name == f))
+                .and_then(|f| decl.field(f))
                 .and_then(|f| f.ty.value_type.as_ref())
                 .and_then(|vt| self.shape.ontology.value_types.get(vt.as_str()))
                 .and_then(|vt| vt.decl.scale)
@@ -3474,11 +3471,11 @@ impl<'a> Reader<'a> {
         // a search could only answer nothing (018).
         if decl.view.is_some() {
             let ty = s.ty.clone();
-            return Err(invalid(Case::ViewNotSearched { ty }));
+            return Err(Error::invalid(Case::ViewNotSearched { ty }));
         }
         if let Some((field, case)) = s.mode.misfit() {
             let reason = Refusal::Invalid(Box::new(case.into()));
-            return Err(Error::Refused { field, reason });
+            return Err(Error::refused(field, reason));
         }
         let vectors = s.mode.vectors();
         let vector_fields: Vec<&FieldName> = vectors.iter().map(|v| v.0).collect();
@@ -3516,7 +3513,7 @@ impl<'a> Reader<'a> {
                     field: (*field).clone(),
                     kind,
                 };
-                return Err(crate::declare::invalid_field(field, case));
+                return Err(Error::invalid_at(field, case));
             }
         }
         if let SearchMode::Hybrid {
@@ -3530,7 +3527,7 @@ impl<'a> Reader<'a> {
             let case = Case::SearchNeedsVector {
                 field: field.clone(),
             };
-            return Err(crate::declare::invalid_field(field, case));
+            return Err(Error::invalid_at(field, case));
         }
         // A query vector is judged by the field's declared length, never by
         // a stored vector, which another may own (024).
@@ -3599,7 +3596,7 @@ impl<'a> Reader<'a> {
         let decl = shape.ontology.ty(&ty).ok().cloned();
         let shown = |now: &FieldName| {
             let d = decl.as_ref()?;
-            let f = d.fields.iter().find(|f| &f.name == now)?;
+            let f = d.field(now)?;
             rights::field_access(who, d, f).reads().then(|| f.clone())
         };
         let fields = (names.iter())
@@ -4106,11 +4103,10 @@ impl<'a> Reader<'a> {
         };
         let start_decl = self.named_type(&start_ty)?.clone();
         if p.start.rerank.is_some() && p.start.search.is_none() {
-            let reason = Refusal::Invalid(Box::new(Case::RerankWithoutSearch.into()));
-            return Err(Error::Refused {
-                field: Some("rerank".into()),
-                reason,
-            });
+            return Err(Error::invalid_at(
+                &"rerank".into(),
+                Case::RerankWithoutSearch,
+            ));
         }
         let params = self.bind_params(&start_decl, &p.start.params)?;
         let limit = self.limit(p.limit, measures::is_measure(&p.project))?;
@@ -4125,10 +4121,10 @@ impl<'a> Reader<'a> {
         let given = std::iter::once(&p.start.named).chain(p.steps.iter().map(|s| &s.named));
         for name in given.flatten() {
             if !binds {
-                return Err(invalid(Case::PatternAsNotRows));
+                return Err(Error::invalid(Case::PatternAsNotRows));
             }
             if let Some(fault) = lakelands_core::names::fault(Naming::Binding, name) {
-                return Err(invalid(fault));
+                return Err(Error::invalid(fault));
             }
         }
         if measures::is_measure(&p.project) {
@@ -4137,7 +4133,7 @@ impl<'a> Reader<'a> {
             // A graph and a path come by depth, type and key, an
             // aggregate's groups by their key (025): an order they would
             // pass over is refused, as `as` is.
-            return Err(invalid(Case::PatternOrderNotRows));
+            return Err(Error::invalid(Case::PatternOrderNotRows));
         }
         // A row is a projection of a walk, not a record: it has no change
         // of its own and no provenance to order by (028, 025). Refused
@@ -4145,14 +4141,14 @@ impl<'a> Reader<'a> {
         for o in &p.order_by {
             if let Some((field, case)) = o.misfit() {
                 let reason = Refusal::Invalid(Box::new(case.into()));
-                return Err(Error::Refused { field, reason });
+                return Err(Error::refused(field, reason));
             }
             match o.by {
                 OrderBy::Value => {}
-                OrderBy::Latest => return Err(invalid(Case::LatestNoChange { ty: None })),
+                OrderBy::Latest => return Err(Error::invalid(Case::LatestNoChange { ty: None })),
                 _ => {
                     let case = Case::NoRecordsProvenance;
-                    return Err(crate::declare::invalid_field(&o.field, case));
+                    return Err(Error::invalid_at(&o.field, case));
                 }
             }
         }
@@ -4162,13 +4158,13 @@ impl<'a> Reader<'a> {
         // from depth 0, would not pass.
         let reaches = p.project == Projection::Reach;
         if (binds || reaches) && p.to.is_some() {
-            return Err(invalid(Case::PatternToNotGraph));
+            return Err(Error::invalid(Case::PatternToNotGraph));
         }
         // A reach of no steps could never answer a row: it is refused as a
         // measure of none is.
         if reaches && p.steps.is_empty() {
             let measure = "reach".to_owned();
-            return Err(invalid(Case::MeasureNoSteps { measure }));
+            return Err(Error::invalid(Case::MeasureNoSteps { measure }));
         }
         let start_name = p.start.named.clone();
         let mut names = vec![start_name.unwrap_or_else(|| start_decl.name.to_string())];
@@ -4216,7 +4212,11 @@ impl<'a> Reader<'a> {
                 // nowhere: hidden or absent, it is refused alike (006).
                 false if !self.out_any(&step.relation) => {
                     let (ty, relation, walk) = (here, step.relation.clone(), step.walk);
-                    return Err(invalid(Case::NoRelationToWalk { ty, relation, walk }));
+                    return Err(Error::invalid(Case::NoRelationToWalk {
+                        ty,
+                        relation,
+                        walk,
+                    }));
                 }
                 false => None,
             };
@@ -4269,7 +4269,7 @@ impl<'a> Reader<'a> {
             {
                 let decl = self.sight.ty(ty)?;
                 if let Some(param) = decl.view.as_ref().and_then(|v| v.params.first()) {
-                    return Err(invalid(
+                    return Err(Error::invalid(
                         Said::from(unbound(ty, param, true)).within(at.clone()),
                     ));
                 }
@@ -4288,7 +4288,7 @@ impl<'a> Reader<'a> {
             several.push(open.then(|| (at.clone(), all.clone())));
             if binds && names.contains(&name) {
                 let said = Said::from(Case::PatternBindsTwice { name });
-                return Err(invalid(said.within(at)));
+                return Err(Error::invalid(said.within(at)));
             }
             names.push(name);
             // A `where` over several types is read against each, once
@@ -4346,7 +4346,7 @@ impl<'a> Reader<'a> {
             return self.measure(p, limit, carried, &hidden);
         }
         if p.to.is_some() && chain {
-            return Err(invalid(Case::PatternToChain));
+            return Err(Error::invalid(Case::PatternToChain));
         }
         // A cursor is checked before any arm answers: a path and an
         // aggregate hand out none, so every cursor is another read's there.
@@ -4357,7 +4357,7 @@ impl<'a> Reader<'a> {
             let top = p.start.rerank.as_ref().map_or(0, |r| r.top as usize);
             match state.stage {
                 Some(st) if st.order.len() <= top => self.second.borrow_mut().resumed = Some(st),
-                Some(_) => return Err(invalid(Case::CursorForeign)),
+                Some(_) => return Err(Error::invalid(Case::CursorForeign)),
                 None => {}
             }
         }
@@ -4411,7 +4411,9 @@ impl<'a> Reader<'a> {
         // another read's.
         let after_start = match &after {
             Some((v, key)) if hood && v.as_slice() == [Value::from(0u64)] => Some(key.clone()),
-            Some(_) if p.project == Projection::Graph => return Err(invalid(Case::CursorForeign)),
+            Some(_) if p.project == Projection::Graph => {
+                return Err(Error::invalid(Case::CursorForeign));
+            }
             _ => None,
         };
         let mut inside = None;
@@ -4459,7 +4461,7 @@ impl<'a> Reader<'a> {
                 }
                 more => {
                     let count = more.len();
-                    return Err(invalid(Case::PathStarts { count }));
+                    return Err(Error::invalid(Case::PathStarts { count }));
                 }
             };
             return self.graph_result(nodes, edges, None).map(Ok);
@@ -4544,9 +4546,9 @@ impl<'a> Reader<'a> {
                     [Value::Number(s), Value::Number(d), Value::String(t)] => {
                         let (s, d) = (s.as_u64(), d.as_u64());
                         let at = s.zip(d).map(|(s, d)| (s, d, t.clone(), key.clone()));
-                        Some(at.ok_or_else(|| invalid(Case::CursorForeign))?)
+                        Some(at.ok_or_else(|| Error::invalid(Case::CursorForeign))?)
                     }
-                    _ => return Err(invalid(Case::CursorForeign)),
+                    _ => return Err(Error::invalid(Case::CursorForeign)),
                 },
             };
             let (mut rows, mut more): (Vec<Row>, bool) = (Vec::new(), false);
@@ -4609,7 +4611,7 @@ impl<'a> Reader<'a> {
             }
         };
         let path = |name: &str| {
-            let (n, f) = aggregate::row_path(name, &bound).map_err(invalid)?;
+            let (n, f) = aggregate::row_path(name, &bound).map_err(Error::invalid)?;
             typed(&n, f)
         };
         let ordered: Vec<Vec<_>> = (p.order_by.iter())
@@ -4633,7 +4635,7 @@ impl<'a> Reader<'a> {
         let row = self.row_shape(&names, &shaped, &shared);
         let mut over_rows = None;
         if let Projection::Aggregate(a) = &p.project {
-            let (a, read) = aggregate::over_rows(a, &bound).map_err(invalid)?;
+            let (a, read) = aggregate::over_rows(a, &bound).map_err(Error::invalid)?;
             for (n, f) in read {
                 paths.extend(typed(&n, f)?);
             }
@@ -4655,7 +4657,7 @@ impl<'a> Reader<'a> {
         // What a named key can never compute is refused, as `find` refuses
         // it, over the row's shape (028, extended).
         if let Some(a) = &over_rows {
-            let keys = aggregate::group_keys(&a.group_by).map_err(invalid)?;
+            let keys = aggregate::group_keys(&a.group_by).map_err(Error::invalid)?;
             for (name, e) in keys {
                 if let Some(e) = e {
                     crate::declare::evaluates(&e, &row, &[Place::Group { name }])?;
@@ -4726,7 +4728,7 @@ impl<'a> Reader<'a> {
             (Some(o), None) => v.len() == o.len(),
         };
         if after.as_ref().is_some_and(|a| !fits(a)) {
-            return Err(invalid(Case::CursorForeign));
+            return Err(Error::invalid(Case::CursorForeign));
         }
         if let Some(order) = streamed {
             // The page and one row more, in the starts' order; a cursor
@@ -4794,7 +4796,7 @@ impl<'a> Reader<'a> {
                     &mut |_, start, binding| {
                         if bounded && rows.len() + held.len() >= max as usize {
                             let (field, reason) = (Some(member.into()), Refusal::TooLarge { max });
-                            return Err(Error::Refused { field, reason });
+                            return Err(Error::refused(field, reason));
                         }
                         let r = row(start, binding)?;
                         let value = |o: &Order| r.get(o.field.as_str()).cloned();
@@ -4821,7 +4823,8 @@ impl<'a> Reader<'a> {
                 })
                 .collect();
             let refs: Vec<&BTreeMap<FieldName, Value>> = as_fields.iter().collect();
-            let groups = aggregate::aggregate(&refs, a, self.told(), self.now).map_err(invalid)?;
+            let groups =
+                aggregate::aggregate(&refs, a, self.told(), self.now).map_err(Error::invalid)?;
             return Ok(Ok(QueryResult::Groups { rows: groups }));
         }
         let order: Vec<Order> = p.order_by.clone();
@@ -4944,7 +4947,7 @@ impl<'a> Reader<'a> {
     fn unlike(&self, all: &BTreeSet<TypeName>, field: &FieldName) -> Option<Unlike> {
         let declared = |t: &TypeName| {
             let decl = self.shape.ontology.ty(t).ok()?;
-            let f = decl.fields.iter().find(|f| &f.name == field)?;
+            let f = decl.field(field)?;
             self.knows(decl, field).then_some(&f.ty)
         };
         let each: Vec<_> = all.iter().map(|t| (t, declared(t))).collect();
@@ -5203,7 +5206,7 @@ impl<'a> Reader<'a> {
             None if !one => return Ok(None),
             None => return Err(several_types(at, reached, None)),
         };
-        Err(invalid(Said::from(said).within(at.clone())))
+        Err(Error::invalid(Said::from(said).within(at.clone())))
     }
 
     /// The type a step over `relation` reaches from `here`, walking `walk`.
@@ -5232,7 +5235,11 @@ impl<'a> Reader<'a> {
             None if lenient && self.out_any(relation) => Ok(None),
             None => {
                 let (ty, relation) = (here.clone(), relation.clone());
-                Err(invalid(Case::NoRelationToWalk { ty, relation, walk }))
+                Err(Error::invalid(Case::NoRelationToWalk {
+                    ty,
+                    relation,
+                    walk,
+                }))
             }
         }
     }
@@ -5366,7 +5373,7 @@ fn ordered_proposals(proposals: Vec<Proposal>, order_by: &[Order]) -> Result<Vec
     for o in order_by {
         if o.by != OrderBy::Value || !PROPOSAL_MEMBERS.contains(&o.field.as_str()) {
             let (members, field, by) = (PROPOSAL_MEMBERS.iter().collect(), o.field.clone(), o.by);
-            return Err(invalid(Case::ProposalOrder { members, field, by }));
+            return Err(Error::invalid(Case::ProposalOrder { members, field, by }));
         }
     }
     let mut keyed: Vec<(core_engines::Place<'_>, Proposal)> = proposals

@@ -34,7 +34,6 @@ use lakelands_api::id::Position;
 use sha2::{Digest as _, Sha256};
 
 use crate::connect::Db;
-use crate::invalid;
 use crate::projection::Names;
 
 /// How an append and a seal begin: synced, whatever the session's default.
@@ -154,7 +153,7 @@ fn add(
             &[&(at.0 as i64)],
         )?;
         if row.get::<_, Option<i64>>(0) != Some(at.0 as i64) {
-            return Err(invalid(Case::ImportIntoHeld { tip: *at }));
+            return Err(Error::invalid(Case::ImportIntoHeld { tip: *at }));
         }
         floor = row.get::<_, Option<i64>>(1).unwrap_or(0) as u64;
     }

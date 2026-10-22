@@ -141,7 +141,10 @@ impl KeyStore for Keys {
         let versions = held.entry((lake.clone(), source.clone())).or_default();
         let Some(i) = versions.iter().position(|(i, k)| i == id && k.is_some()) else {
             let (source, key) = (source.clone(), id.clone());
-            return Err(crate::invalid(Case::KeyVersionNotHeld { source, key }));
+            return Err(lakelands_api::Error::invalid(Case::KeyVersionNotHeld {
+                source,
+                key,
+            }));
         };
         versions[..=i].iter_mut().for_each(|(_, k)| *k = None);
         Ok(())
