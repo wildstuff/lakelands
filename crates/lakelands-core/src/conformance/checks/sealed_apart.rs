@@ -9,7 +9,7 @@ use lakelands_api::IngestOpts;
 use lakelands_api::event::Sealed;
 use lakelands_api::id::KeyId;
 
-use super::erasable::{Keys, again, first, keyed, person, with};
+use super::erasable::{Keys, again, first, person, with};
 use super::removed::{Whole, acts, at, erased};
 use crate::conformance::fixture::source_record;
 use crate::conformance::prelude::*;
@@ -167,7 +167,7 @@ fn under(key: &KeyId, apart: &[KeyId], source: bool) -> Sealed {
 }
 
 async fn a_delivery_sealed_apart_is_shredded_alone(store: Store, reopen: Reopen) -> Held {
-    let (keys, store) = keyed(&reopen, store, "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let crm: SourceId = "crm".into();
@@ -305,7 +305,7 @@ async fn an_output_over_an_apart_value_dies_with_either_key(store: Store, reopen
     use crate::conformance::fixture::computed_by;
     use lakelands_api::ontology::{FieldDecl, StorageKind};
     const TOKEN: &str = "apart_output";
-    let (keys, store) = keyed(&reopen, store, "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     let text = json!({"kind": "text"});
     l.declare_json(
@@ -449,7 +449,7 @@ async fn a_cut_by_time_takes_a_delivery_sealed_apart_with_its_version(
     store: Store,
     reopen: Reopen,
 ) -> Held {
-    let (keys, store) = keyed(&reopen, store, "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let crm: SourceId = "crm".into();
@@ -547,7 +547,7 @@ async fn a_set_forgotten_destroys_the_keys_apart_of_each_source(
     store: Store,
     reopen: Reopen,
 ) -> Held {
-    let (keys, store) = keyed(&reopen, store, "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let (crm, erp): (SourceId, SourceId) = ("crm".into(), "erp".into());
@@ -647,7 +647,7 @@ impl futures_core::Stream for Gate {
 }
 
 async fn a_set_of_deliveries_shreds_what_it_takes_whole(store: Store, reopen: Reopen) -> Held {
-    let (keys, store) = keyed(&reopen, store, "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let crm: SourceId = "crm".into();
@@ -807,7 +807,7 @@ async fn a_call_writing_past_an_act_takes_a_new_key_apart(store: Store, reopen: 
 }
 
 async fn an_ingest_not_sealed_apart_seals_as_before(store: Store, reopen: Reopen) -> Held {
-    let (keys, store) = keyed(&reopen, store, "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let crm: SourceId = "crm".into();

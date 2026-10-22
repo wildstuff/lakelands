@@ -11,7 +11,7 @@
 
 use lakelands_api::write::{ForgetReport, Outcome, RemoveReport, WriteOpts};
 
-use super::erasable::{Keys, again, keyed, person, with};
+use super::erasable::{Keys, again, person, with};
 use super::removed::{at, erased};
 use crate::conformance::fixture::source_record;
 use crate::conformance::prelude::*;
@@ -216,7 +216,7 @@ async fn a_value_taken_back_is_followed_through_a_rekeying(store: Store) -> Held
 }
 
 async fn a_forgotten_source_is_followed_through_a_rekeying(store: Store, reopen: Reopen) -> Held {
-    let (_, store) = keyed(&reopen, store, "with a key store").await?;
+    let (_, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let p = |k: &str, name: &str, city: &str| {

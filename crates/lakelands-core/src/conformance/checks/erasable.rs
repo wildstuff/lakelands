@@ -187,6 +187,12 @@ impl Keys {
         Ok(Keys(Mutex::new(held), Mutex::new(apart)))
     }
 
+    /// Whether no key was ever made.
+    #[cfg(test)]
+    pub(in crate::conformance) fn is_new(&self) -> bool {
+        crate::lock(&self.0).is_empty() && crate::lock(&self.1).is_empty()
+    }
+
     /// A copy of every key, as a backup of the key store holds them.
     pub(super) fn backup(&self) -> Keys {
         let apart = Mutex::new(crate::lock(&self.1).clone());
@@ -215,7 +221,7 @@ pub(super) fn first(keys: &Keys, store: &dyn LakeStore, source: &str) -> Result<
 }
 
 /// Seams with `keys` as the key store, and the suite's backing.
-pub(super) fn with(keys: &Arc<Keys>) -> Seams {
+pub(in crate::conformance) fn with(keys: &Arc<Keys>) -> Seams {
     Seams {
         keys: Some(keys.clone()),
         backings: crate::conformance::backing::backings(),
@@ -267,7 +273,7 @@ pub(super) async fn read(l: &Lake, key: &str, f: &str) -> Result<Value, Failure>
 }
 
 /// Opens the lake again with `seams`, naming `what` if that fails.
-pub(super) async fn again(
+pub(in crate::conformance) async fn again(
     reopen: &Reopen,
     store: Store,
     seams: Seams,
@@ -276,17 +282,6 @@ pub(super) async fn again(
     (reopen)(store, seams)
         .await
         .map_err(|e| Failure::new(format!("opening the lake again {what} failed: {e}")))
-}
-
-/// Opens the lake again with a new key store, naming `what` if that fails.
-pub(super) async fn keyed(
-    reopen: &Reopen,
-    store: Store,
-    what: &str,
-) -> Result<(Arc<Keys>, Store), Failure> {
-    let keys = Arc::new(Keys::default());
-    let store = again(reopen, store, with(&keys), what).await?;
-    Ok((keys, store))
 }
 
 async fn a_sources_value_of_an_erasable_field_is_sealed_in_the_log_and_read_plain(
@@ -304,7 +299,7 @@ async fn a_sources_value_of_an_erasable_field_is_sealed_in_the_log_and_read_plai
     );
     let head = store.head().await.must("reading the head")?;
     ensure!(head == before, "the refused ingest appended up to {head}");
-    let (keys, store) = keyed(&reopen, store, "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.ingest("crm", vec![ada("p1")])
         .await
@@ -446,7 +441,7 @@ async fn erasable_is_declared_on_a_sources_own_field_alone_and_stays(
 }
 
 async fn a_key_the_key_store_does_not_give_fails_closed(store: Store, reopen: Reopen) -> Held {
-    let (keys, store) = keyed(&reopen, store, "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let ada = source_record("person", "p1", json!({"id": "p1", "name": "Ada"}));
@@ -498,7 +493,7 @@ async fn an_output_computed_from_a_sources_erasable_values_is_sealed_under_its_k
     store: Store,
     reopen: Reopen,
 ) -> Held {
-    let (keys, store) = keyed(&reopen, store, "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     let kind = crate::conformance::backing::KIND;
     let text = json!({"kind": "text"});
@@ -800,7 +795,7 @@ async fn a_sources_first_sealed_write_is_planned_as_the_fold_computes_it(
     store: Store,
     reopen: Reopen,
 ) -> Held {
-    let (_, store) = keyed(&reopen, store, "with a key store").await?;
+    let (_, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     let token = "first_sealed";
     let kind = crate::conformance::backing::KIND;

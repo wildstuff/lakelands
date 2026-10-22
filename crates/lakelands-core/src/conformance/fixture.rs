@@ -29,7 +29,8 @@ use lakelands_api::{
 };
 use rust_decimal::Decimal;
 
-use super::{Failure, Given, Held, Store};
+use super::checks::erasable::{Keys, again, with};
+use super::{Failure, Given, Held, Reopen, Store};
 
 /// An answer a refusal may be in: an error, or a result that may hold one.
 pub trait Answer {
@@ -269,6 +270,18 @@ pub async fn at_one_set_change(given: &Given, store: Store, what: &str) -> Resul
     (given.relimit)(store, lakelands_api::seam::Seams::default(), lower)
         .await
         .map_err(|e| Failure::new(format!("{what}: {e}")))
+}
+
+/// The lake opened again with a new, empty key store, which is answered
+/// beside it; `what` is named if that fails.
+pub async fn reopen_with_keys(
+    reopen: &Reopen,
+    store: Store,
+    what: &str,
+) -> Result<(Arc<Keys>, Store), Failure> {
+    let keys = Arc::new(Keys::default());
+    let store = again(reopen, store, with(&keys), what).await?;
+    Ok((keys, store))
 }
 
 /// Fail unless `store` was opened with the default limits, so a harness
