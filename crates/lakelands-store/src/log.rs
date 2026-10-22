@@ -279,9 +279,16 @@ pub fn open(stored: &CanonicalEvent) -> Result<Event> {
     }
     // An older event is read as the release's format says its members; its
     // bytes and its hash stay as stored.
-    let hash = hash_without_hash(value.clone());
+    let original = value.clone();
     let value = lakelands_core::log::converted(v, value);
-    let converted = canonical::to_vec(&value);
+    // Where the conversion left the value alone, its bytes are the stored
+    // ones, already checked above: no second pass over them.
+    let converted = if value == original {
+        stored.bytes.clone()
+    } else {
+        canonical::to_vec(&value)
+    };
+    let hash = hash_without_hash(original);
     let event: Event = serde_json::from_value(value).map_err(|e| {
         let detail = Detail::json(&e);
         corrupt(at, Flaw::NotAnEvent { detail })

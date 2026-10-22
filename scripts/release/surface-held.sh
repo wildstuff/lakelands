@@ -135,7 +135,7 @@ while IFS=$'\t' read -r crate lint item at; do
     if [[ "$lint" =~ $GROWS ]]; then grown=$((grown + 1)); continue; fi
     if [ "$lint" = "$MOVED" ]; then
         e="${item#variant }"; e="${e%%::*}"
-        if printf '%s\n' "$gained" | grep -Fxq "$crate"$'\t'"$e"; then grown=$((grown + 1)); continue; fi
+        if grep -Fxq -- "$crate"$'\t'"$e" <<<"$gained"; then grown=$((grown + 1)); continue; fi
     fi
     if [ -n "$at" ] && deprecated "${at%:*}" "${at##*:}"; then gone=$((gone + 1)); continue; fi
     line="$crate"$'\t'"$lint"$'\t'"$item"

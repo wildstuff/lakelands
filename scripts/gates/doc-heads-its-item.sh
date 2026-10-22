@@ -11,7 +11,8 @@
 #
 # For each added item line in the pull request's diff (from the merge
 # base, so changes on the base branch never count), the gate walks up
-# through the added `///` and `#[…]` lines directly above it. If the
+# through the added `///` and `#[…]` lines and added blank lines above it
+# (rustdoc gives the doc to the item across a blank line). If the
 # next line up is an unchanged `///`, the item is named. A removed line
 # there ends the walk: an item that replaces another under its comment
 # is a change to that item, not an insertion.
@@ -38,7 +39,7 @@ done < <(git diff --no-color --no-ext-diff -U3 "$diff_range" -- '*.rs' | awk '
         if (!is_item($0)) next
         items++
         j = n - 1
-        while (j > 0 && line[j] ~ /^\+[ \t]*(\/\/\/|#\[)/) j--
+        while (j > 0 && (line[j] ~ /^\+[ \t]*(\/\/\/|#\[)/ || line[j] ~ /^\+[ \t]*$/)) j--
         if (j > 0 && line[j] ~ /^ [ \t]*\/\/\//) {
             item = substr($0, 2); sub(/^[ \t]+/, "", item)
             doc = substr(line[j], 2); sub(/^[ \t]+/, "", doc)

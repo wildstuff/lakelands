@@ -65,7 +65,7 @@ base_number() {
     base="$(gate_base)"
     [ -n "$base" ] || return 0
     if [ -n "$name" ]; then
-        git show "$base:$file" 2>/dev/null | sed -n "s/^$name=\([0-9][0-9]*\).*/\1/p" | head -n 1
+        git show "$base:$file" 2>/dev/null | sed -n "/^$name=[0-9]/{s/^$name=\([0-9][0-9]*\).*/\1/p;q;}"
     else
         git show "$base:$file" 2>/dev/null | tr -d '[:space:]' | grep -x '[0-9][0-9]*' || true
     fi

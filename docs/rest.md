@@ -41,6 +41,7 @@ this page says only how a request reaches it.
 
   ```json
   {"error":"conflict","expected":1,"actual":2,
+   "message":"the record changed: expected version 1, found 2",
    "what":"the record changed: expected version 1, found 2",
    "todo":"read the record again and retry against its current version"}
   ```
@@ -51,9 +52,35 @@ this page says only how a request reaches it.
   | `refused`: `invalid`, `constraint`, `precondition`, `too_deep`, `too_large`, `migration`, `out_of_range` | 422 (400 for a request the server cannot read, 404 for no route, 405 for a method the route does not take, 413 for a body over 4 MiB, 415 for a body of another media type) |
   | `refused`: `decided`, `unanswered` | 409 |
   | `not_found` | 404 |
-  | `conflict` | 412 — the version expected came in `If-Match` |
+  | `conflict` | 412 — a stale `If-Match`; `If-None-Match: *` on a key that exists (`expected` is 0, the message says the key already exists); an accept whose proposal's record moved since it was made |
   | `unbound` | 501 |
   | `unavailable` | 503 |
+
+- **Editing a record.** A record's version is one number for the whole
+  record, not one per field: a write that changes any field moves it. A
+  read of one record answers it as `ETag`. So does a `PUT` or `DELETE`
+  of a record, and its `ETag` is that record's next `If-Match`: a client
+  that edits twice sends it without reading in between. A link or an
+  unlink answers the version of the link record, not of either end, so
+  it is not the next `If-Match` of the record it was made from. A verb
+  answers the version of the record write it made, where it made one,
+  and none otherwise.
+
+  Two people editing different fields of one record therefore collide
+  by design: the second write answers 412. A client that edits only its
+  own fields can retry safely:
+
+  1. Read the record again with `with_meta`.
+  2. Compare the `meta.position` of each field the client edits with the
+     position it read those fields at.
+  3. If none of them moved, send the write again with the new `ETag` as
+     `If-Match`; the other person's fields are kept, because a `PUT`
+     changes only the fields it names.
+  4. If one moved, the client's value is stale: show the current value
+     and let the person decide.
+
+  `If-None-Match: *` creates a record and refuses an existing key with
+  the same 412, whose `expected` is 0.
 
 - **Browsers.** A request whose `Origin` is not on the configuration's
   `allowed_origins` is refused before anything else is read.

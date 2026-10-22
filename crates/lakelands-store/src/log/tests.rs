@@ -209,3 +209,34 @@ fn links_are_checked() {
     let (bad, _) = seal(&"finance".into(), Position(1), &Digest::zero(), 1, d);
     assert!(check_link(Some((&first.position, &first.hash)), &bad).is_err());
 }
+
+/// A record carrying a 384-element vector of doubles, f32 widened and
+/// short decimals among them, seals and opens to itself: the open pass
+/// that checks the converted value is skipped where the conversion
+/// changed nothing, and the bytes still verify.
+#[test]
+fn a_vector_record_opens_to_itself() {
+    let vector: Vec<serde_json::Value> = (0..384_u32)
+        .map(|i| match i % 3 {
+            0 => json!(f64::from(i as f32 / 7.0 + 0.5)),
+            1 => json!(f64::from(i) / 1000.0 - 0.1003),
+            _ => json!(-(f64::from(i)) * 1e-9),
+        })
+        .collect();
+    let mut patch = std::collections::BTreeMap::new();
+    patch.insert("embedding".into(), serde_json::Value::Array(vector));
+    let d = draft(EventBody::RecordUpserted {
+        ty: "note".into(),
+        key: "n1".into(),
+        version: lakelands_api::Version(1),
+        patch,
+        made: true,
+    });
+    let (event, stored) = seal(&"finance".into(), Position(0), &Digest::zero(), 1, d);
+    assert_eq!(open(&stored).unwrap(), event);
+    // A flipped digit in the vector is still caught.
+    let mut bad = stored.clone();
+    let at = bad.bytes.iter().position(|&b| b == b'.').unwrap() + 1;
+    bad.bytes[at] = if bad.bytes[at] == b'1' { b'2' } else { b'1' };
+    assert!(open(&bad).is_err());
+}
