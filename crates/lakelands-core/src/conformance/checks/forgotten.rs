@@ -682,9 +682,10 @@ check!(
 /// laid out, so the store opens it for a rebuild (lakelands#1152); and
 /// how many clears ran, one for each rebuild (lakelands#1183); which of
 /// the next commits of a transaction that dropped a key's states fails,
-/// counting from 1; and how many keys' states were dropped
-/// (lakelands#1120).
-pub type Fails = Arc<[AtomicU32; 7]>;
+/// counting from 1; how many keys' states were dropped (lakelands#1120);
+/// and how many times the engine reported its active segment's bytes
+/// (lakelands#1309).
+pub type Fails = Arc<[AtomicU32; 8]>;
 
 /// The harness's engine with a projection whose next reclaims and
 /// clears fail as [`Fails`] says (lakelands#1161).
@@ -812,6 +813,13 @@ impl lakelands_api::engine::LakeEngine for Reclaims {
     }
     fn segments(&self) -> lakelands_api::Result<Vec<SegmentDigest>> {
         self.inner.segments()
+    }
+    fn active_segment_bytes(&self) -> Option<u64> {
+        let bytes = self.inner.active_segment_bytes();
+        if bytes.is_some() {
+            self.fails[7].fetch_add(1, Ordering::SeqCst);
+        }
+        bytes
     }
     fn projection(&self) -> &dyn ProjectionStore {
         self

@@ -127,6 +127,9 @@ pub struct Writer {
     /// While a fold of the log runs: the sets it decides itself, from the
     /// first value it erased that each reads (lakelands#1232).
     pub(crate) zone: Option<crate::writes::Zone>,
+    /// The tip the active segment's size was last weighed at, for a seal
+    /// by size ([`Turn::seal_by_size`]).
+    pub(crate) sized: Option<Position>,
 }
 
 /// What the lake declares at one position, as a read needs it and before
@@ -510,6 +513,7 @@ impl Lake {
             ahead: BTreeSet::new(),
             rebuilding: false,
             zone: None,
+            sized: None,
         })
     }
 

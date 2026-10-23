@@ -289,6 +289,10 @@ impl Lake {
             let rebuilt = lake.rebuilds.load(Ordering::SeqCst);
             lake.finish_forgetting(&mut w)?;
             refolded = lake.rebuilds.load(Ordering::SeqCst) != rebuilt;
+            // A segment past the bound from before is sealed here, its
+            // checkpoint in the log and the feed (074).
+            drop(w);
+            lake.seal_by_size();
         }
         // An act erasing values the folded log held and the projection had
         // not erased, written after a build ahead or met by a fold not told
@@ -416,6 +420,7 @@ impl Lake {
                 ahead: BTreeSet::new(),
                 rebuilding: false,
                 zone: None,
+                sized: None,
             }),
             keys: Arc::new(crate::sealing::Keys::new(location.lake.clone(), seams_keys)),
             head: AtomicU64::new(0),

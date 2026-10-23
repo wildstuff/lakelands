@@ -557,6 +557,17 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   the seal answers its own. Then the host opens the lake again and sends
   nothing again: the handle opened then reads the checkpoint where it is
   in the log (lakelands#623).
+  On SQLite the writer also seals the active segment by itself once it
+  passes `limits.seal_after_bytes`, 256 MiB by default, as `checkpoint`
+  does, after the write that crossed it and before that write is
+  answered, and at a writer's open that finds one past it; never on a
+  read-only handle or in an import
+  (`docs/decisions/074-a-segment-is-sealed-by-size.md`). So a lake never
+  checkpointed still has sealed files that never change: a file backup
+  copies each sealed segment once and the active one each time. The
+  write that crosses the bound waits for
+  the seal, about 0.5 s at the default. A seal that fails does not fail
+  that write; it is tried after the next one.
   A write answered `unsynced` has met a second failed sync: the handle
   is done, and refuses appends, seals and taking the lease until the
   lake is opened again

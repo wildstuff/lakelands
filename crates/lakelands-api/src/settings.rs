@@ -219,6 +219,12 @@ pub const SETTINGS: &[Setting] = &[
         ..location("limits.forget_rebuild", "false")
     },
     Setting {
+        range: "bytes: 0 never seals by size, and a bound below 1048576 (1 MiB) is read as 1 MiB",
+        says: "The active segment's size past which the writer seals it after an append, as `checkpoint` does, on an engine that reports the size (SQLite); a writer's open seals one already past it. PostgreSQL and memory never seal by size.",
+        cost: "each seal holds the writer as a `checkpoint` does, about 2 ms a MiB of the segment: the write that crosses 256 MiB waited 0.51 s on SQLite, against 16 ms for a write of 1 MiB; every checkpoint lists each sealed segment, so a small bound makes many seals and long checkpoints",
+        ..location("limits.seal_after_bytes", "268435456")
+    },
+    Setting {
         range: "KiB",
         says: "SQLite: the writer connection's page cache.",
         ..location("engine.tuning.writer_cache_kb", "65536")

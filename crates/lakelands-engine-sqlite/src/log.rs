@@ -773,6 +773,11 @@ impl Log {
         Ok(())
     }
 
+    /// Where the active segment's committed bytes end.
+    pub(crate) fn active_end(&self) -> Option<u64> {
+        self.segments.last().map(|s| s.end)
+    }
+
     /// The last event's position and hash.
     pub(crate) fn tip(&self) -> Option<(Position, Digest)> {
         self.segments

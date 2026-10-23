@@ -118,8 +118,10 @@ impl Opened {
 /// given, opened bare.
 async fn bare(place: &Place, lake: &str, twin: usize, bound: Option<u32>) -> Opened {
     let (mut location, mut seams) = place(lake, twin);
-    // Low enough that a far write is refused after its record was staged.
+    // Low enough that a far write is refused after its record was staged;
+    // and no seal by size, whose position follows the batches (073).
     location.limits.max_set_changes = 2;
+    location.limits.seal_after_bytes = 0;
     if let Some(bound) = bound {
         location.limits.commit_window_events = bound;
     }
@@ -649,6 +651,9 @@ impl LakeEngine for FaultyEngine {
     }
     fn segments(&self) -> Result<Vec<SegmentDigest>> {
         self.0.segments()
+    }
+    fn active_segment_bytes(&self) -> Option<u64> {
+        self.0.active_segment_bytes()
     }
     fn projection(&self) -> &dyn ProjectionStore {
         self.0.projection()
