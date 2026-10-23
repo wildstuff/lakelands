@@ -1,0 +1,9 @@
+name: lakelands CodeQL config
+
+# Test fixtures and test output are not product code; they carry made-up
+# secrets that the cleartext queries flag. Rust runs with build-mode none.
+paths-ignore:
+  - '**/tests.rs'
+  - '**/tests/**'
+  - 'crates/*/examples/**'
+  - 'crates/lakelands-core/src/conformance/**'
