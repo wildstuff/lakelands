@@ -45,7 +45,7 @@ use crate::exec::Turn;
 use crate::lake::{Lake, PAGE, every};
 use crate::log::Draft;
 use crate::ontology::Ontology;
-use crate::writes::{self, Call};
+use crate::writes;
 
 /// How many co-owned records a refusal names, and how many referring
 /// records a report names per relation.
@@ -316,7 +316,7 @@ fn id(source: &SourceId, ty: Option<&TypeName>, head: Option<Position>) -> Strin
 /// repeat: with what its retirements would set off across an edge, past
 /// the ceiling too, so a host learns before the act that it must narrow a
 /// set or open the lake with a higher `max_set_changes`.
-pub fn preflight(lake: &Turn<'_>, source: &SourceId, ty: Option<&TypeName>) -> Result<PurgeReport> {
+pub fn preflight(lake: &Lake, source: &SourceId, ty: Option<&TypeName>) -> Result<PurgeReport> {
     let view = lake.engine.view(None)?;
     let w = lake.reading(view.as_ref())?;
     let (purged, unsearched) = selection(lake, view.as_ref(), &w.ontology, source, ty)?;
@@ -338,21 +338,19 @@ pub fn preflight(lake: &Turn<'_>, source: &SourceId, ty: Option<&TypeName>) -> R
 /// system writes them, and how many memberships and firings they set off
 /// across an edge; held to `max_set_changes` where `bound`.
 fn retirements(
-    lake: &Turn<'_>,
+    lake: &Lake,
     (w, view): (&crate::lake::Writer, &dyn ProjectionView),
     purged: Vec<StoredRecord>,
     now: lakelands_api::Timestamp,
     bound: bool,
 ) -> Result<(Vec<Draft>, u32)> {
     let system = lake.system("lakelands");
-    let call = Call {
+    let asked = writes::Asked {
         lake,
         who: &system,
         context: WriteContext::default(),
-        followed: None,
-        shown: None,
     };
-    let mut d = call.decide(w, view, now, 0);
+    let mut d = asked.decide(w, view, now, 0);
     d.bound = bound;
     d.retiring_as = lakelands_api::event::ChangeKind::Purged;
     let mut drafts = Vec::new();

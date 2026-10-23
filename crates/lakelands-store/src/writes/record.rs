@@ -75,7 +75,7 @@ pub(crate) struct At<'a> {
 /// what it reads ([`At`]), what its drafts so far leave, where its next
 /// event lands, at which door, and the envelope of its own events.
 pub(crate) struct Decide<'a> {
-    pub(super) call: &'a Call<'a>,
+    pub(super) call: Asked<'a>,
     pub(super) ontology: &'a Ontology,
     pub(super) plans: &'a crate::record::Plans,
     pub at: At<'a>,
@@ -765,12 +765,12 @@ impl Decide<'_> {
     }
 }
 
-impl Call<'_> {
+impl<'a> Asked<'a> {
     /// The context a write of this call is decided in, under the writer
     /// `w` and over `view`, at `now`, `n` drafts already in its append:
     /// the caller is judged, at the authored door.
-    pub(crate) fn decide<'a>(
-        &'a self,
+    pub(crate) fn decide(
+        self,
         w: &'a Writer,
         view: &'a dyn ProjectionView,
         now: Timestamp,
@@ -800,11 +800,11 @@ impl Call<'_> {
     }
 
     /// `upsert_preflight`: `upsert`'s decision, at the head, appending
-    /// nothing. It reads as a preflight does, at a turn but holding no
-    /// writer: the writer that decides the write later may find a head
-    /// that has moved.
+    /// nothing. It reads as a preflight does, with no turn and under no
+    /// lock: the writer that decides the write later may find a head that
+    /// has moved.
     pub fn upsert_preflight(
-        &self,
+        self,
         ty: &TypeName,
         key: &RecordKey,
         patch: &Patch,
@@ -816,6 +816,19 @@ impl Call<'_> {
         let w = self.lake.reading(view.as_ref())?;
         let mut d = self.decide(&w, view.as_ref(), w.last_known_at, 0);
         d.plan(Op::Upsert(ty, key, patch), expected).map(drop)
+    }
+}
+
+impl Call<'_> {
+    /// The context a write of this call is decided in: [`Asked::decide`].
+    pub(crate) fn decide<'a>(
+        &'a self,
+        w: &'a Writer,
+        view: &'a dyn ProjectionView,
+        now: Timestamp,
+        n: usize,
+    ) -> Decide<'a> {
+        self.asked().decide(w, view, now, n)
     }
 
     /// A record door's write, its context checked, under one hold of the
@@ -1069,14 +1082,12 @@ impl Write {
     }
 }
 
-/// A record write queued for its turn, its caller as its door read it
-/// ([`Call`]), and where it is answered: its outcome and the causes of
-/// what it left owed.
+/// A record write queued for its turn, its caller as it asked, seen at
+/// the turn as a door's write is, and where it is answered: its outcome
+/// and the causes of what it left owed.
 pub(crate) struct Job {
     pub who: Principal,
     pub context: WriteContext,
-    pub followed: Option<usize>,
-    pub shown: Option<Shown>,
     pub write: Write,
     pub opts: WriteOpts,
     pub answer: Answer,
@@ -1152,9 +1163,11 @@ impl Job {
     /// Decided and appended alone, as its door did before batches, under
     /// its own [`owing`].
     fn alone(self, turn: &Turn<'_>) -> Reply {
-        let call = call(turn, &self.who, (self.context, self.followed, self.shown));
-        let (write, opts) = (&self.write, self.opts);
-        let done = catch_unwind(AssertUnwindSafe(|| owing(|| call.record(write, opts))));
+        let (who, context, write, opts) = (self.who, self.context, &self.write, self.opts);
+        let done = catch_unwind(AssertUnwindSafe(|| {
+            let (who, followed, shown) = crate::doors::seen(turn, who)?;
+            owing(|| call(turn, &who, (context, followed, shown)).record(write, opts))
+        }));
         let done = done.unwrap_or_else(|p| Err(stopped_by_panic(p)));
         Box::new(move || drop(self.answer.send(done)))
     }
@@ -1189,8 +1202,10 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) -> Vec<Job
         Ok(opened) => opened,
         Err(e) => {
             for job in jobs {
-                let call = call(turn, &job.who, (job.context, job.followed, job.shown));
-                let checked = catch_unwind(AssertUnwindSafe(|| call.checked(job.write.op())));
+                let checked = catch_unwind(AssertUnwindSafe(|| {
+                    let (who, followed, shown) = crate::doors::seen(turn, job.who)?;
+                    call(turn, &who, (job.context, followed, shown)).checked(job.write.op())
+                }));
                 let refused = match checked {
                     Ok(Ok(())) => e.clone(),
                     Ok(Err(refused)) => refused,
@@ -1207,10 +1222,8 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) -> Vec<Job
     let (mut jobs, mut stopped) = (jobs.into_iter(), false);
     for job in jobs.by_ref() {
         let Job {
-            who,
+            mut who,
             context,
-            followed,
-            shown,
             write,
             opts,
             answer,
@@ -1220,17 +1233,25 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) -> Vec<Job
         let id = (opts.idempotency_key.as_ref()).map(|k| log::authored_id(&who.writer(), k));
         let again = id.as_ref().and_then(|id| keys.get(id).copied());
         let decided = catch_unwind(AssertUnwindSafe(|| -> Result<_> {
-            let call = call(turn, &who, (context, followed, shown));
+            let (judged, followed, shown) = crate::doors::seen(turn, who.clone())?;
+            let call = call(turn, &judged, (context, followed, shown));
             let op = write.op();
             call.checked(op)?;
             call.moved(&w)?;
             let at = (&*w, view.as_ref(), now);
-            Ok(match call.decided(at, &mut pending, (op, &opts), again)? {
+            let told = match call.decided(at, &mut pending, (op, &opts), again)? {
                 Decided::Drafts(drafts) => (Told::Events(0..0), Some(turn.stamp(&w, drafts)?)),
                 Decided::Again(j, tip) => (Told::Again(j, tip), None),
                 Decided::Replayed(first) => (Told::Replayed(first), None),
-            })
+            };
+            Ok((told, judged))
         }));
+        let decided = decided.map(|d| {
+            d.map(|(told, judged)| {
+                who = judged;
+                told
+            })
+        });
         let told = match decided {
             Ok(Ok((_, Some((l, mut e, mut s))))) => {
                 if let Some(last) = e.last() {

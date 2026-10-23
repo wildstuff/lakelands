@@ -5,7 +5,7 @@
 //! store makes into an engine — a read, a write, a fold — runs on the
 //! runtime's blocking pool, so an async caller's executor never waits on
 //! storage. A read goes through [`run`]; anything that takes the writer
-//! goes through [`write`], which queues it first. There is no other
+//! goes through [`write()`], which queues it first. There is no other
 //! hand-off in this crate: no nested runtime, no thread that parks the
 //! caller.
 //!
@@ -67,7 +67,7 @@ where
 
 /// A turn at `lake`'s writer: what [`Turn::writer`] and [`Turn::for_write`]
 /// are taken with. The thread that holds the queue lends it to each
-/// entry in turn: to a write's job queued by [`write`], and to a batch of
+/// entry in turn: to a write's job queued by [`write()`], and to a batch of
 /// record writes queued by [`records`] (`write_soon` lends it inline,
 /// where no runtime is there to queue on), and it is lent to an owner of
 /// the lake by [`Lake::turn`]; it reads as the lake.
@@ -223,7 +223,7 @@ impl Drop for Holding {
     }
 }
 
-/// [`write`], without waiting for its answer; with no runtime to queue
+/// [`write()`], without waiting for its answer; with no runtime to queue
 /// on, run here and now, the writer's lock alone deciding when.
 pub(crate) fn write_soon<F>(lake: &Arc<Lake>, work: F)
 where
@@ -267,3 +267,6 @@ pub(crate) fn halted(panicked: bool) -> Error {
     });
     Error::unavailable(Situation::Stopped { detail })
 }
+
+#[cfg(test)]
+mod tests;
