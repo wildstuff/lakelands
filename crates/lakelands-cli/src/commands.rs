@@ -992,6 +992,75 @@ pub async fn rebuild(out: Out<'_>, store: &Arc<dyn LakeStore>) -> Result<(), Fai
     )
 }
 
+/// `build-ahead`: build the projection this release lays out beside the
+/// lake's, while an older release still serves it, saying first how much
+/// room it takes; the writer's open that upgrades the lake then folds only
+/// what was written since, and swaps it in. `discard` removes a build
+/// ahead instead.
+pub async fn build_ahead(
+    out: Out<'_>,
+    location: lakelands_api::Location,
+    seams: lakelands_api::seam::Seams,
+    discard: bool,
+) -> Result<(), Failure> {
+    let lake = location.lake.clone();
+    if discard {
+        let said = match lakelands_store::discard_ahead(location, seams).await? {
+            true => format!("removed the projection built ahead beside {lake}"),
+            false => format!("{lake} kept no projection built ahead: nothing was removed"),
+        };
+        return put(out, said);
+    }
+    put(out, room(&location, &seams).await?)?;
+    let started = std::time::Instant::now();
+    let built = lakelands_store::build_ahead(location, seams).await?;
+    let secs = started.elapsed().as_secs_f64();
+    let (events, through) = (built.events, built.through.map_or(0, |p| p.0));
+    let from = match built.ahead {
+        Some(at) => format!(", on from position {at}"),
+        None => String::new(),
+    };
+    put(
+        out,
+        format!(
+            "built {lake}'s projection ahead through position {through}: {events} events \
+             folded in {secs:.1} s{from}; `lakelands upgrade` with this release folds what is \
+             written after it and swaps it in"
+        ),
+    )
+}
+
+/// How much room a build ahead takes: about what the projection it is
+/// built beside takes, as the engine measures it without opening it.
+async fn room(
+    location: &lakelands_api::Location,
+    seams: &lakelands_api::seam::Seams,
+) -> Result<String, Failure> {
+    use lakelands_api::location::EngineConfig;
+    let bytes = match lakelands_store::room_ahead(location.clone(), seams.clone()).await {
+        Ok(bytes) => bytes,
+        Err(lakelands_api::Error::Unbound { .. }) => {
+            return Ok("building ahead keeps nothing on this engine".to_owned());
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let mib = bytes as f64 / (1024.0 * 1024.0);
+    let place = match &location.engine {
+        EngineConfig::Sqlite { dir, .. } => format!("in {}", dir.display()),
+        EngineConfig::Postgres { schema, .. } => {
+            let schema = schema
+                .clone()
+                .unwrap_or_else(|| format!("lakelands_{}", location.lake));
+            format!("in the database, in a schema of its own beside `{schema}`")
+        }
+        _ => "beside the projection".to_owned(),
+    };
+    Ok(format!(
+        "building ahead takes about {mib:.1} MiB {place}, as much as the projection beside it, \
+         until the upgrade puts it in that one's place"
+    ))
+}
+
 /// `upgrade`: say which log format the lake is written in, as a
 /// read-only open finds it, and, where it is older than the one this
 /// release writes, open it for writing once: that open appends
@@ -1040,6 +1109,25 @@ pub async fn upgrade(
                 let secs = started.elapsed().as_secs_f64();
                 // Another writer may have rebuilt it since the read-only open.
                 let said = match store.rebuilt_at_open() {
+                    Some(why)
+                        if why.contains("a build ahead had folded")
+                            && why.contains("folded the whole log again") =>
+                    {
+                        format!(
+                            "rebuilt the projection of {lake} from layout {found} in {secs:.1} s, \
+                         folding what was written after the build ahead, then the whole log \
+                         again: the log held an act erasing values after the build ahead"
+                        )
+                    }
+                    Some(why) if why.contains("removed the build ahead") => format!(
+                        "rebuilt the projection of {lake} from layout {found} in {secs:.1} s, \
+                         folding the whole log in place: another handle read the projection, \
+                         so the build ahead could not be swapped in and was removed"
+                    ),
+                    Some(why) if why.contains("build ahead") => format!(
+                        "rebuilt the projection of {lake} from layout {found} in {secs:.1} s, \
+                         folding only what was written after the build ahead"
+                    ),
                     Some(_) => {
                         format!(
                             "rebuilt the projection of {lake} from layout {found} in {secs:.1} s"

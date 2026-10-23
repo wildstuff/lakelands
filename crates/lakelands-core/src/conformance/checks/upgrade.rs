@@ -76,6 +76,7 @@ async fn vectors_upgraded(store: Store, given: Given, old: u32) -> Held {
     let ImportedLake {
         store: copy,
         writer,
+        ..
     } = imported?;
     let log = log_events(copy.as_ref()).await?;
     let said: Vec<_> = (log.iter())
@@ -135,31 +136,31 @@ check!(
 
 check!(
     LAKE_14_READ = a_lake_the_release_before_made_is_read_as_it_answered,
-    "054 (lakelands#962): the lake v0.13.1 made through its doors (`docs/log-format/lakes/14/`), in format 14, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; and the walk over its relation with the link's fields; the upgraded lake verifies; and its `sys.setting`, declared again at the writer's open, holds `group` (063, extended), a store's setting written there stamped `store`",
+    "054 (lakelands#962): the lake v0.13.1 made through its doors (`docs/log-format/lakes/14/`), in format 14, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; and the walk over its relation with the link's fields; the upgraded lake verifies; and its `sys.setting`, declared again at the writer's open, holds `group` (063, extended), a store's setting written there stamped `store`; and it answers so again rebuilt, and built ahead beside its writer and swapped in by the writer's open of the layout before, which goes on from the build (071, lakelands#1322); on an engine that keeps no scratch the build ahead is refused as unbound",
     given
 );
 
 check!(
     LAKE_15_READ = the_lake_of_format_15_is_read_as_it_answered,
-    "054 (lakelands#962): the lake v0.14.0 made through its doors (`docs/log-format/lakes/15/`), in format 15, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; and the walk over its relation with the link's fields; the lake verifies; and its `sys.setting`, declared again at the writer's open, holds `group` (063, extended), a store's setting written there stamped `store`",
+    "054 (lakelands#962): the lake v0.14.0 made through its doors (`docs/log-format/lakes/15/`), in format 15, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; and the walk over its relation with the link's fields; the lake verifies; and its `sys.setting`, declared again at the writer's open, holds `group` (063, extended), a store's setting written there stamped `store`; and it answers so again rebuilt, and built ahead beside its writer and swapped in by the writer's open of the layout before, which goes on from the build (071, lakelands#1322); on an engine that keeps no scratch the build ahead is refused as unbound",
     given
 );
 
 check!(
     LAKE_16_READ = the_lake_of_format_16_is_read_as_it_answered,
-    "054 (lakelands#962): the lake v0.15.0 made through its doors (`docs/log-format/lakes/16/`), in format 16, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; the walk over its relation with the link's fields; and, what format 16 adds (058), its sealed values read whole with the file keyring's file it ships and a forgotten source's values read as erased, each with its provenance; imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies; and its `sys.setting`, declared again at the writer's open, holds `group` (063, extended), a store's setting written there stamped `store`",
+    "054 (lakelands#962): the lake v0.15.0 made through its doors (`docs/log-format/lakes/16/`), in format 16, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each of its types with its fields, the link records of its relation among them and the counts of its view; the members of its object set; the walk over its relation with the link's fields; and, what format 16 adds (058), its sealed values read whole with the file keyring's file it ships and a forgotten source's values read as erased, each with its provenance; imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies; and its `sys.setting`, declared again at the writer's open, holds `group` (063, extended), a store's setting written there stamped `store`; and it answers so again rebuilt, and built ahead beside its writer and swapped in by the writer's open of the layout before, which goes on from the build (071, lakelands#1322); on an engine that keeps no scratch the build ahead is refused as unbound",
     given
 );
 
 check!(
     LAKE_17_READ = the_lake_of_format_17_is_read_as_it_answered,
-    "054 (lakelands#962): the lake v0.16.0 made through its doors (`docs/log-format/lakes/17/`), in format 17, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each type it names with its fields, the link records of its relation, the counts of its view, a field only a verb writes, a host's setting with its group, a record a verb retired and two slips, one of them a reaction past its trigger's depth, among them; the members of its object set; the walk over its relation with the link's fields; and its sealed values read whole with the file keyring's file it ships, and a forgotten source's read as erased, each with its provenance, while the values a delivery taken back and a cut that destroyed a key version took are gone with the records only they wrote (065); imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies",
+    "054 (lakelands#962): the lake v0.16.0 made through its doors (`docs/log-format/lakes/17/`), in format 17, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each type it names with its fields, the link records of its relation, the counts of its view, a field only a verb writes, a host's setting with its group, a record a verb retired and two slips, one of them a reaction past its trigger's depth, among them; the members of its object set; the walk over its relation with the link's fields; and its sealed values read whole with the file keyring's file it ships, and a forgotten source's read as erased, each with its provenance, while the values a delivery taken back and a cut that destroyed a key version took are gone with the records only they wrote (065); imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies; and it answers so again rebuilt, and built ahead beside its writer and swapped in by the writer's open of the layout before, which goes on from the build (071, lakelands#1322); on an engine that keeps no scratch the build ahead is refused as unbound",
     given
 );
 
 check!(
     LAKE_18_READ = the_lake_of_format_18_is_read_as_it_answered,
-    "054 (lakelands#962): the lake v0.17.0 made through its doors (`docs/log-format/lakes/18/`), in format 18, imported on this engine, is read as that release answered it, as `answers.json` keeps the answers: every live record of each type it names with its fields, an item a source the field admits wrote, and a person of a delivery sealed apart among them; the members of its object set; the walk over its relation; and its sealed values read whole with the file keyring's file it ships, the apart delivery's through its composed key, each with its provenance, while the values a delivery, several deliveries, a delivery sealed apart and a cut by the time a source saw them took are gone with the records only they wrote (065); imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies",
+    "054 (lakelands#962): the lake v0.17.0 made through its doors (`docs/log-format/lakes/18/`), in format 18, imported on this engine, is read as that release answered it, as `answers.json` keeps the answers: every live record of each type it names with its fields, an item a source the field admits wrote, and a person of a delivery sealed apart among them; the members of its object set; the walk over its relation; and its sealed values read whole with the file keyring's file it ships, the apart delivery's through its composed key, each with its provenance, while the values a delivery, several deliveries, a delivery sealed apart and a cut by the time a source saw them took are gone with the records only they wrote (065); imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies; and it answers so again rebuilt, and built ahead beside its writer and swapped in by the writer's open of the layout before, which goes on from the build (071, lakelands#1322); on an engine that keeps no scratch the build ahead is refused as unbound",
     given
 );
 
@@ -186,10 +187,9 @@ async fn the_lake_of_format_18_is_read_as_it_answered(store: Store, given: Given
 /// The kept lake of `format` (`docs/log-format/lakes/<format>/`), imported
 /// on this engine: its events stay in their format, a writer's open
 /// upgrades an older one, the lake verifies, and it answers as the
-/// release that made it did.
+/// release that made it did: as imported, rebuilt, and built ahead and
+/// swapped in by the writer's open of the layout before (071).
 async fn kept_lake_answers(store: Store, given: Given, format: u32) -> Held {
-    use crate::conformance::fixture::{find_where, pattern, step};
-    use lakelands_api::query::{Projection, QueryResult, Walk};
     store.head().await.must("reading the head")?;
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../docs/log-format/lakes")
@@ -223,7 +223,11 @@ async fn kept_lake_answers(store: Store, given: Given, format: u32) -> Held {
     };
     let imported = (given.import)(dir, lake, None, seams.clone()).await;
     let imported = imported.map_err(|e| Failure::new(format!("importing the lake: {e}")))?;
-    let (copy, writer) = (imported.store, imported.writer);
+    let ImportedLake {
+        store: copy,
+        writer,
+        location,
+    } = imported;
     let log = log_events(copy.as_ref()).await?;
     let made = answers["head"].as_u64().unwrap_or(0);
     let tail: Vec<_> = log
@@ -253,10 +257,60 @@ async fn kept_lake_answers(store: Store, given: Given, format: u32) -> Held {
         false => "verifying the lake",
     };
     copy.verify(None, None).await.must(verifying)?;
-    let (own, cat) = (
-        owner(copy.as_ref()),
-        crate::conformance::fixture::doors(copy.as_ref()),
+    let red = answered(copy.as_ref(), &answers, &by).await?;
+    ensure!(
+        red.is_empty(),
+        "the lake {by} made answers as it did: {}",
+        red.join("; ")
     );
+    let store = writer(copy, seams.clone()).await;
+    let store = store.map_err(|e| Failure::new(format!("opening it for writing: {e}")))?;
+    // Laid out again, by a full rebuild and by a build ahead the writer's
+    // open of the layout before goes on from and swaps in (071), the
+    // lake still answers so.
+    store.rebuild().await.must("rebuilding the lake")?;
+    let red = answered(store.as_ref(), &answers, &by).await?;
+    ensure!(
+        red.is_empty(),
+        "rebuilt, the lake {by} made answers as it did: {}",
+        red.join("; ")
+    );
+    let built = match (given.ahead)(location.clone(), seams.clone()).await {
+        Err(Error::Unbound { .. }) => return settings_grouped(store, writer, seams, format).await,
+        built => built.must("building the lake's projection ahead")?,
+    };
+    let head = store.head().await.must("reading the head")?;
+    ensure!(
+        built.through == Some(head) && (given.lower)(&location),
+        "the projection is built ahead through the head {head:?}, beside the writer, and \
+         marked one layout back by the harness: {built:?}"
+    );
+    let store = writer(store, seams.clone()).await;
+    let store = store.map_err(|e| Failure::new(format!("the upgrade's open: {e}")))?;
+    let why = store.rebuilt_at_open();
+    ensure!(
+        why.as_ref().is_some_and(|w| w.contains("build ahead")),
+        "the writer's open of the layout before goes on from the build ahead: {why:?}"
+    );
+    let red = answered(store.as_ref(), &answers, &by).await?;
+    ensure!(
+        red.is_empty(),
+        "built ahead and swapped in, the lake {by} made answers as it did: {}",
+        red.join("; ")
+    );
+    settings_grouped(store, writer, seams, format).await
+}
+
+/// What the lake answers of what `answers` keeps, part by part, and where
+/// it answers otherwise than `by`, the release that made it, did.
+async fn answered(
+    copy: &dyn LakeStore,
+    answers: &serde_json::Value,
+    by: &str,
+) -> Result<Vec<String>, Failure> {
+    use crate::conformance::fixture::{find_where, pattern, step};
+    use lakelands_api::query::{Projection, QueryResult, Walk};
+    let (own, cat) = (owner(copy), crate::conformance::fixture::doors(copy));
     // The types whose records the answers keep: those they name, else
     // the four every kept lake holds.
     let named: Option<Vec<&str>> = answers["types"]
@@ -322,12 +376,7 @@ async fn kept_lake_answers(store: Store, given: Given, format: u32) -> Held {
             ));
         }
     }
-    ensure!(
-        red.is_empty(),
-        "the lake {by} made answers as it did: {}",
-        red.join("; ")
-    );
-    settings_grouped(copy, writer, seams, format).await
+    Ok(red)
 }
 
 /// The lake of `format`, older than this release's, holds `sys.setting`
@@ -380,7 +429,7 @@ async fn a_migration_of_format_14_folds_as_it_was_written(store: Store, given: G
         .map_err(|e| Failure::new(format!("the answers are no JSON: {e}")))?;
     let lake = lakelands_api::LakeId::from("migrated14");
     let imported = (given.import)(dir, lake, None, Seams::default()).await;
-    let ImportedLake { store, writer } =
+    let ImportedLake { store, writer, .. } =
         imported.map_err(|e| Failure::new(format!("importing the lake: {e}")))?;
     let copy = writer(store, Seams::default()).await;
     let copy = copy.map_err(|e| Failure::new(format!("opening it for writing: {e}")))?;
@@ -446,6 +495,9 @@ impl EngineOpener for LaidOut {
         at: &Location,
     ) -> lakelands_api::Result<Option<(CanonicalEvent, CanonicalEvent)>> {
         self.inner.log_ends(at)
+    }
+    fn open_scratch(&self, at: &Location) -> lakelands_api::Result<Box<dyn LakeEngine>> {
+        self.inner.open_scratch(at)
     }
     fn open(&self, at: &Location, mode: OpenMode) -> lakelands_api::Result<Box<dyn LakeEngine>> {
         let laid = crate::lock(&self.laid).take_if(|_| mode != OpenMode::Rebuild);

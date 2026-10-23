@@ -17,7 +17,7 @@ interface store {
         compact-report, vector-coverage, forget-report, forget-set-report, selection, remove-report,
         find, found-reply, get, record-reply, patch, write-opts, outcome,
         proposed-write, proposal-filter, proposals-reply, source-record, committed, ingest-error, ingest-opts,
-        feed-filter, feed-batch,
+        feed-filter, feed-batch, version,
     };
 
     /// The lake `lake`, opened by the host. Which lakes a caller may
@@ -61,6 +61,11 @@ interface store {
         purge-source: func(source: source-id, %type: option<type-name>, report-id: option<string>) -> result<purge-report, error>;
         /// What `purge-source` would do, appending nothing.
         purge-preflight: func(source: source-id, %type: option<type-name>) -> result<purge-report, error>;
+        /// What `upsert` of the patch by `who`, through the doors of
+        /// `context`, would answer, appending nothing: ok for a write that
+        /// would land, else the refusal it would give, a broken constraint
+        /// among them. The host's.
+        upsert-preflight: func(who: principal, context: write-context, %type: type-name, key: record-key, patch: patch, expected: option<version>) -> result<_, error>;
         /// Forget a source: its keys destroyed, every value it sealed
         /// erased at every position, the storage reclaimed, in one act
         /// under the writer's lock. With a preflight's id, refused unless

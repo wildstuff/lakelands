@@ -59,7 +59,8 @@ mod fold;
 mod open;
 pub(crate) mod scrub;
 mod verify;
-use fold::{Migrated, Recomputed, Step};
+pub use fold::Built;
+use fold::{Beside, Migrated, Recomputed, Step, Swapped};
 pub(crate) use fold::{
     computes, computes_again, computing_changed, fields_again, renamed_fields, using_types,
 };
@@ -226,6 +227,8 @@ pub struct Lake {
     rerank: Mutex<Option<Arc<dyn Reranker>>>,
     /// Bounds on one call's work.
     pub limits: Limits,
+    /// Where the lake is kept: a rebuild opens its scratch there (071).
+    pub(crate) location: Location,
     /// Held while a batch of the lake's owed calls is made: one batch at a
     /// time per lake.
     pub calls: tokio::sync::Mutex<()>,

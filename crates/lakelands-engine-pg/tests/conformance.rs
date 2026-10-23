@@ -16,8 +16,8 @@ use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::Check;
 use lakelands_core::conformance::checks::ALL;
 use lakelands_core::conformance::{
-    Continue, Continued, Fault, FreshLake, Harness, Import, ImportedLake, Meter, Relimit, Reopen,
-    Twin, below, continue_below, run_checks, run_one,
+    Ahead, BuiltAhead, Continue, Continued, Fault, FreshLake, Harness, Import, ImportedLake, Lower,
+    Meter, Relimit, Reopen, Twin, below, continue_below, run_checks, run_one,
 };
 use lakelands_engine_pg::PgOpener;
 use peak_alloc::PeakAlloc;
@@ -54,6 +54,7 @@ impl Harness for Pg {
             Box::pin(async move {
                 let schema = store.lake().to_string();
                 store.close().await?;
+                drop(store);
                 let seams = Seams {
                     engines: vec![Arc::new(PgOpener)],
                     ..host
@@ -73,6 +74,7 @@ impl Harness for Pg {
             Box::pin(async move {
                 let schema = store.lake().to_string();
                 store.close().await?;
+                drop(store);
                 let seams = Seams {
                     engines: vec![wrap(Arc::new(PgOpener))],
                     ..host
@@ -92,6 +94,7 @@ impl Harness for Pg {
             Box::pin(async move {
                 let schema = store.lake().to_string();
                 store.close().await?;
+                drop(store);
                 let seams = Seams {
                     engines: vec![Arc::new(PgOpener)],
                     ..host
@@ -186,10 +189,12 @@ impl Harness for Pg {
                 };
                 lakelands_store::import(location.clone(), seams.clone(), from).await?;
                 let store = lakelands_store::open(location.clone(), seams, OpenMode::Read).await?;
+                let at = location.clone();
                 let writer: Reopen = Arc::new(move |store, host| {
                     let location = location.clone();
                     Box::pin(async move {
                         store.close().await?;
+                        drop(store);
                         let seams = Seams {
                             engines: vec![Arc::new(PgOpener)],
                             ..host
@@ -197,8 +202,53 @@ impl Harness for Pg {
                         lakelands_store::open(location, seams, OpenMode::Write).await
                     })
                 });
-                Ok(ImportedLake { store, writer })
+                Ok(ImportedLake {
+                    store,
+                    writer,
+                    location: at,
+                })
             })
+        })
+    }
+
+    fn location(&self, lake: &lakelands_api::LakeId) -> Option<Location> {
+        Some(common::location(&self.url, lake.as_str(), lake.as_str()))
+    }
+
+    fn aheader(&self) -> Ahead {
+        Arc::new(|location, host| {
+            Box::pin(async move {
+                let seams = Seams {
+                    engines: vec![Arc::new(PgOpener)],
+                    ..host
+                };
+                let built = lakelands_store::build_ahead(location, seams).await?;
+                Ok(BuiltAhead {
+                    ahead: built.ahead,
+                    through: built.through,
+                    events: built.events,
+                })
+            })
+        })
+    }
+
+    fn lowerer(&self) -> Lower {
+        let url = self.url.clone();
+        Arc::new(move |location| {
+            let lakelands_api::location::EngineConfig::Postgres { schema, .. } = &location.engine
+            else {
+                return false;
+            };
+            let (url, schema) = (url.clone(), schema.clone().unwrap_or_default());
+            // The synchronous client runs a runtime of its own, on a
+            // thread of its own (`common::drop_schemas`).
+            let lowered = std::thread::spawn(move || {
+                let mut db = postgres::Client::connect(&url, postgres::NoTls)?;
+                let lower = format!("UPDATE \"{schema}\".meta SET n = n - 1 WHERE k = 'layout'");
+                db.execute(&lower, &[])
+            });
+            let lowered = lowered.join().expect("the marking thread");
+            lowered.expect("marking the projection one layout back") == 1
         })
     }
 

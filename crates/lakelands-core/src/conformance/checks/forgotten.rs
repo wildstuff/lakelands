@@ -727,6 +727,23 @@ impl EngineOpener for ReclaimsOpener {
     ) -> lakelands_api::Result<Option<(CanonicalEvent, CanonicalEvent)>> {
         self.inner.log_ends(location)
     }
+    fn room(&self, location: &Location) -> lakelands_api::Result<u64> {
+        self.inner.room(location)
+    }
+    fn open_scratch(
+        &self,
+        location: &Location,
+    ) -> lakelands_api::Result<Box<dyn lakelands_api::engine::LakeEngine>> {
+        // A rebuild beside the projection clears and folds the scratch:
+        // its clears and commits count and fail as the projection's do.
+        let (inner, fails) = (self.inner.open_scratch(location)?, self.fails.clone());
+        let dropped = AtomicBool::new(false);
+        Ok(Box::new(Reclaims {
+            inner,
+            fails,
+            dropped,
+        }))
+    }
     fn open(
         &self,
         location: &Location,
@@ -748,6 +765,15 @@ impl EngineOpener for ReclaimsOpener {
 impl lakelands_api::engine::LakeEngine for Reclaims {
     fn name(&self) -> &str {
         self.inner.name()
+    }
+    fn mark_built(&self) -> lakelands_api::Result<Option<Position>> {
+        self.inner.mark_built()
+    }
+    fn swap(&self, lease: &Lease) -> lakelands_api::Result<Option<Position>> {
+        self.inner.swap(lease)
+    }
+    fn may_swap(&self) -> lakelands_api::Result<bool> {
+        self.inner.may_swap()
     }
     fn rebuild_rate(&self) -> u64 {
         match self.fails[2].load(Ordering::SeqCst) {

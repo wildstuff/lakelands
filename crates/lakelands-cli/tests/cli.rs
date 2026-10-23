@@ -1163,6 +1163,76 @@ fn upgrade_rebuilds_a_projection_an_older_build_laid_out() {
     );
 }
 
+/// `build-ahead` beside the shell's writer, which holds the lake
+/// (lakelands#1322): it says the room it takes before it starts and opens
+/// the log and its own scratch only, so the projection, unreadable while
+/// it runs, is not opened and the writer keeps its lease and writes on;
+/// `upgrade` of the projection marked a layout back then folds only what
+/// was written after the build. `--discard` removes a build ahead, and
+/// says so where none is kept.
+#[test]
+fn build_ahead_builds_beside_the_writer_and_the_upgrade_goes_on_from_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let sh = Shell::on("build-ahead", Backend::Store);
+    sh.lake();
+    assert_eq!(sh.run(&["apply", &sh.fixture()]).code, 0);
+    let file = sh.root.join("lakes").join("finance.json");
+    let at: Location = serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
+    let EngineConfig::Sqlite { dir, .. } = &at.engine else {
+        panic!("a store lake is SQLite's")
+    };
+    let path = sh.root.join(dir).join("projection.db");
+    let mode = |m: u32| fs::set_permissions(&path, fs::Permissions::from_mode(m)).unwrap();
+    mode(0o000);
+    let run = sh.run(&["build-ahead"]);
+    mode(0o644);
+    let said: Vec<&str> = run.out.lines().collect();
+    assert!(
+        run.code == 0
+            && said.len() == 2
+            && said[0].starts_with("building ahead takes about ")
+            && said[1].starts_with("built finance's projection ahead through position "),
+        "{} {}{}",
+        run.code,
+        run.out,
+        run.err
+    );
+    let bank = sh.file(
+        "bank.ndjson",
+        "{\"type\": \"invoice\", \"key\": \"INV-9\", \"fields\": {\"amount\": \"9.00\"}}\n",
+    );
+    let wrote = sh.run(&["ingest", &bank, "--source", "bank"]);
+    assert_eq!(wrote.code, 0, "the writer writes on: {}", wrote.err);
+    // The release before is stopped; this one finds its layout older.
+    sh.lakes.lock().unwrap().clear();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute("UPDATE meta SET v = v - 1 WHERE k = 'layout'", [])
+        .unwrap();
+    drop(db);
+    let run = sh.run(&["upgrade"]);
+    assert!(
+        run.code == 0
+            && run
+                .out
+                .starts_with("rebuilt the projection of finance from layout ")
+            && run
+                .out
+                .ends_with(", folding only what was written after the build ahead\n"),
+        "{} {}{}",
+        run.code,
+        run.out,
+        run.err
+    );
+    let none = "finance kept no projection built ahead: nothing was removed\n";
+    ok(&sh.run(&["build-ahead", "--discard"]), none);
+    assert_eq!(sh.run(&["build-ahead"]).code, 0);
+    ok(
+        &sh.run(&["build-ahead", "--discard"]),
+        "removed the projection built ahead beside finance\n",
+    );
+    ok(&sh.run(&["build-ahead", "--discard"]), none);
+}
+
 #[test]
 fn compact_prints_what_the_engine_measured_or_that_it_keeps_nothing() {
     for backend in [Backend::Store, Backend::StoreInMemory] {

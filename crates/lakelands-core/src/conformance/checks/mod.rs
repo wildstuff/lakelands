@@ -14,6 +14,7 @@ mod admitted;
 mod after;
 mod aggregates;
 mod aging;
+mod ahead;
 mod annotations;
 mod authored_reads;
 mod authors_view;
@@ -127,6 +128,7 @@ mod streaming;
 mod trigger_firing;
 mod triggers;
 mod upgrade;
+mod upsert_preflight;
 mod valid_cells;
 mod value_renames;
 mod value_types;
@@ -266,6 +268,8 @@ pub const ALL: &[Check] = &[
     constraints::CONSTRAINT_NOT_GRANTED_UNREAD,
     constraints::CONSTRAINT_READS_ITS_RECORD_ALONE,
     constraints::CONSTRAINT_BROKEN_IN_THE_PREFLIGHT,
+    upsert_preflight::UPSERT_JUDGED_AS_WRITTEN,
+    upsert_preflight::UPSERT_JUDGED_ON_WHAT_IT_MAKES,
     logged_ids::NO_NUL_IN_A_LOGGED_ID,
     sorted_whole::SORTED_WHOLE_TOLD,
     rebuild::REBUILD_ANSWERS_AS_BEFORE,
@@ -807,6 +811,7 @@ pub const ALL: &[Check] = &[
     upgrade::FORMAT_16_UPGRADED,
     upgrade::FORMAT_17_UPGRADED,
     upgrade::LAYOUT_REBUILT,
+    ahead::BUILT_AHEAD,
     verb_written::VERB_ONLY,
     verb_written::VERB_ONLY_TOLD,
     admitted::ADMITTED,

@@ -136,6 +136,13 @@ impl EngineOpener for PgOpener {
         let lake = location.lake.clone();
         Ok(Box::new(PgLake::open_scratch(lake, target(location)?)?))
     }
+
+    /// Measures the projection's tables in the location's schema, the log's
+    /// left out, from PostgreSQL's catalogue; none of them is opened to
+    /// read.
+    fn room(&self, location: &Location) -> Result<u64> {
+        handle::room(&target(location)?)
+    }
 }
 
 /// Where a location keeps its lake: the connection, the schema (by

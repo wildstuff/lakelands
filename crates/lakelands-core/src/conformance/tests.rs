@@ -476,6 +476,9 @@ fn given_of(reopen: Reopen, relimit: Relimit) -> Given {
         continued: h.continuer(),
         twin: h.twinner(),
         fault: h.faulter(),
+        location: None,
+        ahead: h.aheader(),
+        lower: h.lowerer(),
     }
 }
 

@@ -136,6 +136,18 @@ impl EngineOpener for SqliteOpener {
             *tuning,
         )?))
     }
+
+    /// The sizes of `projection.db` and its write-ahead journal, read from
+    /// the directory; neither is opened.
+    fn room(&self, location: &Location) -> Result<u64> {
+        let (dir, _) = kept_in(location)?;
+        let size = |name: &str| match std::fs::metadata(dir.join(name)) {
+            Ok(m) => Ok(m.len()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(io_error(Doing::Open, Part::Projection, e)),
+        };
+        Ok(size("projection.db")? + size("projection.db-wal")?)
+    }
 }
 
 /// The directory and the tuning of a location this engine keeps.

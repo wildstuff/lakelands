@@ -28,7 +28,7 @@ use lakelands_api::write::{
 use lakelands_api::{
     Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
     ReadAt, Record, RecordKey, RelationName, Reply, Result, SourceId, Timestamp, TypeName,
-    VerbName, Verification,
+    VerbName, Verification, Version,
 };
 
 use lakelands_api::error::{Case, Exchange, Remote, Seam, Situation};
@@ -56,6 +56,27 @@ pub async fn open(location: Location, seams: Seams, mode: OpenMode) -> Result<Ar
     })
     .await?;
     Ok(Arc::new(Store { lake }))
+}
+
+/// Build the projection this release lays out beside the lake at
+/// `location`, ahead of the writer's open that upgrades it
+/// ([`Lake::build_ahead`]).
+pub async fn build_ahead(location: Location, seams: Seams) -> Result<crate::lake::Built> {
+    exec::run(move || Lake::build_ahead(&location, seams)).await
+}
+
+/// How many bytes the projection of the lake at `location` takes, about
+/// what a build ahead beside it takes, measured without opening it
+/// ([`EngineOpener::room`](lakelands_api::engine::EngineOpener::room)).
+/// Refused as unbound by an engine that keeps no scratch.
+pub async fn room_ahead(location: Location, seams: Seams) -> Result<u64> {
+    exec::run(move || crate::lake::opener(&location, &seams)?.room(&location)).await
+}
+
+/// Remove the scratch built ahead beside the lake at `location`
+/// ([`Lake::discard_ahead`]).
+pub async fn discard_ahead(location: Location, seams: Seams) -> Result<bool> {
+    exec::run(move || Lake::discard_ahead(&location, seams)).await
 }
 
 /// The log format the newest event of the lake at `location` is written
@@ -1004,6 +1025,24 @@ impl LakeStore for Store {
             report.position = report.position.max(last);
         }
         Ok(report)
+    }
+
+    async fn upsert_preflight(
+        &self,
+        who: &Principal,
+        context: WriteContext,
+        ty: &TypeName,
+        key: &RecordKey,
+        patch: Patch,
+        expected: Option<Version>,
+    ) -> Result<()> {
+        let doors = Doors {
+            lake: self.lake.clone(),
+            context,
+        };
+        let (ty, key) = (ty.clone(), key.clone());
+        let judge = move |c: &Call<'_>| c.upsert_preflight(&ty, &key, &patch, expected);
+        doors.write(who, judge).await
     }
 
     async fn forget_source(&self, source: &SourceId, id: Option<&str>) -> Result<ForgetReport> {
