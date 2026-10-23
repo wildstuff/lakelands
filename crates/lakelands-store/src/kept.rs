@@ -308,6 +308,11 @@ impl Undo {
     pub(crate) fn record(&mut self, at: (TypeName, RecordKey), was: Option<StoredRecord>) {
         self.0.push(Undone::Record(at, was));
     }
+
+    /// How many things it holds.
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 /// Whether the group at `key` of `view` was flagged, or is flagged, as not
@@ -388,10 +393,17 @@ pub(crate) fn before(
 /// first, and keep no more. The views as the run worked on them go too: each is read again
 /// from what stays, on first use, as the next transaction reads it.
 pub(crate) fn undo(staged: &mut Staged) {
-    let Some(Undo(done)) = staged.undo.take() else {
+    undo_to(staged, 0);
+    staged.undo = None;
+}
+
+/// [`undo`], of what the run overwrote after its first `from` entries;
+/// the undo stays open.
+pub(crate) fn undo_to(staged: &mut Staged, from: usize) {
+    let Some(Undo(done)) = staged.undo.as_mut() else {
         return;
     };
-    for undone in done.into_iter().rev() {
+    for undone in done.split_off(from).into_iter().rev() {
         match undone {
             Undone::Record(at, Some(r)) => drop(staged.records.insert(at, r)),
             Undone::Record(at, None) => drop(staged.records.remove(&at)),

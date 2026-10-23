@@ -183,7 +183,6 @@ fn judge(
     let mut seen: BTreeSet<EventId> = BTreeSet::new();
     let mut drafts = Vec::new();
     let mut committed = 0u32;
-    let mut window_links = Vec::new();
     let mut duplicates = 0u32;
     // The window's records as the projection holds them, read a type at a
     // time rather than one by one; a key the window names twice is read
@@ -348,16 +347,13 @@ fn judge(
                     end.map(lakelands_api::RecordKey::from)
                 };
                 if let (Some(from), Some(to)) = (end(links::FROM), end(links::TO)) {
-                    let get = |ty: &_, key: &_| d.pending.record(view, ty, key);
-                    let window = Some((&window_links[..], &get as crate::writes::Get));
                     crate::writes::cardinality(
                         (view, &d.at.sight),
-                        window,
+                        &d.pending,
                         (&t.name, relation),
                         &from,
                         &to,
                     )?;
-                    window_links.push((r.ty.clone(), from, to));
                 }
             }
             drafts.extend(d.planned(plan)?.drafts);

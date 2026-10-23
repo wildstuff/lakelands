@@ -147,7 +147,8 @@ async fn a_write_that_waited_behind_a_rename_is_judged_by_it() {
         "a write that waited behind a rename is held by the grant on `holder`: {answer:?}"
     );
     let late = decided_late(&lake, before, move |c| {
-        c.upsert(&ty, &key, patch("owner"), Default::default())
+        let write = writes::Write::Upsert(ty, key, patch("owner"));
+        c.record(&write, Default::default())
     });
     let late = late.await;
     assert!(
@@ -261,7 +262,10 @@ async fn a_link_that_waited_behind_a_relations_rename_is_judged_by_it() {
     let late = decided_late(&lake, before, |c| {
         let (ty, a, b) = ("doc".into(), "a".into(), "b".into());
         let (fields, opts) = (Default::default(), Default::default());
-        c.link(&ty, &a, &"quotes".into(), &b, fields, opts)
+        c.record(
+            &writes::Write::Link(ty, a, "quotes".into(), b, fields),
+            opts,
+        )
     });
     let late = late.await;
     assert!(
@@ -482,7 +486,7 @@ async fn a_write_that_waited_while_the_types_moved_is_judged_by_them() {
     let late = {
         let (ty, key) = (ty.clone(), key.clone());
         decided_late(&lake, before, move |c| {
-            c.upsert(&ty, &key, patch(), Default::default())
+            c.record(&writes::Write::Upsert(ty, key, patch()), Default::default())
         })
     };
     let late = late.await;
@@ -493,7 +497,8 @@ async fn a_write_that_waited_while_the_types_moved_is_judged_by_them() {
     );
     let no = serde_json::from_value(json!({"no": "8"})).expect("a patch");
     let wide_late = decided_late(&lake, wide_before, move |c| {
-        c.upsert(&ty, &"t3".into(), no, Default::default())
+        let write = writes::Write::Upsert(ty, "t3".into(), no);
+        c.record(&write, Default::default())
     });
     let wide_late = wide_late.await;
     assert!(

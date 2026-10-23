@@ -138,17 +138,34 @@ impl Lake {
                 if !of_log && !scoped {
                     w.failed = Some(events[0].position);
                 }
-                if let Ok(view) = self.engine.view(None)
-                    && let Ok(o) = Ontology::at(view.as_ref())
-                {
-                    if let Ok(s) = settings_in(view.as_ref(), &o) {
-                        w.settings = s;
-                    }
-                    w.ontology = o.named();
-                }
+                self.reload(w);
                 Err(e)
             }
         }
+    }
+
+    /// The writer's ontology and settings read again at the head, where
+    /// they can be.
+    fn reload(&self, w: &mut Writer) {
+        if let Ok(view) = self.engine.view(None)
+            && let Ok(o) = Ontology::at(view.as_ref())
+        {
+            if let Ok(s) = settings_in(view.as_ref(), &o) {
+                w.settings = s;
+            }
+            w.ontology = o.named();
+        }
+    }
+
+    /// What a batch's append leaves where it stopped midway, from `first`
+    /// on: the projection as its last commit left it, and the writer
+    /// behind, as a failed fold leaves it. What it owed, its lease and
+    /// whether it lost that stay: a batched write makes no call due.
+    pub(crate) fn stopped_append(&self, w: &mut Writer, first: Option<Position>) {
+        self.engine.projection().rollback();
+        (w.behind, w.staged) = (true, None);
+        w.failed = first.or(w.failed);
+        self.reload(w);
     }
 
     /// Fold one `migrated` event's step over every record it reaches: the
@@ -504,7 +521,14 @@ impl Lake {
     /// declaration with the one the writer holds. A writer that cannot
     /// read them stays behind.
     pub(super) fn refold(&self, w: &mut Writer) -> Result<()> {
-        let folded = self.engine.projection().folded_through()?;
+        // The log's tip, read again: a write that stopped midway may have
+        // left the writer's behind the log, or past it; an append whose
+        // fold failed and that never landed is owed nothing.
+        let folded;
+        (folded, w.tip) = ends(self.engine.as_ref())?;
+        if w.failed > w.tip.as_ref().map(|t| t.0) {
+            w.failed = None;
+        }
         {
             let view = self.engine.view(None)?;
             w.ontology = Ontology::at(view.as_ref())?.named();
