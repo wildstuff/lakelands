@@ -499,21 +499,23 @@ fn read_by_key(engine: &dyn LakeEngine) {
                 )
                 .unwrap();
             let read = engines::rows_read() - before;
-            let got = |page: &[StoredRecord]| -> Vec<String> {
-                let mut keys: Vec<String> = page.iter().map(|r| r.key.to_string()).collect();
-                keys.sort();
-                keys
+            let found = |page: &[StoredRecord]| -> Vec<String> {
+                let mut found: Vec<String> = page.iter().map(|r| r.key.to_string()).collect();
+                found.sort();
+                found
             };
+            let (listed, ordered) = (found(&page), found(&sorted));
             assert!(
                 counted == want.len() as u64
-                    && got(&page) == want
-                    && got(&sorted) == want
+                    && listed == want
+                    && ordered == want
                     && read <= 3 * want.len().max(1) as u64,
-                "as of {at:?}, {what} counted {counted}, found {:?}, and {:?} in `n`'s order \
-                 from {read} rows handed to the rulebook, of a type of {N}; the keys the \
-                 texts make are read",
-                got(&page),
-                got(&sorted)
+                "as of {at:?}, {what} counted {counted}, found {} and {} in `n`'s order, of \
+                 {} wanted, from {read} rows handed to the rulebook, of a type of {N}; the \
+                 records at the keys the texts make are read",
+                listed.len(),
+                ordered.len(),
+                want.len()
             );
         };
         let held = format!("id = 'a:b' and n = {n}");
