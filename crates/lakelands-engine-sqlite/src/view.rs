@@ -102,7 +102,7 @@ fn records_after_sql(ty: &TypeName, head: bool, after: bool, narrow: bool) -> St
         let tail = if head { "ORDER BY r.key " } else { "" };
         return kept_sql(
             head,
-            "r.state",
+            "r.ty, r.key, r.since, r.state",
             after.then_some(4),
             &format!("{tail}LIMIT ?3"),
         );
@@ -112,19 +112,21 @@ fn records_after_sql(ty: &TypeName, head: bool, after: bool, narrow: bool) -> St
         false => ("", 4),
     };
     format!(
-        "SELECT state FROM records WHERE ty = ?1 AND {} {text} {} ORDER BY key LIMIT ?3",
+        "SELECT ty, key, since, state FROM records WHERE ty = ?1 AND {} {text} {} \
+         ORDER BY key LIMIT ?3",
         holds_at(2),
         key_from("key", after.then_some(from))
     )
 }
 
 /// The statement of [`Read::count_in_force`]: the states in force of a
-/// stored type, or [`kept_sql`]'s of a kept name, under the two flags.
+/// stored type, or [`kept_sql`]'s of a kept name, under the two flags. A
+/// state holds a flag only where it is set.
 fn count_in_force_sql(ty: &TypeName, head: bool) -> String {
     let flags = |state: &str| {
         format!(
-            "AND (?3 OR json_extract({state}, '$.retired') = 0) \
-             AND (?4 OR json_extract({state}, '$.restricted') = 0)"
+            "AND (?3 OR json_extract({state}, '$.retired') IS NULL) \
+             AND (?4 OR json_extract({state}, '$.restricted') IS NULL)"
         )
     };
     if is_kept_name(ty) {
@@ -144,7 +146,7 @@ fn count_in_force_sql(ty: &TypeName, head: bool) -> String {
 /// `records` by a range of the key for every index row.
 fn holding_after_sql(after: bool) -> String {
     format!(
-        "SELECT r.state FROM \
+        "SELECT r.ty, r.key, r.since, r.state FROM \
          (SELECT t.key FROM text_index t \
           WHERE t.ty = ?1 AND t.field = ?2 AND t.value = ?4 {} ORDER BY t.key LIMIT ?3) t \
          JOIN records r ON r.ty = ?1 AND r.key = t.key AND r.until IS NULL \
@@ -166,13 +168,15 @@ fn holding_any_sql(after: bool) -> String {
 }
 
 /// The head records of a list of keys, in the list's order.
-const HEADS_OF: &str = "SELECT r.state FROM json_each(?2) k CROSS JOIN records r \
+const HEADS_OF: &str = "SELECT r.ty, r.key, r.since, r.state FROM json_each(?2) k \
+     CROSS JOIN records r \
      ON r.ty = ?1 AND r.key = k.value AND r.until IS NULL ORDER BY k.id";
 
 /// The statement of [`Read::unsorted_after`].
 fn unsorted_after_sql(after: bool) -> String {
     format!(
-        "SELECT r.state FROM records r WHERE r.ty = ?1 AND r.until IS NULL {} \
+        "SELECT r.ty, r.key, r.since, r.state FROM records r WHERE r.ty = ?1 \
+         AND r.until IS NULL {} \
          AND NOT EXISTS (SELECT 1 FROM sort_index s \
          WHERE s.ty = r.ty AND s.field = ?2 AND s.key = r.key) \
          ORDER BY r.key LIMIT ?3",
@@ -219,7 +223,7 @@ fn sorted_after_sql(dir: Direction, from: bool, holders: &Holders<'_>) -> String
         }
     };
     format!(
-        "SELECT s.sort_key, r.state FROM \
+        "SELECT s.sort_key, r.ty, r.key, r.since, r.state FROM \
          (SELECT s.sort_key, s.key FROM {rows} {seek} ORDER BY {by} LIMIT ?3) s \
          JOIN records r ON r.ty = ?1 AND r.key = s.key AND r.until IS NULL \
          ORDER BY {by}"
@@ -240,7 +244,8 @@ fn holders_in_order_sql(dir: Direction) -> String {
 }
 
 /// The statement of [`Read::few_after`]'s seek of one head record.
-const HEAD_RECORD: &str = "SELECT state FROM records WHERE ty = ?1 AND key = ?2 AND until IS NULL";
+const HEAD_RECORD: &str =
+    "SELECT ty, key, since, state FROM records WHERE ty = ?1 AND key = ?2 AND until IS NULL";
 
 /// A page under a text few records hold: the batches it has read by
 /// statements of their own, and the order rows of the holders after them,
@@ -258,7 +263,7 @@ struct Held {
 /// are joined, as in [`holding_after_sql`].
 fn unsorted_holding_sql(after: bool) -> String {
     format!(
-        "SELECT r.state FROM \
+        "SELECT r.ty, r.key, r.since, r.state FROM \
          (SELECT t.key FROM text_index t \
           WHERE t.ty = ?1 AND t.field = ?4 AND t.value = ?5 {} \
           AND NOT EXISTS (SELECT 1 FROM sort_index s \
@@ -278,7 +283,8 @@ const HOLDERS: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM text_index \
 /// The statement of [`Read::record`]: the latest state of the key at or
 /// before the position, and whether it still holds there. No other state
 /// of the key is read (lakelands#596).
-const RECORD_AT: &str = "SELECT state FROM (SELECT state, until FROM records WHERE ty = ?1 \
+const RECORD_AT: &str = "SELECT ty, key, since, state FROM (SELECT ty, key, since, state, until \
+     FROM records WHERE ty = ?1 \
      AND key = ?2 AND since <= ?3 ORDER BY since DESC LIMIT 1) WHERE until IS NULL OR until > ?3";
 
 /// The statement of a recorded output's read: the latest state of the
@@ -425,12 +431,8 @@ impl Read<'_> {
     }
 
     fn record(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
-        let state: Option<String> = one(
-            self.conn,
-            RECORD_AT,
-            params![ty.as_str(), key.as_str(), self.at()],
-        )?;
-        state.as_deref().map(decode_record).transpose()
+        let at = params![ty.as_str(), key.as_str(), self.at()];
+        Ok(projection::records(self.conn, RECORD_AT, at)?.pop())
     }
 
     /// Every record of a type at the view's position, in key order.
@@ -439,14 +441,13 @@ impl Read<'_> {
             let statement = records_after_sql(ty, self.head, false, false);
             return self.page(&statement, &[&ty.as_str(), &self.at(), &-1], None);
         }
-        column(
+        projection::records(
             self.conn,
             &format!(
-                "SELECT state FROM records WHERE ty = ?1 AND {} ORDER BY key",
+                "SELECT ty, key, since, state FROM records WHERE ty = ?1 AND {} ORDER BY key",
                 holds_at(2)
             ),
             params![ty.as_str(), self.at()],
-            |s: String| decode_record(&s),
         )
     }
 
@@ -611,8 +612,9 @@ impl Read<'_> {
         if from.is_some() {
             args.extend([&k as &dyn ToSql, &key]);
         }
-        let row = |r: &rusqlite::Row<'_>| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, String>(1)?));
-        let rows: Vec<(Vec<u8>, String)> = stmt
+        let row =
+            |r: &rusqlite::Row<'_>| Ok((r.get::<_, Vec<u8>>(0)?, projection::record_at(r, 1)?));
+        let rows: Vec<(Vec<u8>, projection::Kept4)> = stmt
             .query_map(args.as_slice(), row)
             .and_then(Iterator::collect)
             .map_err(sql)?;
@@ -666,10 +668,8 @@ impl Read<'_> {
         let end = (held.taken + n as usize).min(rows.len());
         let mut out = Vec::with_capacity(end - held.taken);
         for (k, key) in &rows[held.taken..end] {
-            let state: Option<String> = one(self.conn, HEAD_RECORD, params![ty.as_str(), key])?;
-            if let Some(state) = state {
-                out.push((k.clone(), decode_record(&state)?));
-            }
+            let head = projection::records(self.conn, HEAD_RECORD, params![ty.as_str(), key])?;
+            out.extend(head.into_iter().map(|r| (k.clone(), r)));
         }
         held.taken = end;
         Ok(out)
@@ -720,8 +720,7 @@ impl Read<'_> {
     ) -> Result<Vec<StoredRecord>> {
         let mut args = args.to_vec();
         args.extend(after.as_ref().map(|a| a as &dyn ToSql));
-        let rows: Vec<String> = column(self.conn, statement, args.as_slice(), Ok)?;
-        rows.iter().map(|r| decode_record(r)).collect()
+        projection::records(self.conn, statement, args.as_slice())
     }
 
     /// Records of a type by their keys, at the view's position.
@@ -858,9 +857,14 @@ impl ProjectionView for SqliteView<'_> {
             {
                 return r.count_in_force(ty, scan.retired, scan.restricted);
             }
-            // At the head, a count that must hold a text reads the records
-            // holding it, not the type.
+            // A count that must hold a text in a text key reads the records
+            // at the keys it makes; at the head, one that must hold another
+            // text reads the records holding it, not the type.
             let decl = r.type_decl(ty)?;
+            if let Some(keys) = engines::key_lookup(decl.as_ref(), scan) {
+                let records = r.records_by_key(ty, keys)?;
+                return Ok(engines::count_of(decl.as_ref(), &records, scan));
+            }
             let looked = r.looked(ty, decl.as_ref())?;
             let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
             let lookup = engines::text_lookups(scan, &kept).filter(|_| r.head);
@@ -874,6 +878,10 @@ impl ProjectionView for SqliteView<'_> {
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         self.read(Vec::new(), |r| {
             let decl = r.type_decl(ty)?;
+            if let Some(keys) = engines::key_lookup(decl.as_ref(), scan) {
+                let records = r.records_by_key(ty, keys)?;
+                return Ok(engines::scan(decl.as_ref(), &records, scan));
+            }
             let looked = r.looked(ty, decl.as_ref())?;
             let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
             let lookup = engines::text_lookup(scan, &kept).filter(|_| r.head);

@@ -278,12 +278,40 @@ pub fn text_lookups(
         .or_else(|| text_lookup(scan, kept).map(|(f, t)| (f, vec![t])))
 }
 
+/// The field of a type whose key is that one text field. A record's key
+/// is then its value made a key component (`lakelands_api::key`), which
+/// reads back into the value, so the head state at that key is the only
+/// one that can hold a text there: the exact-text index keeps no rows for
+/// it, and a lookup by it reads that head by key ([`key_lookup`]).
+pub fn text_key(decl: &TypeDecl) -> Option<&FieldName> {
+    let [key] = decl.key.as_slice() else {
+        return None;
+    };
+    let text = |f: &FieldDecl| f.name == *key && f.ty.kind == StorageKind::Text;
+    decl.fields.iter().any(text).then_some(key)
+}
+
+/// The keys a scan of a declared type reads when it must hold exactly a
+/// text ([`text_lookups`]: an `=` of the filter, `equal`, or one of the
+/// texts a match's `equal_any` asks for) in the type's [`text_key`]: those
+/// the texts make, in key order. The engine reads their states at its
+/// position and the rulebook admits, orders and cuts them ([`scan`]).
+pub fn key_lookup(decl: Option<&TypeDecl>, scan: &Scan) -> Option<BTreeSet<String>> {
+    let key = text_key(decl?)?;
+    let (_, texts) = text_lookups(scan, &|f| f == key)?;
+    let made = texts.into_iter().map(serde_json::Value::String);
+    Some(
+        made.filter_map(|t| lakelands_api::key::key_component(&t))
+            .collect(),
+    )
+}
+
 /// The text fields of `ty` its exact-text index keeps rows for, of the
 /// lake's declarations at the head `decls` and its `lookup_index.<type>`
 /// setting's value: those its declarations look its records up by (its
-/// key, its references, the fields a derived relation matches at either
-/// end, those a set's condition or a view's `where` over it compares to a
-/// text at the top level) and those the setting names
+/// key, but a [`text_key`], its references, the fields a derived relation
+/// matches at either end, those a set's condition or a view's `where` over
+/// it compares to a text at the top level) and those the setting names
 /// (`docs/decisions/057-an-exact-text-index-is-kept-where-it-is-looked-up.md`).
 /// `None`, every field, for a name no type declares: a view's kept records.
 pub fn looked_up<'a>(
@@ -327,7 +355,7 @@ pub fn looked_up<'a>(
     out.extend(refs.map(|f| f.name.clone()));
     out.extend(index_fields(t, setting, false, |k| *k == StorageKind::Text));
     let texts = |f: &FieldDecl| matches!(f.ty.kind, StorageKind::Text | StorageKind::Reference);
-    out.retain(|f| t.fields.iter().any(|d| d.name == *f && texts(d)));
+    out.retain(|f| t.fields.iter().any(|d| d.name == *f && texts(d)) && Some(f) != text_key(t));
     Some(out)
 }
 
@@ -398,6 +426,14 @@ pub fn count_in_key_order<E>(
             _ => return Ok(n),
         }
     }
+}
+
+/// How many of `records` [`scan`] would select, its order, keyset
+/// position and limit ignored: a count over states already read, such as
+/// those a [`key_lookup`] read.
+pub fn count_of(decl: Option<&TypeDecl>, records: &[StoredRecord], scan: &Scan) -> u64 {
+    count_read(records.len());
+    records.iter().filter(|r| admits(decl, r, scan)).count() as u64
 }
 
 /// A scan over the states of one type's records at one position, `decl`
@@ -1750,42 +1786,44 @@ pub fn proposals<'a>(
 /// A state an engine's projection stored as JSON, read back; `what`
 /// names it (`a record`) in the fault of one that cannot be read.
 pub fn decode<T: serde::de::DeserializeOwned>(state: &str, what: &str) -> Result<T> {
-    serde_json::from_str(state).map_err(|e| {
-        let (what, detail) = (what.to_owned(), Detail::json(&e));
-        crate::damaged(Part::Projection, None, Flaw::Unreadable { what, detail })
-    })
+    serde_json::from_str(state).map_err(|e| unreadable(what, &e))
+}
+
+fn unreadable(what: &str, e: &serde_json::Error) -> Error {
+    let (what, detail) = (what.to_owned(), Detail::json(e));
+    crate::damaged(Part::Projection, None, Flaw::Unreadable { what, detail })
 }
 
 /// A record as an engine keeps it: its provenance once, where its fields
 /// share it, and per field only where a field's differs (lakelands#1018).
 /// Every field a source or an author wrote in one event carries the same
-/// block, so a record keeps it once, not once a field.
+/// block, so a record keeps it once, not once a field. What the row holds
+/// beside the state is not kept in it: its type, its key and its position,
+/// the row's `since`; nor is a flag that is false, nor `base`'s position
+/// where it is the row's (lakelands#1318).
 #[derive(serde::Serialize, serde::Deserialize)]
 struct State {
-    #[serde(rename = "type")]
-    ty: TypeName,
-    key: RecordKey,
     version: lakelands_api::id::Version,
     fields: BTreeMap<FieldName, Value>,
-    /// The provenance most of the fields share.
+    /// The provenance most of the fields share, its position left out
+    /// where it is the row's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    base: Option<FieldMeta>,
+    base: Option<serde_json::Map<String, Value>>,
     /// Each field's whose differs from `base`, or that holds no value.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     meta: BTreeMap<FieldName, FieldMeta>,
     /// The fields holding a value with no provenance, beside a `base`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     bare: Vec<FieldName>,
-    position: Position,
     made: Position,
-    // Written even when false: an engine's statements read them.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     retired: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     restricted: bool,
 }
 
-/// The state an engine keeps for a record: [`State`]'s form.
+/// The state an engine keeps for a record: [`State`]'s form, kept in a
+/// row that holds its type, its key and its position as `since`.
 pub fn record_state(r: &StoredRecord) -> String {
     // The block most fields with a value share; ties to the first field's.
     let mut shared: Vec<(&FieldMeta, usize)> = Vec::new();
@@ -1795,23 +1833,29 @@ pub fn record_state(r: &StoredRecord) -> String {
             None => shared.push((m, 1)),
         }
     }
-    let base = (shared.iter().rev().max_by_key(|(_, n)| *n)).map(|(b, _)| (*b).clone());
+    let base = (shared.iter().rev().max_by_key(|(_, n)| *n)).map(|(b, _)| *b);
     let meta = (r.meta.iter())
-        .filter(|(f, m)| !r.fields.contains_key(*f) || base.as_ref() != Some(*m))
+        .filter(|(f, m)| !r.fields.contains_key(*f) || base != Some(*m))
         .map(|(f, m)| (f.clone(), m.clone()));
     let bare = r
         .fields
         .keys()
         .filter(|f| base.is_some() && !r.meta.contains_key(*f));
+    let block = |b: &FieldMeta| {
+        let Ok(Value::Object(mut block)) = serde_json::to_value(b) else {
+            unreachable!("a field's provenance serialises as an object")
+        };
+        if b.position == r.position {
+            block.remove("position");
+        }
+        block
+    };
     let state = State {
-        ty: r.ty.clone(),
-        key: r.key.clone(),
         version: r.version,
         fields: r.fields.clone(),
         meta: meta.collect(),
         bare: bare.cloned().collect(),
-        base,
-        position: r.position,
+        base: base.map(block),
         made: r.made,
         retired: r.retired,
         restricted: r.restricted,
@@ -1819,23 +1863,29 @@ pub fn record_state(r: &StoredRecord) -> String {
     serde_json::to_string(&state).expect("a record serialises")
 }
 
-/// A record from the state [`record_state`] kept: each field with a value
-/// and no provenance of its own takes `base`, but a bare one.
-pub fn decode_record(state: &str) -> Result<StoredRecord> {
+/// A record from the state [`record_state`] kept in the row of `ty`'s
+/// `key` put at `since`: each field with a value and no provenance of its
+/// own takes `base`, but a bare one, and `base` takes `since` where it
+/// holds no position.
+pub fn decode_record(ty: &str, key: &str, since: Position, state: &str) -> Result<StoredRecord> {
     let s: State = decode(state, "a record")?;
     let mut meta = s.meta;
-    if let Some(base) = &s.base {
+    if let Some(mut base) = s.base {
+        let at = || Value::from(since.0);
+        base.entry("position").or_insert_with(at);
+        let base: FieldMeta =
+            serde_json::from_value(Value::Object(base)).map_err(|e| unreadable("a record", &e))?;
         for f in s.fields.keys().filter(|f| !s.bare.contains(f)) {
             meta.entry(f.clone()).or_insert_with(|| base.clone());
         }
     }
     Ok(StoredRecord {
-        ty: s.ty,
-        key: s.key,
+        ty: TypeName::from(ty),
+        key: RecordKey::from(key),
         version: s.version,
         fields: s.fields,
         meta,
-        position: s.position,
+        position: since,
         made: s.made,
         retired: s.retired,
         restricted: s.restricted,
