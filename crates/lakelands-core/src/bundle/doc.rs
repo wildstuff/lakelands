@@ -190,6 +190,9 @@ pub(super) struct VerbDoc {
     #[serde(default)]
     pub payload: Named<FieldDoc>,
     pub requires: Option<Cond>,
+    /// Each precondition's name and what it holds, in order.
+    #[serde(default)]
+    pub preconditions: Named<Cond>,
     pub set: Option<Named<Cond>>,
     pub executor: Option<String>,
     #[serde(default)]

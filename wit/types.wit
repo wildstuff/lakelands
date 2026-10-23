@@ -42,6 +42,7 @@ interface types {
     type verb-name = string;
     type trigger-name = string;
     type constraint-name = string;
+    type precondition-name = string;
     type param-name = string;
     type value-type-name = string;
     type source-id = string;
@@ -359,6 +360,12 @@ interface types {
     /// with no key.
     enum verb-scope { %record, %type }
 
+    /// A named condition a verb requires of its record and its call.
+    record precondition {
+        name: precondition-name,
+        holds: condition,
+    }
+
     record verb-decl {
         name: verb-name,
         on: type-name,
@@ -366,6 +373,8 @@ interface types {
         payload: list<field-decl>,
         risk: risk,
         requires: option<condition>,
+        /// Conditions judged after `requires`, in order, each by its name.
+        preconditions: list<precondition>,
         effect: verb-effect,
         description: option<string>,
         /// Callable only by a principal whose grants on `on` name it.

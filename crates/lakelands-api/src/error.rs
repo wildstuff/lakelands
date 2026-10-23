@@ -399,7 +399,8 @@ pub enum Refusal {
     /// A value breaks a declared constraint or a required field is
     /// missing.
     Constraint(Box<Said>),
-    /// A verb's `requires` does not hold for the record.
+    /// A verb's `requires` or one of its preconditions does not hold for
+    /// the record.
     Precondition(Box<Said>),
     /// A chain of reactive writes went deeper than the lake allows.
     TooDeep {
