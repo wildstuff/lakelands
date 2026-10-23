@@ -1072,7 +1072,8 @@ async fn waiting(name: &str, dir: &std::path::Path) -> (Arc<Probe>, MemoryOpener
         ..Seams::default()
     };
     let location = Location::memory(name);
-    let lake = lakelands_store::lake::Lake::open(&location, seams(), OpenMode::Create).unwrap();
+    let mut lake = lakelands_store::lake::Lake::open(&location, seams(), OpenMode::Create).unwrap();
+    let lake = lake.turn();
     let declared = |more, version| EventBody::Declared {
         schema_hash: Some(lakelands_core::shape::schema_hash(&note(more)).unwrap()),
         declaration: Declaration::Type(note(more)),
@@ -1101,7 +1102,8 @@ async fn waiting(name: &str, dir: &std::path::Path) -> (Arc<Probe>, MemoryOpener
     lakelands_core::export::write(store.as_ref(), dir)
         .await
         .expect("the export");
-    let lake = lakelands_store::lake::Lake::open(&location, seams(), OpenMode::Write).unwrap();
+    let mut lake = lakelands_store::lake::Lake::open(&location, seams(), OpenMode::Write).unwrap();
+    let lake = lake.turn();
     *probe.refuse_commit.lock().unwrap() = Some(1);
     lake.rebuild().expect_err("the rebuild stops");
     lake.close().expect("the writer closes");
@@ -1125,7 +1127,8 @@ async fn a_fold_of_the_log_makes_no_call_due() {
     };
     let location = Location::memory("behind-of-the-log");
     let lake = lakelands_store::lake::Lake::open(&location, seams(opener), OpenMode::Write);
-    let lake = lake.expect("a writer folds the whole log");
+    let mut lake = lake.expect("a writer folds the whole log");
+    let lake = lake.turn();
     assert_eq!(lake.writer().owed.len(), 0, "opened");
     lake.rebuild().expect("a rebuild");
     assert_eq!(lake.writer().owed.len(), 0, "rebuilt");
@@ -1285,7 +1288,8 @@ async fn a_fill_in_a_fold_of_the_log_makes_no_call_due() {
     store.rebuild().await.expect_err("the rebuild stops");
     store.close().await.expect("the handle closes");
     let lake = lakelands_store::lake::Lake::open(&location, seams(false), OpenMode::Write);
-    let lake = lake.expect("a writer folds the whole log");
+    let mut lake = lake.expect("a writer folds the whole log");
+    let lake = lake.turn();
     assert_eq!(lake.writer().owed.len(), 0, "opened");
 }
 
@@ -1300,7 +1304,8 @@ fn an_append_decided_by_a_writer_that_is_behind_is_refused() {
         ..Seams::default()
     };
     let location = Location::memory("behind-append");
-    let lake = lakelands_store::lake::Lake::open(&location, seams, OpenMode::Create).unwrap();
+    let mut lake = lakelands_store::lake::Lake::open(&location, seams, OpenMode::Create).unwrap();
+    let lake = lake.turn();
     let wrote = |key: &str| EventBody::RecordUpserted {
         ty: "doc".into(),
         key: key.into(),

@@ -69,18 +69,18 @@ async fn a_write_that_waited_behind_a_rename_is_sent_again() {
     grants.types.insert(ty.clone(), held);
     let narrow = principal("narrow", grants);
 
-    // A thread holds the writer; the upsert follows its grants and waits;
+    // A write holds its turn; the upsert follows its grants and waits;
     // under the writer, `holder` becomes `owner`.
     let (held, holding) = tokio::sync::oneshot::channel();
     let renames = {
-        let (lake, owner) = (lake.clone(), owner.clone());
-        tokio::task::spawn_blocking(move || {
+        let (turns, owner) = (lake.clone(), owner.clone());
+        let migrate = move |lake: &crate::exec::Turn<'_>| {
             let mut w = lake.writer();
             held.send(())
                 .expect("the test waits for the writer to be held");
             std::thread::sleep(Duration::from_millis(300));
             let call = Call {
-                lake: &lake,
+                lake,
                 who: &owner,
                 context: WriteContext::default(),
                 followed: None,
@@ -97,7 +97,9 @@ async fn a_write_that_waited_behind_a_rename_is_sent_again() {
             let drafts = call.migration_drafts(&w, m, plan.expect("the plan"), now, 0);
             drop(view);
             (lake.append(&mut w, drafts.expect("the drafts"))).expect("the migration is appended");
-        })
+            Ok(())
+        };
+        tokio::spawn(async move { crate::exec::write(&turns, migrate).await })
     };
     holding.await.expect("the writer is held");
     let waiting = {
@@ -107,7 +109,7 @@ async fn a_write_that_waited_behind_a_rename_is_sent_again() {
             (cat.upsert(&narrow, &ty, &key, owner_field, Default::default())).await
         })
     };
-    renames.await.expect("the migration ends");
+    (renames.await.expect("the migration ends")).expect("it is applied");
 
     let answer = waiting.await.expect("the upsert ends");
     assert!(
@@ -165,14 +167,14 @@ async fn a_link_that_waited_behind_a_relations_rename_is_sent_again() {
     let narrow = principal("narrow", grants);
     let (held, holding) = tokio::sync::oneshot::channel();
     let renames = {
-        let (lake, owner) = (lake.clone(), owner.clone());
-        tokio::task::spawn_blocking(move || {
+        let (turns, owner) = (lake.clone(), owner.clone());
+        let migrate = move |lake: &crate::exec::Turn<'_>| {
             let mut w = lake.writer();
             held.send(()).expect("the test waits for the writer");
             std::thread::sleep(Duration::from_millis(300));
             let (context, followed) = (WriteContext::default(), None);
             let call = Call {
-                lake: &lake,
+                lake,
                 who: &owner,
                 context,
                 followed,
@@ -189,7 +191,9 @@ async fn a_link_that_waited_behind_a_relations_rename_is_sent_again() {
             let drafts = call.migration_drafts(&w, m, plan.expect("the plan"), now, 0);
             drop(view);
             (lake.append(&mut w, drafts.expect("the drafts"))).expect("the rename is appended");
-        })
+            Ok(())
+        };
+        tokio::spawn(async move { crate::exec::write(&turns, migrate).await })
     };
     holding.await.expect("the writer is held");
     let link = |relation: &'static str| {
@@ -201,7 +205,7 @@ async fn a_link_that_waited_behind_a_relations_rename_is_sent_again() {
         }
     };
     let waiting = tokio::spawn(link("cites"));
-    renames.await.expect("the rename ends");
+    (renames.await.expect("the rename ends")).expect("it is applied");
     let answer = waiting.await.expect("the link ends");
     assert!(
         matches!(&answer, Err(Error::Unavailable { situation }) if situation.to_string().contains("send it again")),
@@ -372,14 +376,14 @@ async fn a_write_that_waited_while_the_types_moved_is_sent_again() {
 
     let (held, holding) = tokio::sync::oneshot::channel();
     let keyed = {
-        let (lake, owner) = (lake.clone(), owner.clone());
-        tokio::task::spawn_blocking(move || {
+        let (turns, owner) = (lake.clone(), owner.clone());
+        let migrate = move |lake: &crate::exec::Turn<'_>| {
             let mut w = lake.writer();
             held.send(())
                 .expect("the test waits for the writer to be held");
             std::thread::sleep(Duration::from_millis(300));
             let call = Call {
-                lake: &lake,
+                lake,
                 who: &owner,
                 context: WriteContext::default(),
                 followed: None,
@@ -393,7 +397,9 @@ async fn a_write_that_waited_while_the_types_moved_is_sent_again() {
             let drafts = call.migration_drafts(&w, m, plan.expect("the plan"), now, 0);
             drop(view);
             (lake.append(&mut w, drafts.expect("the drafts"))).expect("the migration is appended");
-        })
+            Ok(())
+        };
+        tokio::spawn(async move { crate::exec::write(&turns, migrate).await })
     };
     holding.await.expect("the writer is held");
     let waiting = {
@@ -409,7 +415,7 @@ async fn a_write_that_waited_while_the_types_moved_is_sent_again() {
             async move { (cat.upsert(&wide, &ty, &"t2".into(), no, Default::default())).await },
         )
     };
-    keyed.await.expect("the migration ends");
+    (keyed.await.expect("the migration ends")).expect("it is applied");
     let passed = passing.await.expect("the upsert ends");
     assert!(
         passed.is_ok(),

@@ -2,8 +2,8 @@
 //! [`LakeStore`] for the host, [`ChangeFeed`] for consumers, and [`open`].
 //!
 //! Every call names a principal of this lake; a principal of another lake
-//! holds no grant here. Engine work goes through [`crate::exec::run`], and
-//! nowhere else.
+//! holds no grant here. Engine work goes through [`crate::exec::run`], or
+//! [`crate::exec::write`] where it takes the writer, and nowhere else.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -34,7 +34,7 @@ use lakelands_api::{
 use lakelands_api::error::{Case, Exchange, Remote, Seam, Situation};
 use lakelands_core::{feed, rights};
 
-use crate::exec;
+use crate::exec::{self, Turn};
 use crate::ingest;
 use crate::lake::{Lake, owing};
 use crate::reads::{Judged, Pulled, Reader};
@@ -50,8 +50,8 @@ pub async fn open(location: Location, seams: Seams, mode: OpenMode) -> Result<Ar
     let lake = exec::run(move || Lake::open(&location, seams, mode)).await?;
     let lake = Arc::new(lake);
     let owing = lake.clone();
-    exec::run(move || {
-        crate::backed::make_waiting(&owing);
+    exec::write(&lake, move |t| {
+        crate::backed::make_waiting(&owing, t);
         Ok(())
     })
     .await?;
@@ -281,12 +281,13 @@ impl Doors {
     {
         same_lake(&self.lake, who)?;
         let (lake, who, context) = (self.lake.clone(), who.clone(), self.context);
-        exec::run(move || {
-            // A reference to a type it is not shown is a field it may not
-            // know of, by the head's types; the writer judges it again
-            // under its lock (024, extended). The head is read only for
-            // one whose grants hide something once they are followed:
-            // following may hide what the grants as given do not.
+        // A reference to a type it is not shown is a field it may not know
+        // of, by the head's types; the writer judges it again under its
+        // lock (024, extended). The head is read only for one whose grants
+        // hide something once they are followed: following may hide what
+        // the grants as given do not. A read, made before the write waits
+        // its turn, as the writer's own judgement is not.
+        let seen = exec::run(move || {
             let none = Vec::<lakelands_api::engine::Declared>::new();
             let (mut sight, mut followed) = lake.sight(who.clone(), None, None, &none)?;
             let head = || lake.engine.view(None).and_then(|v| lake.shape(v.as_ref()));
@@ -300,9 +301,13 @@ impl Doors {
                 versions: head.ontology.versions(),
                 hidden: sight.hidden().to_vec(),
             });
+            Ok((sight.who().clone(), followed, shown))
+        });
+        let (who, followed, shown) = seen.await?;
+        exec::write(&self.lake, move |lake| {
             f(&Call {
-                lake: &lake,
-                who: sight.who(),
+                lake,
+                who: &who,
                 context,
                 followed,
                 shown,
@@ -450,9 +455,9 @@ impl Doors {
                 cause,
             }));
         }
-        let lake = self.lake.clone();
         let recorded = output.clone();
-        let at = exec::run(move || Ok(writes::record_output(&lake, &ext, &input, output))).await?;
+        let record = move |t: &Turn<'_>| Ok(writes::record_output(t, &ext, &input, output));
+        let at = exec::write(&self.lake, record).await?;
         // The executor ran: where its answer reached the log or is held, a
         // retry answers it; where neither, it is lost but for this sentence.
         let at = at.map_err(|(e, held)| match e {
@@ -504,10 +509,7 @@ impl Catalog for Doors {
         // builds it beside the writer, in chunks (041).
         if self.lake.choosing_due() {
             let lake = self.lake.clone();
-            tokio::spawn(exec::run(move || {
-                lake.choose_orders();
-                Ok(())
-            }));
+            tokio::spawn(async move { crate::choose::choose_orders(&lake).await });
         }
         found
     }
@@ -965,8 +967,7 @@ impl LakeStore for Store {
     }
 
     async fn rebuild(&self) -> Result<Position> {
-        let lake = self.lake.clone();
-        exec::run(move || lake.rebuild()).await
+        exec::write(&self.lake, |t| t.rebuild()).await
     }
 
     fn reclaim_owed(&self) -> Option<String> {
@@ -978,19 +979,21 @@ impl LakeStore for Store {
     }
 
     async fn restrict(&self, ty: &TypeName, key: &RecordKey, reason: String) -> Result<Position> {
-        let (lake, ty, key) = (self.lake.clone(), ty.clone(), key.clone());
-        exec::run(move || writes::restrict(&lake, &ty, &key, Some(reason))).await
+        let (ty, key) = (ty.clone(), key.clone());
+        exec::write(&self.lake, move |t| {
+            writes::restrict(t, &ty, &key, Some(reason))
+        })
+        .await
     }
 
     async fn unrestrict(&self, ty: &TypeName, key: &RecordKey) -> Result<Position> {
-        let (lake, ty, key) = (self.lake.clone(), ty.clone(), key.clone());
-        exec::run(move || writes::restrict(&lake, &ty, &key, None)).await
+        let (ty, key) = (ty.clone(), key.clone());
+        exec::write(&self.lake, move |t| writes::restrict(t, &ty, &key, None)).await
     }
 
     async fn age(&self, today: Timestamp) -> Result<AgeReport> {
-        let lake = self.lake.clone();
-        let (mut report, own) =
-            exec::run(move || owing(|| crate::aging::run(&lake, today))).await?;
+        let age = move |t: &Turn<'_>| owing(|| crate::aging::run(t, today));
+        let (mut report, own) = exec::write(&self.lake, age).await?;
         // The moves' backed fields settle like any write's; the report
         // names the position from which what they filled is visible.
         if let Some(last) = crate::backed::settle_after(&self.lake, &own).await {
@@ -1005,8 +1008,12 @@ impl LakeStore for Store {
         ty: Option<&TypeName>,
     ) -> Result<PurgeReport> {
         writes::check_source(source)?;
-        let (lake, source, ty) = (self.lake.clone(), source.clone(), ty.cloned());
-        exec::run(move || crate::purge::preflight(&lake, &source, ty.as_ref())).await
+        // It decides the retirements through the purge's own decision,
+        // which is made at a turn: it takes no writer, but writes wait for
+        // it as for the purge it foretells.
+        let (source, ty) = (source.clone(), ty.cloned());
+        let preflight = move |t: &Turn<'_>| crate::purge::preflight(t, &source, ty.as_ref());
+        exec::write(&self.lake, preflight).await
     }
 
     async fn purge_source(
@@ -1016,10 +1023,10 @@ impl LakeStore for Store {
         id: Option<&str>,
     ) -> Result<PurgeReport> {
         writes::check_source(source)?;
-        let (lake, source, id) = (self.lake.clone(), source.clone(), id.map(str::to_owned));
-        let ty = ty.cloned();
-        let purge = move || crate::purge::run(&lake, &source, ty.as_ref(), id.as_deref());
-        let (mut report, own) = exec::run(move || owing(purge)).await?;
+        let (source, ty, id) = (source.clone(), ty.cloned(), id.map(str::to_owned));
+        let purge =
+            move |t: &Turn<'_>| owing(|| crate::purge::run(t, &source, ty.as_ref(), id.as_deref()));
+        let (mut report, own) = exec::write(&self.lake, purge).await?;
         // The retirements' backed fields settle like any write's.
         if let Some(last) = crate::backed::settle_after(&self.lake, &own).await {
             report.position = report.position.max(last);
@@ -1029,8 +1036,11 @@ impl LakeStore for Store {
 
     async fn forget_source(&self, source: &SourceId, id: Option<&str>) -> Result<ForgetReport> {
         writes::check_source(source)?;
-        let (lake, source, id) = (self.lake.clone(), source.clone(), id.map(str::to_owned));
-        exec::run(move || crate::forget::run(&lake, &source, id.as_deref())).await
+        let (source, id) = (source.clone(), id.map(str::to_owned));
+        exec::write(&self.lake, move |t| {
+            crate::forget::run(t, &source, id.as_deref())
+        })
+        .await
     }
 
     async fn forget_preflight(&self, source: &SourceId) -> Result<ForgetReport> {
@@ -1045,8 +1055,11 @@ impl LakeStore for Store {
         id: Option<&str>,
     ) -> Result<ForgetSetReport> {
         sources.iter().try_for_each(writes::check_source)?;
-        let (lake, sources, id) = (self.lake.clone(), sources.to_vec(), id.map(str::to_owned));
-        exec::run(move || crate::forget::run_set(&lake, &sources, id.as_deref())).await
+        let (sources, id) = (sources.to_vec(), id.map(str::to_owned));
+        exec::write(&self.lake, move |t| {
+            crate::forget::run_set(t, &sources, id.as_deref())
+        })
+        .await
     }
 
     async fn forget_sources_preflight(&self, sources: &[SourceId]) -> Result<ForgetSetReport> {
@@ -1063,11 +1076,12 @@ impl LakeStore for Store {
         id: Option<&str>,
     ) -> Result<RemoveReport> {
         writes::check_source(source)?;
-        let (lake, source, id) = (self.lake.clone(), source.clone(), id.map(str::to_owned));
+        let (source, id) = (source.clone(), id.map(str::to_owned));
         let selection = selection.clone();
-        let remove =
-            move || crate::remove::run(&lake, &source, &selection, (shredded, id.as_deref()));
-        exec::run(remove).await
+        let remove = move |t: &Turn<'_>| {
+            crate::remove::run(t, &source, &selection, (shredded, id.as_deref()))
+        };
+        exec::write(&self.lake, remove).await
     }
 
     async fn remove_values_preflight(
@@ -1094,22 +1108,15 @@ impl LakeStore for Store {
     }
 
     async fn compact(&self) -> Result<CompactReport> {
-        let lake = self.lake.clone();
-        exec::run(move || lake.compact()).await
+        exec::write(&self.lake, |t| t.compact()).await
     }
 
     fn bind_embed(&self, backend: Arc<dyn lakelands_api::seam::EmbedBackend>) -> Result<()> {
         self.lake.bind_embed(backend);
-        // The sweep reads the lake: on the blocking pool, so the bind
+        // The sweep takes the writer: in the lake's queue, so the bind
         // answers at once.
         let lake = self.lake.clone();
-        match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => drop(runtime.spawn(exec::run(move || {
-                crate::backed::make_waiting(&lake);
-                Ok(())
-            }))),
-            Err(_) => crate::backed::make_waiting(&lake),
-        }
+        exec::write_soon(&self.lake, move |t| crate::backed::make_waiting(&lake, t));
         Ok(())
     }
 
@@ -1119,13 +1126,11 @@ impl LakeStore for Store {
     }
 
     async fn checkpoint(&self) -> Result<Position> {
-        let lake = self.lake.clone();
-        exec::run(move || lake.checkpoint()).await
+        exec::write(&self.lake, |t| t.checkpoint()).await
     }
 
     async fn close(&self) -> Result<()> {
-        let lake = self.lake.clone();
-        exec::run(move || lake.close()).await
+        exec::write(&self.lake, |t| t.close()).await
     }
 }
 

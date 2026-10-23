@@ -39,6 +39,7 @@ use lakelands_api::write::{
 use lakelands_api::{Error, FieldName, Position, RecordKey, Result, SourceId, Timestamp, TypeName};
 use lakelands_core::sight::Sight;
 
+use crate::exec::Turn;
 use crate::forget::{History, each_of, named_now};
 use crate::lake::{Lake, Staged, Writer};
 use crate::log::Draft;
@@ -638,7 +639,7 @@ pub fn preflight(lake: &Lake, source: &SourceId, selection: &Selection) -> Resul
 /// erasable field would be redacted alone. A selection that selects
 /// nothing appends nothing.
 pub fn run(
-    lake: &Lake,
+    lake: &Turn<'_>,
     source: &SourceId,
     selection: &Selection,
     (shredded, report_id): (bool, Option<&str>),

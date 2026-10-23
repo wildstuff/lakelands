@@ -48,6 +48,7 @@ use lakelands_core::{damaged, shape};
 
 use crate::backed::{Due, Of, Outputs, Owed, Recorded};
 use crate::declare::Held;
+pub use crate::exec::Turn;
 use crate::kept;
 use crate::log::{self, Draft};
 use crate::ontology::Ontology;
@@ -242,6 +243,9 @@ pub struct Lake {
     /// What the lake weighs of those pages to choose an order index
     /// itself, and what it chose (`crate::choose`).
     pub(crate) choosing: Mutex<crate::choose::Choosing>,
+    /// The queue writes wait in for their turn at the writer, in the order
+    /// they came ([`crate::exec::write`]).
+    pub(crate) turns: Arc<tokio::sync::Mutex<()>>,
     writer: Mutex<Writer>,
     /// The tip's position and whether the lease is held, as of the last
     /// change the writer made: read without the writer's lock, which an
@@ -435,6 +439,39 @@ impl Left {
     }
 }
 
+impl<'l> Turn<'l> {
+    /// The writer state, locked: taken only on a turn, so a write that
+    /// takes it has waited its turn in the queue first.
+    pub fn writer(&self) -> MutexGuard<'l, Writer> {
+        lakelands_core::lock(&self.lake().writer)
+    }
+
+    /// The writer for a write, locked and caught up. A writer whose fold
+    /// failed is behind its log: it folds from the projection's mark before
+    /// anything is decided over the projection, or the write is answered
+    /// `unavailable`, with that fold's words, and appends nothing.
+    /// Everything that decides a write takes the writer here;
+    /// [`Lake::append_after`] refuses one that is behind. Only the lease's
+    /// holder folds: a handle that gave its lease up while it was behind
+    /// folds nothing and is refused here, as its append would be. A held
+    /// answer goes in first; failing again, it stops no write, and one
+    /// whose fold fails is caught up from as any other.
+    pub fn for_write(&self) -> Result<MutexGuard<'l, Writer>> {
+        let mut w = self.writer();
+        self.regain(&mut w)?;
+        self.caught_up(&mut w)?;
+        let _ = self.record_held(&mut w, None);
+        self.caught_up(&mut w)?;
+        Ok(w)
+    }
+
+    /// Fold the log's events the projection does not reflect yet, and load
+    /// the head's ontology and settings.
+    pub(crate) fn catch_up(&self) -> Result<()> {
+        self.catch_up_in(&mut self.writer())
+    }
+}
+
 impl Lake {
     /// A writer that holds nothing, over `view`: what a write would decide
     /// there, for a preflight that reads and never takes the lease. It
@@ -500,30 +537,6 @@ impl Lake {
     /// Bind `backend` in place of the reranker bound now.
     pub fn bind_rerank(&self, backend: Arc<dyn Reranker>) {
         *lakelands_core::lock(&self.rerank) = Some(backend);
-    }
-
-    /// The writer state, locked.
-    pub fn writer(&self) -> MutexGuard<'_, Writer> {
-        lakelands_core::lock(&self.writer)
-    }
-
-    /// The writer for a write, locked and caught up. A writer whose fold
-    /// failed is behind its log: it folds from the projection's mark before
-    /// anything is decided over the projection, or the write is answered
-    /// `unavailable`, with that fold's words, and appends nothing.
-    /// Everything that decides a write takes the writer here;
-    /// [`Self::append_after`] refuses one that is behind. Only the lease's
-    /// holder folds: a handle that gave its lease up while it was behind
-    /// folds nothing and is refused here, as its append would be. A held
-    /// answer goes in first; failing again, it stops no write, and one
-    /// whose fold fails is caught up from as any other.
-    pub fn for_write(&self) -> Result<MutexGuard<'_, Writer>> {
-        let mut w = self.writer();
-        self.regain(&mut w)?;
-        self.caught_up(&mut w)?;
-        let _ = self.record_held(&mut w, None);
-        self.caught_up(&mut w)?;
-        Ok(w)
     }
 
     /// Marks the writer lost where the engine said its lease is not held
@@ -617,12 +630,6 @@ impl Lake {
         let now = wall_clock().max(w.last_known_at);
         w.last_known_at = now;
         now
-    }
-
-    /// Fold the log's events the projection does not reflect yet, and load
-    /// the head's ontology and settings.
-    pub(crate) fn catch_up(&self) -> Result<()> {
-        self.catch_up_in(&mut self.writer())
     }
 
     /// [`Self::catch_up`] on the writer held.

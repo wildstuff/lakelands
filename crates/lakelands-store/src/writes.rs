@@ -68,6 +68,7 @@ use lakelands_core::{describe, links, shape, value};
 
 use crate::backed::{Outputs, is_backed};
 use crate::declare::{self};
+use crate::exec::Turn;
 use crate::lake::{
     AGING_RULE_TYPE, Lake, SETTING_TYPE, Writer, computes, computes_again, computing_changed,
     every, fields_again, find_proposal,
@@ -454,7 +455,7 @@ pub(crate) fn bound_executor<'a>(lake: &'a Lake, name: &str) -> Result<&'a Arc<d
 /// The write-side context of one call.
 pub struct Call<'a> {
     /// The lake.
-    pub lake: &'a Lake,
+    pub lake: &'a Turn<'a>,
     /// Who the call is made as.
     pub who: &'a Principal,
     /// The host's context.
@@ -2165,7 +2166,7 @@ pub struct External {
 /// held before it ([`Lake::record_held`]). A refusal says whether the
 /// answer is held: the next write records it.
 pub fn record_output(
-    lake: &Lake,
+    lake: &Turn<'_>,
     ext: &External,
     input: &Value,
     output: Value,
@@ -2201,7 +2202,7 @@ pub fn record_output(
 
 /// A host-side retention hold (`LakeStore::restrict` / `unrestrict`).
 pub fn restrict(
-    lake: &Lake,
+    lake: &Turn<'_>,
     ty: &TypeName,
     key: &RecordKey,
     reason: Option<String>,

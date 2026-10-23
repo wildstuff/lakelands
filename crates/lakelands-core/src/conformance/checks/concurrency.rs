@@ -12,17 +12,17 @@
 //! joined in the check's one task ([`join_all`]). Every call the store
 //! makes of its engine runs on the store's blocking pool, so while one
 //! caller waits for its write the others go on, and their writes reach the
-//! engine together, contending for the writer lock as the calls of many
+//! store together, waiting their turn at the writer as the calls of many
 //! clients do. Concurrent here means that, not threads of the check's
 //! own.
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use lakelands_api::Get;
 use lakelands_api::ontology::StorageKind::{Number, Text};
 
 use crate::conformance::backing::made;
-use crate::conformance::fixture::type_of;
+use crate::conformance::fixture::{self, type_of};
 use crate::conformance::prelude::*;
 
 check!(
@@ -37,7 +37,7 @@ check!(
 
 check!(
     READS_AT_A_POSITION = a_read_at_a_position_answers_the_same_during_writes_and_after,
-    "008 and 009: a read at a position sees the lake as it was there, whoever is writing; `find` and `get` at one position agree, and answer the same when asked again later"
+    "008 and 009: a read at a position sees the lake as it was there, whoever is writing; `find` and `get` at one position agree, and answer the same when asked again later; a read made while more writes wait for the writer than the blocking pool holds threads waits for none of those beyond it"
 );
 
 check!(
@@ -52,6 +52,10 @@ check!(
 
 const WRITERS: usize = 8;
 const EACH: usize = 25;
+/// The writes [`READS_AT_A_POSITION`] sends at once, past the blocking pool.
+const WAITING: usize = 800;
+/// The writes of those that land before the read is made.
+const FIRST: usize = 64;
 
 pub(super) async fn items(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
@@ -450,7 +454,63 @@ async fn a_read_at_a_position_answers_the_same_during_writes_and_after(store: St
             again.len()
         );
     }
-    Ok(())
+    // More writes sent at once than the blocking pool holds threads (512,
+    // the runtime's default). A read made once the first few landed waits
+    // for none of those queued beyond the pool: fewer than half of them
+    // land meanwhile. A reader woken too late to tell is sent again.
+    for _ in 0..3 {
+        let (before, during) = read_beside_waiting(cat, own).await?;
+        let beyond = (WAITING - before).saturating_sub(512);
+        if beyond >= FIRST {
+            ensure!(
+                during < beyond / 2,
+                "{during} of {WAITING} writes sent at once landed while a read was made after \
+                 the first {before}: a read waits for none of the {beyond} queued beyond the \
+                 blocking pool"
+            );
+            return Ok(());
+        }
+    }
+    Err(Failure::new(format!(
+        "the reader of {WAITING} writes sent at once woke after too many had landed, \
+         three times; the check could not tell"
+    )))
+}
+
+/// Sends [`WAITING`] writes at once and, once [`FIRST`] of them landed,
+/// one read: how many had landed as it was made, and how many during it.
+async fn read_beside_waiting(
+    cat: &Arc<dyn Catalog>,
+    own: &Principal,
+) -> Result<(usize, usize), Failure> {
+    let landed = Arc::new(AtomicUsize::new(0));
+    let mut callers: Vec<Caller<'static, Result<(usize, usize), Failure>>> = (0..WAITING)
+        .map(|w| {
+            let (write, landed) = (
+                writer(cat.clone(), own.clone(), 100 + w, 1, 1),
+                landed.clone(),
+            );
+            Box::pin(async move {
+                write
+                    .await
+                    .map(|_| (landed.fetch_add(1, Ordering::SeqCst), 0_usize))
+            }) as Caller<'static, _>
+        })
+        .collect();
+    let (rcat, rown) = (cat.clone(), own.clone());
+    callers.push(Box::pin(async move {
+        while landed.load(Ordering::SeqCst) < FIRST {
+            fixture::pause(std::time::Duration::from_millis(1)).await;
+        }
+        let before = landed.load(Ordering::SeqCst);
+        let (ty, get) = ("item".into(), fixture::get_at("w0-r0", None));
+        (rcat.get(&rown, &ty, get).await).must("getting `w0-r0` while the writes wait")?;
+        Ok((before, landed.load(Ordering::SeqCst) - before))
+    }));
+    let mut answers = join_all(callers).await;
+    let read = answers.pop().expect("the reader answered")?;
+    answers.into_iter().collect::<Result<Vec<_>, _>>()?;
+    Ok(read)
 }
 
 async fn two_feed_readers_polling_during_writes_see_one_log(store: Store) -> Held {

@@ -41,6 +41,7 @@ use lakelands_api::{
 
 use lakelands_core::links;
 
+use crate::exec::Turn;
 use crate::lake::{Lake, PAGE, every};
 use crate::log::Draft;
 use crate::ontology::Ontology;
@@ -315,7 +316,7 @@ fn id(source: &SourceId, ty: Option<&TypeName>, head: Option<Position>) -> Strin
 /// repeat: with what its retirements would set off across an edge, past
 /// the ceiling too, so a host learns before the act that it must narrow a
 /// set or open the lake with a higher `max_set_changes`.
-pub fn preflight(lake: &Lake, source: &SourceId, ty: Option<&TypeName>) -> Result<PurgeReport> {
+pub fn preflight(lake: &Turn<'_>, source: &SourceId, ty: Option<&TypeName>) -> Result<PurgeReport> {
     let view = lake.engine.view(None)?;
     let w = lake.reading(view.as_ref())?;
     let (purged, unsearched) = selection(lake, view.as_ref(), &w.ontology, source, ty)?;
@@ -337,7 +338,7 @@ pub fn preflight(lake: &Lake, source: &SourceId, ty: Option<&TypeName>) -> Resul
 /// system writes them, and how many memberships and firings they set off
 /// across an edge; held to `max_set_changes` where `bound`.
 fn retirements(
-    lake: &Lake,
+    lake: &Turn<'_>,
     (w, view): (&crate::lake::Writer, &dyn ProjectionView),
     purged: Vec<StoredRecord>,
     now: lakelands_api::Timestamp,
@@ -368,7 +369,7 @@ fn retirements(
 /// lake's `max_set_changes` of what it sets off across an edge it is
 /// refused whole, appending nothing.
 pub fn run(
-    lake: &Lake,
+    lake: &Turn<'_>,
     source: &SourceId,
     ty: Option<&TypeName>,
     report_id: Option<&str>,

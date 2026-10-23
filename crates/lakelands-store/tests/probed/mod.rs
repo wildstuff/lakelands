@@ -536,7 +536,7 @@ impl EngineOpener for ProbedOpener {
 
 /// The calls the lake owes now, entry by entry, a sweep's over every
 /// page; the entries taken.
-pub fn calls(lake: &lakelands_store::lake::Lake) -> Vec<lakelands_store::backed::Due> {
+pub fn calls(lake: &lakelands_store::lake::Turn<'_>) -> Vec<lakelands_store::backed::Due> {
     use lakelands_store::backed::{Of, page};
     let owed = std::mem::take(&mut lake.writer().owed);
     let mut calls = Vec::new();
