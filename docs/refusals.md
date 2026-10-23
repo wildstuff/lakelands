@@ -277,7 +277,6 @@ What a refusal is about.
 | `computed_cycle` | `fields` (Names) | computed fields read each other in a cycle: {fields} | Computed fields that read each other. |
 | `computed_reads_itself` | `field` (FieldName) | the computed field `{field}` reads itself | A computed field that reads itself. |
 | `constraint_named_twice` | `constraint` (ConstraintName) | two constraints are named `{constraint}` | A type naming two constraints alike. |
-| `precondition_named_twice` | `precondition` (PreconditionName) | two preconditions are named `{precondition}` | A verb that names two of its preconditions alike. |
 | `constraint_reads_beyond` | `constraint` (ConstraintName), `reads` (Beyond) | constraint `{constraint}` reads {reads}, which can change without a write of the record; a constraint reads the record's own fields | A constraint that reads what can change without a write of the record. |
 | `declared_twice` | `what` (Naming), `name` (String) | it declares the {what} `{name}` twice | A name declared twice in one declaration. |
 | `derived_and_function` | — | a field is derived from an expression or computed by a function, not both | A field both derived and computed by a function. |

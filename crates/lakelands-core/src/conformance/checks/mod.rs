@@ -186,6 +186,7 @@ pub const ALL: &[Check] = &[
     requires_parts::REQUIRES_PART,
     requires_payload::PAYLOAD_REQUIRED,
     requires_payload::PRECONDITION_NAMED,
+    requires_payload::PRECONDITION_GRANTED,
     verb_grants::VERB_GRANTED,
     latest::LATEST_ORDER,
     decimals::AS_WRITTEN,

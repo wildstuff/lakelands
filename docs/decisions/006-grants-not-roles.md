@@ -1083,7 +1083,7 @@ at no place, as before. The place is told where the part is and left
 out where it is not, since it tells, as the part does, that every part
 before it held. A place, not a new member of the case, keeps the case
 what a caller already reads. A name is an identifier, two alike are refused
-`precondition_named_twice`, and a verb on its type, with no record to
+`declared_twice`, and a verb on its type, with no record to
 read, declares none, as it declares no `requires`. What reads a verb's
 `requires`, the grants, what a caller is shown and what a proposal
 keeps, reads its preconditions alike. A verb that names nothing is

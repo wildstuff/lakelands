@@ -12,7 +12,7 @@ use lakelands_api::error::Naming;
 use lakelands_api::seam::SETTING_TYPE;
 
 use super::only::holder;
-use super::paths::accept;
+use super::paths::{accept, unlisted};
 use crate::conformance::prelude::*;
 
 check!(
@@ -22,7 +22,12 @@ check!(
 
 check!(
     PRECONDITION_NAMED = a_refused_precondition_is_told_by_its_name,
-    "006, extended (lakelands#1330): a verb declares `preconditions`, each a `name` and the condition it `holds`, judged after its `requires` in order, as one `and`; a call that fails one is refused `requires_unmet` said within it, at the place `precondition` with its name, its failing conjunct as `part`; one that fails `requires` is said at no place, and a precondition is told to a caller only where its part is, so one not shown a setting it reads is told neither; a precondition named twice is refused `precondition_named_twice`, one whose name is no identifier is refused as an invalid name, one reading a payload member the verb does not declare `payload_no_member` naming the precondition, and a verb on its type with one `type_verb_requires`, each appending nothing"
+    "006, extended (lakelands#1330): a verb declares `preconditions`, each a `name` and the condition it `holds`, judged after its `requires` in order, as one `and`; a call that fails one is refused `requires_unmet` said within it, at the place `precondition` with its name, its failing conjunct as `part`; one that fails `requires` is said at no place, and a precondition is told to a caller only where its part is, so one not shown a setting it reads is told neither; two preconditions named alike are refused `declared_twice`, naming the verb, one whose name is no identifier is refused as an invalid name, one reading a payload member the verb does not declare `payload_no_member` naming the precondition, and a verb on its type with one `type_verb_requires`, each appending nothing"
+);
+
+check!(
+    PRECONDITION_GRANTED = a_precondition_is_read_as_requires_is,
+    "006, extended (lakelands#1330): a verb's precondition is read as its `requires` is: a caller who may write what the verb sets and may not read a field only a precondition reads is refused not_granted where the precondition holds and where it fails, appending nothing; neither `describe` nor `describe_type` names the verb to it; and a proposal of the call is not there to such a reviewer, in its listing, at its accept and at its reject; while a `payload.<name>` in the verb's `requires` and preconditions reads no field: a caller without `schema` that reads the type is described the verb, calls it and is listed its proposal"
 );
 
 /// A lake of vehicles read by an odometer and invoices paid by amount.
@@ -345,8 +350,9 @@ async fn a_refused_precondition_is_told_by_its_name(store: Store) -> Held {
         (
             "twice",
             twice,
-            Case::PreconditionNamedTwice {
-                precondition: "positive".into(),
+            Case::DeclaredTwice {
+                what: Naming::Precondition,
+                name: "positive".into(),
             },
         ),
         (
@@ -400,4 +406,77 @@ async fn a_refused_precondition_is_told_by_its_name(store: Store) -> Held {
 /// `json` as a declaration.
 fn de(json: Value) -> Declaration {
     serde_json::from_value(json).expect("a declaration")
+}
+
+async fn a_precondition_is_read_as_requires_is(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), lake(&store).await?);
+    let rules = json!([{"name": "not_overpaid", "holds": "paid + payload.amount <= amount"}]);
+    for (name, risk) in [("settle", "low"), ("vet", "high")] {
+        let mut v = verb(
+            name,
+            "invoice",
+            "amount",
+            "payload.amount > 0 and status = 'open'",
+            ("paid", "paid + payload.amount"),
+        );
+        (v["risk"], v["preconditions"]) = (json!(risk), rules.clone());
+        l.declare_json(v).await?;
+    }
+    let open = json!({"amount": 100, "paid": 0, "status": "open"});
+    l.upsert("invoice", "i1", open).await?;
+    let own = &l.own;
+    let (vet, i1, opts) = ("vet".into(), "i1".into(), WriteOpts::default());
+    let p = match l
+        .cat
+        .call(own, &vet, Some(&i1), patch(json!({"amount": 10})), opts)
+        .await
+    {
+        Ok(Outcome::Proposed { proposal, .. }) => proposal,
+        other => return Err(Failure::new(format!("`vet` is proposed; {other:?}"))),
+    };
+    // `amount` is read by the precondition alone.
+    let mut kept = field_access(s, "kept", "invoice", &[("amount", Access::None)]);
+    (kept.grants.default, kept.grants.review) = (Access::Write, true);
+    let plain = holder(s, "plain", json!({"default": "write", "review": true}));
+    let before = s.head().await.must("reading the head")?;
+    let nope = Err(Error::Refused {
+        field: None,
+        reason: Refusal::NotGranted,
+    });
+    let (holds, fails) = (
+        call(&l, &kept, ("settle", "i1"), json!({"amount": 10})).await,
+        call(&l, &kept, ("settle", "i1"), json!({"amount": 500})).await,
+    );
+    ensure!(
+        holds == nope && fails == nope,
+        "one who may not read what a precondition reads is not granted the call, where it \
+         holds and where it fails: {holds:?}, {fails:?}"
+    );
+    head_unmoved(s, before, "the calls not granted").await?;
+    let mut red = Vec::new();
+    for (who, shown) in [(&kept, false), (&plain, true)] {
+        let all = l.cat.describe(who, ReadAt::default()).await;
+        let all = all.must("describing")?.data.verbs;
+        let ty = describe_type(&*l.cat, who, "invoice").await?.verbs;
+        let names = |v: &str| {
+            let one = all.iter().any(|d| d.name.as_str() == v);
+            (one, ty.iter().any(|n| n.as_str() == v))
+        };
+        for v in ["settle", "vet"] {
+            if names(v) != (shown, shown) {
+                red.push(format!("`{}` is described `{v}`: {:?}", who.id, names(v)));
+            }
+        }
+    }
+    let listed = l.cat.proposals(&plain, ProposalFilter::default()).await;
+    let listed = listed.must("listing the proposals")?.data;
+    let called = call(&l, &plain, ("settle", "i1"), json!({"amount": 10})).await;
+    ensure!(
+        red.is_empty() && listed.iter().any(|e| e.id == p) && called == Ok("applied"),
+        "a verb is described to one who reads what its conditions read and to no other, a \
+         `payload.<name>` being no field: {}; `plain` is listed the proposal {}, its call {called:?}",
+        red.join("; "),
+        listed.iter().any(|e| e.id == p)
+    );
+    unlisted(s, &l, &kept, &p).await
 }

@@ -108,10 +108,6 @@
    "constraint": "c"
   },
   {
-   "code": "precondition_named_twice",
-   "precondition": "pc"
-  },
-  {
    "code": "constraint_reads_beyond",
    "constraint": "c",
    "reads": {

@@ -1,7 +1,7 @@
 use lakelands_api::expr::{Condition, Expr, Literal};
 use lakelands_api::ontology::{
     Assignment, Authority, Cardinality, FieldDecl, FieldType, FunctionInput, Measure,
-    OnInputChange, RelationDecl, RetiredBy, Risk, StorageKind, TriggerDecl, TypeDecl,
+    OnInputChange, Precondition, RelationDecl, RetiredBy, Risk, StorageKind, TriggerDecl, TypeDecl,
     ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewSource,
 };
 use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl};
@@ -164,6 +164,8 @@ name: pay_invoice
 on: invoice
 risk: low
 requires: "status = 'open'"
+preconditions:
+  live: "not (status = 'void')"
 payload:
   paid_on: { type: date_time, required: true }
 set:
@@ -317,7 +319,10 @@ fn complete_declarations() -> Vec<Declaration> {
                 ..field("paid_on", kind(StorageKind::DateTime))
             }],
             risk: Risk::Low,
-            preconditions: Vec::new(),
+            preconditions: vec![Precondition {
+                name: "live".into(),
+                holds: text("not (status = 'void')"),
+            }],
             requires: Some(text("status = 'open'")),
             effect: VerbEffect::Write {
                 set: vec![Assignment {

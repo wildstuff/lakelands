@@ -1902,18 +1902,17 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             }
             let mut named = BTreeSet::new();
             for p in &v.preconditions {
-                let precondition = p.name.clone();
                 let on = [
                     on[0].clone(),
                     Place::Precondition {
                         name: p.name.clone(),
                     },
                 ];
-                name(Naming::Precondition, precondition.as_str())
-                    .map_err(|e| e.within(on[0].clone()))?;
+                name(Naming::Precondition, p.name.as_str()).map_err(|e| e.within(on[0].clone()))?;
                 if !named.insert(&p.name) {
-                    let case = Case::PreconditionNamedTwice { precondition };
-                    return Err(Error::invalid(at(&on, case)));
+                    let (what, name) = (Naming::Precondition, p.name.to_string());
+                    let case = Case::DeclaredTwice { what, name };
+                    return Err(Error::invalid(at(&on[..1], case)));
                 }
                 given(&condition(&p.holds, Eval::Verb, &on)?, &on)?;
             }

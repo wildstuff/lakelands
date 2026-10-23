@@ -810,8 +810,6 @@ catalog! {
         ComputedReadsItself { field: FieldName } => "the computed field `{field}` reads itself",
         /// A type naming two constraints alike.
         ConstraintNamedTwice { constraint: ConstraintName } => "two constraints are named `{constraint}`",
-        /// A verb that names two of its preconditions alike.
-        PreconditionNamedTwice { precondition: PreconditionName } => "two preconditions are named `{precondition}`",
         /// A constraint that reads what can change without a write of the
         /// record.
         ConstraintReadsBeyond { constraint: ConstraintName, reads: Box<Beyond> } => "constraint `{constraint}` reads {reads}, which can change without a write of the record; a constraint reads the record's own fields",

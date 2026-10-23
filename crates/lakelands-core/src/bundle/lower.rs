@@ -11,15 +11,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use lakelands_api::error::Naming;
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
-    Assignment, EmbedDecl, FieldDecl, FieldType, FunctionInput, Measure, RelationDecl, StorageKind,
-    TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl, ViewParam, ViewSource,
+    Assignment, EmbedDecl, FieldDecl, FieldType, FunctionInput, Measure, Precondition,
+    RelationDecl, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
+    ViewDecl, ViewParam, ViewSource,
 };
 use lakelands_api::write::{
     AnnotationFault, Declaration, FunctionDecl, ObjectSetDecl, SettingDecl,
 };
 use lakelands_api::{
-    FieldName, ParamName, Patch, RelationName, SourceId, TriggerName, TypeName, ValueTypeName,
-    VerbName,
+    FieldName, ParamName, Patch, PreconditionName, RelationName, SourceId, TriggerName, TypeName,
+    ValueTypeName, VerbName,
 };
 
 use super::doc::{
@@ -495,6 +496,16 @@ pub(super) fn verb(l: &mut Lower<'_>, doc: VerbDoc) -> VerbDecl {
     let on = l.type_ref("`on`", &doc.on);
     let payload = l.fields("payload field", doc.payload);
     let requires = l.opt_cond("`requires`", doc.requires);
+    let preconditions = (doc.preconditions.0.into_iter())
+        .map(|(name, holds)| {
+            l.name(Naming::Precondition, &name);
+            let holds = l.cond(&format!("precondition `{name}`"), holds);
+            Precondition {
+                name: PreconditionName::new(name),
+                holds,
+            }
+        })
+        .collect();
     let effect = match (doc.set, doc.executor, doc.retire) {
         (None, None, true) => VerbEffect::Retire,
         (Some(set), None, false) => VerbEffect::Write {
@@ -541,7 +552,7 @@ pub(super) fn verb(l: &mut Lower<'_>, doc: VerbDoc) -> VerbDecl {
         scope: doc.scope,
         payload,
         risk: doc.risk,
-        preconditions: Vec::new(),
+        preconditions,
         requires,
         effect,
         description: doc.description,
