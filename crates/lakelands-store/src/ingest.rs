@@ -174,13 +174,12 @@ fn judge(
     (source, first, records): (&SourceId, u64, &[SourceRecord]),
     asks: &mut Asks,
 ) -> Result<(Vec<Draft>, Reads, u32, u32)> {
-    let (lake, who) = (call.lake, call.who);
+    let lake = call.lake;
     // A forgotten source is never given a key again, and writes nothing
     // (058).
     let forgotten = crate::lake::forgotten_list(view, &Default::default())?;
     let mut d = call.decide(w, view, now, 0);
     (d.door, d.envelope.origin) = (Door::Source, Origin::Source);
-    let sees = lakelands_core::sight::Sight::held(who, &w.ontology);
     let mut seen: BTreeSet<EventId> = BTreeSet::new();
     let mut drafts = Vec::new();
     let mut committed = 0u32;
@@ -192,8 +191,9 @@ fn judge(
     // the records up to the first whose type or key the loop refuses are
     // read, so a key no engine can hold is refused, not sent.
     let mut keys: BTreeMap<&lakelands_api::TypeName, Vec<_>> = Default::default();
-    let formed =
-        |r: &&SourceRecord| sees.ty(&r.ty).is_ok() && crate::writes::check_key(&r.key).is_ok();
+    let formed = |r: &&SourceRecord| {
+        d.at.sight.ty(&r.ty).is_ok() && crate::writes::check_key(&r.key).is_ok()
+    };
     for r in records.iter().take_while(formed) {
         keys.entry(&r.ty).or_default().push(r.key.clone());
     }
@@ -201,7 +201,7 @@ fn judge(
     // same way: each reference is still judged from the same view.
     let mut targets: BTreeMap<&lakelands_api::TypeName, Vec<_>> = Default::default();
     for r in records.iter().take_while(formed) {
-        let decl = sees.ty(&r.ty).expect("a formed record names a type");
+        let decl = d.at.sight.ty(&r.ty).expect("a formed record names a type");
         for f in &decl.fields {
             let named = (f.ty.target.as_ref()).zip(r.fields.get(&f.name).and_then(|v| v.as_str()));
             // Only a key an engine can hold is read; any other value is
@@ -220,8 +220,8 @@ fn judge(
     let mut once = BTreeSet::new();
     for (i, r) in records.iter().enumerate() {
         let judged = (|| {
-            let decl = sees.ty(&r.ty)?;
-            crate::writes::untold_setting(&sees, decl, &r.key)?;
+            let decl = d.at.sight.ty(&r.ty)?;
+            crate::writes::untold_setting(&d.at.sight, decl, &r.key)?;
             // The record's own source, else the call's: its event and its id.
             let source = r.source.as_ref().unwrap_or(source);
             d.envelope.source = Some(source.clone());
@@ -351,7 +351,7 @@ fn judge(
                     let get = |ty: &_, key: &_| d.pending.record(view, ty, key);
                     let window = Some((&window_links[..], &get as crate::writes::Get));
                     crate::writes::cardinality(
-                        (view, &sees),
+                        (view, &d.at.sight),
                         window,
                         (&t.name, relation),
                         &from,

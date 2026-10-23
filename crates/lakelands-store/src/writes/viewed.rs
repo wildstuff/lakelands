@@ -173,10 +173,9 @@ impl Decide<'_> {
         (before, after): (Option<&StoredRecord>, &StoredRecord),
         out: &mut Vec<(Draft, Option<Change>)>,
     ) -> Result<()> {
-        let w = self.w;
         let mut v = match self.pending.viewed.take() {
             Some(v) => v,
-            None => Box::new(Viewed::of(&w.ontology)),
+            None => Box::new(Viewed::of(self.ontology)),
         };
         let setting = after.ty.as_str() == SETTING_TYPE;
         let moves = v.reads.contains(&after.ty) || setting && v.named.contains(after.key.as_str());
@@ -197,8 +196,8 @@ impl Decide<'_> {
         (before, after): (Option<&StoredRecord>, &StoredRecord),
         out: &mut Vec<(Draft, Option<Change>)>,
     ) -> Result<()> {
-        let w = self.w;
-        let settings = (v.settings).get_or_insert_with(|| held((&v.views, &v.named), &w.settings));
+        let settings =
+            (v.settings).get_or_insert_with(|| held((&v.views, &v.named), self.at.settings));
         let setting = after.ty.as_str() == SETTING_TYPE;
         let was = setting.then(|| settings.clone());
         if setting {
@@ -231,17 +230,16 @@ impl Decide<'_> {
         (before, after): (Option<&StoredRecord>, &StoredRecord),
         out: &mut Vec<(Draft, Option<Change>)>,
     ) -> Result<()> {
-        let w = self.w;
         let at = At {
-            view: self.view,
+            view: self.at.view,
             projection: None,
-            ontology: &w.ontology,
+            ontology: self.ontology,
             settings: v.settings.as_ref().expect("the settings are held"),
         };
         let none = BTreeSet::new();
         let staged = &mut v.staged;
         let mut moved = kept::step(&at, staged, Some((before, after)), &none, self.next)?;
-        let sees = Sight::held(self.call.who, &w.ontology);
+        let sees = Sight::held(self.call.who, self.ontology);
         let max = self.call.lake.limits.max_set_changes as usize;
         let named = |s: &ObjectSetDecl| sees.shows(&Declaration::ObjectSet(s.clone()));
         // Only a setting's write ends a view's keeping.
@@ -250,12 +248,12 @@ impl Decide<'_> {
             if !kept::whole(&at, staged, view)? {
                 let reads = |r: &Reader| {
                     r.view() == view
-                        || sources_read(&w.ontology, r.view())
+                        || sources_read(self.ontology, r.view())
                             .iter()
                             .any(|(t, _)| t == view)
                 };
                 let shown = |r: &Reader| sees.shows(&r.declaration());
-                return Err(match readers(&w.ontology).filter(reads).find(shown) {
+                return Err(match readers(self.ontology).filter(reads).find(shown) {
                     Some(r) => r.refusal(Case::ViewKeptForSet { ty: view.clone() }),
                     None => Error::not_granted(),
                 });
@@ -273,8 +271,8 @@ impl Decide<'_> {
             if !kept::reflagged(&at, staged, (view, key))? {
                 continue;
             }
-            for s in w.ontology.object_sets.values().map(|e| &e.decl) {
-                if sources_read(&w.ontology, &s.of)
+            for s in self.ontology.object_sets.values().map(|e| &e.decl) {
+                if sources_read(self.ontology, &s.of)
                     .iter()
                     .any(|(t, _)| t == view)
                 {
@@ -291,9 +289,9 @@ impl Decide<'_> {
         let mut mine = BTreeMap::new();
         let mut fired = Vec::new();
         for (view, key) in &moved {
-            let sets = (w.ontology.object_sets.values()).map(|e| &e.decl);
+            let sets = (self.ontology.object_sets.values()).map(|e| &e.decl);
             let sets: Vec<&ObjectSetDecl> = sets.filter(|s| &s.of == view).collect();
-            let triggers = w.ontology.triggers.values().map(|e| &e.decl);
+            let triggers = self.ontology.triggers.values().map(|e| &e.decl);
             let on = |t: &&TriggerDecl| &t.on == view && fires_on(t, change);
             let triggers: Vec<&TriggerDecl> = triggers.filter(on).collect();
             if sets.is_empty() && triggers.is_empty() {
@@ -316,7 +314,7 @@ impl Decide<'_> {
                 let of = (s.name.clone(), view.clone(), key.clone());
                 let was = match mine.get(&of) {
                     Some(m) => *m,
-                    None => self.pending.member(self.view, &s.name, view, key)?,
+                    None => self.pending.member(self.at.view, &s.name, view, key)?,
                 };
                 let is = match &row {
                     Some(r) => self.member(s, r, at.settings)?,
@@ -328,7 +326,7 @@ impl Decide<'_> {
                 mine.insert(of.clone(), is);
                 let change = (of.0, of.1, of.2, is);
                 out.push((
-                    self.call.changed(change.clone(), self.next, self.now),
+                    self.call.changed(change.clone(), self.next, self.at.now),
                     Some(change),
                 ));
                 if self.bound && self.pending.across + out.len() > max {
@@ -343,7 +341,7 @@ impl Decide<'_> {
             let draft = Draft {
                 cause: Some(self.next),
                 context: self.call.context,
-                ..Draft::system(self.now, body)
+                ..Draft::system(self.at.now, body)
             };
             out.push((draft, None));
             if self.bound && self.pending.across + out.len() > max {

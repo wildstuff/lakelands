@@ -439,15 +439,15 @@ impl Call<'_> {
 
     /// The drafts that declare a checked set: each declaration at its next
     /// version, with the link types its relations need; and the sections
-    /// of its plan, of the types it computes again (062). Where `telling`,
-    /// as a proposal's plan, its sections alone: nothing it finds refuses
+    /// of its plan, of the types it computes again (062). Judged as a
+    /// proposal's plan, its sections alone: nothing it finds refuses
     /// it but the records a type withdrawn or declared again finds held,
     /// and its sets are not decided.
     pub(crate) fn bundle_drafts(
         &self,
         w: &Writer,
         declarations: Vec<Declaration>,
-        (now, first, telling): (Timestamp, usize, bool),
+        (now, first, judging): (Timestamp, usize, Judging),
     ) -> Result<Bundled> {
         let mut drafts = Vec::with_capacity(declarations.len());
         let mut decided = Vec::new();
@@ -518,7 +518,7 @@ impl Call<'_> {
         };
         let viewing = declarations.iter().any(moves) && reads_view(&w.ontology)
             || declarations.iter().any(reads);
-        let left = (viewing && !telling).then(|| {
+        let left = (viewing && !judging.tells()).then(|| {
             let mut left = w.ontology.clone();
             (declarations.iter()).for_each(|d| left.put(d.clone(), 0, None));
             left
@@ -547,7 +547,7 @@ impl Call<'_> {
                 // A set of a type computed again is decided by its walk, over
                 // the records as the bundle computes them.
                 Declaration::ObjectSet(set) if again.contains(&set.of) => (None, Vec::new()),
-                Declaration::ObjectSet(_) if telling => (None, Vec::new()),
+                Declaration::ObjectSet(_) if judging.tells() => (None, Vec::new()),
                 // A set of a view is decided over its kept records, below.
                 Declaration::ObjectSet(set)
                     if after.as_ref().is_some_and(|a| of_view(&set.of, a)) =>
@@ -562,7 +562,7 @@ impl Call<'_> {
                 // A proposal's plan judges no setting's held value: the
                 // accept does, and the plan would tell of a value its
                 // proposer may not be answered.
-                Declaration::Setting(_) if telling => (None, Vec::new()),
+                Declaration::Setting(_) if judging.tells() => (None, Vec::new()),
                 Declaration::Setting(s) => {
                     let whole = (settled.as_ref()).expect("a bundle with a setting has its copy");
                     (None, self.restamped((w, whole), s, now)?)
@@ -601,8 +601,8 @@ impl Call<'_> {
         let mut types = Vec::new();
         if let (Some(last), Some(whole)) = (last, &whole) {
             let event = provisional(self.lake, position_after(w, first + last), &drafts[last]);
-            types = self.walked_again((w, whole), (&again, &fields), (&event, now, telling))?;
-            if !telling {
+            types = self.walked_again((w, whole), (&again, &fields), (&event, now, judging))?;
+            if !judging.tells() {
                 let changes = self.recomputed_sets((w, whole, &decided), &again, &event, now)?;
                 drafts.extend(changes);
             }
@@ -750,8 +750,8 @@ impl Call<'_> {
     /// computes again (those `fields` names of it, and those derived or
     /// embedded from them), has no section, and one it is not told of a reference of has
     /// none of it; one judged of by nothing it is told counts nothing.
-    /// Where `telling`, as a proposal's plan, nothing is refused and no
-    /// held record is computed.
+    /// Judged as a proposal's plan, nothing is refused and no held record
+    /// is computed.
     fn walked_again(
         &self,
         (w, whole): (&Writer, &Ontology),
@@ -759,7 +759,7 @@ impl Call<'_> {
             &BTreeSet<TypeName>,
             &BTreeMap<TypeName, BTreeSet<FieldName>>,
         ),
-        (event, now, telling): (&Event, Timestamp, bool),
+        (event, now, judging): (&Event, Timestamp, Judging),
     ) -> Result<Vec<MigrationReport>> {
         let view = self.lake.engine.view(None)?;
         let computing = whole.computing(&types.iter().cloned().collect::<Vec<_>>());
@@ -772,7 +772,7 @@ impl Call<'_> {
             let computed = (decl.fields.iter())
                 .filter(|f| f.derived.is_some() || f.function.is_some() || f.embed.is_some());
             let moving: BTreeSet<FieldName> = computed.map(|f| f.name.clone()).collect();
-            let mut walked = Walked::of(whole, decl, &moving, (&sight, telling))?;
+            let mut walked = Walked::of(whole, decl, &moving, (&sight, judging))?;
             // Its author is told of the fields it knows of alone, of those
             // the bundle computes again and what is derived from them: a
             // type none of whose such fields it knows of has no section,
@@ -816,7 +816,7 @@ impl Call<'_> {
             // Nothing judged: every record is computed again, uncounted. A
             // held record is counted only for one who holds `restricted`.
             let recomputed = match judges {
-                false if !telling && sealed => {
+                false if !judging.tells() && sealed => {
                     live(v, ty, |r| {
                         computed_again(with, r, event, &w.settings).map(drop)
                     })?;
@@ -828,7 +828,7 @@ impl Call<'_> {
                     live(v, ty, |r| {
                         // A plan that only tells computes no held record: it
                         // counts none, and its inputs are not its author's.
-                        if telling && sight.withheld(r) {
+                        if judging.tells() && sight.withheld(r) {
                             return Ok(());
                         }
                         n += u64::from(!sight.withheld(r));
@@ -839,7 +839,7 @@ impl Call<'_> {
                     n
                 }),
             };
-            let (breaches, lossless) = walked.kept(telling)?;
+            let (breaches, lossless) = walked.kept(judging)?;
             // A reference's count to one who reads it and is shown its target.
             let target = |f: &FieldName| (decl.field(f))?.ty.target.clone();
             let shows = |f: &FieldName| target(f).is_some_and(|t| sight.ty(&t).is_ok());
@@ -1059,9 +1059,9 @@ impl Call<'_> {
         granted(self.who.grants.schema && !rights::holds_only(self.who))?;
         let mut m = m.clone();
         let author = self.authored(&w.ontology, &mut m)?;
-        let report = self
-            .preflight_plan(w, view, (&m, author.as_ref(), None), (None, self.tells()))?
-            .report;
+        let judged = (&m, author.as_ref(), None);
+        let report =
+            (self.preflight_plan(w, view, judged, (None, self.judging(When::Plan))))?.report;
         self.shown(w, &m, report)
     }
 
