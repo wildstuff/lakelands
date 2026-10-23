@@ -1,6 +1,6 @@
 # The log format
 
-**Format version 18.** Reviewed so that a verifier can be written from
+**Format version 19.** Reviewed so that a verifier can be written from
 this document alone (lakelands#14). A release reads and writes one
 format version, this one: every event of a lake carries it, from
 position 0, and a lake written in another is refused by name and never
@@ -281,7 +281,7 @@ store has lost the version it last sealed with: the write is refused the
 same way, so a wrong key store fails at the write, not at a later
 rebuild. A verifier without the
 keys checks every hash and id over the bytes as stored, and the form of
-each sealed member. `docs/log-format/vectors/18/` holds a sealed ingest
+each sealed member. `docs/log-format/vectors/19/` holds a sealed ingest
 and a sealed output under a key its README names.
 
 ## 2. Kinds
@@ -978,6 +978,10 @@ the first release with real installations
   (`docs/decisions/069-an-authored-field-may-admit-a-named-source.md`),
   a verb's `granted`
   (`docs/decisions/070-a-verb-may-be-kept-to-the-callers-granted-it.md`).
+  18 → 19: none. Format 19 is 0.18.0's one step, taken before any form
+  it adds (lakelands#1330), and a log of format 18 holds none of them:
+  a verb's `preconditions`, and a `payload.<name>` in its `requires`
+  (`docs/decisions/028-authoring-is-strict-and-whole.md`).
   No other step changes a fold, so the projection stays. A step that
   changes how an event folds says so here, and a writer's open then
   rebuilds the projection.
@@ -1295,7 +1299,7 @@ the record's type, and no set through itself.
   `m` 60 s, `s` 1 s) in microseconds, which must come out whole: `1.5h`
   is `5400000000`, and `30d` is `2592000000000`.
 
-`docs/log-format/vectors/18/schema-hash.json` shows a view whose conditions
+`docs/log-format/vectors/19/schema-hash.json` shows a view whose conditions
 are written as text, its shape object with those conditions in typed
 form, and the resulting hash. A shape's `key` is the key the type's
 records carry, so a grouped view hashes alike whether its declaration

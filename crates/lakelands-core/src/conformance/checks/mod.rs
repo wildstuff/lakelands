@@ -810,6 +810,7 @@ pub const ALL: &[Check] = &[
     upgrade::FORMAT_15_UPGRADED,
     upgrade::FORMAT_16_UPGRADED,
     upgrade::FORMAT_17_UPGRADED,
+    upgrade::FORMAT_18_UPGRADED,
     upgrade::LAYOUT_REBUILT,
     ahead::BUILT_AHEAD,
     verb_written::VERB_ONLY,

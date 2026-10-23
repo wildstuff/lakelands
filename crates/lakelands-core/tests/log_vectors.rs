@@ -1047,7 +1047,8 @@ fn lines_of(n: u32) -> Vec<Value> {
 /// The steps from each older format to this release's change no event:
 /// 14 → 15 lets a verb's path read across a reference or a relation's
 /// link (055), which a log of format 14 never declares, and 15 → 16,
-/// 16 → 17 and 17 → 18 add forms a log of the format before never holds.
+/// 16 → 17, 17 → 18 and 18 → 19 add forms a log of the format before
+/// never holds.
 /// So every line of each older format's vectors, of every kind they hold,
 /// is read as it was written, `v` included, and decodes into this
 /// release's structs; the kinds each holds are named, so a kind the
