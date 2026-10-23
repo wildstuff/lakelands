@@ -71,9 +71,13 @@ feed and the export are compared byte for byte, on every engine.
 - **Not history pruning.** A read `as_of` any position still answers. A
   lake that wants less history needs a different operation, with a
   record of its own.
-- **Not sealing.** That is `checkpoint`.
-- **Not scheduled.** `serve` does not compact on its own. A daily
-  compaction would be a later option with its own configuration.
+- **Not sealing.** That is `checkpoint`, or the seal past
+  `limits.seal_after_bytes` on an engine that reports a segment's size
+  (`docs/decisions/074-a-segment-is-sealed-by-size.md`).
+- **Not scheduled.** `serve` does not compact on its own. The one
+  storage act a lake takes by itself is the seal by size
+  (`docs/decisions/074-a-segment-is-sealed-by-size.md`), which appends a
+  checkpoint and compacts nothing.
 - **Not `VACUUM FULL`.** It takes an exclusive lock and would lock every
   reader of the lake out while it rewrote.
 - **Not a promise for a pgvector index.** A vector field the lake asks an
@@ -94,3 +98,11 @@ feed and the export are compared byte for byte, on every engine.
   - in `rebuild`, a host that only migrates would never reclaim;
   - in `close`, shutdown would turn slow, and a process killed while
     closing would leave the work half done.
+
+## How it came to be
+
+- The first version: a host-triggered, engine-local compact that changes
+  no answer, neither seals nor runs on its own.
+- "Not sealing" and "Not scheduled" name the seal by size, the one
+  storage act a lake takes by itself; a compact still does neither
+  (lakelands#1309).

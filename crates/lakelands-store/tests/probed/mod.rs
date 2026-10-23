@@ -391,6 +391,9 @@ impl LakeEngine for Probed {
     fn segments(&self) -> Result<Vec<SegmentDigest>> {
         self.inner.segments()
     }
+    fn active_segment_bytes(&self) -> Option<u64> {
+        self.inner.active_segment_bytes()
+    }
     fn projection(&self) -> &dyn ProjectionStore {
         self
     }

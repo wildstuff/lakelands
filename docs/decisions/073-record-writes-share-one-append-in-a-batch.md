@@ -74,9 +74,9 @@ appended, the batch's tip when it was decided for a replay.
 ### The exceptions
 
 A batch's answers depend on its batch only here. Each exception has its
-oracle in the batched rows: the failed append's and the panics' run on
-every engine, the failed fold's on the memory engine, whose fold a probe
-refuses.
+oracle in the rows: the failed append's and the panics' run on every
+engine, the failed fold's on the memory engine, whose fold a probe
+refuses, and the seal's in the sealed-by-size row every engine runs.
 
 - **An append that fails.** Where the durable append fails, nothing of
   the batch is in the log, and every write of it is answered that
@@ -96,6 +96,13 @@ refuses.
   run, and the lake writes again. Where that recovery panics too, the
   record writes taken from the queue with the batch and not decided yet
   are answered `stopped` as well; the entries queued after them run.
+- **A seal by size.** Where an engine reports its segment's size, the
+  writer seals it after the entry that took it past
+  `limits.seal_after_bytes`, at a batch's close
+  (`docs/decisions/074-a-segment-is-sealed-by-size.md`), so the
+  checkpoint's position, and every position after it, follows where
+  batches closed. The batched rows and the soak run with the bound at 0;
+  the row of the seal says only whether a lake seals.
 
 ## Why
 
@@ -129,3 +136,10 @@ how much one durable step holds.
   a batch.
 - It does not recover from a panic in a write that runs alone: that is
   answered `stopped` as before.
+
+## How it came to be
+
+- The first version: one append and one fold for the record writes at
+  the queue's head, each decided alone, and three exceptions.
+- A fourth exception: where a seal by size falls follows where batches
+  closed (lakelands#1309).

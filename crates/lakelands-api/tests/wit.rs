@@ -1572,6 +1572,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 order_unused_secs: 14,
                 order_chunk: 15,
                 forget_rebuild: true,
+                seal_after_bytes: 16,
             }),
         ),
         (

@@ -206,8 +206,9 @@ impl Holding {
         entry
     }
 
-    /// Run `entry` on the lake, while it is there; the lake is let go
-    /// before any of its answers is given.
+    /// Run `entry` on the lake, while it is there, and seal its active
+    /// segment if the entry left it past its bound, before the answers
+    /// are given (074); the lake is let go before any of them is given.
     fn run(&mut self, entry: Entry) {
         let Some(lake) = self.lake.upgrade() else {
             return;
@@ -222,6 +223,9 @@ impl Holding {
                 }
             }
         }
+        // Between two entries, so never inside a batch: an entry is one.
+        let seal = || Turn(&lake).seal_by_size();
+        drop(catch_unwind(AssertUnwindSafe(seal)));
     }
 
     /// Give the answers decided.

@@ -40,9 +40,12 @@
 //! once the digest the engine takes of that segment is the file's; the
 //! rest follows through `import`.
 //! The projection is folded under the import's lease as a rebuild folds
-//! it, and nothing is appended: the head is the export's. The lease is
-//! given up, and the host opens the lake as always; that open takes a
-//! lease greater than every fence in the log and continues it.
+//! it, and nothing is appended: the head is the export's. No segment is
+//! sealed by size, the re-open that upgrades an older export included.
+//! The lease is given up, and the host opens the lake as always; that
+//! open takes a lease greater than every fence in the log and continues
+//! it, and may seal a segment past its bound
+//! (`docs/decisions/074-a-segment-is-sealed-by-size.md`).
 //!
 //! **A failure is loud.** Once the first event is written, what can still
 //! fail is the target's storage. The error names the position the import
@@ -343,10 +346,13 @@ pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported>
     drop(engine);
     // An export of an older format is upgraded as any lake is: by a
     // writer's open, whose lease is above every fence the export holds
-    // (`docs/log-format.md` §6). Its events stay as they were written.
+    // (`docs/log-format.md` §6). Its events stay as they were written,
+    // and it seals nothing by size: the head is the export's (074).
     let ends = crate::lake::opener(location, &seams)?.log_ends(location)?;
     if crate::log::one_format(&location.lake, ends.as_ref())? < LOG_FORMAT_VERSION {
-        Lake::open(location, seams, OpenMode::Write)?
+        let mut location = location.clone();
+        location.limits.seal_after_bytes = 0;
+        Lake::open(&location, seams, OpenMode::Write)?
             .turn()
             .close()?;
     }
