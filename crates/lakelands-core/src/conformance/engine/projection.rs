@@ -92,6 +92,11 @@ engine_check!(
 );
 
 engine_check!(
+    VECTOR_PUT_BEFORE_A_LATER_STATE = a_vector_put_before_a_later_state_reads_as_put,
+    "072, seams §ProjectionStore: a state put again before a later state with another vector reads that vector at its position, while the later state, which named the elements the earlier one stored, still reads them"
+);
+
+engine_check!(
     PUTS_IN_ONE_TRANSACTION =
         several_puts_of_one_thing_in_one_transaction_leave_what_they_leave_one_by_one,
     "seams §ProjectionStore: puts of the same things in one transaction, at later positions, at the same one or before a later one, leave the history and the head's indexes a commit after each put would leave"
@@ -768,6 +773,34 @@ fn a_put_before_a_later_state_ends_where_that_state_begins(engine: &dyn LakeEngi
         "at the head, `five` answered {five:?} and `three` {three:?}; the state put at 3 is \
          not the latest, so the head still reads `five`"
     );
+    Ok(())
+}
+
+fn a_vector_put_before_a_later_state_reads_as_put(engine: &dyn LakeEngine) -> Held {
+    let vectors: Declaration = serde_json::from_value(json!({
+        "declare": "type", "name": "t",
+        "fields": [{"name": "v", "type": {"kind": "vector", "dimensions": 2}}]
+    }))
+    .expect("a declaration in the check is well-formed");
+    let (a, b) = (json!([0.5, 0.25]), json!([0.75, 0.125]));
+    fold(engine, 3, |p| {
+        p.put_declaration(&vectors, 1, None, Position(0))?;
+        p.put_record(&record("t", "a", json!({"v": a}), 3))
+    })?;
+    fold_one(engine, 5, record("t", "a", json!({"v": a}), 5))?;
+    fold_one(engine, 5, record("t", "a", json!({"v": b}), 3))?;
+    let (ty, key) = (TypeName::from("t"), RecordKey::from("a"));
+    for (as_of, expected) in [(Some(3), &b), (Some(4), &b), (Some(5), &a), (None, &a)] {
+        let got = view(engine, as_of.map(Position))?
+            .get(&ty, &key)
+            .must("reading the record")?
+            .and_then(|r| r.fields.get("v").cloned());
+        ensure!(
+            got.as_ref() == Some(expected),
+            "`a` was put with v = {a} at 3 and again at 5, then with v = {b} at 3; a view at \
+             {as_of:?} read {got:?}, but the state valid there holds {expected}"
+        );
+    }
     Ok(())
 }
 

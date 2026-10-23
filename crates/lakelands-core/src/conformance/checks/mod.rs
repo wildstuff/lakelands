@@ -887,6 +887,7 @@ pub const ALL: &[Check] = &[
     stored_vectors::VECTOR_RESTRICTION_KEPT,
     stored_vectors::VECTOR_REKEY_ENDED,
     stored_vectors::VECTOR_RENAME_KEPT,
+    stored_vectors::VECTOR_JSON_IN_PLACE,
     purge::CO_OWNED_COUNTED,
     purge::BACKED_NO_OWNER,
     purge::INITIAL_NO_OWNER,

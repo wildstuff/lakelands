@@ -504,13 +504,15 @@ impl History {
 #[derive(Default)]
 pub(crate) struct HeadTypes(HashMap<TypeName, HeadType>);
 
-/// A type's declaration at the head, its order index's fields, and its
-/// exact-text index's (`None`, every field, for a kept name).
+/// A type's declaration at the head, its order index's fields, its
+/// exact-text index's (`None`, every field, for a kept name), and those
+/// its states keep apart ([`engines::vector_fields`]).
 #[derive(Clone, Default)]
 pub(crate) struct HeadType {
     pub(crate) decl: Option<TypeDecl>,
     pub(crate) sorted: Vec<FieldName>,
     pub(crate) looked: Option<BTreeSet<FieldName>>,
+    pub(crate) vectors: BTreeSet<FieldName>,
 }
 
 impl HeadTypes {
@@ -565,6 +567,11 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
         ),
         None => Vec::new(),
     };
+    let own = view.as_ref().unwrap_or(ty);
+    let vectors = engines::vector_fields(ty, |t| match t == own {
+        true => Ok(declared.clone()),
+        false => type_at(db, names, t, None),
+    })?;
     let decl = declared.filter(|_| view.is_none());
     let looked = decl
         .as_ref()
@@ -573,6 +580,7 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
         decl,
         sorted,
         looked,
+        vectors,
     })
 }
 
@@ -1603,7 +1611,7 @@ impl Buffer {
         v: Option<&Pgvector>,
     ) -> Result<u64> {
         self.drop_rows(db, names)?;
-        let mut apart = self.put_vectors(db, names, v)?;
+        let mut apart = self.put_vectors(db, names, types, v)?;
         let records: BTreeMap<(Vec<String>, i64), String> = (self.records.iter())
             .map(|(k, r)| {
                 let apart = apart.remove(k).unwrap_or_default();
@@ -1767,11 +1775,17 @@ impl Buffer {
     /// Write the vector rows of the buffered records' states
     /// ([`engines::put_vectors`]), over the rows in force each record holds
     /// and whether a later state of it is kept, and answer the fields each
-    /// state keeps apart. A unit vector is filled for a row in force of a
+    /// state keeps apart, of those its type's declaration in `types` keeps. A unit vector is filled for a row in force of a
     /// field whose index is marked (`crate::vector_index`); a row that ends
     /// holds none. A vector the index put alone for a field a state names
     /// goes.
-    fn put_vectors(&self, db: &mut Db, names: &Names, v: Option<&Pgvector>) -> Result<StatesApart> {
+    fn put_vectors(
+        &self,
+        db: &mut Db,
+        names: &Names,
+        types: &mut HeadTypes,
+        v: Option<&Pgvector>,
+    ) -> Result<StatesApart> {
         let mut apart = BTreeMap::new();
         let mut held: BTreeMap<(String, String), Held> = BTreeMap::new();
         for (ident, _) in self.records.keys() {
@@ -1819,9 +1833,9 @@ impl Buffer {
                 .expect("a key asked for")
                 .head = Some(row.get(2));
         }
-        let (mut written, mut later, mut ended, mut gone) = Default::default();
-        let (written, later): (&mut VectorRows, &mut VectorRows) = (&mut written, &mut later);
-        let (ended, gone): (&mut VectorRows, &mut VectorRows) = (&mut ended, &mut gone);
+        let (mut written, mut ended, mut gone) = Default::default();
+        let (written, ended, gone): (&mut VectorRows, &mut VectorRows, &mut VectorRows) =
+            (&mut written, &mut ended, &mut gone);
         // A unit vector is filled only where its field's index is marked.
         let marks: BTreeSet<String> = match v {
             Some(_) => db.column(
@@ -1830,26 +1844,26 @@ impl Buffer {
             )?,
             None => BTreeSet::new(),
         };
+        let mut vectors: BTreeMap<&TypeName, BTreeSet<FieldName>> = BTreeMap::new();
         for ((ident, at), r) in &self.records {
+            if !vectors.contains_key(&r.ty) {
+                vectors.insert(&r.ty, types.get(db, names, &r.ty)?.vectors);
+            }
             let h = held
                 .get_mut(&(ident[0].clone(), ident[1].clone()))
                 .expect("a key held");
             let behind = h.head.is_some_and(|head| head > *at);
-            let put = engines::put_vectors(r, std::mem::take(&mut h.rows), behind);
+            let put = engines::put_vectors(r, std::mem::take(&mut h.rows), behind, &vectors[&r.ty]);
             h.rows = put.held;
             let until = put.ends.then_some(*at);
-            let to = match behind {
-                true => &mut *later,
-                false => &mut *written,
-            };
             for (f, e) in put.written {
                 let marked = marks.contains(&vector_index::mark(&r.ty, f.as_str()));
                 let unit =
                     (marked && until.is_none()).then(|| vector_index::unit_text(&e.ranked()));
-                to.push([&ident[0], &ident[1], f.as_str()], *at, until);
-                to.unit.push(unit.flatten());
-                to.single.push(e.single);
-                to.data.push(e.data);
+                written.push([&ident[0], &ident[1], f.as_str()], *at, until);
+                written.unit.push(unit.flatten());
+                written.single.push(e.single);
+                written.data.push(e.data);
             }
             for (f, since) in put.ended {
                 ended.push(
@@ -1870,19 +1884,7 @@ impl Buffer {
         }
         let t = names.t("vectors");
         let ident = "unnest($1::text[], $2::text[], $3::text[], $4::int8[]";
-        for (w, on) in [
-            (
-                &*written,
-                "DO UPDATE SET until = EXCLUDED.until, single = EXCLUDED.single, \
-                         data = EXCLUDED.data",
-            ),
-            // Under a later state a row already at this position may be one
-            // the head names: it stays as it is.
-            (&*later, "DO NOTHING"),
-        ] {
-            if w.since.is_empty() {
-                continue;
-            }
+        if !written.since.is_empty() {
             let (unit, set, units) = match v {
                 Some(v) => (
                     ", unit",
@@ -1891,10 +1893,7 @@ impl Buffer {
                 ),
                 None => ("", "", String::new()),
             };
-            let on = match on.starts_with("DO UPDATE") {
-                true => format!("{on}{set}"),
-                false => on.to_owned(),
-            };
+            let w = &*written;
             let [tys, keys, fields] = &w.ident;
             db.execute(
                 &format!(
@@ -1902,7 +1901,8 @@ impl Buffer {
                      SELECT ty, key, field, since, until, single, data{units} FROM \
                      {ident}, $5::int8[], $6::bool[], $7::bytea[], $8::text[]) \
                      AS b(ty, key, field, since, until, single, data, u) \
-                     ON CONFLICT (ty, key, field, since) {on}"
+                     ON CONFLICT (ty, key, field, since) DO UPDATE SET until = EXCLUDED.until, \
+                     single = EXCLUDED.single, data = EXCLUDED.data{set}"
                 ),
                 &[
                     tys, keys, fields, &w.since, &w.until, &w.single, &w.data, &w.unit,

@@ -12,7 +12,9 @@ in `vectors`, and the suite's rows hold it on every engine
 `a_links_vector_reads_through_a_walk_at_each_position`,
 `a_restriction_and_its_lifting_keep_a_records_vector`,
 `a_rekey_ends_the_old_keys_vector_at_its_position`,
-`a_migration_that_renames_a_vector_field_reads_its_elements_under_the_new_name`).
+`a_migration_that_renames_a_vector_field_reads_its_elements_under_the_new_name`,
+`a_json_array_of_numbers_reads_as_written_beside_a_vector`, and through
+the engine seam `a_vector_put_before_a_later_state_reads_as_put`).
 
 ### The stored state carries no vector elements
 
@@ -20,7 +22,11 @@ A state the SQLite or PostgreSQL engine stores keeps a vector field's
 provenance and, in place of its elements, the position of the row of
 `vectors` that holds them. A read joins that row, at the head and as of
 any position, and answers the elements the write gave, bit for bit. A
-field that holds no vector names no row.
+field that holds no vector names no row. Only a field the type's
+declaration in force declares a vector is kept apart, a link type's by
+its relation's fields and a kept name's by its view's: a value of any
+other field stays in its state whatever its shape, a `json` array of
+numbers among them.
 The store's own names, `sys.` and `sys:` other than the link types,
 keep a vector in their state as before: an engine reads them, settings
 among them, by statements of its own that join no row, and they are few.
@@ -46,7 +52,10 @@ and elements, and writes one under the new name where it renames the
 field, ending the old name's row: the engine is handed a state, not the
 migration, so it shares a row by name and elements alone. A vector the
 vector index is handed with no state naming it has a row of its own
-(`since` -1), which a state that names the field replaces.
+(`since` -1), which a state that names the field replaces. A state put
+at a position before a later state of its record keeps its vectors in
+place and writes no row: the row at its position may be one a later
+state names, with other elements, and it stays as that state wrote it.
 
 ### Elements are doubles, or `f32`s where every one is exactly an `f32`
 

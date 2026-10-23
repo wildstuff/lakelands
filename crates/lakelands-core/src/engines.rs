@@ -2012,31 +2012,65 @@ pub fn vectors_in_place(ty: &TypeName) -> bool {
     own && !ty.as_str().starts_with(lakelands_api::key::LINK_PREFIX)
 }
 
+/// The fields a state of `ty` keeps apart ([`put_vectors`]): those declared
+/// as vectors by the declaration its records answer to, `decl_of` reading
+/// a type's at the head; a kept name's is its view's, a link type's its
+/// relation's fields. A value of any other field stays in the state,
+/// whatever its shape, and so does every vector of the store's own names.
+pub fn vector_fields(
+    ty: &TypeName,
+    mut decl_of: impl FnMut(&TypeName) -> Result<Option<TypeDecl>>,
+) -> Result<BTreeSet<FieldName>> {
+    let vectors = |fields: &[FieldDecl]| -> BTreeSet<FieldName> {
+        (fields.iter())
+            .filter(|f| f.ty.kind == StorageKind::Vector)
+            .map(|f| f.name.clone())
+            .collect()
+    };
+    if vectors_in_place(ty) {
+        return Ok(BTreeSet::new());
+    }
+    Ok(match crate::links::link_type_parts(ty) {
+        Some((t, name)) => (decl_of(&t)?.iter())
+            .flat_map(|d| d.relations.iter().filter(|r| r.name == name))
+            .flat_map(|r| vectors(&r.fields))
+            .collect(),
+        None => (decl_of(&kept_view(ty).unwrap_or_else(|| ty.clone()))?)
+            .map_or_else(BTreeSet::new, |d| vectors(&d.fields)),
+    })
+}
+
 /// What putting `r`'s state does to the vector rows of its record, `held`
 /// those in force before it (`docs/decisions/072-a-vector-is-stored-once.md`):
 /// each vector a row in force holds bit for bit, the state names; any
 /// other is written at the state's position, and so is every one of a
 /// state after a retirement. A row the state does not name ends at its
 /// position, and so does every row a retired state names, so a row in
-/// force is one of the head. Where a `later` state is kept already every
-/// vector is written anew, ending at once, and no row held changes. The
-/// store's own names (`sys.`, `sys:`), which engines read by statements of
-/// their own, keep their vectors in their states.
-pub fn put_vectors(r: &StoredRecord, held: Vec<VectorRow>, later: bool) -> VectorPut {
+/// force is one of the head. A state put where a `later` one is kept
+/// already keeps its vectors in place and changes no row: the row at its
+/// position may be one a later state names with other elements. Only the
+/// fields of `vectors` ([`vector_fields`]) are kept apart.
+pub fn put_vectors(
+    r: &StoredRecord,
+    held: Vec<VectorRow>,
+    later: bool,
+    vectors: &BTreeSet<FieldName>,
+) -> VectorPut {
+    if later {
+        return VectorPut {
+            held,
+            ..VectorPut::default()
+        };
+    }
     let at = r.position;
     let mut put = VectorPut {
-        ends: r.retired || later,
+        ends: r.retired,
         ..VectorPut::default()
     };
-    let mut was = BTreeMap::new();
-    for (f, since, e) in held {
-        match later {
-            true => put.held.push((f, since, e)),
-            false => drop(was.insert(f, (since, e))),
-        }
-    }
-    let own = vectors_in_place(&r.ty);
-    let kept = (r.fields.iter()).filter(|_| !own);
+    let mut was: BTreeMap<_, _> = (held.into_iter())
+        .map(|(f, since, e)| (f, (since, e)))
+        .collect();
+    let kept = (r.fields.iter()).filter(|(f, _)| vectors.contains(*f));
     for (f, e) in kept.filter_map(|(f, v)| Some((f, Elements::of(v)?))) {
         let since = match was.remove(f) {
             Some((since, h)) if h == e => {

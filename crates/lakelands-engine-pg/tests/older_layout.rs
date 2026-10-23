@@ -19,6 +19,8 @@ use std::sync::Arc;
 use lakelands_api::engine::OpenMode;
 use lakelands_api::error::Situation;
 use lakelands_api::ontology::StorageKind::{Decimal, Text};
+use lakelands_api::query::{Search, SearchMode};
+use lakelands_api::read::ReadAt;
 use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::fixture::{
@@ -138,9 +140,19 @@ async fn a_writers_open_rebuilds_a_projection_laid_out_between_the_two_changes()
         .unwrap();
     let elements = json!([0.1, -0.5, 3]);
     l.upsert("pin", "k", json!({"v": elements})).await.unwrap();
+    // The lake asks for the field's index: with pgvector it is built and
+    // marked, and the rebuilt projection keeps both.
+    l.set("vector_index.pin", json!(["v"])).await.unwrap();
     store.close().await.unwrap();
     let layout = format!("SELECT n FROM \"{schema}\".meta WHERE k = 'layout'");
     let wanted = tokio::task::block_in_place(|| one(&url, &layout));
+    let indexed = format!(
+        "SELECT (SELECT count(*) FROM \"{schema}\".meta WHERE k = 'vindex.pin.v') * 10 + \
+         (SELECT count(*) FROM pg_indexes WHERE schemaname = '{schema}' \
+          AND indexname LIKE 'vindex_%')"
+    );
+    let index = tokio::task::block_in_place(|| one(&url, &indexed));
+    assert_eq!(index, -1, "PLANT");
     // The in-between build's projection: the elements in the state, as
     // `f32`s in a head index, the mark the current one.
     let between = format!(
@@ -171,11 +183,31 @@ async fn a_writers_open_rebuilds_a_projection_laid_out_between_the_two_changes()
             .is_some_and(|w| w.contains(&format!("layout {}", wanted - 1))),
         "the writer's open says why it rebuilt: {why:?}"
     );
-    let pin = Lake::of(store.as_ref()).read("pin", "k").await.unwrap();
+    let l = Lake::of(store.as_ref());
+    let pin = l.read("pin", "k").await.unwrap();
     assert_eq!(
         pin.fields["v"], elements,
         "the rebuilt projection reads the elements"
     );
+    assert_eq!(
+        tokio::task::block_in_place(|| one(&url, &indexed)),
+        index,
+        "the rebuilt projection keeps the vector index the lake asks for, and its mark"
+    );
+    let asked = Search {
+        ty: "pin".into(),
+        mode: SearchMode::vector("v", vec![0.1, -0.5, 3.0]),
+        k: 10,
+        cursor: None,
+        filter: None,
+        with_meta: false,
+        at: ReadAt::default(),
+        rerank: None,
+    };
+    let hits = l.cat.search(&l.own, asked).await.unwrap().data.hits;
+    let keys: Vec<&str> = hits.iter().map(|h| h.record.key.0.as_str()).collect();
+    assert_eq!(keys, ["k"], "a vector search ranks the record");
+    drop(l);
     let inline =
         format!("SELECT count(*) FROM \"{schema}\".records WHERE state::jsonb -> 'fields' ? 'v'");
     let inline = tokio::task::block_in_place(|| one(&url, &inline));

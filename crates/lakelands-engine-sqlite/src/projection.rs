@@ -959,13 +959,15 @@ pub(crate) fn fts_term(token: &str) -> String {
 
 /// The types a transaction's records are indexed under, each as its
 /// records are: its declaration at the head, the fields its order index
-/// keeps, and those its exact-text index keeps.
+/// keeps, those its exact-text index keeps, and those its states keep
+/// apart ([`engines::vector_fields`]).
 pub(crate) type Kept = BTreeMap<TypeName, Indexed>;
 /// How one type's records are indexed: see [`Kept`].
 pub(crate) type Indexed = (
     Option<TypeDecl>,
     Vec<FieldName>,
     Option<BTreeSet<FieldName>>,
+    BTreeSet<FieldName>,
 );
 
 /// Put a record's state and, when it is the latest, its head indexes. Its
@@ -998,14 +1000,14 @@ pub(crate) fn put_record(conn: &Connection, kept: &mut Kept, r: &StoredRecord) -
         "SELECT 1 FROM records WHERE ty = ?1 AND key = ?2 AND since > ?3 LIMIT 1",
         params![r.ty.as_str(), r.key.as_str(), r.position.0 as i64],
     )?;
-    let apart = put_vectors(conn, r, later.is_some())?;
+    if !kept.contains_key(&r.ty) {
+        kept.insert(r.ty.clone(), indexed(conn, &r.ty)?);
+    }
+    let apart = put_vectors(conn, r, later.is_some(), &kept[&r.ty].3)?;
     let state = engines::record_state(r, &apart);
     let held = RECORDS.put(conn, &[&r.ty.as_str(), &r.key.as_str()], r.position, &state)?;
     if later.is_none() {
-        if !kept.contains_key(&r.ty) {
-            kept.insert(r.ty.clone(), indexed(conn, &r.ty)?);
-        }
-        let (decl, sorted, looked) = &kept[&r.ty];
+        let (decl, sorted, looked, _) = &kept[&r.ty];
         index_record(conn, (decl.as_ref(), sorted, looked.as_ref()), !held, r)?;
         // The setting's write rebuilds the index it asks for, so the index
         // describes the head from the next read on.
@@ -1020,13 +1022,14 @@ pub(crate) fn put_record(conn: &Connection, kept: &mut Kept, r: &StoredRecord) -
 }
 
 /// Write the vector rows of `r`'s state ([`engines::put_vectors`]), `later`
-/// where a later state of its record is kept, and answer the fields it
-/// keeps apart. A vector the index put alone for a field the state names
+/// where a later state of its record is kept, and answer the fields of
+/// `vectors` it keeps apart. A vector the index put alone for a field the state names
 /// goes.
 fn put_vectors(
     conn: &Connection,
     r: &StoredRecord,
     later: bool,
+    vectors: &BTreeSet<FieldName>,
 ) -> Result<BTreeMap<FieldName, Position>> {
     let (ty, key, at) = (r.ty.as_str(), r.key.as_str(), r.position.0 as i64);
     let mut stmt = (conn.prepare_cached(
@@ -1045,23 +1048,14 @@ fn put_vectors(
     let rows: Vec<_> = rows.and_then(Iterator::collect).map_err(sql)?;
     let (loose, held): (Vec<_>, Vec<_>) = rows.into_iter().partition(|r| r.1 < 0);
     let held = (held.into_iter()).map(|(f, since, e)| (f, Position(since as u64), e));
-    let put = engines::put_vectors(r, held.collect(), later);
+    let put = engines::put_vectors(r, held.collect(), later, vectors);
     let until = put.ends.then_some(at);
-    // Under a later state a row already at this position may be one the
-    // head names: it stays as it is.
-    let kept = match later {
-        true => "NOTHING",
-        false => {
-            "UPDATE SET until = excluded.until, single = excluded.single, data = excluded.data"
-        }
-    };
     for (f, e) in &put.written {
         run(
             conn,
-            &format!(
-                "INSERT INTO vectors (ty, key, field, since, until, single, data) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT DO {kept}"
-            ),
+            "INSERT INTO vectors (ty, key, field, since, until, single, data) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT DO UPDATE SET \
+             until = excluded.until, single = excluded.single, data = excluded.data",
             params![ty, key, f.as_str(), at, until, e.single, e.data],
         )?;
     }
@@ -1146,7 +1140,8 @@ fn indexed(conn: &Connection, ty: &TypeName) -> Result<Indexed> {
         Some(_) => Some(looked_fields(conn, ty)?),
         None => None,
     };
-    Ok((decl, sorted, looked))
+    let vectors = engines::vector_fields(ty, |t| type_at(conn, t, None))?;
+    Ok((decl, sorted, looked, vectors))
 }
 
 /// The fields of a declared type the exact-text index keeps ([`relook`]).
@@ -1235,7 +1230,7 @@ pub(crate) fn put_declaration(conn: &Connection, d: &Declared) -> Result<Option<
 /// at `at` or after was indexed under that declaration when it was put: a
 /// migration puts every record again, and nothing is left to do here.
 pub(crate) fn index_older(conn: &Connection, ty: &TypeName, at: Position) -> Result<()> {
-    let (head, sorted, looked) = indexed(conn, ty)?;
+    let (head, sorted, looked, _) = indexed(conn, ty)?;
     // A page of the type at a time; an ended key has no index rows.
     let mut after = String::new();
     loop {

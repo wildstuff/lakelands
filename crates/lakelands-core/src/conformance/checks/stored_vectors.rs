@@ -53,6 +53,11 @@ check!(
     "072, 027 and 001: a migration that renames a vector field reads each record's elements under the old name as of before it and under the new one from it on, bit for bit, by `get` and by `find`, and neither name reads the other's; a vector search of the new name ranks them by the one cosine; a rebuild answers the same"
 );
 
+check!(
+    VECTOR_JSON_IN_PLACE = a_json_array_of_numbers_reads_as_written_beside_a_vector,
+    "072 and 001: a `json` field holding an array of numbers, beside a vector field of the same record, reads by `get` and by `find`, at the head and as of every position a write ended at, the array written last, bit for bit in the log's number form: doubles that no `f32` holds, `f32`s and integers; only a field declared a vector is kept apart, so a rebuild answers the same"
+);
+
 /// Doubles that no `f32` holds.
 const DOUBLES: [f64; 3] = [0.1, 1.0 / 3.0, -std::f64::consts::E];
 /// Doubles that no `f32` holds, written later over [`DOUBLES`].
@@ -552,4 +557,30 @@ async fn a_migration_that_renames_a_vector_field_reads_its_elements_under_the_ne
         ranks(&l, "pin", "w", &live, what).await?;
     }
     Ok(())
+}
+
+async fn a_json_array_of_numbers_reads_as_written_beside_a_vector(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let doc = type_decl("doc", vec![vector("v", 3), field("j", StorageKind::Json)]);
+    l.declare(doc).await?;
+    let (doubles, singles, integral) = (json!(DOUBLES), widened(&SINGLES), json!([2, -3, 7]));
+    let at = |o: Outcome| Some(o.position());
+    let mut writes = Vec::new();
+    for (key, patch, left) in [
+        (
+            "a",
+            json!({"v": doubles, "j": doubles}),
+            Some(Some(&doubles)),
+        ),
+        ("b", json!({"j": singles}), Some(Some(&singles))),
+        ("a", json!({"j": integral}), Some(Some(&integral))),
+        ("b", json!({"v": singles}), None),
+        ("a", json!({"j": singles}), Some(Some(&singles))),
+    ] {
+        writes.push((at(l.upsert("doc", key, patch).await?), key, left));
+    }
+    let want = grid(&writes);
+    holds(&l, "doc", "j", &want, "written").await?;
+    store.rebuild().await.must("rebuilding the lake")?;
+    holds(&l, "doc", "j", &want, "after a rebuild").await
 }

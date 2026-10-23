@@ -185,6 +185,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     projection::VIEW_KEEPS_POSITION,
     projection::SAME_POSITION,
     projection::PUT_BEFORE_A_LATER_STATE,
+    projection::VECTOR_PUT_BEFORE_A_LATER_STATE,
     projection::PUTS_IN_ONE_TRANSACTION,
     projection::CLEAR,
     projection::OTHER_LAYOUT,
