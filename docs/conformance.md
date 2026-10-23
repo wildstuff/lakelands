@@ -1351,7 +1351,7 @@ belongs in the suite, not beside one engine:
 
 **sized**
 
-- `a_segment_past_its_bound_is_sealed_where_the_engine_weighs_it` — 074: on an engine that reports its active segment's bytes, a lake opened again with `limits.seal_after_bytes` below what the segment holds seals it at the writer's open, and again after the append that takes the next past it, each seal a checkpoint listing the segments sealed so far; the lake verifies to its head, and opened again reads across the seals; on an engine that reports none the same lake holds no checkpoint
+- `a_segment_past_its_bound_is_sealed_where_the_engine_weighs_it` — 074: on an engine that reports its active segment's bytes, a lake opened again with `limits.seal_after_bytes` below what the segment holds seals it at the writer's open, and again after the append that takes the next past it, each seal a checkpoint listing the segments sealed so far; the lake verifies to its head, opened again reads its log and records across the seals, rebuilds across them, and its export imports, folding from genesis as a catch-up does, and verifies to the same head; on an engine that reports none the same lake holds no checkpoint
 
 **grid**
 

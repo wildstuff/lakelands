@@ -133,3 +133,63 @@ async fn a_read_only_open_and_an_import_seal_nothing_and_the_next_writer_does() 
     }
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// An export of the format before, past the bound: the writer's open that
+/// upgrades it after the import seals nothing either.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_export_s_upgrade_at_import_seals_nothing() {
+    use lakelands_api::engine::CanonicalEvent;
+    use lakelands_api::event::{Digest, OLDEST_LOG_FORMAT as OLD};
+    use lakelands_api::{Position, Timestamp};
+    use lakelands_core::canonical;
+    use lakelands_store::log::{Draft, seal};
+    // The event in format `v`, its hash taken again.
+    let in_format = |stored: CanonicalEvent, v: u32| {
+        let mut event: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
+        event["v"] = json!(v);
+        event.as_object_mut().unwrap().remove("hash");
+        let hash = canonical::sha256_hex(&event);
+        event["hash"] = json!(hash);
+        CanonicalEvent {
+            hash: Digest(hash),
+            bytes: canonical::to_vec(&event),
+            ..stored
+        }
+    };
+    let base = scratch("older-import");
+    let (out, imported) = (base.join("export"), base.join("imported"));
+    let id = &"ledger".into();
+    let made = Draft::system(Timestamp(1), EventBody::LakeCreated { format: OLD });
+    let (_, made) = seal(id, Position(0), &Digest::zero(), 0, made);
+    let made = in_format(made, OLD);
+    // A holder past 1 MiB takes the segment past the bound.
+    let taken = Draft::system(
+        Timestamp(2),
+        EventBody::LeaseTaken {
+            fence: 1,
+            holder: "h".repeat(1100 << 10),
+        },
+    );
+    let (_, taken) = seal(id, Position(1), &made.hash, 1, taken);
+    let taken = in_format(taken, OLD);
+    std::fs::create_dir_all(out.join("log")).unwrap();
+    let mut file = Vec::new();
+    for e in [made, taken] {
+        file.extend_from_slice(&e.bytes);
+        file.push(b'\n');
+    }
+    std::fs::write(out.join("log").join(format!("{:020}.jsonl", 0)), file).unwrap();
+    let imports = lakelands_store::import(at(&imported, 1), seams(), out);
+    imports.await.unwrap();
+    let read = lakelands_store::open(at(&imported, 0), seams(), OpenMode::Read)
+        .await
+        .unwrap();
+    let log = log_events(read.as_ref()).await.unwrap();
+    let upgraded = log
+        .iter()
+        .filter(|e| matches!(e.body, EventBody::LakeUpgraded { .. }));
+    assert_eq!(upgraded.count(), 1, "the import upgraded the lake");
+    assert_eq!(checkpoints(read.as_ref()).await, Vec::<u64>::new());
+    read.close().await.unwrap();
+    let _ = std::fs::remove_dir_all(&base);
+}
