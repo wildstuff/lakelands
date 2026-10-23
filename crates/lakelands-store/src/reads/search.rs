@@ -40,12 +40,11 @@ impl<'a> Reader<'a> {
         };
         let ranks = self.ranks(&decl, vector_fields.iter().copied().chain(texts))?;
         // A vector ranking reads a vector field, and a hybrid search without
-        // a vector reads one a model fills: one that cannot use its ranking
-        // is refused here, before any embedding is asked for (lakelands#743).
-        // A field the head does not show its reader holds no vectors there,
-        // and no model fills it.
-        // A read that ranks nothing, the answer of a second stage, judges no
-        // ranking: the read of its window did (067).
+        // a vector reads one a model fills: one that cannot is refused
+        // before any embedding is asked for (lakelands#743). A field the
+        // head does not show its reader holds no vectors, and no model fills
+        // it. A read that ranks nothing, a second stage's, judges none: the
+        // read of its window did (067).
         let declared = |n: &FieldName| ranks.fields.get(n);
         let ranked = self.at_head || self.head.is_some();
         for field in &vector_fields {
@@ -203,10 +202,8 @@ impl<'a> Reader<'a> {
         let (decl, text_fields, filter, ranks) = self.searched(s)?;
         let vectors = s.mode.vectors();
         let vector_fields: Vec<&FieldName> = vectors.iter().map(|v| v.0).collect();
-        // A search that names no fields reads only the searchable fields
-        // the principal reads (024); none hidden or masked, it reads them all.
-        // Before the head, each is read under its name there, where the
-        // head declares it searchable.
+        // A search that names no fields reads the searchable fields the
+        // principal reads (024), each before the head under its name there.
         let hidden = (decl.fields.iter())
             .any(|f| f.searchable && !rights::field_access(self.who, &decl, f).reads());
         let named = text_fields.map(|n| n.iter().collect::<Vec<_>>());
@@ -218,13 +215,11 @@ impl<'a> Reader<'a> {
         let known: Option<Vec<FieldName>> = (hidden || text_fields.is_some() || !self.at_head)
             .then(|| searched().map(|(_, f)| f.name.clone()).collect());
         let text_fields = known.as_deref();
-        // A ranking the search does not weigh takes its type's setting, as
-        // the read finds it at its position (lakelands#561); a field the
-        // type no longer holds is never named by a search, so weighs 1.
-        // A match of the text weighs what the search gives the field it is
-        // in, else the setting, a field searched under its name at the
-        // head; a field not searched brings no weight (lakelands#1230,
-        // lakelands#1237).
+        // A ranking the search does not weigh takes its type's setting at
+        // the read's position (lakelands#561). A text match weighs what the
+        // search gives its field, else the setting, under the field's name
+        // at the head; a field not searched brings no weight
+        // (lakelands#1230, lakelands#1237).
         let key = format!("{}{}", lakelands_api::seam::SEARCH_WEIGHTS_SETTING, s.ty);
         let set = self.shape.settings.get(&key);
         let (field_weights, text_default) = lakelands_api::seam::search_weights(set);
@@ -244,13 +239,11 @@ impl<'a> Reader<'a> {
             None => 0,
         };
         let k = s.k.max(1) as usize;
-        // One more than the page, to know whether a next page exists; for
-        // a second stage, one more than its window, to know whether the
-        // first stage holds more.
+        // One more than the page (or the second stage's window), to know
+        // whether more exists.
         let want = top.map_or(offset + k + 1, |t| t + 1);
-        // A search without a query vector ranks its text alone; one over
-        // several vector fields answers an index's set when any of them is
-        // asked for an index.
+        // Without a query vector a search ranks its text alone; over several
+        // vector fields it answers an index's set when any is indexed.
         let (mut by_text, mut indexed) = (true, false);
         if !matches!(&s.mode, SearchMode::Hybrid { vector: None, .. }) {
             for field in &vector_fields {
@@ -273,16 +266,12 @@ impl<'a> Reader<'a> {
             (SearchMode::Vector { .. }, false) => "vector",
         }
         .to_owned();
-        // The rankings a search reads, each with its weight, in the order
-        // they are summed (046): its text, then each vector field; a search
-        // of one ranking fuses nothing, and its axis is listed without a
-        // count, since it reads no further than its page (lakelands#560).
-        // The engine is asked for all of them at once, under the head's
-        // names, and before the head the text is ranked as the head holds
-        // it, as the vectors are; a ranking over no field the head shows
-        // the reader has no candidate, and is not asked.
+        // The rankings, each with its weight, in the order they are summed
+        // (046): the text, then each vector field. A search of one ranking
+        // fuses nothing and lists its axis without a count (lakelands#560).
+        // The engine is asked for all at once under the head's names; a
+        // ranking over no field the head shows the reader is not asked.
         let (mut asked, mut lists, mut axes) = (Rankings::default(), Vec::new(), Vec::new());
-        // The model a caller named for its own vector, as it named it.
         let models = s.mode.models();
         let named = |f: &FieldName| {
             let m = models.iter().find(|(n, _)| *n == f);
@@ -318,12 +307,10 @@ impl<'a> Reader<'a> {
             axes.push(axis(Some(field)));
         }
         // Candidates are pulled in growing batches until the page and one
-        // more are visible, or the engine has no more: a filter, `valid_at`
-        // or the grants never shorten a page silently. A list read is a
-        // scan of its index whatever it is asked for, so a fused search's
-        // first pull asks for the whole window at once. Each pull stands
-        // alone: a page is judged from one pull, at the position it was read
-        // at, and a read made again for a pull goes on from its depth.
+        // more are visible or the engine has no more, so a filter, `valid_at`
+        // or the grants never shorten a page silently. A list read scans its
+        // index whatever it is asked for, so a fused search's first pull asks
+        // for the whole window. A page is judged from one pull.
         let fuses = lists.len() > 1;
         let first = if fuses {
             self.lake.limits.max_limit as usize
@@ -441,9 +428,8 @@ impl<'a> Reader<'a> {
             && filter.is_none()
             && !self.timed(decl);
         {
-            // Each list's visible candidates to the window, and what a
-            // record it has not ranked yet could still gain from it:
-            // nothing once the list is whole or its window full.
+            // Each list's visible candidates to the window, and what an unranked
+            // record could still gain from it: nothing once whole or full.
             let (mut keyed, mut gain, mut counted) = (Vec::new(), Vec::new(), true);
             for (weight, candidates) in lists {
                 let whole = candidates.len() < pull as usize;
@@ -527,7 +513,6 @@ impl<'a> Reader<'a> {
         Ok(core_engines::indexed_fields(decl, setting).contains(field))
     }
 
-    /// The ranked candidates this read may see, as hits, in rank order.
     pub(super) fn visible_hits(
         &self,
         decl: &TypeDecl,
@@ -535,7 +520,6 @@ impl<'a> Reader<'a> {
         ranked: Vec<(RecordKey, f64)>,
         with_meta: bool,
     ) -> Result<Vec<Hit>> {
-        // One read for the batch, not one per candidate.
         let keys: Vec<RecordKey> = ranked.iter().map(|(k, _)| k.clone()).collect();
         let rows = self.at_read(&decl.name, self.view.get_many(&decl.name, &keys)?);
         let (ends, admit) = (
@@ -580,7 +564,6 @@ impl<'a> Reader<'a> {
             return Ok(None);
         };
         let (head, who, since, shape) = (&h.view, &h.who, &h.since, &h.shape);
-        // Each candidate under the name and the key it bears at the head.
         let name = since.name(&decl.name);
         let moved: Vec<RecordKey> = keys.iter().map(|k| since.key(&name, k)).collect();
         let sees = Sight::held(who, shape.as_ref());
@@ -589,7 +572,6 @@ impl<'a> Reader<'a> {
             return Ok(Some(BTreeSet::new()));
         };
         let rows = head.get_many(&name, &moved)?;
-        // A link's ends are judged at the head too, under the same grant.
         let fields: Vec<_> = rows.iter().map(|r| &r.fields).collect();
         let ends = sees.ends(decl, &fields, &mut |end, keys| head.get_many(end, keys))?;
         let admitted: BTreeSet<RecordKey> = (rows.into_iter().zip(ends))

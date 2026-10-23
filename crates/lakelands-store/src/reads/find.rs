@@ -44,7 +44,6 @@ impl<'a> Reader<'a> {
         (!sorted.contains(&f.name) && !held).then(|| f.name.clone())
     }
 
-    /// [`Self::find`]'s answer.
     fn find_ordered(&self, ty: &TypeName, find: &Find) -> Result<Found> {
         let decl = self.named_type(ty)?.clone();
         let params = self.bind_params(&decl, &find.params)?;

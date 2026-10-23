@@ -6,10 +6,9 @@ use super::*;
 /// The edges of a derived relation around each of some records of one
 /// type, one list per key, resolved from the view by identity of the
 /// matched values: out to the target's records that hold the owner's
-/// values, in from the owners that hold the target's. The records are
-/// read a page at a time, and a page's matches are one scan a relation
-/// side, paged by [`MATCHED`] records. Nothing is stored; the edges are as the view's position has
-/// the values (`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`).
+/// values, in from the owners that hold the target's. A relation side is
+/// one scan, paged by [`MATCHED`] records. Nothing is stored
+/// (`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`).
 fn derived_edges(
     r: &Reader<'_>,
     ty: &TypeName,
@@ -46,9 +45,8 @@ fn derived_edges(
         .into_iter()
         .map(|near| (near.key.clone(), near))
         .collect();
-    // An owned relation leaves `near` for its target; a targeted one
-    // reaches it. Each with its condition, read once for the hop: one that
-    // cannot be read connects nothing.
+    // An owned relation leaves `near`; a targeted one reaches it. Each
+    // has its condition read once; one that cannot be read connects nothing.
     let filter = |x: &RelationDecl| {
         let c = x.derived.as_ref().and_then(|d| d.filter.as_ref());
         c.map(|c| condition(c, Eval::Record, &[]).ok())
@@ -59,9 +57,8 @@ fn derived_edges(
         .map(|(other, x, out)| (other, x, out, filter(x)))
         .filter(|w| !matches!(w.3, Some(None)))
         .collect();
-    // The values a near record holds for one side of a match, and the
-    // pairs a scan of the other side must hold: none when a value is
-    // missing, for null never matches.
+    // The values a near record holds for one side of a match: none when
+    // one is missing, for null never matches.
     let equal = |near: &StoredRecord, pairs: &[MatchPair], out: bool| {
         let pair = |p: &MatchPair| {
             let (here, there) = if out {
@@ -77,9 +74,7 @@ fn derived_edges(
             .map(pair)
             .collect::<Option<Vec<(FieldName, Value)>>>()
     };
-    // One scan a relation side for the whole batch, with every tuple its
-    // near records hold (lakelands#971); each near record is handed the
-    // matches that hold its own.
+    // One scan a relation side for the whole batch (lakelands#971).
     for (other, x, out, filter) in &walked {
         let (other, x, out) = (*other, *x, *out);
         let pairs = &x.derived.as_ref().expect("derived").pairs;
@@ -87,15 +82,13 @@ fn derived_edges(
             .iter()
             .map(|k| nears.get(k).and_then(|n| equal(n, pairs, out)))
             .collect();
-        // A tuple by its canonical bytes: two are the same exactly where
-        // their values are identical.
+        // Tuples are the same exactly where their canonical bytes are.
         let id = |t: &Vec<(FieldName, Value)>| canonical::of(t);
         let asked: BTreeMap<Vec<u8>, &Vec<(FieldName, Value)>> =
             tuples.iter().flatten().map(|t| (id(t), t)).collect();
         let asked: Vec<Vec<(FieldName, Value)>> = asked.into_values().cloned().collect();
-        // The matches a page at a time, in key order, at most `MATCHED`
-        // records held: a tuple's matches may span pages, and each start's
-        // edges still come in key order.
+        // A page at a time, in key order: a tuple's matches may span pages,
+        // and each start's edges still come in key order.
         let mut after = None;
         loop {
             let found;
@@ -192,9 +185,8 @@ pub(crate) fn answered(
     answered_of(view, sees, ty, &[key], 1)
 }
 
-/// Whether [`answered`] holds of `need` or more of `keys`. The records are
-/// read a batch at a time, and a link's ends once for the batch, until
-/// enough are answered.
+/// Whether [`answered`] holds of `need` or more of `keys`, read a batch at
+/// a time until enough are.
 pub(crate) fn answered_of(
     view: &dyn ProjectionView,
     sees: &Sight,
@@ -212,7 +204,6 @@ pub(crate) fn answered_of(
     for page in keys.chunks(COUNT_PAGE) {
         let keys: Vec<RecordKey> = page.iter().map(|k| (*k).clone()).collect();
         let rows = view.get_many(ty, &keys)?;
-        // A page whose keys hold no record asks no end's type.
         let ends = match rows.is_empty() {
             true => Vec::new(),
             false => {
@@ -238,7 +229,6 @@ pub(crate) fn answered_of(
 /// may see.
 pub(super) struct Visible<'r, 'a> {
     pub(super) reader: &'r Reader<'a>,
-    /// What each of the pattern's steps walks, by the step's index.
     pub(super) reach: &'r [Reach],
     /// For rows, a reach and a walk a step's `where` reads, the records the
     /// walk has read, each read once for the walk, a step's `where` and a
@@ -247,7 +237,6 @@ pub(super) struct Visible<'r, 'a> {
 }
 
 impl Visible<'_, '_> {
-    /// The record at `node` as this read answers it, read once.
     pub(super) fn record(&self, node: &graph::Node) -> Result<Option<StoredRecord>> {
         if let Some(r) = self
             .records
@@ -315,16 +304,13 @@ impl EdgeSource for Visible<'_, '_> {
         step: Option<usize>,
     ) -> Result<Vec<Vec<Edge>>> {
         let r = self.reader;
-        // Every relation, where the hop is no step's.
         const ALL: &Reach = &Reach {
             owner: None,
             far: None,
         };
         let reach = step.and_then(|i| self.reach.get(i)).unwrap_or(ALL);
-        // A hop past the first reaches types the step's own probe did not
-        // look at.
+        // A hop past the first reaches types the step's probe did not.
         r.probe_derived(ty, relation, walk, reach)?;
-        // A relation the step does not walk around `ty` is not read either.
         let mut shown = r.shown_relations(Some(ty));
         shown.retain(|(t, x)| reach.walks(ty, walk, t, x));
         let mut lists = ProjectionView::edges(r.view.as_ref(), ty, keys, relation, walk)?;
@@ -342,10 +328,8 @@ impl EdgeSource for Visible<'_, '_> {
         let read =
             |e: &Edge| (shown.iter()).any(|(t, x)| t.name == e.from.0 && x.name == e.relation);
         lists.iter_mut().for_each(|list| list.retain(read));
-        // A link's edge comes from its own record: a restricted link is
-        // walked only with the `restricted` grant, and its fields only as
-        // far as the principal may read the link type's fields. The link
-        // records are read a link type at a time.
+        // A link's edge comes from its own record: walked only with the
+        // `restricted` grant if restricted, its fields as far as readable.
         let carried = |e: &Edge| {
             r.shape
                 .ontology

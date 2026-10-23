@@ -15,34 +15,28 @@
 //! **Order and pages.** Records sort by the `order_by` keys, a record
 //! without a value for a key after every record with one in either
 //! direction, and by key, ascending, to break ties. A cursor carries the
-//! position its first page was read at and the sort values and key of the
-//! last row, so the next page starts strictly after it and the page set is
-//! stable while the lake is written.
+//! position of its first page and the last row's sort values and key, so
+//! the page set is stable while the lake is written.
 //!
-//! **A page reads a page.** `find` over a stored type asks the engine for
-//! the page in that order, `order_by`, `after` and `limit + 1` pushed
-//! down, and never for the type. A filter the engine cannot apply is
-//! applied here over engine pages read one after another, each continuing
-//! after the last row read, until the page and one row more are kept or
-//! the type is out. So a page's cost is the rows read to fill it: a
-//! selective filter the store evaluates over a large type is bounded in
-//! memory and linear in time, by design. A page ordered by the key alone
-//! reads about `limit` rows in the engine too; one ordered by a field is
-//! sorted by the engine over the type at the position, for that answer
-//! only, and since each such engine page sorts the type again, the store
-//! asks for twice as many rows each time it reads on
-//! (`docs/seams.md`, the ceiling of `find`).
+//! **A page reads a page.** `find` over a stored type pushes the order,
+//! `after` and `limit + 1` down to the engine, and never asks for the
+//! type. A filter the engine cannot apply is applied here over engine
+//! pages read one after another until the page and one row more are kept
+//! or the type is out: a page costs the rows read to fill it, bounded in
+//! memory and linear in time. A page ordered by a field is sorted by the
+//! engine over the type for that answer only, so the store asks for twice
+//! as many rows each time it reads on (`docs/seams.md`, the ceiling of
+//! `find`).
 //!
 //! **Views** are computed on read: the source's records at the same
 //! position, filtered by the view's `where`, grouped by its `group_by`
 //! fields (whose values form the view record's key, in declared order, by
 //! the one key rule of `docs/log-format.md` §2.3) and measured. A group
 //! with no member has no record, except that a view without `group_by` is
-//! always one record, keyed [`lakelands_api::key::UNGROUPED`], whatever
-//! its `where` keeps. A view the setting `view_kept.<type>` asks for is
-//! kept by the fold and read from its kept records where they are exactly
-//! what the read would compute (049). A walk's step reads a view so too,
-//! one with parameters only where the start bound them.
+//! always one record, keyed [`lakelands_api::key::UNGROUPED`]. A view the
+//! setting `view_kept.<type>` asks for is read from its kept records where
+//! they are exactly what the read would compute (049); a walk's step reads
+//! a view so too, one with parameters only where the start bound them.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::cmp::Ordering;
@@ -85,7 +79,7 @@ use crate::lake::{Lake, Shape};
 use crate::ontology::Ontology;
 
 /// A sight an entry of the listing is judged under beside the one in
-/// force, and the lake it is of ([`Reader::entry`]).
+/// force, and its lake ([`Reader::entry`]).
 type Under<'s> = Option<(&'s Sight<'s>, &'s Ontology)>;
 
 /// Everything one read sees.
@@ -160,9 +154,8 @@ pub struct Reader<'a> {
 }
 
 /// What a read holds of the declarations' past (lakelands#1064): those in
-/// force at its position, as the engine holds them, and every state
-/// replaced after `from` and by its position, read a range at a time as
-/// entries further back ask; and the past it last built.
+/// force at its position, every state replaced after `from`, read a range
+/// at a time as entries further back ask, and the past it last built.
 #[derive(Default)]
 struct Past {
     /// In force at the read's position, once asked.
@@ -197,16 +190,14 @@ pub use stage::{Staged, Window};
 /// shape, the reader with its grants followed there, and where each record
 /// of the read's position stands there. The read's holds are read from
 /// this view too ([`HeldNow`]): a re-key landing between two views of the
-/// head would be in one and not in the other's moves, and a held record
-/// would be judged by another's hold.
+/// head would be in one and not in the other's moves.
 ///
-/// The indexes are not a view: the engine reads the text and the vectors
-/// as they stand when it is asked, and says the position they stood at
-/// ([`Pulled`]). A search's head is that position, at the head and as of
-/// an earlier one alike. A head taken before the rankings were read would
-/// not know a write that landed in between: a re-key's moves, so that a
-/// visible record bore a held record's score, or a hold, so that a record
-/// was ranked by a text its reader may not read (lakelands#826).
+/// The indexes are not a view: the engine reads them as they stand when
+/// asked, and says the position they stood at ([`Pulled`]). A search's
+/// head is that position. A head taken before the rankings were read would
+/// not know a write that landed in between, so a visible record could bear
+/// a held record's score, or be ranked by a text its reader may not read
+/// (lakelands#826).
 pub struct Head<'a> {
     /// The projection at the head.
     view: Rc<dyn ProjectionView + 'a>,
@@ -263,8 +254,8 @@ impl Pulled {
 /// read again for (`Doors::read_to`).
 pub type Judged<T> = std::result::Result<T, Pulled>;
 
-/// A view's parameters as one read binds them: as given, in canonical
-/// form, and as the literals `param()` is replaced by.
+/// A view's parameters as one read binds them: canonical, and as the
+/// literals `param()` becomes.
 type Bound = (Params, BTreeMap<String, Literal>);
 
 /// What a view reads of one source, once its reader is found to read it:
@@ -431,7 +422,7 @@ fn projection_name(p: &Projection) -> String {
         Projection::Components => "components",
         Projection::Reach => "reach",
     }
-    .to_owned()
+    .into()
 }
 
 /// A cursor's state, when it was handed out for this door, this type and
@@ -716,10 +707,9 @@ impl<'a> Reader<'a> {
     }
 
     /// Records of `ty` as an engine holds them, as this read answers them:
-    /// each field computed at the read computed over the record as stored,
-    /// with this read's clock, the one a `where` reads; a setting as its
-    /// reader is told it, none it is not told ([`Sight::told`]), so a
-    /// `where`, an order and an aggregate read what it is told.
+    /// fields computed at the read, with this read's clock; a setting as
+    /// its reader is told it ([`Sight::told`]), so a `where`, an order and
+    /// an aggregate read what it is told.
     fn at_read(&self, ty: &TypeName, mut rows: Vec<StoredRecord>) -> Vec<StoredRecord> {
         if self.sight.narrows(ty) {
             let told = |r: StoredRecord| match self.sight.told(&r)? {
@@ -771,9 +761,8 @@ impl<'a> Reader<'a> {
 
     /// The records of `ty` whose fields hold every value of one of the
     /// tuples `any`, as [`Self::get_many`] reads them, and the key the
-    /// next page reads after where more follow: of a type that is not a
-    /// view, a page of at most [`MATCHED`] in key order after `after`; a
-    /// view's all at once.
+    /// next page reads after: a page of at most [`MATCHED`] in key order
+    /// after `after`; a view's all at once.
     fn matching(
         &self,
         ty: &TypeName,
@@ -1097,9 +1086,8 @@ impl<'a> Reader<'a> {
     }
 
     /// Whether the principal may see a stored record at this read, before
-    /// masking: live, restricted only with the grant, admitted by its
-    /// `only`, a setting it is told ([`Sight::told`]), valid at `valid_at`
-    /// when asked. A link record's ends are judged a page at a time
+    /// masking: live, admitted by its `only`, told ([`Sight::told`]), valid
+    /// at `valid_at`. A link's ends are judged a page at a time
     /// ([`Self::admitted_ends`]).
     fn live(&self, decl: &TypeDecl, r: &StoredRecord) -> bool {
         self.live_by(decl, &self.sight.admit(&decl.name), r)
@@ -1175,11 +1163,10 @@ impl<'a> Reader<'a> {
     }
 
     /// A read's condition with the filter of each set it names in the
-    /// name's place, as the ontology read holds it. A set of a type its
-    /// reader is not shown, or whose filter, with the sets it names, reads
-    /// a field its reader is kept from, or across an edge what is held from
-    /// it (055, extended), is, to that reader, a set that is not declared
-    /// (024): the refusal names nothing of the type or field.
+    /// name's place. A set of a type its reader is not shown, or whose
+    /// filter reads a field its reader is kept from, or across an edge what
+    /// is held from it (055, extended), is to that reader a set not
+    /// declared (024): the refusal names nothing of the type or field.
     /// Over a view's records, which carry no provenance, a condition that
     /// reads one is refused (028, extended).
     fn named_sets(

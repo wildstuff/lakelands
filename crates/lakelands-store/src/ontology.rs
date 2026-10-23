@@ -85,7 +85,6 @@ impl ToolNames {
         self.judge(name);
     }
 
-    /// Whether `name` is a problem: empty, too long, or made twice.
     fn judge(&mut self, name: &str) {
         let made = self.names.get(name).map_or(0, Vec::len);
         let bad = made > 1 || made == 1 && (name.is_empty() || name.len() > MAX_TOOL_NAME);
@@ -95,7 +94,6 @@ impl ToolNames {
         };
     }
 
-    /// The verb `verb` out of force: the name it made gives way.
     fn take_verb(&mut self, verb: &VerbName) {
         let name = tools::tool_base(verb.as_str());
         if let Some(held) = self.names.get_mut(&name) {
@@ -107,7 +105,6 @@ impl ToolNames {
         self.judge(&name);
     }
 
-    /// The type `ty` out of force: the names it made give way.
     fn take_type(&mut self, ty: &TypeName) {
         let of = |s: &NameSource| match s {
             NameSource::Type { ty: t } | NameSource::Link { ty: t, .. } => t == ty,
@@ -124,7 +121,6 @@ impl ToolNames {
         }
     }
 
-    /// `t` in force: the names it made give way to those it makes.
     fn put_type(&mut self, t: &TypeDecl) {
         let of = |s: &NameSource| match s {
             NameSource::Type { ty } | NameSource::Link { ty, .. } => ty == &t.name,
@@ -210,7 +206,7 @@ impl Ontology {
         self
     }
 
-    /// The tool names it keeps, if it is the writer's or made from it.
+    /// The tool names it keeps, if the writer's.
     pub fn tool_names(&self) -> Option<&ToolNames> {
         self.names.as_deref()
     }
@@ -225,7 +221,6 @@ impl Ontology {
     /// The ontology a set of declarations in force makes.
     pub fn from_declared(declared: &[Declared]) -> Ontology {
         let mut o = Ontology::default();
-        // The functions first, so that each type is completed once.
         let function = |d: &&Declared| matches!(d.declaration, Declaration::Function(_));
         let rest = declared.iter().filter(|d| !function(d));
         for d in declared.iter().filter(function).chain(rest) {
@@ -239,7 +234,7 @@ impl Ontology {
         o
     }
 
-    /// Put one declaration in force, replacing an earlier version.
+    /// Put one declaration in force.
     pub fn put(&mut self, declaration: Declaration, version: u32, schema_hash: Option<String>) {
         self.put_at(declaration, version, schema_hash, Position::GENESIS)
     }
@@ -324,13 +319,11 @@ impl Ontology {
         }
     }
 
-    /// A shape with every computed field's `depends_on` holding each field
-    /// it is computed from: what its expression reads, or its function's
-    /// inputs. A field is read no further than what it depends on, so a
-    /// computed field must list what it hands out, whether or not its
-    /// declaration did (024, extended). An expression whose reads cannot
-    /// be told reads every other field beside it, of its type or of its
-    /// relation: such a field is closed, never open.
+    /// Completes every computed field's `depends_on` with what it is
+    /// computed from, its expression's reads or its function's inputs: a
+    /// field is read no further than what it depends on (024, extended).
+    /// An expression whose reads cannot be told reads every other field
+    /// beside it: such a field is closed, never open.
     pub fn complete(&self, t: &mut TypeDecl) {
         let links = t.relations.iter_mut().map(|r| &mut r.fields);
         for fields in std::iter::once(&mut t.fields).chain(links) {
@@ -350,11 +343,10 @@ impl Ontology {
         }
     }
 
-    /// The entries a recomputation of `types` reads, and nothing else:
-    /// theirs, and those of the functions and the value types their fields
-    /// name, each shared with this ontology as it stands now. A name this
-    /// ontology does not hold is one the answer does not hold: a field
-    /// whose function is not declared yet is not computed, here as there.
+    /// The entries a recomputation of `types` reads, shared with this
+    /// ontology: theirs and those of the functions and value types their
+    /// fields name. A name not held here is not held there: a field whose
+    /// function is not declared yet is not computed, here as there.
     pub fn computing(&self, types: &[TypeName]) -> Ontology {
         let mut o = Ontology::default();
         for (name, t) in types.iter().filter_map(|n| self.types.get_key_value(n)) {
@@ -404,7 +396,7 @@ impl Ontology {
             })
     }
 
-    /// The value types, as a list.
+    /// The value types.
     pub fn value_type_list(&self) -> Vec<ValueTypeDecl> {
         self.value_types.values().map(|e| e.decl.clone()).collect()
     }
