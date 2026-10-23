@@ -52,6 +52,10 @@ on!(
     "faulty"
 );
 on!(a_panicked_batch_answers_every_job_stopped, "panicked");
+on!(
+    a_job_refused_after_staging_leaves_its_batch_as_it_found_it,
+    "staged"
+);
 on!(a_batch_that_panicked_once_durable_is_caught_up, "durable");
 on!(an_ingest_window_closes_a_batch, "ingest");
 on!(a_soak_replays_serially, "soak");

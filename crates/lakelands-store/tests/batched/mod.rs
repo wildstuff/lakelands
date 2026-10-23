@@ -19,19 +19,21 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use lakelands_api::engine::{
-    CanonicalEvent, EngineOpener, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
-    Ranked, Rankings, VectorIndex,
+    CanonicalEvent, Chosen, Declared, EngineOpener, LakeEngine, Lease, Matched, OpenMode,
+    ProjectionStore, ProjectionView, Ranked, Rankings, Scan, VectorIndex,
 };
 use lakelands_api::error::Situation;
-use lakelands_api::event::{Digest, Event, EventBody, SegmentDigest};
+use lakelands_api::event::{Digest, Event, EventBody, EventId, SegmentDigest};
 use lakelands_api::principal::TypeGrants;
+use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::SourceRecord;
+use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{FeedFilter, Seams};
-use lakelands_api::write::{Declaration, Outcome};
+use lakelands_api::write::{Declaration, Outcome, Proposal, ProposalFilter};
 use lakelands_api::{
     Access, Error, FieldName, Grants, IdempotencyKey, LakeId, LakeStore, Location, Patch, Position,
-    Principal, PrincipalKind, RecordKey, Result, SourceId, Timestamp, TypeName, Version,
-    WriteContext, WriteOpts,
+    Principal, PrincipalKind, RecordKey, RelationName, Result, SourceId, Timestamp, TypeName,
+    Version, WriteContext, WriteOpts,
 };
 use lakelands_store::batch::{self, Asked, Batches, Write};
 use serde_json::{Value, json};
@@ -98,13 +100,15 @@ fn kin(lake: &str, id: &str) -> Principal {
 
 /// What an engine is to do: fail or panic at the next so many appends,
 /// panic after the next so many made their events durable, fail the next
-/// so many reads of its tip; and how many appends it made.
+/// so many reads of its tip, and of proposals; and how many appends it
+/// made.
 #[derive(Default)]
 pub struct Faults {
     pub fail: AtomicUsize,
     pub panic: AtomicUsize,
     pub panic_after: AtomicUsize,
     pub tip: AtomicUsize,
+    pub proposals: AtomicUsize,
     pub appends: AtomicUsize,
 }
 
@@ -686,7 +690,7 @@ impl LakeEngine for FaultyEngine {
         self.0.projection()
     }
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
-        self.0.view(as_of)
+        Ok(Box::new(FaultyView(self.0.view(as_of)?, &self.1)))
     }
     fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked> {
         self.0.ranked(ty, asked, k)
@@ -781,6 +785,129 @@ pub async fn a_failed_append_answers_every_job_and_a_rerun_is_serial(place: &Pla
     o.store.close().await.expect("the lake closes");
     let alone = written(place, (name, 1, None), &mixed(name), How::Alone).await;
     same(&alone, &again, "the batch made again");
+    batch::fix_clock(None);
+}
+
+/// A view of a faulty engine: it fails the reads of proposals it is told
+/// to.
+struct FaultyView<'v>(Box<dyn ProjectionView + 'v>, &'v Faults);
+
+impl ProjectionView for FaultyView<'_> {
+    fn position(&self) -> Option<Position> {
+        self.0.position()
+    }
+    fn declarations(&self) -> Result<Vec<Declared>> {
+        self.0.declarations()
+    }
+    fn replaced(&self, from: Position, to: Position) -> Result<Option<Vec<Declared>>> {
+        self.0.replaced(from, to)
+    }
+    fn chosen(&self, ty: &TypeName) -> Result<Chosen> {
+        self.0.chosen(ty)
+    }
+    fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
+        self.0.get(ty, key)
+    }
+    fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
+        self.0.scan(ty, scan)
+    }
+    fn count(&self, ty: &TypeName, scan: &Scan) -> Result<u64> {
+        self.0.count(ty, scan)
+    }
+    fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
+        self.0.get_many(ty, keys)
+    }
+    fn edges(
+        &self,
+        ty: &TypeName,
+        keys: &[RecordKey],
+        relation: Option<&RelationName>,
+        walk: Walk,
+    ) -> Result<Vec<Vec<Edge>>> {
+        self.0.edges(ty, keys, relation, walk)
+    }
+    fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
+        if due(&self.1.proposals) {
+            return Err(planted("a read of proposals failed"));
+        }
+        self.0.proposals(filter)
+    }
+    fn proposals_before(
+        &self,
+        filter: &ProposalFilter,
+        at: Option<Position>,
+    ) -> Result<Option<Vec<Proposal>>> {
+        self.0.proposals_before(filter, at)
+    }
+    fn is_member(&self, set: &str, ty: &TypeName, key: &RecordKey) -> Result<bool> {
+        self.0.is_member(set, ty, key)
+    }
+    fn members(&self, set: &str, ty: &TypeName) -> Result<std::collections::BTreeSet<RecordKey>> {
+        self.0.members(set, ty)
+    }
+    fn applied(&self, id: &EventId) -> Result<Option<Position>> {
+        self.0.applied(id)
+    }
+    fn applied_many(&self, ids: &[EventId]) -> Result<Vec<Option<Position>>> {
+        self.0.applied_many(ids)
+    }
+    fn output(&self, seam: &str, input: &Digest) -> Result<Option<(Position, Value)>> {
+        self.0.output(seam, input)
+    }
+    fn matching(
+        &self,
+        filter: &FeedFilter,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<Matched> {
+        self.0.matching(filter, from, through, limit)
+    }
+    fn of_source(
+        &self,
+        source: &SourceId,
+        from: Position,
+        through: Position,
+        limit: u32,
+    ) -> Result<Matched> {
+        self.0.of_source(source, from, through, limit)
+    }
+}
+
+/// `x` made, then a batch of its retirement, whose read of the record's
+/// pending calls fails after its reactions are staged, and of an upsert
+/// of `x`, in the lake `twin` of `place`, as `how` queues them.
+async fn refused_after_staging(place: &Place, lake: &str, twin: usize, how: How) -> Written {
+    let o = opened(place, lake, twin, None).await;
+    position(&o.batches.write(vec![upsert(lake, "x", 6)]).await[0]);
+    o.faults.proposals.store(1, Ordering::SeqCst);
+    let retire = plain(owner(lake, "ann"), Write::Retire("item".into(), "x".into()));
+    let answers = queued(&o, vec![retire, upsert(lake, "x", 2)], how).await;
+    let read = matches!(situation(&answers[0]), Some(Situation::Busy { .. }));
+    assert!(read, "the retirement is refused its read: {answers:?}");
+    let written = Written {
+        answers: answers.iter().map(wire).collect(),
+        log: log(o.store.as_ref()).await,
+        held: held(o.store.as_ref(), lake).await,
+        appends: 0,
+    };
+    o.store.close().await.expect("the lake closes");
+    written
+}
+
+/// A job refused after it staged what it changes leaves its batch as it
+/// found it: a retirement refused after its reactions are staged, then an
+/// upsert of its record in the same batch, answer and log what they do
+/// alone.
+pub async fn a_job_refused_after_staging_leaves_its_batch_as_it_found_it(
+    place: &Place,
+    name: &str,
+) {
+    let _clock = CLOCK.lock().await;
+    batch::fix_clock(Some(AT));
+    let alone = refused_after_staging(place, name, 0, How::Alone).await;
+    let batched = refused_after_staging(place, name, 1, How::OfAll).await;
+    same(&alone, &batched, "a batch with a job refused after staging");
     batch::fix_clock(None);
 }
 
