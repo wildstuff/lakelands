@@ -45,8 +45,8 @@ pub use catalog::{
 pub use error::{Error, Missing, Refusal, Result};
 pub use id::{
     ConstraintName, Cursor, DeliveryId, FieldName, IdempotencyKey, LakeId, ParamName, Position,
-    ProposalId, RecordKey, RelationName, SourceId, TriggerName, TypeName, ValueTypeName, VerbName,
-    Version,
+    PreconditionName, ProposalId, RecordKey, RelationName, SourceId, TriggerName, TypeName,
+    ValueTypeName, VerbName, Version,
 };
 pub use location::{EngineConfig, Location, SqliteTuning};
 pub use principal::{Access, Grants, Principal, PrincipalKind, WriteContext, WriteOrigin};

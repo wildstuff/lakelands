@@ -162,6 +162,22 @@ fn named(c: &Condition, sets: Sets<'_>) -> Option<std::collections::BTreeSet<Fie
     Some(out)
 }
 
+/// [`named`] of a verb's condition, whose `payload.<name>` is the call's
+/// and reads no field; a set it names reads as its own.
+fn named_in_verb(c: &Condition, sets: Sets<'_>) -> Option<std::collections::BTreeSet<FieldName>> {
+    let (mut out, mut own) = (std::collections::BTreeSet::new(), true);
+    gather(
+        c,
+        sets,
+        &mut Vec::new(),
+        &mut |e| match std::mem::take(&mut own) {
+            true => out.extend(crate::derive::verb_reads(e).0),
+            false => out.extend(crate::derive::reads(e)),
+        },
+    )?;
+    Some(out)
+}
+
 /// The paths a condition reads, and those of the sets it names, as
 /// [`named`] gathers them.
 fn paths_named(c: &Condition, sets: Sets<'_>) -> Option<Vec<Vec<FieldName>>> {
@@ -301,8 +317,13 @@ impl Sight<'_> {
                 if !far || !v.record_paths().is_some_and(|p| p.iter().all(from)) {
                     return false;
                 }
+                let requires = who.grants.schema
+                    || v.conditions().all(|c| {
+                        let read = named_in_verb(c, &sets_of(declared));
+                        read.is_some_and(|n| self.reads_all(&n, &v.on))
+                    });
                 let VerbEffect::Write { set } = &v.effect else {
-                    return described(&v.on) && holds(v.requires.as_ref(), &v.on);
+                    return described(&v.on) && requires;
                 };
                 let known = |n: &FieldName| {
                     let t = self.force.ty(&v.on);
@@ -316,9 +337,7 @@ impl Sight<'_> {
                 };
                 let all =
                     |a: &lakelands_api::ontology::Assignment| known(&a.field) && value(&a.value);
-                described(&v.on)
-                    && holds(v.requires.as_ref(), &v.on)
-                    && (who.grants.schema || set.iter().all(all))
+                described(&v.on) && requires && (who.grants.schema || set.iter().all(all))
             }
             Declaration::Function(f) => self.function_visible(f),
             Declaration::ValueType(v) => self.uses_shown(&v.name, declared),
@@ -548,7 +567,7 @@ pub fn probed_types(d: &Declaration) -> std::collections::BTreeSet<TypeName> {
 /// expression on `ty` itself, the fields a derived relation matches, its
 /// own and those of `ty` as its target, what a view reads of `ty` as a
 /// source ([`view_reads`]), a set's `where`, a trigger's `when`, and a
-/// verb's `requires` and what it sets its fields from (where
+/// verb's conditions and what it sets its fields from (where
 /// `payload.<name>` is the call's and reads no field), each with what the
 /// sets it names read, as `sets` answers them. A condition that does not
 /// parse reads nothing here.
@@ -585,7 +604,13 @@ pub fn declaration_probes(
         Declaration::ObjectSet(s) if &s.of == ty => of(&s.filter),
         Declaration::Trigger(t) if &t.on == ty => t.when.as_ref().map(of).unwrap_or_default(),
         Declaration::Verb(v) if &v.on == ty => {
-            let mut names = v.requires.as_ref().map(of).unwrap_or_default();
+            let own = |c: &Condition| parsed(c).map(|e| crate::derive::verb_reads(&e).0);
+            let of = |c| {
+                named_in_verb(c, sets)
+                    .or_else(|| own(c))
+                    .unwrap_or_default()
+            };
+            let mut names: std::collections::BTreeSet<_> = v.conditions().flat_map(of).collect();
             if let VerbEffect::Write { set } = &v.effect {
                 for a in set {
                     let value = parsed(&a.value).map(|e| crate::derive::verb_reads(&e).0);

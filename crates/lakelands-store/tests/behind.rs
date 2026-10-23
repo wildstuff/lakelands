@@ -561,6 +561,7 @@ async fn pay_verb(l: &Lake, risk: Risk) {
         scope: Default::default(),
         payload: vec![],
         risk,
+        preconditions: Vec::new(),
         requires: None,
         effect: VerbEffect::External {
             executor: "bank".into(),
