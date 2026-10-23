@@ -1131,32 +1131,34 @@ enum Told {
     Replayed(Outcome),
 }
 
-/// Record writes queued together, decided under one turn. One runs alone,
-/// as [`Call::record`] decides it, where the writer must first catch up,
+/// The head of record writes queued together, decided under one turn;
+/// the jobs left behind it are answered. The head runs alone, as
+/// [`Call::record`] decides it, where the writer must first catch up,
 /// regain its lease or append a held answer, and where it does not batch
-/// ([`Write::batches`]). The others are decided one by one, each against
-/// the drafts of those before it, and appended together; none is answered
+/// ([`Write::batches`]). Otherwise it and the jobs behind it that batch
+/// are decided one by one, each against the drafts of those before it,
+/// and appended together, up to `commit_window_events`; none is answered
 /// before that append returns. A job refused, or stopped, is answered
 /// alone and leaves nothing behind; one that stopped ends its batch.
-/// Each answer goes to `replies`, given once the turn lets the lake go.
-pub(crate) fn write_many(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) {
+pub(crate) fn write_many(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) -> Vec<Job> {
     let mut jobs = std::collections::VecDeque::from(jobs);
-    while let Some(head) = jobs.pop_front() {
-        let w = turn.writer();
-        let ready = !w.lost && !w.behind && w.answers.is_empty();
-        let batches = |j: &Job| j.write.batches(&w.ontology, &j.context);
-        if !(ready && batches(&head)) {
-            drop(w);
-            replies.push(head.alone(turn));
-            continue;
-        }
-        let n = jobs.iter().take_while(|j| batches(j)).count();
-        let batch = std::iter::once(head).chain(jobs.drain(..n)).collect();
+    let Some(head) = jobs.pop_front() else {
+        return Vec::new();
+    };
+    let w = turn.writer();
+    let ready = !w.lost && !w.behind && w.answers.is_empty();
+    let batches = |j: &Job| j.write.batches(&w.ontology, &j.context);
+    if !(ready && batches(&head)) {
         drop(w);
-        for left in batched(turn, batch, replies).into_iter().rev() {
-            jobs.push_front(left);
-        }
+        replies.push(head.alone(turn));
+        return jobs.into();
     }
+    let n = jobs.iter().take_while(|j| batches(j)).count();
+    let batch = std::iter::once(head).chain(jobs.drain(..n)).collect();
+    drop(w);
+    let mut left = batched(turn, batch, replies);
+    left.extend(jobs);
+    left
 }
 
 impl Job {
@@ -1220,6 +1222,8 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) -> Vec<Job
     let (mut pending, mut keys) = (Pending::default(), BTreeMap::new());
     let (mut decisions, mut lease, mut events, mut stored) = (vec![], None, vec![], vec![]);
     let (mut jobs, mut stopped) = (jobs.into_iter(), false);
+    // A batch closes after the job its events reach the bound with.
+    let bound = turn.limits.commit_window_events.max(1) as usize;
     for job in jobs.by_ref() {
         let Job {
             mut who,
@@ -1240,7 +1244,13 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) -> Vec<Job
             call.moved(&w)?;
             let at = (&*w, view.as_ref(), now);
             let told = match call.decided(at, &mut pending, (op, &opts), again)? {
-                Decided::Drafts(drafts) => (Told::Events(0..0), Some(turn.stamp(&w, drafts)?)),
+                Decided::Drafts(drafts) => {
+                    // Its door refused what the seal would, and the batch
+                    // opened on a writer that may append.
+                    let stamped = turn.stamp(&w, drafts);
+                    debug_assert!(stamped.is_ok(), "a batched stamp refused");
+                    (Told::Events(0..0), Some(stamped?))
+                }
                 Decided::Again(j, tip) => (Told::Again(j, tip), None),
                 Decided::Replayed(first) => (Told::Replayed(first), None),
             };
@@ -1277,7 +1287,7 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) -> Vec<Job
             Err(_) => pending.undo(mark),
         }
         decisions.push(Decision { who, answer, told });
-        if stopped {
+        if stopped || events.len() >= bound {
             break;
         }
     }
@@ -1320,8 +1330,7 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) -> Vec<Job
         Err(p) => {
             turn.stopped_append(&mut w, first);
             let e = stopped_by_panic(p);
-            let stopped = |d: &Decision| d.told.as_ref().err().unwrap_or(&e).clone();
-            decisions.iter().map(|d| Err(stopped(d))).collect()
+            decisions.iter().map(|_| Err(e.clone())).collect()
         }
     };
     drop(w);
@@ -1332,11 +1341,12 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) -> Vec<Job
 }
 
 /// What a job of a batch whose append from `first` failed `e` is
-/// answered: a refusal stays; where the append's fold failed, a job that
-/// appended is told so at its own first position; otherwise `e`.
+/// answered: where only its fold failed, a refusal stays, decided over
+/// what is durable, and a job that appended is told so at its own first
+/// position; otherwise `e`, as nothing of the batch is in the log.
 fn failed(d: &Decision, e: &Error, first: Option<Position>) -> Error {
     match (&d.told, e.situation(), first) {
-        (Err(refused), ..) => refused.clone(),
+        (Err(refused), Some(Situation::NotFolded { .. }), _) => refused.clone(),
         (Ok(Told::Events(r)), Some(Situation::NotFolded { cause, .. }), Some(first)) => {
             let (from, cause) = (Position(first.0 + r.start as u64), cause.clone());
             Error::unavailable(Situation::NotFolded { from, cause })

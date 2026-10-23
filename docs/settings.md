@@ -94,7 +94,7 @@ The deepest a chain of reactive writes may go.
 
 ### `limits.commit_window_events`
 
-The most events one group-commit window of an ingest holds.
+The most records one group-commit window of an ingest holds, or events one batch of record writes holds; a batch closes after the write that reaches it.
 
 - **Takes:** a count, 1 at least.
 - **Default:** `32`.
