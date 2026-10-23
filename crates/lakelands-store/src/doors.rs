@@ -105,6 +105,30 @@ pub async fn import(
     exec::run(move || crate::import::import(&location, seams, &dir)).await
 }
 
+/// `who` as a write's call sees the lake: followed through its renames,
+/// and, for one whose grants hide something once they are followed, with
+/// what it was shown. A reference to a type it is not shown is a field it
+/// may not know of, by the head's types; the writer judges it again under
+/// its lock (024, extended). The head is read only for one whose grants
+/// hide something once they are followed: following may hide what the
+/// grants as given do not.
+fn seen(lake: &Lake, who: Principal) -> Result<(Principal, Option<usize>, Option<writes::Shown>)> {
+    let none = Vec::<lakelands_api::engine::Declared>::new();
+    let (mut sight, mut followed) = lake.sight(who.clone(), None, None, &none)?;
+    let head = || lake.engine.view(None).and_then(|v| lake.shape(v.as_ref()));
+    let head = rights::hides_some(sight.who()).then(head).transpose()?;
+    if let Some(head) = &head {
+        let renames = Some(&head.renames[..]);
+        (sight, followed) = lake.sight(who.clone(), None, renames, head.as_ref())?;
+    }
+    let shown = head.as_ref().map(|head| writes::Shown {
+        asked: who,
+        versions: head.ontology.versions(),
+        hidden: sight.hidden().to_vec(),
+    });
+    Ok((sight.who().clone(), followed, shown))
+}
+
 fn same_lake(lake: &Lake, who: &Principal) -> Result<()> {
     writes::granted(who.lake == lake.id)?;
     // The writer is a part of an authored event's id, whose parts NUL
@@ -280,31 +304,9 @@ impl Doors {
         F: FnOnce(&Call<'_>) -> Result<T> + Send + 'static,
     {
         same_lake(&self.lake, who)?;
-        let (lake, who, context) = (self.lake.clone(), who.clone(), self.context);
-        // A reference to a type it is not shown is a field it may not know
-        // of, by the head's types; the writer judges it again under its
-        // lock (024, extended). The head is read only for one whose grants
-        // hide something once they are followed: following may hide what
-        // the grants as given do not. A read, made before the write waits
-        // its turn, as the writer's own judgement is not.
-        let seen = exec::run(move || {
-            let none = Vec::<lakelands_api::engine::Declared>::new();
-            let (mut sight, mut followed) = lake.sight(who.clone(), None, None, &none)?;
-            let head = || lake.engine.view(None).and_then(|v| lake.shape(v.as_ref()));
-            let head = rights::hides_some(sight.who()).then(head).transpose()?;
-            if let Some(head) = &head {
-                let renames = Some(&head.renames[..]);
-                (sight, followed) = lake.sight(who.clone(), None, renames, head.as_ref())?;
-            }
-            let shown = head.as_ref().map(|head| writes::Shown {
-                asked: who,
-                versions: head.ontology.versions(),
-                hidden: sight.hidden().to_vec(),
-            });
-            Ok((sight.who().clone(), followed, shown))
-        });
-        let (who, followed, shown) = seen.await?;
+        let (who, context) = (who.clone(), self.context);
         exec::write(&self.lake, move |lake| {
+            let (who, followed, shown) = seen(lake, who)?;
             f(&Call {
                 lake,
                 who: &who,
@@ -1008,12 +1010,8 @@ impl LakeStore for Store {
         ty: Option<&TypeName>,
     ) -> Result<PurgeReport> {
         writes::check_source(source)?;
-        // It decides the retirements through the purge's own decision,
-        // which is made at a turn: it takes no writer, but writes wait for
-        // it as for the purge it foretells.
-        let (source, ty) = (source.clone(), ty.cloned());
-        let preflight = move |t: &Turn<'_>| crate::purge::preflight(t, &source, ty.as_ref());
-        exec::write(&self.lake, preflight).await
+        let (lake, source, ty) = (self.lake.clone(), source.clone(), ty.cloned());
+        exec::run(move || crate::purge::preflight(&lake, &source, ty.as_ref())).await
     }
 
     async fn purge_source(
@@ -1043,13 +1041,18 @@ impl LakeStore for Store {
         patch: Patch,
         expected: Option<Version>,
     ) -> Result<()> {
-        let doors = Doors {
-            lake: self.lake.clone(),
-            context,
-        };
-        let (ty, key) = (ty.clone(), key.clone());
-        let judge = move |c: &Call<'_>| c.upsert_preflight(&ty, &key, &patch, expected);
-        doors.write(who, judge).await
+        same_lake(&self.lake, who)?;
+        let (lake, who, ty, key) = (self.lake.clone(), who.clone(), ty.clone(), key.clone());
+        exec::run(move || {
+            let (who, ..) = seen(&lake, who)?;
+            let asked = writes::Asked {
+                lake: &lake,
+                who: &who,
+                context,
+            };
+            asked.upsert_preflight(&ty, &key, &patch, expected)
+        })
+        .await
     }
 
     async fn forget_source(&self, source: &SourceId, id: Option<&str>) -> Result<ForgetReport> {

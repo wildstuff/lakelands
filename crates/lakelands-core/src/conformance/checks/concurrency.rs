@@ -52,7 +52,11 @@ check!(
 
 const WRITERS: usize = 8;
 const EACH: usize = 25;
-/// The writes [`READS_AT_A_POSITION`] sends at once, past the blocking pool.
+/// The threads of the runtime's blocking pool, its default: the suite runs
+/// on a runtime it does not size. A pool larger than this would leave the
+/// check blind, never red.
+const POOL: usize = 512;
+/// The writes [`READS_AT_A_POSITION`] sends at once, past the [`POOL`].
 const WAITING: usize = 800;
 /// The writes of those that land before the read is made.
 const FIRST: usize = 64;
@@ -454,13 +458,13 @@ async fn a_read_at_a_position_answers_the_same_during_writes_and_after(store: St
             again.len()
         );
     }
-    // More writes sent at once than the blocking pool holds threads (512,
-    // the runtime's default). A read made once the first few landed waits
-    // for none of those queued beyond the pool: fewer than half of them
-    // land meanwhile. A reader woken too late to tell is sent again.
+    // More writes sent at once than the blocking pool holds threads. A read
+    // made once the first few landed waits for none of those queued beyond
+    // the pool: fewer than half of them land meanwhile. A reader woken too
+    // late to tell is sent again.
     for _ in 0..3 {
         let (before, during) = read_beside_waiting(cat, own).await?;
-        let beyond = (WAITING - before).saturating_sub(512);
+        let beyond = (WAITING - before).saturating_sub(POOL);
         if beyond >= FIRST {
             ensure!(
                 during < beyond / 2,

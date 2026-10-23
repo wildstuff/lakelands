@@ -1494,7 +1494,7 @@ pub(crate) enum Beside {
     /// The whole log, as the open's catch-up folds: an open to rebuild.
     Open,
     /// The whole log, told the acts of removal the projection lists, as
-    /// [`Lake::rebuild`] folds.
+    /// [`Turn::rebuild`] folds.
     Rebuild,
 }
 

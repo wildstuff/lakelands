@@ -428,8 +428,7 @@ pub(crate) fn granted(ok: bool) -> Result<()> {
 /// ceiling, whatever the origin names
 /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`). Every
 /// write door calls it first, before any other check and before it takes
-/// the writer, so a refused context waits on no other write and every
-/// door refuses it alike. It reads nothing. A host's `cause` is checked
+/// the writer, so every door refuses it alike. It reads nothing. A host's `cause` is checked
 /// where the write appends, under the writer: that it is at or below the
 /// head, then the ceiling of the trigger whose firing it names
 /// ([`crate::lake::Lake::append_after`]).
@@ -588,7 +587,17 @@ pub(crate) struct Plan {
     pub after: Option<StoredRecord>,
 }
 
-impl Call<'_> {
+/// What a decision reads of its call: the lake, who it is made as, and
+/// the host's context. A preflight decides through one with no turn, as
+/// it takes no writer.
+#[derive(Clone, Copy)]
+pub(crate) struct Asked<'a> {
+    pub lake: &'a Lake,
+    pub who: &'a Principal,
+    pub context: WriteContext,
+}
+
+impl Asked<'_> {
     fn draft(&self, now: Timestamp, origin: Origin, body: EventBody) -> Draft {
         Draft {
             writer: self.who.writer(),
@@ -612,6 +621,25 @@ impl Call<'_> {
             context: self.context,
             ..Draft::system(now, body)
         }
+    }
+}
+
+impl Call<'_> {
+    /// What a decision of this call reads of it.
+    pub(crate) fn asked(&self) -> Asked<'_> {
+        Asked {
+            lake: self.lake,
+            who: self.who,
+            context: self.context,
+        }
+    }
+
+    fn draft(&self, now: Timestamp, origin: Origin, body: EventBody) -> Draft {
+        self.asked().draft(now, origin, body)
+    }
+
+    fn changed(&self, change: Change, cause: Position, now: Timestamp) -> Draft {
+        self.asked().changed(change, cause, now)
     }
 
     /// Give a draft the id its idempotency key derives, and the key.
@@ -1972,10 +2000,10 @@ fn assigned(
 
 impl Call<'_> {
     /// The writer, held by this call. Its grants were followed through the
-    /// lake's renames before it waited here; where a migration renamed a
-    /// field or a relation meanwhile they may no longer hold it, and the
-    /// call is refused to be sent again, in words that name no migration
-    /// (006, extended).
+    /// lake's renames at its turn; where a migration caught up with here
+    /// (another handle's, or one whose fold the lake had not yet made)
+    /// renamed a field or a relation since, they may no longer hold it, and the call is refused to be sent again, in words
+    /// that name no migration (006, extended).
     pub(crate) fn writer(&self) -> Result<std::sync::MutexGuard<'_, crate::lake::Writer>> {
         let w = self.lake.for_write()?;
         if let Some(n) = self.followed
