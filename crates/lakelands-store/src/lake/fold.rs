@@ -1274,20 +1274,6 @@ impl Lake {
         Ok(())
     }
 
-    /// Clear the projection and fold the whole log again. Only the lease's
-    /// holder does: a handle without it would clear under the holder's fold,
-    /// and a lost one takes the lease again first, as a write does.
-    pub fn rebuild(&self) -> Result<Position> {
-        let mut w = self.writer();
-        self.regain(&mut w)?;
-        if w.lease.is_none() {
-            return Err(no_lease());
-        }
-        self.rebuild_held(&mut w)?;
-        self.finish_forgetting(&mut w)?;
-        Ok(w.tip.as_ref().map_or(Position::GENESIS, |t| t.0))
-    }
-
     /// [`Self::rebuild`], under the writer's lock its caller holds. The
     /// whole log is folded into the scratch beside the projection and
     /// swapped in (071); the projection answers as it was until then, and
@@ -1415,6 +1401,7 @@ impl Lake {
             w.failed,
         );
         let built = {
+            let builder = builder.turn();
             let mut b = builder.writer();
             // What the writer holds of acts goes into the builder's
             // writer, and comes back in the same exchange.
@@ -1467,6 +1454,22 @@ impl Lake {
     }
 }
 
+impl Turn<'_> {
+    /// Clear the projection and fold the whole log again. Only the lease's
+    /// holder does: a handle without it would clear under the holder's fold,
+    /// and a lost one takes the lease again first, as a write does.
+    pub fn rebuild(&self) -> Result<Position> {
+        let mut w = self.writer();
+        self.regain(&mut w)?;
+        if w.lease.is_none() {
+            return Err(no_lease());
+        }
+        self.rebuild_held(&mut w)?;
+        self.finish_forgetting(&mut w)?;
+        Ok(w.tip.as_ref().map_or(Position::GENESIS, |t| t.0))
+    }
+}
+
 /// What became of a build beside the projection.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Swapped {
@@ -1491,7 +1494,7 @@ pub(crate) enum Beside {
     /// The whole log, as the open's catch-up folds: an open to rebuild.
     Open,
     /// The whole log, told the acts of removal the projection lists, as
-    /// [`Lake::rebuild`] folds.
+    /// [`Turn::rebuild`] folds.
     Rebuild,
 }
 

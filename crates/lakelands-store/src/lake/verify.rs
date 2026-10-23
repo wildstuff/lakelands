@@ -191,7 +191,9 @@ impl Lake {
         }
         Ok(out)
     }
+}
 
+impl Turn<'_> {
     /// Seal the active segment and write the checkpoint that opens the
     /// next, as one step.
     pub fn checkpoint(&self) -> Result<Position> {

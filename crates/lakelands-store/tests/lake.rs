@@ -1034,8 +1034,8 @@ impl lakelands_api::engine::EngineOpener for Racing {
     > {
         let ends = opener().log_ends(location)?;
         if !self.raced.swap(true, Ordering::SeqCst) {
-            let other = lakelands_store::lake::Lake::open(location, seams(), OpenMode::Write)?;
-            other.close()?;
+            let mut other = lakelands_store::lake::Lake::open(location, seams(), OpenMode::Write)?;
+            other.turn().close()?;
         }
         Ok(ends)
     }
@@ -3273,7 +3273,8 @@ async fn verify_refuses_a_known_at_that_goes_back_naming_its_position() {
 fn the_seal_refuses_an_event_the_log_would_not_read() {
     use lakelands_store::log::Draft;
     let location = Location::memory(name());
-    let lake = lakelands_store::lake::Lake::open(&location, seams(), OpenMode::Create).unwrap();
+    let mut lake = lakelands_store::lake::Lake::open(&location, seams(), OpenMode::Create).unwrap();
+    let lake = lake.turn();
     let answer = |output| EventBody::OutputRecorded {
         seam: "verb:bank:pay".into(),
         input: Digest::zero(),
