@@ -126,7 +126,7 @@ const LT: &str = "sys.link.invoice.approved_by";
 pub(super) const SEPT: &str = "2026-09-01T00:00:00.000000Z";
 const OCT: &str = "2026-10-01T00:00:00.000000Z";
 
-fn approved_by(fields: Vec<FieldDecl>, authority: Authority) -> RelationDecl {
+pub(super) fn approved_by(fields: Vec<FieldDecl>, authority: Authority) -> RelationDecl {
     RelationDecl {
         name: "approved_by".into(),
         target: "partner".into(),
@@ -204,7 +204,7 @@ pub(super) async fn link_ok(
 }
 
 /// Unlinks `from` from `to` over `approved_by` as the owner.
-async fn unlink(l: &Lake, from: &str, to: &str) -> lakelands_api::Result<Outcome> {
+pub(super) async fn unlink(l: &Lake, from: &str, to: &str) -> lakelands_api::Result<Outcome> {
     let (ty, rel) = ("invoice".into(), "approved_by".into());
     let opts = WriteOpts::default();
     l.cat
@@ -213,7 +213,7 @@ async fn unlink(l: &Lake, from: &str, to: &str) -> lakelands_api::Result<Outcome
 }
 
 /// The edges a one-hop walk over `approved_by` answers from `key` of `ty`.
-async fn walked(
+pub(super) async fn walked(
     cat: &dyn Catalog,
     who: &Principal,
     ty: &str,
