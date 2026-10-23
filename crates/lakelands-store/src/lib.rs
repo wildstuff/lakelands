@@ -18,6 +18,8 @@ mod aging;
 #[doc(hidden)]
 pub mod backed;
 mod backing;
+#[doc(hidden)]
+pub mod batch;
 mod choose;
 mod declare;
 mod doors;

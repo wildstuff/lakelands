@@ -100,6 +100,8 @@ pub(crate) use plan::When;
 pub(crate) use plan::shown_plan;
 use record::Decide;
 pub(crate) use record::Envelope;
+pub use record::Write;
+pub(crate) use record::{Job, write_many};
 pub(crate) use stands::overruled;
 pub(crate) use touched::{Folding, Zone};
 
@@ -534,6 +536,39 @@ impl Pending {
         self.reads
     }
 
+    /// Begin a job of a batch over what the jobs before it left: its
+    /// counters start again, and what it changes can be put back.
+    pub(crate) fn mark(&mut self) -> Mark {
+        self.across = 0;
+        if let Some(v) = &mut self.viewed {
+            v.open();
+        }
+        Mark {
+            records: self.records.clone(),
+            members: self.members.clone(),
+            sealed: self.sealed.clone(),
+            calls: self.calls.clone(),
+            viewed: self.viewed.is_some(),
+        }
+    }
+
+    /// Keep what the job marked last changed.
+    pub(crate) fn keep(&mut self) {
+        if let Some(v) = &mut self.viewed {
+            v.close(true);
+        }
+    }
+
+    /// Put back what the job marked by `m` changed.
+    pub(crate) fn undo(&mut self, m: Mark) {
+        (self.records, self.members) = (m.records, m.members);
+        (self.sealed, self.calls) = (m.sealed, m.calls);
+        match (&mut self.viewed, m.viewed) {
+            (Some(v), true) => v.close(false),
+            (viewed, _) => *viewed = None,
+        }
+    }
+
     fn member(
         &self,
         view: &dyn ProjectionView,
@@ -546,6 +581,18 @@ impl Pending {
             None => view.is_member(set, ty, key),
         }
     }
+}
+
+/// What a [`Pending`] held when a job of a batch began
+/// ([`Pending::mark`]); what a job reads and does not change, the records
+/// read from the projection, stays.
+pub(crate) struct Mark {
+    records: BTreeMap<(TypeName, RecordKey), StoredRecord>,
+    members: BTreeMap<(String, TypeName, RecordKey), bool>,
+    sealed: crate::backed::Recorded,
+    calls: Option<BTreeMap<(TypeName, RecordKey), Vec<ProposalId>>>,
+    /// Whether it held what the views read, then opened to be put back.
+    viewed: bool,
 }
 
 /// A record write, decided: the event to append and the record it makes.
@@ -643,7 +690,7 @@ impl Call<'_> {
         if events.is_empty() {
             return Ok(None);
         }
-        let outcome = self.told_of(&w.ontology, &events, outcome_of(&events))?;
+        let outcome = self.told_of(&w.ontology, &events, outcome_of(&events), None)?;
         // An external verb is answered its executor's answer, recorded in
         // a later append that other writes may precede.
         match called_out(&events, &outcome) {
@@ -741,7 +788,7 @@ impl Call<'_> {
         let at = view.applied(&log::accepted_id(&self.lake.id, proposal))?;
         let Some(at) = at else { return Err(decided()) };
         let events = self.appended(w, at)?;
-        let outcome = self.told_of(&w.ontology, &events, outcome_of(&events))?;
+        let outcome = self.told_of(&w.ontology, &events, outcome_of(&events), None)?;
         match called_out(&events, &outcome) {
             Some(_) => self.recorded(view, outcome, at, true),
             None => Err(decided()),
@@ -1811,9 +1858,11 @@ fn unchanged(o: &Ontology, m: &Migration, plan: &MigrationPlan) -> bool {
     m.renames.is_empty() && !fills && o.in_force(&Declaration::Type(m.to.clone()))
 }
 
-/// The lake's head: the position of its last event.
+/// The lake's head: the position of its last event, or of the last a
+/// batch staged past it.
 fn head(w: &Writer) -> Position {
-    w.tip.as_ref().map_or(Position::GENESIS, |t| t.0)
+    let tip = w.staged.as_ref().or(w.tip.as_ref());
+    tip.map_or(Position::GENESIS, |t| t.0)
 }
 
 /// A migration report's id: named by what it says to its reader and where
@@ -1831,9 +1880,11 @@ pub(crate) fn report_id(report: &MigrationReport, head: Option<Position>) -> Str
     }))
 }
 
-/// The next position in an append that already holds `n` drafts.
+/// The next position in an append that already holds `n` drafts, after
+/// what a batch staged.
 pub(crate) fn position_after(w: &Writer, n: usize) -> Position {
-    let first = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0.next());
+    let tip = w.staged.as_ref().or(w.tip.as_ref());
+    let first = tip.map_or(Position::GENESIS, |t| t.0.next());
     Position(first.0 + n as u64)
 }
 
@@ -1973,6 +2024,13 @@ impl Call<'_> {
     /// (006, extended).
     pub(crate) fn writer(&self) -> Result<std::sync::MutexGuard<'_, crate::lake::Writer>> {
         let w = self.lake.for_write()?;
+        self.moved(&w)?;
+        Ok(w)
+    }
+
+    /// Refuse the call where what its grants were followed through moved
+    /// under `w` ([`Self::writer`]).
+    pub(crate) fn moved(&self, w: &Writer) -> Result<()> {
         if let Some(n) = self.followed
             && self.lake.renames(None)?.len() != n
         {
@@ -1984,29 +2042,23 @@ impl Call<'_> {
         {
             return Err(Error::unavailable(Situation::TypesMoved));
         }
-        Ok(w)
+        Ok(())
     }
 }
-
-/// A record as a write reads it, the head's or its append's.
-pub type Get<'a> = &'a dyn Fn(&TypeName, &RecordKey) -> Result<Option<StoredRecord>>;
-
-/// An ingest window's earlier links, `(link type, from, to)` each, and how
-/// it reads a record.
-pub type Window<'a> = (&'a [(TypeName, RecordKey, RecordKey)], Get<'a>);
 
 /// The relation's cardinality over live links, with the link from `from`
 /// to `to` among them: `many_to_one` and `one_to_one` allow one live link
 /// per `from`, `one_to_many` and `one_to_one` one per `to`. Answered from
-/// the links the engine walks at the head, not by reading every link, then
-/// from an ingest window's earlier links, the records read as the window
-/// plans them: one answer wherever the store cut the stream (016). The
+/// the links the engine walks at the head, less those `pending` retired,
+/// not by reading every link, then from the live links `pending` holds,
+/// the records read as `pending` leaves them: one answer wherever the
+/// store cut the stream (016), and wherever a batch of writes is cut. The
 /// other end of the link that holds is named only where a record holds
 /// its key and the principal of `sees` is answered that link: by its ends,
 /// as deep as they go, and by `only` on the link type itself (006, 051).
 pub fn cardinality(
     (view, sees): (&dyn ProjectionView, &Sight),
-    window: Option<Window>,
+    pending: &Pending,
     (ty, r): (&TypeName, &RelationDecl),
     from: &RecordKey,
     to: &RecordKey,
@@ -2016,41 +2068,45 @@ pub fn cardinality(
     let (relation, cardinality) = (r.name.clone(), r.cardinality);
     let broken = |case: Case| Error::constraint(Some(links::TO.into()), case);
     let lt = links::link_type_name(ty, &r.name);
-    let head = |t: &TypeName, k: &RecordKey| view.get(t, k);
-    let (earlier, get): (&[_], Get) = window.unwrap_or((&[], &head));
+    let get = |t: &TypeName, k: &RecordKey| pending.record(view, t, k);
+    let key_at = |l: &StoredRecord, f: &str| l.fields.get(f)?.as_str().map(RecordKey::from);
     let earlier = || {
-        earlier
+        let live = pending
+            .records
             .iter()
-            .filter(|(t, f, o)| *t == lt && (f, o) != (from, to))
+            .filter(|((t, _), l)| *t == lt && !l.retired);
+        live.filter_map(|(_, l)| Some((key_at(l, links::FROM)?, key_at(l, links::TO)?)))
+            .filter(|(f, o)| (f, o) != (from, to))
+    };
+    let retired = |f: &RecordKey, o: &RecordKey| {
+        let at = (lt.clone(), links::link_key(f, o));
+        pending.records.get(&at).is_some_and(|l| l.retired)
     };
     let walk = |end: &TypeName, key: &RecordKey, dir| -> Result<Vec<_>> {
         Ok(view
             .edges(end, std::slice::from_ref(key), Some(&r.name), dir)?
             .remove(0))
     };
-    // `from`'s other link first, in the head and then the window, then
+    // `from`'s other link first, in the head and then in `pending`, then
     // `to`'s: the one answered does not turn on where the store cut.
     let mut other = None;
     if per_from
         && let Some(e) = walk(ty, from, Walk::Out)?
             .into_iter()
-            .find(|e| e.to.1 != *to)
+            .find(|e| e.to.1 != *to && !retired(from, &e.to.1))
     {
         other = Some((true, e.to.1));
     }
     if other.is_none() && per_from {
-        other = earlier()
-            .find(|(_, f, _)| f == from)
-            .map(|(_, _, o)| (true, o.clone()));
+        other = earlier().find(|(f, _)| f == from).map(|(_, o)| (true, o));
     }
     if other.is_none() && per_to {
         let mut there = walk(&r.target, to, Walk::In)?.into_iter();
-        other = (there.find(|e| e.from.0 == *ty && e.from.1 != *from)).map(|e| (false, e.from.1));
+        let e = there.find(|e| e.from.0 == *ty && e.from.1 != *from && !retired(&e.from.1, to));
+        other = e.map(|e| (false, e.from.1));
     }
     if other.is_none() && per_to {
-        other = earlier()
-            .find(|(_, _, o)| o == to)
-            .map(|(_, f, _)| (false, f.clone()));
+        other = earlier().find(|(_, o)| o == to).map(|(f, _)| (false, f));
     }
     let Some((of_from, end)) = other else {
         return Ok(());

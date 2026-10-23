@@ -93,6 +93,19 @@ pub(crate) struct Viewed {
 }
 
 impl Viewed {
+    /// Open the undo of a job of a batch.
+    pub(super) fn open(&mut self) {
+        self.staged.undo = Some(kept::Undo::default());
+    }
+
+    /// Close it: keep what the job's runs put, or put it back.
+    pub(super) fn close(&mut self, keep: bool) {
+        match keep {
+            true => self.staged.undo = None,
+            false => kept::undo(&mut self.staged),
+        }
+    }
+
     /// What the sets of views of `o`, and its triggers on views, read.
     fn of(o: &Ontology) -> Viewed {
         let mut v = Viewed::default();
@@ -207,16 +220,19 @@ impl Decide<'_> {
                 None => settings.remove(after.key.as_str()),
             };
         }
-        v.staged.undo = Some(kept::Undo::default());
+        // Inside a job of a batch, whose own undo is open, a refusal puts
+        // back this run alone.
+        let outer = v.staged.undo.is_some();
+        let from = v.staged.undo.get_or_insert_default().len();
         let decided = self.viewed_run(v, change, (before, after), out);
-        match decided {
-            Ok(()) => v.staged.undo = None,
-            Err(_) => {
-                kept::undo(&mut v.staged);
-                if was.is_some() {
-                    v.settings = was;
-                }
+        if decided.is_err() {
+            kept::undo_to(&mut v.staged, from);
+            if was.is_some() {
+                v.settings = was;
             }
+        }
+        if !outer {
+            v.staged.undo = None;
         }
         decided
     }

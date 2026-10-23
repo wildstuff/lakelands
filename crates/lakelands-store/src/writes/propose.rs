@@ -76,7 +76,7 @@ impl Call<'_> {
         let keyed = opts.idempotency_key.is_some();
         let by = MadeDue::Call { keyed };
         let events = appended.map_err(|e| not_handed(e, due && w.behind, by))?;
-        let outcome = self.told_of(&w.ontology, &events, outcome_of(&events))?;
+        let outcome = self.told_of(&w.ontology, &events, outcome_of(&events), None)?;
         let external = match &decl.effect {
             VerbEffect::External { executor } if low => Some(External {
                 executor: executor.clone(),
@@ -741,7 +741,7 @@ impl Call<'_> {
         let by = MadeDue::Accepted;
         let events = appended.map_err(|e| not_handed(e, external.is_some() && w.behind, by))?;
         let outcome = self.answered(&events, renamed);
-        let mut outcome = self.told_of(&w.ontology, &events, outcome)?;
+        let mut outcome = self.told_of(&w.ontology, &events, outcome, None)?;
         // Each declaration of the bundle as it stands after the accept, as
         // `apply` answers it (027, extended).
         if let ProposedWrite::Declare { declarations, .. } = write {

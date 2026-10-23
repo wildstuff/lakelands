@@ -73,6 +73,10 @@ pub struct Writer {
     pub lease: Option<Lease>,
     /// The last event's position and hash.
     pub tip: Option<(Position, Digest)>,
+    /// The last event a batch of record writes stamped after `tip` and
+    /// has not appended yet: where its next write is decided from
+    /// ([`crate::writes::write_many`]).
+    pub staged: Option<(Position, Digest)>,
     /// The last event's `known_at`.
     pub last_known_at: Timestamp,
     /// The ontology at the head.
@@ -245,7 +249,7 @@ pub struct Lake {
     pub(crate) choosing: Mutex<crate::choose::Choosing>,
     /// The queue writes wait in for their turn at the writer, in the order
     /// they came ([`crate::exec::write`]).
-    pub(crate) turns: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) queue: Mutex<crate::exec::Queue>,
     writer: Mutex<Writer>,
     /// The tip's position and whether the lease is held, as of the last
     /// change the writer made: read without the writer's lock, which an
@@ -337,6 +341,9 @@ pub(crate) fn owing<T>(work: impl FnOnce() -> Result<T>) -> Result<(T, BTreeSet<
 }
 
 pub(crate) fn wall_clock() -> Timestamp {
+    if let Some(at) = crate::batch::fixed() {
+        return at;
+    }
     let micros = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as i64)
@@ -482,6 +489,7 @@ impl Lake {
         Ok(Writer {
             lease: None,
             tip,
+            staged: None,
             last_known_at: wall_clock(),
             ontology: shape.ontology.clone(),
             settings: shape.settings.clone(),

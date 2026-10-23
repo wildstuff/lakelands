@@ -1,7 +1,11 @@
 //! The record doors: `upsert`, `retire`, `link`, `unlink` and `call`, and
 //! the decision each write is made in.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
 use super::*;
+use crate::exec::stopped_by_panic;
+use crate::lake::{Reads, owing};
 use crate::record;
 
 /// What a decision's own events carry beside the call's writer and
@@ -250,7 +254,13 @@ impl Decide<'_> {
                     patch.insert(end.into(), Value::String(k.to_string()));
                 }
                 let plan = self.record(&lt, &links::link_key(key, to), &patch, expected, None)?;
-                cardinality((self.at.view, &self.at.sight), None, (ty, &r), key, to)?;
+                cardinality(
+                    (self.at.view, &self.at.sight),
+                    &self.pending,
+                    (ty, &r),
+                    key,
+                    to,
+                )?;
                 self.planned(plan)
             }
             (Op::Unlink((_, key, _, to)), Some((lt, _))) => {
@@ -782,43 +792,67 @@ impl Call<'_> {
         }
     }
 
-    /// `upsert`.
-    pub fn upsert(
-        &self,
-        ty: &TypeName,
-        key: &RecordKey,
-        patch: Patch,
-        opts: WriteOpts,
-    ) -> Result<Outcome> {
-        check_context(self.lake, &self.context)?;
-        ordinary_door(ty)?;
-        self.write(Op::Upsert(ty, key, &patch), opts)
-    }
-
-    /// An authored write of one record, as `upsert`, `retire`, `link` and
-    /// `unlink` make it, their context already checked, under one hold of
-    /// the writer: the plan and its append. A retry of a write the caller
-    /// made is answered that write, as every retry is before the grants
-    /// are asked: before a refusal for what the caller is not shown, and
-    /// after a link door's own questions (035, extended).
-    fn write(&self, op: Op<'_>, opts: WriteOpts) -> Result<Outcome> {
+    /// A record door's write, its context checked, under one hold of the
+    /// writer: the plan and its append.
+    pub(crate) fn record(&self, write: &Write, opts: WriteOpts) -> Result<Outcome> {
+        let op = write.op();
+        self.checked(op)?;
         let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
-        let first = self.replay(&w, &opts.idempotency_key, view.as_ref());
         let now = self.lake.clock(&mut w);
-        let mut d = self.decide(&w, view.as_ref(), now, 0);
-        if let Err(gone) = d.sight(op) {
+        let mut pending = Pending::default();
+        let drafts =
+            match self.decided((&w, view.as_ref(), now), &mut pending, (op, &opts), None)? {
+                Decided::Drafts(drafts) => drafts,
+                Decided::Replayed(first) => return Ok(first),
+                Decided::Again(..) => unreachable!("a write alone has no batch"),
+            };
+        drop(view);
+        let events = self.lake.append(&mut w, drafts)?;
+        self.told_of(&w.ontology, &events, outcome_of(&events), None)
+    }
+
+    /// A record door's own questions of its context: its depth, and for
+    /// `upsert` and `retire` a type written through no other door.
+    fn checked(&self, op: Op<'_>) -> Result<()> {
+        check_context(self.lake, &self.context)?;
+        match op {
+            Op::Upsert(ty, ..) | Op::Retire(ty, _) => ordinary_door(ty),
+            _ => Ok(()),
+        }
+    }
+
+    /// A record write decided under the writer at a time, over a view,
+    /// against what `pending` holds: its drafts, or what a retry is
+    /// answered, the first write's, `again` naming the job of its batch
+    /// that used its key. A retry is answered that write as every retry
+    /// is before the grants are asked: before a refusal for what the
+    /// caller is not shown, and after a link door's own questions (035,
+    /// extended).
+    fn decided(
+        &self,
+        (w, view, now): (&Writer, &dyn ProjectionView, Timestamp),
+        pending: &mut Pending,
+        (op, opts): (Op<'_>, &WriteOpts),
+        again: Option<usize>,
+    ) -> Result<Decided> {
+        let key = &opts.idempotency_key;
+        let first = match again {
+            Some(job) => Ok(Some(Decided::Again(job, head(w)))),
+            None => (self.replay(w, key, view)).map(|f| f.map(Decided::Replayed)),
+        };
+        let mut d = Lent(self.decide(w, view, now, 0), pending);
+        std::mem::swap(&mut d.0.pending, d.1);
+        if let Err(gone) = d.0.sight(op) {
             return first?.ok_or(gone);
         }
-        d.shape(op)?;
+        d.0.shape(op)?;
         if let Some(first) = first? {
             return Ok(first);
         }
-        let mut drafts = d.plan(op, opts.expected_version)?.drafts;
-        self.keyed(&mut drafts[0], &opts.idempotency_key);
-        drop(view);
-        let events = self.lake.append(&mut w, drafts)?;
-        self.told_of(&w.ontology, &events, outcome_of(&events))
+        let mut drafts = d.0.plan(op, opts.expected_version)?.drafts;
+        self.keyed(&mut drafts[0], key);
+        Ok(Decided::Drafts(drafts))
     }
 
     /// `outcome` as its caller is told it: a set joined or left, or a
@@ -827,12 +861,14 @@ impl Call<'_> {
     /// one of the records it moved, as a write's own record is its
     /// writer's (055, extended); and, after an act, only where one of its
     /// reactions stands ([`overruled`]): a replay answers what the history
-    /// without the erased values sets off (065).
+    /// without the erased values sets off (065). Read at the head, or at
+    /// `at`, where a job of a batch is told.
     pub(super) fn told_of(
         &self,
         o: &Ontology,
         events: &[Event],
         mut outcome: Outcome,
+        at: Option<Position>,
     ) -> Result<Outcome> {
         let Outcome::Applied {
             position, set_off, ..
@@ -840,8 +876,8 @@ impl Call<'_> {
         else {
             return Ok(outcome);
         };
-        let at = events.iter().find(|e| e.position == *position);
-        let own = match at.map(|e| &e.body) {
+        let written = events.iter().find(|e| e.position == *position);
+        let own = match written.map(|e| &e.body) {
             Some(
                 EventBody::RecordUpserted { ty, key, .. }
                 | EventBody::RecordIngested { ty, key, .. }
@@ -873,7 +909,7 @@ impl Call<'_> {
         if moved.is_empty() && gone.is_empty() {
             return Ok(outcome);
         }
-        let view = self.lake.engine.view(None)?;
+        let view = self.lake.engine.view(at)?;
         let sees = Sight::held(self.who, o);
         let mut told = mine;
         for ((name, ty), keys) in &moved {
@@ -887,41 +923,6 @@ impl Call<'_> {
         set_off.joined.retain(|s| told.contains(s));
         set_off.left.retain(|s| told.contains(s));
         Ok(outcome)
-    }
-
-    /// `retire`.
-    pub fn retire(&self, ty: &TypeName, key: &RecordKey, opts: WriteOpts) -> Result<Outcome> {
-        check_context(self.lake, &self.context)?;
-        ordinary_door(ty)?;
-        self.write(Op::Retire(ty, key), opts)
-    }
-
-    /// `link`: the link over `relation` from `key` of `ty` to `to`, as a
-    /// write of its link record (`docs/decisions/035-a-link-is-a-record.md`).
-    pub fn link(
-        &self,
-        ty: &TypeName,
-        key: &RecordKey,
-        relation: &RelationName,
-        to: &RecordKey,
-        fields: Patch,
-        opts: WriteOpts,
-    ) -> Result<Outcome> {
-        check_context(self.lake, &self.context)?;
-        self.write(Op::Link((ty, key, relation, to), &fields), opts)
-    }
-
-    /// `unlink`: the link's record retired, its history kept.
-    pub fn unlink(
-        &self,
-        ty: &TypeName,
-        key: &RecordKey,
-        relation: &RelationName,
-        to: &RecordKey,
-        opts: WriteOpts,
-    ) -> Result<Outcome> {
-        check_context(self.lake, &self.context)?;
-        self.write(Op::Unlink((ty, key, relation, to)), opts)
     }
 
     /// The verb `verb` for its caller: one on a type the caller is not
@@ -990,5 +991,299 @@ impl Call<'_> {
         }
         let payload = self.verb_payload(w, &decl, payload)?;
         Ok((decl, payload, pinned))
+    }
+}
+
+/// A record door's write as data: what a turn decides ([`write_many`]).
+#[derive(Clone, Debug)]
+pub enum Write {
+    /// `upsert`: the type, the key and the patch.
+    Upsert(TypeName, RecordKey, Patch),
+    /// `retire`: the type and the key.
+    Retire(TypeName, RecordKey),
+    /// `link`: the type and the key it starts from, its relation, the key
+    /// it ends at, and the link's own fields, as a write of its link
+    /// record (`docs/decisions/035-a-link-is-a-record.md`).
+    Link(TypeName, RecordKey, RelationName, RecordKey, Patch),
+    /// `unlink`: the link's record retired, its history kept.
+    Unlink(TypeName, RecordKey, RelationName, RecordKey),
+}
+
+impl Write {
+    fn op(&self) -> Op<'_> {
+        match self {
+            Write::Upsert(ty, key, patch) => Op::Upsert(ty, key, patch),
+            Write::Retire(ty, key) => Op::Retire(ty, key),
+            Write::Link(ty, key, r, to, fields) => Op::Link((ty, key, r, to), fields),
+            Write::Unlink(ty, key, r, to) => Op::Unlink((ty, key, r, to)),
+        }
+    }
+
+    /// Whether it may be decided in a batch under `o`: not a setting nor
+    /// an aging rule, with no cause the host names, and of no type, a
+    /// link's link type, computed outside the lake, whose append makes
+    /// calls due.
+    fn batches(&self, o: &Ontology, context: &WriteContext) -> bool {
+        let (ty, relation) = match self {
+            Write::Upsert(ty, ..) | Write::Retire(ty, _) => (ty, None),
+            Write::Link(ty, _, r, ..) | Write::Unlink(ty, _, r, _) => (ty, Some(r)),
+        };
+        let system = [SETTING_TYPE, AGING_RULE_TYPE].contains(&ty.as_str());
+        let Ok(decl) = o.ty(ty) else {
+            return !system && context.cause.is_none();
+        };
+        let written = match relation {
+            None => Some(decl.clone()),
+            Some(r) => {
+                (decl.relations.iter().find(|d| d.name == *r)).map(|r| links::link_type(ty, r))
+            }
+        };
+        let outside = written.is_some_and(|t| crate::backed::computed_outside(o, &t));
+        !system && context.cause.is_none() && !outside
+    }
+}
+
+/// A record write queued for its turn, its caller as its door read it
+/// ([`Call`]), and where it is answered: its outcome and the causes of
+/// what it left owed.
+pub(crate) struct Job {
+    pub who: Principal,
+    pub context: WriteContext,
+    pub followed: Option<usize>,
+    pub shown: Option<Shown>,
+    pub write: Write,
+    pub opts: WriteOpts,
+    pub answer: Answer,
+}
+
+/// Where a [`Job`] is answered.
+pub(crate) type Answer = tokio::sync::oneshot::Sender<Result<(Outcome, BTreeSet<Position>)>>;
+
+/// A record write decided ([`Call::decided`]).
+enum Decided {
+    /// Its drafts.
+    Drafts(Vec<Draft>),
+    /// A retry, answered the first write's outcome.
+    Replayed(Outcome),
+    /// A retry of the write of an earlier job of its batch, by its index,
+    /// told at the batch's tip as it was decided.
+    Again(usize, Position),
+}
+
+/// A decision lent a batch's [`Pending`], which goes back to it however
+/// the decision ends.
+struct Lent<'d, 'p>(Decide<'d>, &'p mut Pending);
+
+impl Drop for Lent<'_, '_> {
+    fn drop(&mut self) {
+        std::mem::swap(&mut self.0.pending, self.1);
+    }
+}
+
+/// A job of a batch once it is decided: its caller, where it is answered,
+/// and its events' range in the batch's append or its answer.
+struct Decision {
+    who: Principal,
+    answer: Answer,
+    told: Result<Told>,
+}
+
+enum Told {
+    Events(std::ops::Range<usize>),
+    Again(usize, Position),
+    Replayed(Outcome),
+}
+
+/// Record writes queued together, decided under one turn. One runs alone,
+/// as [`Call::record`] decides it, where the writer must first catch up,
+/// regain its lease or append a held answer, and where it does not batch
+/// ([`Write::batches`]). The others are decided one by one, each against
+/// the drafts of those before it, and appended together; none is answered
+/// before that append returns. A job refused, or stopped, is answered
+/// alone and leaves nothing behind; one that stopped ends its batch.
+pub(crate) fn write_many(turn: &Turn<'_>, jobs: Vec<Job>) {
+    let mut jobs = std::collections::VecDeque::from(jobs);
+    while let Some(head) = jobs.pop_front() {
+        let w = turn.writer();
+        let ready = !w.lost && !w.behind && w.answers.is_empty();
+        let batches = |j: &Job| j.write.batches(&w.ontology, &j.context);
+        if !(ready && batches(&head)) {
+            drop(w);
+            head.alone(turn);
+            continue;
+        }
+        let n = jobs.iter().take_while(|j| batches(j)).count();
+        let batch = std::iter::once(head).chain(jobs.drain(..n)).collect();
+        drop(w);
+        for left in batched(turn, batch).into_iter().rev() {
+            jobs.push_front(left);
+        }
+    }
+}
+
+impl Job {
+    /// Decided and appended alone, as its door did before batches, under
+    /// its own [`owing`].
+    fn alone(self, turn: &Turn<'_>) {
+        let call = call(turn, &self.who, (self.context, self.followed, self.shown));
+        let (write, opts) = (&self.write, self.opts);
+        let done = catch_unwind(AssertUnwindSafe(|| owing(|| call.record(write, opts))));
+        drop(
+            self.answer
+                .send(done.unwrap_or_else(|p| Err(stopped_by_panic(p)))),
+        );
+    }
+}
+
+/// The call `who` makes at `turn`, with its context, how far its grants
+/// were followed, and what it was shown.
+fn call<'a>(
+    turn: &'a Turn<'a>,
+    who: &'a Principal,
+    (context, followed, shown): (WriteContext, Option<usize>, Option<Shown>),
+) -> Call<'a> {
+    Call {
+        lake: turn,
+        who,
+        context,
+        followed,
+        shown,
+    }
+}
+
+/// Decide `jobs` one by one under one hold of the writer, then append
+/// them together and answer each; answers the jobs a stopped one left
+/// undecided.
+fn batched(turn: &Turn<'_>, jobs: Vec<Job>) -> Vec<Job> {
+    let opened = catch_unwind(AssertUnwindSafe(|| -> Result<_> {
+        let w = turn.for_write()?;
+        Ok((w, turn.engine.view(None)?))
+    }));
+    let (mut w, view) = match opened.unwrap_or_else(|p| Err(stopped_by_panic(p))) {
+        Ok(opened) => opened,
+        Err(e) => {
+            for job in jobs {
+                drop(job.answer.send(Err(e.clone())));
+            }
+            return Vec::new();
+        }
+    };
+    let (mut pending, mut keys) = (Pending::default(), BTreeMap::new());
+    let (mut decisions, mut lease, mut events, mut stored) = (vec![], None, vec![], vec![]);
+    let (mut jobs, mut stopped) = (jobs.into_iter(), false);
+    for job in jobs.by_ref() {
+        let Job {
+            who,
+            context,
+            followed,
+            shown,
+            write,
+            opts,
+            answer,
+        } = job;
+        let mark = pending.mark();
+        let now = turn.clock(&mut w);
+        let id = (opts.idempotency_key.as_ref()).map(|k| log::authored_id(&who.writer(), k));
+        let again = id.as_ref().and_then(|id| keys.get(id).copied());
+        let decided = catch_unwind(AssertUnwindSafe(|| -> Result<_> {
+            let call = call(turn, &who, (context, followed, shown));
+            let op = write.op();
+            call.checked(op)?;
+            call.moved(&w)?;
+            let at = (&*w, view.as_ref(), now);
+            Ok(match call.decided(at, &mut pending, (op, &opts), again)? {
+                Decided::Drafts(drafts) => (Told::Events(0..0), Some(turn.stamp(&w, drafts)?)),
+                Decided::Again(j, tip) => (Told::Again(j, tip), None),
+                Decided::Replayed(first) => (Told::Replayed(first), None),
+            })
+        }));
+        let told = match decided {
+            Ok(Ok((_, Some((l, mut e, mut s))))) => {
+                w.staged = e.last().map(|e| (e.position, e.hash.clone()));
+                let range = events.len()..events.len() + e.len();
+                events.append(&mut e);
+                stored.append(&mut s);
+                lease = Some(l);
+                if let Some(id) = id {
+                    keys.insert(id, decisions.len());
+                }
+                Ok(Told::Events(range))
+            }
+            Ok(told) => told.map(|(t, _)| t),
+            Err(p) => {
+                stopped = true;
+                Err(stopped_by_panic(p))
+            }
+        };
+        match &told {
+            Ok(_) => pending.keep(),
+            Err(_) => pending.undo(mark),
+        }
+        decisions.push(Decision { who, answer, told });
+        if stopped {
+            break;
+        }
+    }
+    drop(view);
+    w.staged = None;
+    let first = events.first().map(|e: &Event| e.position);
+    let owed = w.owed.len();
+    let shared = catch_unwind(AssertUnwindSafe(|| -> Result<_> {
+        let (events, causes) = match lease {
+            Some(l) => {
+                owing(|| turn.append_stamped(&mut w, (l, events, stored), Reads::default()))?
+            }
+            None => (Vec::new(), BTreeSet::new()),
+        };
+        debug_assert_eq!(w.owed.len(), owed, "a batched write makes no call due");
+        let tell = |r: &std::ops::Range<usize>, who: &Principal, at: Position| {
+            let call = call(turn, who, (WriteContext::default(), None, None));
+            let e = &events[r.clone()];
+            call.told_of(&w.ontology, e, outcome_of(e), Some(at))
+        };
+        let told = |d: &Decision| match d.told.as_ref().map_err(Clone::clone)? {
+            Told::Events(r) => {
+                let (from, to) = (events[r.start].position, events[r.end - 1].position);
+                let own = causes.range(from..=to).copied().collect();
+                Ok((tell(r, &d.who, to)?, own))
+            }
+            Told::Again(j, tip) => match &decisions[*j].told {
+                Ok(Told::Events(r)) => Ok((tell(r, &d.who, *tip)?, BTreeSet::new())),
+                _ => unreachable!("a key is kept for a job that appended"),
+            },
+            Told::Replayed(first) => Ok((first.clone(), BTreeSet::new())),
+        };
+        Ok(decisions.iter().map(told).collect::<Vec<_>>())
+    }));
+    let answers = match shared {
+        Ok(Ok(answers)) => answers,
+        Ok(Err(e)) => (decisions.iter())
+            .map(|d| Err(failed(d, &e, first)))
+            .collect(),
+        Err(p) => {
+            turn.stopped_append(&mut w, first);
+            let e = stopped_by_panic(p);
+            let stopped = |d: &Decision| d.told.as_ref().err().unwrap_or(&e).clone();
+            decisions.iter().map(|d| Err(stopped(d))).collect()
+        }
+    };
+    drop(w);
+    for (d, answer) in decisions.into_iter().zip(answers) {
+        drop(d.answer.send(answer));
+    }
+    jobs.collect()
+}
+
+/// What a job of a batch whose append from `first` failed `e` is
+/// answered: a refusal stays; where the append's fold failed, a job that
+/// appended is told so at its own first position; otherwise `e`.
+fn failed(d: &Decision, e: &Error, first: Option<Position>) -> Error {
+    match (&d.told, e.situation(), first) {
+        (Err(refused), ..) => refused.clone(),
+        (Ok(Told::Events(r)), Some(Situation::NotFolded { cause, .. }), Some(first)) => {
+            let (from, cause) = (Position(first.0 + r.start as u64), cause.clone());
+            Error::unavailable(Situation::NotFolded { from, cause })
+        }
+        _ => e.clone(),
     }
 }

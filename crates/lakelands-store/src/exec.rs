@@ -9,20 +9,42 @@
 //! hand-off in this crate: no nested runtime, no thread that parks the
 //! caller.
 //!
-//! **The queue.** A lake's writes wait their turn in an async queue, in
-//! the order they came, before they take a thread: one write at a time
-//! holds a blocking thread on the writer's lock, so a crowd of writers
-//! parks no thread, and a read beside them finds the pool free. The
-//! writer's lock stays; the queue only decides who takes it next, which
-//! the lock itself does not do fairly. The log's order is still the order
-//! the writer appends in.
+//! **The queue.** A lake's writes wait their turn in one queue, in the
+//! order they came, before they take a thread: the first to find nobody
+//! holding the turn takes a blocking thread and runs the entries from the
+//! head until the queue is empty, so a crowd of writers parks no thread,
+//! and a read beside them finds the pool free. The writer's lock stays;
+//! the queue only decides who takes it next, which the lock itself does
+//! not do fairly. The log's order is still the order the writer appends
+//! in. An entry is a job that runs alone, or record writes as data, which
+//! the turn decides together ([`crate::writes::write_many`]).
 
+use std::any::Any;
+use std::collections::VecDeque;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use lakelands_api::Result;
 use lakelands_api::error::{Detail, Error, Situation};
 
 use crate::lake::Lake;
+use crate::writes::Job;
+
+/// A lake's queue: its entries, oldest first, and whether a thread holds
+/// the turn and runs them.
+#[derive(Default)]
+pub(crate) struct Queue {
+    entries: VecDeque<Entry>,
+    held: bool,
+}
+
+/// One entry of the queue.
+enum Entry {
+    /// A job that runs alone, answering its caller itself.
+    Alone(Box<dyn FnOnce(&Turn<'_>) + Send>),
+    /// Record writes.
+    Records(Vec<Job>),
+}
 
 /// Run `work` on the blocking pool and answer its result. A panic inside
 /// the work is reported as the lake being unavailable, never propagated
@@ -68,27 +90,79 @@ impl Lake {
     }
 }
 
-/// Run `work` on the blocking pool when its turn in `lake`'s queue comes,
-/// lent the turn, and answer its result as [`run`] does. The turn is
-/// waited for in a task of its own and goes into the blocking work with
-/// it, so a caller who goes away does not stop a job between its turn and
-/// its end, and the next job's turn comes when the work ends, however it
-/// ends.
+/// Run `work` when its turn in `lake`'s queue comes, lent the turn, and
+/// answer its result as [`run`] does. The work runs on the thread that
+/// holds the turn, so a caller who goes away does not stop a job between
+/// its turn and its end, and the next job's turn comes when the work
+/// ends, however it ends.
 pub async fn write<T, F>(lake: &Arc<Lake>, work: F) -> Result<T>
 where
     T: Send + 'static,
     F: FnOnce(&Turn<'_>) -> Result<T> + Send + 'static,
 {
-    let lake = lake.clone();
-    let job = tokio::spawn(async move {
-        let turn = lake.turns.clone().lock_owned().await;
-        run(move || {
-            let _turn = turn;
-            work(&Turn(&lake))
-        })
-        .await
-    });
-    job.await.unwrap_or_else(|e| Err(stopped(&e)))
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let job = move |t: &Turn<'_>| {
+        let answer = catch_unwind(AssertUnwindSafe(|| work(t)));
+        drop(tx.send(answer.unwrap_or_else(|p| Err(stopped_by_panic(p)))));
+    };
+    queue(lake, Entry::Alone(Box::new(job)));
+    rx.await.unwrap_or_else(|_| Err(halted(true)))
+}
+
+/// Queue record writes as one entry; each job is answered on its own.
+pub(crate) fn records(lake: &Arc<Lake>, jobs: Vec<Job>) {
+    queue(lake, Entry::Records(jobs));
+}
+
+/// Put `entry` at the end of `lake`'s queue, and take the turn where
+/// nobody holds it.
+fn queue(lake: &Arc<Lake>, entry: Entry) {
+    let mut q = lakelands_core::lock(&lake.queue);
+    q.entries.push_back(entry);
+    if !std::mem::replace(&mut q.held, true) {
+        hold(lake.clone());
+    }
+}
+
+/// Hold `lake`'s turn on a blocking thread: run the entries from the head
+/// until none is left.
+fn hold(lake: Arc<Lake>) {
+    drop(tokio::task::spawn_blocking(move || {
+        let holding = Holding(&lake);
+        while let Some(entry) = holding.next() {
+            match entry {
+                Entry::Alone(job) => job(&Turn(&lake)),
+                Entry::Records(jobs) => crate::writes::write_many(&Turn(&lake), jobs),
+            }
+        }
+    }));
+}
+
+/// The turn, held: a panic that unwinds out of it answers the jobs it took
+/// and had not answered `Stopped`, as their dropped answers are read, and
+/// hands the turn on to the entries still queued.
+struct Holding<'l>(&'l Arc<Lake>);
+
+impl Holding<'_> {
+    /// The head entry; with none left, the turn is let go.
+    fn next(&self) -> Option<Entry> {
+        let mut q = lakelands_core::lock(&self.0.queue);
+        let entry = q.entries.pop_front();
+        q.held = entry.is_some();
+        entry
+    }
+}
+
+impl Drop for Holding<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let mut q = lakelands_core::lock(&self.0.queue);
+            q.held = !q.entries.is_empty();
+            if q.held {
+                hold(self.0.clone());
+            }
+        }
+    }
 }
 
 /// [`write`], without waiting for its answer; with no runtime to queue
@@ -116,7 +190,19 @@ where
 /// The store's work stopped: whether it panicked or was cancelled, never
 /// what a panic said, which may quote a record.
 pub(crate) fn stopped(e: &tokio::task::JoinError) -> Error {
-    let detail = Detail::scrubbed(if e.is_panic() {
+    halted(e.is_panic())
+}
+
+/// [`stopped`], for work that panicked where it was caught: what it said
+/// is dropped unread.
+pub(crate) fn stopped_by_panic(payload: Box<dyn Any + Send>) -> Error {
+    drop(payload);
+    halted(true)
+}
+
+/// The store's work stopped, as it panicked or as it was cancelled.
+pub(crate) fn halted(panicked: bool) -> Error {
+    let detail = Detail::scrubbed(if panicked {
         "it panicked"
     } else {
         "it was cancelled"

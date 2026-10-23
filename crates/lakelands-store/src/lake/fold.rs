@@ -138,17 +138,34 @@ impl Lake {
                 if !of_log && !scoped {
                     w.failed = Some(events[0].position);
                 }
-                if let Ok(view) = self.engine.view(None)
-                    && let Ok(o) = Ontology::at(view.as_ref())
-                {
-                    if let Ok(s) = settings_in(view.as_ref(), &o) {
-                        w.settings = s;
-                    }
-                    w.ontology = o.named();
-                }
+                self.reload(w);
                 Err(e)
             }
         }
+    }
+
+    /// The writer's ontology and settings read again at the head, where
+    /// they can be.
+    fn reload(&self, w: &mut Writer) {
+        if let Ok(view) = self.engine.view(None)
+            && let Ok(o) = Ontology::at(view.as_ref())
+        {
+            if let Ok(s) = settings_in(view.as_ref(), &o) {
+                w.settings = s;
+            }
+            w.ontology = o.named();
+        }
+    }
+
+    /// What a batch's append leaves where it stopped midway, from `first`
+    /// on: the projection as its last commit left it, and the writer
+    /// behind, owing the calls of what landed, as a failed fold leaves it.
+    /// What it owed before, its lease and whether it lost that stay.
+    pub(crate) fn stopped_append(&self, w: &mut Writer, first: Option<Position>) {
+        self.engine.projection().rollback();
+        (w.behind, w.staged) = (true, None);
+        w.failed = first.or(w.failed);
+        self.reload(w);
     }
 
     /// Fold one `migrated` event's step over every record it reaches: the
@@ -460,6 +477,19 @@ impl Lake {
     /// sees half a transaction. A fold that reaches the tip has handed out
     /// the calls of an append whose fold had failed.
     pub(super) fn fold_from(&self, w: &mut Writer, from: Position) -> Result<()> {
+        // The log's tip, read again: a write that stopped midway may have
+        // left the writer's behind the log, or past it; an append whose
+        // fold failed and that never landed is owed nothing.
+        w.tip = match ends(self.engine.as_ref()) {
+            Ok((_, tip)) => tip,
+            Err(e) => {
+                w.behind = true;
+                return Err(e);
+            }
+        };
+        if w.failed > w.tip.as_ref().map(|t| t.0) {
+            w.failed = None;
+        }
         // The sets it decides itself, from the first value it erases that
         // each reads, or from the first event where it begins midway in a
         // lake with an act (lakelands#1232).
