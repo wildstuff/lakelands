@@ -469,7 +469,11 @@ fn a_state_keeps_shared_provenance_once_and_reads_every_fields_back() {
     ];
     for r in &cases {
         let state = record_state(r);
-        assert_eq!(&decode_record("t", "k", r.position, &state).unwrap(), r, "{state}");
+        assert_eq!(
+            &decode_record("t", "k", r.position, &state).unwrap(),
+            r,
+            "{state}"
+        );
         let whole = serde_json::to_string(r).unwrap();
         assert_eq!(&decode_record("t", "k", r.position, &whole).unwrap(), r);
     }

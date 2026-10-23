@@ -277,6 +277,7 @@ pub const ALL: &[Check] = &[
     filters::PROVENANCE_IN_WHERE_AND_ORDER,
     filters::LOOKED_UP_OR_SCANNED,
     filters::LONG_TEXT_AND_NUL,
+    filters::TEXT_KEY_READ_BY_KEY,
     provenance::TWO_TIME_AXES,
     provenance::VALID_TIME_IS_A_DATE_TIME,
     provenance::FIELD_PROVENANCE,

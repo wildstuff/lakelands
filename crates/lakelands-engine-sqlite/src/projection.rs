@@ -550,7 +550,7 @@ fn fill_chosen(
             "DELETE FROM sort_index WHERE ty = ?1 AND field = ?2 AND key = ?3",
             params![ty.as_str(), field.as_str(), r.key.as_str()],
         )?;
-        for (field, sort_key) in engines::order_rows(std::slice::from_ref(field), &r) {
+        for (field, sort_key) in engines::order_rows(std::slice::from_ref(field), r) {
             run(
                 conn,
                 "INSERT INTO sort_index (ty, field, key, sort_key) VALUES (?1, ?2, ?3, ?4)",
@@ -781,7 +781,12 @@ pub(crate) fn head_record(
 /// A record as a statement answers it from the column `at` on: its row's
 /// type, key and position, then its state ([`engines::decode_record`]).
 pub(crate) fn record_at(row: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Kept4> {
-    Ok((row.get(at)?, row.get(at + 1)?, row.get(at + 2)?, row.get(at + 3)?))
+    Ok((
+        row.get(at)?,
+        row.get(at + 1)?,
+        row.get(at + 2)?,
+        row.get(at + 3)?,
+    ))
 }
 
 /// A record's row and state as [`record_at`] reads them.
@@ -873,7 +878,9 @@ pub(crate) fn index_record(
         .map_err(sql)?;
     }
     // A record keeps a search row only while it has tokens: most have none.
-    let tokens = decl.map(|d| engines::record_tokens(d, r)).unwrap_or_default();
+    let tokens = decl
+        .map(|d| engines::record_tokens(d, r))
+        .unwrap_or_default();
     if tokens.is_empty() {
         if !fresh {
             drop("DELETE FROM search_rows WHERE ty = ?1 AND key = ?2")?;

@@ -299,7 +299,10 @@ pub fn key_lookup(decl: Option<&TypeDecl>, scan: &Scan) -> Option<BTreeSet<Strin
     let key = text_key(decl?)?;
     let (_, texts) = text_lookups(scan, &|f| f == key)?;
     let made = texts.into_iter().map(serde_json::Value::String);
-    Some(made.filter_map(|t| lakelands_api::key::key_component(&t)).collect())
+    Some(
+        made.filter_map(|t| lakelands_api::key::key_component(&t))
+            .collect(),
+    )
 }
 
 /// The text fields of `ty` its exact-text index keeps rows for, of the
@@ -1861,8 +1864,8 @@ pub fn decode_record(ty: &str, key: &str, since: Position, state: &str) -> Resul
     if let Some(mut base) = s.base {
         let at = || Value::from(since.0);
         base.entry("position").or_insert_with(at);
-        let base: FieldMeta = serde_json::from_value(Value::Object(base))
-            .map_err(|e| unreadable("a record", &e))?;
+        let base: FieldMeta =
+            serde_json::from_value(Value::Object(base)).map_err(|e| unreadable("a record", &e))?;
         for f in s.fields.keys().filter(|f| !s.bare.contains(f)) {
             meta.entry(f.clone()).or_insert_with(|| base.clone());
         }

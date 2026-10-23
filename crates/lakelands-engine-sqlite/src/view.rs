@@ -612,7 +612,8 @@ impl Read<'_> {
         if from.is_some() {
             args.extend([&k as &dyn ToSql, &key]);
         }
-        let row = |r: &rusqlite::Row<'_>| Ok((r.get::<_, Vec<u8>>(0)?, projection::record_at(r, 1)?));
+        let row =
+            |r: &rusqlite::Row<'_>| Ok((r.get::<_, Vec<u8>>(0)?, projection::record_at(r, 1)?));
         let rows: Vec<(Vec<u8>, projection::Kept4)> = stmt
             .query_map(args.as_slice(), row)
             .and_then(Iterator::collect)
@@ -862,7 +863,9 @@ impl ProjectionView for SqliteView<'_> {
             let decl = r.type_decl(ty)?;
             if let Some(keys) = engines::key_lookup(decl.as_ref(), scan) {
                 let records = r.records_by_key(ty, keys)?;
-                let admitted = records.iter().filter(|x| engines::admits(decl.as_ref(), x, scan));
+                let admitted = records
+                    .iter()
+                    .filter(|x| engines::admits(decl.as_ref(), x, scan));
                 return Ok(admitted.count() as u64);
             }
             let looked = r.looked(ty, decl.as_ref())?;

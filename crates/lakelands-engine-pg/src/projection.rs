@@ -55,6 +55,7 @@ use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING};
 use lakelands_api::write::Declaration;
 use lakelands_core::engines::{self, decode};
+use postgres::Row;
 use postgres::types::ToSql;
 
 use crate::connect::Db;
@@ -248,7 +249,7 @@ fn heads_sql(s: &str) -> String {
 /// table changes so that a projection made before would answer wrongly,
 /// not fail: one made with another layout is never read, and is rebuilt
 /// from the log.
-pub(crate) const LAYOUT: u64 = 5;
+pub(crate) const LAYOUT: u64 = 6;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
@@ -334,7 +335,7 @@ impl History {
     pub(crate) fn at_head(&self, names: &Names) -> String {
         let t = names.t(self.table);
         format!(
-            "{t}_head h CROSS JOIN LATERAL (SELECT x.state FROM {t} x \
+            "{t}_head h CROSS JOIN LATERAL (SELECT x.* FROM {t} x \
              WHERE {on} AND x.since = h.since LIMIT 1) r",
             on = self.each(" AND ", |_, c| format!("x.{c} = h.{c}")),
         )
@@ -510,7 +511,8 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
             "SELECT (SELECT r.state FROM {d} WHERE h.ident = $1), \
              (SELECT r.state FROM {r} WHERE h.ty = $2 AND h.key = $3), \
              (SELECT array_agg(field) FROM {l} WHERE ty = $4), \
-             (SELECT t FROM {m} WHERE k = $5)",
+             (SELECT t FROM {m} WHERE k = $5), \
+             (SELECT r.since FROM {r} WHERE h.ty = $2 AND h.key = $3)",
             d = DECLARATIONS.at_head(names),
             r = RECORDS.at_head(names),
             l = names.t("lookup_fields"),
@@ -526,10 +528,7 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
     )?;
     let looked: Option<Vec<String>> = row.get(2);
     let declared = declared_type(row.get(0))?;
-    let setting = row
-        .get::<_, Option<String>>(1)
-        .map(|state| decode_record(&state))
-        .transpose()?;
+    let setting = setting_at(&row, ty, [1, 4])?;
     let chosen = chosen_decoded(row.get(3));
     let sorted = match &declared {
         Some(d) => engines::order_fields(
@@ -785,9 +784,9 @@ pub(crate) fn relook(
     let was = rows.iter().map(|row| (row.get(0), row.get(1))).collect();
     let heads = RECORDS.at_head(names);
     let changes = engines::relooked(kept, moved, &was, |key| {
-        let sql = format!("SELECT r.state FROM {heads} WHERE h.ty = $1 AND h.key = $2");
+        let sql = format!("SELECT {RECORD} FROM {heads} WHERE h.ty = $1 AND h.key = $2");
         let row = db.query_opt(&sql, &[&SETTING_TYPE, &key])?;
-        (row.map(|row| decode::<StoredRecord>(row.get(0), "a record"))).transpose()
+        row.map(|row| record_at(&row, 0)).transpose()
     })?;
     let text = names.t("text_index");
     for (ty, f, comes) in changes {
@@ -1047,8 +1046,33 @@ pub(crate) fn catch_up_sorted(db: &mut Db, names: &Names) -> Result<()> {
     })
 }
 
-pub(crate) fn decode_record(state: &str) -> Result<StoredRecord> {
-    lakelands_core::engines::decode_record(state)
+/// What a statement selects of a record `r`: its row's type, key and
+/// position, then its state, which leaves them out.
+pub(crate) const RECORD: &str = "r.ty, r.key, r.since, r.state";
+
+/// The record a row holds from the column `at` on, as [`RECORD`] selects it.
+pub(crate) fn record_at(row: &Row, at: usize) -> Result<StoredRecord> {
+    let since = Position(row.get::<_, i64>(at + 2) as u64);
+    engines::decode_record(row.get(at), row.get(at + 1), since, row.get(at + 3))
+}
+
+/// The `sort_index.<type>` setting of `ty` a row holds as two scalar
+/// reads of its head, its state in the column `state` and its position in
+/// `since`; `None` where it is unset.
+pub(crate) fn setting_at(
+    row: &Row,
+    ty: &TypeName,
+    [state, since]: [usize; 2],
+) -> Result<Option<StoredRecord>> {
+    let (Some(s), Some(at)) = (
+        row.get::<_, Option<&str>>(state),
+        row.get::<_, Option<i64>>(since),
+    ) else {
+        return Ok(None);
+    };
+    let key = engines::sort_index_key(ty);
+    let at = Position(at as u64);
+    engines::decode_record(SETTING_TYPE, &key, at, s).map(Some)
 }
 
 /// The declaration of a type in force at `at` (`None` for the head).
@@ -1100,7 +1124,7 @@ pub(crate) fn head_records_after(
 ) -> Result<Vec<StoredRecord>> {
     db.records(
         &format!(
-            "SELECT r.state FROM {} WHERE h.ty = $1 AND h.key > $2 ORDER BY h.key LIMIT $3",
+            "SELECT {RECORD} FROM {} WHERE h.ty = $1 AND h.key > $2 ORDER BY h.key LIMIT $3",
             RECORDS.at_head(names)
         ),
         &[&ty.as_str(), &after, &n],
@@ -1116,12 +1140,12 @@ pub(crate) fn head_record(
 ) -> Result<Option<StoredRecord>> {
     db.query_opt(
         &format!(
-            "SELECT r.state FROM {} WHERE h.ty = $1 AND h.key = $2",
+            "SELECT {RECORD} FROM {} WHERE h.ty = $1 AND h.key = $2",
             RECORDS.at_head(names)
         ),
         &[&ty.as_str(), &key.as_str()],
     )?
-    .map(|r| decode_record(&r.get::<_, String>(0)))
+    .map(|r| record_at(&r, 0))
     .transpose()
 }
 
@@ -1644,7 +1668,7 @@ pub(crate) fn index_older(
 ) -> Result<()> {
     let head = types.get(db, names, ty)?;
     let page = format!(
-        "SELECT r.state FROM {} WHERE h.ty = $1 AND h.since < $2 AND h.key > $3 \
+        "SELECT {RECORD} FROM {} WHERE h.ty = $1 AND h.since < $2 AND h.key > $3 \
          ORDER BY h.key LIMIT {PAGE}",
         RECORDS.at_head(names)
     );
