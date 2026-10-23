@@ -656,9 +656,11 @@ pub trait ProjectionView {
 
 /// The engine's vector index, beside the projection: its write side and
 /// its size. Vectors are indexed at the head, in the fold's transaction,
-/// and read by [`LakeEngine::ranked`].
+/// and read by [`LakeEngine::ranked`]. An engine may index a state's
+/// vectors as it puts the state; a put or a remove after it holds over
+/// what the state holds, until the record's next state.
 pub trait VectorIndex: Send + Sync {
-    /// Index a record's vector for one field.
+    /// Index a record's vector for one field, replacing the one it held.
     fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()>;
 
     /// Remove a record's vector for one field.

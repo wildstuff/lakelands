@@ -220,6 +220,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::NEAREST_BY_COSINE,
     reads::ZERO_AND_WRONG_LENGTH,
     reads::PUT_AND_REMOVE,
+    reads::PUT_OVER_A_STATE,
     reads::EARLIER_STATES,
     reads::LATER_OUTPUT_HOLDS,
     reads::FIRST_APPLIED,

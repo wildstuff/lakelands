@@ -799,7 +799,12 @@ vector, a page at a time, so its time is linear in them (suite:
 
 - `put` replaces a record's vector for the field; `remove` forgets it,
   and forgetting one that is absent does nothing. Inside the fold's
-  transaction both take effect when it commits, as its puts do.
+  transaction both take effect when it commits, as its puts do. Both
+  answer alike over a vector a state of the record holds, which a disk
+  engine indexes as it puts the state (072): a put of other elements
+  replaces the state's and a remove forgets them until the record's
+  next state, and a put of a field its type does not keep apart is
+  counted (suite: `put_and_remove_answer_alike_over_a_vector_a_state_holds`).
 - `count` is how many vectors the field holds.
 
 The store keeps the index in step while it folds: it puts a live
@@ -911,7 +916,7 @@ holds it to.
 | `ranked`'s lists are of one state, with its position: an open transaction moves neither, a commit both; a record retired at the head is no candidate | engine: `ranked_answers_every_list_from_one_state_and_says_its_position` |
 | a fold that commits between two statements of one `ranked` call is in none of its lists; on PostgreSQL the call holds every table it reads from its first statement, and a `clear` queued ahead of it is in its position | SQLite: `src/tests.rs`, `a_fold_committed_inside_one_ranked_call_is_in_none_of_its_lists` (the reader's statement trace commits the fold); PostgreSQL: `tests/ranked.rs`, `a_fold_committed_inside_one_call_is_in_none_of_its_lists`, `a_call_holds_every_table_it_reads_from_its_first_statement`, `a_clear_queued_ahead_of_a_call_is_in_its_position` |
 | A search's candidates are judged at the position they were read at: a re-key, a hold placed or lifted, a write between two pulls, a field or a link type renamed in between, a searchable field the reader may not read declared in between; a hold placed in between keeps its record out of a pattern started by a search and out of a fused search, and a record given to another is no hit of a holder of `only` | store: `tests/search_position.rs` (the memory engine, a write planted before `ranked` answers), the ten rows of the file |
-| `ranked`'s vector lists: the exact top `k` by cosine, ties, a zero vector, a wrong length; `put` replaces; `clear` empties the index | engine: `nearest_ranks_by_cosine_with_ties_by_key`, `a_zero_vector_scores_zero_and_a_wrong_length_is_invalid`, `put_replaces_a_vector_and_remove_forgets_it`, `clear_empties_the_projection_and_the_vector_index` |
+| `ranked`'s vector lists: the exact top `k` by cosine, ties, a zero vector, a wrong length; `put` replaces, also over a state's vector; `clear` empties the index | engine: `nearest_ranks_by_cosine_with_ties_by_key`, `a_zero_vector_scores_zero_and_a_wrong_length_is_invalid`, `put_replaces_a_vector_and_remove_forgets_it`, `put_and_remove_answer_alike_over_a_vector_a_state_holds`, `clear_empties_the_projection_and_the_vector_index` |
 | `declarations`, `is_member`, `members`, `output`, `applied` and `applied_many` at an earlier position; `mark_applied` keeps the first position | engine: `declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position`, `the_first_applied_position_is_kept` |
 | `replaced` with the head's declarations answers `declarations` at every earlier position, and two ranges that meet answer the one over both | engine: `what_was_replaced_since_a_position_and_what_is_in_force_hold_what_was_then` |
 | `of_source` answers a source's positions as `matching` answers a filter's | engine: `the_index_answers_a_sources_positions_in_order_to_its_through`; store: `forget_index`'s `a_preflight_reads_the_sources_events_as_a_walk_does`; suite: every row of 058 |
