@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Beyond, Case, Place, Said};
 use crate::expr::{Condition, Func};
 use crate::id::{
-    ConstraintName, FieldName, ParamName, RelationName, SourceId, TriggerName, TypeName,
-    ValueTypeName, VerbName,
+    ConstraintName, FieldName, ParamName, PreconditionName, RelationName, SourceId, TriggerName,
+    TypeName, ValueTypeName, VerbName,
 };
 
 /// A host's own marks on a declaration: a map from a namespaced key
@@ -1464,9 +1464,15 @@ pub struct VerbDecl {
     pub payload: Vec<FieldDecl>,
     /// Its declared risk; the caller cannot lower it.
     pub risk: Risk,
-    /// A condition the record must meet for the verb to be called.
+    /// A condition the record must meet for the verb to be called; in
+    /// it, `payload.<name>` reads the call's payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requires: Option<Condition>,
+    /// Conditions the record and the call must meet too, each by its own
+    /// name, judged after `requires` in order, so that a refusal names
+    /// the one unmet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preconditions: Vec<Precondition>,
     /// What it does.
     #[serde(flatten)]
     pub effect: VerbEffect,
@@ -1481,19 +1487,34 @@ pub struct VerbDecl {
     pub granted: bool,
 }
 
+/// A named condition a verb requires of its record and its call
+/// (`docs/decisions/006-grants-not-roles.md`, extended).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Precondition {
+    /// Its name, unique in its verb.
+    pub name: PreconditionName,
+    /// What the record and the call hold, as `requires` reads them.
+    pub holds: Condition,
+}
+
 impl VerbDecl {
-    /// The paths the verb reads of a record: those of its `requires`, and
-    /// those of its set values but for `payload.<name>`, a member of the
-    /// call's payload. `None` where one of them does not parse.
+    /// What the verb requires, in the order a call judges it: `requires`,
+    /// then each precondition's `holds`.
+    pub fn conditions(&self) -> impl Iterator<Item = &Condition> {
+        let named = self.preconditions.iter().map(|p| &p.holds);
+        self.requires.iter().chain(named)
+    }
+
+    /// The paths the verb reads of a record: those of its conditions and
+    /// its set values but for `payload.<name>`, a member of the call's
+    /// payload ([`record_paths`]). `None` where one of them does not parse.
     pub fn record_paths(&self) -> Option<Vec<Vec<FieldName>>> {
         let set = self.effect.set();
-        let values = set.iter().map(|a| (&a.value, true));
+        let values = set.iter().map(|a| &a.value);
         let mut read = Vec::new();
-        for (c, value) in self.requires.iter().map(|r| (r, false)).chain(values) {
-            let (e, mut paths) = (c.typed().ok()?, Vec::new());
-            crate::expr::paths(&e, &mut paths);
-            let payload = |p: &[FieldName]| value && p.len() == 2 && p[0].as_str() == "payload";
-            read.extend(paths.iter().filter(|p| !payload(p)).map(|p| p.to_vec()));
+        for c in self.conditions().chain(values) {
+            read.extend(record_paths(&c.typed().ok()?));
         }
         Some(read)
     }
@@ -1516,15 +1537,14 @@ impl VerbDecl {
         Some(on.reads_across(&self.record_paths()?, ty))
     }
 
-    /// The relations an `exists(…)` of the verb's `requires` and set values
-    /// names.
+    /// The relations an `exists(…)` of the verb's conditions and set
+    /// values names.
     pub fn exists_relations(&self) -> Vec<FieldName> {
         let set = self.effect.set();
         let mut out = Vec::new();
         let values = set.iter().map(|a| &a.value);
         for e in self
-            .requires
-            .iter()
+            .conditions()
             .chain(values)
             .filter_map(|c| c.typed().ok())
         {
@@ -1532,6 +1552,20 @@ impl VerbDecl {
         }
         out
     }
+}
+
+/// The paths a verb's condition or value `e` reads of a record: each but
+/// `payload.<name>`, a member of the call's payload. A bare `payload` and
+/// a longer path are the record's.
+pub(crate) fn record_paths(e: &crate::expr::Expr) -> Vec<Vec<FieldName>> {
+    let mut paths = Vec::new();
+    crate::expr::paths(e, &mut paths);
+    let payload = |p: &&[FieldName]| p.len() == 2 && p[0].as_str() == "payload";
+    paths
+        .into_iter()
+        .filter(|p| !payload(p))
+        .map(<[FieldName]>::to_vec)
+        .collect()
 }
 
 /// The relation each `exists(…)` in `e` names, added to `out`.
@@ -1564,6 +1598,8 @@ struct VerbWire {
     risk: Risk,
     #[serde(default)]
     requires: Option<Condition>,
+    #[serde(default)]
+    preconditions: Vec<Precondition>,
     effect: EffectKind,
     #[serde(default)]
     set: Option<Vec<Assignment>>,
@@ -1612,6 +1648,7 @@ impl TryFrom<VerbWire> for VerbDecl {
             payload: w.payload,
             risk: w.risk,
             requires: w.requires,
+            preconditions: w.preconditions,
             effect,
             description: w.description,
             granted: w.granted,

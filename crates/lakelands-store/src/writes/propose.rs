@@ -802,7 +802,13 @@ impl Call<'_> {
         }
         let read = |f: &FieldName| sight.reads_from(&ty, f);
         let sees = |t: &TypeName| sight.ty(t).is_ok();
-        let requires = |v: &VerbName| o.verb(v).ok().and_then(|v| v.requires.clone());
+        // All a verb requires, as one `and`; one that does not parse as itself.
+        let requires = |v: &VerbName| {
+            let v = o.verb(v).ok()?;
+            let typed = v.conditions().map(|c| c.typed().map_err(|_| c.clone()));
+            let all = typed.collect::<std::result::Result<Vec<_>, _>>();
+            Some(all.map_or_else(|c| c, |args| lakelands_api::expr::Expr::And { args }.into()))
+        };
         let mut named = Named::default();
         e.names(&mut named);
         // A constraint is told to one who reads every field it reads, as

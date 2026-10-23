@@ -808,6 +808,9 @@ impl Declaration {
             Declaration::ValueType(v) => all.push(("constraint".into(), v.constraint.as_ref())),
             Declaration::Verb(v) => {
                 all.push(("requires".into(), v.requires.as_ref()));
+                for (i, p) in v.preconditions.iter().enumerate() {
+                    all.push((format!("preconditions[{i}].holds"), Some(&p.holds)));
+                }
                 if let crate::ontology::VerbEffect::Write { set } = &v.effect {
                     for (i, a) in set.iter().enumerate() {
                         all.push((format!("set[{i}].value"), Some(&a.value)));

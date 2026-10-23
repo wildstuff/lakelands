@@ -784,11 +784,11 @@ impl<'a> Across<'a> {
     }
 }
 
-/// The scope a verb's `requires` and assignments see: the record's fields
-/// and their provenance, what a path reads across a reference, and in an
-/// assignment `payload.<name>` for the call's payload. A set's `where`
-/// and a trigger's `when` see it over their own scope, `record`, with no
-/// payload (055, extended).
+/// The scope a verb's conditions and assignments see: the record's fields
+/// and their provenance, what a path reads across a reference, and
+/// `payload.<name>` for the call's payload. A set's `where` and a
+/// trigger's `when` see it over their own scope, `record`, with no payload
+/// (055, extended).
 pub(super) struct VerbScope<'a, S = RecordScope<'a>> {
     pub(super) record: S,
     pub(super) fields: &'a BTreeMap<FieldName, Value>,

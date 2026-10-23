@@ -2340,6 +2340,10 @@
    "name": "c"
   },
   {
+   "code": "precondition",
+   "name": "pc"
+  },
+  {
    "code": "object_set",
    "name": "s"
   },

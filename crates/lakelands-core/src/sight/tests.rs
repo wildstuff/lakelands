@@ -113,6 +113,7 @@ fn a_relation_and_a_verb_are_judged_by_the_sight() {
         scope: Default::default(),
         payload: vec![],
         risk: lakelands_api::ontology::Risk::Low,
+        preconditions: Vec::new(),
         requires: None,
         effect: VerbEffect::Write { set },
         description: None,

@@ -711,7 +711,14 @@ impl Decide<'_> {
             let (value, declared) = (self.at.settings.get(k), o.settings.get(k).map(|e| &e.decl));
             Sight::held(self.call.who, o).setting_shown(k, value, declared)
         };
-        requires(self.at.settings, verb, key, &record, now, &across, &told)?;
+        requires(
+            self.at.settings,
+            (verb, payload),
+            key,
+            &record,
+            (now, &across),
+            &told,
+        )?;
         // A verb on a link finds both its ends live and answered, whatever
         // its effect (035): one that writes the link has them judged where
         // the record is written, any other here, as `link` judges them.
