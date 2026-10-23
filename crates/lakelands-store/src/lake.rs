@@ -60,7 +60,7 @@ mod open;
 pub(crate) mod scrub;
 mod verify;
 pub use fold::Built;
-use fold::{Beside, Migrated, Recomputed, Step};
+use fold::{Beside, Migrated, Recomputed, Step, Swapped};
 pub(crate) use fold::{
     computes, computes_again, computing_changed, fields_again, renamed_fields, using_types,
 };

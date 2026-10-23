@@ -707,9 +707,12 @@ moment before, and opens a moment later.
      SQLite, a schema of its own on PostgreSQL) and marks it built at
      the log's tip. It opens the log and its own scratch only, never the
      projection the old release answers from and never the lease, so the
-     old writer writes on. It says the room it takes before it starts,
-     about as much as the projection; run again, it goes on from where it
-     stopped.
+     old writer writes on. Before it starts it says the room it takes,
+     in MiB: as much as the projection, measured from its files on SQLite
+     and from its tables' sizes on PostgreSQL (or, where a session holds
+     a table, from what the catalogue last recorded). Run again, it goes
+     on from where it stopped; run it again just before step 2 if the old
+     release forgot a source or removed values since.
   2. Stop every process of the old release, readers too.
   3. Run `lakelands upgrade` (or the host's own writer's open). The open
      folds only what was written after the build and swaps the scratch
@@ -732,9 +735,24 @@ moment before, and opens a moment later.
   whole log, and the next build ahead removes it and begins anew. A
   forget, purge or removal the old release made after the build is
   folded into it as a full rebuild would, so the build ahead answers
-  what the full rebuild answers. Where the swap meets another handle on
-  the projection (on SQLite, a reader of either release left running),
-  the open removes the build ahead and rebuilds as it did before 0.18.0.
+  what the full rebuild answers, but not at the tail's cost. A removal
+  of values after the build, and a forget the lake's rates do not scope,
+  makes the open fold the whole log again after the swap, as the old
+  release did when it made it: the upgrade then takes as long as one
+  without the build ahead, and both the open and `lakelands upgrade`
+  say so (`then the whole log again`). Running `lakelands build-ahead`
+  again after the act folds the whole log beside the old release
+  instead, and the upgrade is short again.
+
+  On SQLite a projection another handle reads (a reader of either
+  release left running) cannot be swapped. The open then folds the whole
+  log in place, as before 0.18.0, removes the build ahead and says so
+  (`removed the build ahead it could not swap in`). `LakeStore::rebuild`
+  and a forget or removal that rebuilds do the same while a reader is
+  open: the store asks before it builds, so a rebuild with a reader open
+  folds the log once, in place, and takes no second projection's room;
+  without a reader, it folds beside and the room is taken until the
+  swap. PostgreSQL's swap waits for its readers instead, as above.
   Nothing removes a build ahead on its own: it is the operator's room,
   kept for the upgrade it was made for; `lakelands build-ahead
   --discard` gives it back.

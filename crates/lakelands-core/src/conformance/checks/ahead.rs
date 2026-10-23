@@ -14,7 +14,7 @@ use crate::conformance::prelude::*;
 
 check!(
     BUILT_AHEAD = a_lake_built_ahead_then_written_answers_as_rebuilt,
-    "071 (lakelands#1322): a lake's projection is built ahead beside the writer that holds it, through its head, while that writer, a release that keeps no scratch, goes on: it forgets a source and purges what another brought into a type after the build, and the writer's open of the layout before goes on from the build ahead, swaps it in and answers every record with its provenance as a full rebuild of the same log does, the forgotten source's values and the purged records gone; a build ahead resumed past a removal of a source's values folds the whole log again, told the act, and the open that swaps it in answers as a full rebuild, the removed values gone; on an engine that keeps no scratch the build ahead is refused as unbound and nothing is written",
+    "071 (lakelands#1322): a lake's projection is built ahead beside the writer that holds it, through its head, while that writer, a release that keeps no scratch, goes on: it forgets a source and purges what another brought into a type after the build, and the writer's open of the layout before goes on from the build ahead, swaps it in and answers every record with its provenance as a full rebuild of the same log does, the forgotten source's values and the purged records gone; a build ahead resumed past a removal of a source's values folds the whole log again, told the act, and the open that swaps it in answers as a full rebuild, the removed values gone; with no act after the build ahead the open folds only the events after it, and says how many; a removal of a source's values after the build ahead is folded, and the open then folds the whole log again to finish it and says so; on an engine that keeps no scratch the build ahead is refused as unbound and nothing is written",
     given
 );
 
@@ -72,23 +72,38 @@ async fn as_rebuilt(store: &dyn LakeStore, want: Value, when: &str) -> Held {
 }
 
 /// The writer's open of the lake marked one layout back: it goes on from
-/// the build ahead, saying so.
+/// the build ahead marked at `built`, folds the events written after it,
+/// and says so. Where `erased` is given, it says it then folded the whole
+/// log again to finish an act that erased values after the build, or
+/// that it did not.
 async fn upgraded(
     store: Store,
     given: &Given,
-    location: &Location,
+    built: Position,
+    erased: Option<bool>,
     seams: Seams,
 ) -> Result<Store, Failure> {
+    let Some(location) = given.location.as_ref() else {
+        return Err(Failure::new("the harness names no location of the lake"));
+    };
+    let tail = store.head().await.must("reading the head")?.0 - built.0;
     ensure!(
         (given.lower)(location),
         "the harness marks the lake's projection one layout back"
     );
     let store = (given.reopen)(store, seams).await;
     let store = store.map_err(|e| Failure::new(format!("the upgrade's open: {e}")))?;
-    let why = store.rebuilt_at_open();
+    let why = store.rebuilt_at_open().unwrap_or_default();
+    let folded = format!(
+        "a build ahead had folded it through position {}, and the open folded the {tail} events \
+         after it",
+        built.0
+    );
+    let again = "folded the whole log again";
     ensure!(
-        why.as_ref().is_some_and(|w| w.contains("build ahead")),
-        "the writer's open of the layout before goes on from the build ahead: {why:?}"
+        why.contains(&folded) && erased.is_none_or(|e| why.contains(again) == e),
+        "the writer's open of the layout before goes on from the build ahead, says {folded:?}, \
+         and says {again:?} only after an act that erased values ({erased:?}): it said {why:?}"
     );
     Ok(store)
 }
@@ -143,7 +158,9 @@ async fn a_lake_built_ahead_then_written_answers_as_rebuilt(store: Store, given:
         built.ahead.is_none() && built.through == Some(head) && built.events == head.0 + 1,
         "the first build ahead folds the whole log, through the head {head:?}: {built:?}"
     );
-    // The older release acts after the build.
+    // The older release forgets and purges after the build. The open
+    // finishes the forget as the older release did, scoped or by a
+    // rebuild as the lake's rates choose, so which is not asked.
     store
         .forget_source(&"crm".into(), None)
         .await
@@ -154,17 +171,47 @@ async fn a_lake_built_ahead_then_written_answers_as_rebuilt(store: Store, given:
         .await
         .must("ingesting from web again")?;
     drop(l);
-    let store = upgraded(store, &given, &location, seams()).await?;
+    let store = upgraded(store, &given, head, None, seams()).await?;
     let p2 = json!(["p2", {"id": "p2", "city": "Oslo", "note": "kept"}]);
     let p3 = json!(["p3", {"id": "p3", "name": "Cy", "city": "Oslo"}]);
     let i3 = json!(["i3", {"label": "i3"}]);
-    let want = json!([[p2, p3], [i3]]);
+    let want = json!([[p2, p3], [i3.clone()]]);
     as_rebuilt(store.as_ref(), want, "with acts after the build ahead").await?;
+    // Only writes after the build ahead: the open folds them and nothing
+    // more.
+    let store = older(store).await?;
+    let built = (given.ahead)(location.clone(), seams()).await;
+    let built = built.must("building the projection ahead again")?;
+    let at = built
+        .through
+        .ok_or_else(|| Failure::new("a build ahead marks the head"))?;
+    Lake::of(store.as_ref())
+        .upsert("person", "p3", json!({"note": "tail"}))
+        .await?;
+    let store = upgraded(store, &given, at, Some(false), seams()).await?;
+    let p3 = json!(["p3", {"id": "p3", "name": "Cy", "city": "Oslo", "note": "tail"}]);
+    let want = json!([[p2, p3.clone()], [i3]]);
+    as_rebuilt(store.as_ref(), want, "with writes after the build ahead").await?;
+    // A removal after the build ahead: the open folds the events after it,
+    // then the whole log again, told the act, and says so.
+    let store = older(store).await?;
+    let built = (given.ahead)(location.clone(), seams()).await;
+    let built = built.must("building the projection ahead before a removal")?;
+    let at = built
+        .through
+        .ok_or_else(|| Failure::new("a build ahead marks the head"))?;
+    let all_of = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
+    let removed = store
+        .remove_values(&"web".into(), &all_of, false, None)
+        .await;
+    removed.must("removing web's values")?;
+    let store = upgraded(store, &given, at, Some(true), seams()).await?;
+    let want = json!([[p2, p3], []]);
+    as_rebuilt(store.as_ref(), want, "with a removal after the build ahead").await?;
     // A removal before the build ahead resumes: it folds the whole log.
     let store = older(store).await?;
     let first = (given.ahead)(location.clone(), seams()).await;
     first.must("building the projection ahead again")?;
-    let all_of = Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"));
     let removed = store
         .remove_values(&"erp".into(), &all_of, false, None)
         .await;
@@ -180,9 +227,10 @@ async fn a_lake_built_ahead_then_written_answers_as_rebuilt(store: Store, given:
     Lake::of(store.as_ref())
         .upsert("person", "p2", json!({"note": "after"}))
         .await?;
-    let store = upgraded(store, &given, &location, seams()).await?;
+    let store = upgraded(store, &given, head, Some(false), seams()).await?;
     let p2 = json!(["p2", {"id": "p2", "city": "Oslo", "note": "after"}]);
-    let want = json!([[p2], [i3]]);
+    let p3 = json!(["p3", {"id": "p3", "note": "tail"}]);
+    let want = json!([[p2, p3], []]);
     as_rebuilt(
         store.as_ref(),
         want,

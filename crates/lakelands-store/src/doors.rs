@@ -65,6 +65,14 @@ pub async fn build_ahead(location: Location, seams: Seams) -> Result<crate::lake
     exec::run(move || Lake::build_ahead(&location, seams)).await
 }
 
+/// How many bytes the projection of the lake at `location` takes, about
+/// what a build ahead beside it takes, measured without opening it
+/// ([`EngineOpener::room`](lakelands_api::engine::EngineOpener::room)).
+/// Refused as unbound by an engine that keeps no scratch.
+pub async fn room_ahead(location: Location, seams: Seams) -> Result<u64> {
+    exec::run(move || crate::lake::opener(&location, &seams)?.room(&location)).await
+}
+
 /// Remove the scratch built ahead beside the lake at `location`
 /// ([`Lake::discard_ahead`]).
 pub async fn discard_ahead(location: Location, seams: Seams) -> Result<bool> {

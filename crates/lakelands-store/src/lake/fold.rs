@@ -1317,7 +1317,7 @@ impl Lake {
             // It reads the recorded outputs and makes no call due but a
             // failed append's; the calls a write before it made due stay
             // that write's.
-            if self.rebuilt_beside(w, Beside::Rebuild)?.is_some() {
+            if let Swapped::In(_) = self.rebuilt_beside(w, Beside::Rebuild)? {
                 return self.catch_up_in(w);
             }
             self.engine.projection().clear()?;
@@ -1386,20 +1386,25 @@ impl Lake {
     /// Build the scratch beside this lake's projection as `how` says, and
     /// put it in the projection's place under the writer's lease: the
     /// writer's own lists of acts go with the fold and come back from it.
-    /// None, and nothing done, where the engine keeps no scratch, and
-    /// where the log holds no event, which no mark keeps: the caller
-    /// folds in place. Any other refusal of the swap leaves the
-    /// projection as it was, and the scratch marked.
+    /// Nothing done where the engine keeps no scratch, and where the log
+    /// holds no event, which no mark keeps: the caller folds in place. Any
+    /// other refusal of the swap leaves the projection as it was, and the
+    /// scratch marked.
     ///
-    /// No rebuild is refused for a reader (071): where the engine refuses
-    /// the swap while another handle reads the projection, the scratch is
-    /// removed, the writer's lists are as they were, and the caller folds
-    /// in place, as before 071 — an upgrade's open too, whose build ahead
-    /// is then spent.
-    pub(super) fn rebuilt_beside(&self, w: &mut Writer, how: Beside) -> Result<Option<Built>> {
+    /// No rebuild is refused for a reader (071): where the engine would
+    /// refuse the swap while another handle reads the projection, the log
+    /// is not folded beside it, and the caller folds in place, as before
+    /// 071 — an upgrade's open too, whose build ahead is then removed, as
+    /// it is where a reader came between the build and the swap.
+    pub(super) fn rebuilt_beside(&self, w: &mut Writer, how: Beside) -> Result<Swapped> {
         let lease = w.lease.clone().ok_or_else(no_lease)?;
+        // Asked first, so a fold beside is not spent on a swap refused.
+        if !self.engine.may_swap()? {
+            let spent = how == Beside::Resume && self.spend_ahead()?;
+            return Ok(Swapped::Busy(spent));
+        }
         let Some(mut builder) = Lake::scratch(&self.location, &self.seams)? else {
-            return Ok(None);
+            return Ok(Swapped::Kept);
         };
         builder.keys = self.keys.clone();
         let before = (
@@ -1435,20 +1440,45 @@ impl Lake {
         };
         let busy = |e: &Error| matches!(e.situation(), Some(Situation::SwapBusy { .. }));
         match swapped {
-            Ok(_) if built.through.is_some() => Ok(Some(built)),
+            Ok(_) if built.through.is_some() => Ok(Swapped::In(built)),
+            Ok(_) => Ok(Swapped::Kept),
             Err(e) if !busy(&e) => {
                 self.lose(w, &e);
                 Err(e)
             }
-            _ => {
+            Err(_) => {
                 (w.removals, w.forgotten, w.ahead, w.owed, w.failed) = before;
-                if built.through.is_some() {
-                    Lake::discard_ahead(&self.location, self.seams.clone())?;
-                }
-                Ok(None)
+                Lake::discard_ahead(&self.location, self.seams.clone())?;
+                Ok(Swapped::Busy(built.ahead.is_some()))
             }
         }
     }
+
+    /// Remove a build ahead an open that folds in place will not swap in:
+    /// whether one was marked. One a builder holds stays, and is not
+    /// counted.
+    fn spend_ahead(&self) -> Result<bool> {
+        match Lake::discard_ahead(&self.location, self.seams.clone()) {
+            Ok(marked) => Ok(marked),
+            Err(Error::Unbound { .. }) => Ok(false),
+            Err(e) if matches!(e.situation(), Some(Situation::Rebuilding { .. })) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// What became of a build beside the projection.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Swapped {
+    /// Folded beside the projection and put in its place.
+    In(Built),
+    /// Nothing built: the engine keeps no scratch, or the log holds no
+    /// event. The caller folds in place.
+    Kept,
+    /// Not put in place, since another handle read the projection: the
+    /// caller folds in place. True where a build ahead the open would
+    /// have gone on from was removed.
+    Busy(bool),
 }
 
 /// How a build beside the projection begins.

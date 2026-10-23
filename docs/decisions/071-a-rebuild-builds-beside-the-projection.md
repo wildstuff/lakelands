@@ -92,14 +92,23 @@ its mark. A fold that met an act erasing values, a source forgotten or
 values removed, may hold what the act erased, since it folded those
 values before it was told the act. Such a build folds the whole log
 again, told the act, as a rebuild is. The writer's open that upgrades
-the lake then folds only the events after the mark.
+the lake then folds only the events after the mark. An act erasing
+values among those events is met the same way: the open folds them,
+swaps, and then folds the whole log again to finish the act, as the old
+release did when it wrote it. The open says so, since it then takes as
+long as an upgrade without the build ahead; a build ahead run again
+after the act moves that cost to before the upgrade.
 
 A swap refused `swap_busy`, because another handle has the projection
-open, is not the open's failure. The open removes the scratch, gives the
-writer back what it knew before the build, and folds in place. An
-upgrade's build ahead is then spent. A reader left running must not
-keep a lake from opening, and the scratch cannot be swapped while it
-reads.
+open, is not the open's failure. A reader left running must not keep a
+lake from opening, and the scratch cannot be swapped while it reads. So
+the store asks the engine first (`LakeEngine::may_swap`), and where a
+swap would be refused it folds in place without folding beside: a
+rebuild then costs one fold and no second projection's room, not two.
+The open of an upgrade removes the build ahead it cannot swap in, and
+says so. A reader that comes between the question and the swap is met
+as before: the open removes the scratch, gives the writer back what it
+knew before the build, and folds in place.
 
 Nothing removes a build ahead on its own. A writer's open swaps in one
 that fits its layout, and the next build ahead removes one the log no
@@ -107,7 +116,11 @@ longer holds the mark of. A scratch of another layout whose mark the log
 still holds may be the next upgrade, already paid for. Only the operator
 knows whether that upgrade is still coming, so only the operator removes
 it: `lakelands build-ahead --discard`, after the command has said up
-front how much room the build takes.
+front how much room the build takes. The engine measures that room
+without opening the projection (`EngineOpener::room`): the files'
+sizes on SQLite; on PostgreSQL the tables' sizes, or, where a session
+holds a table for more than a second, the sizes the catalogue last
+recorded.
 
 On PostgreSQL the builder holds a session lock while its handle lives.
 The server lets a session's locks go only when it sees the connection

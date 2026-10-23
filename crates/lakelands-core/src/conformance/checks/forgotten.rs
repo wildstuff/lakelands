@@ -727,6 +727,9 @@ impl EngineOpener for ReclaimsOpener {
     ) -> lakelands_api::Result<Option<(CanonicalEvent, CanonicalEvent)>> {
         self.inner.log_ends(location)
     }
+    fn room(&self, location: &Location) -> lakelands_api::Result<u64> {
+        self.inner.room(location)
+    }
     fn open_scratch(
         &self,
         location: &Location,
@@ -768,6 +771,9 @@ impl lakelands_api::engine::LakeEngine for Reclaims {
     }
     fn swap(&self, lease: &Lease) -> lakelands_api::Result<Option<Position>> {
         self.inner.swap(lease)
+    }
+    fn may_swap(&self) -> lakelands_api::Result<bool> {
+        self.inner.may_swap()
     }
     fn rebuild_rate(&self) -> u64 {
         match self.fails[2].load(Ordering::SeqCst) {

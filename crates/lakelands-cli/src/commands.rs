@@ -1011,7 +1011,7 @@ pub async fn build_ahead(
         };
         return put(out, said);
     }
-    put(out, room(&location))?;
+    put(out, room(&location, &seams).await?)?;
     let started = std::time::Instant::now();
     let built = lakelands_store::build_ahead(location, seams).await?;
     let secs = started.elapsed().as_secs_f64();
@@ -1031,35 +1031,34 @@ pub async fn build_ahead(
 }
 
 /// How much room a build ahead takes: about what the projection it is
-/// built beside takes, measured on SQLite without opening it.
-fn room(location: &lakelands_api::Location) -> String {
+/// built beside takes, as the engine measures it without opening it.
+async fn room(
+    location: &lakelands_api::Location,
+    seams: &lakelands_api::seam::Seams,
+) -> Result<String, Failure> {
     use lakelands_api::location::EngineConfig;
-    match &location.engine {
-        EngineConfig::Sqlite { dir, .. } => {
-            let bytes: u64 = ["projection.db", "projection.db-wal"]
-                .iter()
-                .filter_map(|f| std::fs::metadata(dir.join(f)).ok())
-                .map(|m| m.len())
-                .sum();
-            let mib = bytes as f64 / (1024.0 * 1024.0);
-            format!(
-                "building ahead takes about {mib:.1} MiB in {}, as much as the projection beside it, \
-                 until the upgrade puts it in that one's place",
-                dir.display()
-            )
+    let bytes = match lakelands_store::room_ahead(location.clone(), seams.clone()).await {
+        Ok(bytes) => bytes,
+        Err(lakelands_api::Error::Unbound { .. }) => {
+            return Ok("building ahead keeps nothing on this engine".to_owned());
         }
+        Err(e) => return Err(e.into()),
+    };
+    let mib = bytes as f64 / (1024.0 * 1024.0);
+    let place = match &location.engine {
+        EngineConfig::Sqlite { dir, .. } => format!("in {}", dir.display()),
         EngineConfig::Postgres { schema, .. } => {
             let schema = schema
                 .clone()
                 .unwrap_or_else(|| format!("lakelands_{}", location.lake));
-            format!(
-                "building ahead takes about as much room in the database as the projection's \
-                 tables in schema `{schema}`, in a schema of its own beside them, until the \
-                 upgrade puts it in their place; the projection is not opened to measure it"
-            )
+            format!("in the database, in a schema of its own beside `{schema}`")
         }
-        _ => "building ahead keeps nothing on this engine".to_owned(),
-    }
+        _ => "beside the projection".to_owned(),
+    };
+    Ok(format!(
+        "building ahead takes about {mib:.1} MiB {place}, as much as the projection beside it, \
+         until the upgrade puts it in that one's place"
+    ))
 }
 
 /// `upgrade`: say which log format the lake is written in, as a
@@ -1110,6 +1109,21 @@ pub async fn upgrade(
                 let secs = started.elapsed().as_secs_f64();
                 // Another writer may have rebuilt it since the read-only open.
                 let said = match store.rebuilt_at_open() {
+                    Some(why)
+                        if why.contains("a build ahead had folded")
+                            && why.contains("folded the whole log again") =>
+                    {
+                        format!(
+                            "rebuilt the projection of {lake} from layout {found} in {secs:.1} s, \
+                         folding what was written after the build ahead, then the whole log \
+                         again: the log held an act erasing values after the build ahead"
+                        )
+                    }
+                    Some(why) if why.contains("removed the build ahead") => format!(
+                        "rebuilt the projection of {lake} from layout {found} in {secs:.1} s, \
+                         folding the whole log in place: another handle read the projection, \
+                         so the build ahead could not be swapped in and was removed"
+                    ),
                     Some(why) if why.contains("build ahead") => format!(
                         "rebuilt the projection of {lake} from layout {found} in {secs:.1} s, \
                          folding only what was written after the build ahead"

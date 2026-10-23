@@ -3,7 +3,8 @@
 //! writer holds it: the build reads the log and folds into its own scratch
 //! schema only, so it finishes while another session holds every
 //! projection table and the lease locked, and the writer writes on; the
-//! writer's open of the layout before goes on from it.
+//! writer's open of the layout before goes on from it. The room it takes is
+//! measured before, and answered while the tables are held.
 
 mod common;
 
@@ -75,7 +76,15 @@ async fn a_lake_is_built_ahead_beside_its_writer_without_its_projection_or_lease
     let note = |k: &str| source_record("note", k, json!({"text": k}));
     l.ingest("crm", vec![note("a"), note("b")]).await.unwrap();
     let head = store.head().await.unwrap();
+    let room = lakelands_store::room_ahead(location.clone(), seams()).await;
+    assert!(room.unwrap() > 0, "the projection's tables take room");
     let release = tokio::task::block_in_place(|| hold(&url, &schema));
+    // Measured while every table is held, it answers what the catalogue
+    // recorded, and waits on no one past its second.
+    let held = lakelands_store::room_ahead(location.clone(), seams());
+    let held = tokio::time::timeout(Duration::from_secs(10), held).await;
+    held.expect("the measure waits on no projection table")
+        .unwrap();
     let built = lakelands_store::build_ahead(location.clone(), seams());
     let built = tokio::time::timeout(Duration::from_secs(60), built).await;
     drop(release);

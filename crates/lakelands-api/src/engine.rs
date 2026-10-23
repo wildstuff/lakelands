@@ -225,6 +225,17 @@ pub trait LakeEngine: Send + Sync {
             op: "swap".to_owned(),
         }))
     }
+
+    /// Whether a [`swap`](Self::swap) on this handle would find no other
+    /// handle reading the projection it would replace, asked before a
+    /// rebuild folds the log beside it, so no fold is spent on a swap the
+    /// engine refuses for a reader. A handle may open between the answer
+    /// and the swap, which then refuses as it says. An engine whose swap
+    /// waits for its readers, or that keeps no scratch, answers true, as
+    /// this default does.
+    fn may_swap(&self) -> Result<bool> {
+        Ok(true)
+    }
 }
 
 /// The projection's write side. The fold calls it inside one transaction
@@ -702,6 +713,22 @@ pub trait EngineOpener: Send + Sync {
         let _ = location;
         Err(crate::Error::unbound(crate::error::Seam::Operation {
             op: "open_scratch".to_owned(),
+        }))
+    }
+
+    /// How many bytes the projection the lake at `location` answers from
+    /// takes where it is kept, which a scratch built beside it takes about
+    /// as much of again
+    /// (`docs/decisions/071-a-rebuild-builds-beside-the-projection.md`).
+    /// Measured without opening the projection or waiting on a handle that
+    /// holds it: an engine that cannot measure it so may answer what its
+    /// catalogue last recorded. Zero where it keeps no projection yet. An
+    /// engine that keeps no scratch refuses as unbound, as this default
+    /// does.
+    fn room(&self, location: &Location) -> Result<u64> {
+        let _ = location;
+        Err(crate::Error::unbound(crate::error::Seam::Operation {
+            op: "room".to_owned(),
         }))
     }
 }

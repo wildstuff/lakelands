@@ -115,19 +115,26 @@ impl Lake {
         };
         let built = match rebuilds {
             true => lake.rebuilt_beside(&mut lake.writer(), how)?,
-            false => None,
+            false => Swapped::Kept,
         };
-        if rebuilds && built.is_none() {
+        if rebuilds && !matches!(built, Swapped::In(_)) {
             lake.engine.projection().clear()?;
         }
         lake.rebuilt_at_open = rebuilt_at_open.map(|why| match built {
-            Some(Built {
+            Swapped::In(Built {
                 ahead: Some(at),
                 events,
                 ..
             }) => format!(
                 "{why}; a build ahead had folded it through position {}, and the open folded the {events} events after it",
                 at.0
+            ),
+            Swapped::Busy(true) => format!(
+                "{why}; another handle read the projection, so the open folded the whole log in \
+                 place, and removed the build ahead it could not swap in"
+            ),
+            Swapped::Busy(false) => format!(
+                "{why}; another handle read the projection, so the open folded the whole log in place"
             ),
             _ => why,
         });
@@ -147,8 +154,13 @@ impl Lake {
         }
         if rebuilds {
             let tip = lake.writer().tip.as_ref().map_or(0, |t| t.0.0);
-            lake.measured(began, built.map_or(tip, |b| b.events));
+            let events = match built {
+                Swapped::In(b) => b.events,
+                _ => tip,
+            };
+            lake.measured(began, events);
         }
+        let mut refolded = false;
         if let Some(lease) = lease {
             let mut w = lake.writer();
             let now = lake.clock(&mut w);
@@ -273,7 +285,19 @@ impl Lake {
             // An owed rebuild refuses the open, since the projection is not
             // whole without it; a reclaim that fails again stays owed and
             // is told, never a lock-out (lakelands#1161).
+            let rebuilt = lake.rebuilds.load(Ordering::SeqCst);
             lake.finish_forgetting(&mut w)?;
+            refolded = lake.rebuilds.load(Ordering::SeqCst) != rebuilt;
+        }
+        // An act erasing values the folded log held and the projection had
+        // not erased, written after a build ahead or met by a fold not told
+        // of it, is finished by a rebuild of the whole log: said, since the
+        // open then took as long as one.
+        if let Some(why) = lake.rebuilt_at_open.as_mut().filter(|_| refolded) {
+            why.push_str(
+                "; the log held an act erasing values that the projection had not erased, so the \
+                 open then folded the whole log again to finish it",
+            );
         }
         {
             // A read-only handle keeps the folded position `catch_up`
