@@ -74,7 +74,9 @@ appended, the batch's tip when it was decided for a replay.
 ### The exceptions
 
 A batch's answers depend on its batch only here. Each exception has its
-oracle in the rows every engine runs.
+oracle in the rows: the failed append's and the panics' run on every
+engine, the failed fold's on the memory engine, whose fold a probe
+refuses, and the seal's in the sealed-by-size row every engine runs.
 
 - **An append that fails.** Where the durable append fails, nothing of
   the batch is in the log, and every write of it is answered that

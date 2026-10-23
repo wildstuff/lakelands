@@ -76,6 +76,26 @@ fn tagged(lake: &str, id: &str) -> Principal {
     }
 }
 
+/// A writer of every type, `restricted` held, who is shown only the kids
+/// tagged `a`: nothing across a kid's edge is held from it, so it is told
+/// what a far write sets off at a kid it is shown.
+fn kin(lake: &str, id: &str) -> Principal {
+    let kid = TypeGrants {
+        only: [(FieldName::from("tag"), json!("a"))].into(),
+        ..TypeGrants::default()
+    };
+    let grants = Grants {
+        default: Access::Write,
+        types: [(TypeName::from("kid"), kid)].into(),
+        restricted: true,
+        ..Grants::default()
+    };
+    Principal {
+        grants,
+        ..owner(lake, id)
+    }
+}
+
 /// What an engine is to do: fail or panic at the next so many appends,
 /// panic after the next so many made their events durable, fail the next
 /// so many reads of its tip; and how many appends it made.
@@ -154,9 +174,10 @@ fn declaration(d: Value) -> Declaration {
 /// `item`, a number, a tag and a reference to an item, linked one to one
 /// over `next` and many to many over `near`; the items whose number
 /// passes 5, and those whose referred item's does; a trigger on those
-/// whose referred item's number passes 7, across the edge; the items by
-/// tag, a view kept, and a trigger on it; and `obs`, which a source
-/// feeds.
+/// whose referred item's number passes 7, across the edge; `kid`, a tag
+/// and a reference to an item, and the kids whose item's number passes 5;
+/// the items by tag, a view kept, and a trigger on it; and `obs`, which a
+/// source feeds.
 pub async fn declared(store: &dyn LakeStore, lake: &str) {
     let cat = store.catalog(WriteContext::default());
     let who = owner(lake, "owner");
@@ -170,6 +191,10 @@ pub async fn declared(store: &dyn LakeStore, lake: &str) {
         json!({"declare": "object_set", "name": "big", "of": "item", "where": "n > 5"}),
         json!({"declare": "object_set", "name": "far", "of": "item", "where": "up.n > 5"}),
         json!({"declare": "trigger", "name": "hot", "on": "item", "when": "up.n > 7"}),
+        json!({"declare": "type", "name": "kid",
+            "fields": [{"name": "tag", "type": text},
+                       {"name": "up", "type": {"kind": "reference", "target": "item"}}]}),
+        json!({"declare": "object_set", "name": "kin", "of": "kid", "where": "up.n > 5"}),
         json!({"declare": "type", "name": "by_tag", "key": ["tag"],
             "view": {"source": "item", "group_by": ["tag"],
                      "measures": [{"name": "n", "expr": "count()"}]},
@@ -215,14 +240,15 @@ fn upsert_as(who: Principal, key: &str, v: Value) -> Asked {
 /// lake refuses, some referring to another item, retirements, links and
 /// unlinks, some under one of 3 idempotency keys; and, each once at a
 /// place the seed picks, the cases a batch could get wrong: a one-to-one
-/// link moved within a batch, a far write that sets off a set and a
-/// trigger across an edge a job before it laid, a writer told of a group
-/// of a kept view that later jobs empty, the retry of a write
-/// after an earlier job retired, or moved out of its retrier's sight, the
-/// record it set something off at, a retirement refused past the lake's
-/// `max_set_changes` after it retired a link, then that link, that group
-/// and the record written again, a job deeper than the ceiling beside one that is not, and a job
-/// that names a cause between two that do not.
+/// link moved within a batch, a far write that sets a kid in a set across
+/// an edge a job before it laid, its writer shown the kid until a later
+/// job moves it out of sight, a writer told of a group of a kept view that
+/// later jobs empty, the retry of a write after an earlier job retired, or
+/// moved out of its retrier's sight, the record it set something off at, a
+/// retirement refused past the lake's `max_set_changes` after it retired a
+/// link, then that link, that group and the record written again, a job
+/// deeper than the ceiling beside one that is not, and a job that names a
+/// cause between two that do not.
 pub struct Writes {
     state: u64,
     keys: u64,
@@ -293,6 +319,7 @@ impl Writes {
     fn case(&mut self, lake: &str, which: u64) -> Vec<Asked> {
         let ann = || owner(lake, "ann");
         let item = || TypeName::from("item");
+        let kid = |who, v| plain(who, Write::Upsert("kid".into(), "c1".into(), patch(v)));
         let link = |w: fn(TypeName, RecordKey, _, RecordKey) -> Write, to: &str| {
             plain(ann(), w(item(), "k0".into(), "next".into(), to.into()))
         };
@@ -305,12 +332,12 @@ impl Writes {
                 link(|t, k, r, to| Write::Link(t, k, r, to, Patch::new()), "k2"),
             ],
             1 => vec![
-                upsert_as(ann(), "k2", json!({"n": 0, "tag": "a"})),
-                upsert_as(ann(), "k1", json!({"n": 1, "tag": "a", "up": "k2"})),
-                upsert_as(tagged(lake, "bob"), "k2", json!({"n": 9})),
-                upsert_as(ann(), "k1", json!({"tag": "b"})),
+                upsert_as(ann(), "p1", json!({"n": 0, "tag": "a"})),
+                kid(ann(), json!({"tag": "a", "up": "p1"})),
+                upsert_as(kin(lake, "cy"), "p1", json!({"n": 9})),
+                kid(ann(), json!({"tag": "b"})),
                 upsert_as(tagged(lake, "bob"), "b1", json!({"n": 1, "tag": "a"})),
-                upsert_as(ann(), "k2", json!({"tag": "b"})),
+                upsert_as(ann(), "f2", json!({"tag": "b"})),
                 upsert_as(ann(), "b1", json!({"tag": "b"})),
             ],
             2 => {
@@ -481,12 +508,12 @@ struct Written {
     appends: usize,
 }
 
-/// What `lake` answers its owner of the items and of the kept view by
+/// What `lake` answers its owner of the items, the kids and the kept view by
 /// tag, as the wire writes it.
 async fn held(store: &dyn LakeStore, lake: &str) -> String {
     let (cat, who) = (store.catalog(WriteContext::default()), owner(lake, "owner"));
     let mut held = String::new();
-    for ty in ["item", "by_tag"] {
+    for ty in ["item", "kid", "by_tag"] {
         let all = serde_json::from_value(json!({"limit": 500})).expect("a find");
         let found = cat.find(&who, &ty.into(), all).await;
         held += &serde_json::to_string(&found.map_err(|e| e.to_string())).expect("it writes");

@@ -264,15 +264,14 @@ async fn a_batch_is_answered_before_the_next_is_folded() {
         }
     }));
     let held = batches.hold();
-    let queue = |asked: Asked| {
-        let batches = batches.clone();
-        tokio::spawn(async move { batches.write(vec![asked]).await })
-    };
-    let first = queue(batched::upsert(name, "a", 1));
-    let second = queue(batched::upsert(name, "b", 2));
-    while batches.queued() < 2 {
-        tokio::time::sleep(Duration::from_millis(1)).await;
+    batched::until(|| batches.queued() == 0).await;
+    let mut callers = Vec::new();
+    for (n, key) in [(1, "a"), (2, "b")] {
+        let (b, asked) = (batches.clone(), batched::upsert(name, key, n));
+        callers.push(tokio::spawn(async move { b.write(vec![asked]).await }));
+        batched::until(|| batches.queued() == n as usize).await;
     }
+    let (second, first) = (callers.pop().expect("two"), callers.pop().expect("two"));
     drop(held);
     tokio::task::spawn_blocking(move || inside.recv())
         .await
