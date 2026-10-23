@@ -40,7 +40,7 @@ pub fn order(lake: &str) -> Vec<Asked> {
     order.iter().flatten().filter(of).cloned().collect()
 }
 
-/// `jobs`, taken from a queue in this order.
+/// `jobs`, queued in this order, which the queue takes them in.
 pub(crate) fn taken(jobs: &[Job]) {
     if let Some(order) = lakelands_core::lock(&ORDER).as_mut() {
         let asked = |j: &Job| (j.context, j.who.clone(), j.write.clone(), j.opts.clone());

@@ -1131,33 +1131,36 @@ enum Told {
     Replayed(Outcome),
 }
 
-/// Record writes queued together, decided under one turn. One runs alone,
-/// as [`Call::record`] decides it, where the writer must first catch up,
-/// regain its lease or append a held answer, and where it does not batch
-/// ([`Write::batches`]). The others are decided one by one, each against
-/// the drafts of those before it, and appended together, until their
-/// events reach the lake's `commit_window_events`; none is answered
-/// before that append returns. A job refused, or stopped, is answered
-/// alone and leaves nothing behind; one that stopped ends its batch.
-/// Each answer goes to `replies`, given once the turn lets the lake go.
-pub(crate) fn write_many(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) {
+/// The head of record writes queued together, decided under one turn,
+/// and the jobs left behind it. It runs alone, as [`Call::record`]
+/// decides it, where the writer must first catch up, regain its lease or
+/// append a held answer, and where it does not batch
+/// ([`Write::batches`]). Otherwise it and the jobs behind it that batch
+/// are decided one by one, each against the drafts of those before it,
+/// and appended together, until their events reach the lake's
+/// `commit_window_events`; none is answered before that append returns.
+/// A job refused, or stopped, is answered alone and leaves nothing
+/// behind; one that stopped ends its batch. Each answer goes to
+/// `replies`, given once the turn lets the lake go.
+pub(crate) fn write_many(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) -> Vec<Job> {
     let mut jobs = std::collections::VecDeque::from(jobs);
-    while let Some(head) = jobs.pop_front() {
-        let w = turn.writer();
-        let ready = !w.lost && !w.behind && w.answers.is_empty();
-        let batches = |j: &Job| j.write.batches(&w.ontology, &j.context);
-        if !(ready && batches(&head)) {
-            drop(w);
-            replies.push(head.alone(turn));
-            continue;
-        }
-        let n = jobs.iter().take_while(|j| batches(j)).count();
-        let batch = std::iter::once(head).chain(jobs.drain(..n)).collect();
+    let Some(head) = jobs.pop_front() else {
+        return Vec::new();
+    };
+    let w = turn.writer();
+    let ready = !w.lost && !w.behind && w.answers.is_empty();
+    let batches = |j: &Job| j.write.batches(&w.ontology, &j.context);
+    if !(ready && batches(&head)) {
         drop(w);
-        for left in batched(turn, batch, replies).into_iter().rev() {
-            jobs.push_front(left);
-        }
+        replies.push(head.alone(turn));
+        return jobs.into();
     }
+    let n = jobs.iter().take_while(|j| batches(j)).count();
+    let batch = std::iter::once(head).chain(jobs.drain(..n)).collect();
+    drop(w);
+    let mut left = batched(turn, batch, replies);
+    left.extend(jobs);
+    left
 }
 
 impl Job {

@@ -144,6 +144,9 @@ pub(crate) fn queued(lake: &Lake) -> usize {
 /// nobody holds it.
 fn queue(lake: &Arc<Lake>, entry: Entry) {
     let mut q = lakelands_core::lock(&lake.queue);
+    if let Entry::Records(jobs) = &entry {
+        crate::batch::taken(jobs);
+    }
     q.entries.push_back(entry);
     let held = std::mem::replace(&mut q.held, true);
     drop(q);
@@ -196,7 +199,6 @@ impl Holding {
                 jobs.append(more);
                 q.entries.pop_front();
             }
-            crate::batch::taken(jobs);
         }
         q.held = entry.is_some();
         entry
@@ -211,7 +213,13 @@ impl Holding {
         match entry {
             Entry::Alone(job) => self.replies.push(job(&Turn(&lake))),
             Entry::Records(jobs) => {
-                crate::writes::write_many(&Turn(&lake), jobs, &mut self.replies);
+                // One batch a turn, so its answers are given before the
+                // next: what it left goes back to the head of the queue.
+                let left = crate::writes::write_many(&Turn(&lake), jobs, &mut self.replies);
+                if !left.is_empty() {
+                    let mut q = lakelands_core::lock(&self.queue);
+                    q.entries.push_front(Entry::Records(left));
+                }
             }
         }
     }

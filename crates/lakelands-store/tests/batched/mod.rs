@@ -928,7 +928,7 @@ pub async fn a_soak_replays_serially(place: &Place, name: &str) {
         // recorded says whose each write is.
         let mut writes = Writes::new(c).take(name, each);
         for (_, who, ..) in &mut writes {
-            who.id = format!("{}.{c}", who.id).into();
+            who.id = format!("{}.{c}", who.id);
         }
         let batches = o.batches.clone();
         running.push(tokio::spawn(async move {

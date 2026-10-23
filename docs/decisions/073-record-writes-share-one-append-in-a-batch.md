@@ -91,7 +91,9 @@ oracle in the batched rows every engine runs.
   rolled back, the writer is marked behind and reads the log's tip again
   as it catches up, so events the engine made durable before the panic
   are kept. The lease is left as it is. The writes queued behind still
-  run, and the lake writes again.
+  run, and the lake writes again. Where that recovery panics too, the
+  record writes taken from the queue with the batch and not decided yet
+  are answered `stopped` as well; the entries queued after them run.
 
 ## Why
 
