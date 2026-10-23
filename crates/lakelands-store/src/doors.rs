@@ -38,7 +38,7 @@ use crate::exec;
 use crate::ingest;
 use crate::lake::{Lake, owing};
 use crate::reads::{Judged, Pulled, Reader};
-use crate::writes::{self, Call, External, MadeDue};
+use crate::writes::{self, Call, External, MadeDue, When};
 
 /// When a read reads: its axes, and the clock a cursor carries from its
 /// first page where it continues one.
@@ -810,7 +810,7 @@ impl Catalog for Doors {
             let w = c.writer()?;
             let view = c.lake.engine.view(None)?;
             let report = c
-                .preflight_value_type(&w, view.as_ref(), &m, (None, c.tells()))?
+                .preflight_value_type(&w, view.as_ref(), &m, (None, c.judging(When::Plan)))?
                 .report;
             c.renames_shown(&w.ontology, &m, &report)?;
             Ok(Reply {

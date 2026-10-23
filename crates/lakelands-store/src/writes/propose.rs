@@ -115,13 +115,12 @@ impl Call<'_> {
         // A holder of `only` changes no shape, and proposes no write that
         // anything but the write itself could move off its pairs (051).
         granted(!write.is_schema() || !rights::holds_only(self.who))?;
-        let pin = |ty: &TypeName| {
-            ordinary_door(ty)?;
-            let sees = Sight::held(self.who, &w.ontology);
-            self.pin(&w, sees.ty(ty)?, None)
-        };
         let mut d = self.decide(&w, view.as_ref(), now, 1);
-        let mut pinned = false;
+        let pin = |d: &Decide<'_>, ty: &TypeName| {
+            ordinary_door(ty)?;
+            self.pin(&w, d.at.sight.ty(ty)?, None)
+        };
+        let (mut pinned, judging) = (false, Judging::Proposal);
         // A change of the ontology keeps what it would do as its proposer
         // is shown it without `restricted`, so no count it keeps tells of a
         // hold; each reader is shown it as its listing shows it (062).
@@ -145,7 +144,7 @@ impl Call<'_> {
                 patch,
                 opts,
             } => {
-                pinned = pin(ty)?;
+                pinned = pin(&d, ty)?;
                 let mut plan = d.plan(Op::Upsert(ty, key, patch), opts.expected_version)?;
                 let EventBody::RecordUpserted {
                     patch: mut checked, ..
@@ -161,7 +160,7 @@ impl Call<'_> {
                 *patch = checked;
             }
             ProposedWrite::Retire { ty, key, opts } => {
-                pinned = pin(ty)?;
+                pinned = pin(&d, ty)?;
                 d.plan(Op::Retire(ty, key), opts.expected_version)?;
             }
             ProposedWrite::Call {
@@ -191,7 +190,11 @@ impl Call<'_> {
                         in_force = Some(declarations.clone());
                         Some(Vec::new())
                     }
-                    false => Some(as_plain.bundle_drafts(&w, changed, (now, 0, true))?.types),
+                    false => Some(
+                        as_plain
+                            .bundle_drafts(&w, changed, (now, 0, judging))?
+                            .types,
+                    ),
                 };
                 *plan = bundled.map(|types| Box::new(plan::plan_of(&w, (types, Vec::new()))));
             }
@@ -199,7 +202,8 @@ impl Call<'_> {
                 let author = self.authored(&w.ontology, migration)?;
                 // A retarget converts as its author is answered (lakelands#1071).
                 let judged = (&**migration, author.as_ref(), Some(self.who));
-                let planned = as_plain.preflight_plan(&w, view.as_ref(), judged, (None, true))?;
+                let planned =
+                    as_plain.preflight_plan(&w, view.as_ref(), judged, (None, judging))?;
                 // One whose target is in force changes nothing: answered as
                 // a declaration in force is, and not filed (027, extended).
                 if unchanged(&w.ontology, migration, &planned) {
@@ -226,7 +230,7 @@ impl Call<'_> {
                 // Refused by a constraint left broken only on what its
                 // proposer is told of, as a migration is.
                 let found = as_plain
-                    .preflight_value_type(&w, view.as_ref(), &m, (None, true))?
+                    .preflight_value_type(&w, view.as_ref(), &m, (None, judging))?
                     .report;
                 self.renames_shown(&w.ontology, &m, &found)?;
                 **report = fits(found, false)?;
@@ -240,8 +244,7 @@ impl Call<'_> {
             ProposedWrite::Declare { plan, .. } => plan.as_deref().cloned(),
             ProposedWrite::Migrate { migration, report } => {
                 let mut types = vec![self.shown(&w, migration, (**report).clone())?];
-                let sight = Sight::held(self.who, &w.ontology);
-                types.extend(plan::others_shown(&sight, std::mem::take(&mut others)));
+                types.extend(plan::others_shown(&d.at.sight, std::mem::take(&mut others)));
                 Some(plan::plan_of(&w, (types, Vec::new())))
             }
             ProposedWrite::MigrateValueType { report, .. } => {
@@ -251,7 +254,7 @@ impl Call<'_> {
             _ => None,
         };
         if let Some(p) = &mut shown {
-            plan::shown_plan(p, &Sight::held(self.who, &w.ontology), view.as_ref())?;
+            plan::shown_plan(p, &d.at.sight, view.as_ref())?;
         }
         // A bundle wholly in force is filed for nothing: its accept would
         // change nothing. It is answered at the head, as `apply` answers it,
@@ -554,7 +557,7 @@ impl Call<'_> {
         // The proposer's events are written as the proposer and caused by
         // the acceptance before their record is computed.
         let mut d = self.decide(&w, view.as_ref(), now, 1);
-        d.who = &proposer;
+        d.at.sight = Sight::held(&proposer, &w.ontology);
         (d.envelope.writer, d.envelope.cause) = (Some(p.proposer.clone()), Some(accepted_at));
         // What the write leaves is judged by the reviewer's pairs too: a
         // holder of `only` accepts no write that takes a record out of its
@@ -657,7 +660,7 @@ impl Call<'_> {
                 self.check_bundle(&w.ontology, declarations)?;
                 let mut changed = declarations.clone();
                 changed.retain(|d| !w.ontology.in_force(d));
-                let own = self.bundle_drafts(&w, changed, (now, drafts.len(), false))?;
+                let own = self.bundle_drafts(&w, changed, (now, drafts.len(), Judging::Act))?;
                 sections.0 = own.types;
                 drafts.extend(own.drafts.into_iter().map(&as_accepted));
             }
@@ -674,7 +677,8 @@ impl Call<'_> {
                 // Judged as its author's at the proposal: the lake's own
                 // names are judged again.
                 let judged = (&**migration, None, Some(&proposer));
-                let plan = self.preflight_plan(&w, view.as_ref(), judged, (Some(now), false))?;
+                let plan =
+                    self.preflight_plan(&w, view.as_ref(), judged, (Some(now), Judging::Act))?;
                 // So would it take away a mark set since, which the hash
                 // does not cover: it restates what its report said, no more.
                 if plan.report.restated != report.restated {
@@ -709,7 +713,8 @@ impl Call<'_> {
                     to: (**to).clone(),
                     renames: renames.clone(),
                 };
-                let plan = self.preflight_value_type(&w, view.as_ref(), &m, (Some(now), false))?;
+                let plan =
+                    self.preflight_value_type(&w, view.as_ref(), &m, (Some(now), Judging::Act))?;
                 // Renames reach only the fields the proposal's report named:
                 // one that came to use the value type since would be
                 // rewritten unseen by the proposer and the reviewer.

@@ -224,15 +224,15 @@ impl Call<'_> {
     /// preflight makes anyway. Past the lake's `max_set_changes` it decides
     /// no further, and the plan holds one change too many: a stale report
     /// and a migration that is not lossless are refused before that is.
-    /// Where `telling`, as a proposal's, a constraint left broken is lossy
-    /// only by a record its reader is told of, and is not refused
+    /// Judged as a proposal's plan, a constraint left broken is lossy only
+    /// by a record its reader is told of, and is not refused
     /// `constraint_left_broken` (062).
     pub(crate) fn preflight_plan(
         &self,
         w: &Writer,
         view: &dyn ProjectionView,
         (m, author, judged): (&Migration, Option<&Authored>, Option<&Principal>),
-        (now, telling): (Option<Timestamp>, bool),
+        (now, judging): (Option<Timestamp>, Judging),
     ) -> Result<MigrationPlan> {
         let before = w.ontology.ty(&m.to.name)?.clone();
         // A migration reshapes stored records, and a view stores none. A
@@ -823,7 +823,7 @@ impl Call<'_> {
             // A proposal only tells: a record held from its proposer moves
             // nothing it is answered, so it makes the report lossy only at
             // the accept, which judges every record (062).
-            report.lossless &= !c.at_ingest.refuses() || (telling && records == 0);
+            report.lossless &= !c.at_ingest.refuses() || (judging.tells() && records == 0);
             if records == 0 {
                 continue;
             }
@@ -843,7 +843,7 @@ impl Call<'_> {
             if refs.is_empty() {
                 continue;
             }
-            let mut walked = Walked::of(&after, decl, &refs, (&sees, false))?;
+            let mut walked = Walked::of(&after, decl, &refs, (&sees, Judging::Act))?;
             // The references the moves rewrite, as they leave them (062).
             let mut unlived = Unlived::of(decl, &refs, &sees);
             if (walked.judges(true) || unlived.watches()) && !plan.moves.is_empty() {
@@ -874,7 +874,7 @@ impl Call<'_> {
                 }
             }
             // As its own type's: a proposal is lossy by what it is told of.
-            let (breaches, lossless) = walked.kept(telling)?;
+            let (breaches, lossless) = walked.kept(judging)?;
             report.breaches.extend(breaches);
             report.lossless &= lossless;
         }
@@ -909,7 +909,7 @@ impl Call<'_> {
             // Told, a link held from its reader is no more one than a
             // retired link is (062).
             live(view, &lt, |l| {
-                if telling && sees.withheld(l) {
+                if judging.tells() && sees.withheld(l) {
                     return Ok(());
                 }
                 for (seen, at) in ends.iter_mut().zip([links::FROM, links::TO]) {
@@ -1329,15 +1329,15 @@ impl Call<'_> {
     /// `schema`, a proposal for none. Given `now`, the time of an apply, it
     /// decides each record's set memberships as the step leaves the record,
     /// with what reads a renamed value computed again and the new
-    /// declaration in force. Where `telling`, as a proposal's, a constraint
-    /// left broken refuses only by a record its reader is told of (062); a
+    /// declaration in force. Judged as a proposal's plan, a constraint left
+    /// broken refuses only by a record its reader is told of (062); a
     /// misfit counts every record alike, a retired one too.
     pub(crate) fn preflight_value_type(
         &self,
         w: &Writer,
         view: &dyn ProjectionView,
         m: &ValueTypeMigration,
-        (now, telling): (Option<Timestamp>, bool),
+        (now, judging): (Option<Timestamp>, Judging),
     ) -> Result<ValueTypePlan> {
         let to = &m.to;
         let current = w
@@ -1526,7 +1526,7 @@ impl Call<'_> {
                 true => BTreeSet::new(),
                 false => reached.iter().cloned().collect(),
             };
-            let mut walked = Walked::of(&probe, decl, &moving, (&sees, false))?;
+            let mut walked = Walked::of(&probe, decl, &moving, (&sees, Judging::Act))?;
             let shown = |r: &StoredRecord| match sees.withheld(r) {
                 true => Ok(false),
                 false => crate::reads::answered(view, &sees, &name, &r.key),
@@ -1597,7 +1597,7 @@ impl Call<'_> {
                 }
                 Ok(())
             })?;
-            let (breaches, lossless) = walked.kept(telling)?;
+            let (breaches, lossless) = walked.kept(judging)?;
             let refuses = |b: &&Breach| {
                 let c = decl.constraints.iter().find(|c| c.name == b.constraint);
                 c.is_some_and(|c| c.at_ingest.refuses())
@@ -1705,8 +1705,8 @@ impl Call<'_> {
         first: usize,
     ) -> Result<Vec<Draft>> {
         if m.renames.is_empty() {
-            let declared =
-                self.bundle_drafts(w, vec![Declaration::ValueType(m.to)], (now, first, false));
+            let to = vec![Declaration::ValueType(m.to)];
+            let declared = self.bundle_drafts(w, to, (now, first, Judging::Act));
             return declared.map(|b| b.drafts);
         }
         let max = self.lake.limits.max_set_changes;

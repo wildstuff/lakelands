@@ -208,8 +208,8 @@ impl Decide<'_> {
     /// The heads a write reads across an edge: at the head and over the
     /// append's drafts.
     fn with_heads<R>(&self, f: impl FnOnce(Heads<'_>) -> R) -> R {
-        let max = self.call.lake.limits.max_depth;
-        heads((self.view, &self.pending, max), f)
+        let max = self.at.depth;
+        heads((self.at.view, &self.pending, max), f)
     }
 
     /// Whether a trigger fires on a write that leaves `after` (it was
@@ -221,14 +221,13 @@ impl Decide<'_> {
         before: Option<&StoredRecord>,
         after: &StoredRecord,
     ) -> Result<bool> {
-        let w = self.w;
         let Some(c) = &t.when else { return Ok(true) };
-        let sets = |n: &str| w.ontology.set(n);
+        let sets = |n: &str| self.ontology.set(n);
         let at = [Place::Trigger {
             name: t.name.clone(),
         }];
         let e = declare::filter(&sets, &t.on, c, Eval::Guard, &at)?;
-        let on = w.ontology.ty(&t.on)?;
+        let on = self.ontology.ty(&t.on)?;
         Ok(self.holds_at_write((&e, t.when_strict), on, before, after))
     }
 
@@ -278,18 +277,18 @@ impl Decide<'_> {
         before: Option<&StoredRecord>,
         after: &StoredRecord,
     ) -> bool {
-        let (w, now) = (self.w, self.now);
+        let now = self.at.now;
         let live = before.filter(|b| !b.retired);
         let scope = WriteScope {
             after: &after.fields,
             before: live.map(|b| &b.fields),
             retiring: live.is_some() && after.retired,
             meta: Some(&after.meta),
-            settings: Some(&w.settings),
+            settings: Some(self.at.settings),
             now,
         };
-        let settings = (&w.settings, strict);
-        self.with_heads(|h| holds((h, &w.ontology, on), after, e, scope, settings))
+        let settings = (self.at.settings, strict);
+        self.with_heads(|h| holds((h, self.ontology, on), after, e, scope, settings))
     }
 
     /// Whether `record` is a member of `s` as the append leaves what its
@@ -300,8 +299,8 @@ impl Decide<'_> {
         record: &StoredRecord,
         settings: &BTreeMap<String, Value>,
     ) -> Result<bool> {
-        let o = &self.w.ontology;
-        self.with_heads(|h| member_of((s, o), record, settings, self.now, h))
+        let o = self.ontology;
+        self.with_heads(|h| member_of((s, o), record, settings, self.at.now, h))
     }
 
     /// What a write that leaves `after` (it was `before`) sets off across
@@ -319,8 +318,8 @@ impl Decide<'_> {
         (change, own): (ChangeKind, &BTreeMap<(String, TypeName, RecordKey), bool>),
         out: &mut Vec<(Draft, Option<Change>)>,
     ) -> Result<()> {
-        let (w, now) = (self.w, self.now);
-        let o = &w.ontology;
+        let now = self.at.now;
+        let o = self.ontology;
         // Each set and trigger: its name, its type, its condition, and
         // whether it is a set.
         let sets = (o.object_sets.values())
@@ -351,7 +350,7 @@ impl Decide<'_> {
             let reached = reaches(o, on, &e);
             let mut found = BTreeMap::new();
             for r in reached.iter().filter(|r| r.ty == &after.ty && moved(r)) {
-                for rec in back((self.view, &self.pending), &r.back, after.clone())? {
+                for rec in back((self.at.view, &self.pending), &r.back, after.clone())? {
                     found.insert(rec.key.clone(), rec);
                 }
             }
@@ -362,7 +361,7 @@ impl Decide<'_> {
                 continue;
             }
             let held = match set {
-                true => self.view.members(name, of)?,
+                true => self.at.view.members(name, of)?,
                 false => BTreeSet::new(),
             };
             for r in found.into_values() {
@@ -375,12 +374,12 @@ impl Decide<'_> {
                         let scope = RecordScope {
                             fields: &r.fields,
                             meta: Some(&r.meta),
-                            settings: Some(&w.settings),
+                            settings: Some(self.at.settings),
                             now,
                         };
                         let is = !r.retired
                             && self.with_heads(|h| {
-                                holds((h, o, on), &r, &e, scope, (&w.settings, false))
+                                holds((h, o, on), &r, &e, scope, (self.at.settings, false))
                             });
                         if was == is {
                             continue;
