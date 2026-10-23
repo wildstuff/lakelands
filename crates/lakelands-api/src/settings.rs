@@ -225,7 +225,7 @@ pub const SETTINGS: &[Setting] = &[
     },
     Setting {
         range: "KiB",
-        says: "SQLite: each reader connection's page cache; it multiplies by the readers open at once.",
+        says: "SQLite: each reader connection's page cache; it multiplies by the readers open at once, up to one per core and at most 16.",
         ..location("engine.tuning.reader_cache_kb", "16384")
     },
     Setting {

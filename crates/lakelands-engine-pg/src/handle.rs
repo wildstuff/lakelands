@@ -1,11 +1,12 @@
 //! A handle onto one lake's schema: the log and lease, the projection's
 //! write side, the vector index.
 //!
-//! Handles share nothing but the database: any number of them, in this
-//! process or others, see one lake. A handle keeps its own connections:
-//! - a reader, for views and log reads, which only reads;
-//! - for a handle opened for writing, a lease connection, which holds the
-//!   lease's lock, appends and seals;
+//! Any number of handles, in this process or others, see one lake. A
+//! handle reads, views and log, on the readers the process's lakes on its
+//! server share
+//! ([`connect::shared_readers`]), and a handle opened for writing keeps
+//! two connections of its own:
+//! - a lease connection, which holds the lease's lock, appends and seals;
 //! - and a projection connection, the only one that writes the projection.
 //!
 //! It gives up the lease it took when it is dropped. A handle opened
@@ -29,7 +30,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use lakelands_api::engine::{
     Applied, CanonicalEvent, Choose, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
@@ -41,6 +42,7 @@ use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::query::cosine;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
+use lakelands_core::engines::pool::{Pool, Taken};
 use lakelands_core::engines::{self, vector_bytes};
 use postgres::types::ToSql;
 
@@ -91,7 +93,7 @@ pub struct PgLake {
     lake: LakeId,
     target: Target,
     pub(crate) names: Names,
-    pub(crate) reader: Mutex<Db>,
+    readers: Arc<Pool<Db>>,
     writing: Option<Writing>,
     held: Mutex<Option<Lease>>,
     transaction: Mutex<Option<Transaction>>,
@@ -109,8 +111,10 @@ pub struct PgLake {
 impl PgLake {
     pub(crate) fn open(lake: LakeId, target: Target, mode: OpenMode) -> Result<PgLake> {
         let names = Names::new(target.quoted_schema()?);
-        let mut reader = connect::connect(&target)?;
-        let exists = matches!(shape(&mut reader, &target.schema, false)?, Shape::Lake);
+        let readers = connect::shared_readers(&target);
+        let shaped = |db: &mut Db| shape(db, &target.schema, false);
+        let (mut reader, shaped) = read_on(&readers, &target, shaped)?;
+        let exists = matches!(shaped, Shape::Lake);
         if !exists && mode != OpenMode::Create {
             let (lake, schema) = (lake.to_string(), Some(target.schema.clone()));
             return Err(Error::unavailable(Situation::NoLake { lake, schema }));
@@ -125,8 +129,13 @@ impl PgLake {
             let found = projection::laid_out(&mut reader, &names, found)?;
             engines::layout(&lake, found, projection::LAYOUT)?;
         }
+        let read = mode == OpenMode::Read;
+        let read = read.then(|| vector_index::find(&mut reader, false).ok());
+        // Given back before the writer's connections catch up, however
+        // long that takes: other lakes read on it.
+        drop(reader);
         let (writing, pgvector) = match mode {
-            OpenMode::Read => (None, vector_index::find(&mut reader, false).ok()),
+            OpenMode::Read => (None, read.flatten()),
             OpenMode::Write | OpenMode::Create => {
                 let lease = connect::session_keeping_state(&target)?;
                 let mut projection = connect::connect(&target)?;
@@ -163,12 +172,14 @@ impl PgLake {
                 (Some(writing), found)
             }
         };
-        check_name(&mut reader, &names, &target.schema, &lake)?;
+        read_on(&readers, &target, |db| {
+            check_name(db, &names, &target.schema, &lake)
+        })?;
         Ok(PgLake {
             lake,
             target,
             names,
-            reader: Mutex::new(reader),
+            readers,
             writing,
             held: Mutex::new(None),
             transaction: Mutex::new(None),
@@ -184,14 +195,17 @@ impl PgLake {
     /// anew.
     pub(crate) fn open_scratch(lake: LakeId, target: Target) -> Result<PgLake> {
         let live = Names::new(target.quoted_schema()?);
-        let mut reader = connect::connect(&target)?;
+        let readers = connect::shared_readers(&target);
         // The projection's tables are another layout's, perhaps: only the
         // log's are judged.
-        if !matches!(shape(&mut reader, &target.schema, true)?, Shape::Lake) {
+        let shaped = |db: &mut Db| shape(db, &target.schema, true);
+        let (mut reader, shaped) = read_on(&readers, &target, shaped)?;
+        if !matches!(shaped, Shape::Lake) {
             let (lake, schema) = (lake.to_string(), Some(target.schema.clone()));
             return Err(Error::unavailable(Situation::NoLake { lake, schema }));
         }
         check_name(&mut reader, &live, &target.schema, &lake)?;
+        drop(reader);
         let bare = target.scratch_schema();
         let names = Names::beside(Target::quote(&bare), &live);
         let mut lease = connect::session_keeping_state(&target)?;
@@ -237,7 +251,7 @@ impl PgLake {
             lake,
             target,
             names,
-            reader: Mutex::new(reader),
+            readers,
             writing: Some(Writing {
                 lease: Mutex::new(lease),
                 projection: Mutex::new(projection),
@@ -311,21 +325,10 @@ impl PgLake {
         Ok(swapped)
     }
 
-    /// Run `f` on the reader. A connection the server or the network
-    /// closed is opened again, once, and `f` runs on the new one: a second
-    /// failure is answered as it is (lakelands#979).
-    pub(crate) fn reading<R>(&self, mut f: impl FnMut(&mut Db) -> Result<R>) -> Result<R> {
-        let mut db = lock(&self.reader);
-        if db.is_closed() {
-            *db = connect::connect(&self.target)?;
-        }
-        match f(&mut db) {
-            Err(_) if db.is_closed() => {
-                *db = connect::connect(&self.target)?;
-                f(&mut db)
-            }
-            answer => answer,
-        }
+    /// Run `f` on a reader of the process's lakes on the server, so the
+    /// reads of one lake run side by side ([`read_on`]).
+    pub(crate) fn reading<R>(&self, f: impl FnMut(&mut Db) -> Result<R>) -> Result<R> {
+        read_on(&self.readers, &self.target, f).map(|(_, answer)| answer)
     }
 
     /// The writer's connection `db` closed under it: the session the
@@ -450,6 +453,28 @@ pub(crate) fn room(target: &Target) -> Result<u64> {
         )?,
     };
     Ok(u64::try_from(row.get::<_, i64>(0)).unwrap_or(0))
+}
+
+/// A reader of `readers`, and what `f` answered on it. A connection the
+/// server or the network closed is opened again, once, and `f` runs on
+/// the new one: a second failure is answered as it is (lakelands#979).
+fn read_on<'p, R>(
+    readers: &'p Pool<Db>,
+    target: &Target,
+    mut f: impl FnMut(&mut Db) -> Result<R>,
+) -> Result<(Taken<'p, Db>, R)> {
+    let mut db = readers.take(|| connect::reader(target))?;
+    if db.is_closed() {
+        *db = connect::reader(target)?;
+    }
+    let answer = match f(&mut db) {
+        Err(_) if db.is_closed() => {
+            *db = connect::reader(target)?;
+            f(&mut db)
+        }
+        answer => answer,
+    };
+    Ok((db, answer?))
 }
 
 /// What a schema holds, as the engine sees it at open.

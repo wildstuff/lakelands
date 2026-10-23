@@ -193,7 +193,7 @@ SQLite: the writer connection's page cache.
 
 ### `engine.tuning.reader_cache_kb`
 
-SQLite: each reader connection's page cache; it multiplies by the readers open at once.
+SQLite: each reader connection's page cache; it multiplies by the readers open at once, up to one per core and at most 16.
 
 - **Takes:** KiB.
 - **Default:** `16384`.

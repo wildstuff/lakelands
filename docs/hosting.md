@@ -1316,7 +1316,12 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   holds the lease, every write, rebuild and compaction is refused with
   the lease's situation and appends nothing, and the handle reads on.
   The lake's connections carry `application_name` `lakelands <schema>`
-  in `pg_stat_activity`. A host that needs more gives the executor its own record of what it did, keyed by
+  in `pg_stat_activity`: two for a lake the process writes, two more
+  while a rebuild of it runs, none for a lake it only reads. The reads
+  run side by side on readers the process's lakes on one server share,
+  named `lakelands readers <pid>`: up to 16, however many lakes it opens
+  there and however many cores it has. A
+  host that needs more gives the executor its own record of what it did, keyed by
   the call's position (`VerbInvocation.position`). See
   `docs/decisions/013-verbs-run-by-declared-risk.md`, extended.
 - **An outage and a missing seam are cases, not sentences

@@ -27,8 +27,10 @@
 //! once and keeps it for as long as it lives, so a statement run again
 //! costs one round trip, not a parse and an execute. The texts are the
 //! engine's own, the schema's name and fixed SQL with every value bound as
-//! a parameter, so there are as many as the engine has statements. Each
-//! run is planned for its values (`plan_cache_mode`), set as the
+//! a parameter, so there are as many as the engine has statements, for
+//! each lake a reader served: past [`PREPARED_MOST`] a connection lets
+//! them all go and prepares anew, so a reader the process's lakes share
+//! does not grow with every lake it ever read. Each run is planned for its values (`plan_cache_mode`), set as the
 //! connection starts: a generic plan kept from when a table was small
 //! would go on scanning it whole.
 //!
@@ -38,18 +40,19 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use lakelands_api::error::{Case, Detail, Error, Result, Situation, Tls};
 use lakelands_api::location::{PgTls, PgTlsMode, PgTuning};
 use lakelands_api::record::StoredRecord;
+use lakelands_core::engines::pool::{self, Pool};
 use postgres::types::{FromSql, ToSql};
 use postgres::{Client, NoTls, Row, SimpleQueryMessage, Statement};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
-use crate::sql;
+use crate::{lock, sql};
 
 /// The oldest server the engine supports, as `server_version_num` says it.
 pub const MIN_SERVER_VERSION: i32 = 160_000;
@@ -122,6 +125,9 @@ pub(crate) fn driver<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     }
 }
 
+/// The most statements one connection keeps prepared.
+const PREPARED_MOST: usize = 512;
+
 /// One connection, every statement through [`driver`]; closed through it
 /// too, since closing blocks on the driver's runtime as a statement does.
 /// It keeps the statements it prepared, by their text, until it is closed.
@@ -182,6 +188,9 @@ impl Db {
             Some(statement) => statement.clone(),
             None => {
                 let statement = driver(|| client.prepare(text)).map_err(sql)?;
+                if self.prepared.len() >= PREPARED_MOST {
+                    self.prepared.clear();
+                }
                 self.prepared.insert(text.to_owned(), statement.clone());
                 statement
             }
@@ -334,8 +343,40 @@ fn tls_config_with(tls: &PgTls, bundles: &[&str]) -> Result<rustls::ClientConfig
     }
 }
 
-/// Open one connection to the target's server.
+/// The readers a process's lakes on one server share: one pool per
+/// server, database, credentials, TLS and tuning, kept while a handle onto
+/// one of its lakes is open. So a process holds at most
+/// [`pool::MOST`] readers on a server,
+/// however many lakes it opens there, and not fewer on a machine of fewer
+/// cores: the reads run on the server's. Every statement names its schema,
+/// so a reader serves any lake on its server.
+pub(crate) fn shared_readers(target: &Target) -> Arc<Pool<Db>> {
+    static POOLS: Mutex<Vec<(String, Weak<Pool<Db>>)>> = Mutex::new(Vec::new());
+    let server = format!("{:?}", (&target.url, &target.tls, &target.tuning));
+    let mut pools = lock(&POOLS);
+    pools.retain(|(_, pool)| pool.strong_count() > 0);
+    let found = pools.iter().find(|(s, _)| *s == server);
+    if let Some(pool) = found.and_then(|(_, pool)| pool.upgrade()) {
+        return pool;
+    }
+    let pool = Arc::new(Pool::new(Vec::new(), pool::MOST));
+    pools.push((server, Arc::downgrade(&pool)));
+    pool
+}
+
+/// Open one of the readers [`shared_readers`] keeps, named for the
+/// process, not a lake.
+pub(crate) fn reader(target: &Target) -> Result<Db> {
+    open(target, &format!("lakelands readers {}", std::process::id()))
+}
+
+/// Open one connection to the target's server, for its lake.
 pub(crate) fn connect(target: &Target) -> Result<Db> {
+    open(target, &format!("lakelands {}", target.schema))
+}
+
+/// Open one connection to the target's server, named `name`.
+fn open(target: &Target, name: &str) -> Result<Db> {
     for key in TLS_KEYS {
         if target.url.contains(&format!("{key}=")) {
             let key = key.to_owned();
@@ -364,7 +405,7 @@ pub(crate) fn connect(target: &Target) -> Result<Db> {
     config.options(&options);
     // An operator finds the lake's connections by name in
     // `pg_stat_activity`.
-    config.application_name(&format!("lakelands {}", target.schema));
+    config.application_name(name);
     let client = match target.tls.mode {
         PgTlsMode::Disable => {
             config.ssl_mode(postgres::config::SslMode::Disable);

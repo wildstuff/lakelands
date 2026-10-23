@@ -75,7 +75,10 @@ fn a_fold_committed_inside_one_ranked_call_is_in_none_of_its_lists() {
     fold(&lake, "a", 1);
     let writer = lake.clone();
     *AFTER_FOLDED.lock().unwrap() = Some(Box::new(move || fold(&writer, "b", 2)));
-    super::lock(&lake.reader).trace_v2(TraceEventCodes::SQLITE_TRACE_PROFILE, Some(after_folded));
+    // On the one idle reader, which the call takes.
+    lake.reader()
+        .unwrap()
+        .trace_v2(TraceEventCodes::SQLITE_TRACE_PROFILE, Some(after_folded));
     let asked = Rankings {
         vectors: vec![("e".into(), vec![1.0, 0.0])],
         ..Rankings::default()
