@@ -1,13 +1,12 @@
 //! One step of a pattern, walked from one record, and a chain of steps.
 //!
-//! A step walks one relation in one direction for `min..=max` hops. It
-//! reports every record it reaches whose depth (the fewest hops that
-//! reach it) falls in that range. The start is reported at depth 0 when
-//! `min` is 0; otherwise it is reported only if the walk comes back to
-//! it through a cycle, at the depth it comes back. `neighbors` is the
-//! one-hop step; `traverse` chains steps, each walked from every record
-//! the previous one kept, `spanned` answers the graph a chain walks, and
-//! `reach` what each step of a chain reaches, each record once.
+//! A step walks one relation in one direction for `min..=max` hops and
+//! reports every record it reaches whose depth (the fewest hops) falls in
+//! that range. The start is reported at depth 0 when `min` is 0, else only
+//! if a cycle brings the walk back to it. `neighbors` is the one-hop step;
+//! `traverse` chains steps, each walked from every record the previous one
+//! kept, `spanned` answers the graph a chain walks, and `reach` what each
+//! step reaches, each record once.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::slice;
@@ -39,6 +38,15 @@ pub struct Traversal {
     pub bindings: Vec<Vec<Reached>>,
     /// Whether the cap on bindings cut the answer short.
     pub truncated: bool,
+}
+
+/// Records at their depths, in `(depth, type, key)` order.
+fn ordered(at: impl IntoIterator<Item = (Node, u32)>) -> Vec<Reached> {
+    let mut out: Vec<Reached> = (at.into_iter())
+        .map(|(node, depth)| Reached { node, depth })
+        .collect();
+    out.sort_by(|a, b| (a.depth, &a.node).cmp(&(b.depth, &b.node)));
+    out
 }
 
 /// The records one hop away from `from` over one relation.
@@ -92,15 +100,13 @@ pub fn step<S: EdgeSource + ?Sized>(
 /// record the previous one kept.
 ///
 /// `keep(i, node)` decides whether a record the `i`-th step reached is
-/// kept; that is where the caller applies the step's `where` and its
-/// own visibility rules. A record a step drops is not walked from.
+/// kept; that is where the caller applies the step's `where` and its own
+/// visibility rules. A dropped record is not walked from.
 ///
-/// Bindings come depth-first over the steps, each step's records in
-/// `(depth, type, key)` order, so the answer is ordered by its first
-/// step's records, then its second's, and so on. At most `max_bindings`
-/// are returned; `truncated` says whether more were found. Refused as
-/// invalid, before any walking, when any step's depth range is empty or
-/// goes past `max_depth`.
+/// Bindings come depth-first, each step's records in `(depth, type, key)`
+/// order. At most `max_bindings` are returned; `truncated` says whether
+/// more were found. Refused as invalid, before any walking, when any
+/// step's depth range is empty or goes past `max_depth`.
 pub fn traverse<S, K>(
     source: &S,
     from: &Node,
@@ -120,13 +126,11 @@ where
 }
 
 /// Walk a chain of steps from each of `starts`, as [`traverse`] walks it
-/// from one, and hand each binding to `each(start, binding)`: the starts
-/// in their order, each one's bindings in [`traverse`]'s. A [`PAGE`] of
-/// starts is walked together, each hop of each step asked for every
-/// record of the page that takes it at once, so a page of starts costs a
-/// few questions of the source, not a few a start. `each` answers
-/// whether to go on; the walk stops where it says not to, with the rest
-/// of that page walked and not handed out.
+/// from one, and hand each binding to `each(start, binding)`, in the
+/// starts' order. A [`PAGE`] of starts is walked together, each hop asked
+/// for the whole page at once, so a page costs a few questions of the
+/// source, not a few a start. `each` answers whether to go on; the rest of
+/// that page is walked and not handed out.
 pub fn traverse_each<S, K, E>(
     source: &S,
     starts: &[Node],
@@ -157,19 +161,17 @@ where
 
 /// The graph a chain of steps walks from each of `starts`: the starts,
 /// whether or not a match begins there, every record a match binds, the
-/// records each was walked through from the record before it (below its
-/// step's `min`, or dropped by `keep`), and the links walked between
-/// them. Each record is at the fewest hops any match reaches it in. It is
-/// walked as [`traverse_each`] walks a chain, a [`PAGE`] of starts
-/// together.
+/// records each was walked through (below its step's `min`, or dropped by
+/// `keep`), and the links walked between them. Each record is at the
+/// fewest hops any match reaches it in. Walked as [`traverse_each`] walks
+/// a chain.
 ///
-/// One page of it, as [`subgraph`](super::subgraph()) pages: the
-/// records at `offset..offset + limit` of the order `(depth, type, key)`
-/// and the links between a record of the page and one of this or an
-/// earlier page. The whole chain is walked for every page: a record's
-/// depth is the fewest hops of any match, from any start. Refused
-/// `too_large` once what it holds (the starts, and every record each
-/// walk reaches, counted as it grows) numbers more than `max_nodes`.
+/// One page of it, as [`subgraph`](super::subgraph()) pages: the records at
+/// `offset..offset + limit` of the order `(depth, type, key)` and the links
+/// between a record of the page and one of this or an earlier page. The
+/// whole chain is walked for every page. Refused `too_large` once what it
+/// holds (the starts, and every record each walk reaches, counted as it
+/// grows) numbers more than `max_nodes`.
 pub fn spanned<S, K>(
     source: &S,
     starts: &[Node],
@@ -200,30 +202,20 @@ where
         }
     }
     let span = chain.span.take().expect("a span was asked for");
-    let mut nodes: Vec<Reached> = span
-        .depth_of
-        .into_iter()
-        .map(|(node, depth)| Reached { node, depth })
-        .collect();
-    nodes.sort_by(|a, b| (a.depth, &a.node).cmp(&(b.depth, &b.node)));
-    Ok(page(nodes, span.edges, offset, limit))
+    Ok(page(ordered(span.depth_of), span.edges, offset, limit))
 }
 
 /// What each step of a chain reaches from `starts`, a step at a time
-/// (lakelands#991): step `i` walks from every record step `i - 1` kept,
-/// the starts for the first, a dead end included; `keep` is applied as
-/// [`traverse`] applies it. Each record is handed to `each(step, ..)`
-/// once, at the first step that kept it (counted from 1), with that
-/// step's fewest hops from any record it walked from; a step's records
-/// come together in `(depth, type, key)` order. A start is handed out
-/// only where a step keeps it. `each` answers whether to go on, and the
-/// steps after the one it stops at are not walked. Refused `too_large`
-/// once what it holds (the records listed, a step's records so far, and
-/// each walk from a page of sources apart, counted as it grows) number
-/// more than `max_nodes`, so a walk stopped earlier is not; refused as
-/// invalid,
-/// before any walking, when a step's depth range is empty or goes past
-/// `max_depth`.
+/// (lakelands#991): step `i` walks from every record step `i - 1` kept (the
+/// starts for the first); `keep` applies as in [`traverse`]. Each record is
+/// handed to `each(step, ..)` once, at the first step (from 1) that kept
+/// it, with that step's fewest hops from any record it walked from, in
+/// `(depth, type, key)` order. A start is handed out only where a step
+/// keeps it. `each` answers whether to go on; later steps are not walked.
+/// Refused `too_large` once what it holds (the records listed, a step's
+/// records so far, and each walk from a page of sources apart, counted as
+/// it grows) number more than `max_nodes`; refused as invalid, before any
+/// walking, when a step's depth range is empty or goes past `max_depth`.
 pub fn reach<S, K, E>(
     source: &S,
     starts: &[Node],
@@ -260,12 +252,8 @@ where
                 *d = (*d).min(r.depth);
             }
         }
-        let mut walked: Vec<Reached> = (best.into_iter())
-            .map(|(node, depth)| Reached { node, depth })
-            .collect();
-        walked.sort_by(|a, b| (a.depth, &a.node).cmp(&(b.depth, &b.node)));
         let mut kept = Vec::new();
-        for reached in walked {
+        for reached in ordered(best) {
             if keep(i, &reached.node)? {
                 kept.push(reached);
             }
@@ -436,13 +424,12 @@ where
     }
 }
 
-/// Breadth-first over one relation from each of `froms` at once, one
-/// level at a time, each level's links read together for every walk
-/// that reaches it. Each record is recorded at the first level that
-/// reaches it, so its depth is the fewest hops; each level is a sorted
-/// set, so nothing depends on the order the source answers in. With
-/// `routes`, one map for each walk, each record a walk reaches is kept in
-/// its map with the first record and link, in that order, it was reached by.
+/// Breadth-first over one relation from each of `froms` at once, a level at
+/// a time, each level's links read together for every walk. A record is
+/// recorded at the first level that reaches it, so its depth is the fewest
+/// hops; levels are sorted sets, so nothing depends on the source's order.
+/// With `routes`, one map per walk, each record reached is kept with the
+/// first record and link it was reached by.
 fn walk_step<S: EdgeSource + ?Sized>(
     links: &mut Links<'_, S>,
     froms: &[Node],
@@ -479,8 +466,7 @@ fn walk_step<S: EdgeSource + ?Sized>(
             }
             *frontier = next;
         }
-        // With a bound, what the walks hold beside `held` records already
-        // held is counted as it grows, every source's map apart.
+        // With a bound, what the walks hold beside `held` is counted as it grows.
         if let Some((held, max)) = bound
             && held + best.iter().map(BTreeMap::len).sum::<usize>() > max as usize
         {
@@ -491,12 +477,7 @@ fn walk_step<S: EdgeSource + ?Sized>(
         if depth.min == 0 {
             best.insert(from.clone(), 0);
         }
-        let mut out: Vec<Reached> = (best.into_iter())
-            .filter(|(_, d)| *d >= depth.min)
-            .map(|(node, depth)| Reached { node, depth })
-            .collect();
-        out.sort_by(|a, b| (a.depth, &a.node).cmp(&(b.depth, &b.node)));
-        out
+        ordered(best.into_iter().filter(|(_, d)| *d >= depth.min))
     });
     Ok(ends.collect())
 }

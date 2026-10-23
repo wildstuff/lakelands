@@ -4,22 +4,18 @@
 //!
 //! Three rules, each enforced here and nowhere else:
 //!
-//! - **Reading.** A field the principal may read is returned in full. A
-//!   field it may not read is absent — or, if the field is declared
-//!   `sensitive` or the grant says `masked`, listed as masked so the reader
-//!   knows a value exists without seeing it. A restricted record is
-//!   withheld from a principal without the `restricted` grant; a retired
-//!   record from everyone.
-//! - **Probing.** A read that filters on a field, orders by it or
-//!   aggregates over it learns something about its values even if the
-//!   field is masked in the answer: a filter answers "is there a record
-//!   whose salary is above X" record by record, and a sum over one record
-//!   is that record's value. So a read that probes a field the principal
-//!   may not read is refused outright, never answered with masking.
-//! - **Writing.** A write names the door it comes through — authored
-//!   (`upsert`, a verb) or source (`ingest`). Every field it carries must
-//!   exist, be written by that door's authority, and be granted to the
-//!   principal; one field that fails refuses the whole write
+//! - **Reading.** A readable field is returned in full. An unreadable one
+//!   is absent, or listed as masked if declared `sensitive` or granted
+//!   `masked`. A restricted record is withheld from a principal without
+//!   the `restricted` grant; a retired record from everyone.
+//! - **Probing.** A filter, ordering or aggregate on a field learns its
+//!   values even if the answer masks it ("is any salary above X", a sum
+//!   over one record). A read that probes a field the principal may not
+//!   read is refused outright, never answered with masking.
+//! - **Writing.** A write names its door: authored (`upsert`, a verb) or
+//!   source (`ingest`). Every field it carries must exist, be written by
+//!   that door's authority and be granted; one failing field refuses the
+//!   whole write
 //!   (`docs/decisions/012-writes-touch-only-their-fields.md`).
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -64,11 +60,9 @@ pub fn granted_access(who: &Principal, decl: &TypeDecl, field: &FieldDecl) -> Ac
 }
 
 /// What one walk through the fields a field is built from has asked: a
-/// field's access once it is answered, and none while the walk stands on
-/// it, so a field many others are built from is asked once, not once for
-/// every way that leads to it (lakelands#926). `before` holds the answers
-/// of the walk made before this one, and `met` whether this one came back
-/// to a field it stands on.
+/// field's access once answered, none while the walk stands on it, so a
+/// shared source is asked once (lakelands#926). `before` holds the last
+/// walk's answers, `met` whether this one came back to a field it stands on.
 #[derive(Default)]
 struct Asked<'d> {
     now: BTreeMap<&'d FieldName, Option<Access>>,
@@ -76,13 +70,11 @@ struct Asked<'d> {
     met: bool,
 }
 
-/// What the grants give `field`, and what it is shown as. Written fields
-/// may list each other in a cycle: a field the walk stands on then answers
-/// as the walk before left it, lowering nothing in the first, and the walk
-/// is made again until no answer moves. So a field has one answer,
-/// whichever field is asked for and whichever way the walk comes round:
-/// the widest under which each is read no further than what it is built
-/// from.
+/// What the grants give `field`, and what it is shown as. Fields may list
+/// each other in a cycle: a field the walk stands on answers as the walk
+/// before left it, and the walk is repeated until no answer moves. So a
+/// field has one answer however the walk comes round: the widest under
+/// which each is read no further than what it is built from.
 fn settled<'d>(who: &Principal, decl: &'d TypeDecl, field: &'d FieldDecl) -> (Access, Access) {
     let mut asked = Asked::default();
     loop {
@@ -183,12 +175,10 @@ fn built_from<'d>(
     (access, from_source)
 }
 
-/// Whether the principal may retire records of a type: every field of the
-/// type is writable as its grants resolve it, field by field, whatever the
-/// field's authority. Retiring removes every field of a record, so a
-/// principal who may write only some of them may not; one granted each
-/// field one by one may. A type with no field falls back to its type-level
-/// grant. A view's records are computed, and are never retired.
+/// Whether the principal may retire records of a type: every field is
+/// writable as its grants resolve it, whatever its authority, since
+/// retiring removes them all. A type with no field falls back to its
+/// type-level grant. A view's records are computed, never retired.
 pub fn may_retire(who: &Principal, decl: &TypeDecl) -> bool {
     if decl.view.is_some() {
         return false;
@@ -278,15 +268,14 @@ pub(crate) fn own_only(who: &Principal, ty: &TypeName) -> Vec<(FieldName, Value)
 }
 
 /// The one effective `only` of a type for `who`, and whether its records
-/// are computed for it; [`admit`] is made of it, and every door asks
-/// that. A stored type's is its own pairs. A view's are its own,
-/// plus, where it has one stored source, no merge, and groups by every
-/// field the source's pairs name, the source's pairs on its group fields:
-/// each group's records then share those values, so the admitted records
+/// are computed for it; [`admit`] is made of it. A stored type's is its own
+/// pairs. A view's are its own plus, where it has one stored source, no
+/// merge, and groups by every field the source's pairs name, the source's
+/// pairs: each group's records share those values, so the admitted records
 /// are the groups that hold them. Otherwise a view that reads a type held
-/// to some records, or a link type whose end type is, is computed from
-/// the admitted records alone, and then held to the view's own pairs. A
-/// kept name answers for its view. `find` answers a type by its name.
+/// to some records, or a link type whose end type is, is computed from the
+/// admitted records alone, then held to the view's own pairs. A kept name
+/// answers for its view. `find` answers a type by its name.
 pub(crate) fn only<'a>(
     who: &Principal,
     ty: &TypeName,
@@ -299,11 +288,9 @@ pub(crate) fn only<'a>(
 type OnlyAnswer = (Vec<(FieldName, Value)>, bool);
 
 /// [`only`] of `ty`, `seen` the views on the walk's path and `known` what
-/// each view walked before answered, so that a view many views read is
-/// asked once a call (lakelands#942). An answer is the same from any path:
-/// a view on a cycle of views, which the read refuses, reads a view whose
-/// answer is computed, so it carries no pairs and answers its own pairs,
-/// computed, whichever way the walk came.
+/// each view walked before answered, so a shared view is asked once a call
+/// (lakelands#942). The answer is the same from any path: a view on a cycle
+/// of views, which the read refuses, answers its own pairs, computed.
 fn only_seen<'a>(
     who: &Principal,
     ty: &TypeName,
@@ -488,14 +475,12 @@ pub fn verb_granted(who: &Principal, verb: &VerbDecl) -> bool {
 /// filter on it is: a verb that reads one would answer its value, by
 /// running or not, or copy it whole (024, extended). So is each field it
 /// reads of another record, across a reference, on the type `ty` answers.
-/// A path that steps through a relation's link is `who`'s only where
-/// nothing of the link type and its end types is held from it: it holds
-/// `restricted` and no `only` there, and is shown the relation (055,
-/// extended), so no link it reads can be one it is not answered. So is
-/// one that begins at a derived relation, of its target and, where the
-/// target is a link type, of its ends: no record it
-/// matches can be one the caller is not answered, and none is read as no
-/// match for a caller a record is held from.
+/// A path through a relation's link is `who`'s only where nothing of the
+/// link type and its end types is held from it: it holds `restricted`, no
+/// `only` there, and is shown the relation (055, extended). So is one that
+/// begins at a derived relation, of its target and, for a link-type
+/// target, its ends: no record it matches can be one the caller is not
+/// answered.
 pub fn reads_what_verb_reads<'d>(
     who: &Principal,
     decl: &'d TypeDecl,
@@ -598,11 +583,10 @@ pub fn holds_only(who: &Principal) -> bool {
 }
 
 /// Refuse a read that names `decl` where `who`'s `only` on it cannot be
-/// applied: a pair on a field the type does not declare, of a kind other
-/// than `text` or `reference`, with a value that is not text, that the
-/// holder may not read, or that is computed at the read, which an engine
-/// does not hold to filter by. The refusal names the type, never the field, so a
-/// field the holder may not know of is not told.
+/// applied: a pair on an undeclared field, of a kind other than `text` or
+/// `reference`, with a non-text value, that the holder may not read, or
+/// computed at the read (an engine cannot filter by it). The refusal names
+/// the type, never the field, so an unknown field is not told.
 pub fn check_only(who: &Principal, decl: &TypeDecl) -> Result<(), Error> {
     use lakelands_api::ontology::StorageKind;
     let applies = |(f, v): &(FieldName, Value)| {
@@ -657,17 +641,14 @@ pub fn check_known<'a>(
 }
 
 /// Refuse a search the principal may not make: a lexical search probes
-/// every searchable field of the type at once, so each must be readable;
-/// a vector search probes each vector field it names, in the order named,
-/// and, since a vector embedded from text encodes that text, before each
+/// every searchable field at once, so each must be readable; a vector
+/// search probes each vector field it names, in order, and before each
 /// every field it is embedded from.
 ///
-/// A lexical or hybrid search that names `fields` probes those
-/// instead of every searchable field, in name order; the vector half of a
-/// hybrid search is not narrowed. A named field must be declared, readable
-/// and searchable, judged in that order: an unreadable field is refused as
-/// not granted before its searchability is looked at, so the refusal never
-/// tells a principal whether a field it may not read is searchable.
+/// A lexical or hybrid search naming `fields` probes those instead, in
+/// name order; the vector half is not narrowed. A named field must be
+/// declared, readable and searchable, judged in that order, so the refusal
+/// never tells a principal whether a field it may not read is searchable.
 pub fn check_search(
     who: &Principal,
     decl: &TypeDecl,
@@ -696,12 +677,11 @@ pub fn check_search(
     check_probe(who, decl, vectors)
 }
 
-/// Refuse a search's own weights of its text the principal could not
-/// give, judged as its type's `search_weights` setting's `text_fields` is:
-/// each named field, in name order, probed as a field a search names, so
-/// one not declared and one not shown are answered alike, then searchable,
-/// then its weight one a search may give. A weight is never judged before
-/// the field it weighs. An empty map is refused as an empty `fields` is.
+/// Refuse a search's own text weights the principal could not give, judged
+/// as `search_weights`' `text_fields` is: each field, in name order, probed
+/// as a searched field (undeclared and unshown answer alike), then
+/// searchable, then its weight one a search may give. An empty map is
+/// refused as an empty `fields` is.
 pub fn check_text_weights(
     who: &Principal,
     decl: &TypeDecl,
@@ -865,15 +845,13 @@ fn no_field(decl: &TypeDecl, name: &FieldName) -> Error {
     Error::invalid_at(name, Case::UnknownField { ty, field })
 }
 
-/// A migration that is not in force as `who` may know it: the shape it
-/// leaves as [`described_fields`] shows it, judged with its grants
-/// held through the migration's own renames, of fields and of the link
-/// types its renamed relations move; and a rename only where
-/// `who` may know of the field under both names, the old one in `was`,
-/// the type it was written against. A proposal that waited is judged by
-/// the names it was written with: `who` is its reader with the grants
-/// followed to the proposal's position, so a restriction on a name taken
-/// since reaches the name it bore then.
+/// A migration not in force as `who` may know it: the shape it leaves as
+/// [`described_fields`] shows it, judged with grants held through the
+/// migration's own renames (of fields, and of the link types its renamed
+/// relations move); a rename only where `who` may know the field under both
+/// names, the old one in `was`, the type it was written against. A waiting
+/// proposal is judged by the names it was written with, so a restriction on
+/// a name taken since reaches the name it bore then.
 pub fn known_migration<'a>(who: &Principal, was: &TypeDecl, m: &mut Migration, find: Find<'_, 'a>) {
     let (then, mut was) = (following(who, m), was.clone());
     known_fields(who, &mut was, find);
@@ -1141,29 +1119,22 @@ pub fn reads_both(who: &Principal, was: &TypeDecl, m: &Migration, f: &FieldName)
 /// every place that answers one calls this. `was` is the type the report
 /// was made against: as it stands, or, for a listed proposal, as it stood
 /// when proposed, read with `who`'s grants then. `sees` is a type the
-/// reader may see. An entry is shown where the reader may see the type
-/// and know of the field: a conversion in the shape the migration leaves,
-/// and by the name it took its values from where it was renamed, as is a
-/// rewritten reference of the migrated type itself, and a member restated,
-/// with what was declared and what `to` states (a link field's entry,
-/// `relation.field`, judged on its link type by [`link_known`]), as
-/// `describe` shows a
-/// field member by member: one of [`FieldDecl::UNREAD`] only where the
-/// reader reads the field in `to` and as the type stands, under the name
-/// it had, since a field's access is built from what it is computed from
-/// and a migration may change that with no rename (a link field bears
-/// the name it had: a relation renamed keeps its link fields); a dropped
-/// field in the shape as it stands, and a renamed relation likewise; a
-/// declaration the migration carries
-/// where `described`, the lake as `describe` shows it to the reader,
+/// reader may see. An entry is shown where the reader may see the type and
+/// know of the field: a conversion in the shape the migration leaves, and
+/// by the name it took its values from where renamed, as is a rewritten
+/// reference of the migrated type itself; a member restated (a link
+/// field's entry, `relation.field`, judged on its link type by
+/// [`link_known`]), one of [`FieldDecl::UNREAD`] only where the reader
+/// reads the field in `to` and as the type stands, under the name it had,
+/// since a migration may change a field's access with no rename; a dropped
+/// field or renamed relation in the shape as it stands; a declaration the
+/// migration carries where `described`, the lake as `describe` shows it,
 /// names it, asked only for a report that carries one. The totals stay;
-/// `more` says that something was left out here, or that a count is
-/// larger than the keys named beside it, which the preflight takes among
-/// those its reader is answered: so it tells nothing the report does not. The hashes are
-/// [`shown_hashes`]'s, and the id is made again over what is shown. The
-/// reader is shown the migrated type: one that is not is answered no
-/// migration at all, by every door that would answer a report
-/// (lakelands#762).
+/// `more` says something was left out here, or a count is larger than the
+/// keys named beside it, so it tells nothing the report does not. The
+/// hashes are [`shown_hashes`]'s, and the id is made again over what is
+/// shown. A reader not shown the migrated type is answered no migration at
+/// all, by every door (lakelands#762).
 pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDescription>>(
     who: &Principal,
     was: &TypeDecl,

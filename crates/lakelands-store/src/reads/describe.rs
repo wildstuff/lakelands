@@ -460,12 +460,10 @@ impl<'a> Reader<'a> {
 
     /// The records of the kept view `view` that `filter` holds for, as
     /// this reader reads them, handed to `each` in key order until it
-    /// fails: the kept records read `page` at a time, each shown with the
-    /// reader's face, which a record carries whole, and held there to
-    /// `filter` and the reader's pairs. It never holds the kept type, whose
-    /// records carry the fold's state (lakelands#731). `kept` is what
-    /// [`Self::kept_as`] answers. The record's fields are masked by the
-    /// door, as a computed record's are.
+    /// fails: read `page` at a time, each shown with the reader's face and
+    /// held there to `filter` and the reader's pairs. It never holds the
+    /// kept type, whose records carry the fold's state (lakelands#731).
+    /// `kept` is what [`Self::kept_as`] answers. The door masks the fields.
     fn each_kept(
         &self,
         view: &TypeName,
@@ -517,9 +515,7 @@ impl<'a> Reader<'a> {
     /// whole there, a group of the reader's face is not exact, or the read
     /// names a valid time where one is declared in the view's tree
     /// ([`Self::timed_tree`]), which a kept fold has no axis for. What
-    /// depends on the reader is decided
-    /// here, as the computation decides it: the probes of every source, in
-    /// its order, and the face.
+    /// depends on the reader is decided here, as the computation decides it.
     fn kept_as(
         &self,
         decl: &TypeDecl,
@@ -575,11 +571,10 @@ impl<'a> Reader<'a> {
     /// The kept records of `view` whose whole face reads otherwise than
     /// their own fields, found by their mark, each with that face (none
     /// for a group on the open face alone, and none the reader's pairs do
-    /// not admit: a pair on a measure is judged on both faces, as for a
-    /// view read whole). There are as many as the
-    /// state's `differ`; the text index finds them at the head, and a read
-    /// at an earlier position scans the kept type for them. None unless the
-    /// reader reads the `whole` face.
+    /// not admit: a pair on a measure is judged on both faces). There are
+    /// as many as the state's `differ`; the text index finds them at the
+    /// head, and a read at an earlier position scans the kept type. None
+    /// unless the reader reads the `whole` face.
     pub(super) fn differing(
         &self,
         stored: &TypeDecl,
