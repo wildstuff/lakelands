@@ -34,6 +34,7 @@ use lakelands_api::{
 use lakelands_api::error::{Case, Exchange, Remote, Seam, Situation};
 use lakelands_core::{feed, rights};
 
+use crate::batch::Asked;
 use crate::exec::{self, Turn};
 use crate::ingest;
 use crate::lake::{Lake, owing};
@@ -43,9 +44,6 @@ use crate::writes::{self, Call, External, MadeDue, When};
 /// When a read reads: its axes, and the clock a cursor carries from its
 /// first page where it continues one.
 type Clocked = (ReadAt, Option<Timestamp>);
-
-/// A record write asked: who asks, the write and its options.
-pub(crate) type Asked = (Principal, writes::Write, WriteOpts);
 
 /// Open a lake at a location. The host passes the engines it compiled in
 /// (and any seams it binds) in `seams`; the store depends on no engine.
@@ -351,10 +349,9 @@ impl Doors {
     /// answered as [`Self::write_settled`] answers.
     pub(crate) async fn records(&self, writes: Vec<Asked>) -> Vec<Result<Outcome>> {
         let (mut jobs, mut asked) = (Vec::new(), Vec::new());
-        for (who, write, opts) in writes {
+        for (context, who, write, opts) in writes {
             let (answer, rx) = tokio::sync::oneshot::channel();
             let same = same_lake(&self.lake, &who).map(|()| {
-                let context = self.context;
                 let who = who.clone();
                 jobs.push(writes::Job {
                     who,
@@ -391,7 +388,8 @@ impl Doors {
         write: writes::Write,
         opts: WriteOpts,
     ) -> Result<Outcome> {
-        let mut answers = self.records(vec![(who.clone(), write, opts)]).await;
+        let asked = (self.context, who.clone(), write, opts);
+        let mut answers = self.records(vec![asked]).await;
         answers.remove(0)
     }
 
