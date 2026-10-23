@@ -394,6 +394,19 @@ mod tests {
         ) -> lakelands_api::Result<lakelands_api::write::PurgeReport> {
             self.inner.purge_preflight(source, ty).await
         }
+        async fn upsert_preflight(
+            &self,
+            who: &lakelands_api::Principal,
+            context: lakelands_api::WriteContext,
+            ty: &lakelands_api::TypeName,
+            key: &lakelands_api::RecordKey,
+            patch: lakelands_api::record::Patch,
+            expected: Option<lakelands_api::Version>,
+        ) -> lakelands_api::Result<()> {
+            self.inner
+                .upsert_preflight(who, context, ty, key, patch, expected)
+                .await
+        }
         async fn forget_source(
             &self,
             source: &lakelands_api::SourceId,
