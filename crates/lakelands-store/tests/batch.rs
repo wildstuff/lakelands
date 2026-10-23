@@ -243,6 +243,52 @@ async fn a_panic_out_of_the_turn_hands_it_to_the_entry_behind() {
     store.close().await.expect("the lake closes");
 }
 
+/// Record writes of two callers taken together, more events than a batch
+/// holds, are written in two batches, and the first is answered before
+/// the second is folded.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_batch_is_answered_before_the_next_is_folded() {
+    let (probe, name) = (Arc::new(Probe::default()), "answered-first");
+    let batched::Opened { store, batches, .. } =
+        batched::opened(&probed(&probe), name, 0, Some(1)).await;
+    let (entered, inside) = std::sync::mpsc::channel();
+    let (release, wait) = std::sync::mpsc::channel::<()>();
+    let (mut commits, mut once) = (0, Some((entered, wait)));
+    *probe.before_commit.lock().unwrap() = Some(Box::new(move |_| {
+        commits += 1;
+        if commits == 2
+            && let Some((entered, wait)) = once.take()
+        {
+            entered.send(()).expect("the test waits");
+            wait.recv().expect("the test releases");
+        }
+    }));
+    let held = batches.hold();
+    let queue = |asked: Asked| {
+        let batches = batches.clone();
+        tokio::spawn(async move { batches.write(vec![asked]).await })
+    };
+    let first = queue(batched::upsert(name, "a", 1));
+    let second = queue(batched::upsert(name, "b", 2));
+    while batches.queued() < 2 {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    drop(held);
+    tokio::task::spawn_blocking(move || inside.recv())
+        .await
+        .expect("the wait ends")
+        .expect("the second batch is folded");
+    let first = tokio::time::timeout(Duration::from_secs(10), first).await;
+    applied(
+        &first
+            .expect("the first is answered meanwhile")
+            .expect("it ends")[0],
+    );
+    release.send(()).expect("the second batch waits");
+    applied(&second.await.expect("the second ends")[0]);
+    store.close().await.expect("the lake closes");
+}
+
 /// A lake its caller lets go as soon as a write is answered has let its
 /// lease go: it opens again at once.
 #[tokio::test(flavor = "multi_thread")]

@@ -6,7 +6,7 @@
 //! hidden from its documentation, and no host is to call it; a fixed clock
 //! and a recorded order hold for every lake of the process.
 
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use lakelands_api::engine::OpenMode;
@@ -26,14 +26,19 @@ pub type Asked = (WriteContext, Principal, Write, WriteOpts);
 /// The record writes the queues took, in the order taken, while recorded.
 static ORDER: Mutex<Option<Vec<Asked>>> = Mutex::new(None);
 
+/// Whether [`ORDER`] is recorded: read first, so a queue of a lake whose
+/// order nobody records takes no lock the lakes share.
+static RECORDED: AtomicBool = AtomicBool::new(false);
+
 /// Record the order record writes are taken from every queue in, or, at
 /// `false`, stop.
 pub fn record_order(on: bool) {
     *lakelands_core::lock(&ORDER) = on.then(Vec::new);
+    RECORDED.store(on, Ordering::SeqCst);
 }
 
-/// The record writes taken since [`record_order`], by the principal as
-/// the writer judged it; those of the lake `lake` only.
+/// The record writes taken since [`record_order`], each as its caller
+/// asked it; those of the lake `lake` only.
 pub fn order(lake: &str) -> Vec<Asked> {
     let order = lakelands_core::lock(&ORDER);
     let of = |a: &&Asked| a.1.lake.as_str() == lake;
@@ -42,6 +47,9 @@ pub fn order(lake: &str) -> Vec<Asked> {
 
 /// `jobs`, queued in this order, which the queue takes them in.
 pub(crate) fn taken(jobs: &[Job]) {
+    if !RECORDED.load(Ordering::SeqCst) {
+        return;
+    }
     if let Some(order) = lakelands_core::lock(&ORDER).as_mut() {
         let asked = |j: &Job| (j.context, j.who.clone(), j.write.clone(), j.opts.clone());
         order.extend(jobs.iter().map(asked));

@@ -19,7 +19,8 @@
 //! in. An entry is a job that runs alone, or record writes as data; the
 //! record writes queued one after another, up to the first job that runs
 //! alone, are taken together, and the turn decides them in batches that
-//! share one durable append ([`crate::writes::write_many`]).
+//! share one durable append, each answered before the next is decided
+//! ([`crate::writes::write_many`]).
 
 use std::any::Any;
 use std::collections::VecDeque;
@@ -156,7 +157,9 @@ fn queue(lake: &Arc<Lake>, entry: Entry) {
 }
 
 /// Hold the turn of `queue`'s lake on a blocking thread: run the entries
-/// from the head until none is left, giving each entry's answers after it.
+/// from the head until none is left, giving each entry's answers after it;
+/// record writes are run one batch at a time, each answered before the
+/// next, and what a batch leaves goes back to the head.
 fn hold(queue: Arc<Mutex<Queue>>, lake: Weak<Lake>) {
     let mut holding = Holding {
         queue,

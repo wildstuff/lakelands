@@ -1249,9 +1249,7 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) -> Vec<Job
                 Decided::Drafts(drafts) => {
                     // Its door refused what the seal would, and the batch
                     // opened on a writer that may append.
-                    let stamped = turn.stamp(&w, drafts);
-                    debug_assert!(stamped.is_ok(), "a batched stamp refused");
-                    (Told::Events(0..0), Some(stamped?))
+                    (Told::Events(0..0), Some(turn.stamp(&w, drafts)?))
                 }
                 Decided::Again(j, tip) => (Told::Again(j, tip), None),
                 Decided::Replayed(first) => (Told::Replayed(first), None),
