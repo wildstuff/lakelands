@@ -1098,49 +1098,37 @@ pub(crate) fn joined<T>(
     names: &Names,
     read: Vec<(T, (StoredRecord, engines::Apart))>,
 ) -> Result<Vec<(T, StoredRecord)>> {
-    let named = read.iter().flat_map(|(_, (r, apart))| {
-        let at = apart.iter();
-        at.map(move |(f, since)| (r.ty.as_str(), r.key.as_str(), f.as_str(), since.0 as i64))
-    });
-    let (mut tys, mut keys, mut fields, mut since) = (vec![], vec![], vec![], vec![]);
-    for (ty, key, field, at) in named {
-        tys.push(ty);
-        keys.push(key);
-        fields.push(field);
-        since.push(at);
+    let mut asked = VectorRows::default();
+    for (_, (r, apart)) in &read {
+        let ident = [r.ty.to_string(), r.key.to_string()];
+        for (f, at) in apart {
+            asked.push(&ident, f, at.0 as i64, None);
+        }
     }
+    // Each row found by its place among those asked for.
     let mut rows = HashMap::new();
-    if !tys.is_empty() {
+    if !asked.since.is_empty() {
+        let [tys, keys, fields] = &asked.ident;
         let found = db.query(
             &format!(
-                "SELECT v.ty, v.key, v.field, v.since, v.single, v.data FROM \
-                 unnest($1::text[], $2::text[], $3::text[], $4::int8[]) AS w(ty, key, field, since) \
+                "SELECT w.n, v.single, v.data FROM unnest($1::text[], $2::text[], $3::text[], \
+                 $4::int8[]) WITH ORDINALITY AS w(ty, key, field, since, n) \
                  JOIN {} v ON v.ty = w.ty AND v.key = w.key AND v.field = w.field \
                  AND v.since = w.since",
                 names.t("vectors")
             ),
-            &[&tys, &keys, &fields, &since],
+            &[tys, keys, fields, &asked.since],
         )?;
         for row in found {
-            let at: (String, String, String, i64) =
-                (row.get(0), row.get(1), row.get(2), row.get(3));
-            let e = engines::Elements {
-                single: row.get(4),
-                data: row.get(5),
-            };
-            rows.insert(at, e);
+            let e = engines::Elements::new(row.get(1), row.get(2));
+            rows.insert(row.get::<_, i64>(0), e);
         }
     }
-    let mut out = Vec::with_capacity(read.len());
+    let (mut out, mut n) = (Vec::with_capacity(read.len()), 0);
     for (t, (mut r, apart)) in read {
-        for (f, at) in apart {
-            let row = (
-                r.ty.to_string(),
-                r.key.to_string(),
-                f.to_string(),
-                at.0 as i64,
-            );
-            engines::rejoin(&mut r, f, rows.remove(&row))?;
+        for (f, _) in apart {
+            n += 1;
+            engines::rejoin(&mut r, f, rows.remove(&n))?;
         }
         out.push((t, r));
     }
@@ -1762,7 +1750,8 @@ struct VectorRows {
 }
 
 impl VectorRows {
-    fn push(&mut self, ident: [&str; 3], since: i64, until: Option<i64>) {
+    fn push(&mut self, ident: &[String], field: &FieldName, since: i64, until: Option<i64>) {
+        let ident = ident.iter().map(String::as_str).chain([field.as_str()]);
         for (column, v) in self.ident.iter_mut().zip(ident) {
             column.push(v.to_owned());
         }
@@ -1775,10 +1764,10 @@ impl Buffer {
     /// Write the vector rows of the buffered records' states
     /// ([`engines::put_vectors`]), over the rows in force each record holds
     /// and whether a later state of it is kept, and answer the fields each
-    /// state keeps apart, of those its type's declaration in `types` keeps. A unit vector is filled for a row in force of a
-    /// field whose index is marked (`crate::vector_index`); a row that ends
-    /// holds none. A vector the index put alone for a field a state names
-    /// goes.
+    /// state keeps apart, of those its type's declaration in `types` keeps.
+    /// A unit vector is filled for a row in force of a field whose index
+    /// is marked (`crate::vector_index`); a row that ends holds none. A
+    /// vector the index put alone for a field a state names goes.
     fn put_vectors(
         &self,
         db: &mut Db,
@@ -1813,10 +1802,7 @@ impl Buffer {
             match since < 0 {
                 true => drop(h.alone.insert(field)),
                 false => {
-                    let e = engines::Elements {
-                        single: row.get(4),
-                        data: row.get(5),
-                    };
+                    let e = engines::Elements::new(row.get(4), row.get(5));
                     h.rows.push((field.into(), Position(since as u64), e));
                 }
             }
@@ -1833,9 +1819,7 @@ impl Buffer {
                 .expect("a key asked for")
                 .head = Some(row.get(2));
         }
-        let (mut written, mut ended, mut gone) = Default::default();
-        let (written, ended, gone): (&mut VectorRows, &mut VectorRows, &mut VectorRows) =
-            (&mut written, &mut ended, &mut gone);
+        let (mut written, mut ended, mut gone) = <[VectorRows; 3]>::default().into();
         // A unit vector is filled only where its field's index is marked.
         let marks: BTreeSet<String> = match v {
             Some(_) => db.column(
@@ -1860,24 +1844,20 @@ impl Buffer {
                 let marked = marks.contains(&vector_index::mark(&r.ty, f.as_str()));
                 let unit =
                     (marked && until.is_none()).then(|| vector_index::unit_text(&e.ranked()));
-                written.push([&ident[0], &ident[1], f.as_str()], *at, until);
+                written.push(ident, &f, *at, until);
                 written.unit.push(unit.flatten());
                 written.single.push(e.single);
                 written.data.push(e.data);
             }
             for (f, since) in put.ended {
-                ended.push(
-                    [&ident[0], &ident[1], f.as_str()],
-                    since.0 as i64,
-                    Some(*at),
-                );
+                ended.push(ident, &f, since.0 as i64, Some(*at));
             }
             for f in put.gone {
-                gone.push([&ident[0], &ident[1], f.as_str()], *at, None);
+                gone.push(ident, &f, *at, None);
             }
             for f in put.apart.keys() {
                 if h.alone.remove(f.as_str()) {
-                    gone.push([&ident[0], &ident[1], f.as_str()], -1, None);
+                    gone.push(ident, f, -1, None);
                 }
             }
             apart.insert((ident.clone(), *at), put.apart);
@@ -1893,7 +1873,7 @@ impl Buffer {
                 ),
                 None => ("", "", String::new()),
             };
-            let w = &*written;
+            let w = &written;
             let [tys, keys, fields] = &w.ident;
             db.execute(
                 &format!(

@@ -1923,6 +1923,11 @@ pub struct Elements {
 }
 
 impl Elements {
+    /// Elements as a row holds them.
+    pub fn new(single: bool, data: Vec<u8>) -> Elements {
+        Elements { single, data }
+    }
+
     /// The elements of `v` where it is a vector they give back exactly:
     /// an array of numbers, each the one its double reads as in the log's
     /// number form ([`number`]). Anything else stays in the state.

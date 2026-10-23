@@ -1099,11 +1099,7 @@ impl PgLake {
                 let mut came = Vec::new();
                 db.batch(&vector_index::search_settings(depth))?;
                 db.query_each(&sql, &[&unit, &i64::from(depth)], |row| {
-                    let v = engines::Elements {
-                        single: row.get(1),
-                        data: row.get(2),
-                    };
-                    let v = v.ranked();
+                    let v = engines::Elements::new(row.get(1), row.get(2)).ranked();
                     came.push((RecordKey::from(row.get::<_, String>(0)), cosine(query, &v)));
                     Ok(())
                 })?;
@@ -1135,11 +1131,7 @@ impl PgLake {
             &[&ty.as_str(), &field],
             |row| {
                 let key: String = row.get(0);
-                let v = engines::Elements {
-                    single: row.get(1),
-                    data: row.get(2),
-                };
-                let v = v.ranked();
+                let v = engines::Elements::new(row.get(1), row.get(2)).ranked();
                 if v.len() != query.len() {
                     return Err(engines::dimensions(query.len(), v.len(), ty, field));
                 }
