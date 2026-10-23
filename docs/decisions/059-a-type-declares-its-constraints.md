@@ -198,3 +198,22 @@ first. A constraint that admits at ingest admits what a walk leaves, as
 it admits what a source sends, and a report names it: a value type's
 migration and a re-key list in `breaches` each such constraint with its
 type, the count and the first keys their reader is answered.
+
+### A write is judged without being written
+
+A host that shows its user a write before it is saved asks whether the
+save would land. It asks the store, never a copy of the store's rules:
+a copy drifts from the store the day a rule's judgement changes. So
+`upsert_preflight` is `upsert`'s own decision, the same path up to its
+append, and appends nothing: the patch folded onto the live record,
+its initial values and derived fields filled, every constraint in
+force judged as the write judges it, and every other refusal the
+write's path reaches before its append given in the write's words. It
+reads the head as a read does and holds no lock, so the answer is the
+write's at that head: a write made later is judged again where it
+lands, and what only the writer's lock decides (its lease, a retry
+under an idempotency key) is the write's alone.
+Its clock is the wall clock when it reads, where the write's never runs
+behind the last `known_at` the log holds: on a host whose clock has gone
+back, a constraint that reads the time, or a field's `known_at` or
+`seen_at`, may be judged at an earlier instant than the write judges it.

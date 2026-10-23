@@ -795,6 +795,24 @@ impl Call<'_> {
         self.write(Op::Upsert(ty, key, &patch), opts)
     }
 
+    /// `upsert_preflight`: `upsert`'s decision, at the head, appending
+    /// nothing. It reads as a preflight does, under no lock: the writer
+    /// that decides the write later may find a head that has moved.
+    pub fn upsert_preflight(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        patch: &Patch,
+        expected: Option<Version>,
+    ) -> Result<()> {
+        check_context(self.lake, &self.context)?;
+        ordinary_door(ty)?;
+        let view = self.lake.engine.view(None)?;
+        let w = self.lake.reading(view.as_ref())?;
+        let mut d = self.decide(&w, view.as_ref(), w.last_known_at, 0);
+        d.plan(Op::Upsert(ty, key, patch), expected).map(drop)
+    }
+
     /// An authored write of one record, as `upsert`, `retire`, `link` and
     /// `unlink` make it, their context already checked, under one hold of
     /// the writer: the plan and its append. A retry of a write the caller

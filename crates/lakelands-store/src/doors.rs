@@ -28,7 +28,7 @@ use lakelands_api::write::{
 use lakelands_api::{
     Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
     ReadAt, Record, RecordKey, RelationName, Reply, Result, SourceId, Timestamp, TypeName,
-    VerbName, Verification,
+    VerbName, Verification, Version,
 };
 
 use lakelands_api::error::{Case, Exchange, Remote, Seam, Situation};
@@ -1025,6 +1025,24 @@ impl LakeStore for Store {
             report.position = report.position.max(last);
         }
         Ok(report)
+    }
+
+    async fn upsert_preflight(
+        &self,
+        who: &Principal,
+        context: WriteContext,
+        ty: &TypeName,
+        key: &RecordKey,
+        patch: Patch,
+        expected: Option<Version>,
+    ) -> Result<()> {
+        let doors = Doors {
+            lake: self.lake.clone(),
+            context,
+        };
+        let (ty, key) = (ty.clone(), key.clone());
+        let judge = move |c: &Call<'_>| c.upsert_preflight(&ty, &key, &patch, expected);
+        doors.write(who, judge).await
     }
 
     async fn forget_source(&self, source: &SourceId, id: Option<&str>) -> Result<ForgetReport> {

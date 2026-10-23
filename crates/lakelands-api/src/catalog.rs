@@ -15,7 +15,7 @@ use crate::describe::{LakeDescription, TypeDescription};
 use crate::error::Result;
 use crate::event::Digest;
 use crate::id::{
-    LakeId, Position, ProposalId, RecordKey, RelationName, SourceId, TypeName, VerbName,
+    LakeId, Position, ProposalId, RecordKey, RelationName, SourceId, TypeName, VerbName, Version,
 };
 use crate::ontology::FieldDecl;
 use crate::principal::{Principal, WriteContext};
@@ -515,6 +515,30 @@ pub trait LakeStore: Send + Sync {
         source: &SourceId,
         ty: Option<&TypeName>,
     ) -> Result<crate::write::PurgeReport>;
+
+    /// What [`Catalog::upsert`] of `patch` by `who`, through the doors of
+    /// `context`, would answer, appending nothing: `Ok` for a write that
+    /// would land, and otherwise the refusal it would give, a rule of the
+    /// type broken among them, judged on the record the patch makes of the
+    /// live one. It reads the head as a read does and takes no
+    /// idempotency key: a retry, what the head becomes before the write,
+    /// and the writer's own state (its lease, a fold behind) are the
+    /// write's to answer. The host's, with no door.
+    #[allow(clippy::too_many_arguments)]
+    async fn upsert_preflight(
+        &self,
+        who: &Principal,
+        context: WriteContext,
+        ty: &TypeName,
+        key: &RecordKey,
+        patch: Patch,
+        expected: Option<Version>,
+    ) -> Result<()> {
+        let _ = (who, context, ty, key, patch, expected);
+        Err(crate::Error::unbound(crate::error::Seam::Operation {
+            op: "upsert_preflight".to_owned(),
+        }))
+    }
 
     /// Forget a source (`docs/decisions/058-a-source-may-be-forgotten.md`):
     /// append `source_forgotten` with the records it made and alone
