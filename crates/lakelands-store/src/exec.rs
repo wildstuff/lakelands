@@ -5,7 +5,7 @@
 //! store makes into an engine — a read, a write, a fold — runs on the
 //! runtime's blocking pool, so an async caller's executor never waits on
 //! storage. A read goes through [`run`]; anything that takes the writer
-//! goes through [`write`], which queues it first. There is no other
+//! goes through [`write()`], which queues it first. There is no other
 //! hand-off in this crate: no nested runtime, no thread that parks the
 //! caller.
 //!
@@ -24,7 +24,7 @@
 use std::any::Any;
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 
 use lakelands_api::Result;
 use lakelands_api::error::{Detail, Error, Situation};
@@ -42,11 +42,16 @@ pub(crate) struct Queue {
 
 /// One entry of the queue.
 enum Entry {
-    /// A job that runs alone, answering its caller itself.
-    Alone(Box<dyn FnOnce(&Turn<'_>) + Send>),
+    /// A job that runs alone, its answer given after it.
+    Alone(Box<dyn FnOnce(&Turn<'_>) -> Reply + Send>),
     /// Record writes.
     Records(Vec<Job>),
 }
+
+/// An answer decided and not given yet. The turn gives it once it has let
+/// the lake go, so a caller who drops the lake on its answer finds it
+/// gone, its lease released, as when the work's own thread ended first.
+pub(crate) type Reply = Box<dyn FnOnce() + Send>;
 
 /// Run `work` on the blocking pool and answer its result. A panic inside
 /// the work is reported as the lake being unavailable, never propagated
@@ -64,7 +69,7 @@ where
 
 /// A turn at `lake`'s writer: what [`Turn::writer`] and [`Turn::for_write`]
 /// are taken with. The thread that holds the queue lends it to each
-/// entry in turn: to a write's job queued by [`write`], and to a batch of
+/// entry in turn: to a write's job queued by [`write()`], and to a batch of
 /// record writes queued by [`records`] (`write_soon` lends it inline,
 /// where no runtime is there to queue on), and it is lent to an owner of
 /// the lake by [`Lake::turn`]; it reads as the lake.
@@ -105,9 +110,10 @@ where
     F: FnOnce(&Turn<'_>) -> Result<T> + Send + 'static,
 {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let job = move |t: &Turn<'_>| {
+    let job = move |t: &Turn<'_>| -> Reply {
         let answer = catch_unwind(AssertUnwindSafe(|| work(t)));
-        drop(tx.send(answer.unwrap_or_else(|p| Err(stopped_by_panic(p)))));
+        let answer = answer.unwrap_or_else(|p| Err(stopped_by_panic(p)));
+        Box::new(move || drop(tx.send(answer)))
     };
     queue(lake, Entry::Alone(Box::new(job)));
     rx.await.unwrap_or_else(|_| Err(halted(true)))
@@ -121,10 +127,11 @@ pub(crate) fn records(lake: &Arc<Lake>, jobs: Vec<Job>) {
 /// Hold `lake`'s turn until what is answered is dropped ([`crate::batch`]).
 pub(crate) fn hold_turn(lake: &Arc<Lake>) -> std::sync::mpsc::Sender<()> {
     let (tx, rx) = std::sync::mpsc::channel::<()>();
-    queue(
-        lake,
-        Entry::Alone(Box::new(move |_| rx.recv().unwrap_or_default())),
-    );
+    let job = move |_: &Turn<'_>| -> Reply {
+        rx.recv().unwrap_or_default();
+        Box::new(|| ())
+    };
+    queue(lake, Entry::Alone(Box::new(job)));
     tx
 }
 
@@ -141,33 +148,40 @@ fn queue(lake: &Arc<Lake>, entry: Entry) {
     let held = std::mem::replace(&mut q.held, true);
     drop(q);
     if !held {
-        hold(lake.clone());
+        hold(lake.queue.clone(), Arc::downgrade(lake));
     }
 }
 
-/// Hold `lake`'s turn on a blocking thread: run the entries from the head
-/// until none is left.
-fn hold(lake: Arc<Lake>) {
-    let mut holding = Holding { lake, began: false };
+/// Hold the turn of `queue`'s lake on a blocking thread: run the entries
+/// from the head until none is left, giving each entry's answers after it.
+fn hold(queue: Arc<Mutex<Queue>>, lake: Weak<Lake>) {
+    let mut holding = Holding {
+        queue,
+        lake,
+        began: false,
+        replies: Vec::new(),
+    };
     drop(tokio::task::spawn_blocking(move || {
         holding.began = true;
         while let Some(entry) = holding.next() {
-            match entry {
-                Entry::Alone(job) => job(&Turn(&holding.lake)),
-                Entry::Records(jobs) => crate::writes::write_many(&Turn(&holding.lake), jobs),
-            }
+            holding.run(entry);
+            holding.reply();
         }
     }));
 }
 
-/// The turn, held. A panic that unwinds out of it answers the jobs it
-/// took and had not answered `Stopped`, as their dropped answers are
-/// read, and hands the turn on to the entries still queued; a hold the
-/// runtime never ran (it was shutting down) lets the turn go and answers
-/// every queued job `Stopped` the same way.
+/// The turn, held. It holds its lake only while an entry runs: an entry
+/// whose lake is gone, every caller having let it go, is dropped unrun.
+/// A panic that unwinds out of it gives the answers decided, answers the
+/// jobs it took and had not answered `Stopped`, as their dropped answers
+/// are read, and hands the turn on to the entries still queued; a hold
+/// the runtime never ran (it was shutting down) lets the turn go and
+/// answers every queued job `Stopped` the same way.
 struct Holding {
-    lake: Arc<Lake>,
+    queue: Arc<Mutex<Queue>>,
+    lake: Weak<Lake>,
     began: bool,
+    replies: Vec<Reply>,
 }
 
 impl Holding {
@@ -175,7 +189,7 @@ impl Holding {
     /// writes taken into it, which the turn decides together; with none
     /// left, the turn is let go.
     fn next(&self) -> Option<Entry> {
-        let mut q = lakelands_core::lock(&self.lake.queue);
+        let mut q = lakelands_core::lock(&self.queue);
         let mut entry = q.entries.pop_front();
         if let Some(Entry::Records(jobs)) = &mut entry {
             while let Some(Entry::Records(more)) = q.entries.front_mut() {
@@ -187,6 +201,27 @@ impl Holding {
         q.held = entry.is_some();
         entry
     }
+
+    /// Run `entry` on the lake, while it is there; the lake is let go
+    /// before any of its answers is given.
+    fn run(&mut self, entry: Entry) {
+        let Some(lake) = self.lake.upgrade() else {
+            return;
+        };
+        match entry {
+            Entry::Alone(job) => self.replies.push(job(&Turn(&lake))),
+            Entry::Records(jobs) => {
+                crate::writes::write_many(&Turn(&lake), jobs, &mut self.replies);
+            }
+        }
+    }
+
+    /// Give the answers decided.
+    fn reply(&mut self) {
+        for reply in self.replies.drain(..) {
+            reply();
+        }
+    }
 }
 
 impl Drop for Holding {
@@ -194,7 +229,8 @@ impl Drop for Holding {
         if self.began && !std::thread::panicking() {
             return;
         }
-        let mut q = lakelands_core::lock(&self.lake.queue);
+        self.reply();
+        let mut q = lakelands_core::lock(&self.queue);
         let unrun = match self.began {
             true => VecDeque::new(),
             false => std::mem::take(&mut q.entries),
@@ -204,12 +240,12 @@ impl Drop for Holding {
         drop(q);
         drop(unrun);
         if held {
-            hold(self.lake.clone());
+            hold(self.queue.clone(), self.lake.clone());
         }
     }
 }
 
-/// [`write`], without waiting for its answer; with no runtime to queue
+/// [`write()`], without waiting for its answer; with no runtime to queue
 /// on, run here and now, the writer's lock alone deciding when.
 pub(crate) fn write_soon<F>(lake: &Arc<Lake>, work: F)
 where
@@ -253,3 +289,6 @@ pub(crate) fn halted(panicked: bool) -> Error {
     });
     Error::unavailable(Situation::Stopped { detail })
 }
+
+#[cfg(test)]
+mod tests;

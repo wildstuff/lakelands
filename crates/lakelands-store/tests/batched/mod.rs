@@ -48,7 +48,7 @@ const AT: Timestamp = Timestamp(1_790_000_000_000_000);
 /// reads.
 static CLOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn owner(lake: &str, id: &str) -> Principal {
+pub fn owner(lake: &str, id: &str) -> Principal {
     Principal {
         kind: PrincipalKind::Human,
         id: id.into(),
@@ -139,7 +139,7 @@ async fn bare(place: &Place, lake: &str, twin: usize, bound: Option<u32>) -> Ope
 }
 
 /// [`bare`], with the declarations of [`declared`].
-async fn opened(place: &Place, lake: &str, twin: usize, bound: Option<u32>) -> Opened {
+pub async fn opened(place: &Place, lake: &str, twin: usize, bound: Option<u32>) -> Opened {
     let o = bare(place, lake, twin, bound).await;
     declared(o.store.as_ref(), lake).await;
     o
@@ -155,7 +155,7 @@ fn declaration(d: Value) -> Declaration {
 /// whose referred item's number passes 7, across the edge; the items by
 /// tag, a view kept, and a trigger on it; and `obs`, which a source
 /// feeds.
-async fn declared(store: &dyn LakeStore, lake: &str) {
+pub async fn declared(store: &dyn LakeStore, lake: &str) {
     let cat = store.catalog(WriteContext::default());
     let who = owner(lake, "owner");
     let text = json!({"kind": "text"});

@@ -10,7 +10,7 @@ fields of its type that are looked up. The memory engine keeps no such
 index.
 
 **The declarations look up these fields of a type:**
-- its key;
+- its key, but a key that is one text field;
 - its references;
 - the fields a derived relation matches at either end (044);
 - those a set's condition, or a view's `where` over the type, compares
@@ -22,6 +22,23 @@ index.
 `sort_index.<type>` does for the order index (041). Its write is refused
 as invalid, naming the field, when the field is no text or is computed
 at the read.
+
+**A key of one text field is read by key.** A record's key is its key
+fields' values made components by the key rule (`docs/log-format.md`
+§2.3), and a single text component reads back into its value, so the
+only record that can hold a text there is the one at the key the text
+makes. A `where` that the field equals a text, or a derived relation's
+match asking for one of texts, reads those keys' states
+(`engines::key_lookup`), at the head and at an earlier position alike,
+and the rulebook admits each. The index keeps no rows for the field:
+they would only repeat the key. What holds the key and its field
+together is the store: it fills a record's key fields from its key and
+refuses a write whose key fields make another key (`KeyDisagrees`), and
+a key field cannot be erasable (`ErasableKey`), so no erasure blanks it
+while the key stays. What could break the inversion otherwise cannot
+happen: a rename of a value a key field holds is refused (027), a change
+of the key fields re-keys the type's records, and a link type's key is
+two fields.
 
 `lakelands_core::engines::looked_up` decides the set from the
 declarations and the setting at the head. Both engines call it, and no
@@ -109,3 +126,13 @@ on every engine.
 - **Not every text kept and only the deletes taken off.** That was
   measured: +9 % ingest against +23 %, with every find unchanged. It was
   not taken, because the rows themselves are the cost.
+
+## How it came to be
+
+- The first version: the exact-text index keeps rows for the fields the
+  declarations and the setting look up, every field of a view's kept
+  records, and a reader decides from that set (lakelands#1019).
+- A commit decides the set again only for the types it moved
+  (lakelands#1098).
+- A key of one text field is read by key, and the index keeps no rows
+  for it (lakelands#1318).

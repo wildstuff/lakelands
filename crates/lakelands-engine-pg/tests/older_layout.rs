@@ -1,7 +1,8 @@
 //! A projection an older build laid out (lakelands#1151): its `routes`
 //! without the `source` column, its states without the `procedure` a
-//! computed field's metadata names (lakelands#1191), and its mark one
-//! layout back. A reader's open is refused naming the layouts; the
+//! computed field's metadata names (lakelands#1191), its states holding
+//! their rows' type, key and position and their false flags
+//! (lakelands#1318), and its mark one layout back. A reader's open is refused naming the layouts; the
 //! writer's open rebuilds it from the log under its lease, saying why,
 //! and the next writer's open rebuilds nothing.
 
@@ -62,7 +63,9 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
         wanted - 1
     );
     let unnamed = format!(
-        "UPDATE \"{schema}\".records SET state = replace(state, '\"procedure\":\"twice\",', '')"
+        "UPDATE \"{schema}\".records SET state = (jsonb_build_object('type', ty, 'key', key, \
+         'position', since, 'retired', false, 'restricted', false) \
+         || replace(state, '\"procedure\":\"twice\",', '')::jsonb)::text"
     );
     tokio::task::block_in_place(|| {
         let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
@@ -91,6 +94,16 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
     assert!(
         sourced > 0 && now == wanted,
         "the rebuild indexed crm's events at layout {wanted}"
+    );
+    let held = format!(
+        "SELECT count(*) FROM \"{schema}\".records WHERE state::jsonb ?| \
+         array['type', 'key', 'position'] OR state::jsonb @> '{{\"retired\": false}}' \
+         OR state::jsonb @> '{{\"restricted\": false}}'"
+    );
+    let held = tokio::task::block_in_place(|| one(&url, &held));
+    assert_eq!(
+        held, 0,
+        "no state holds what its row holds, or a false flag"
     );
     store.close().await.unwrap();
     let store = open(&location, OpenMode::Write).await.unwrap();

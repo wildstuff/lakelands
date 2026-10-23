@@ -159,13 +159,11 @@ impl Lake {
 
     /// What a batch's append leaves where it stopped midway, from `first`
     /// on: the projection as its last commit left it, and the writer
-    /// behind, owing the `owed` calls it owed before, as a failed fold
-    /// leaves it; the fold that catches up owes those of what landed. Its
-    /// lease and whether it lost that stay.
-    pub(crate) fn stopped_append(&self, w: &mut Writer, (first, owed): (Option<Position>, usize)) {
+    /// behind, as a failed fold leaves it. What it owed, its lease and
+    /// whether it lost that stay: a batched write makes no call due.
+    pub(crate) fn stopped_append(&self, w: &mut Writer, first: Option<Position>) {
         self.engine.projection().rollback();
         (w.behind, w.staged) = (true, None);
-        w.owed.truncate(owed);
         w.failed = first.or(w.failed);
         self.reload(w);
     }
@@ -479,19 +477,6 @@ impl Lake {
     /// sees half a transaction. A fold that reaches the tip has handed out
     /// the calls of an append whose fold had failed.
     pub(super) fn fold_from(&self, w: &mut Writer, from: Position) -> Result<()> {
-        // The log's tip, read again: a write that stopped midway may have
-        // left the writer's behind the log, or past it; an append whose
-        // fold failed and that never landed is owed nothing.
-        w.tip = match ends(self.engine.as_ref()) {
-            Ok((_, tip)) => tip,
-            Err(e) => {
-                w.behind = true;
-                return Err(e);
-            }
-        };
-        if w.failed > w.tip.as_ref().map(|t| t.0) {
-            w.failed = None;
-        }
         // The sets it decides itself, from the first value it erases that
         // each reads, or from the first event where it begins midway in a
         // lake with an act (lakelands#1232).
@@ -536,7 +521,14 @@ impl Lake {
     /// declaration with the one the writer holds. A writer that cannot
     /// read them stays behind.
     pub(super) fn refold(&self, w: &mut Writer) -> Result<()> {
-        let folded = self.engine.projection().folded_through()?;
+        // The log's tip, read again: a write that stopped midway may have
+        // left the writer's behind the log, or past it; an append whose
+        // fold failed and that never landed is owed nothing.
+        let folded;
+        (folded, w.tip) = ends(self.engine.as_ref())?;
+        if w.failed > w.tip.as_ref().map(|t| t.0) {
+            w.failed = None;
+        }
         {
             let view = self.engine.view(None)?;
             w.ontology = Ontology::at(view.as_ref())?.named();
@@ -1526,7 +1518,7 @@ pub(crate) enum Beside {
     /// The whole log, as the open's catch-up folds: an open to rebuild.
     Open,
     /// The whole log, told the acts of removal the projection lists, as
-    /// [`Lake::rebuild`] folds.
+    /// [`Turn::rebuild`] folds.
     Rebuild,
 }
 

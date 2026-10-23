@@ -208,11 +208,12 @@ impl Db {
         Ok(self.query(text, args)?.iter().map(|r| r.get(0)).collect())
     }
 
-    /// The records whose states the first column of a query's rows holds.
+    /// The records a query's rows hold, each from its first column on as
+    /// [`crate::projection::record_at`] reads it.
     pub(crate) fn records(&mut self, query: &str, params: Params<'_>) -> Result<Vec<StoredRecord>> {
         self.query(query, params)?
             .iter()
-            .map(|r| crate::projection::decode_record(&r.get::<_, String>(0)))
+            .map(|r| crate::projection::record_at(r, 0))
             .collect()
     }
 

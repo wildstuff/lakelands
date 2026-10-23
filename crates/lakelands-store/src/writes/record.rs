@@ -4,7 +4,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use super::*;
-use crate::exec::stopped_by_panic;
+use crate::exec::{Reply, stopped_by_panic};
 use crate::lake::{Reads, owing};
 use crate::record;
 
@@ -75,7 +75,7 @@ pub(crate) struct At<'a> {
 /// what it reads ([`At`]), what its drafts so far leave, where its next
 /// event lands, at which door, and the envelope of its own events.
 pub(crate) struct Decide<'a> {
-    pub(super) call: &'a Call<'a>,
+    pub(super) call: Asked<'a>,
     pub(super) ontology: &'a Ontology,
     pub(super) plans: &'a crate::record::Plans,
     pub at: At<'a>,
@@ -765,12 +765,12 @@ impl Decide<'_> {
     }
 }
 
-impl Call<'_> {
+impl<'a> Asked<'a> {
     /// The context a write of this call is decided in, under the writer
     /// `w` and over `view`, at `now`, `n` drafts already in its append:
     /// the caller is judged, at the authored door.
-    pub(crate) fn decide<'a>(
-        &'a self,
+    pub(crate) fn decide(
+        self,
         w: &'a Writer,
         view: &'a dyn ProjectionView,
         now: Timestamp,
@@ -800,11 +800,11 @@ impl Call<'_> {
     }
 
     /// `upsert_preflight`: `upsert`'s decision, at the head, appending
-    /// nothing. It reads as a preflight does, at a turn but holding no
-    /// writer: the writer that decides the write later may find a head
-    /// that has moved.
+    /// nothing. It reads as a preflight does, with no turn and under no
+    /// lock: the writer that decides the write later may find a head that
+    /// has moved.
     pub fn upsert_preflight(
-        &self,
+        self,
         ty: &TypeName,
         key: &RecordKey,
         patch: &Patch,
@@ -816,6 +816,19 @@ impl Call<'_> {
         let w = self.lake.reading(view.as_ref())?;
         let mut d = self.decide(&w, view.as_ref(), w.last_known_at, 0);
         d.plan(Op::Upsert(ty, key, patch), expected).map(drop)
+    }
+}
+
+impl Call<'_> {
+    /// The context a write of this call is decided in: [`Asked::decide`].
+    pub(crate) fn decide<'a>(
+        &'a self,
+        w: &'a Writer,
+        view: &'a dyn ProjectionView,
+        now: Timestamp,
+        n: usize,
+    ) -> Decide<'a> {
+        self.asked().decide(w, view, now, n)
     }
 
     /// A record door's write, its context checked, under one hold of the
@@ -1069,14 +1082,12 @@ impl Write {
     }
 }
 
-/// A record write queued for its turn, its caller as its door read it
-/// ([`Call`]), and where it is answered: its outcome and the causes of
-/// what it left owed.
+/// A record write queued for its turn, its caller as it asked, seen at
+/// the turn as a door's write is, and where it is answered: its outcome
+/// and the causes of what it left owed.
 pub(crate) struct Job {
     pub who: Principal,
     pub context: WriteContext,
-    pub followed: Option<usize>,
-    pub shown: Option<Shown>,
     pub write: Write,
     pub opts: WriteOpts,
     pub answer: Answer,
@@ -1128,7 +1139,8 @@ enum Told {
 /// events reach the lake's `commit_window_events`; none is answered
 /// before that append returns. A job refused, or stopped, is answered
 /// alone and leaves nothing behind; one that stopped ends its batch.
-pub(crate) fn write_many(turn: &Turn<'_>, jobs: Vec<Job>) {
+/// Each answer goes to `replies`, given once the turn lets the lake go.
+pub(crate) fn write_many(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) {
     let mut jobs = std::collections::VecDeque::from(jobs);
     while let Some(head) = jobs.pop_front() {
         let w = turn.writer();
@@ -1136,13 +1148,13 @@ pub(crate) fn write_many(turn: &Turn<'_>, jobs: Vec<Job>) {
         let batches = |j: &Job| j.write.batches(&w.ontology, &j.context);
         if !(ready && batches(&head)) {
             drop(w);
-            head.alone(turn);
+            replies.push(head.alone(turn));
             continue;
         }
         let n = jobs.iter().take_while(|j| batches(j)).count();
         let batch = std::iter::once(head).chain(jobs.drain(..n)).collect();
         drop(w);
-        for left in batched(turn, batch).into_iter().rev() {
+        for left in batched(turn, batch, replies).into_iter().rev() {
             jobs.push_front(left);
         }
     }
@@ -1151,14 +1163,14 @@ pub(crate) fn write_many(turn: &Turn<'_>, jobs: Vec<Job>) {
 impl Job {
     /// Decided and appended alone, as its door did before batches, under
     /// its own [`owing`].
-    fn alone(self, turn: &Turn<'_>) {
-        let call = call(turn, &self.who, (self.context, self.followed, self.shown));
-        let (write, opts) = (&self.write, self.opts);
-        let done = catch_unwind(AssertUnwindSafe(|| owing(|| call.record(write, opts))));
-        drop(
-            self.answer
-                .send(done.unwrap_or_else(|p| Err(stopped_by_panic(p)))),
-        );
+    fn alone(self, turn: &Turn<'_>) -> Reply {
+        let (who, context, write, opts) = (self.who, self.context, &self.write, self.opts);
+        let done = catch_unwind(AssertUnwindSafe(|| {
+            let (who, followed, shown) = crate::doors::seen(turn, who)?;
+            owing(|| call(turn, &who, (context, followed, shown)).record(write, opts))
+        }));
+        let done = done.unwrap_or_else(|p| Err(stopped_by_panic(p)));
+        Box::new(move || drop(self.answer.send(done)))
     }
 }
 
@@ -1179,9 +1191,10 @@ fn call<'a>(
 }
 
 /// Decide `jobs` one by one under one hold of the writer, then append
-/// them together and answer each; answers the jobs a stopped one left
-/// undecided.
-fn batched(turn: &Turn<'_>, jobs: Vec<Job>) -> Vec<Job> {
+/// them together and answer each into `replies`; answers the jobs a
+/// stopped one left undecided. Where the writer cannot be taken, a job
+/// its caller may not write is refused that first, as alone.
+fn batched(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) -> Vec<Job> {
     let opened = catch_unwind(AssertUnwindSafe(|| -> Result<_> {
         let w = turn.for_write()?;
         Ok((w, turn.engine.view(None)?))
@@ -1190,7 +1203,17 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>) -> Vec<Job> {
         Ok(opened) => opened,
         Err(e) => {
             for job in jobs {
-                drop(job.answer.send(Err(e.clone())));
+                let checked = catch_unwind(AssertUnwindSafe(|| {
+                    let (who, followed, shown) = crate::doors::seen(turn, job.who)?;
+                    call(turn, &who, (job.context, followed, shown)).checked(job.write.op())
+                }));
+                let refused = match checked {
+                    Ok(Ok(())) => e.clone(),
+                    Ok(Err(refused)) => refused,
+                    Err(p) => stopped_by_panic(p),
+                };
+                let answer = job.answer;
+                replies.push(Box::new(move || drop(answer.send(Err(refused)))));
             }
             return Vec::new();
         }
@@ -1202,10 +1225,8 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>) -> Vec<Job> {
     let bound = turn.limits.commit_window_events.max(1) as usize;
     for job in jobs.by_ref() {
         let Job {
-            who,
+            mut who,
             context,
-            followed,
-            shown,
             write,
             opts,
             answer,
@@ -1215,12 +1236,13 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>) -> Vec<Job> {
         let id = (opts.idempotency_key.as_ref()).map(|k| log::authored_id(&who.writer(), k));
         let again = id.as_ref().and_then(|id| keys.get(id).copied());
         let decided = catch_unwind(AssertUnwindSafe(|| -> Result<_> {
-            let call = call(turn, &who, (context, followed, shown));
+            let (judged, followed, shown) = crate::doors::seen(turn, who.clone())?;
+            let call = call(turn, &judged, (context, followed, shown));
             let op = write.op();
             call.checked(op)?;
             call.moved(&w)?;
             let at = (&*w, view.as_ref(), now);
-            Ok(match call.decided(at, &mut pending, (op, &opts), again)? {
+            let told = match call.decided(at, &mut pending, (op, &opts), again)? {
                 Decided::Drafts(drafts) => {
                     // Its door refused what the seal would, and the batch
                     // opened on a writer that may append.
@@ -1230,8 +1252,15 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>) -> Vec<Job> {
                 }
                 Decided::Again(j, tip) => (Told::Again(j, tip), None),
                 Decided::Replayed(first) => (Told::Replayed(first), None),
-            })
+            };
+            Ok((told, judged))
         }));
+        let decided = decided.map(|d| {
+            d.map(|(told, judged)| {
+                who = judged;
+                told
+            })
+        });
         let told = match decided {
             Ok(Ok((_, Some((l, mut e, mut s))))) => {
                 if let Some(last) = e.last() {
@@ -1298,14 +1327,14 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>) -> Vec<Job> {
             .map(|d| Err(failed(d, &e, first)))
             .collect(),
         Err(p) => {
-            turn.stopped_append(&mut w, (first, owed));
+            turn.stopped_append(&mut w, first);
             let e = stopped_by_panic(p);
             decisions.iter().map(|_| Err(e.clone())).collect()
         }
     };
     drop(w);
     for (d, answer) in decisions.into_iter().zip(answers) {
-        drop(d.answer.send(answer));
+        replies.push(Box::new(move || drop(d.answer.send(answer))));
     }
     jobs.collect()
 }

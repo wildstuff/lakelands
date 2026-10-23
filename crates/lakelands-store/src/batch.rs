@@ -93,7 +93,8 @@ impl Batches {
         crate::exec::hold_turn(&self.lake)
     }
 
-    /// How many entries wait in the queue.
+    /// How many entries wait in the lake's queue, the one being run left
+    /// out.
     pub fn queued(&self) -> usize {
         crate::exec::queued(&self.lake)
     }

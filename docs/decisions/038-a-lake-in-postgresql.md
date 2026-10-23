@@ -135,11 +135,16 @@ force at a position, so they keep no heads, which every put would write
 and no read would use. A record's key is compared bytewise
 (`COLLATE "C"`), so the primary keys hold the order keys are read in.
 
-### The layout is 2
+### The layout is 6
 
 These tables are not the ones layout 1 made, which would be read as if
-they held no heads, so the engine's layout number is 2, and a projection
-of layout 1 is refused at open and rebuilt (004).
+they held no heads, so the engine's layout number became 2, and a
+projection of an older layout is refused at open and rebuilt (004). It
+is raised whenever a table or a state changes so that an older
+projection would answer wrongly. At 6, a record's state leaves out what
+its row holds, its type, its key and its position, and its flags where
+they are false; every statement that reads a record selects the row's
+columns beside its state (lakelands#1318).
 
 ### The rulebook decides
 
@@ -217,3 +222,8 @@ file answers on disk: it dies with its holder.
   of them; it reads the log over a connection of its own, so a lake
   whose projection another build laid out, or that has none, is
   exported (lakelands#865).
+- The layout is 6: a record's state no longer holds its row's type, key
+  and position or a false flag, and a count in force asks for a flag that
+  is absent (lakelands#1318). Layouts 3 to 5 kept provenance once a
+  record (lakelands#1018), routes by source (lakelands#1151) and the
+  procedure a computed field names (lakelands#1191).

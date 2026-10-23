@@ -250,7 +250,7 @@ pub struct Lake {
     pub(crate) choosing: Mutex<crate::choose::Choosing>,
     /// The queue writes wait in for their turn at the writer, in the order
     /// they came ([`crate::exec::write`]).
-    pub(crate) queue: Mutex<crate::exec::Queue>,
+    pub(crate) queue: Arc<Mutex<crate::exec::Queue>>,
     writer: Mutex<Writer>,
     /// The tip's position and whether the lease is held, as of the last
     /// change the writer made: read without the writer's lock, which an
