@@ -393,7 +393,7 @@ impl Lake {
             limits: location.limits,
             location: location.clone(),
             calls: tokio::sync::Mutex::new(()),
-            queue: Mutex::default(),
+            queue: Arc::default(),
             waiting: Mutex::new(BTreeMap::new()),
             sorted_whole: Mutex::new(BTreeMap::new()),
             choosing: Mutex::default(),

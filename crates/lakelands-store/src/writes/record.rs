@@ -4,7 +4,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use super::*;
-use crate::exec::stopped_by_panic;
+use crate::exec::{Reply, stopped_by_panic};
 use crate::lake::{Reads, owing};
 use crate::record;
 
@@ -1127,7 +1127,8 @@ enum Told {
 /// the drafts of those before it, and appended together; none is answered
 /// before that append returns. A job refused, or stopped, is answered
 /// alone and leaves nothing behind; one that stopped ends its batch.
-pub(crate) fn write_many(turn: &Turn<'_>, jobs: Vec<Job>) {
+/// Each answer goes to `replies`, given once the turn lets the lake go.
+pub(crate) fn write_many(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) {
     let mut jobs = std::collections::VecDeque::from(jobs);
     while let Some(head) = jobs.pop_front() {
         let w = turn.writer();
@@ -1135,13 +1136,13 @@ pub(crate) fn write_many(turn: &Turn<'_>, jobs: Vec<Job>) {
         let batches = |j: &Job| j.write.batches(&w.ontology, &j.context);
         if !(ready && batches(&head)) {
             drop(w);
-            head.alone(turn);
+            replies.push(head.alone(turn));
             continue;
         }
         let n = jobs.iter().take_while(|j| batches(j)).count();
         let batch = std::iter::once(head).chain(jobs.drain(..n)).collect();
         drop(w);
-        for left in batched(turn, batch).into_iter().rev() {
+        for left in batched(turn, batch, replies).into_iter().rev() {
             jobs.push_front(left);
         }
     }
@@ -1150,14 +1151,12 @@ pub(crate) fn write_many(turn: &Turn<'_>, jobs: Vec<Job>) {
 impl Job {
     /// Decided and appended alone, as its door did before batches, under
     /// its own [`owing`].
-    fn alone(self, turn: &Turn<'_>) {
+    fn alone(self, turn: &Turn<'_>) -> Reply {
         let call = call(turn, &self.who, (self.context, self.followed, self.shown));
         let (write, opts) = (&self.write, self.opts);
         let done = catch_unwind(AssertUnwindSafe(|| owing(|| call.record(write, opts))));
-        drop(
-            self.answer
-                .send(done.unwrap_or_else(|p| Err(stopped_by_panic(p)))),
-        );
+        let done = done.unwrap_or_else(|p| Err(stopped_by_panic(p)));
+        Box::new(move || drop(self.answer.send(done)))
     }
 }
 
@@ -1178,9 +1177,10 @@ fn call<'a>(
 }
 
 /// Decide `jobs` one by one under one hold of the writer, then append
-/// them together and answer each; answers the jobs a stopped one left
-/// undecided.
-fn batched(turn: &Turn<'_>, jobs: Vec<Job>) -> Vec<Job> {
+/// them together and answer each into `replies`; answers the jobs a
+/// stopped one left undecided. Where the writer cannot be taken, a job
+/// its caller may not write is refused that first, as alone.
+fn batched(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) -> Vec<Job> {
     let opened = catch_unwind(AssertUnwindSafe(|| -> Result<_> {
         let w = turn.for_write()?;
         Ok((w, turn.engine.view(None)?))
@@ -1189,7 +1189,15 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>) -> Vec<Job> {
         Ok(opened) => opened,
         Err(e) => {
             for job in jobs {
-                drop(job.answer.send(Err(e.clone())));
+                let call = call(turn, &job.who, (job.context, job.followed, job.shown));
+                let checked = catch_unwind(AssertUnwindSafe(|| call.checked(job.write.op())));
+                let refused = match checked {
+                    Ok(Ok(())) => e.clone(),
+                    Ok(Err(refused)) => refused,
+                    Err(p) => stopped_by_panic(p),
+                };
+                let answer = job.answer;
+                replies.push(Box::new(move || drop(answer.send(Err(refused)))));
             }
             return Vec::new();
         }
@@ -1289,7 +1297,7 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>) -> Vec<Job> {
             .map(|d| Err(failed(d, &e, first)))
             .collect(),
         Err(p) => {
-            turn.stopped_append(&mut w, (first, owed));
+            turn.stopped_append(&mut w, first);
             let e = stopped_by_panic(p);
             let stopped = |d: &Decision| d.told.as_ref().err().unwrap_or(&e).clone();
             decisions.iter().map(|d| Err(stopped(d))).collect()
@@ -1297,7 +1305,7 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>) -> Vec<Job> {
     };
     drop(w);
     for (d, answer) in decisions.into_iter().zip(answers) {
-        drop(d.answer.send(answer));
+        replies.push(Box::new(move || drop(d.answer.send(answer))));
     }
     jobs.collect()
 }

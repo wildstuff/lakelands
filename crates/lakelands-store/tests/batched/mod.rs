@@ -38,7 +38,7 @@ pub type Place = Arc<dyn Fn(&str, usize) -> (Location, Seams) + Send + Sync>;
 /// The time both lakes of a comparison read.
 const AT: Timestamp = Timestamp(1_790_000_000_000_000);
 
-fn owner(lake: &str, id: &str) -> Principal {
+pub fn owner(lake: &str, id: &str) -> Principal {
     Principal {
         kind: PrincipalKind::Human,
         id: id.into(),
@@ -66,7 +66,7 @@ fn blind(lake: &str) -> Principal {
     }
 }
 
-async fn opened(place: &Place, lake: &str, twin: usize) -> (Arc<dyn LakeStore>, Batches) {
+pub async fn opened(place: &Place, lake: &str, twin: usize) -> (Arc<dyn LakeStore>, Batches) {
     let (location, seams) = place(lake, twin);
     let (store, batches) = batch::open(location, seams, OpenMode::Create)
         .await
@@ -78,7 +78,7 @@ async fn opened(place: &Place, lake: &str, twin: usize) -> (Arc<dyn LakeStore>, 
 /// `item`, a number and a tag, linked one to one over `next` and many to
 /// many over `near`; the items whose number passes 5; and the items by
 /// tag, a view kept.
-async fn declared(store: &dyn LakeStore, lake: &str) {
+pub async fn declared(store: &dyn LakeStore, lake: &str) {
     let cat = store.catalog(WriteContext::default());
     let who = owner(lake, "owner");
     let text = json!({"kind": "text"});
@@ -167,7 +167,7 @@ impl Writes {
 }
 
 /// The whole log of `store`.
-async fn log(store: &dyn LakeStore) -> Vec<Event> {
+pub async fn log(store: &dyn LakeStore) -> Vec<Event> {
     let (feed, mut from, mut events) = (store.feed(), Position::GENESIS, Vec::new());
     loop {
         let page = feed
@@ -186,7 +186,7 @@ async fn log(store: &dyn LakeStore) -> Vec<Event> {
 /// writes them, and the log.
 type Written = (Vec<String>, Vec<Event>);
 
-fn wire(answer: &Result<Outcome>) -> String {
+pub fn wire(answer: &Result<Outcome>) -> String {
     match answer {
         Ok(o) => serde_json::to_string(o).expect("an outcome writes"),
         Err(e) => format!("{e:?}"),
@@ -373,7 +373,7 @@ impl LakeEngine for FaultyEngine {
     }
 }
 
-fn upsert(lake: &str, key: &str, n: u64) -> (Principal, Write, WriteOpts) {
+pub fn upsert(lake: &str, key: &str, n: u64) -> (Principal, Write, WriteOpts) {
     let patch = serde_json::from_value(json!({"n": n})).expect("a patch");
     let write = Write::Upsert("item".into(), key.into(), patch);
     (owner(lake, "ann"), write, WriteOpts::default())
@@ -381,7 +381,7 @@ fn upsert(lake: &str, key: &str, n: u64) -> (Principal, Write, WriteOpts) {
 
 /// A write the lake refuses: an upsert of a record that exists at no
 /// version yet, at version 7.
-fn refused(lake: &str, key: &str) -> (Principal, Write, WriteOpts) {
+pub fn refused(lake: &str, key: &str) -> (Principal, Write, WriteOpts) {
     let (who, write, _) = upsert(lake, key, 1);
     let opts = WriteOpts {
         expected_version: Some(Version(7)),
@@ -392,7 +392,7 @@ fn refused(lake: &str, key: &str) -> (Principal, Write, WriteOpts) {
 
 /// A setting written, which runs alone and ends a batch: the kept view
 /// by tag bounded.
-fn setting(lake: &str) -> (Principal, Write, WriteOpts) {
+pub fn setting(lake: &str) -> (Principal, Write, WriteOpts) {
     let n = WRITTEN.fetch_add(1, Ordering::SeqCst);
     let patch = json!({"key": "view_kept.by_tag", "value": n.is_multiple_of(2)});
     let patch = serde_json::from_value(patch).expect("a patch");
@@ -402,7 +402,7 @@ fn setting(lake: &str) -> (Principal, Write, WriteOpts) {
 
 static WRITTEN: AtomicUsize = AtomicUsize::new(0);
 
-fn situation(answer: &Result<Outcome>) -> Option<&Situation> {
+pub fn situation(answer: &Result<Outcome>) -> Option<&Situation> {
     answer.as_ref().err().and_then(Error::situation)
 }
 

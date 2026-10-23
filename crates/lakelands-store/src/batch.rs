@@ -59,6 +59,12 @@ impl Batches {
         Doors::new(&self.lake, context).records(writes).await
     }
 
+    /// How many entries wait in the lake's queue, the one being run left
+    /// out.
+    pub fn queued(&self) -> usize {
+        crate::exec::queued(&self.lake)
+    }
+
     /// One write decided and appended alone, as a door did before writes
     /// were batched.
     pub async fn alone(

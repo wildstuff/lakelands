@@ -9,7 +9,9 @@
 //! key, and the entries of the kept views' orders since the last clear;
 //! and it can hand one event of the log out damaged, and the head's view
 //! out at an earlier position, and let a write land just before the
-//! engine answers a `ranked`.
+//! engine answers a `ranked`; and it can panic in a read of a record, in
+//! a commit, before or after the engine takes it, and in the view asked
+//! for next.
 //! [`calls`] reads what a lake owes as the drain would.
 
 #![allow(dead_code)]
@@ -122,6 +124,15 @@ pub struct Probe {
     /// A reader to park inside the next `declarations`: it says so on the
     /// first and waits on the second before it reads.
     pub park: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    /// A record whose every `get` and `get_many` panics while it is set.
+    pub panic_get: Mutex<Option<(TypeName, RecordKey)>>,
+    /// A commit to panic at: the n-th from now, counted from 1, and
+    /// whether the engine takes it first.
+    pub panic_commit: Mutex<Option<(usize, bool)>>,
+    /// Whether the view asked for next after a commit panicked panics too.
+    pub then_view: std::sync::atomic::AtomicBool,
+    /// A view to panic at: the n-th asked for from now, counted from 1.
+    pub panic_view: Mutex<Option<usize>>,
 }
 
 impl Probe {
@@ -148,6 +159,15 @@ impl Probe {
                 detail: lakelands_api::error::Detail::scrubbed(message),
             },
         ))
+    }
+
+    /// A read of `ty`'s records at `keys`, panicking where `panic_get`
+    /// names one of them.
+    fn read_at(&self, ty: &TypeName, keys: &[RecordKey]) {
+        let planted = self.panic_get.lock().unwrap().clone();
+        if planted.is_some_and(|(t, k)| t == *ty && keys.contains(&k)) {
+            std::panic::panic_any("a read panicked (planted)");
+        }
     }
 
     /// Whether this call is the one `planted` names: it counts down.
@@ -188,6 +208,7 @@ impl ProjectionView for ProbedView<'_> {
         self.inner.declarations()
     }
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
+        self.probe.read_at(ty, std::slice::from_ref(key));
         self.probe.got(ty, 1)?;
         *self
             .probe
@@ -199,6 +220,7 @@ impl ProjectionView for ProbedView<'_> {
         self.inner.get(ty, key)
     }
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
+        self.probe.read_at(ty, keys);
         self.probe.got(ty, keys.len())?;
         self.inner.get_many(ty, keys)
     }
@@ -371,6 +393,9 @@ impl LakeEngine for Probed {
         self
     }
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
+        if Probe::refused(&self.probe.panic_view) {
+            std::panic::panic_any("a view panicked (planted)");
+        }
         if Probe::refused(&self.probe.refuse_view) {
             let message = "the view was refused (planted)".to_owned();
             return Err(lakelands_api::Error::unavailable(
@@ -442,7 +467,27 @@ impl ProjectionStore for Probed {
                 },
             ));
         }
-        self.inner.projection().commit(through)
+        let panics = {
+            let mut planted = self.probe.panic_commit.lock().unwrap();
+            let now = planted.as_mut().is_some_and(|(n, _)| {
+                *n -= 1;
+                *n == 0
+            });
+            match now {
+                true => planted.take().map(|(_, taken)| taken),
+                false => None,
+            }
+        };
+        let Some(taken) = panics else {
+            return self.inner.projection().commit(through);
+        };
+        if taken {
+            self.inner.projection().commit(through)?;
+        }
+        if self.probe.then_view.load(Ordering::SeqCst) {
+            *self.probe.panic_view.lock().unwrap() = Some(1);
+        }
+        std::panic::panic_any("a commit panicked (planted)");
     }
     fn rollback(&self) {
         self.inner.projection().rollback();
