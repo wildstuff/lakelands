@@ -22,9 +22,8 @@ impl<'a> Reader<'a> {
         let params = self.bind_params(&start_decl, &p.start.params)?;
         let limit = self.limit(p.limit, measures::is_measure(&p.project))?;
         let max_depth = self.lake.limits.max_depth;
-        // Rows and an aggregate bind each record under a name, the one
-        // `as` gives or its type's, once (018, extended); nothing else
-        // binds by name.
+        // Rows and an aggregate bind each record under a name, once (018,
+        // extended); nothing else binds by name.
         let binds = matches!(
             p.project,
             Projection::Rows { .. } | Projection::Aggregate(_)
@@ -42,8 +41,7 @@ impl<'a> Reader<'a> {
             measures::check(p)?;
         } else if !matches!(p.project, Projection::Rows { .. }) && !p.order_by.is_empty() {
             // A graph and a path come by depth, type and key, an
-            // aggregate's groups by their key (025): an order they would
-            // pass over is refused, as `as` is.
+            // aggregate's groups by their key (025): an order is refused.
             return Err(Error::invalid(Case::PatternOrderNotRows));
         }
         // A row is a projection of a walk, not a record: it has no change
@@ -63,16 +61,14 @@ impl<'a> Reader<'a> {
                 }
             }
         }
-        // What a pattern says and an arm cannot honour is refused, not
-        // passed over: a path is a graph of one walk from one start. Rows
-        // are told so before their steps are judged, which a path's, each
-        // from depth 0, would not pass.
+        // What a pattern says and an arm cannot honour is refused: a path
+        // is a graph of one walk from one start. Rows are told so before
+        // their steps are judged, which a path's would not pass.
         let reaches = p.project == Projection::Reach;
         if (binds || reaches) && p.to.is_some() {
             return Err(Error::invalid(Case::PatternToNotGraph));
         }
-        // A reach of no steps could never answer a row: it is refused as a
-        // measure of none is.
+        // A reach of no steps could never answer a row.
         if reaches && p.steps.is_empty() {
             let measure = "reach".to_owned();
             return Err(Error::invalid(Case::MeasureNoSteps { measure }));
@@ -88,9 +84,8 @@ impl<'a> Reader<'a> {
         let mut reach: Vec<Reach> = Vec::new();
         let measure = measures::is_measure(&p.project);
         // A graph whose steps all start at depth 0 is one walk over any of
-        // their relations from the start (018): a step's relation may be
-        // declared by a type another step reaches. Any other is a chain, and
-        // so is a reach, whatever its depths.
+        // their relations from the start (018); any other is a chain, and
+        // so is a reach.
         let chain = reaches || p.steps.iter().any(|s| s.depth.min > 0);
         let lenient = match p.project {
             Projection::Graph => !chain,
@@ -112,15 +107,12 @@ impl<'a> Reader<'a> {
             };
             let owner = self.as_declared(&here, step);
             let owner = owner.as_ref();
-            // Rows are walked as a chain whatever their depths, so a step
-            // that binds is judged from where it stands, as a chain's and a
-            // measure's are.
+            // Rows are walked as a chain whatever their depths.
             let walked = measure || chain || binds;
             let reached = match walked {
                 true => self.step_target(&here, &step.relation, step.walk, (lenient, owner))?,
-                // A neighbourhood's step may stand anywhere, but a relation
-                // no type its reader is shown declares is walked from
-                // nowhere: hidden or absent, it is refused alike (006).
+                // A relation no type its reader is shown declares is walked
+                // from nowhere: hidden or absent, it is refused alike (006).
                 false if !self.out_any(&step.relation) => {
                     let (ty, relation, walk) = (here, step.relation.clone(), step.walk);
                     return Err(Error::invalid(Case::NoRelationToWalk {
@@ -138,28 +130,26 @@ impl<'a> Reader<'a> {
             reach.push(Reach { owner, far });
             self.probe_derived(&here, Some(&step.relation), step.walk, &reach[i])?;
             // Such a step reaches every type of its whole range from `here`,
-            // not only the first that declares its relation, and its `type`
-            // may name any of them (a measure's has none); a neighbourhood's
-            // reaches every type its relation does. It is judged once the relation is probed around
-            // `here`, so one held from the field that carries it there is
-            // answered that first.
+            // and its `type` may name any of them; a neighbourhood's reaches
+            // every type its relation does. It is judged once the relation
+            // is probed around `here`, so one held from the field that
+            // carries it there is answered that first.
             let all = match walked {
                 true => self.ranged(step, &here, reach[i].owner.as_ref()),
                 false => self.neighbours(step, None, reach[i].owner.as_ref()),
             };
             // The step after another in a chain is judged from one type.
             // Rows and an aggregate may bind a last step over several types
-            // (018, extended): under the relation's name as its caller
-            // wrote it, its records hold their key, `_type`, `_depth` and
-            // the fields every type declares alike, and a `where` or a path
+            // (018, extended): its records hold their key, `_type`, `_depth`
+            // and the fields every type declares alike; a `where` or a path
             // that reads another field is refused.
             let open = binds && i == last && step.ty.is_none() && all.len() > 1;
             let one = (binds && !open) || (chain && !measure && i < last);
             let reached = self.neighbour_target(&at, step, &all, one)?.or(reached);
-            // At a valid time a walk keeps each record it meets by its own
-            // type's valid time, so a step of a hop or more probes every type
-            // it can meet (024, lakelands#831): from the declarations, since a
-            // refusal that waited for a record would say that one was reached.
+            // At a valid time a walk keeps each record by its own type's
+            // valid time, so a step of a hop or more probes every type it
+            // can meet (024, lakelands#831): from the declarations, since a
+            // refusal that waited for a record would say one was reached.
             if self.valid_at.is_some() && step.depth.max > 0 {
                 for t in self.met(step, (!lenient).then_some(&here), &reach[i]) {
                     self.visible_type(&t)?;
@@ -169,10 +159,8 @@ impl<'a> Reader<'a> {
             self.visible_type(&reached)?;
             // A view with parameters is bound only by a read that names it
             // (018): a step that arrives at one other than the start has no
-            // values to read it with, whatever records the walk would reach,
-            // so the pattern is refused before any record is read.
-            // Every type the step reaches is a view it arrives at, not only
-            // the one it binds by.
+            // values to read it with, so the pattern is refused before any
+            // record is read, for every type the step reaches.
             for ty in all
                 .iter()
                 .chain([&reached])
@@ -230,9 +218,8 @@ impl<'a> Reader<'a> {
         for s in &p.steps {
             graph::check_depth(s.depth, max_depth)?;
         }
-        // A pattern judged before its start's reranker is asked reads nothing.
-        // Code above this return runs in that judging read too, before the
-        // reranker is asked: a judgement belongs above it, a read below.
+        // A pattern judged before its start's reranker is asked reads
+        // nothing: a judgement belongs above this return, a read below.
         if self.second.borrow().judging {
             let rows = Vec::new();
             return Ok(Ok(QueryResult::Rows {
@@ -243,9 +230,8 @@ impl<'a> Reader<'a> {
         let (reader, reach) = (self, &reach[..]);
         // Rows, a reach and every walk a step's `where` reads hold what the
         // walk reads, so that `where` reads each record its visibility read
-        // already brought for the batch, never one alone (lakelands#940,
-        // lakelands#1027). A graph or a measure without one walks more
-        // records than it answers, and holds none.
+        // brought for the batch (lakelands#940, lakelands#1027). A graph or
+        // a measure without one walks more records than it answers.
         let wheres = p.steps.iter().any(|s| s.filter.is_some());
         let records = (binds || reaches || wheres).then(RefCell::default);
         let hidden = Visible {
@@ -273,8 +259,7 @@ impl<'a> Reader<'a> {
             }
         }
         // Whether a record reached over step `i` is kept and walked from:
-        // it is of the step's `type`, and its `where`, read against the
-        // record's own type among those the step reaches, holds of it.
+        // of the step's `type`, and its `where` holds of it.
         let keep = |i: usize, node: &graph::Node| -> Result<bool> {
             if p.steps[i].ty.as_ref().is_some_and(|t| *t != node.0) {
                 return Ok(false);
@@ -288,9 +273,8 @@ impl<'a> Reader<'a> {
             let r = hidden.record(node)?;
             Ok(r.is_some_and(|r| self.holds(f, &r, true)))
         };
-        // The start: the one record a key names, what a search finds, or
-        // the records of the start's type a filter (or none) selects, which
-        // rows read a page at a time.
+        // The start: the record a key names, what a search finds, or the
+        // records a filter selects, which rows read a page at a time.
         let few: Option<Vec<StoredRecord>> = if let Some(key) = &p.start.key {
             if self.start_found(p, key)? {
                 Some(self.get_one(&start_ty, key)?.into_iter().collect())
@@ -311,15 +295,12 @@ impl<'a> Reader<'a> {
         };
         let at = [Place::Start, Place::Where];
         let filter = self.record_filter(&start_decl, p.start.filter.as_ref(), &at)?;
-        // A chain and a path read every start, and so do rows of a view,
-        // whose records are computed whole. A neighbourhood's starts are
-        // its first records, so it reads as many as its page reaches and
-        // one more (lakelands#963).
+        // A chain, a path and rows of a view read every start; a
+        // neighbourhood's starts are its first records, so it reads as many
+        // as its page reaches and one more (lakelands#963).
         let hood = p.project == Projection::Graph && !chain && p.to.is_none();
-        // A neighbourhood's cursor names the last start its page held, and
-        // a page from it reads the starts after it, inside them where more
-        // than the page follow (lakelands#1050). A graph's other `after` is
-        // another read's.
+        // A neighbourhood's cursor names the last start its page held
+        // (lakelands#1050). A graph's other `after` is another read's.
         let after_start = match &after {
             Some((v, key)) if hood && v.as_slice() == [Value::from(0u64)] => Some(key.clone()),
             Some(_) if p.project == Projection::Graph => {
@@ -499,17 +480,13 @@ impl<'a> Reader<'a> {
             return Ok(Ok(QueryResult::Rows { rows, next_cursor }));
         }
         // Rows are ordered, projected and measured by their paths,
-        // `name.field`, each read as the rows hold it, and a name they do
-        // not hold is refused (018, extended). An order or a measure probes
-        // its field as `find`'s do (024), so an answer is never computed
-        // over values the principal may not read; a named key's fields are
-        // probed as a field key's are.
+        // `name.field`; a name they do not hold is refused (018, extended).
+        // An order or a measure probes its field as `find`'s do (024), as
+        // a named key's fields are.
         let bound = |n: &str| names.iter().any(|b| b == n);
         // A path under a name over several types reads a field every one
-        // of them declares alike, against each (`true`), and is refused
-        // otherwise, naming the types that differ. Its `key`, `_type` and
-        // `_depth` are the lake's columns, read against no type and never
-        // probed.
+        // declares alike, against each (`true`), else is refused. Its `key`,
+        // `_type` and `_depth` are the lake's columns, never probed.
         let typed = |n: &str, f: FieldName| {
             let i = names.iter().position(|b| b == n).expect("a bound name");
             match &several[i] {
@@ -576,10 +553,9 @@ impl<'a> Reader<'a> {
             }
         }
         // Rows: one per match, walked a page of starts at a time
-        // (lakelands#940), each page one frontier and each record read
-        // once for the walk, its `where` and its row. The starts come in
-        // key order, or in an order the engine gives them (041): each of
-        // its paths a stored field of the start's own, as `page` reads.
+        // (lakelands#940). The starts come in key order, or in an order the
+        // engine gives them (041): each path a stored field of the start's
+        // own, as `page` reads.
         let mut keep = keep;
         let ordered = few.is_none().then(|| {
             let own = |o: &Order| {
@@ -682,11 +658,9 @@ impl<'a> Reader<'a> {
             return Ok(Ok(QueryResult::Rows { rows, next_cursor }));
         }
         // Every row: an aggregate's whole, an order's as their sort values
-        // and records until the page is cut. An order over a record a step
-        // reaches, and an aggregate, hold at most the lake's
-        // `max_graph_nodes` rows, past which the read is refused, never
-        // cut, as a whole-graph measure is (026); a start's own order over
-        // starts at hand (a key, a search, a view's records) as before.
+        // and records until the page is cut. An order over a step's record,
+        // and an aggregate, hold at most `max_graph_nodes` rows, past which
+        // the read is refused, never cut, as a whole-graph measure is (026).
         let own = |o: &Order| {
             o.field
                 .as_str()
@@ -820,14 +794,12 @@ impl<'a> Reader<'a> {
         Ok(found.map(|f| f.hits.into_iter().map(|h| h.record.key).collect()))
     }
 
-    /// Refuse an order or a measure over a path of a pattern's rows, the
-    /// type of a bound name and one of its fields, whose field the principal
-    /// may not read, or that the type does not declare, as `find` refuses
-    /// one (024, 006). A row's `<name>.key` and `<name>._depth` are the
-    /// lake's columns and probe nothing.
-    /// The first `ordered` paths are orders, and an order by a field
-    /// computed at the read is refused once the field is probed. A path
-    /// read over several types (`wide`) is refused naming its type.
+    /// Refuse an order or a measure over a path of a pattern's rows whose
+    /// field the principal may not read or the type does not declare, as
+    /// `find` refuses one (024, 006). The lake's columns probe nothing.
+    /// The first `ordered` paths are orders, refused by a field computed at
+    /// the read. A path over several types (`wide`) is refused naming its
+    /// type.
     fn probe_rows(&self, paths: &[Read], ordered: usize) -> Result<()> {
         for (i, (ty, field, wide)) in paths.iter().enumerate() {
             let decl = self.shape.ontology.ty(ty)?;
@@ -851,10 +823,10 @@ impl<'a> Reader<'a> {
     }
 
     /// How the types a step reaches declare `field`, where not alike: one
-    /// its reader may not know of is missing, as on a type without it
-    /// (024), and one whose field type (storage kind, value type, target
-    /// or dimensions) is not the one most of them declare, the first
-    /// type's by name on a tie, is said otherwise. None where all declare it alike.
+    /// its reader may not know of is missing (024), and one whose field
+    /// type (kind, value type, target or dimensions) is not the one most
+    /// declare, the first by name on a tie, is said otherwise. None where
+    /// all declare it alike.
     fn unlike(&self, all: &BTreeSet<TypeName>, field: &FieldName) -> Option<Unlike> {
         let declared = |t: &TypeName| {
             let decl = self.shape.ontology.ty(t).ok()?;
@@ -951,14 +923,10 @@ impl<'a> Reader<'a> {
     }
 
     /// Rewrite a step naming a relation's `inverse` to that relation,
-    /// walked the other way: the inverse is the relation's name from its
-    /// target, and the step's `walk` counts from the name it gives. A
-    /// relation declared under the name wins, so a step is read as an
-    /// inverse only when it walks no relation of that name from `here`.
-    ///
-    /// An inverse is one relation (044, extended), so such a step walks
-    /// that relation alone, whatever else bears its name: its owner is
-    /// answered, for the step to be judged and walked by.
+    /// walked the other way. A relation declared under the name wins, so a
+    /// step is read as an inverse only when it walks no relation of that
+    /// name from `here`. An inverse is one relation (044, extended): its
+    /// owner is answered, for the step to be judged and walked by.
     fn as_declared(&self, here: &TypeName, step: &mut Step) -> Option<TypeName> {
         let (name, walk) = (&step.relation, step.walk);
         // Whether a relation leaves `here` (out) or reaches it (in) by the
@@ -998,9 +966,8 @@ impl<'a> Reader<'a> {
 
     /// The types a typed step's walk passes through, its `type` among
     /// them: a neighbourhood and a path keep a record at `every_hop`, so
-    /// only that type; a chain's step walks its range and keeps at its end,
-    /// so each type its `type` is reached from in the hops left as well. A
-    /// relation that leads to none of them answers nothing the step keeps.
+    /// only that type; a chain's step keeps at its end, so each type its
+    /// `type` is reached from in the hops left as well.
     fn through(
         &self,
         step: &Step,
@@ -1047,10 +1014,8 @@ impl<'a> Reader<'a> {
     }
 
     /// The types a step's records may be of from `here`, over its whole
-    /// range: `here` itself where it starts at depth 0, and each type a hop
-    /// of it reaches. A row would bind a record of each under the step's
-    /// one name, and a `where` be read against each. A range that reaches
-    /// none is judged by its first hop.
+    /// range: `here` where it starts at depth 0, and each type a hop
+    /// reaches. A range that reaches none is judged by its first hop.
     fn ranged(&self, step: &Step, here: &TypeName, owner: Option<&TypeName>) -> BTreeSet<TypeName> {
         let mut reached = BTreeSet::new();
         let mut at = BTreeSet::from([here.clone()]);
@@ -1099,11 +1064,9 @@ impl<'a> Reader<'a> {
     }
 
     /// The type a step reaches, one of `reached`: the one it names as its
-    /// `type`, or the only one. None where it reaches several and names
-    /// none, or reaches none. A step that reaches several types and must
-    /// reach `one` (a row binds its records, or a chain's next step is
-    /// judged from it) names its `type`; a `type` it does not reach is
-    /// refused, naming every type it does.
+    /// `type`, or the only one. A step over several types that must reach
+    /// `one` names its `type`; a `type` it does not reach is refused,
+    /// naming every type it does.
     fn neighbour_target(
         &self,
         at: &Place,
@@ -1163,12 +1126,11 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// A pattern's row as one type: for each name bound to a type in
-    /// `types`, each field of the type its reader may know of under its
-    /// path, `<name>.<field>`, and `<name>.key`, the record's key where no
-    /// such field is named `key`. A field named `_depth` or `_type` is left
-    /// out: under a bound name that path is the lake's column. A name over
-    /// several types holds the fields they share alone.
+    /// A pattern's row as one type: each field of a bound name's type its
+    /// reader may know of under `<name>.<field>`, and `<name>.key` where no
+    /// field is named `key`. `_depth` and `_type` are left out: they are
+    /// the lake's columns. A name over several types holds the fields they
+    /// share alone.
     fn row_shape(&self, names: &[String], types: &[TypeName], open: &[Shared]) -> TypeDecl {
         let mut row = TypeDecl::default();
         for ((name, ty), open) in names.iter().zip(types).zip(open) {
@@ -1197,14 +1159,13 @@ impl<'a> Reader<'a> {
         row
     }
 
-    /// A record's values into a pattern's row under their paths,
-    /// `<name>.<field>`. A row's `<name>.key` is the record's key, unless
-    /// its type declares a field `key` its reader may know of: then that
-    /// field's value, null where the record holds none. `<name>._depth`
-    /// is the hops its step took to reach it, 0 for the start, and
-    /// `<name>._type` its type, whatever field of those names a lake
-    /// written before the rule holds. A name over several types (`open`)
-    /// binds the key, the type, the depth and the fields its types share.
+    /// A record's values into a pattern's row under `<name>.<field>`.
+    /// `<name>.key` is the record's key, unless its type declares a field
+    /// `key` its reader may know of: then that field's value, null where
+    /// none. `<name>._depth` is the hops its step took, 0 for the start,
+    /// and `<name>._type` its type, whatever a lake written before the rule
+    /// holds in fields so named. A name over several types (`open`) binds
+    /// the key, type, depth and the fields its types share.
     fn bind(
         &self,
         row: &mut BTreeMap<String, Value>,

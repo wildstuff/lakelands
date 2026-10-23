@@ -1,10 +1,8 @@
 //! Aggregates: expressions over a set of records rather than one.
 //!
-//! `count`, `sum`, `min`, `max` and `avg` fold a group of records. They
-//! appear in `find`'s aggregate and in a view's measures; a measure may
-//! also compute with the group's own values and with measures declared
-//! before it (`margin = sum(revenue) - sum(cost)`, then
-//! `rate = margin / sum(revenue)`).
+//! `count`, `sum`, `min`, `max` and `avg` fold a group of records, in
+//! `find`'s aggregate and in a view's measures; a measure may also use the
+//! group's own values and earlier measures (`rate = margin / sum(revenue)`).
 //!
 //! - `count()` counts the records; `count(x)` counts those where `x` is
 //!   not null.
@@ -72,9 +70,9 @@ impl Scope for GroupScope<'_> {
 
 /// One aggregate call over a group, folded a record at a time: the count,
 /// the exact sum and the best value, kept instead of the records. It
-/// answers what folding the records at once would, errors included: an
-/// argument that fails on any record comes before a value that cannot be
-/// added or compared, and either before the result.
+/// answers what folding the records at once would, errors included: a
+/// failing argument comes before a value that cannot be added or compared,
+/// and either before the result.
 #[derive(Clone, Debug, Default)]
 struct Fold {
     count: usize,
@@ -169,12 +167,12 @@ impl Fold {
 
 /// The numbers of a sum by the scale they carry: for each scale how many,
 /// their sum and the sum of their magnitudes, as integers. Where the
-/// magnitudes, written at the largest scale among the values, stay below
-/// 2^96, no order of additions rounds or fails, and the sum is exact at
-/// that scale: a function of its values, whatever order they came in, and
-/// one a number can be taken out of again. Adding them one to the next is
-/// not: a zero hands the other number back as it stands, so
-/// `1.10 - 1.10 + 5` read `5` or `5.00` by the order of the keys.
+/// magnitudes, at the largest scale among the values, stay below 2^96, no
+/// order of additions rounds or fails and the sum is exact at that scale:
+/// a function of its values, whatever their order, and one a number can be
+/// taken out of again. Adding one to the next is not: a zero hands the
+/// other number back as it stands, so `1.10 - 1.10 + 5` read `5` or `5.00`
+/// by the order of the keys.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct Scales(BTreeMap<u32, (u64, Wide, Wide)>);
 
@@ -201,10 +199,9 @@ impl Scales {
     }
 
     /// Put a number in, or take one out. A scale no number carries has no
-    /// entry, so the numbers held say the same whatever was put and taken
-    /// on the way. Magnitudes past an integer's width, and a number taken
-    /// that was not put, leave the scale's magnitude at the width's end:
-    /// the sum is then not exact, and stays so.
+    /// entry. Magnitudes past an integer's width, and a number taken that
+    /// was not put, leave the scale's magnitude at the width's end: the sum
+    /// is then not exact, and stays so.
     fn fold(&mut self, n: Decimal, put: bool) {
         let (scale, m) = (n.scale(), n.mantissa());
         let (count, sum, size) = self.0.entry(scale).or_default();
@@ -423,8 +420,8 @@ pub fn row_path(name: &str, bound: &dyn Fn(&str) -> bool) -> Answer<(String, Fie
 /// (018, extended). A measure's field and a field key name a path whole.
 /// Each path of a named key reads the longest name bound, a field of its
 /// record, then members, and is rewritten to the row's one key. A path no
-/// bound name starts is refused. Answers the aggregate so read and each
-/// name and field it reads.
+/// bound name starts is refused. Answers the aggregate and each name and
+/// field it reads.
 pub fn over_rows(
     agg: &Aggregate,
     bound: &dyn Fn(&str) -> bool,

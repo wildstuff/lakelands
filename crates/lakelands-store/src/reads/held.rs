@@ -22,19 +22,16 @@ use lakelands_core::engines as core_engines;
 
 use crate::lake::Lake;
 
-/// The records a count reads at once.
 const PAGE: u32 = 1024;
 
 /// Where a record of an earlier position stands at the head: under the
 /// name its type bears there, after each rename since, and under the key
 /// it bears there, after each re-key since.
 pub(crate) struct Since {
-    /// The types renamed since, in the log's order, each with its position.
     renamed: Vec<(Position, TypeName, TypeName)>,
     /// By a type's name at the head, each key a re-key since moved, and
     /// the key it bears at the head.
     moved: BTreeMap<TypeName, BTreeMap<RecordKey, RecordKey>>,
-    /// The same, from the key at the head back to the key then.
     back: BTreeMap<TypeName, BTreeMap<RecordKey, RecordKey>>,
 }
 
@@ -129,7 +126,6 @@ impl Since {
         Ok(since)
     }
 
-    /// The name at the head of a type named `ty` at `at`.
     fn name_after(&self, ty: &TypeName, at: Position) -> TypeName {
         let mut name = ty.clone();
         for (_, from, to) in self.renamed.iter().filter(|r| r.0 > at) {
@@ -140,13 +136,10 @@ impl Since {
         name
     }
 
-    /// The name at the head of a type of the earlier position.
     pub(crate) fn name(&self, ty: &TypeName) -> TypeName {
         self.name_after(ty, Position::GENESIS)
     }
 
-    /// The key at the head of the record `key` of the type named `name`
-    /// there.
     pub(crate) fn key(&self, name: &TypeName, key: &RecordKey) -> RecordKey {
         let moved = self.moved.get(name).and_then(|m| m.get(key));
         moved.unwrap_or(key).clone()
@@ -165,7 +158,6 @@ impl Since {
     }
 }
 
-/// The view at a position, with the head beside it.
 pub(crate) struct HeldNow<'a> {
     then: Box<dyn ProjectionView + 'a>,
     head: Rc<dyn ProjectionView + 'a>,

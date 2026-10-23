@@ -13,18 +13,17 @@
 //! <dir>/export.json                              a manifest, never trusted
 //! ```
 //!
-//! A lake that was never checkpointed exports one file,
-//! `00000000000000000000.jsonl`. Every line is in the release's one format
-//! version. The export reads through the head as it stood when it began,
-//! a page of the feed at a
+//! A lake never checkpointed exports one file, `00000000000000000000.jsonl`.
+//! Every line is in the release's one format version. The export reads
+//! through the head as it stood when it began, a page of the feed at a
 //! time, writing each line as it comes; it writes only into an empty or
-//! absent directory, and an export that fails leaves nothing behind.
+//! absent directory, and a failed export leaves nothing behind.
 //!
 //! [`verify`] reads only `log/`, a line at a time: canonical lines,
 //! consecutive positions, the hash chain from 64 zeros, every checkpoint
-//! against the files before it, every line in the one format version
-//! this release reads, and no member where a reader of the lake refuses
-//! it (`crate::log::misplaced`), so an import refuses it before it writes.
+//! against the files before it, one format version this release reads, and
+//! no member a reader of the lake refuses (`crate::log::misplaced`), so an
+//! import refuses it before it writes.
 
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write as _};
@@ -87,10 +86,9 @@ pub fn file_name(first: Position) -> String {
     format!("log/{:020}.jsonl", first.0)
 }
 
-/// Write `store`'s log as its segment files, and the manifest, into `dir`,
-/// which must be absent or empty. Answers the manifest. On any failure
-/// what the export wrote is removed again, so no partial export is left to
-/// pass for a shorter log.
+/// Write `store`'s log as segment files and the manifest into `dir`, which
+/// must be absent or empty. On failure what was written is removed, so no
+/// partial export passes for a shorter log.
 pub async fn write(store: &dyn LakeStore, dir: &Path) -> Result<Manifest> {
     let existed = match fs::read_dir(dir) {
         Ok(mut entries) => {

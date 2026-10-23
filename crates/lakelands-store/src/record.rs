@@ -30,11 +30,9 @@
 //!   A field whose function has a backing outside the store is filled
 //!   from a recorded output or cleared until one is recorded
 //!   ([`crate::backed`]).
-//!
-//! - **Initial values.** The event that makes a record (none was live
-//!   under the key) fills each field that declares `initial` and holds no
-//!   value after the patch, with `origin: initial` and the event's
-//!   position, time and writer
+//! - **Initial values.** The event that makes a record fills each field
+//!   that declares `initial` and holds no value after the patch, with
+//!   `origin: initial`
 //!   (`docs/decisions/050-a-field-declares-its-initial-value.md`).
 //!
 //! A record written again after it was retired starts from no fields, and
@@ -153,11 +151,9 @@ impl Plan {
     }
 }
 
-/// An entry of the ontology, of whichever kind.
 type Held = Arc<dyn Any + Send + Sync>;
 
-/// The entries of an ontology a type's plan is made from: the type's, and
-/// those of the functions and the value types its fields name.
+/// The ontology entries a type's plan is made from.
 fn entries<'o>(o: &'o Ontology, ty: &TypeName) -> impl Iterator<Item = Held> + 'o {
     let t = o.types.get(ty);
     let named = t.into_iter().flat_map(|t| &t.decl.fields).flat_map(|f| {
@@ -223,7 +219,6 @@ pub(crate) fn initial_meta(event: &Event) -> FieldMeta {
     }
 }
 
-/// The provenance an event gives the fields it writes.
 pub(crate) fn meta_of(event: &Event, origin: Origin) -> FieldMeta {
     FieldMeta {
         upstream: event.upstream.clone(),
@@ -349,9 +344,7 @@ pub fn apply(
     }))
 }
 
-/// The provenance of a value the fold computed: the event's, with
-/// `origin: derived`, and for a field a function computes, that
-/// function as the procedure.
+/// The event's provenance with `origin: derived`, and the field's function as procedure.
 fn derived_meta(event: &Event, plan: &Plan, field: &FieldName) -> FieldMeta {
     let mut m = meta_of(event, Origin::Derived);
     if let Some(p) = plan.procedures.get(field) {
@@ -539,9 +532,7 @@ fn compute(
     Ok(changed)
 }
 
-/// A type with every field computed by a declared `expr` function given
-/// that function's expression, so the derived pass treats both alike. A
-/// field whose function has another backing is left to [`backed`].
+/// Gives each field computed by an `expr` function that function's expression; other backings are left to [`backed`].
 pub fn resolve_functions(decl: &TypeDecl, ontology: &Ontology) -> TypeDecl {
     let mut out = decl.clone();
     for f in &mut out.fields {
