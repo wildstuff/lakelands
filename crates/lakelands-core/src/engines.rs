@@ -291,10 +291,11 @@ pub fn text_key(decl: &TypeDecl) -> Option<&FieldName> {
     decl.fields.iter().any(text).then_some(key)
 }
 
-/// The keys a scan of a declared type reads at the head when it must hold
-/// exactly a text, or one of texts, in the type's [`text_key`]: those the
-/// texts make, in key order. The engine reads their head states and the
-/// rulebook admits, orders and cuts them ([`scan`]).
+/// The keys a scan of a declared type reads when it must hold exactly a
+/// text ([`text_lookups`]: an `=` of the filter, `equal`, or one of the
+/// texts a match's `equal_any` asks for) in the type's [`text_key`]: those
+/// the texts make, in key order. The engine reads their states at its
+/// position and the rulebook admits, orders and cuts them ([`scan`]).
 pub fn key_lookup(decl: Option<&TypeDecl>, scan: &Scan) -> Option<BTreeSet<String>> {
     let key = text_key(decl?)?;
     let (_, texts) = text_lookups(scan, &|f| f == key)?;
@@ -425,6 +426,14 @@ pub fn count_in_key_order<E>(
             _ => return Ok(n),
         }
     }
+}
+
+/// How many of `records` [`scan`] would select, its order, keyset
+/// position and limit ignored: a count over states already read, such as
+/// those a [`key_lookup`] read.
+pub fn count_of(decl: Option<&TypeDecl>, records: &[StoredRecord], scan: &Scan) -> u64 {
+    count_read(records.len());
+    records.iter().filter(|r| admits(decl, r, scan)).count() as u64
 }
 
 /// A scan over the states of one type's records at one position, `decl`

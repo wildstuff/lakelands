@@ -668,3 +668,85 @@ fn a_commit_decides_again_only_the_types_its_puts_move_and_as_the_whole_decides(
         heads = after;
     }
 }
+
+/// A key of one text field is left out of the exact-text index and read by
+/// key: a `where` that it equals a text, or a match asking for one of
+/// texts, makes the keys the texts make, escaped as the key rule escapes
+/// them. A key of two
+/// fields, a number key and a reference key are none: they keep their rows
+/// where they are texts, and no lookup by key is made for them.
+#[test]
+fn a_key_of_one_text_field_is_read_by_key_and_no_other_key_is() {
+    let decl = |key: &[&str], fields: serde_json::Value| -> Declaration {
+        serde_json::from_value(json!({"declare": "type", "name": key.join("_"), "key": key,
+            "fields": fields}))
+        .unwrap()
+    };
+    let text = |n: &str| json!({"name": n, "type": {"kind": "text"}});
+    let lake = [
+        decl(&["id"], json!([text("id"), text("note")])),
+        decl(&["a", "b"], json!([text("a"), text("b")])),
+        decl(&["n"], json!([{"name": "n", "type": {"kind": "number"}}])),
+        decl(
+            &["r"],
+            json!([{"name": "r", "type": {"kind": "reference", "target": "id"}}]),
+        ),
+    ];
+    let types: Vec<&TypeDecl> = (lake.iter())
+        .map(|d| match d {
+            Declaration::Type(t) => t,
+            _ => unreachable!(),
+        })
+        .collect();
+    let named = |f: &[&str]| -> BTreeSet<FieldName> { f.iter().map(|&f| f.into()).collect() };
+    let looked = |t: &TypeDecl| looked_up(&t.name, &lake, None).unwrap();
+    assert_eq!(text_key(types[0]), Some(&"id".into()));
+    assert_eq!(looked(types[0]), named(&[]), "the text key keeps no rows");
+    for (t, rows) in [
+        (types[1], &["a", "b"][..]),
+        (types[2], &[]),
+        (types[3], &["r"]),
+    ] {
+        assert_eq!(text_key(t), None, "`{}` is no text key", t.name);
+        assert_eq!(
+            looked(t),
+            named(rows),
+            "`{}` keeps rows for its key",
+            t.name
+        );
+    }
+    let lookup = |t: &TypeDecl, filter: &str| {
+        let scan = Scan {
+            filter: Some(crate::expr::parse(filter).unwrap()),
+            ..Scan::default()
+        };
+        key_lookup(Some(t), &scan).map(|k| k.into_iter().collect::<Vec<_>>())
+    };
+    let keys = |k: &[&str]| Some(k.iter().map(|&k| k.to_owned()).collect::<Vec<_>>());
+    assert_eq!(lookup(types[0], "id = 'a:b'"), keys(&["a%3Ab"]));
+    assert_eq!(lookup(types[0], "id = '50%'"), keys(&["50%25"]));
+    assert_eq!(
+        lookup(types[0], "note = 'x' and id = 'zürich'"),
+        keys(&["zürich"])
+    );
+    let any = Scan {
+        equal_any: ["日本", "a:b"]
+            .map(|t| vec![("id".into(), json!(t))])
+            .into(),
+        ..Scan::default()
+    };
+    let made = key_lookup(Some(types[0]), &any).map(|k| k.into_iter().collect::<Vec<_>>());
+    assert_eq!(made, keys(&["a%3Ab", "日本"]), "a match asks for several");
+    assert_eq!(
+        lookup(types[0], "id in ('a', 'b')"),
+        None,
+        "`in` is no lookup"
+    );
+    assert_eq!(lookup(types[0], "note = 'x'"), None, "not by its key");
+    assert_eq!(lookup(types[0], "id = 'a' or note = 'x'"), None);
+    assert_eq!(lookup(types[0], "id = '10'"), None, "compares as a number");
+    assert_eq!(lookup(types[1], "a = 'x' and b = 'y'"), None);
+    assert_eq!(lookup(types[2], "n = 1"), None);
+    assert_eq!(lookup(types[3], "r = 'x'"), None);
+    assert_eq!(key_lookup(None, &Scan::default()), None, "no declaration");
+}
