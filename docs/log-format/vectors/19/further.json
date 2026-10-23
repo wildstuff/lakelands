@@ -432,6 +432,12 @@
       "about": "A `values_removed` taking back `erp`'s deliveries `batch-7` and `d68` in one act (065, lakelands#1290): the set's ids in order, each once, and no `before`. The acts at 66 and 69 took both deliveries' values, so it destroys no key and retires nothing. A selection format 18 holds and 17 does not.",
       "line": "{\"body\":{\"kind\":\"values_removed\",\"selection\":{\"deliveries\":[\"batch-7\",\"d68\"]},\"source\":\"erp\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"d2f4d12065fb1ea923690bbebd7782cdab8d96098a7f693abe6e7c4cc8397d69\",\"id\":\"0000000000000000000000000000004f\",\"known_at\":\"2026-10-05T09:00:44.000000Z\",\"lake\":\"vectors\",\"origin\":\"system\",\"position\":79,\"prev\":\"bdbbd9563c8c68daef8ede33d8c483951ae02879cdfae4867737409527dda907\",\"v\":19,\"writer\":\"system:lakelands\"}",
       "hash": "d2f4d12065fb1ea923690bbebd7782cdab8d96098a7f693abe6e7c4cc8397d69"
+    },
+    {
+      "shows": "verb_preconditions",
+      "about": "A `declared` verb `settle` on `payment` (028, 006): its `requires` reads the call's payload, `payload.amount`, and its precondition `not_overpaid`, judged after it, reads the payload beside the record's own fields; an unmet one is refused said within it. A form format 19 holds and 18 does not.",
+      "line": "{\"body\":{\"declaration\":{\"declare\":\"verb\",\"effect\":\"write\",\"name\":\"settle\",\"on\":\"payment\",\"payload\":[{\"authority\":\"authored\",\"name\":\"amount\",\"on_input_change\":\"keep\",\"required\":false,\"searchable\":false,\"sensitive\":false,\"type\":{\"kind\":\"number\"}}],\"preconditions\":[{\"holds\":\"paid + payload.amount <= amount\",\"name\":\"not_overpaid\"}],\"requires\":\"payload.amount > 0\",\"risk\":\"low\",\"set\":[{\"field\":\"paid\",\"value\":\"paid + payload.amount\"}]},\"kind\":\"declared\",\"version\":1},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"c3876355517ba20f0481b5d6b90d832505844b7bb9a06a6b0da43c08822e7a36\",\"id\":\"00000000000000000000000000000050\",\"known_at\":\"2026-10-05T09:00:45.000000Z\",\"lake\":\"vectors\",\"origin\":\"authored\",\"position\":80,\"prev\":\"d2f4d12065fb1ea923690bbebd7782cdab8d96098a7f693abe6e7c4cc8397d69\",\"v\":19,\"writer\":\"agent:agent\"}",
+      "hash": "c3876355517ba20f0481b5d6b90d832505844b7bb9a06a6b0da43c08822e7a36"
     }
   ],
   "misplaced": [

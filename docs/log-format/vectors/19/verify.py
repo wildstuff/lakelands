@@ -319,6 +319,9 @@ SHOWS = {
                       for f in declaration(e).get("fields", []))),
     "verb_granted": shows("a declared verb kept to the callers granted it, `granted`")(
         lambda e: declaration(e).get("declare") == "verb" and declaration(e).get("granted") is True),
+    "verb_preconditions": shows("a declared verb whose `requires` reads the call's payload and that names a precondition")(
+        lambda e: declaration(e).get("declare") == "verb" and declaration(e).get("requires") == "payload.amount > 0"
+        and [p.get("name") for p in declaration(e).get("preconditions", [])] == ["not_overpaid"]),
     "setting_declared": shows("a declared host setting with its type, unit, meaning and group")(
         lambda e: declaration(e).get("declare") == "setting" and declaration(e).get("key") == "vat_rate"
         and declaration(e).get("type") == {"kind": "decimal"} and declaration(e).get("group") == "operator"),

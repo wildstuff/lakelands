@@ -26,6 +26,7 @@ use lakelands_api::error::{Flaw, Situation};
 use lakelands_api::event::{
     ChangeKind, DepthBound, Event, EventBody, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT,
 };
+use lakelands_api::expr::Condition;
 use lakelands_api::id::KeyId;
 use lakelands_api::ontology::{AtIngest, TypeDecl, VerbScope};
 use lakelands_api::time::Timestamp;
@@ -193,7 +194,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 599, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 606, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -395,7 +396,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 72] = [
+const SHOWN: [&str; 73] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -468,10 +469,11 @@ const SHOWN: [&str; 72] = [
     "removed_seen_before",
     "verb_granted",
     "removed_deliveries",
+    "verb_preconditions",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 79;
+const LAST: u64 = 80;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
@@ -674,6 +676,9 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
             if t.fields.iter().any(|f| f.admits.iter().map(|s| s.as_str()).eq(["samples"]))),
         "retired_by_verbs" => matches!(declared, Some(D::Type(t))
             if t.retired_by == lakelands_api::ontology::RetiredBy::Verbs),
+        "verb_preconditions" => matches!(declared, Some(D::Verb(v))
+            if v.requires == Some(Condition::Text("payload.amount > 0".into()))
+                && v.preconditions.iter().map(|p| p.name.as_str()).eq(["not_overpaid"])),
         "verb_granted" => {
             matches!(declared, Some(D::Verb(v)) if v.granted && v.name.as_str() == "void")
         }

@@ -25,7 +25,7 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `further.json`: the lake's next events, positions 8 to 79, each
+- `further.json`: the lake's next events, positions 8 to 80, each
   following the one before it without a gap. Every entry of its `events`
   holds a `line`, which is canonical, the line's `hash`, `about`, a
   sentence on what the line is there to show, and `shows`, a name for
@@ -163,7 +163,11 @@ The files:
     `d68` in one act (79), the set's ids in order, each once, and no
     `before`: a selection format 18 holds and 17 does not (065,
     lakelands#1290). The acts at 66 and 69 took both deliveries' values,
-    so it destroys no key and retires nothing.
+    so it destroys no key and retires nothing;
+  - a verb `settle` on `payment` whose `requires` reads the call's
+    payload and that names a precondition, `not_overpaid` (80): a form
+    format 19 holds and 18 does not
+    (`docs/decisions/028-authoring-is-strict-and-whole.md`).
 
   Its `misplaced` holds five lines that are not of the lake. Each
   stands at its position after the event before it, in the release's
