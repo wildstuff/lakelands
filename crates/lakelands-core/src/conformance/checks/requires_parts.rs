@@ -3,15 +3,11 @@
 //! reads is not told it, nor one not shown a setting it or a part
 //! before it reads.
 
-use lakelands_api::error::Case;
 use lakelands_api::seam::SETTING_TYPE;
-use lakelands_api::{Access, Error, Refusal};
-use serde_json::json;
 
 use super::only::holder;
 use super::paths::{accept, call, lake, proposal_of, unlisted, unmet, verb};
-use crate::conformance::fixture::field_access;
-use crate::conformance::{Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     REQUIRES_PART = a_refused_requires_names_the_part_the_record_fails,
@@ -166,16 +162,5 @@ async fn a_refused_requires_names_the_part_the_record_fails(store: Store) -> Hel
 
 /// The refusal `unmet` names, without its part.
 fn untold(verb: &str, key: &str) -> Result<&'static str, Error> {
-    let (verb, ty, key) = (verb.into(), "invoice".into(), key.into());
-    let part = None;
-    let case = Case::RequiresUnmet {
-        verb,
-        ty,
-        key,
-        part,
-    };
-    Err(Error::Refused {
-        field: None,
-        reason: Refusal::Precondition(Box::new(case.into())),
-    })
+    requires_unmet(verb, "invoice", key, None)
 }

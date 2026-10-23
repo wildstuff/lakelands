@@ -7,15 +7,9 @@
 //! every engine stores decimals differently, and a float anywhere on the
 //! way is invisible until a total is a cent off.
 
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::read::{AggFunc, Aggregate, Group, GroupKey};
-use lakelands_api::{Find, Found, TypeName};
-use serde_json::json;
+use lakelands_api::read::Group;
 
-use crate::conformance::fixture::{
-    Lake, Must, agg, all, dec, decimal, field, type_decl, value, view_of,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     AS_WRITTEN = a_decimal_reads_back_exactly_as_it_was_written,

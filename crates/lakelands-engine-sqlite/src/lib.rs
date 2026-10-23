@@ -15,11 +15,14 @@
 //! # A lake directory
 //!
 //! ```text
-//! <dir>/lake                  the lake's name
+//! <dir>/lake                  the lake's name; every handle onto the
+//!                             projection holds it locked shared (handle.rs)
 //! <dir>/lease                 the fencing token and its holder (lease.rs)
 //! <dir>/log/<first>.jsonl     the log's segments (docs/log-format.md §4.2)
 //! <dir>/index/<first>.idx     each event's members beside its bytes (log.rs)
 //! <dir>/projection.db         the projection, with its kept history
+//! <dir>/projection.db.rebuild the projection a rebuild builds beside it (scratch.rs)
+//! <dir>/projection.db.rebuild.mark  its lock, and its mark once built; emptied, kept
 //! ```
 //!
 //! The log is the truth: the projection and the index hold nothing the log
@@ -37,6 +40,7 @@ mod handle;
 mod lease;
 mod log;
 mod projection;
+mod scratch;
 mod view;
 
 use lakelands_api::engine::{CanonicalEvent, EngineOpener, LakeEngine, OpenMode};
@@ -117,6 +121,19 @@ impl EngineOpener for SqliteOpener {
             dir.clone(),
             *tuning,
             mode,
+        )?))
+    }
+
+    /// Opens the log in the location's directory as `Read` does, and the
+    /// scratch beside its projection, `projection.db.rebuild`; the
+    /// projection itself is not opened.
+    fn open_scratch(&self, location: &Location) -> Result<Box<dyn LakeEngine>> {
+        let (dir, tuning) = kept_in(location)?;
+        let lake = location.lake.clone();
+        Ok(Box::new(SqliteLake::open_scratch(
+            lake,
+            dir.clone(),
+            *tuning,
         )?))
     }
 }

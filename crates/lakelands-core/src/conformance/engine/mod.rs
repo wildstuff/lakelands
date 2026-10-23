@@ -66,6 +66,7 @@ macro_rules! engine_check {
 pub mod log;
 pub mod projection;
 pub mod reads;
+pub mod rebuild;
 
 /// Opens lakes for the engine checks: one engine, as its test configures
 /// it.
@@ -107,6 +108,25 @@ pub trait EngineHarness: Send + Sync {
     /// whose rebuild drops its marks with its tables, or whose projection no
     /// other build opens.
     fn rebuild_as_before(&self, _lake: &LakeId) -> bool {
+        false
+    }
+
+    /// A handle onto the scratch beside the projection of the lake `lake`
+    /// names, as `EngineOpener::open_scratch` opens it in a second process;
+    /// unbound, as this default answers, for an engine that keeps none.
+    fn scratch(&self, _lake: &LakeId) -> lakelands_api::Result<Box<dyn LakeEngine>> {
+        Err(lakelands_api::Error::unbound(
+            lakelands_api::error::Seam::Operation {
+                op: "open_scratch".to_owned(),
+            },
+        ))
+    }
+
+    /// Leave the scratch of the lake `lake` names, marked built and opened
+    /// by no handle, marked with a hash the log does not hold at its mark,
+    /// as a scratch of a lake whose log was replaced would be. `false` for
+    /// an engine that keeps no scratch.
+    fn forge_scratch_mark(&self, _lake: &LakeId) -> bool {
         false
     }
 }
@@ -168,6 +188,8 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     projection::PUTS_IN_ONE_TRANSACTION,
     projection::CLEAR,
     projection::OTHER_LAYOUT,
+    rebuild::BUILT_BESIDE,
+    rebuild::KEPT_SCRATCH,
     reads::MIXED_KINDS,
     reads::AFTER_AND_LIMIT,
     reads::KEY_BATCHES,

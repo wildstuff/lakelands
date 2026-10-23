@@ -18,6 +18,7 @@ mod annotations;
 mod authored_reads;
 mod authors_view;
 mod backings;
+mod batched;
 mod bundles;
 mod chosen;
 mod compact;
@@ -38,7 +39,7 @@ mod derived_relations;
 mod describe;
 mod durations;
 mod embeddings;
-mod erasable;
+pub(in crate::conformance) mod erasable;
 mod export;
 mod feed;
 mod fields;
@@ -120,6 +121,7 @@ mod sets_across;
 mod settings;
 mod shown_hash;
 mod sorted_whole;
+mod stored_vectors;
 mod streaming;
 mod trigger_firing;
 mod triggers;
@@ -859,6 +861,18 @@ pub const ALL: &[Check] = &[
     aging::REFUSED_BY_CONSTRAINT,
     aging::REFUSALS_BOUNDED,
     concurrency::AGE_UNDER_WRITES,
+    batched::ONE_WINNER_ON_A_VERSION,
+    batched::ONE_KEY_ONE_WRITE,
+    batched::DEEP_CONTEXT_ALONE,
+    batched::BELOW_SET_CEILING,
+    batched::BACKED_OWN_FILL,
+    batched::KEY_PER_PRINCIPAL,
+    batched::ONE_LINK_LANDS,
+    batched::SETTING_WHOLE,
+    stored_vectors::VECTOR_BITS_KEPT,
+    stored_vectors::VECTOR_WIDENED_KEPT,
+    stored_vectors::VECTOR_LINK_KEPT,
+    stored_vectors::VECTOR_ERASED_KEPT,
     purge::CO_OWNED_COUNTED,
     purge::BACKED_NO_OWNER,
     purge::INITIAL_NO_OWNER,

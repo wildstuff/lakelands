@@ -4,19 +4,11 @@
 //! (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 //! extended).
 
-use lakelands_api::error::Case;
-use lakelands_api::ontology::StorageKind::{self, Json, Text};
-use lakelands_api::ontology::{RelationDecl, TypeDecl};
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::write::{Declaration, Migration, Outcome, ProposedWrite};
-use lakelands_api::{Access, PrincipalKind};
-use serde_json::{Value, json};
+use lakelands_api::ontology::StorageKind::{Json, Text};
+use lakelands_api::write::Outcome;
 
-use crate::conformance::fixture::{
-    Lake, Must, derived, field, field_access, field_writer, head_unmoved, migration, principal,
-    reads_all, refused_like, said_like, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{derived, said_like};
+use crate::conformance::prelude::*;
 
 /// A place a case is said at, on the wire: a declaration by its kind
 /// (`type`, `object_set`, `trigger`, `verb`) and its name.

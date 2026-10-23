@@ -3,13 +3,11 @@
 //! `docs/decisions/026-the-store-walks-the-graph.md`,
 //! `docs/decisions/029-every-answer-has-one-order.md`).
 
-use lakelands_api::ontology::{RelationDecl, StorageKind};
-use lakelands_api::query::{Depth, Pattern, QueryResult, Step, Walk};
-use lakelands_api::{Error, LakeStore, RecordKey, Refusal, TypeName, Value};
-use serde_json::json;
+use lakelands_api::Value;
+use lakelands_api::query::Depth;
 
-use crate::conformance::fixture::{Lake, Must, field, limits, reason, reference, type_decl};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::reference;
+use crate::conformance::prelude::*;
 
 check!(
     UNDECLARED_RELATION = a_step_over_a_relation_the_type_does_not_declare_is_refused,

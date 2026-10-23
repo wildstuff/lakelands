@@ -2,23 +2,11 @@
 //! a field there: a verb's `requires` and the values it sets read so, at
 //! the call, the record as a write that sends the reference would find it.
 
-use lakelands_api::error::{Case, Missing, Printed};
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{Cardinality, FieldDecl, RelationDecl, StorageKind};
-use lakelands_api::write::ProposalFilter;
-use lakelands_api::{
-    Access, Error, Find, LakeStore, Outcome, Principal, ProposalId, ReadAt, Record, Refusal,
-    Version, WriteOpts,
-};
-use serde_json::{Value, json};
+use lakelands_api::error::Missing;
 
 use super::only::holder;
-use crate::conformance::fixture::{
-    Lake, Must, derived, events_after, field, field_access, get_at, head_unmoved, invalid_case,
-    limits, migration, patch, reference, refused_like, refused_on, restrict, source_record,
-    sourced, try_upsert, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{derived, get_at, reference, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     PATH_STEPS = a_verbs_condition_reads_a_field_of_the_record_a_reference_names,
@@ -44,18 +32,7 @@ pub(super) async fn call(
 /// The refusal of `verb` on the invoice `key` whose `requires` is unmet
 /// at `part`.
 pub(super) fn unmet(verb: &str, key: &str, part: &str) -> Result<&'static str, Error> {
-    let (verb, ty, key) = (verb.into(), "invoice".into(), key.into());
-    let part = Some(Box::new(Printed(part.into())));
-    let case = Case::RequiresUnmet {
-        verb,
-        ty,
-        key,
-        part,
-    };
-    Err(Error::Refused {
-        field: None,
-        reason: Refusal::Precondition(Box::new(case.into())),
-    })
+    requires_unmet(verb, "invoice", key, Some(part))
 }
 
 /// A write verb on `invoice`, declared as JSON.
@@ -199,20 +176,7 @@ async fn a_verb_on_a_link_type_reads_its_ends(store: Store) -> Held {
         let found = links.iter().find(of).map(|r| r.key.as_str().to_owned());
         found.unwrap_or_default()
     };
-    let unmet = |deal: &str, part: &str| {
-        let (verb, ty, key) = ("seal".into(), LT.into(), key(deal).as_str().into());
-        let part = Some(Box::new(Printed(part.into())));
-        let case = Case::RequiresUnmet {
-            verb,
-            ty,
-            key,
-            part,
-        };
-        Err(Error::Refused {
-            field: None,
-            reason: Refusal::Precondition(Box::new(case.into())),
-        })
-    };
+    let unmet = |deal: &str, part: &str| requires_unmet("seal", LT, &key(deal), Some(part));
     let plain = holder(s, "plain", json!({"default": "write"}));
     let mut got = Vec::new();
     for deal in ["d1", "d2", "d3"] {

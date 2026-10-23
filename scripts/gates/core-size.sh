@@ -3,16 +3,17 @@
 #
 # The core stays small enough to read, and its specification may grow
 # without taking room from it. Two budgets are counted, over every line
-# of every tracked `src/**/*.rs` in CRATES (`tests/` directories beside
-# `src/` are not counted):
-#   - specification: the conformance suite (`src/conformance/**`) and the
+# of every tracked `.rs` file under `src/` and under `tests/` of each
+# crate in CRATES:
+#   - specification: the conformance suite (`src/conformance/**`), the
 #     unit tests (every `tests.rs`, and everything under a `tests/`
-#     directory inside `src/`);
-#   - product: every other file, doc comments included.
+#     directory inside `src/`) and the integration tests (everything
+#     under the `tests/` directory beside `src/`);
+#   - product: every other file under `src/`, doc comments included.
 # What is test code is decided by path alone, so a unit test lives in a
 # `tests.rs` beside its module, never inline. The contract crate is
 # counted with the core, so code moved between them is not read as code
-# cut.
+# cut; the memory engine is counted as the other engines are.
 # Red when
 #   - a budget's count exceeds its ratchet base (its BASE file);
 #   - a ratchet base exceeds its CEILING;
@@ -25,19 +26,20 @@
 #     `#[cfg(test)]` anywhere but directly before `mod tests;`.
 . "$(dirname "$0")/lib.sh"
 
-CRATES=(lakelands-api lakelands-core lakelands-store lakelands-engine-sqlite lakelands-engine-pg)
-PRODUCT_CEILING=80000
+CRATES=(lakelands-api lakelands-core lakelands-store lakelands-engine-mem lakelands-engine-sqlite lakelands-engine-pg)
+PRODUCT_CEILING=83000
 PRODUCT_BASE=scripts/gates/core-size.product.base
-SPEC_CEILING=115000
+SPEC_CEILING=154500
 SPEC_BASE=scripts/gates/core-size.spec.base
 
 all=()
-for c in "${CRATES[@]}"; do all+=(":(glob)crates/$c/src/**/*.rs"); done
+for c in "${CRATES[@]}"; do all+=(":(glob)crates/$c/src/**/*.rs" ":(glob)crates/$c/tests/**/*.rs"); done
 spec=()
 for c in "${CRATES[@]}"; do
     spec+=(":(glob)crates/$c/src/conformance/**/*.rs"
         ":(glob)crates/$c/src/**/tests.rs"
-        ":(glob)crates/$c/src/**/tests/**/*.rs")
+        ":(glob)crates/$c/src/**/tests/**/*.rs"
+        ":(glob)crates/$c/tests/**/*.rs")
 done
 product=("${all[@]}")
 for s in "${spec[@]}"; do product+=(":(exclude,glob)${s#:(glob)}"); done

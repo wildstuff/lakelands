@@ -28,12 +28,15 @@ importing the shape of the platform the organs come from.
 - **One catalog.** Every LLM-facing tool name is produced by the catalog
   generator; a string-literal tool name outside it fails.
 - **Budgets.** `cfg(feature)` sites ≤ 20 (features are one per engine);
-  store facade + engine traits ≤ 110 methods; the core crates' product
-  code ≤ 80k lines and their specification (the conformance suite and
-  unit tests, which live in `tests.rs` files, never inline) ≤ 115k. Each
-  goes down by itself and is raised only by the rule in
-  `docs/budgets.md`: a decisive reason, cutting first, a measured size,
-  and a recorded row. The gates refuse a raise without its row.
+  the store facade and every `pub trait` in `engine.rs` ≤ 110 methods;
+  the core crates' (api, core, store and the three engines) product
+  code ≤ 83k lines and their specification (the conformance suite, unit
+  tests, which live in `tests.rs` files, never inline, and every
+  `tests/` beside `src/`) ≤ 154.5k. Each goes down by itself, its base
+  is lowered to its count at the release, and it is raised only by the
+  rule in `docs/budgets.md`: a decisive reason, cutting first, a
+  measured size, and a recorded row. The gates refuse a raise without
+  its row.
 - **The conformance suite is the specification.** A behaviour claim goes
   into the suite, not beside one engine; it runs on every engine in CI.
 - **Licence.** `cargo deny` on every PR; no copyleft-in-a-library.

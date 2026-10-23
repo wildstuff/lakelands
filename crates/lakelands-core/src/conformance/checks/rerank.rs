@@ -4,19 +4,10 @@
 //! The suite's reranker scores a text by its count of `overdue` (twice)
 //! and `reminder`, and records every call it receives.
 
-use lakelands_api::error::{Case, Seam};
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::query::{Hits, QueryResult};
-use lakelands_api::seam::{RerankCall, Reranker, Seams};
+use lakelands_api::seam::{RerankCall, Reranker};
 use lakelands_api::write::WriteOpts;
-use lakelands_api::{Access, Error, LakeStore, Principal};
-use serde_json::{Value, json};
 
-use crate::conformance::fixture::{
-    Lake, Must, field, field_access, head_unmoved, invalid_case, pattern, reads_all, restrict,
-    searchable, type_decl, vector,
-};
-use crate::conformance::{Failure, Given, Held, Store, backing};
+use crate::conformance::prelude::*;
 
 check!(
     RERANK_REORDERS_THE_WINDOW =

@@ -5,24 +5,12 @@
 //! `docs/decisions/026-the-store-walks-the-graph.md`,
 //! `docs/decisions/029-every-answer-has-one-order.md`).
 
-use std::collections::BTreeMap;
-
-use lakelands_api::error::Case;
-use lakelands_api::location::Limits;
-use lakelands_api::ontology::{
-    Authority, Cardinality, FieldDecl, RelationDecl, StorageKind, TypeDecl,
-};
-use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, SearchMode, Step, Walk};
-use lakelands_api::seam::Seams;
+use lakelands_api::Value;
+use lakelands_api::query::Depth;
 use lakelands_api::write::WriteOpts;
-use lakelands_api::{Catalog, Cursor, LakeStore, Position, Principal, Refusal, Value};
-use serde_json::json;
 
-use crate::conformance::fixture::{
-    Lake, Must, alike_renamed, doors, field, invalid_case, order, owner, patch, pattern, reads_all,
-    reason, reference, restrict, searchable, source_record, sourced, step, type_decl,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture::{doors, order, owner, reference, source_record, step};
+use crate::conformance::prelude::*;
 
 check!(
     DEGREE_COUNTS = degree_counts_each_records_links_to_ends_it_may_see_highest_first,

@@ -2,18 +2,9 @@
 //! group's row, in that write's own append, where its `when` holds over the
 //! row after (`docs/decisions/066-a-set-holds-a-kept-view.md`).
 
-use lakelands_api::event::{ChangeKind, EventBody};
-use lakelands_api::location::Limits;
-use lakelands_api::seam::Seams;
-use lakelands_api::{
-    Access, Grants, LakeStore, Position, PrincipalKind, Refusal, TypeName, WriteOpts,
-};
-use serde_json::{Value, json};
+use lakelands_api::event::ChangeKind;
 
-use crate::conformance::fixture::{
-    Lake, Must, events_from, head_unmoved, limits, migration, patch, principal, refused_like,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::prelude::*;
 
 check!(
     KEPT_TRIGGER = a_trigger_on_a_kept_view_fires_where_a_groups_row_is_put,
@@ -369,13 +360,7 @@ async fn what_a_trigger_on_a_kept_view_fires_is_held_to_the_ceiling(
 ) -> Held {
     let l = Lake::of(store.as_ref());
     lake(&l).await?;
-    let lower = Limits {
-        max_set_changes: 1,
-        ..limits()
-    };
-    let store = (given.relimit)(store, Seams::default(), lower)
-        .await
-        .map_err(|e| Failure::new(format!("opening at a ceiling of one: {e}")))?;
+    let store = at_one_set_change(&given, store, "opening at a ceiling of one").await?;
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     let before = s.head().await.must("the head")?;
     let (ty, key) = (TypeName::from("invoice"), "i1".into());

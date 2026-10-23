@@ -4,16 +4,10 @@
 //! §`scan`). Every change a record's own events make moves it; a link
 //! carried by a link record moves the link record, not its ends.
 
-use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind};
-use lakelands_api::read::{Direction, OrderBy};
 use lakelands_api::write::WriteOpts;
-use lakelands_api::{Find, Position};
-use serde_json::json;
 
-use crate::conformance::fixture::{
-    Lake, Must, field, order, patch, read_at, reference, source_record, sourced, type_decl,
-};
-use crate::conformance::{Held, Store};
+use crate::conformance::fixture::{order, reference, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     LATEST_ORDER = find_ordered_by_latest_lists_records_by_their_last_event,

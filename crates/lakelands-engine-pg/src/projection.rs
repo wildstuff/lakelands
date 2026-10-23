@@ -63,17 +63,44 @@ use crate::connect::Db;
 #[derive(Clone, Debug)]
 pub(crate) struct Names {
     schema: String,
+    /// For a scratch, the lake's schema, which keeps the log's tables.
+    log: Option<String>,
 }
+
+/// The tables of the log and the lease, which a scratch reads in the
+/// lake's schema.
+const LOG_TABLES: [&str; 3] = ["lease", "segments", "log"];
 
 impl Names {
     /// The tables of the schema written as `quoted`.
     pub(crate) fn new(quoted: String) -> Names {
-        Names { schema: quoted }
+        Names {
+            schema: quoted,
+            log: None,
+        }
+    }
+
+    /// The tables of a scratch in the schema written as `quoted`, beside
+    /// the lake `live` names: the projection's and `meta` there, the log's
+    /// and the lease in the lake's schema (`scratch.rs`).
+    pub(crate) fn beside(quoted: String, live: &Names) -> Names {
+        Names {
+            schema: quoted,
+            log: Some(live.schema.clone()),
+        }
+    }
+
+    /// The schema, as SQL writes it.
+    pub(crate) fn schema(&self) -> &str {
+        &self.schema
     }
 
     /// One table, schema-qualified.
     pub(crate) fn t(&self, table: &str) -> String {
-        format!("{}.{table}", self.schema)
+        match &self.log {
+            Some(log) if LOG_TABLES.contains(&table) => format!("{log}.{table}"),
+            _ => format!("{}.{table}", self.schema),
+        }
     }
 
     /// The statements that create the lake's tables, if absent.
@@ -97,12 +124,11 @@ impl Names {
     /// (lakelands#1018).
     pub(crate) fn schema_sql(&self) -> String {
         let (s, heads) = (&self.schema, heads_sql(&self.schema));
-        format!(
-            "
-CREATE SCHEMA IF NOT EXISTS {s};
-CREATE TABLE IF NOT EXISTS {s}.meta (
-    k TEXT PRIMARY KEY, n BIGINT, t TEXT
-);
+        // A scratch reads the log's tables in the lake's schema.
+        let log = match self.log {
+            Some(_) => String::new(),
+            None => format!(
+                "
 CREATE TABLE IF NOT EXISTS {s}.lease (
     one INTEGER PRIMARY KEY CHECK (one = 1),
     fence BIGINT NOT NULL, holder TEXT NOT NULL
@@ -114,7 +140,15 @@ CREATE TABLE IF NOT EXISTS {s}.log (
     position BIGINT PRIMARY KEY, segment BIGINT NOT NULL, fence BIGINT NOT NULL,
     id TEXT NOT NULL, prev TEXT NOT NULL, hash TEXT NOT NULL, bytes BYTEA NOT NULL
 );
-CREATE INDEX IF NOT EXISTS log_segment ON {s}.log (segment, position);
+CREATE INDEX IF NOT EXISTS log_segment ON {s}.log (segment, position);"
+            ),
+        };
+        format!(
+            "
+CREATE SCHEMA IF NOT EXISTS {s};
+CREATE TABLE IF NOT EXISTS {s}.meta (
+    k TEXT PRIMARY KEY, n BIGINT, t TEXT
+);{log}
 CREATE TABLE IF NOT EXISTS {s}.declarations (
     ident TEXT NOT NULL, since BIGINT NOT NULL, state TEXT NOT NULL,
     PRIMARY KEY (ident, since)
@@ -243,6 +277,12 @@ pub(crate) const LAKE_TABLES: [&str; 19] = [
 /// The projection's tables, cleared by a rebuild; the log, its segments,
 /// the lease and the lake's name stay.
 pub(crate) const PROJECTION_TABLES: &[&str] = LAKE_TABLES.split_at(4).1;
+
+/// The projection's tables an earlier layout had and this one does not:
+/// a layout that drops or renames a table names the old one here, so a
+/// lake that layout made still opens to be rebuilt, and the rebuild's
+/// `clear` or swap drops it (`scratch.rs`).
+pub(crate) const RETIRED_TABLES: &[&str] = &[];
 
 /// A history table: its name and the columns naming one thing in it.
 pub(crate) struct History {

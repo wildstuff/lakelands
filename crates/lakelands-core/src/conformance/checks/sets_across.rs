@@ -4,24 +4,11 @@
 //! (`docs/decisions/055-a-path-steps-through-a-reference.md`, extended).
 
 use lakelands_api::engine::OpenMode;
-use lakelands_api::event::EventBody;
-use lakelands_api::location::Limits;
-use lakelands_api::ontology::{Cardinality, Derived, MatchPair, RelationDecl, StorageKind};
 use lakelands_api::principal::Grants;
-use lakelands_api::seam::{AGING_RULE_TYPE, Seams};
-use lakelands_api::write::{Declaration, ProposedWrite};
-use lakelands_api::{
-    Access, LakeStore, Outcome, Position, Principal, PrincipalKind, Refusal, SourceId, Timestamp,
-    TypeName, WriteOpts,
-};
-use serde_json::json;
+use lakelands_api::seam::AGING_RULE_TYPE;
 
-use crate::conformance::fixture::{
-    Lake, Must, events_from, field, find_at, find_where, head_unmoved, ingest, limits, migration,
-    object_set_on, patch, principal, reads_all, reference, refused_like, refused_on, restrict,
-    source_record, sourced, trigger_on, type_decl,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture::{ingest, reference, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     SET_ACROSS = a_sets_where_reads_a_field_across_an_edge,
@@ -494,13 +481,7 @@ async fn what_a_far_write_sets_off_is_held_to_the_ceiling(store: Store, given: G
     let rule = json!({"on": "customer", "field": "tier", "from": "a", "to": "b",
         "when": "true"});
     l.upsert(AGING_RULE_TYPE, "retier", rule).await?;
-    let lower = Limits {
-        max_set_changes: 1,
-        ..limits()
-    };
-    let store = (given.relimit)(store, Seams::default(), lower)
-        .await
-        .map_err(|e| Failure::new(format!("opening at a ceiling of one: {e}")))?;
+    let store = at_one_set_change(&given, store, "opening at a ceiling of one").await?;
     let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
     let before = s.head().await.must("the head")?;
     let large = |r: &lakelands_api::Result<Outcome>, set: &str| matches!(refused_on(r), Some((named, Refusal::TooLarge { max: 1 })) if named == set);

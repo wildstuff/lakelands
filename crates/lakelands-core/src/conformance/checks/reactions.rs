@@ -7,19 +7,10 @@
 //! record: an `upsert`, an ingest, or the write a verb makes when it runs.
 //! Both facts are in the log, in the same append, caused by that write.
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use lakelands_api::Patch;
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::write::Declaration;
-use serde_json::json;
 
-use crate::conformance::fixture::{
-    Lake, Must, events_after, events_from, field, find_where, object_set_on, trigger_on, type_decl,
-    type_of, write_verb,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::type_of;
+use crate::conformance::prelude::*;
 
 check!(
     VERB_WRITE_REACTS = a_trigger_fires_on_a_verbs_write,

@@ -5,18 +5,10 @@
 //! or copy it whole, so it is not that caller's to call or to be shown.
 
 use lakelands_api::error::Missing;
-use lakelands_api::error::{Case, Printed};
 use lakelands_api::id::ProposalId;
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::write::{Proposal, ProposalFilter, ProposedWrite};
-use lakelands_api::{Access, Error, Outcome, Principal, ReadAt, Refusal, TypeName, WriteOpts};
-use serde_json::{Value, json};
 
-use crate::conformance::fixture::{
-    Lake, Must, derived, field, field_access, invalid_case, patch, reference, type_decl, type_of,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{derived, reference, type_of};
+use crate::conformance::prelude::*;
 
 check!(
     VERB_READS_AS_A_FILTER = a_verb_that_reads_a_field_its_caller_may_not_read_is_not_its_to_call,
@@ -134,20 +126,7 @@ async fn a_verb_that_reads_a_field_its_caller_may_not_read_is_not_its_to_call(
         field: None,
         reason: Refusal::NotGranted,
     });
-    let unmet = |verb: &str, key: &str| {
-        let (verb, ty, key) = (verb.into(), "memo".into(), key.into());
-        let part = Some(Box::new(Printed("secret = 'x'".into())));
-        let case = Case::RequiresUnmet {
-            verb,
-            ty,
-            key,
-            part,
-        };
-        Err(Error::Refused {
-            field: None,
-            reason: Refusal::Precondition(Box::new(case.into())),
-        })
-    };
+    let unmet = |verb: &str, key: &str| requires_unmet(verb, "memo", key, Some("secret = 'x'"));
     let (applied, proposed) = (Ok("applied"), Ok("proposed"));
     let refused = || {
         let mut want = vec![nope.clone(); 8];

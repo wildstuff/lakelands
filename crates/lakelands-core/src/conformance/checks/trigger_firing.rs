@@ -2,17 +2,10 @@
 //! reaction could write at it drops instead
 //! (`docs/decisions/021-the-write-context-belongs-to-the-host.md`).
 
-use lakelands_api::event::{ChangeKind, DepthBound, EventBody};
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::seam::FeedFilter;
-use lakelands_api::{Position, Refusal, SourceId, TypeName};
-use serde_json::json;
+use lakelands_api::event::{ChangeKind, DepthBound};
 
-use crate::conformance::fixture::{
-    Lake, Must, events_from, field, followed, head_unmoved, limits, reactive, reference,
-    refused_on, source_record, trigger_on, try_upsert, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{reference, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     TRIGGER_DROPPED = a_trigger_past_its_depth_drops_instead_of_firing,

@@ -10,23 +10,12 @@
 //! cardinality over live links, live ends, and the doors each link goes
 //! through.
 
-use lakelands_api::error::Case;
-use lakelands_api::ontology::{
-    Authority, Cardinality, FieldDecl, RelationDecl, StorageKind, TypeDecl,
-};
 use lakelands_api::principal::PrincipalKind;
-use lakelands_api::query::{Edge, Projection, QueryResult, Walk};
-use lakelands_api::write::{Outcome, ProposedWrite, WriteOpts};
-use lakelands_api::{Catalog, Error, LakeStore, Position, Principal, Refusal};
-use serde_json::{Value, json};
+use lakelands_api::query::Edge;
+use lakelands_api::write::{Outcome, WriteOpts};
 
-use crate::conformance::fixture::{
-    Lake, Must, all, doors, fed, field, field_writer, head_unmoved, invalid_case, migration,
-    no_such_field, patch, pattern, principal, reads_all, reason, reference, refused_on, restrict,
-    source_record, step, type_decl,
-};
-use crate::conformance::{Failure, Held, Store};
-use crate::links::{link_key, link_type_name};
+use crate::conformance::fixture::{doors, fed, reference, source_record, step};
+use crate::conformance::prelude::*;
 
 check!(
     WRITTEN_AND_WALKED = a_link_is_written_and_walked_with_its_fields,
@@ -137,7 +126,7 @@ const LT: &str = "sys.link.invoice.approved_by";
 pub(super) const SEPT: &str = "2026-09-01T00:00:00.000000Z";
 const OCT: &str = "2026-10-01T00:00:00.000000Z";
 
-fn approved_by(fields: Vec<FieldDecl>, authority: Authority) -> RelationDecl {
+pub(super) fn approved_by(fields: Vec<FieldDecl>, authority: Authority) -> RelationDecl {
     RelationDecl {
         name: "approved_by".into(),
         target: "partner".into(),
@@ -215,7 +204,7 @@ pub(super) async fn link_ok(
 }
 
 /// Unlinks `from` from `to` over `approved_by` as the owner.
-async fn unlink(l: &Lake, from: &str, to: &str) -> lakelands_api::Result<Outcome> {
+pub(super) async fn unlink(l: &Lake, from: &str, to: &str) -> lakelands_api::Result<Outcome> {
     let (ty, rel) = ("invoice".into(), "approved_by".into());
     let opts = WriteOpts::default();
     l.cat
@@ -224,7 +213,7 @@ async fn unlink(l: &Lake, from: &str, to: &str) -> lakelands_api::Result<Outcome
 }
 
 /// The edges a one-hop walk over `approved_by` answers from `key` of `ty`.
-async fn walked(
+pub(super) async fn walked(
     cat: &dyn Catalog,
     who: &Principal,
     ty: &str,

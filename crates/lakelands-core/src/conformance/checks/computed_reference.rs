@@ -4,16 +4,13 @@
 use std::fmt::Write as _;
 
 use lakelands_api::error::Missing;
-use lakelands_api::write::{Declaration, Outcome, ProposedWrite, WriteOpts};
-use lakelands_api::{Error, LakeStore, Principal, ProposalId, Refusal, Version};
-use serde_json::{Value, json};
+use lakelands_api::write::{Outcome, WriteOpts};
 
 use super::only::holder;
 use crate::conformance::backing::{EMBED_MODEL, KIND};
-use crate::conformance::fixture::{
-    self, Lake, Must, alike_renamed, patch, refused_like, restrict, source_record, try_upsert,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture;
+use crate::conformance::fixture::source_record;
+use crate::conformance::prelude::*;
 
 check!(
     COMPUTED_REFERENCE = a_reference_a_record_computes_is_judged_as_one_its_writer_sends,

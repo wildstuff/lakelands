@@ -5,18 +5,12 @@
 //! purge and its removal take them; closing the admission is a
 //! declaration, and the rows written before keep what they hold.
 
-use lakelands_api::error::{Case, Place, RecordName};
+use lakelands_api::error::RecordName;
 use lakelands_api::principal::{Grants, PrincipalKind};
-use lakelands_api::write::Selection;
-use lakelands_api::{Access, Error, Origin, Position, Principal, Refusal, SourceId, Timestamp};
-use serde_json::{Value, json};
 
 use super::removed::{at, erased};
-use crate::conformance::fixture::{
-    Lake, Must, head_unmoved, ingest, invalid_case, invalid_said, principal, read_at,
-    source_record, upsert,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{ingest, source_record, upsert};
+use crate::conformance::prelude::*;
 
 check!(
     ADMITTED = an_admitted_source_writes_an_authored_field_and_no_other_source_does,

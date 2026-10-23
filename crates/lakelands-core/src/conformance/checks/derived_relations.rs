@@ -5,19 +5,11 @@
 //! matched fields hold the same non-null value, as the read's position
 //! holds them, both ways and in every walk the store runs.
 
-use lakelands_api::ontology::{
-    Cardinality, Derived, MatchPair, RelationDecl, StorageKind, TypeDecl,
-};
-use lakelands_api::query::{Pattern, Projection, QueryResult, Walk};
+use lakelands_api::Value;
 use lakelands_api::write::WriteOpts;
-use lakelands_api::{Access, Catalog, LakeStore, Position, Principal, Refusal, Value};
-use serde_json::json;
 
-use crate::conformance::fixture::{
-    Lake, Must, doors, field, field_access, head_unmoved, is_invalid, owner, patch, pattern,
-    refused_alike, refused_like, refused_on, step, type_decl, type_of,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{doors, owner, step, type_of};
+use crate::conformance::prelude::*;
 
 check!(
     BOTH_WAYS = a_walk_over_a_derived_relation_finds_exactly_the_matching_records_both_ways,

@@ -3,18 +3,13 @@
 //! is the lowest of what a principal's grants say under every name the
 //! field bears, has borne or, as of an earlier position, will bear.
 
-use lakelands_api::seam::Seams;
-use lakelands_api::write::{Migration, Outcome, ProposedWrite};
-use lakelands_api::{Access, LakeStore, Position, Principal};
-use serde_json::{Value, json};
+use lakelands_api::write::Outcome;
 
 use super::computed_inputs::told;
 use super::export::Scratch;
-use crate::conformance::fixture::{
-    Lake, Must, field_access, get_at, ingest, log_events, no_such_field, read_at, recorded_outputs,
-    refused_alike, reviewer, source_record, try_upsert, write_verb,
-};
-use crate::conformance::{Failure, Given, Held, ImportedLake, Store};
+use crate::conformance::ImportedLake;
+use crate::conformance::fixture::{get_at, ingest, recorded_outputs, reviewer, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     GRANT_FOLLOWS = a_grant_holds_a_field_under_every_name_it_has_borne,

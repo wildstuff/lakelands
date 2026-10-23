@@ -125,36 +125,22 @@
 
 use std::fs;
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use futures_core::Stream;
-use lakelands_api::event::{Digest, Event, EventBody};
-use lakelands_api::ontology::{
-    Authority, Cardinality, FieldDecl, RelationDecl, StorageKind, TypeDecl,
-};
-use lakelands_api::query::{Pattern, Projection, QueryResult, Search, SearchMode, Step, Walk};
-use lakelands_api::read::{AggFunc, Direction, OrderBy};
-use lakelands_api::seam::{FEED_EXAMINED, FeedFilter, SETTING_TYPE, Seams, VIEW_KEPT_SETTING};
-use lakelands_api::{
-    Find, Found, LakeStore, Position, Principal, ReadAt, RecordKey, SourceId, SourceRecord,
-    TypeName,
-};
-use serde_json::json;
+use lakelands_api::event::Digest;
+use lakelands_api::seam::{FEED_EXAMINED, SETTING_TYPE, VIEW_KEPT_SETTING};
 use sha2::{Digest as _, Sha256};
 
 use crate::conformance::backing::EMBED_MODEL;
-use crate::conformance::fixture::{
-    Lake, Must, agg, aggregate, declare, doors, embedding, field, ingest, limits, order, owner,
-    pattern, pause, reason, restrict, source_record, sourced, step, type_decl, view_of,
-};
-use crate::conformance::{Failure, Given, Held, Meter, Store, backing, next};
+use crate::conformance::fixture::{doors, ingest, order, owner, source_record, step};
+use crate::conformance::prelude::*;
+use crate::conformance::{Meter, next};
 use crate::export;
-use crate::links::{link_key, link_type_name};
 
 check!(
     STREAMS =

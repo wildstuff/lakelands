@@ -11,17 +11,10 @@
 //! writer's open, and refused to a reader's until one has; a vocabulary
 //! that changes a held type in any other way is refused at the open.
 
-use lakelands_api::error::Case;
-use lakelands_api::ontology::{ConstraintDecl, FieldDecl, StorageKind, TypeDecl};
-use lakelands_api::seam::Seams;
-use lakelands_api::{Access, LakeStore, ReadAt, TypeName};
-use serde_json::json;
+use lakelands_api::ontology::ConstraintDecl;
 
-use crate::conformance::fixture::{
-    Lake, Must, declare, describe_type, doors, field, field_access, get_at, invalid_case,
-    invalid_like, owner, type_decl, write_verb,
-};
-use crate::conformance::{Failure, Given, Held, Reopen, Store, backing};
+use crate::conformance::fixture::{doors, get_at, owner};
+use crate::conformance::prelude::*;
 
 check!(
     HOST_TYPES_AT_OPEN = a_host_type_is_declared_when_a_writer_opens_the_lake,

@@ -2,21 +2,9 @@
 //! period that seals each period's values under a version of their own
 //! (`docs/decisions/058-a-source-may-be-forgotten.md`, lakelands#1153).
 
-use std::sync::Arc;
-
-use lakelands_api::Error;
-use lakelands_api::error::{Case, Situation};
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{FieldDecl, StorageKind};
-use lakelands_api::seam::KeyStore;
-use serde_json::json;
-
 use super::erasable::{Keys, again, person, read, with};
-use crate::conformance::fixture::{
-    Lake, Must, events_after, field, head_unmoved, invalid_case, refused_on, source_record,
-    sourced, try_upsert,
-};
-use crate::conformance::{Failure, Held, Reopen, Store};
+use crate::conformance::fixture::source_record;
+use crate::conformance::prelude::*;
 
 check!(
     VERSION_DESTROYED = a_destroyed_version_takes_the_outputs_of_its_values,
@@ -71,8 +59,7 @@ fn crm(keys: &Keys, store: &Store) -> Result<Vec<lakelands_api::id::KeyId>, Fail
 }
 
 async fn a_destroyed_version_takes_the_outputs_of_its_values(store: Store, reopen: Reopen) -> Held {
-    let keys = Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     let mut t = people(&l, "prefix").await?;
     let ada = source_record("person", "p1", json!({"id": "p1", "name": "Ada"}));
@@ -177,8 +164,7 @@ async fn a_key_period_seals_a_periods_values_under_one_version(
     store: Store,
     reopen: Reopen,
 ) -> Held {
-    let keys = Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let ty = lakelands_api::seam::SETTING_TYPE;

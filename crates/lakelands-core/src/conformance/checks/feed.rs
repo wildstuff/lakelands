@@ -2,18 +2,11 @@
 //! append (`docs/decisions/004-the-change-feed-is-the-log.md`,
 //! `docs/decisions/001-the-log-is-the-truth.md`).
 
-use lakelands_api::event::{Event, EventBody};
+use lakelands_api::SetOff;
 use lakelands_api::ontology::StorageKind::{Number, Text};
-use lakelands_api::seam::FeedFilter;
-use lakelands_api::write::ProposedWrite;
-use lakelands_api::{Access, LakeStore, Outcome, Position, RecordKey, SetOff, TypeName, WriteOpts};
-use serde_json::json;
 
-use crate::conformance::fixture::{
-    Caller, Lake, Must, field_access, followed, join_all, log_events, patch, pause, source_record,
-    sourced, type_of, upsert, write_verb,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{source_record, type_of, upsert};
+use crate::conformance::prelude::*;
 
 /// What a write's answer says it set off.
 fn set_off(o: &Outcome) -> SetOff {

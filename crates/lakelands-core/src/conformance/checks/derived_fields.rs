@@ -9,17 +9,8 @@
 //! every total built on it quietly short, which is why the check reads
 //! the field back rather than trusting the declaration.
 
-use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
-use lakelands_api::write::Declaration;
-use lakelands_api::{Access, Error, Origin, Refusal, TypeName};
-use serde_json::json;
-
-use crate::conformance::fixture::{
-    Lake, Must, computed_by, dec, decimal, derived, field, field_access, find_where, get_at,
-    head_unmoved, no_such_field, patch, read, refused_on, refused_unmoved, source_record,
-    try_upsert, type_decl, type_of, value,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{derived, get_at, read, source_record, type_of};
+use crate::conformance::prelude::*;
 
 check!(
     COMPUTED_BY_THE_FOLD = a_derived_field_is_computed_by_the_fold_on_every_write,

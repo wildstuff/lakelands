@@ -4,15 +4,8 @@
 //! history, so a read pinned to an earlier position answers with the
 //! setting of that position, not today's.
 
-use lakelands_api::ontology::StorageKind;
-use lakelands_api::seam::Seams;
-use lakelands_api::{Access, Find, Grants, LakeStore, Position, PrincipalKind};
-use serde_json::json;
-
-use crate::conformance::fixture::{
-    Lake, Must, all_found, derived, field, find_where, principal, read_at, restrict, type_decl,
-};
-use crate::conformance::{Failure, Given, Held, Reopen, Store};
+use crate::conformance::fixture::derived;
+use crate::conformance::prelude::*;
 
 check!(
     SETTING_AS_OF = a_setting_is_read_as_it_stood_at_the_position_read,

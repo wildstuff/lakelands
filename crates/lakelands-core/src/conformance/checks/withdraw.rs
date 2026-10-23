@@ -4,26 +4,11 @@
 //! extended). A withdrawal is one `declared` event; what something in
 //! force reads is not withdrawn, and a name not in force is not either.
 
-use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{FunctionInput, RelationDecl, StorageKind, TriggerDecl};
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::seam::Seams;
-use lakelands_api::write::{
-    Declaration, DeclarationKind, FunctionDecl, InForce, ProposalFilter, ProposalState,
-    ProposedWrite, Withdrawal, WriteOpts,
-};
-use lakelands_api::{
-    Access, Catalog, Error, Grants, LakeStore, Missing, Outcome, Position, PrincipalKind,
-    ProposalId, Refusal, TypeName,
-};
-use serde_json::json;
+use lakelands_api::ontology::{FunctionInput, TriggerDecl};
+use lakelands_api::write::{DeclarationKind, FunctionDecl, InForce, Withdrawal, WriteOpts};
 
-use crate::conformance::fixture::{
-    Lake, Must, computed_by, events_after, field, find_at, invalid_like, limits, object_set_on,
-    patch, principal, reactive, read_at, reason, reference, refused_alike, refused_unmoved,
-    reviewer, trigger_on, try_upsert, type_decl, write_verb,
-};
-use crate::conformance::{Failure, Given, Held, Store};
+use crate::conformance::fixture::{reference, reviewer};
+use crate::conformance::prelude::*;
 
 check!(
     WITHDRAWN_TRIGGER = a_withdrawn_trigger_stops_firing_and_is_seen_as_of_before,

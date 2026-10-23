@@ -5,28 +5,23 @@
 //! crash between the act's steps leaves the rest to the next writer's
 //! open. The checks bring the key store of [`super::erasable`].
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32};
 
 use lakelands_api::engine::{
     CanonicalEvent, EngineOpener, Lease, OpenMode, ProjectionStore, ProjectionView, Ranked,
     Rankings, VectorIndex,
 };
-use lakelands_api::error::{Flaw, Situation};
-use lakelands_api::event::{Digest, Event, EventBody, SegmentDigest};
+use lakelands_api::error::Flaw;
+use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::KeyId;
-use lakelands_api::ontology::{FieldDecl, StorageKind};
 use lakelands_api::read::Found;
-use lakelands_api::seam::{DataKey, KeyStore, Seams};
+use lakelands_api::seam::DataKey;
 use lakelands_api::write::ForgetReport;
-use lakelands_api::{Error, LakeId, LakeStore, Location, Position, SourceId, TypeName};
-use serde_json::{Value, json};
+use lakelands_api::{LakeId, Location};
 
 use super::erasable::{Keys, again, person, read, with};
-use crate::conformance::fixture::{
-    Lake, Must, events_after, find_at, get_at, refused_like, source_record, sourced,
-};
-use crate::conformance::{Failure, Held, Reopen, Store};
+use crate::conformance::fixture::{get_at, source_record};
+use crate::conformance::prelude::*;
 
 check!(
     FORGOTTEN = a_forgotten_sources_values_read_as_erased_at_every_position,
@@ -273,8 +268,7 @@ async fn a_forgotten_sources_values_read_as_erased_at_every_position(
     store: Store,
     reopen: Reopen,
 ) -> Held {
-    let keys = Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     lake(&l).await?;
     let before = people(store.as_ref(), &l).await?;
@@ -464,8 +458,7 @@ async fn a_source_with_plaintext_values_in_the_log_is_not_forgotten(
     store: Store,
     reopen: Reopen,
 ) -> Held {
-    let keys = Arc::new(Keys::default());
-    let store = again(&reopen, store, with(&keys), "with a key store").await?;
+    let (_, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     let mut t = person();
     t.fields.retain(|f| f.name != "name");
@@ -550,8 +543,7 @@ async fn an_export_imports_with_its_keys_or_with_its_forgetting(
     store: Store,
     given: crate::conformance::Given,
 ) -> Held {
-    let keys = Arc::new(Keys::default());
-    let store = again(&given.reopen, store, with(&keys), "with a key store").await?;
+    let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
     let ada = source_record("person", "p1", json!({"id": "p1", "name": "Ada"}));

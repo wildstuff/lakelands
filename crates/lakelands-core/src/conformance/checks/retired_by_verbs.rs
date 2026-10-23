@@ -5,19 +5,13 @@
 //! them, as the system. A refusal names the retire verbs its writer is
 //! shown and may call, and none it is not, whatever the key.
 
-use lakelands_api::error::{Case, Printed};
-use lakelands_api::event::EventBody;
 use lakelands_api::ontology::RetiredBy;
-use lakelands_api::write::{ProposedWrite, WriteOpts};
-use lakelands_api::{Error, Outcome, Principal, Refusal};
-use serde_json::{Value, json};
+use lakelands_api::write::WriteOpts;
 
 use super::only::holder;
 use super::paths::{accept, call, proposal_of};
-use crate::conformance::fixture::{
-    Lake, Must, describe_type, events_after, get_at, head_unmoved, ingest, source_record, upsert,
-};
-use crate::conformance::{Failure, Held, Store};
+use crate::conformance::fixture::{get_at, ingest, source_record, upsert};
+use crate::conformance::prelude::*;
 
 check!(
     RETIRED_BY_VERBS = a_type_only_its_verbs_retire_is_refused_at_retire,
@@ -156,16 +150,8 @@ async fn a_type_only_its_verbs_retire_is_refused_at_retire(store: Store) -> Held
     head_unmoved(s, before, "a retirement of a type only its verbs retire").await?;
     // Its verbs retire: under `requires`, by the call's own events.
     let unmet = call(&l, &l.own, "archive", "o1").await;
-    let case = Case::RequiresUnmet {
-        verb: "archive".into(),
-        ty: "order".into(),
-        key: "o1".into(),
-        part: Some(Box::new(Printed("status = 'closed'".into()))),
-    };
-    let precondition = Error::Refused {
-        field: None,
-        reason: Refusal::Precondition(Box::new(case.into())),
-    };
+    let precondition =
+        requires_unmet::<()>("archive", "order", "o1", Some("status = 'closed'")).unwrap_err();
     ensure!(
         unmet.as_ref().err() == Some(&precondition) && live(&l, "o1").await?,
         "`archive` of o1, still open, is refused as a precondition: {unmet:?}"
