@@ -1073,6 +1073,23 @@ so this is the one place it is told, and only the part that fails. A
 constraint is a type's own rule and its refusal names it, not a part of
 its condition (`docs/decisions/059-a-type-declares-its-constraints.md`).
 
+A verb may name its conditions (lakelands#1330). Beside `requires`,
+`preconditions` lists conditions, each a `name` and what it `holds`,
+judged after `requires` in order, as one `and` of them all. A
+`requires_unmet` of one is said within it, at the place `precondition`
+with its name, beside its `part`, so a caller is told which rule it
+broke without matching the text of the rule; one of `requires` is said
+at no place, as before. The place is told where the part is and left
+out where it is not, since it tells, as the part does, that every part
+before it held. A place, not a new member of the case, keeps the case
+what a caller already reads. A name is an identifier, two alike are refused
+`precondition_named_twice`, and a verb on its type, with no record to
+read, declares none, as it declares no `requires`. What reads a verb's
+`requires`, the grants, what a caller is shown and what a proposal
+keeps, reads its preconditions alike. A verb that names nothing is
+declared, written and refused as before: `preconditions` is left out
+where there are none.
+
 A type its principal is not shown is not named by what is declared
 beside it either. A verb on such a type is not described and no tool
 is made of it, even where the principal could write every field the
@@ -2821,3 +2838,5 @@ Of `only`:
   of such a change) needs `restricted` beside `schema`, refused `grant_needed`
   whatever the lake holds; to a caller without it, a change's plan and
   preview are judged as it is told, as a proposal's are (062).
+- A verb names its conditions as `preconditions`, and a refusal of one
+  names it (lakelands#1330).

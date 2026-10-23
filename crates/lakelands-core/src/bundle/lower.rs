@@ -541,6 +541,7 @@ pub(super) fn verb(l: &mut Lower<'_>, doc: VerbDoc) -> VerbDecl {
         scope: doc.scope,
         payload,
         risk: doc.risk,
+        preconditions: Vec::new(),
         requires,
         effect,
         description: doc.description,

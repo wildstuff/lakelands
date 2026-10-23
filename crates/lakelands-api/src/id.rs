@@ -95,6 +95,8 @@ name! {
     TriggerName,
     /// A constraint a type declares over its records.
     ConstraintName,
+    /// A precondition a verb declares over its record and its call.
+    PreconditionName,
     /// A parameter a view declares and a read binds.
     ParamName,
     /// A version of a source's data key, as the host's key store names it

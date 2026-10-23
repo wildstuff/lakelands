@@ -201,3 +201,21 @@ fn a_constraint_reads_its_record_alone_as_declare_judges_it() {
         Err(Case::ParamOutsideView)
     ));
 }
+
+#[test]
+fn a_verb_without_preconditions_reads_and_writes_as_before() {
+    let verb = json!({"name": "pay", "on": "invoice", "risk": "low", "effect": "write",
+        "payload": [], "requires": "status = 'open'", "set": [{"field": "paid", "value": "1"}]});
+    let v: VerbDecl = serde_json::from_value(verb.clone()).unwrap();
+    assert!(v.preconditions.is_empty());
+    let back = serde_json::to_value(&v).unwrap();
+    assert!(back.get("preconditions").is_none(), "{back}");
+    let mut named = verb;
+    named["preconditions"] = json!([{"name": "open", "holds": "status = 'open'"}]);
+    let v: VerbDecl = serde_json::from_value(named).unwrap();
+    assert_eq!(v.conditions().count(), 2);
+    assert_eq!(
+        serde_json::to_value(&v).unwrap()["preconditions"][0]["name"],
+        "open"
+    );
+}

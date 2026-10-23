@@ -155,3 +155,26 @@ fn a_declined_calls_reason_is_optional_on_the_wire() {
         Error::declined(&verb)
     );
 }
+
+/// A `requires_unmet` of a verb's precondition is said within it; one of
+/// its `requires` reads, writes and says what it did (lakelands#1330).
+#[test]
+fn an_unmet_precondition_is_said_within_it() {
+    let wire = json!({"code": "requires_unmet", "verb": "v", "type": "t", "key": "k",
+        "part": "a = 1", "message": "verb `v` requires what `t` `k` does not hold: `a = 1`"});
+    let said: Said = serde_json::from_value(wire.clone()).expect("a case");
+    assert!(said.at.is_empty());
+    assert_eq!(serde_json::to_value(&said).expect("written"), wire);
+    let said = said.within(Place::Precondition {
+        name: "paid".into(),
+    });
+    assert_eq!(
+        said.to_string(),
+        "precondition `paid`: verb `v` requires what `t` `k` does not hold: `a = 1`"
+    );
+    let back = serde_json::to_value(&said).expect("written");
+    assert_eq!(
+        back["at"],
+        json!([{"code": "precondition", "name": "paid", "message": "precondition `paid`"}])
+    );
+}

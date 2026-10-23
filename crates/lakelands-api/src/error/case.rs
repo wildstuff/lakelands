@@ -31,8 +31,8 @@ use super::outage::{Aimless, Exchange, closed, named};
 use crate::expr::Condition;
 use crate::expr::kind::Kind;
 use crate::id::{
-    ConstraintName, FieldName, KeyId, LakeId, ParamName, Position, ProposalId, RecordKey,
-    RelationName, SourceId, TriggerName, TypeName, ValueTypeName, VerbName,
+    ConstraintName, FieldName, KeyId, LakeId, ParamName, Position, PreconditionName, ProposalId,
+    RecordKey, RelationName, SourceId, TriggerName, TypeName, ValueTypeName, VerbName,
 };
 use crate::ontology::{Authority, Cardinality, FieldType, StorageKind};
 use crate::query::Walk;
@@ -170,8 +170,8 @@ pub struct Named {
 impl Named {
     /// Whether a reviewer is shown all of it by `listed`, a proposal as
     /// its listing shows it: each type one it `sees`; each field one it
-    /// `reads` of the type written, a verb's counting those its `requires`
-    /// reads; each verb the one called; what a declaration
+    /// `reads` of the type written, a verb's counting the record's its
+    /// `requires` reads; each verb the one called; what a declaration
     /// says only beside a field; each key the one written or, as each
     /// value, one listed under a field named, or in a call's payload,
     /// which is listed only whole.
@@ -198,7 +198,10 @@ impl Named {
         let mut read = Vec::new();
         for v in &self.verbs {
             match requires(v).map(|c| c.typed()) {
-                Some(Ok(e)) => read.extend(e.fields_read().into_iter().cloned()),
+                Some(Ok(e)) => {
+                    let paths = crate::ontology::record_paths(&e).into_iter();
+                    read.extend(paths.filter_map(|p| p.into_iter().next()));
+                }
                 Some(Err(_)) => return false,
                 None => {}
             }
@@ -310,6 +313,7 @@ said_by_display!(
     RelationName,
     TriggerName,
     ConstraintName => constraints,
+    PreconditionName => nothing,
     TypeName => types,
     ValueTypeName => declared,
     VerbName => verbs,
@@ -536,6 +540,8 @@ named! {
         Trigger = "trigger" => "trigger",
         /// A type's constraint.
         Constraint = "constraint" => "constraint",
+        /// A verb's precondition.
+        Precondition = "precondition" => "precondition",
         /// An object set.
         ObjectSet = "object_set" => "object set",
         /// A function.
@@ -596,6 +602,8 @@ catalog! {
         Trigger { name: TriggerName } => "trigger `{name}`",
         /// A type's constraint.
         TypeConstraint { name: ConstraintName } => "constraint `{name}`",
+        /// A verb's precondition.
+        Precondition { name: PreconditionName } => "precondition `{name}`",
         /// An object set.
         ObjectSet { name: String } => "object set `{name}`",
         /// A function.
@@ -802,6 +810,8 @@ catalog! {
         ComputedReadsItself { field: FieldName } => "the computed field `{field}` reads itself",
         /// A type naming two constraints alike.
         ConstraintNamedTwice { constraint: ConstraintName } => "two constraints are named `{constraint}`",
+        /// A verb that names two of its preconditions alike.
+        PreconditionNamedTwice { precondition: PreconditionName } => "two preconditions are named `{precondition}`",
         /// A constraint that reads what can change without a write of the
         /// record.
         ConstraintReadsBeyond { constraint: ConstraintName, reads: Box<Beyond> } => "constraint `{constraint}` reads {reads}, which can change without a write of the record; a constraint reads the record's own fields",
@@ -1446,7 +1456,8 @@ catalog! {
         ConstraintLeftBroken { constraint: ConstraintName, #[serde(rename = "type")] ty: TypeName, records: u64 } => "{records} record(s) of `{ty}` would be left breaking the constraint `{constraint}`; fix them first",
         /// A verb's `requires` that does not hold, and the part of it the
         /// record fails: of a conjunction, its first conjunct that does
-        /// not hold; else the whole condition (006).
+        /// not hold; else the whole condition (006). Said within the
+        /// precondition it is of, for one of a verb's preconditions.
         RequiresUnmet {
             verb: VerbName,
             #[serde(rename = "type")]

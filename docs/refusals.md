@@ -28,6 +28,7 @@ What a declared name names.
 | `executor` | — | executor | A verb's executor. |
 | `trigger` | — | trigger | A trigger. |
 | `constraint` | — | constraint | A type's constraint. |
+| `precondition` | — | precondition | A verb's precondition. |
 | `object_set` | — | object set | An object set. |
 | `function` | — | function | A function. |
 | `setting` | — | setting | A host's setting. |
@@ -202,6 +203,7 @@ Where in a declaration or a request a case is said.
 | `value_type` | `name` (ValueTypeName) | value type `{name}` | A value type. |
 | `trigger` | `name` (TriggerName) | trigger `{name}` | A trigger. |
 | `type_constraint` | `name` (ConstraintName) | constraint `{name}` | A type's constraint. |
+| `precondition` | `name` (PreconditionName) | precondition `{name}` | A verb's precondition. |
 | `object_set` | `name` (String) | object set `{name}` | An object set. |
 | `function` | `name` (String) | function `{name}` | A function. |
 | `function_config` | `key` (String) | `config.{key}` | A member of a function's `config`. |
@@ -275,6 +277,7 @@ What a refusal is about.
 | `computed_cycle` | `fields` (Names) | computed fields read each other in a cycle: {fields} | Computed fields that read each other. |
 | `computed_reads_itself` | `field` (FieldName) | the computed field `{field}` reads itself | A computed field that reads itself. |
 | `constraint_named_twice` | `constraint` (ConstraintName) | two constraints are named `{constraint}` | A type naming two constraints alike. |
+| `precondition_named_twice` | `precondition` (PreconditionName) | two preconditions are named `{precondition}` | A verb that names two of its preconditions alike. |
 | `constraint_reads_beyond` | `constraint` (ConstraintName), `reads` (Beyond) | constraint `{constraint}` reads {reads}, which can change without a write of the record; a constraint reads the record's own fields | A constraint that reads what can change without a write of the record. |
 | `declared_twice` | `what` (Naming), `name` (String) | it declares the {what} `{name}` twice | A name declared twice in one declaration. |
 | `derived_and_function` | — | a field is derived from an expression or computed by a function, not both | A field both derived and computed by a function. |
@@ -568,7 +571,7 @@ What a refusal is about.
 | `required` | `type` (TypeName), `field` (FieldName) | `{type}` requires a value for `{field}` | A record with no value for a required field. |
 | `constraint_broken` | `constraint` (ConstraintName), `type` (TypeName), `key` (RecordKey) | `{type}` `{key}` would break the constraint `{constraint}` | A write that would leave a record breaking its type's constraint. |
 | `constraint_left_broken` | `constraint` (ConstraintName), `type` (TypeName), `records` (u64) | {records} record(s) of `{type}` would be left breaking the constraint `{constraint}`; fix them first | Records a walk of the lake would leave breaking their type's constraint: a declaration's or a migration's computing again, a re-key's rewritten references, a value type's renames. |
-| `requires_unmet` | `verb` (VerbName), `type` (TypeName), `key` (RecordKey), `part` (Printed, optional) | verb `{verb}` requires what `{type}` `{key}` does not hold[: `{part}`] | A verb's `requires` that does not hold, and the part of it the record fails: of a conjunction, its first conjunct that does not hold; else the whole condition (006). |
+| `requires_unmet` | `verb` (VerbName), `type` (TypeName), `key` (RecordKey), `part` (Printed, optional) | verb `{verb}` requires what `{type}` `{key}` does not hold[: `{part}`] | A verb's `requires` that does not hold, and the part of it the record fails: of a conjunction, its first conjunct that does not hold; else the whole condition (006). Said within the precondition it is of, for one of a verb's preconditions. |
 | `restriction` | `type` (TypeName), `key` (RecordKey), `already` (bool) | `{type}` `{key}` is [{?already}already\|not] restricted | A restriction of what is restricted, or a release of what is not. |
 | `set_declares_twice` | — | the set declares it more than once | A set of declarations that names one twice. |
 | `set_empty` | — | nothing to apply: the set holds no declaration | A set of no declarations. |
@@ -1115,7 +1118,7 @@ its own sentence. The other types:
 
 - **text** (`String`), a **name** (`TypeName`, `FieldName`, `RelationName`,
   `VerbName`, `ParamName`, `TriggerName`, `ConstraintName`,
-  `ValueTypeName`, `LakeId`, `SourceId`, `KeyId`) or a **record key** (`RecordKey`): a string;
+  `PreconditionName`, `ValueTypeName`, `LakeId`, `SourceId`, `KeyId`) or a **record key** (`RecordKey`): a string;
 - a **number** (`u16`, `u32`, `u64`, `usize`, `i32`, `i64`, `Number`) or
   a **position** (`Position`): a JSON number;
 - an **instant** (`Timestamp`): an RFC 3339 string in UTC; a

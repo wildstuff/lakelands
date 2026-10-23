@@ -73,8 +73,9 @@ declaration refuse it as invalid, naming the declaration and the field:
 - a type: what each derived field's expression reads;
 - an object set: its `where`;
 - a trigger: its `when`, where `changed(f)` and `previous(f)` read `f`;
-- a verb: its `requires`, and what the value it sets a field from reads.
-  `payload.<name>` there is the call's payload and no field.
+- a verb: its `requires` and preconditions, and what the value it sets a
+  field from reads. `payload.<name>` there is the call's payload and no
+  field.
 
 `setting`, `now`, `today` and a guard's `retired` read no field. The
 reads are gathered by the function the migration preflight keeps a
@@ -123,6 +124,22 @@ both ask it:
   checked against the verb's list, so such a member is never given and
   the value would read null at every call.
 
+A verb's `requires` and its preconditions read the payload by the same
+rule (lakelands#1330). They are judged in the write the call makes,
+against the record as that write finds it, so a rule over what a call
+brings, a reading that may not go back or a payment that may not
+overpay, is the verb's to keep: two calls at once cannot both pass it
+against a record only one of them leaves. A member the payload does not
+declare is refused there as in a value, naming the condition. A record
+the payload names is not reached through it: `payload.invoice.status` is
+a path of the record's field `payload`, refused as an unknown field on a
+type without one. Reaching it would say every rule a path through a
+reference keeps, its kinds, what it reads for the grants and for what a
+caller is shown, the fields it may not step into and its depth, a second
+time, of a record the call names where the others are named by the
+record; a verb that needs the far record's state is declared on that
+record, or its record carries the reference.
+
 A type may have a field named `payload`, and a verb on it is not
 refused: the two readings sit one segment apart, and the rule is total.
 What follows is that a verb's value cannot read a member of a json field
@@ -130,7 +147,10 @@ named `payload`, since `payload.<name>` is always the call's. A lake
 that needs it names the field otherwise, or reads it whole.
 
 A verb already in force with a bare `payload` opens and runs as before;
-it is held to the rule when it is declared again.
+it is held to the rule when it is declared again. A `requires` in force
+on a type with a field named `payload` that read `payload.<name>` of
+that field reads the call's payload, as the values came to
+(lakelands#470).
 
 ### What can never be evaluated is refused
 
@@ -376,3 +396,6 @@ rather than one error at a time.
 - A verb's `requires` and set values read the link a relation holds,
   `<relation>.<link field>`, where a relation's name was an unknown
   field in a condition (lakelands#567).
+- A verb's `requires` reads `payload.<name>` as the call's, as its
+  values do, where it was judged with no payload and refused one at
+  declare (lakelands#1330).

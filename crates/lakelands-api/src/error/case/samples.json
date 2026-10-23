@@ -108,6 +108,10 @@
    "constraint": "c"
   },
   {
+   "code": "precondition_named_twice",
+   "precondition": "pc"
+  },
+  {
    "code": "constraint_reads_beyond",
    "constraint": "c",
    "reads": {
@@ -2338,6 +2342,10 @@
   {
    "code": "type_constraint",
    "name": "c"
+  },
+  {
+   "code": "precondition",
+   "name": "pc"
   },
   {
    "code": "object_set",

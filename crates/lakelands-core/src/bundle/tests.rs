@@ -317,6 +317,7 @@ fn complete_declarations() -> Vec<Declaration> {
                 ..field("paid_on", kind(StorageKind::DateTime))
             }],
             risk: Risk::Low,
+            preconditions: Vec::new(),
             requires: Some(text("status = 'open'")),
             effect: VerbEffect::Write {
                 set: vec![Assignment {
@@ -333,6 +334,7 @@ fn complete_declarations() -> Vec<Declaration> {
             scope: Default::default(),
             payload: Vec::new(),
             risk: Risk::Medium,
+            preconditions: Vec::new(),
             requires: None,
             effect: VerbEffect::External {
                 executor: "mailer".to_owned(),

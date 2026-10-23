@@ -27,8 +27,8 @@ pub enum Place {
     /// Over one source record of a view: its `where`, or an aggregate's
     /// argument in a measure. Like `Record`, and `param` has meaning.
     View,
-    /// A verb's `requires` and set values, and an object set's `where`:
-    /// like `Record`, and `exists` has meaning.
+    /// A verb's `requires`, preconditions and set values, and an object
+    /// set's `where`: like `Record`, and `exists` has meaning.
     Verb,
 }
 

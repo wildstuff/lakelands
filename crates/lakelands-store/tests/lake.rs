@@ -272,6 +272,7 @@ fn invoice_with_verbs() -> Vec<Declaration> {
         scope: Default::default(),
         payload: vec![field("note", StorageKind::Text)],
         risk,
+        preconditions: Vec::new(),
         requires: None,
         effect: VerbEffect::Write {
             set: vec![Assignment {
@@ -288,6 +289,7 @@ fn invoice_with_verbs() -> Vec<Declaration> {
         scope: Default::default(),
         payload: vec![],
         risk: Risk::Low,
+        preconditions: Vec::new(),
         requires: None,
         effect: VerbEffect::External {
             executor: "bank".into(),
