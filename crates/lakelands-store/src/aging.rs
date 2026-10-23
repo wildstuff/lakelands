@@ -43,7 +43,8 @@ use lakelands_core::rights::{self, Door};
 use lakelands_core::{canonical, names};
 
 use crate::declare;
-use crate::lake::{AGING_RULE_TYPE, Lake, every};
+use crate::exec::Turn;
+use crate::lake::{AGING_RULE_TYPE, every};
 use crate::log;
 use crate::ontology::Ontology;
 use crate::writes::{self, Call, Envelope};
@@ -183,7 +184,7 @@ fn refuse(ran: &mut RuleRun, key: &RecordKey, why: Refusal) {
 
 /// Run every live rule once for `today`, in rule-name order, one append
 /// per rule that moves anything.
-pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
+pub fn run(lake: &Turn<'_>, today: Timestamp) -> Result<AgeReport> {
     // `today` is a date: a time other than UTC midnight is refused.
     if today.0.rem_euclid(MICROS_PER_DAY) != 0 {
         let case = Case::AgingNotADate { today };

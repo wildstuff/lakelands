@@ -740,13 +740,14 @@ async fn not_folded(bodies: &[(Value, &str)]) {
         let rest = |t: &Kept| format!("{:?} {:?}", t.state("book"), t.lake.renames(None));
         let seen = [t.same("book", "").await, t.same("above", "").await];
         let before = rest(&t);
-        let folded = {
-            let mut w = t.lake.writer();
-            let body = serde_json::from_value(body.clone()).expect("an event");
-            let draft = crate::log::Draft::system(t.lake.clock(&mut w), body);
-            let folded = t.lake.append(&mut w, vec![draft]);
-            folded.expect_err("not folded").to_string()
-        };
+        let body = serde_json::from_value(body.clone()).expect("an event");
+        let folded = crate::exec::write(&t.lake, move |lake| {
+            let mut w = lake.writer();
+            let draft = crate::log::Draft::system(lake.clock(&mut w), body);
+            let folded = lake.append(&mut w, vec![draft]);
+            Ok(folded.expect_err("not folded").to_string())
+        });
+        let folded = folded.await.expect("its turn");
         let own = &t.owner;
         let now = [t.read(own, "book").await, t.read(own, "above").await];
         assert_eq!((now, rest(&t)), (seen, before), "{what}: as it was");
@@ -972,12 +973,13 @@ async fn a_value_rename_that_names_other_types_is_not_folded() {
         let body = json!({"kind": "value_type_migrated", "renames": [["k", "j"]],
                           "report_id": "r", "version": 2, "types": types,
                           "declaration": {"name": "kinds", "kind": "text", "one_of": ["j"]}});
-        let folded = {
-            let mut w = t.lake.writer();
-            let body = serde_json::from_value(body).expect("an event");
-            let draft = crate::log::Draft::system(t.lake.clock(&mut w), body);
-            t.lake.append(&mut w, vec![draft]).map(drop)
-        };
+        let body = serde_json::from_value(body).expect("an event");
+        let folded = crate::exec::write(&t.lake, move |lake| {
+            let mut w = lake.writer();
+            let draft = crate::log::Draft::system(lake.clock(&mut w), body);
+            Ok(lake.append(&mut w, vec![draft]).map(drop))
+        });
+        let folded = folded.await.expect("its turn");
         let now = t.read(&t.owner, "line").await;
         match folds {
             true => assert!(folded.is_ok() && now.contains(r#"{"kind":"j"}"#), "{now}"),

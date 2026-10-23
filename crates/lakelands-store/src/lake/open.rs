@@ -103,7 +103,8 @@ impl Lake {
         };
         let rebuilds = mode == OpenMode::Rebuild || rebuilt_at_open.is_some();
         let began = std::time::Instant::now();
-        let mut lake = Lake::assemble(location, seams, engine, lease.clone());
+        let mut assembled = Lake::assemble(location, seams, engine, lease.clone());
+        let lake = assembled.turn();
         // The rebuild folds beside the projection and swaps the scratch in
         // (071): an upgrade's goes on from where a build ahead stopped, an
         // open to rebuild folds the whole log. Either is folded as the
@@ -120,7 +121,7 @@ impl Lake {
         if rebuilds && !matches!(built, Swapped::In(_)) {
             lake.engine.projection().clear()?;
         }
-        lake.rebuilt_at_open = rebuilt_at_open.map(|why| match built {
+        let mut said = rebuilt_at_open.map(|why| match built {
             Swapped::In(Built {
                 ahead: Some(at),
                 events,
@@ -293,7 +294,7 @@ impl Lake {
         // not erased, written after a build ahead or met by a fold not told
         // of it, is finished by a rebuild of the whole log: said, since the
         // open then took as long as one.
-        if let Some(why) = lake.rebuilt_at_open.as_mut().filter(|_| refolded) {
+        if let Some(why) = said.as_mut().filter(|_| refolded) {
             why.push_str(
                 "; the log held an act erasing values that the projection had not erased, so the \
                  open then folded the whole log again to finish it",
@@ -307,7 +308,8 @@ impl Lake {
                 lake.publish(&w);
             }
         }
-        Ok(lake)
+        assembled.rebuilt_at_open = said;
+        Ok(assembled)
     }
 
     /// Build the projection this release lays out beside the one the lake
@@ -326,7 +328,8 @@ impl Lake {
     pub fn build_ahead(location: &Location, seams: Seams) -> Result<Built> {
         let opener = opener(location, &seams)?;
         log::one_format(&location.lake, opener.log_ends(location)?.as_ref())?;
-        let builder = Lake::scratch(location, &seams)?.ok_or_else(keeps_no_scratch)?;
+        let mut scratch = Lake::scratch(location, &seams)?.ok_or_else(keeps_no_scratch)?;
+        let builder = scratch.turn();
         let mut w = builder.writer();
         w.rebuilding = builder.engine.projection().folded_through()?.is_none();
         let built = builder.build(&mut w, false)?;
@@ -390,6 +393,7 @@ impl Lake {
             limits: location.limits,
             location: location.clone(),
             calls: tokio::sync::Mutex::new(()),
+            turns: Arc::new(tokio::sync::Mutex::new(())),
             waiting: Mutex::new(BTreeMap::new()),
             sorted_whole: Mutex::new(BTreeMap::new()),
             choosing: Mutex::default(),

@@ -325,7 +325,8 @@ pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported>
             return Err(precondition(Case::ImportNotEmpty { lake, head }));
         }
         carry(engine.as_ref(), &lease, &files, &digests, location)?;
-        let lake = Lake::assemble(location, seams.clone(), engine.clone(), Some(lease.clone()));
+        let mut lake = Lake::assemble(location, seams.clone(), engine.clone(), Some(lease.clone()));
+        let lake = lake.turn();
         lake.catch_up().map_err(|e| {
             let cause = Box::new(e);
             Error::unavailable(Situation::ImportNotFolded { cause })
@@ -345,7 +346,9 @@ pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported>
     // (`docs/log-format.md` §6). Its events stay as they were written.
     let ends = crate::lake::opener(location, &seams)?.log_ends(location)?;
     if crate::log::one_format(&location.lake, ends.as_ref())? < LOG_FORMAT_VERSION {
-        Lake::open(location, seams, OpenMode::Write)?.close()?;
+        Lake::open(location, seams, OpenMode::Write)?
+            .turn()
+            .close()?;
     }
     Ok(Imported {
         lake: location.lake.clone(),
