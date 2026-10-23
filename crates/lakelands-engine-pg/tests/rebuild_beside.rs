@@ -1,7 +1,9 @@
 //! A rebuild beside the projection, on the PostgreSQL engine
 //! (lakelands#1322): a builder killed halfway leaves the projection
 //! answering and its scratch schema for the next writer's open to remove;
-//! a scratch is built beside projection tables this build does not know.
+//! a scratch is built beside projection tables this build does not know;
+//! a rebuild handle over a layout an older build laid out swaps in the
+//! scratch built beside it, which is the upgrade's path.
 
 mod common;
 
@@ -86,6 +88,14 @@ fn there(url: &str, name: &str) -> bool {
     .unwrap()
 }
 
+/// Drop the lake's schema and its scratch's: the tests of this binary run
+/// at once, so each drops its own only.
+fn done(url: &str, schema: &str) {
+    common::drop_schema(url, schema);
+    let scratch = common::scratch_of(schema);
+    run(url, format!("DROP SCHEMA IF EXISTS \"{scratch}\" CASCADE"));
+}
+
 /// The child: folds into the scratch and dies before it marks it.
 #[test]
 fn a_builder_that_dies_halfway() {
@@ -128,7 +138,7 @@ fn a_builder_killed_halfway_leaves_the_projection_answering() {
     assert_eq!(reads(again.as_ref(), "a"), (Some(Position(1)), true));
     assert_eq!(reads(reader.as_ref(), "a"), (Some(Position(1)), true));
     drop((again, reader));
-    common::drop_schemas(&url);
+    done(&url, &schema);
 }
 
 #[test]
@@ -160,5 +170,43 @@ fn a_scratch_is_built_beside_projection_tables_this_build_does_not_know() {
         there(&url, &scratch),
         "a marked scratch outlives its handle"
     );
-    common::drop_schemas(&url);
+    done(&url, &schema);
+}
+
+#[test]
+fn a_swap_from_a_rebuild_handle_over_an_older_layout_puts_the_scratch_in_place() {
+    let Some(url) = common::url_or_skip("the pg rebuild-beside test") else {
+        return;
+    };
+    let schema = common::fresh_schema();
+    drop(lake(&url, &schema));
+    run(
+        &url,
+        format!("UPDATE \"{schema}\".meta SET n = n - 1 WHERE k = 'layout'"),
+    );
+    assert!(
+        PgOpener.open(&at(&url, &schema), OpenMode::Read).is_err(),
+        "a reader's open refuses the older layout"
+    );
+    let rebuilder = PgOpener
+        .open(&at(&url, &schema), OpenMode::Rebuild)
+        .unwrap();
+    let lease = rebuilder.take_lease("rebuilder").unwrap();
+    let built = PgOpener.open_scratch(&at(&url, &schema)).unwrap();
+    fold(built.as_ref(), "b", 4);
+    assert_eq!(built.mark_built().unwrap(), Some(Position(4)));
+    let swapped = rebuilder.swap(&lease);
+    assert!(
+        matches!(&swapped, Err(Error::Unavailable { situation }) if matches!(**situation, Situation::Rebuilding { .. })),
+        "a scratch a builder holds open is not swapped: {swapped:?}"
+    );
+    drop(built);
+    assert_eq!(rebuilder.swap(&lease).unwrap(), Some(Position(4)));
+    assert!(!there(&url, &common::scratch_of(&schema)));
+    assert_eq!(reads(rebuilder.as_ref(), "b"), (Some(Position(4)), true));
+    assert_eq!(reads(rebuilder.as_ref(), "a"), (Some(Position(4)), false));
+    let reader = PgOpener.open(&at(&url, &schema), OpenMode::Read).unwrap();
+    assert_eq!(reads(reader.as_ref(), "b"), (Some(Position(4)), true));
+    drop((rebuilder, reader));
+    done(&url, &schema);
 }

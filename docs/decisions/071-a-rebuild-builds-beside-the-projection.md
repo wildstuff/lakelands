@@ -76,6 +76,45 @@ The swap waits for the locks of transactions reading the old tables,
 and readers that begin after it wait behind it, so a long reader
 stalls the lake for as long as it reads.
 
+### The store builds beside, and a build ahead outruns the upgrade
+
+Every rebuild the store makes builds beside the projection and swaps:
+the writer's open of a projection an older build laid out, an open to
+rebuild, and `LakeStore::rebuild`. The first goes on from a scratch
+marked built where one fits; the other two fold the whole log. Where the
+engine keeps no scratch, the store folds in place, as before.
+
+`lakelands build-ahead` runs the first half of an upgrade early. Under
+the new release, beside a lake the old release still holds, it opens the
+log and its own scratch only, folds the log into it and marks it built.
+It says the room it takes before it starts. Run again, it goes on from
+its mark. A fold that met an act erasing values, a source forgotten or
+values removed, may hold what the act erased, since it folded those
+values before it was told the act. Such a build folds the whole log
+again, told the act, as a rebuild is. The writer's open that upgrades
+the lake then folds only the events after the mark.
+
+A swap refused `swap_busy`, because another handle has the projection
+open, is not the open's failure. The open removes the scratch, gives the
+writer back what it knew before the build, and folds in place. An
+upgrade's build ahead is then spent. A reader left running must not
+keep a lake from opening, and the scratch cannot be swapped while it
+reads.
+
+Nothing removes a build ahead on its own. A writer's open swaps in one
+that fits its layout, and the next build ahead removes one the log no
+longer holds the mark of. A scratch of another layout whose mark the log
+still holds may be the next upgrade, already paid for. Only the operator
+knows whether that upgrade is still coming, so only the operator removes
+it: `lakelands build-ahead --discard`, after the command has said up
+front how much room the build takes.
+
+On PostgreSQL the builder holds a session lock while its handle lives.
+The server lets a session's locks go only when it sees the connection
+close, which can be after the next statement of the process that dropped
+it. So a dropped builder gives the lock up itself, and a swap that
+follows the drop is not refused `rebuilding`.
+
 ## Why
 
 A rebuild folds the whole log, so its time grows with the lake. Done in

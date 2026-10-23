@@ -687,8 +687,10 @@ none of that: its maker has connected and not made the tables, and a
 reader that comes in that moment is answered `no_projection`, as the
 moment before, and opens a moment later.
 - **An older build's projection is rebuilt by the first writer's open.**
-  The open takes the lease, drops the projection, makes it anew and
-  folds the whole log, and holds the writer that long; the CLI says so
+  The open takes the lease, folds the whole log into a scratch beside
+  the projection and puts it in the projection's place
+  (`docs/decisions/071-a-rebuild-builds-beside-the-projection.md`), and
+  holds the writer that long; the CLI says so
   (`the projection was rebuilt from the log at this open`), and a host
   reads why from `LakeStore::rebuilt_at_open`. 0.16.0 is such a step
   for both engines: the first open of 0.16.0 rebuilds the projection,
@@ -697,13 +699,53 @@ moment before, and opens a moment later.
   record, a release build). `lakelands upgrade` runs that open at a moment
   the operator picks, also for a lake already in this release's log
   format, and `lakelands upgrade --check` names the layout it found.
+- **Build ahead, and the upgrade folds only the tail.** The upgrade
+  step for a release whose engine lays the projection out anew:
+  1. With the new release, run `lakelands build-ahead` while the old one
+     still serves the lake. It folds the log into the scratch beside the
+     projection (`projection.db.rebuild` in the lake's directory on
+     SQLite, a schema of its own on PostgreSQL) and marks it built at
+     the log's tip. It opens the log and its own scratch only, never the
+     projection the old release answers from and never the lease, so the
+     old writer writes on. It says the room it takes before it starts,
+     about as much as the projection; run again, it goes on from where it
+     stopped.
+  2. Stop every process of the old release, readers too.
+  3. Run `lakelands upgrade` (or the host's own writer's open). The open
+     folds only what was written after the build and swaps the scratch
+     in, saying so (`folding only what was written after the build
+     ahead`). At 100 000 records, from stopping the old release to the
+     first answer under the new one, with 1 000 written after the build
+     (a release build): 2.7 s without the build ahead and 0.10 s with it
+     on SQLite, 7.9 s and 0.13 s on PostgreSQL; with a 64-dimension
+     vector and an eight-field order index, 12.6 s and 0.35 s on SQLite,
+     29.9 s and 0.31 s on PostgreSQL. The build ahead itself takes about
+     what the open took without it.
+
+  On PostgreSQL the swap is one transaction of some 30 ms, and waits for
+  every transaction reading the projection's tables; a reader that
+  begins meanwhile waits behind it. A reader that holds a transaction
+  open for 5 s holds the swap, and every reader after it, that long.
+
+  A build ahead whose mark the log no longer holds (a backup older than
+  it restored, the lake imported anew) is not used: the open folds the
+  whole log, and the next build ahead removes it and begins anew. A
+  forget, purge or removal the old release made after the build is
+  folded into it as a full rebuild would, so the build ahead answers
+  what the full rebuild answers. Where the swap meets another handle on
+  the projection (on SQLite, a reader of either release left running),
+  the open removes the build ahead and rebuilds as it did before 0.18.0.
+  Nothing removes a build ahead on its own: it is the operator's room,
+  kept for the upgrade it was made for; `lakelands build-ahead
+  --discard` gives it back.
 - **A reader waits for the writer.** A read-only open of it is refused
   before anything is read, naming the number found, the number wanted
   and `lakelands rebuild` (`projection_layout` in `docs/refusals.md`).
 - **A newer build's projection, or one with no mark, is refused** at
   every open, as above. `lakelands rebuild`, or a host's own open with
-  `OpenMode::Rebuild`, opens it, drops the projection under the lease,
-  makes it anew and folds the whole log; the open is the rebuild.
+  `OpenMode::Rebuild`, opens it, folds the whole log beside the
+  projection under the lease and puts it in the projection's place; the
+  open is the rebuild.
   `LakeStore::rebuild` on an open lake does the same for a lake that
   opened.
 
