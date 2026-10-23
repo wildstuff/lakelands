@@ -1130,11 +1130,14 @@ fn indexed(conn: &Connection, ty: &TypeName) -> Result<Indexed> {
         None => type_at(conn, ty, None)?,
     };
     let sorted = sorted_fields(conn, ty, decl.as_ref(), true)?;
+    let vectors = engines::vector_fields(ty, |t| match t == ty {
+        true => Ok(decl.clone()),
+        false => type_at(conn, t, None),
+    })?;
     let looked = match decl {
         Some(_) => Some(looked_fields(conn, ty)?),
         None => None,
     };
-    let vectors = engines::vector_fields(ty, |t| type_at(conn, t, None))?;
     Ok((decl, sorted, looked, vectors))
 }
 
