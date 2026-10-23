@@ -76,6 +76,58 @@ The swap waits for the locks of transactions reading the old tables,
 and readers that begin after it wait behind it, so a long reader
 stalls the lake for as long as it reads.
 
+### The store builds beside, and a build ahead outruns the upgrade
+
+Every rebuild the store makes builds beside the projection and swaps:
+the writer's open of a projection an older build laid out, an open to
+rebuild, and `LakeStore::rebuild`. The first goes on from a scratch
+marked built where one fits; the other two fold the whole log. Where the
+engine keeps no scratch, the store folds in place, as before.
+
+`lakelands build-ahead` runs the first half of an upgrade early. Under
+the new release, beside a lake the old release still holds, it opens the
+log and its own scratch only, folds the log into it and marks it built.
+It says the room it takes before it starts. Run again, it goes on from
+its mark. A fold that met an act erasing values, a source forgotten or
+values removed, may hold what the act erased, since it folded those
+values before it was told the act. Such a build folds the whole log
+again, told the act, as a rebuild is. The writer's open that upgrades
+the lake then folds only the events after the mark. An act erasing
+values among those events is met the same way: the open folds them,
+swaps, and then folds the whole log again to finish the act, as the old
+release did when it wrote it. The open says so, since it then takes as
+long as an upgrade without the build ahead; a build ahead run again
+after the act moves that cost to before the upgrade.
+
+A swap refused `swap_busy`, because another handle has the projection
+open, is not the open's failure. A reader left running must not keep a
+lake from opening, and the scratch cannot be swapped while it reads. So
+the store asks the engine first (`LakeEngine::may_swap`), and where a
+swap would be refused it folds in place without folding beside: a
+rebuild then costs one fold and no second projection's room, not two.
+The open of an upgrade removes the build ahead it cannot swap in, and
+says so. A reader that comes between the question and the swap is met
+as before: the open removes the scratch, gives the writer back what it
+knew before the build, and folds in place.
+
+Nothing removes a build ahead on its own. A writer's open swaps in one
+that fits its layout, and the next build ahead removes one the log no
+longer holds the mark of. A scratch of another layout whose mark the log
+still holds may be the next upgrade, already paid for. Only the operator
+knows whether that upgrade is still coming, so only the operator removes
+it: `lakelands build-ahead --discard`, after the command has said up
+front how much room the build takes. The engine measures that room
+without opening the projection (`EngineOpener::room`): the files'
+sizes on SQLite; on PostgreSQL the tables' sizes, or, where a session
+holds a table for more than a second, the sizes the catalogue last
+recorded.
+
+On PostgreSQL the builder holds a session lock while its handle lives.
+The server lets a session's locks go only when it sees the connection
+close, which can be after the next statement of the process that dropped
+it. So a dropped builder gives the lock up itself, and a swap that
+follows the drop is not refused `rebuilding`.
+
 ## Why
 
 A rebuild folds the whole log, so its time grows with the lake. Done in

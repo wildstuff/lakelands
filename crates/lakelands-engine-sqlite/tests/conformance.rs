@@ -14,8 +14,8 @@ use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::checks::ALL;
 use lakelands_core::conformance::{
-    Continue, Continued, Fault, FreshLake, Harness, Import, ImportedLake, LARGE_LAKE, Meter,
-    Relimit, Reopen, Twin, below, continue_below, run_all, run_one,
+    Ahead, BuiltAhead, Continue, Continued, Fault, FreshLake, Harness, Import, ImportedLake,
+    LARGE_LAKE, Lower, Meter, Relimit, Reopen, Twin, below, continue_below, run_all, run_one,
 };
 use lakelands_engine_sqlite::SqliteOpener;
 use peak_alloc::PeakAlloc;
@@ -52,6 +52,9 @@ impl Harness for Sqlite {
             Box::pin(async move {
                 let lake = store.lake().to_string();
                 store.close().await?;
+                // No handle of the closed writer is left to hold the
+                // projection from a swap at the open.
+                drop(store);
                 let seams = Seams {
                     engines: vec![Arc::new(SqliteOpener)],
                     ..host
@@ -72,6 +75,7 @@ impl Harness for Sqlite {
             Box::pin(async move {
                 let lake = store.lake().to_string();
                 store.close().await?;
+                drop(store);
                 let seams = Seams {
                     engines: vec![wrap(Arc::new(SqliteOpener))],
                     ..host
@@ -92,6 +96,7 @@ impl Harness for Sqlite {
             Box::pin(async move {
                 let lake = store.lake().to_string();
                 store.close().await?;
+                drop(store);
                 let seams = Seams {
                     engines: vec![Arc::new(SqliteOpener)],
                     ..host
@@ -187,10 +192,12 @@ impl Harness for Sqlite {
                 };
                 lakelands_store::import(location.clone(), seams.clone(), from).await?;
                 let store = lakelands_store::open(location.clone(), seams, OpenMode::Read).await?;
+                let at = location.clone();
                 let writer: Reopen = Arc::new(move |store, host| {
                     let location = location.clone();
                     Box::pin(async move {
                         store.close().await?;
+                        drop(store);
                         let seams = Seams {
                             engines: vec![Arc::new(SqliteOpener)],
                             ..host
@@ -198,8 +205,48 @@ impl Harness for Sqlite {
                         lakelands_store::open(location, seams, OpenMode::Write).await
                     })
                 });
-                Ok(ImportedLake { store, writer })
+                Ok(ImportedLake {
+                    store,
+                    writer,
+                    location: at,
+                })
             })
+        })
+    }
+
+    fn location(&self, lake: &lakelands_api::LakeId) -> Option<Location> {
+        Some(Location::sqlite(
+            lake.as_str(),
+            self.root.join(lake.as_str()),
+        ))
+    }
+
+    fn aheader(&self) -> Ahead {
+        Arc::new(|location, host| {
+            Box::pin(async move {
+                let seams = Seams {
+                    engines: vec![Arc::new(SqliteOpener)],
+                    ..host
+                };
+                let built = lakelands_store::build_ahead(location, seams).await?;
+                Ok(BuiltAhead {
+                    ahead: built.ahead,
+                    through: built.through,
+                    events: built.events,
+                })
+            })
+        })
+    }
+
+    fn lowerer(&self) -> Lower {
+        Arc::new(|location| {
+            let lakelands_api::location::EngineConfig::Sqlite { dir, .. } = &location.engine else {
+                return false;
+            };
+            let db = rusqlite::Connection::open(dir.join("projection.db"));
+            let lowered =
+                db.and_then(|db| db.execute("UPDATE meta SET v = v - 1 WHERE k = 'layout'", []));
+            lowered.expect("marking the projection one layout back") == 1
         })
     }
 

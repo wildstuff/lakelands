@@ -673,6 +673,23 @@ impl LakeEngine for SqliteLake {
     fn swap(&self, lease: &Lease) -> Result<Option<Position>> {
         self.swapping(lease)
     }
+
+    /// Tries the projection's hold exclusively, as the swap takes it, and
+    /// takes it shared again: false while another handle of this engine
+    /// holds it. A process that takes no hold is not seen here; the swap
+    /// still refuses it.
+    fn may_swap(&self) -> Result<bool> {
+        let Some(opened) = &self.opened else {
+            return Ok(true);
+        };
+        let free = match FileExt::try_lock(opened) {
+            Ok(()) => true,
+            Err(TryLockError::WouldBlock) => false,
+            Err(TryLockError::Error(e)) => return Err(io_error(Doing::Lock, Part::Projection, e)),
+        };
+        FileExt::lock_shared(opened).map_err(|e| io_error(Doing::Lock, Part::Projection, e))?;
+        Ok(free)
+    }
 }
 
 impl ProjectionStore for SqliteLake {

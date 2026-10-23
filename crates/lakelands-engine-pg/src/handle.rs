@@ -416,6 +416,39 @@ pub(crate) fn log_ends(target: &Target) -> Result<Option<(CanonicalEvent, Canoni
     Ok(at(Position(0))?.zip(at(tip)?))
 }
 
+/// The bytes the projection's tables in the target's schema take, with
+/// their indexes and what PostgreSQL keeps out of line: measured where no
+/// session holds a table against it for a second, and otherwise as the
+/// catalogue last recorded it, which waits on no one.
+pub(crate) fn room(target: &Target) -> Result<u64> {
+    const TABLES: &str = "FROM pg_catalog.pg_class c \
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+        WHERE n.nspname = $1 AND c.relkind = 'r' AND c.relname <> ALL($2)";
+    // A table's pages, its out-of-line pages and its indexes' pages, as
+    // the catalogue last recorded them.
+    const RECORDED: &str = "(SELECT coalesce(sum(r.relpages), 0) FROM pg_catalog.pg_class r \
+        WHERE r.oid = c.reltoastrelid \
+        OR r.oid IN (SELECT indexrelid FROM pg_catalog.pg_index WHERE indrelid = c.oid))";
+    let mut db = connect::connect(target)?;
+    let log = projection::LAKE_TABLES[..4].to_vec();
+    let args: &[&(dyn postgres::types::ToSql + Sync)] = &[&target.schema, &log];
+    db.batch("SET lock_timeout = '1s'")?;
+    let measured = format!(
+        "SELECT coalesce(sum(pg_catalog.pg_total_relation_size(c.oid)), 0)::bigint {TABLES}"
+    );
+    let row = match db.query_one(&measured, args) {
+        Ok(row) => row,
+        Err(_) => db.query_one(
+            &format!(
+                "SELECT (coalesce(sum(c.relpages + {RECORDED}), 0) \
+                 * current_setting('block_size')::bigint)::bigint {TABLES}"
+            ),
+            args,
+        )?,
+    };
+    Ok(u64::try_from(row.get::<_, i64>(0)).unwrap_or(0))
+}
+
 /// What a schema holds, as the engine sees it at open.
 enum Shape {
     /// No schema, or one holding no table.
@@ -519,7 +552,7 @@ impl Drop for PgLake {
             let _ = self.release_lease(&lease);
         }
         // A scratch not marked built through what it folded is removed
-        // before its lock goes with the session.
+        // before its lock is given up.
         if let (Some(bare), Some(writing)) = (&self.scratch, &self.writing) {
             let mut db = lock(&writing.projection);
             let _ = db.batch("ROLLBACK");
@@ -529,6 +562,8 @@ impl Drop for PgLake {
             ) {
                 let _ = db.batch(&scratch::remove_sql(&self.names));
             }
+            drop(db);
+            let _ = scratch::unlock(&mut lock(&writing.lease), &self.target.schema);
         }
     }
 }

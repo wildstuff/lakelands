@@ -230,6 +230,34 @@ pub trait Harness: Send + Sync {
         })
     }
 
+    /// Where this harness keeps a lake it handed out: the location a
+    /// check hands an [`Ahead`] or a [`Lower`]. None where it keeps none a
+    /// check can name.
+    fn location(&self, lake: &lakelands_api::LakeId) -> Option<lakelands_api::Location> {
+        let _ = lake;
+        None
+    }
+
+    /// How this harness builds a lake's projection ahead: the [`Ahead`] a
+    /// check of an upgrade is given. A harness without one answers
+    /// `unbound`.
+    fn aheader(&self) -> Ahead {
+        Arc::new(|_, _| {
+            Box::pin(async {
+                let op = "build_ahead".to_owned();
+                let seam = lakelands_api::error::Seam::Operation { op };
+                Err(lakelands_api::Error::unbound(seam))
+            })
+        })
+    }
+
+    /// How this harness marks a lake's projection as the release before
+    /// laid it out: the [`Lower`] a check of an upgrade is given. A
+    /// harness without one marks nothing.
+    fn lowerer(&self) -> Lower {
+        Arc::new(|_| false)
+    }
+
     /// How many records the suite's large lake holds at its first size;
     /// it grows to four times this. [`LARGE_LAKE`] unless the engine's
     /// test asks for more, as a long run does.
@@ -283,7 +311,40 @@ pub struct Given {
     /// How the harness opens the check's lake again through a wrapped
     /// engine.
     pub fault: Fault,
+    /// Where the harness keeps the check's lake, if it can name it.
+    pub location: Option<lakelands_api::Location>,
+    /// How the harness builds a lake's projection ahead.
+    pub ahead: Ahead,
+    /// How the harness marks a lake's projection one layout back.
+    pub lower: Lower,
 }
+
+/// Builds the projection of the lake at a location of the harness's
+/// engine ahead, beside the writer that holds it, as `lakelands
+/// build-ahead` does (`lakelands_store::build_ahead`, 071). An engine
+/// that keeps no scratch answers it `unbound`.
+pub type Ahead = Arc<dyn Fn(lakelands_api::Location, Seams) -> AheadFuture + Send + Sync>;
+
+/// The future an [`Ahead`] answers.
+pub type AheadFuture =
+    Pin<Box<dyn Future<Output = lakelands_api::Result<BuiltAhead>> + Send + 'static>>;
+
+/// What an [`Ahead`] folded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BuiltAhead {
+    /// Where the build before it stopped, and it went on from.
+    pub ahead: Option<lakelands_api::Position>,
+    /// Where its scratch is folded through and marked.
+    pub through: Option<lakelands_api::Position>,
+    /// The events it folded.
+    pub events: u64,
+}
+
+/// Marks the projection kept at a location of the harness's engine one
+/// layout older than its own, as the release before laid it out, and
+/// changes nothing it holds: what a writer's open after an upgrade
+/// meets. False where the harness cannot.
+pub type Lower = Arc<dyn Fn(&lakelands_api::Location) -> bool + Send + Sync>;
 
 /// Closes a lake the harness opened and opens it again for writing with
 /// `seams` and the harness's engine, as a host's next process opens it:
@@ -449,6 +510,8 @@ pub struct ImportedLake {
     pub store: Arc<dyn LakeStore>,
     /// Closes a handle onto the imported lake and opens it for writing.
     pub writer: Reopen,
+    /// Where the harness keeps the imported lake.
+    pub location: lakelands_api::Location,
 }
 
 /// The future [`Harness::fresh`] answers: a new, empty lake, or why none
@@ -672,6 +735,9 @@ async fn run_check(harness: &dyn Harness, check: &Check) -> Result<(), Failure> 
         continued: harness.continuer(),
         twin: harness.twinner(),
         fault: harness.faulter(),
+        location: harness.location(store.lake()),
+        ahead: harness.aheader(),
+        lower: harness.lowerer(),
     };
     match caught((check.run)(store, given)).await {
         Ok(outcome) => outcome,

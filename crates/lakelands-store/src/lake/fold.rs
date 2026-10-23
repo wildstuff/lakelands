@@ -1288,7 +1288,11 @@ impl Lake {
         Ok(w.tip.as_ref().map_or(Position::GENESIS, |t| t.0))
     }
 
-    /// [`Self::rebuild`], under the writer's lock its caller holds.
+    /// [`Self::rebuild`], under the writer's lock its caller holds. The
+    /// whole log is folded into the scratch beside the projection and
+    /// swapped in (071); the projection answers as it was until then, and
+    /// a rebuild that fails leaves it so. An engine that keeps no scratch
+    /// is rebuilt in place.
     pub(super) fn rebuild_held(&self, w: &mut Writer) -> Result<()> {
         // No shape is kept from here until the fold is whole again, and no
         // list of a source's versions.
@@ -1310,14 +1314,17 @@ impl Lake {
         self.keys.unlist();
         let began = std::time::Instant::now();
         let folded = (|| {
-            self.engine.projection().clear()?;
-            w.ontology = Ontology::default().named();
-            w.settings = BTreeMap::new();
-            // A page at a time: a rebuild that stops is continued by the
-            // next fold from where it committed, as a failed fold is.
             // It reads the recorded outputs and makes no call due but a
             // failed append's; the calls a write before it made due stay
             // that write's.
+            if let Swapped::In(_) = self.rebuilt_beside(w, Beside::Rebuild)? {
+                return self.catch_up_in(w);
+            }
+            self.engine.projection().clear()?;
+            w.ontology = Ontology::default().named();
+            w.settings = BTreeMap::new();
+            // A page at a time: a rebuild in place that stops is continued
+            // by the next fold from where it committed, as a failed fold is.
             w.rebuilding = true;
             let folded = self.fold_from(w, Position::GENESIS);
             w.rebuilding = false;
@@ -1332,6 +1339,173 @@ impl Lake {
         self.publish(w);
         Ok(())
     }
+
+    /// A lake over the scratch beside the projection `location` keeps,
+    /// holding no lease, which folds into the scratch only; none where the
+    /// engine keeps no scratch. Opening it opens the log and the scratch,
+    /// never the projection, whatever layout made it (071).
+    pub(super) fn scratch(location: &Location, seams: &Seams) -> Result<Option<Lake>> {
+        let opener = opener(location, seams)?;
+        match opener.open_scratch(location) {
+            Ok(scratch) => {
+                let engine: Arc<dyn LakeEngine> = Arc::from(scratch);
+                Ok(Some(Lake::assemble(location, seams.clone(), engine, None)))
+            }
+            Err(Error::Unbound { .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Fold the log into this lake's scratch, on `w`, from where it is
+    /// folded through to the log's tip, and mark it built there. `whole`
+    /// empties it first, so the whole log is folded. The fold is the
+    /// writer's, under the flag `w.rebuilding` holds, and is told the acts
+    /// `w.removals` holds.
+    pub(super) fn build(&self, w: &mut Writer, whole: bool) -> Result<Built> {
+        if whole {
+            self.engine.projection().clear()?;
+        }
+        let folded;
+        (folded, w.tip) = ends(self.engine.as_ref())?;
+        {
+            let view = self.engine.view(None)?;
+            w.ontology = Ontology::at(view.as_ref())?.named();
+            w.settings = settings_in(view.as_ref(), &w.ontology)?;
+        }
+        let from = folded.map_or(Position::GENESIS, Position::next);
+        self.fold_from(w, from)?;
+        let through = self.engine.mark_built()?;
+        let events = through.map_or(0, |t| (t.0 + 1).saturating_sub(from.0));
+        Ok(Built {
+            ahead: folded,
+            through,
+            events,
+        })
+    }
+
+    /// Build the scratch beside this lake's projection as `how` says, and
+    /// put it in the projection's place under the writer's lease: the
+    /// writer's own lists of acts go with the fold and come back from it.
+    /// Nothing done where the engine keeps no scratch, and where the log
+    /// holds no event, which no mark keeps: the caller folds in place. Any
+    /// other refusal of the swap leaves the projection as it was, and the
+    /// scratch marked.
+    ///
+    /// No rebuild is refused for a reader (071): where the engine would
+    /// refuse the swap while another handle reads the projection, the log
+    /// is not folded beside it, and the caller folds in place, as before
+    /// 071 — an upgrade's open too, whose build ahead is then removed, as
+    /// it is where a reader came between the build and the swap.
+    pub(super) fn rebuilt_beside(&self, w: &mut Writer, how: Beside) -> Result<Swapped> {
+        let lease = w.lease.clone().ok_or_else(no_lease)?;
+        // Asked first, so a fold beside is not spent on a swap refused.
+        if !self.engine.may_swap()? {
+            let spent = how == Beside::Resume && self.spend_ahead()?;
+            return Ok(Swapped::Busy(spent));
+        }
+        let Some(mut builder) = Lake::scratch(&self.location, &self.seams)? else {
+            return Ok(Swapped::Kept);
+        };
+        builder.keys = self.keys.clone();
+        let before = (
+            w.removals.clone(),
+            w.forgotten.clone(),
+            w.ahead.clone(),
+            w.owed.clone(),
+            w.failed,
+        );
+        let built = {
+            let mut b = builder.writer();
+            // What the writer holds of acts goes into the builder's
+            // writer, and comes back in the same exchange.
+            let lend = |w: &mut Writer, b: &mut Writer| {
+                std::mem::swap(&mut w.removals, &mut b.removals);
+                std::mem::swap(&mut w.forgotten, &mut b.forgotten);
+                std::mem::swap(&mut w.ahead, &mut b.ahead);
+                std::mem::swap(&mut w.owed, &mut b.owed);
+                std::mem::swap(&mut w.failed, &mut b.failed);
+            };
+            lend(w, &mut b);
+            b.rebuilding = how == Beside::Rebuild;
+            let built = builder.build(&mut b, how != Beside::Resume);
+            lend(w, &mut b);
+            built?
+        };
+        // The builder lets the scratch go before it is swapped: no handle
+        // may hold it open then. One marked at no event goes with it.
+        drop(builder);
+        let swapped = match built.through {
+            Some(_) => self.engine.swap(&lease),
+            None => Ok(None),
+        };
+        let busy = |e: &Error| matches!(e.situation(), Some(Situation::SwapBusy { .. }));
+        match swapped {
+            Ok(_) if built.through.is_some() => Ok(Swapped::In(built)),
+            Ok(_) => Ok(Swapped::Kept),
+            Err(e) if !busy(&e) => {
+                self.lose(w, &e);
+                Err(e)
+            }
+            Err(_) => {
+                (w.removals, w.forgotten, w.ahead, w.owed, w.failed) = before;
+                Lake::discard_ahead(&self.location, self.seams.clone())?;
+                Ok(Swapped::Busy(built.ahead.is_some()))
+            }
+        }
+    }
+
+    /// Remove a build ahead an open that folds in place will not swap in:
+    /// whether one was marked. One a builder holds stays, and is not
+    /// counted.
+    fn spend_ahead(&self) -> Result<bool> {
+        match Lake::discard_ahead(&self.location, self.seams.clone()) {
+            Ok(marked) => Ok(marked),
+            Err(Error::Unbound { .. }) => Ok(false),
+            Err(e) if matches!(e.situation(), Some(Situation::Rebuilding { .. })) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// What became of a build beside the projection.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Swapped {
+    /// Folded beside the projection and put in its place.
+    In(Built),
+    /// Nothing built: the engine keeps no scratch, or the log holds no
+    /// event. The caller folds in place.
+    Kept,
+    /// Not put in place, since another handle read the projection: the
+    /// caller folds in place. True where a build ahead the open would
+    /// have gone on from was removed.
+    Busy(bool),
+}
+
+/// How a build beside the projection begins.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Beside {
+    /// From where a scratch built ahead stopped, or the whole log where
+    /// none is kept, as the open's catch-up folds: a writer's open of an
+    /// older layout.
+    Resume,
+    /// The whole log, as the open's catch-up folds: an open to rebuild.
+    Open,
+    /// The whole log, told the acts of removal the projection lists, as
+    /// [`Lake::rebuild`] folds.
+    Rebuild,
+}
+
+/// What a build beside the projection folded.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Built {
+    /// Where a scratch built before was folded through, and this build
+    /// went on from; none where it began at the log's first event.
+    pub ahead: Option<Position>,
+    /// Where the scratch is folded through and marked; none for a log that
+    /// holds no event.
+    pub through: Option<Position>,
+    /// How many events this build folded.
+    pub events: u64,
 }
 
 /// One event a transaction folded, kept in place of the records it

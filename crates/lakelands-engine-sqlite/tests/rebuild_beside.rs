@@ -2,8 +2,9 @@
 //! a builder killed halfway leaves the projection answering and its
 //! scratch for the next writer's open to remove; a scratch is built beside
 //! a projection it never opens; a swap is refused while another handle
-//! holds the projection it would replace, and a handle that opens during
-//! one reads the projection put in place; a mark the log does not reach
+//! holds the projection it would replace, as the question asked before
+//! it answers, and a handle that opens during one reads the projection put
+//! in place; a mark the log does not reach
 //! keeps no scratch.
 
 use std::path::{Path, PathBuf};
@@ -177,12 +178,17 @@ fn a_swap_from_a_rebuild_handle_over_an_older_layout_waits_for_every_other_handl
         ["projection.db.rebuild", "projection.db.rebuild.mark"],
         "a marked scratch outlives its handle, and its journal is in its file"
     );
+    assert!(rebuilder.may_swap().unwrap(), "no other handle holds it");
     let other = open(&dir, OpenMode::Rebuild).unwrap();
+    // Asked before the swap, it answers as the swap does, and leaves the
+    // handle holding the projection as before.
+    assert!(!rebuilder.may_swap().unwrap(), "another handle holds it");
     assert!(refused(rebuilder.swap(&lease), |s| matches!(
         s,
         Situation::SwapBusy { .. }
     )));
     drop(other);
+    assert!(rebuilder.may_swap().unwrap(), "the other handle is gone");
     assert_eq!(rebuilder.swap(&lease).unwrap(), Some(Position(4)));
     assert_eq!(left(&dir), Vec::<String>::new());
     assert_eq!(folded(rebuilder.as_ref()), Some(Position(4)));
