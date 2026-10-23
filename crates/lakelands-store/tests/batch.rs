@@ -1,8 +1,9 @@
 //! Record writes queued as batches on the memory engine probed: a batch
 //! whose fold fails, a job that panics while it is decided, a batch that
-//! panics in its fold, one whose panic escapes the turn with an entry
-//! queued behind it, a lake let go on its answer and opened again, and a
-//! write computed outside the store (lakelands#1332).
+//! panics in its fold, one whose tell panics after its append, one whose
+//! panic escapes the turn with an entry queued behind it, a lake let go
+//! on its answer and opened again, and a write computed outside the store
+//! (lakelands#1332).
 
 #[path = "batched/mod.rs"]
 mod batched;
@@ -282,4 +283,76 @@ async fn a_write_computed_outside_is_decided_alone() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("the call the write made due was never made");
+}
+
+/// The `rome` set's moves in `store`'s log after `from`: (key, joined).
+async fn moves(store: &dyn LakeStore, from: Position) -> Vec<(String, bool)> {
+    let moved = |e: &Event| match &e.body {
+        EventBody::ObjectSetChanged {
+            set, key, joined, ..
+        } if set == "rome" && e.position > from => Some((key.to_string(), *joined)),
+        _ => None,
+    };
+    batched::log(store).await.iter().filter_map(moved).collect()
+}
+
+/// A batch whose tell panics, its events appended and folded, answers
+/// every job `Stopped`; what landed stays, once, and the lake folds and
+/// writes on from it: a far write that set off a move is told as one at
+/// the batch's tip, read as of a position, which panics here.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_batch_whose_tell_panics_after_its_append_answers_every_job_and_keeps_what_landed() {
+    let (probe, name) = (Arc::new(Probe::default()), "tell-panics");
+    let (store, batches) = batched::opened(&probed(&probe), name, 0).await;
+    let who = batched::owner(name, "owner");
+    let cat = store.catalog(WriteContext::default());
+    let declarations = [
+        json!({"declare": "type", "name": "cust",
+            "fields": [{"name": "city", "type": {"kind": "text"}}]}),
+        json!({"declare": "type", "name": "order",
+            "fields": [{"name": "customer", "type": {"kind": "reference", "target": "cust"}}]}),
+        json!({"declare": "object_set", "name": "rome", "of": "order",
+            "where": "customer.city = 'Rome'"}),
+    ];
+    for d in declarations {
+        let d: Declaration = serde_json::from_value(d).expect("a declaration");
+        cat.declare(&who, d).await.expect("it is declared");
+    }
+    let write = |ty: &str, key: &str, patch: serde_json::Value| {
+        let patch = serde_json::from_value(patch).expect("a patch");
+        let write = Write::Upsert(ty.into(), key.into(), patch);
+        (who.clone(), write, Default::default())
+    };
+    let ctx = WriteContext::default();
+    let setup = vec![
+        write("cust", "c1", json!({"city": "Paris"})),
+        write("order", "o1", json!({"customer": "c1"})),
+    ];
+    batches.write(ctx, setup).await.iter().for_each(applied);
+    let head = store.head().await.expect("a head");
+    probe.panic_as_of.store(true, Ordering::SeqCst);
+    let rome = write("cust", "c1", json!({"city": "Rome"}));
+    let answers = batches
+        .write(ctx, vec![rome, batched::upsert(name, "a", 1)])
+        .await;
+    assert!(
+        !probe.panic_as_of.load(Ordering::SeqCst),
+        "the tell read as of a position"
+    );
+    answers.iter().for_each(stopped);
+    assert_eq!(moves(store.as_ref(), head).await, [("o1".into(), true)]);
+    assert_eq!(items(store.as_ref(), head).await, ["a"]);
+    let after = batches.write(ctx, vec![batched::upsert(name, "b", 2)]);
+    applied(&after.await[0]);
+    let paris = write("cust", "c1", json!({"city": "Paris"}));
+    let left = batches.write(ctx, vec![paris]).await;
+    let Ok(Outcome::Applied { set_off, .. }) = &left[0] else {
+        panic!("the far write applies: {left:?}")
+    };
+    assert_eq!(set_off.left, ["rome"], "the far write is told the move");
+    let moved = [("o1".into(), true), ("o1".into(), false)];
+    assert_eq!(moves(store.as_ref(), head).await, moved);
+    assert_eq!(items(store.as_ref(), head).await, ["a", "b"]);
+    assert!(reads(store.as_ref(), name, "a").await, "a reads");
+    store.close().await.expect("the lake closes");
 }

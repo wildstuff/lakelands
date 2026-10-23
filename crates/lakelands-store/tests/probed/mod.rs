@@ -133,6 +133,8 @@ pub struct Probe {
     pub then_view: std::sync::atomic::AtomicBool,
     /// A view to panic at: the n-th asked for from now, counted from 1.
     pub panic_view: Mutex<Option<usize>>,
+    /// Whether the next view asked for as of a position panics.
+    pub panic_as_of: std::sync::atomic::AtomicBool,
 }
 
 impl Probe {
@@ -393,7 +395,8 @@ impl LakeEngine for Probed {
         self
     }
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
-        if Probe::refused(&self.probe.panic_view) {
+        let as_of_panics = || self.probe.panic_as_of.swap(false, Ordering::SeqCst);
+        if Probe::refused(&self.probe.panic_view) || (as_of.is_some() && as_of_panics()) {
             std::panic::panic_any("a view panicked (planted)");
         }
         if Probe::refused(&self.probe.refuse_view) {
