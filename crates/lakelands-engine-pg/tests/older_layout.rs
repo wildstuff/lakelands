@@ -135,9 +135,8 @@ async fn a_writers_open_rebuilds_a_projection_laid_out_between_the_two_changes()
     let location = common::location(&url, "between", &schema);
     let store = open(&location, OpenMode::Create).await.unwrap();
     let l = Lake::of(store.as_ref());
-    l.declare(type_decl("pin", vec![vector("v", 3)]))
-        .await
-        .unwrap();
+    let pin = type_decl("pin", vec![vector("v", 3)]);
+    l.declare(pin).await.unwrap();
     let elements = json!([0.1, -0.5, 3]);
     l.upsert("pin", "k", json!({"v": elements})).await.unwrap();
     // The lake asks for the field's index: with pgvector it is built and
@@ -169,10 +168,7 @@ async fn a_writers_open_rebuilds_a_projection_laid_out_between_the_two_changes()
          DROP COLUMN since, DROP COLUMN until, DROP COLUMN single; \
          ALTER TABLE \"{schema}\".vectors ADD PRIMARY KEY (ty, field, key)"
     );
-    let data: Vec<u8> = [0.1f32, -0.5, 3.0]
-        .iter()
-        .flat_map(|x| x.to_le_bytes())
-        .collect();
+    let data = lakelands_core::engines::vector_bytes(&[0.1, -0.5, 3.0]);
     let row = format!("UPDATE \"{schema}\".vectors SET data = $1");
     let defs = format!(
         "SELECT indexdef FROM pg_indexes WHERE schemaname = '{schema}' AND indexname LIKE 'vindex_%'"
@@ -206,10 +202,7 @@ async fn a_writers_open_rebuilds_a_projection_laid_out_between_the_two_changes()
     );
     let l = Lake::of(store.as_ref());
     let pin = l.read("pin", "k").await.unwrap();
-    assert_eq!(
-        pin.fields["v"], elements,
-        "the rebuilt projection reads the elements"
-    );
+    assert_eq!(pin.fields["v"], elements, "the rebuild reads the elements");
     assert_eq!(
         tokio::task::block_in_place(|| one(&url, &indexed)),
         index,
@@ -235,11 +228,7 @@ async fn a_writers_open_rebuilds_a_projection_laid_out_between_the_two_changes()
     assert_eq!(inline, 0, "no state holds a vector's elements");
     store.close().await.unwrap();
     let store = open(&location, OpenMode::Write).await.unwrap();
-    assert_eq!(
-        store.rebuilt_at_open(),
-        None,
-        "the next writer's open rebuilds nothing"
-    );
+    assert_eq!(store.rebuilt_at_open(), None, "the next open rebuilds none");
     store.close().await.unwrap();
     common::drop_schema(&url, &schema);
 }

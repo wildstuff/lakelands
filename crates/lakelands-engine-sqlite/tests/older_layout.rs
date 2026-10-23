@@ -178,9 +178,8 @@ async fn a_writers_open_rebuilds_a_projection_laid_out_between_the_two_changes()
     let location = Location::sqlite("between", &dir);
     let store = open(&location, OpenMode::Create).await.unwrap();
     let l = Lake::of(store.as_ref());
-    l.declare(type_decl("pin", vec![vector("v", 3)]))
-        .await
-        .unwrap();
+    let pin = type_decl("pin", vec![vector("v", 3)]);
+    l.declare(pin).await.unwrap();
     let elements = json!([0.1, -0.5, 3]);
     l.upsert("pin", "k", json!({"v": elements})).await.unwrap();
     store.close().await.unwrap();
@@ -190,19 +189,14 @@ async fn a_writers_open_rebuilds_a_projection_laid_out_between_the_two_changes()
         (db().query_row("SELECT v FROM meta WHERE k = 'layout'", [], |r| r.get(0))).unwrap();
     // The in-between build's projection: the elements in the state, as
     // `f32`s in a head index, the mark the current one.
-    let data: Vec<u8> = [0.1f32, -0.5, 3.0]
-        .iter()
-        .flat_map(|x| x.to_le_bytes())
-        .collect();
     db().execute_batch(
         "UPDATE records SET state = json_remove(json_set(state, '$.fields.v', \
          json('[0.1,-0.5,3]')), '$.vectors'); DROP TABLE vectors; \
          CREATE TABLE vectors (ty TEXT NOT NULL, field TEXT NOT NULL, key TEXT NOT NULL, \
-         data BLOB NOT NULL, PRIMARY KEY (ty, field, key));",
+         data BLOB NOT NULL, PRIMARY KEY (ty, field, key)); \
+         INSERT INTO vectors VALUES ('pin', 'v', 'k', X'CDCCCC3D000000BF00004040');",
     )
     .unwrap();
-    db().execute("INSERT INTO vectors VALUES ('pin', 'v', 'k', ?1)", [&data])
-        .unwrap();
     let refused = open(&location, OpenMode::Read).await.err().unwrap();
     assert!(
         matches!(refused.situation(), Some(Situation::ProjectionLayout { found, .. }) if *found == Some(wanted as u64 - 1)),
@@ -216,24 +210,13 @@ async fn a_writers_open_rebuilds_a_projection_laid_out_between_the_two_changes()
         "the writer's open says why it rebuilt: {why:?}"
     );
     let pin = Lake::of(store.as_ref()).read("pin", "k").await.unwrap();
-    assert_eq!(
-        pin.fields["v"], elements,
-        "the rebuilt projection reads the elements"
-    );
-    let inline: i64 = (db().query_row(
-        "SELECT count(*) FROM records WHERE json_type(state, '$.fields.v') IS NOT NULL",
-        [],
-        |r| r.get(0),
-    ))
-    .unwrap();
+    assert_eq!(pin.fields["v"], elements, "the rebuild reads the elements");
+    let inline = "SELECT count(*) FROM records WHERE json_type(state, '$.fields.v') IS NOT NULL";
+    let inline: i64 = db().query_row(inline, [], |r| r.get(0)).unwrap();
     assert_eq!(inline, 0, "no state holds a vector's elements");
     store.close().await.unwrap();
     let store = open(&location, OpenMode::Write).await.unwrap();
-    assert_eq!(
-        store.rebuilt_at_open(),
-        None,
-        "the next writer's open rebuilds nothing"
-    );
+    assert_eq!(store.rebuilt_at_open(), None, "the next open rebuilds none");
     store.close().await.unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }

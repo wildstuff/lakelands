@@ -468,17 +468,10 @@ async fn a_restriction_and_its_lifting_keep_a_records_vector(store: Store) -> He
     let restricted = restrict(store.as_ref(), "held", "r", "a hold").await?;
     writes.push((Some(restricted), "r", None));
     ranks(&l, "held", "v", &live, "restricted").await?;
-    let (t, k) = (TypeName::from("held"), RecordKey::from("r"));
-    let lifted = store
-        .unrestrict(&t, &k)
-        .await
-        .must("lifting the hold on `r`")?;
-    writes.push((Some(lifted), "r", None));
-    writes.push((
-        at(l.upsert("held", "r", json!({"tag": "b"})).await?),
-        "r",
-        None,
-    ));
+    let lifted = store.unrestrict(&"held".into(), &"r".into()).await;
+    writes.push((Some(lifted.must("lifting the hold on `r`")?), "r", None));
+    let tagged = at(l.upsert("held", "r", json!({"tag": "b"})).await?);
+    writes.push((tagged, "r", None));
     let want = grid(&writes);
     holds(&l, "held", "v", &want, "restricted and lifted").await?;
     ranks(&l, "held", "v", &live, "lifted").await?;
@@ -506,11 +499,8 @@ async fn a_rekey_ends_the_old_keys_vector_at_its_position(store: Store) -> Held 
         .await?);
     writes.extend([(moved, "n1", Some(None)), (moved, "n2", Some(None))]);
     writes.extend([(moved, "c1", d), (moved, "c2", s)]);
-    writes.push((
-        at(l.upsert("badge", "c1", json!({"tag": "b"})).await?),
-        "c1",
-        None,
-    ));
+    let tagged = at(l.upsert("badge", "c1", json!({"tag": "b"})).await?);
+    writes.push((tagged, "c1", None));
     let want = grid(&writes);
     let live = [("c1", &doubles), ("c2", &singles)];
     holds(&l, "badge", "v", &want, "re-keyed").await?;
@@ -564,18 +554,19 @@ async fn a_json_array_of_numbers_reads_as_written_beside_a_vector(store: Store) 
     let doc = type_decl("doc", vec![vector("v", 3), field("j", StorageKind::Json)]);
     l.declare(doc).await?;
     let (doubles, singles, integral) = (json!(DOUBLES), widened(&SINGLES), json!([2, -3, 7]));
+    let (d, s, i) = (
+        Some(Some(&doubles)),
+        Some(Some(&singles)),
+        Some(Some(&integral)),
+    );
     let at = |o: Outcome| Some(o.position());
     let mut writes = Vec::new();
     for (key, patch, left) in [
-        (
-            "a",
-            json!({"v": doubles, "j": doubles}),
-            Some(Some(&doubles)),
-        ),
-        ("b", json!({"j": singles}), Some(Some(&singles))),
-        ("a", json!({"j": integral}), Some(Some(&integral))),
+        ("a", json!({"v": doubles, "j": doubles}), d),
+        ("b", json!({"j": singles}), s),
+        ("a", json!({"j": integral}), i),
         ("b", json!({"v": singles}), None),
-        ("a", json!({"j": singles}), Some(Some(&singles))),
+        ("a", json!({"j": singles}), s),
     ] {
         writes.push((at(l.upsert("doc", key, patch).await?), key, left));
     }
