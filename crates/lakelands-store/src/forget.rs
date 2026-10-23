@@ -47,6 +47,7 @@ use lakelands_api::{
     Error, FieldName, Position, RecordKey, Result, SourceId, TypeName, WriteContext,
 };
 
+use crate::exec::Turn;
 use crate::lake::{Lake, Staged, every, forgotten_list};
 use crate::log::Draft;
 use crate::ontology::Ontology;
@@ -561,7 +562,7 @@ fn refuse_unknown(
 
 /// Forget `source`, as the module says; with a preflight's `report_id`,
 /// only if that report is of this source and the lake has not moved since.
-pub fn run(lake: &Lake, source: &SourceId, report_id: Option<&str>) -> Result<ForgetReport> {
+pub fn run(lake: &Turn<'_>, source: &SourceId, report_id: Option<&str>) -> Result<ForgetReport> {
     run_of(lake, std::slice::from_ref(source), report_id, false).map(alone)
 }
 
@@ -572,7 +573,7 @@ pub fn run(lake: &Lake, source: &SourceId, report_id: Option<&str>) -> Result<Fo
 /// twice, one the log holds no event of, one whose values the log holds
 /// in plaintext, or a report of another set or head.
 pub fn run_set(
-    lake: &Lake,
+    lake: &Turn<'_>,
     sources: &[SourceId],
     report_id: Option<&str>,
 ) -> Result<ForgetSetReport> {
@@ -582,7 +583,7 @@ pub fn run_set(
 /// The act over `set`, a source the log holds no event of refused where
 /// `known` asks for one.
 fn run_of(
-    lake: &Lake,
+    lake: &Turn<'_>,
     set: &[SourceId],
     report_id: Option<&str>,
     known: bool,

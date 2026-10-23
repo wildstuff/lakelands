@@ -13,6 +13,7 @@
 //! field no page has been ordered by for the window of unuse is dropped.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use lakelands_api::engine::{Choose, Chosen, Scan};
@@ -21,6 +22,7 @@ use lakelands_api::seam::sortable;
 use lakelands_api::{FieldName, RecordKey, Result, TypeName};
 use lakelands_core::{engines, lock};
 
+use crate::exec;
 use crate::lake::{Lake, read_only};
 
 /// What a lake weighs to choose an order index and what it chose.
@@ -77,7 +79,7 @@ impl Lake {
     }
 
     /// Whether there is a field to weigh or a sweep to make, and nothing
-    /// is choosing already: the caller then runs [`Self::choose_orders`].
+    /// is choosing already: the caller then runs [`choose_orders`].
     pub(crate) fn choosing_due(&self) -> bool {
         let mut c = lock(&self.choosing);
         // Once at the writer's first read, to find what a writer before it
@@ -90,41 +92,15 @@ impl Lake {
         due
     }
 
-    /// Weigh the fields whose pages reached the bound, build the order
-    /// index of each that is eligible, and drop what has gone unused.
-    /// Best effort: a lake that cannot do it now leaves its reads sorting.
-    pub(crate) fn choose_orders(&self) {
-        let _ = self.choose_all();
-        lock(&self.choosing).running = false;
-    }
-
-    fn choose_all(&self) -> Result<()> {
-        loop {
-            let next = {
-                let mut c = lock(&self.choosing);
-                let first = c.pending.iter().next().cloned();
-                first.inspect(|key| {
-                    c.pending.remove(key);
-                    c.pages.remove(key);
-                })
-            };
-            let Some((ty, field)) = next else { break };
-            if let Err(e) = self.choose_one(&ty, &field) {
-                // A field left half built is dropped, not read.
-                let _ = self.choose_step(&ty, &Choose::Drop(field));
-                return Err(e);
-            }
-        }
-        self.sweep()
-    }
-
-    /// Build the order index of `field` of `ty` if the lake may choose it.
-    fn choose_one(&self, ty: &TypeName, field: &FieldName) -> Result<()> {
+    /// Whether the lake may choose the order index of `field` of `ty`: a
+    /// stored, sortable field of a type that is large enough, holds fewer
+    /// chosen fields than the bound, and whose order the host sets none of.
+    fn eligible(&self, ty: &TypeName, field: &FieldName) -> Result<bool> {
         let l = self.limits;
         let view = self.engine.view(None)?;
         let shape = self.shape(view.as_ref())?;
         let Some(decl) = shape.ontology.ty(ty).ok().filter(|d| d.view.is_none()) else {
-            return Ok(());
+            return Ok(false);
         };
         let stored = |f: &&lakelands_api::ontology::FieldDecl| {
             f.name == *field && sortable(&f.ty.kind) && f.computed_at != Some(ComputedAt::Read)
@@ -133,7 +109,7 @@ impl Lake {
         if !engines::sorted_fields(ty, decl, setting).is_empty()
             || decl.fields.iter().find(stored).is_none()
         {
-            return Ok(());
+            return Ok(false);
         }
         let chosen = view.chosen(ty)?;
         let held = chosen.kept.len() + chosen.building.len();
@@ -141,7 +117,7 @@ impl Lake {
             || chosen.building.contains(field)
             || held >= l.order_max_fields as usize
         {
-            return Ok(());
+            return Ok(false);
         }
         // At least the bound, read as a page of that many: a count would
         // read the whole type, as long as the sort the choice saves.
@@ -150,53 +126,11 @@ impl Lake {
             limit: min,
             ..Scan::default()
         };
-        if min > 0 && view.scan(ty, &page)?.len() < min as usize {
-            return Ok(());
-        }
-        drop(view);
-        self.choose_step(ty, &Choose::Start(field.clone()))?;
-        let mut after: Option<RecordKey> = None;
-        loop {
-            let fill = Choose::Fill {
-                field: field.clone(),
-                after: after.clone(),
-                limit: l.order_chunk.max(1),
-            };
-            let started = Instant::now();
-            let next = self.choose_step(ty, &fill)?;
-            let Some(last) = next else { break };
-            after = Some(last);
-            // The writer's lock is not fair: a builder that took it again
-            // at once would hold off a write waiting for it until the
-            // build ended. It rests as long as the chunk held the lock, so
-            // a write waits for one chunk and never for the build.
-            std::thread::sleep(started.elapsed().max(Duration::from_millis(1)));
-        }
-        self.choose_step(ty, &Choose::Keep(field.clone()))?;
-        lock(&self.choosing)
-            .used
-            .insert((ty.clone(), field.clone()), Instant::now());
-        Ok(())
+        Ok(min == 0 || view.scan(ty, &page)?.len() >= min as usize)
     }
 
-    /// One step, under the writer's lock, which a write waits for and no
-    /// longer: a chunk, never the whole build.
-    fn choose_step(&self, ty: &TypeName, step: &Choose) -> Result<Option<RecordKey>> {
-        let mut w = self.writer();
-        self.regain(&mut w)?;
-        if w.lease.is_none() {
-            return Err(read_only());
-        }
-        self.engine.projection().choose_order(ty, step)
-    }
-
-    /// Forget what the engine no longer holds, start every chosen field a
-    /// writer finds as just used, drop one a task that died left half
-    /// built, and drop what has gone unused for the window. With the switch
-    /// off, drop every field the lake chose: only what the host sets is
-    /// indexed then, a choice an earlier writer made included.
-    fn sweep(&self) -> Result<()> {
-        let now = Instant::now();
+    /// What the engine holds chosen, of every stored type that holds any.
+    fn chosen_all(&self) -> Result<BTreeMap<TypeName, Chosen>> {
         let view = self.engine.view(None)?;
         let shape = self.shape(view.as_ref())?;
         let types = lakelands_core::sight::InForce::types(shape.as_ref());
@@ -210,34 +144,115 @@ impl Lake {
                 chosen.insert(ty, held);
             }
         }
-        drop(view);
-        let off = !self.limits.choose_order_index;
-        let mut drops = Vec::new();
-        {
-            let mut c = lock(&self.choosing);
-            c.swept = Some(now);
-            let kept =
-                |(t, f): &(TypeName, FieldName)| chosen.get(t).is_some_and(|c| c.kept.contains(f));
-            c.used.retain(|key, _| kept(key));
-            for (ty, fields) in &chosen {
-                for f in &fields.kept {
-                    c.used.entry((ty.clone(), f.clone())).or_insert(now);
-                }
-                drops.extend(fields.building.iter().map(|f| (ty.clone(), f.clone())));
-            }
-            let unused = Duration::from_secs(u64::from(self.limits.order_unused_secs));
-            for (key, at) in &c.used {
-                if off || now.duration_since(*at) > unused {
-                    drops.push(key.clone());
-                }
-            }
-        }
-        for (ty, field) in drops {
-            self.choose_step(&ty, &Choose::Drop(field.clone()))?;
-            lock(&self.choosing).used.remove(&(ty, field));
-        }
-        Ok(())
+        Ok(chosen)
     }
+}
+
+/// Weigh the fields whose pages reached the bound, build the order index
+/// of each that is eligible, and drop what has gone unused. Best effort: a
+/// lake that cannot do it now leaves its reads sorting.
+pub(crate) async fn choose_orders(lake: &Arc<Lake>) {
+    let _ = choose_all(lake).await;
+    lock(&lake.choosing).running = false;
+}
+
+async fn choose_all(lake: &Arc<Lake>) -> Result<()> {
+    loop {
+        let next = {
+            let mut c = lock(&lake.choosing);
+            let first = c.pending.iter().next().cloned();
+            first.inspect(|key| {
+                c.pending.remove(key);
+                c.pages.remove(key);
+            })
+        };
+        let Some((ty, field)) = next else { break };
+        if let Err(e) = choose_one(lake, &ty, &field).await {
+            // A field left half built is dropped, not read.
+            let _ = step(lake, &ty, Choose::Drop(field)).await;
+            return Err(e);
+        }
+    }
+    sweep(lake).await
+}
+
+/// Build the order index of `field` of `ty` if the lake may choose it.
+async fn choose_one(lake: &Arc<Lake>, ty: &TypeName, field: &FieldName) -> Result<()> {
+    let (l, t, f) = (lake.clone(), ty.clone(), field.clone());
+    if !exec::run(move || l.eligible(&t, &f)).await? {
+        return Ok(());
+    }
+    step(lake, ty, Choose::Start(field.clone())).await?;
+    let mut after: Option<RecordKey> = None;
+    loop {
+        let fill = Choose::Fill {
+            field: field.clone(),
+            after: after.clone(),
+            limit: lake.limits.order_chunk.max(1),
+        };
+        let Some(last) = step(lake, ty, fill).await? else {
+            break;
+        };
+        after = Some(last);
+    }
+    step(lake, ty, Choose::Keep(field.clone())).await?;
+    lock(&lake.choosing)
+        .used
+        .insert((ty.clone(), field.clone()), Instant::now());
+    Ok(())
+}
+
+/// One step, a write of its own in the lake's queue: a write sent during
+/// the build waits for the chunk in hand, never for the build, since the
+/// next chunk queues behind it.
+async fn step(lake: &Arc<Lake>, ty: &TypeName, step: Choose) -> Result<Option<RecordKey>> {
+    let ty = ty.clone();
+    exec::write(lake, move |t| {
+        let mut w = t.writer();
+        t.regain(&mut w)?;
+        if w.lease.is_none() {
+            return Err(read_only());
+        }
+        t.engine.projection().choose_order(&ty, &step)
+    })
+    .await
+}
+
+/// Forget what the engine no longer holds, start every chosen field a
+/// writer finds as just used, drop one a task that died left half built,
+/// and drop what has gone unused for the window. With the switch off, drop
+/// every field the lake chose: only what the host sets is indexed then, a
+/// choice an earlier writer made included.
+async fn sweep(lake: &Arc<Lake>) -> Result<()> {
+    let now = Instant::now();
+    let l = lake.clone();
+    let chosen = exec::run(move || l.chosen_all()).await?;
+    let off = !lake.limits.choose_order_index;
+    let mut drops = Vec::new();
+    {
+        let mut c = lock(&lake.choosing);
+        c.swept = Some(now);
+        let kept =
+            |(t, f): &(TypeName, FieldName)| chosen.get(t).is_some_and(|c| c.kept.contains(f));
+        c.used.retain(|key, _| kept(key));
+        for (ty, fields) in &chosen {
+            for f in &fields.kept {
+                c.used.entry((ty.clone(), f.clone())).or_insert(now);
+            }
+            drops.extend(fields.building.iter().map(|f| (ty.clone(), f.clone())));
+        }
+        let unused = Duration::from_secs(u64::from(lake.limits.order_unused_secs));
+        for (key, at) in &c.used {
+            if off || now.duration_since(*at) > unused {
+                drops.push(key.clone());
+            }
+        }
+    }
+    for (ty, field) in drops {
+        step(lake, &ty, Choose::Drop(field.clone())).await?;
+        lock(&lake.choosing).used.remove(&(ty, field));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

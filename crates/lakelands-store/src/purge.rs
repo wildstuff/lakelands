@@ -41,10 +41,11 @@ use lakelands_api::{
 
 use lakelands_core::links;
 
+use crate::exec::Turn;
 use crate::lake::{Lake, PAGE, every};
 use crate::log::Draft;
 use crate::ontology::Ontology;
-use crate::writes::{self, Call};
+use crate::writes;
 
 /// How many co-owned records a refusal names, and how many referring
 /// records a report names per relation.
@@ -344,14 +345,12 @@ fn retirements(
     bound: bool,
 ) -> Result<(Vec<Draft>, u32)> {
     let system = lake.system("lakelands");
-    let call = Call {
+    let asked = writes::Asked {
         lake,
         who: &system,
         context: WriteContext::default(),
-        followed: None,
-        shown: None,
     };
-    let mut d = call.decide(w, view, now, 0);
+    let mut d = asked.decide(w, view, now, 0);
     d.bound = bound;
     d.retiring_as = lakelands_api::event::ChangeKind::Purged;
     let mut drafts = Vec::new();
@@ -368,7 +367,7 @@ fn retirements(
 /// lake's `max_set_changes` of what it sets off across an edge it is
 /// refused whole, appending nothing.
 pub fn run(
-    lake: &Lake,
+    lake: &Turn<'_>,
     source: &SourceId,
     ty: Option<&TypeName>,
     report_id: Option<&str>,

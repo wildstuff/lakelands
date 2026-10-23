@@ -136,10 +136,12 @@ caller's (lakelands#1029, lakelands#1131).
     write for the whole pass: about 0.85 s at 100 000 records on SQLite
     and 2.4 s on PostgreSQL. A write sent while 100 000 records were
     built waited at most 160 ms on SQLite and 320 ms on PostgreSQL, with
-    each chunk 140 to 190 ms on PostgreSQL. The builder's lock is not
-    fair, so it rests as long as each chunk held it; without that rest a
-    write sent during the build waited for nearly all of it in the runs
-    measured.
+    each chunk 140 to 190 ms on PostgreSQL. Each chunk is a write of its
+    own that waits its turn in the lake's queue of writes, which serves
+    them in the order sent, so a write sent during the build goes before
+    the next chunk; the builder does not rest between chunks. A lock that
+    is not fair, as the writer's was before writes queued, let a write
+    sent during the build wait for nearly all of it in the runs measured.
 - **The host's setting wins.** A `sort_index.<type>` setting naming a
   field takes the lake's choice away in the same rebuild that writes the
   setting's rows, and the lake chooses nothing for that type. Retiring

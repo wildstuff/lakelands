@@ -48,15 +48,16 @@ impl Folded {
     }
 
     /// One append, folded in one transaction; the events' positions.
-    fn try_append(&self, bodies: Vec<EventBody>) -> Result<Vec<Position>> {
-        let mut w = self.0.for_write()?;
-        let now = self.0.clock(&mut w);
+    fn try_append(&mut self, bodies: Vec<EventBody>) -> Result<Vec<Position>> {
+        let lake = self.0.turn();
+        let mut w = lake.for_write()?;
+        let now = lake.clock(&mut w);
         let drafts = bodies.into_iter().map(|b| Draft::system(now, b)).collect();
-        let events = self.0.append(&mut w, drafts)?;
+        let events = lake.append(&mut w, drafts)?;
         Ok(events.iter().map(|e| e.position).collect())
     }
 
-    fn append(&self, bodies: Vec<EventBody>) -> Vec<Position> {
+    fn append(&mut self, bodies: Vec<EventBody>) -> Vec<Position> {
         self.try_append(bodies).expect("the append folds")
     }
 
@@ -137,7 +138,7 @@ fn note(n: lakelands_api::ontology::StorageKind) -> TypeDecl {
 
 #[test]
 fn a_later_write_lands_on_the_record_the_step_converted() {
-    let l = Folded::new("fold-steps-1");
+    let mut l = Folded::new("fold-steps-1");
     let p = l.append(vec![
         declared(doc(Text)),
         wrote("doc", "a", 1, json!({"title": "T", "n": "12"})),
@@ -168,7 +169,7 @@ fn a_later_write_lands_on_the_record_the_step_converted() {
 
 #[test]
 fn a_record_written_before_the_step_is_not_converted_from_the_view() {
-    let l = Folded::new("fold-steps-2");
+    let mut l = Folded::new("fold-steps-2");
     l.append(vec![
         declared(doc(Text)),
         wrote("doc", "a", 1, json!({"n": "abc"})),
@@ -197,7 +198,7 @@ fn a_record_written_before_the_step_is_not_converted_from_the_view() {
 
 #[test]
 fn a_rekey_moves_records_of_the_view_and_a_later_write_finds_them() {
-    let l = Folded::new("fold-steps-4");
+    let mut l = Folded::new("fold-steps-4");
     l.append(vec![declared(doc(Text))]);
     let p = l.append(
         ["k1", "s1", "s2", "c1", "c2"]
@@ -255,7 +256,7 @@ fn a_rekey_moves_records_of_the_view_and_a_later_write_finds_them() {
 fn a_second_step_finds_what_the_transaction_wrote_at_a_moved_key() {
     // 4a: the view's record does not convert; what was written at its new
     // key does.
-    let l = Folded::new("fold-steps-4a");
+    let mut l = Folded::new("fold-steps-4a");
     l.append(vec![
         declared(doc(Text)),
         wrote("doc", "a", 1, json!({"n": "abc"})),
@@ -269,7 +270,7 @@ fn a_second_step_finds_what_the_transaction_wrote_at_a_moved_key() {
     assert_eq!(l.state(None, "doc", "a"), json!("ended"));
 
     // 4b: a new record at the old key does not stand in for the moved one.
-    let l = Folded::new("fold-steps-4b");
+    let mut l = Folded::new("fold-steps-4b");
     l.append(vec![
         declared(doc(Text)),
         wrote("doc", "a", 1, json!({"n": "5"})),
@@ -303,7 +304,7 @@ fn a_second_step_finds_what_the_transaction_wrote_at_a_moved_key() {
 fn a_key_a_written_record_left_holds_the_record_that_arrives() {
     // 4c: one step moves a record of the transaction off `x` and a record
     // of the view onto it.
-    let l = Folded::new("fold-steps-4c");
+    let mut l = Folded::new("fold-steps-4c");
     l.append(vec![
         declared(doc(Text)),
         wrote("doc", "v", 1, json!({"title": "V"})),
@@ -327,7 +328,7 @@ fn a_key_a_written_record_left_holds_the_record_that_arrives() {
 fn a_record_arrives_at_a_key_a_written_one_left_a_step_earlier() {
     // 5: two steps; the view's record arrives at a key a created one left
     // a step earlier, and a later write there lands on it.
-    let l = Folded::new("fold-steps-5");
+    let mut l = Folded::new("fold-steps-5");
     l.append(vec![
         declared(doc(Text)),
         wrote("doc", "v", 1, json!({"title": "V"})),
@@ -352,7 +353,7 @@ fn a_record_arrives_at_a_key_a_written_one_left_a_step_earlier() {
 fn a_written_record_that_moves_leaves_its_old_key_ended() {
     // 6: a record created in the transaction and moved by a later step
     // leaves its old key ended in the projection.
-    let l = Folded::new("fold-steps-6");
+    let mut l = Folded::new("fold-steps-6");
     l.append(vec![declared(doc(Text))]);
     let q = l.append(vec![
         wrote("doc", "x", 1, json!({"title": "W"})),
@@ -375,7 +376,7 @@ fn at_head(l: &Folded, key: &str) -> Value {
 #[test]
 fn a_reference_follows_a_move_unless_the_transaction_wrote_it() {
     // 7: a referencing record the transaction rewrote keeps what it wrote.
-    let l = Folded::new("fold-steps-7");
+    let mut l = Folded::new("fold-steps-7");
     l.append(vec![
         declared(doc(Text)),
         declared(note(Text)),
@@ -419,7 +420,7 @@ fn a_reference_follows_a_move_unless_the_transaction_wrote_it() {
 #[test]
 fn an_ended_key_a_flagged_record_and_a_missing_move() {
     // 9: a key ended in an earlier transaction is no record to convert.
-    let l = Folded::new("fold-steps-9");
+    let mut l = Folded::new("fold-steps-9");
     l.append(vec![
         declared(doc(Text)),
         wrote("doc", "a", 1, json!({"title": "x"})),
@@ -481,7 +482,7 @@ fn an_ended_key_a_flagged_record_and_a_missing_move() {
 #[test]
 fn memberships_move_with_the_keys_through_two_steps() {
     // 12a: a chain in one step, an `object_set_changed` between two steps.
-    let l = Folded::new("fold-steps-12a");
+    let mut l = Folded::new("fold-steps-12a");
     let changed = |key: &str, joined| EventBody::ObjectSetChanged {
         set: "kept".into(),
         ty: "doc".into(),
@@ -522,7 +523,7 @@ fn a_type_of_several_pages_is_converted_whole() {
     // 13: an ended key inside the view's first page, and a record written
     // before the step that sorts into the second.
     const N: u64 = 2_500;
-    let l = Folded::new("fold-steps-13");
+    let mut l = Folded::new("fold-steps-13");
     let key = |i: u64| format!("k{i:04}");
     let mut load = vec![declared(doc(Text))];
     load.extend((0..N).map(|i| wrote("doc", &key(i), 1, json!({"n": i.to_string()}))));
@@ -564,13 +565,13 @@ fn summed() -> TypeDecl {
 #[test]
 fn an_output_fills_the_record_at_its_moved_key() {
     // 6a: an `output_recorded` after the step names the record's new key.
-    let l = Folded::new("fold-steps-6a");
+    let mut l = Folded::new("fold-steps-6a");
     l.append(vec![
         function(1),
         declared(summed()),
         wrote("doc", "a", 1, json!({"title": "A"})),
     ]);
-    let due = calls(&l.0).pop().expect("the call `a` makes is due");
+    let due = calls(&l.0.turn()).pop().expect("the call `a` makes is due");
     let q = l.append(vec![
         migrated(summed(), &[], &[("doc", "a", "b")]),
         EventBody::OutputRecorded {
@@ -594,11 +595,13 @@ type Fill = Box<dyn Fn(&str, Option<Value>, Option<Position>) -> EventBody>;
 /// `f`, and `a`'s output "S": the lake, the call's fill, and the
 /// output's position.
 fn one_call(name: &str) -> (Folded, Fill, Position) {
-    let l = Folded::new(name);
+    let mut l = Folded::new(name);
     let mut load = vec![function(1), declared(summed())];
     load.extend(["a", "b", "c"].map(|k| wrote("doc", k, 1, json!({"title": "A"}))));
     l.append(load);
-    let due = calls(&l.0).pop().expect("the call the records make is due");
+    let due = calls(&l.0.turn())
+        .pop()
+        .expect("the call the records make is due");
     let fill: Fill = Box::new(move |key, output, output_at| EventBody::OutputRecorded {
         seam: due.seam.clone(),
         input: due.input.clone(),
@@ -612,7 +615,7 @@ fn one_call(name: &str) -> (Folded, Fill, Position) {
 
 #[test]
 fn a_fill_names_its_calls_latest_output_and_a_name_of_any_other_is_refused() {
-    let (l, fill, s) = one_call("fold-named");
+    let (mut l, fill, s) = one_call("fold-named");
     // A fill names the output, in a later append and in the same one as a
     // second output, which it then names.
     let q = l.append(vec![fill("b", None, Some(s))]);
@@ -631,7 +634,7 @@ fn a_fill_names_its_calls_latest_output_and_a_name_of_any_other_is_refused() {
     );
     // Any other position, a superseded output, both members and neither.
     let refused = |name: &str, member: &dyn Fn(Position) -> (Option<Value>, Option<Position>)| {
-        let (l, fill, s) = one_call(name);
+        let (mut l, fill, s) = one_call(name);
         l.append(vec![fill("a", Some(json!("T")), None)]);
         let (output, output_at) = member(s);
         let refused = l.try_append(vec![fill("b", output, output_at)]);
@@ -669,20 +672,20 @@ fn derived_fields_are_computed_again_over_the_records_as_the_step_left_them() {
     // 14: a re-key, a new record at the old key, then the function declared
     // again: every record of the type is computed again once, in the order
     // of the keys they have now.
-    let l = Folded::new("fold-steps-14");
+    let mut l = Folded::new("fold-steps-14");
     l.append(vec![
         function(1),
         declared(summed()),
         wrote("doc", "a", 1, json!({"title": "A"})),
         wrote("doc", "c", 1, json!({"title": "C"})),
     ]);
-    l.0.writer().owed.clear();
+    l.0.turn().writer().owed.clear();
     let q = l.append(vec![
         migrated(summed(), &[], &[("doc", "a", "z")]),
         wrote("doc", "a", 1, json!({"title": "fresh"})),
         function(2),
     ]);
-    let due: Vec<_> = (calls(&l.0).iter())
+    let due: Vec<_> = (calls(&l.0.turn()).iter())
         .map(|d| {
             let lakelands_store::backed::Call::Function { call, .. } = &d.call else {
                 panic!("a function's call is due");

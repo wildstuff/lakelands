@@ -71,7 +71,7 @@ pub(crate) struct At<'a> {
 /// what it reads ([`At`]), what its drafts so far leave, where its next
 /// event lands, at which door, and the envelope of its own events.
 pub(crate) struct Decide<'a> {
-    pub(super) call: &'a Call<'a>,
+    pub(super) call: Asked<'a>,
     pub(super) ontology: &'a Ontology,
     pub(super) plans: &'a crate::record::Plans,
     pub at: At<'a>,
@@ -755,12 +755,12 @@ impl Decide<'_> {
     }
 }
 
-impl Call<'_> {
+impl<'a> Asked<'a> {
     /// The context a write of this call is decided in, under the writer
     /// `w` and over `view`, at `now`, `n` drafts already in its append:
     /// the caller is judged, at the authored door.
-    pub(crate) fn decide<'a>(
-        &'a self,
+    pub(crate) fn decide(
+        self,
         w: &'a Writer,
         view: &'a dyn ProjectionView,
         now: Timestamp,
@@ -789,24 +789,12 @@ impl Call<'_> {
         }
     }
 
-    /// `upsert`.
-    pub fn upsert(
-        &self,
-        ty: &TypeName,
-        key: &RecordKey,
-        patch: Patch,
-        opts: WriteOpts,
-    ) -> Result<Outcome> {
-        check_context(self.lake, &self.context)?;
-        ordinary_door(ty)?;
-        self.write(Op::Upsert(ty, key, &patch), opts)
-    }
-
     /// `upsert_preflight`: `upsert`'s decision, at the head, appending
-    /// nothing. It reads as a preflight does, under no lock: the writer
-    /// that decides the write later may find a head that has moved.
+    /// nothing. It reads as a preflight does, with no turn and under no
+    /// lock: the writer that decides the write later may find a head that
+    /// has moved.
     pub fn upsert_preflight(
-        &self,
+        self,
         ty: &TypeName,
         key: &RecordKey,
         patch: &Patch,
@@ -818,6 +806,32 @@ impl Call<'_> {
         let w = self.lake.reading(view.as_ref())?;
         let mut d = self.decide(&w, view.as_ref(), w.last_known_at, 0);
         d.plan(Op::Upsert(ty, key, patch), expected).map(drop)
+    }
+}
+
+impl Call<'_> {
+    /// The context a write of this call is decided in: [`Asked::decide`].
+    pub(crate) fn decide<'a>(
+        &'a self,
+        w: &'a Writer,
+        view: &'a dyn ProjectionView,
+        now: Timestamp,
+        n: usize,
+    ) -> Decide<'a> {
+        self.asked().decide(w, view, now, n)
+    }
+
+    /// `upsert`.
+    pub fn upsert(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        patch: Patch,
+        opts: WriteOpts,
+    ) -> Result<Outcome> {
+        check_context(self.lake, &self.context)?;
+        ordinary_door(ty)?;
+        self.write(Op::Upsert(ty, key, &patch), opts)
     }
 
     /// An authored write of one record, as `upsert`, `retire`, `link` and

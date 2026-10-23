@@ -47,7 +47,7 @@ use lakelands_api::{
 };
 use lakelands_core::rights::Door;
 
-use crate::exec;
+use crate::exec::{self, Turn};
 use crate::lake::{Lake, Reads, Writer};
 use crate::log::{self, Draft};
 use crate::purge::made_by;
@@ -67,7 +67,7 @@ pub type Apart = std::sync::Mutex<BTreeMap<SourceId, KeyId>>;
 /// named or decided already, its values sealed apart too where `apart`
 /// keeps the call's keys.
 pub fn window(
-    lake: &Lake,
+    lake: &Turn<'_>,
     who: &Principal,
     (context, delivery, apart): (WriteContext, Option<DeliveryId>, Option<&Apart>),
     source: &SourceId,
@@ -490,15 +490,15 @@ pub fn run(
             if batch.is_empty() {
                 continue;
             }
-            let (l, w, s, d) = (lake.clone(), who.clone(), source.clone(), delivery.clone());
+            let (w, s, d) = (who.clone(), source.clone(), delivery.clone());
             let a = apart.clone();
             let first = next;
             next += batch.len() as u64;
-            let run = move || {
+            let run = move |t: &Turn<'_>| {
                 let how = (context, d, a.as_deref());
-                crate::lake::owing(|| window(&l, &w, how, &s, (first, batch)))
+                crate::lake::owing(|| window(t, &w, how, &s, (first, batch)))
             };
-            let mut answer = exec::run(run).await;
+            let mut answer = exec::write(&lake, run).await;
             // The calls the window made due are made before it answers, so
             // its position is one the filled fields are visible from.
             if let Ok((c, own)) = &mut answer

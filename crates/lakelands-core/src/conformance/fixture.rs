@@ -1313,8 +1313,8 @@ pub type Caller<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Drive every caller to its end together, in the check's one task, and
 /// answer their outputs in the callers' order. Each caller is polled
-/// whenever the task wakes, so while one waits on the lake (the store
-/// runs each write on its blocking pool, under its writer lock) the
+/// whenever the task wakes, so while one waits on the lake (a write
+/// waits its turn at the writer, then runs on the blocking pool) the
 /// others go on: the calls overlap at the store as the calls of many
 /// clients do. No runtime is needed beyond the one the engine's test
 /// brings.

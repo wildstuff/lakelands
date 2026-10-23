@@ -132,10 +132,14 @@ value in every read as of a position before the rename.
 enters: a read takes the list from the view it reads at the head, so a
 rename is in its shape and in its grants or in neither; a read as of a
 position takes the head's list, where a later rename can only take away.
-A write is followed before it waits for the writer, and a migration can
-rename a field while it waits. Where the list has grown when the write
-takes the writer, it is refused to be sent again; an ingest is followed
-under the writer itself.
+A write is followed at its turn in the lake's queue of writes, before it
+takes the writer: a migration through the same handle waits its turn as
+the write does, so a write that waited behind one is followed through its
+renames. Only what the writer catches up with as it is taken can rename
+a field between the two: another handle's migration, or one whose fold
+the lake has not yet made; where the list has grown when the write takes
+the writer, it is refused to be sent again. An ingest is
+followed under the writer itself.
 
 **A type's name follows the same rule.** A renamed relation carried by
 link records moves them to the link type of its new name, and a grant
@@ -454,10 +458,11 @@ against, each of the reader as its call named it, its grants followed
 there (below). Following comes first, since a grant held through a
 rename may hide what the grants as given do not. A write judges under
 its lock with the principal its call was made with. Where the types
-moved while it waited, its sight is made a second time, over the head's
-types, and the write is refused to be sent again where the head hides
-other references from it than its call was shown; one that waited while
-types moved that hide nothing more from it is applied.
+moved between its sight and its lock, as only a migration the writer
+catches up with as it is taken moves them, its sight is made a second
+time, over the head's types, and the write is refused to be sent again
+where the head hides other references from it than its call was shown;
+one seen before types moved that hide nothing more from it is applied.
 
 What is shown does not turn on a read's valid time. A read at `valid_at`
 filters records by the type's valid-time fields, so the read that
