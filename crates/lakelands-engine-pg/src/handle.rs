@@ -41,8 +41,7 @@ use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::query::cosine;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
-use lakelands_core::engines::{self, vector_bytes};
-use postgres::types::ToSql;
+use lakelands_core::engines;
 
 use crate::connect::{self, Db, Target};
 use crate::projection::{self, Buffer, HeadTypes, Names, PROJECTION_TABLES, RETIRED_TABLES};
@@ -401,6 +400,30 @@ impl PgLake {
         let v = self.pgvector.as_ref();
         t.put += page.write(&mut db, &self.names, &mut t.types, &mut t.asked, v)?;
         Ok(())
+    }
+
+    /// Put `vector` into the vector index for `ty`'s `key`, or remove it
+    /// where none: taken by the transaction's buffer where it holds a
+    /// state of the key, else made now.
+    fn index(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        field: &str,
+        vector: Option<&[f32]>,
+    ) -> Result<()> {
+        let writing = self.writing()?;
+        let at = (ty.as_str(), key.as_str(), field);
+        if let Some(t) = lock(&self.transaction).as_mut()
+            && t.buffer.index(at, vector)
+        {
+            return Ok(());
+        }
+        let (mut db, v) = (self.projecting(writing)?, self.pgvector.as_ref());
+        match vector {
+            Some(vector) => vector_index::put(&mut db, &self.names, v, at, vector),
+            None => vector_index::remove(&mut db, &self.names, v, at),
+        }
     }
 }
 
@@ -1151,49 +1174,18 @@ impl PgLake {
 
 /// The vector index's write side and its size: the rows the records'
 /// states hold in force, each field's ranked together, in the fold's
-/// transaction. The state's row holds a vector the fold puts already, or
-/// will once the transaction's buffer is written; one put alone has a row
-/// of its own until it is taken out.
+/// transaction. The state's row holds a vector the fold puts already; one
+/// put or removed after it holds over the state's until the record's next
+/// state. Of a key whose state the transaction's buffer holds, the buffer
+/// takes the put or the remove, made when it is written where the rows it
+/// leaves differ.
 impl VectorIndex for PgLake {
     fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()> {
-        let writing = self.writing()?;
-        let buffered = (lock(&self.transaction).as_ref())
-            .and_then(|t| t.buffer.latest(ty.as_str(), key.as_str()))
-            .is_some_and(|r| {
-                let held = r.fields.get(field).and_then(engines::Elements::of);
-                !r.retired && held.is_some_and(|e| e.ranked() == vector)
-            });
-        if buffered && !engines::vectors_in_place(ty) {
-            return Ok(());
-        }
-        let mut db = self.projecting(writing)?;
-        let (sql, data) = (
-            vector_index::put_sql(&self.names, self.pgvector.as_ref()),
-            vector_bytes(vector),
-        );
-        let (mark, unit) = (
-            vector_index::mark(ty, field),
-            vector_index::unit_text(vector),
-        );
-        let (ty_, key_) = (ty.as_str(), key.as_str());
-        let mut args: Vec<&(dyn ToSql + Sync)> = vec![&ty_, &field, &key_, &data];
-        if self.pgvector.is_some() {
-            // The unit vector goes in with the vector when the lake asks
-            // for the field's index (`crate::vector_index`).
-            args.extend([&mark as &(dyn ToSql + Sync), &unit]);
-        }
-        db.execute(&sql, &args)
+        self.index(ty, key, field, Some(vector))
     }
 
     fn remove(&self, ty: &TypeName, key: &RecordKey, field: &str) -> Result<()> {
-        let writing = self.writing()?;
-        self.projecting(writing)?.execute(
-            &format!(
-                "DELETE FROM {} WHERE ty = $1 AND field = $2 AND key = $3 AND since = -1",
-                self.names.t("vectors")
-            ),
-            &[&ty.as_str(), &field, &key.as_str()],
-        )
+        self.index(ty, key, field, None)
     }
 
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64> {

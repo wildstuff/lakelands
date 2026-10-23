@@ -52,7 +52,14 @@ and elements, and writes one under the new name where it renames the
 field, ending the old name's row: the engine is handed a state, not the
 migration, so it shares a row by name and elements alone. A vector the
 vector index is handed with no state naming it has a row of its own
-(`since` -1), which a state that names the field replaces. A state put
+(`since` -1), which a state that names the field replaces. One handed
+for a field whose row in force a state names holds over it, as it does
+on the in-memory engine, whose index has no rows of states: a put of
+the same elements leaves the state's row, as the fold's put after the
+state does, and a put of others, or a remove, ends the state's row at
+its own position, so a read as of that state still finds it, and a put
+writes a row of its own. The record's next state writes its row anew.
+A state put
 at a position before a later state of its record keeps its vectors in
 place and writes no row: the row at its position may be one a later
 state names, with other elements, and it stays as that state wrote it.

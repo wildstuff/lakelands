@@ -980,21 +980,15 @@ fn nearest(
 /// The vector index's write side and its size: the rows the records'
 /// states hold in force, each field's ranked together, in the fold's
 /// transaction. The state's row holds a vector the fold puts already; one
-/// put alone has a row of its own until it is taken out.
+/// put or removed after it holds over the state's until the record's next
+/// state.
 impl VectorIndex for SqliteLake {
     fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()> {
         self.write(|conn| projection::put_vector(conn, (ty.as_str(), key.as_str(), field), vector))
     }
 
     fn remove(&self, ty: &TypeName, key: &RecordKey, field: &str) -> Result<()> {
-        self.write(|conn| {
-            conn.prepare_cached(
-                "DELETE FROM vectors WHERE ty = ?1 AND field = ?2 AND key = ?3 AND since = -1",
-            )
-            .and_then(|mut s| s.execute(params![ty.as_str(), field, key.as_str()]))
-            .map(|_| ())
-            .map_err(sql)
-        })
+        self.write(|conn| projection::remove_vector(conn, (ty.as_str(), key.as_str(), field)))
     }
 
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64> {

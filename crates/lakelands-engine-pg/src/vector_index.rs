@@ -55,6 +55,7 @@ use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::seam::{SETTING_TYPE, VECTOR_INDEX_SETTING};
 use lakelands_core::engines;
+use postgres::types::ToSql;
 
 use crate::connect::Db;
 use crate::projection::{self, Names};
@@ -501,29 +502,76 @@ pub(crate) fn search_settings(k: u32) -> String {
     )
 }
 
-/// The statement a `put` writes a vector with, as a row of its own
-/// (`since` -1) where no row of a state holds one in force, filling its
-/// unit vector when its field is marked; `$5` the mark, `$6` the unit
-/// vector, unbound without pgvector.
-pub(crate) fn put_sql(names: &Names, v: Option<&Pgvector>) -> String {
-    let (column, unit, set) = match v {
-        Some(v) => (
-            ", unit",
-            format!(
+/// Put a vector the index is asked to hold for `ty`'s `key`, as a row of
+/// its own (`since` -1), its unit vector filled when its field is marked.
+/// A state's row in force holding it already stays; one holding other
+/// elements is taken out ([`remove`]) and the vector put alone stands
+/// until the record's next state.
+pub(crate) fn put(
+    db: &mut Db,
+    names: &Names,
+    v: Option<&Pgvector>,
+    (ty, key, field): (&str, &str, &str),
+    vector: &[f32],
+) -> Result<()> {
+    let vectors = names.t("vectors");
+    let held = db.query_opt(
+        &format!(
+            "SELECT single, data FROM {vectors} WHERE ty = $1 AND key = $2 AND field = $3 \
+             AND since >= 0 AND until IS NULL"
+        ),
+        &[&ty, &key, &field],
+    )?;
+    if held.is_some_and(|r| engines::Elements::new(r.get(0), r.get(1)).ranked() == vector) {
+        return Ok(());
+    }
+    remove(db, names, v, (ty, key, field))?;
+    let (data, mark, unit) = (
+        engines::vector_bytes(vector),
+        mark(&TypeName::from(ty), field),
+        unit_text(vector),
+    );
+    let mut args: Vec<&(dyn ToSql + Sync)> = vec![&ty, &key, &field, &data];
+    let (column, unit_of) = match v {
+        Some(v) => {
+            args.extend([&mark as &(dyn ToSql + Sync), &unit]);
+            let unit = format!(
                 ", CASE WHEN EXISTS (SELECT 1 FROM {} WHERE k = $5) THEN CAST($6::text AS {}) END",
                 names.t("meta"),
                 v.ty(None)
-            ),
-            ", unit = EXCLUDED.unit",
-        ),
-        None => ("", String::new(), ""),
+            );
+            (", unit", unit)
+        }
+        None => ("", String::new()),
     };
-    format!(
-        "INSERT INTO {vectors} (ty, key, field, since, single, data{column}) \
-         SELECT $1, $3, $2, -1, true, $4{unit} WHERE NOT EXISTS (SELECT 1 FROM {vectors} \
-         WHERE ty = $1 AND key = $3 AND field = $2 AND since >= 0 AND until IS NULL) \
-         ON CONFLICT (ty, key, field, since) DO UPDATE SET data = EXCLUDED.data{set}",
-        vectors = names.t("vectors"),
+    db.execute(
+        &format!(
+            "INSERT INTO {vectors} (ty, key, field, since, single, data{column}) \
+             VALUES ($1, $2, $3, -1, true, $4{unit_of})"
+        ),
+        &args,
+    )
+}
+
+/// Forget the vector the index holds for `ty`'s `key`: one put alone goes,
+/// and a state's row in force ends at its own position, holding no unit
+/// vector, so a view of that state still reads it, a read joining a row by
+/// its position alone.
+pub(crate) fn remove(
+    db: &mut Db,
+    names: &Names,
+    v: Option<&Pgvector>,
+    (ty, key, field): (&str, &str, &str),
+) -> Result<()> {
+    let unit = if v.is_some() { ", unit = NULL" } else { "" };
+    db.execute(
+        &format!(
+            "WITH e AS (UPDATE {t} SET until = since{unit} WHERE ty = $1 AND key = $2 \
+             AND field = $3 AND since >= 0 AND until IS NULL) \
+             DELETE FROM {t} WHERE ty = $1 AND key = $2 AND field = $3 AND since = -1",
+            t = names.t("vectors")
+        ),
+        &[&ty, &key, &field],
     )
 }
 

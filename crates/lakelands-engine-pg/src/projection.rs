@@ -1445,6 +1445,10 @@ pub(crate) struct Buffer {
     dropped: BTreeSet<(String, String)>,
     /// The outputs whose every state goes, by seam and input, likewise.
     dropped_outputs: BTreeSet<(String, String)>,
+    /// The vector index's last put (`Some`) or remove of each field of a
+    /// key whose state it holds, by type, key and field: made when it is
+    /// written where the rows its last state leaves differ.
+    indexed: BTreeMap<(String, String, String), Option<Vec<f32>>>,
 }
 
 /// A row of the feed index: position, kind, type, key and source.
@@ -1473,6 +1477,7 @@ impl Buffer {
         let of = |ident: &[String]| ident[0] == ty && ident[1] == key;
         self.records.retain(|(ident, _), _| !of(ident));
         self.members.retain(|(ident, _), _| !of(&ident[1..]));
+        self.indexed.retain(|(t, k, _), _| t != ty || k != key);
         self.dropped.insert((ty.to_owned(), key.to_owned()));
     }
 
@@ -1488,6 +1493,21 @@ impl Buffer {
         let ident = vec![ty.to_owned(), key.to_owned()];
         let of = (ident.clone(), i64::MIN)..=(ident, i64::MAX);
         self.records.range(of).next_back().map(|(_, r)| r)
+    }
+
+    /// Take the vector index's put (`Some`) or remove of `ty`'s `key`
+    /// where a state of it is held, answering whether it took it.
+    pub(crate) fn index(
+        &mut self,
+        (ty, key, field): (&str, &str, &str),
+        v: Option<&[f32]>,
+    ) -> bool {
+        let held = self.latest(ty, key).is_some();
+        if held {
+            let at = (ty.to_owned(), key.to_owned(), field.to_owned());
+            self.indexed.insert(at, v.map(<[f32]>::to_vec));
+        }
+        held
     }
 
     pub(crate) fn record(&mut self, r: &StoredRecord) {
@@ -1862,6 +1882,17 @@ impl Buffer {
             }
             apart.insert((ident.clone(), *at), put.apart);
         }
+        // An index put or remove after the states stands where the rows they
+        // leave hold otherwise: made once they are written.
+        let mut later = Vec::new();
+        for ((ty, key, field), vector) in &self.indexed {
+            let h = &held[&(ty.clone(), key.clone())];
+            let row = (h.rows.iter()).find(|(f, ..)| f.as_str() == field);
+            let row = row.map(|(.., e)| e.ranked());
+            if h.alone.contains(field) || row != *vector {
+                later.push(((ty.as_str(), key.as_str(), field.as_str()), vector));
+            }
+        }
         let t = names.t("vectors");
         let ident = "unnest($1::text[], $2::text[], $3::text[], $4::int8[]";
         if !written.since.is_empty() {
@@ -1912,6 +1943,12 @@ impl Buffer {
                 ),
                 &[tys, keys, fields, &gone.since],
             )?;
+        }
+        for (at, vector) in later {
+            match vector {
+                Some(vector) => vector_index::put(db, names, v, at, vector)?,
+                None => vector_index::remove(db, names, v, at)?,
+            }
         }
         Ok(apart)
     }

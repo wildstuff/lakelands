@@ -1075,20 +1075,49 @@ fn put_vectors(
 }
 
 /// Put a vector the index is asked to hold for `ty`'s `key`, as a row of
-/// its own (`since` -1), where no row of a state holds one in force: the
-/// fold asks it after the state's row, which holds it already.
-pub(crate) fn put_vector(
-    conn: &Connection,
-    (ty, key, field): (&str, &str, &str),
-    vector: &[f32],
-) -> Result<()> {
+/// its own (`since` -1). The fold asks it after the state's row, which
+/// holds it already; a state's row holding other elements is taken out
+/// ([`remove_vector`]) and the vector put alone stands until the record's
+/// next state.
+pub(crate) fn put_vector(conn: &Connection, at: (&str, &str, &str), vector: &[f32]) -> Result<()> {
+    let held = (conn.prepare_cached(
+        "SELECT single, data FROM vectors WHERE ty = ?1 AND key = ?2 AND field = ?3 \
+         AND since >= 0 AND until IS NULL",
+    ))
+    .and_then(|mut s| {
+        s.query_row(params![at.0, at.1, at.2], |r| {
+            Ok(engines::Elements::new(r.get(0)?, r.get(1)?))
+        })
+        .optional()
+    })
+    .map_err(sql)?;
+    if held.is_some_and(|e| e.ranked() == vector) {
+        return Ok(());
+    }
+    remove_vector(conn, at)?;
     run(
         conn,
         "INSERT INTO vectors (ty, key, field, since, until, single, data) \
-         SELECT ?1, ?2, ?3, -1, NULL, 1, ?4 WHERE NOT EXISTS (SELECT 1 FROM vectors \
-         WHERE ty = ?1 AND key = ?2 AND field = ?3 AND since >= 0 AND until IS NULL) \
-         ON CONFLICT DO UPDATE SET data = excluded.data",
-        params![ty, key, field, engines::vector_bytes(vector)],
+         VALUES (?1, ?2, ?3, -1, NULL, 1, ?4)",
+        params![at.0, at.1, at.2, engines::vector_bytes(vector)],
+    )
+}
+
+/// Forget the vector the index holds for `ty`'s `key`: one put alone goes,
+/// and a state's row in force ends at its own position, so a view of that
+/// state still reads it, a read joining a row by its position alone.
+pub(crate) fn remove_vector(conn: &Connection, (ty, key, field): (&str, &str, &str)) -> Result<()> {
+    let at = params![ty, key, field];
+    run(
+        conn,
+        "DELETE FROM vectors WHERE ty = ?1 AND key = ?2 AND field = ?3 AND since = -1",
+        at,
+    )?;
+    run(
+        conn,
+        "UPDATE vectors SET until = since WHERE ty = ?1 AND key = ?2 AND field = ?3 \
+         AND until IS NULL",
+        at,
     )
 }
 
