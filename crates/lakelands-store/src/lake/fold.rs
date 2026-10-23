@@ -513,6 +513,19 @@ impl Lake {
             || !crate::remove::removed_list(view.as_ref(), &none)?.is_empty())
     }
 
+    /// The log's tip, read again, and how far the projection is folded: a
+    /// write that stopped midway may have left the writer's behind the
+    /// log, or past it; an append whose fold failed and that never landed
+    /// is owed nothing.
+    fn retip(&self, w: &mut Writer) -> Result<Option<Position>> {
+        let folded;
+        (folded, w.tip) = ends(self.engine.as_ref())?;
+        if w.failed > w.tip.as_ref().map(|t| t.0) {
+            w.failed = None;
+        }
+        Ok(folded)
+    }
+
     /// Fold the events the log holds past the projection, a page at a
     /// time, and publish the head once they are folded.
     ///
@@ -521,14 +534,7 @@ impl Lake {
     /// declaration with the one the writer holds. A writer that cannot
     /// read them stays behind.
     pub(super) fn refold(&self, w: &mut Writer) -> Result<()> {
-        // The log's tip, read again: a write that stopped midway may have
-        // left the writer's behind the log, or past it; an append whose
-        // fold failed and that never landed is owed nothing.
-        let folded;
-        (folded, w.tip) = ends(self.engine.as_ref())?;
-        if w.failed > w.tip.as_ref().map(|t| t.0) {
-            w.failed = None;
-        }
+        let folded = self.retip(w)?;
         {
             let view = self.engine.view(None)?;
             w.ontology = Ontology::at(view.as_ref())?.named();
@@ -1331,6 +1337,7 @@ impl Lake {
                 return self.catch_up_in(w);
             }
             self.engine.projection().clear()?;
+            self.retip(w)?;
             w.ontology = Ontology::default().named();
             w.settings = BTreeMap::new();
             // A page at a time: a rebuild in place that stops is continued
