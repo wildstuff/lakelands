@@ -1,53 +1,40 @@
 //! What an expression means: the one evaluator every filter, guard,
 //! derived field, constraint and view measure goes through.
 //!
-//! # Values
-//!
-//! An expression computes a [`Val`]: null, a boolean, an exact decimal
-//! number, text, an instant, a duration, or a JSON value it cannot look
-//! into. Record values enter by their JSON form (`docs/log-format.md` §5):
-//! a JSON number and a decimal string are both numbers when arithmetic or
-//! a comparison needs one, and text that is a timestamp is an instant when
-//! compared with an instant.
-//!
-//! # The rules
+//! An expression computes a [`Val`]: null, a boolean, an exact decimal,
+//! text, an instant, a duration, or an opaque JSON value. Record values
+//! enter by their JSON form (`docs/log-format.md` §5): a JSON number and a
+//! decimal string are both numbers where one is needed, and timestamp text
+//! is an instant when compared with an instant.
 //!
 //! - **Absent never matches.** A field with no value is null. A comparison
-//!   with a null operand is false — `!=` included — so a filter never
-//!   selects a record for what it does not hold; `is null` is the way to
-//!   ask. Arithmetic and functions on null give null; `coalesce` picks the
-//!   first operand that is not null.
-//! - **Numbers compare as numbers.** `1 = 1.0`, and `'10' > 9`: whenever
-//!   both sides read as numbers, they compare exactly as decimals.
-//!   Otherwise instants compare as instants, and everything else compares
-//!   as text. A boolean equals only a boolean and has no order.
-//! - **Arithmetic is exact and checked.** Decimal arithmetic never passes
-//!   through a binary float; overflow and division by zero are errors,
-//!   never a wrapped or infinite value. An instant plus or minus a duration
-//!   is an instant; the difference of two instants is a duration. A
-//!   duration divided by a duration is a number; a duration times or
-//!   divided by a number is a duration, to the microsecond.
-//! - **`and`, `or` and `if` are lazy.** Only the operands that decide the
-//!   answer are evaluated, so `if(b != 0, a / b, 0)` never divides by zero.
-//!   An operand that is not a boolean counts as false.
+//!   with a null operand is false, `!=` included, so a filter never selects
+//!   a record for what it does not hold; `is null` asks. Arithmetic and
+//!   functions on null give null; `coalesce` picks the first non-null.
+//! - **Numbers compare as numbers.** `1 = 1.0`, `'10' > 9`: when both sides
+//!   read as numbers they compare as decimals; else instants as instants,
+//!   else text. A boolean equals only a boolean and has no order.
+//! - **Arithmetic is exact and checked.** Never through a binary float;
+//!   overflow and division by zero are errors. Instant ± duration is an
+//!   instant; instant − instant a duration; duration ÷ duration a number;
+//!   duration × or ÷ number a duration, to the microsecond.
+//! - **`and`, `or` and `if` are lazy.** Only the deciding operands are
+//!   evaluated, so `if(b != 0, a / b, 0)` never divides by zero. A
+//!   non-boolean operand counts as false.
 //! - **Text functions count characters,** not bytes. `replace` with an
 //!   empty pattern changes nothing. `matches` takes an I-Regexp (RFC 9485)
 //!   and matches the whole text.
-//! - **`round` rounds half away from zero,** the rule money is kept by.
-//!   `floor` is the greatest whole number not above its operand.
+//! - **`round` rounds half away from zero;** `floor` is the greatest whole
+//!   number not above its operand.
 //! - **Time is the caller's.** `now()` and `today()` read the scope's
 //!   clock: the fold binds it to the `known_at` of the event it folds, so a
-//!   replay computes the same value; a read binds it to the time of the
-//!   read.
+//!   replay computes the same value; a read binds it to the read's time.
 //!
-//! An expression that cannot be evaluated — a type misuse, an overflow, a
-//! function used where it has no meaning — is a [`Case`]. What an
-//! error means is the caller's posture, stated where each caller lives: a
-//! record its filter fails for does not match, a group key that fails is
-//! null, a trigger guard does not fire, a derived field is cleared. One
-//! record's value never fails a read of the others. What can never be
-//! evaluated, whatever the record holds, is refused before any of them
-//! runs (`lakelands_api::expr::kind`).
+//! An expression that cannot be evaluated is a [`Case`]. What it means is
+//! the caller's posture: a failed filter does not match, a failed group key
+//! is null, a guard does not fire, a derived field is cleared. One record's
+//! value never fails a read of the others. What can never be evaluated is
+//! refused before any record runs (`lakelands_api::expr::kind`).
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -87,12 +74,10 @@ pub(crate) fn err<T>(case: Case) -> Result<T> {
     Err(case)
 }
 
-/// What an expression can see: the record in scope and the context of the
-/// evaluation.
+/// What an expression can see.
 pub trait Scope {
-    /// The value at a path: a field of the record in scope, or
-    /// `<name>.<field>` of a record a pattern's row binds. `None` when
-    /// absent.
+    /// The value at a path: a field, or `<name>.<field>` of a record a
+    /// pattern's row binds. `None` when absent.
     fn value(&self, path: &[FieldName]) -> Option<Value>;
 
     /// In a guard: the field's value before the write. `None` outside a
@@ -101,8 +86,7 @@ pub trait Scope {
         None
     }
 
-    /// Whether the evaluation is a guard over a write, where `changed` and
-    /// `previous` have meaning.
+    /// Whether this is a guard over a write (`changed`, `previous`).
     fn in_write(&self) -> bool {
         false
     }
@@ -112,8 +96,8 @@ pub trait Scope {
         false
     }
 
-    /// Whether every operand is read where the first that decides would
-    /// stop the evaluation: a strict guard's (lakelands#1215).
+    /// Whether every operand is read even after one decides: a strict
+    /// guard's (lakelands#1215).
     fn eager(&self) -> bool {
         false
     }
@@ -193,17 +177,15 @@ impl Scope for RecordScope<'_> {
     }
 }
 
-/// A guard over a write: the record after the write, the record before it
-/// (`None` for a create), its per-field provenance, the lake's settings and
-/// the event's time.
+/// A guard over a write: the record after and before it, with provenance,
+/// settings and the event's time.
 pub struct WriteScope<'a> {
     /// The record's fields after the write.
     pub after: &'a BTreeMap<FieldName, Value>,
     /// The record's fields before the write; `None` for a create.
     pub before: Option<&'a BTreeMap<FieldName, Value>>,
-    /// Whether the write retires the record: live before, retired after.
-    /// A retirement keeps the fields, so only this tells it from an
-    /// update.
+    /// Whether the write retires the record (live before, retired after);
+    /// the fields are kept, so only this tells it from an update.
     pub retiring: bool,
     /// Per-field provenance after the write, if kept.
     pub meta: Option<&'a BTreeMap<FieldName, FieldMeta>>,
@@ -498,10 +480,9 @@ fn number(v: &Val) -> Result<Decimal> {
 }
 
 /// A value as the instant it denotes, if it reads as one. A text is read
-/// without the bound of the years 0000 to 9999: here it is compared or
-/// computed with, and `'9999-12-31T23:30:00-01:00'` is after every
-/// instant a field holds, not a text to compare letter by letter. What
-/// is written is judged where it lands.
+/// without the bound of the years 0000 to 9999: `'9999-12-31T23:30:00-01:00'`
+/// is after every instant a field holds, not a text to compare letter by
+/// letter. What is written is judged where it lands.
 pub(crate) fn as_time(v: &Val) -> Option<Timestamp> {
     match v {
         Val::Time(t) => Some(*t),
@@ -528,10 +509,9 @@ pub(crate) fn operand(v: &Val) -> Box<Operand> {
 }
 
 /// The order of two non-null values, when they have one: numbers (and
-/// text that reads as a number) numerically, instants as instants,
-/// durations as durations, other text as text. Values of kinds that do not
-/// compare — a number against text that is not one, a boolean against
-/// anything but a boolean, a JSON value against anything — have none.
+/// number-like text) numerically, instants, durations, other text as text.
+/// A number against other text, a boolean against a non-boolean and JSON
+/// have none.
 fn order(l: &Val, r: &Val) -> Option<Ordering> {
     if let (Some(a), Some(b)) = (as_number(l), as_number(r)) {
         return Some(a.cmp(&b));
@@ -547,11 +527,9 @@ fn order(l: &Val, r: &Val) -> Option<Ordering> {
     }
 }
 
-/// A comparison. It never fails: null on either side, or two values of
-/// kinds that do not compare, make every operator false — `!=` included —
-/// so a filter over mixed data selects what matches and skips the rest
-/// rather than failing the whole read. Booleans and JSON values are equal
-/// or not, and have no order.
+/// A comparison. It never fails: null on either side, or kinds that do not
+/// compare, make every operator false, `!=` included, so a filter over
+/// mixed data skips what does not match rather than failing the read.
 pub fn compare(op: CmpOp, l: &Val, r: &Val) -> Result<bool> {
     if *l == Val::Null || *r == Val::Null {
         return Ok(false);
@@ -803,10 +781,8 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
                 });
             }
         },
-        // Answered above, from the scope, where the set's filter did not
-        // stand in the call's place before ([`expand`]).
+        // Answered above, from the scope ([`expand`]).
         Func::InSet => return err(Case::InSetHere),
-        // Answered above, from the scope.
         Func::Exists => return err(Case::ExistsHere),
         Func::Param => match &vals[0] {
             Val::Text(name) => scope.param(name).map_or(Val::Null, |v| from_json(&v)),
@@ -920,9 +896,7 @@ pub fn to_json(
     scale: Option<u32>,
 ) -> Option<Value> {
     use lakelands_api::ontology::StorageKind as K;
-    // A value at a declared scale is rounded half away from zero and then
-    // written with exactly that many fractional digits, as a written value
-    // of the type is.
+    // Rounded half away from zero, then written with exactly `scale` digits.
     let rounded = |d: Decimal| scale.map_or(d, |s| crate::value::at_scale(d, s));
     match (v, kind) {
         (Val::Null, _) => Some(Value::Null),

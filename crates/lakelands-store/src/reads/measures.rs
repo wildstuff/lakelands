@@ -21,16 +21,13 @@ use lakelands_core::rights;
 
 use super::{CursorState, Judged, Pulled, Reader, Visible, encode};
 
-/// The records a seed page reads at once.
 const PAGE: usize = 256;
 
-/// Whether a projection is a whole-graph measure.
 pub(super) fn is_measure(p: &Projection) -> bool {
     matches!(p, Projection::Degree | Projection::Components)
 }
 
-/// What a measure refuses: a member it would otherwise ignore, so that an
-/// answer never looks like more than it is.
+/// Refuses a member a measure would otherwise ignore.
 pub(super) fn check(p: &Pattern) -> Result<()> {
     let measure = match p.project {
         Projection::Degree => "degree",
@@ -209,7 +206,6 @@ impl Reader<'_> {
                 // With no start type, no record stands alone (018).
                 let alone = p.start.ty.is_some();
                 let mut found = Components::new(hidden, relations, max, alone);
-                // The seeds come a page at a time, and grow a page at a time.
                 let mut seeds: Vec<Node> = Vec::with_capacity(graph::PAGE);
                 let moved = self.seeds((p, hidden.reach), carried, |node| {
                     seeds.push(node);
@@ -241,8 +237,7 @@ impl Reader<'_> {
         Ok(Ok(self.rows_page(p, all, offset, limit, params)))
     }
 
-    /// One page of a pattern's rows already in their order, and the cursor
-    /// that continues it when more follow.
+    /// One page of a pattern's ordered rows, and the cursor that continues it.
     pub(super) fn rows_page(
         &self,
         p: &Pattern,

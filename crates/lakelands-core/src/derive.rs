@@ -5,20 +5,17 @@
 //!
 //! 1. **Dependents are cleared.** A field that declares `depends_on` with
 //!    `on_input_change: clear` is cleared when the write changes one of its
-//!    inputs — unless the write itself sets that field. Clearing counts as
-//!    a change, so a field that depends on a cleared field is cleared too.
-//! 2. **Derived fields are recomputed,** each from its expression over the
-//!    record as it now stands, in dependency order: a derived field is
-//!    computed after every derived field it reads, whatever the order they
-//!    were declared in. A cycle among derived fields is refused when the
-//!    type is declared, so the fold never meets one.
+//!    inputs, unless the write sets that field. Clearing counts as a
+//!    change, so a field depending on a cleared field is cleared too.
+//! 2. **Derived fields are recomputed** from their expressions over the
+//!    record as it now stands, each after every derived field it reads. A
+//!    cycle is refused when the type is declared.
 //!
 //! A derived value lands in its field's storage kind; a decimal whose value
-//! type declares a scale is rounded half away from zero first, so a chain
-//! like `net = gross - vat` reads the already-rounded `vat` and reconciles
-//! to the cent. A derived value that cannot be computed for this record —
-//! an absent input, a division by zero, a value that does not fit the
-//! field — is cleared rather than left stale.
+//! type declares a scale is rounded half away from zero first, so
+//! `net = gross - vat` reads the already-rounded `vat` and reconciles to
+//! the cent. A value that cannot be computed for this record (an absent
+//! input, a division by zero, a misfit) is cleared rather than left stale.
 //!
 //! All of it is a pure function of the record, the write, the lake's
 //! settings and the event's time, so a replay recomputes it exactly.
@@ -198,6 +195,18 @@ pub fn bare(ty: &TypeDecl, value_types: &[ValueTypeDecl]) -> BTreeMap<FieldName,
     sent(ty, value_types, &BTreeMap::new())
 }
 
+/// A scope over `after` alone: a create's record, at the epoch.
+fn alone(after: &BTreeMap<FieldName, Value>) -> WriteScope<'_> {
+    WriteScope {
+        after,
+        before: None,
+        retiring: false,
+        meta: None,
+        settings: None,
+        now: Timestamp(0),
+    }
+}
+
 /// The record a create that sends `sent` leaves: [`bare`] with those
 /// values in place of the `initial`s.
 fn sent(
@@ -213,15 +222,7 @@ fn sent(
         let Some(decl) = ty.fields.iter().find(|f| f.name == name && !f.at_read()) else {
             continue;
         };
-        let scope = WriteScope {
-            after: &fields,
-            before: None,
-            retiring: false,
-            meta: None,
-            settings: None,
-            now: Timestamp(0),
-        };
-        match computed(decl, &expr, value_types, &scope) {
+        match computed(decl, &expr, value_types, &alone(&fields)) {
             Value::Null => fields.remove(&name),
             v => fields.insert(name, v),
         };
@@ -248,11 +249,11 @@ pub fn leaves(ty: &TypeDecl, read: &BTreeSet<FieldName>) -> BTreeSet<FieldName> 
 }
 
 /// Whether no create that sends only fields `sendable` names can make `e`
-/// hold, as far as its form shows it: no field it reads is fed by one of
-/// them, or one of the conditions it joins by `and` is, read only from
-/// fields none of them feeds, broken by the record a create leaves
-/// ([`bare`]) and decided by the record alone. Anything else is a create it
-/// cannot rule out. `ty` is as for [`fixed`].
+/// hold, as far as its form shows: no field it reads is fed by one of them,
+/// or one of its `and` conditions is read only from fields none feeds,
+/// broken by the record a create leaves ([`bare`]) and decided by the
+/// record alone. Anything else is a create it cannot rule out. `ty` is as
+/// for [`fixed`].
 #[doc(hidden)]
 pub fn stuck(
     ty: &TypeDecl,
@@ -268,26 +269,18 @@ pub fn stuck(
         return false;
     };
     let fields = bare(ty, value_types);
-    let scope = WriteScope {
-        after: &fields,
-        before: None,
-        retiring: false,
-        meta: None,
-        settings: None,
-        now: Timestamp(0),
-    };
+    let scope = alone(&fields);
     let broken = |a: &Expr| decided(ty, a) && !crate::expr::holds(a, &scope).unwrap_or(false);
     args.iter().any(|a| !fed(a) && broken(a))
 }
 
 /// The constraints of `ty` that the record [`bare`] breaks, with the
-/// fields of the part that breaks. A create fills the key's fields from
-/// its key, a value of its own: so a constraint counts only where it breaks
-/// whatever the key holds, as one that reads no key field, through the
-/// derived ones, or one that joins by `and` a part that reads none and
-/// breaks, whose fields are then that part's. A part a setting or the clock
-/// decides is not judged here: the create's own write judges it. `ty` is
-/// as for [`fixed`].
+/// fields of the part that breaks. A create fills the key's fields from its
+/// key, so a constraint counts only where it breaks whatever the key holds:
+/// one that reads no key field (through the derived ones), or one joining
+/// by `and` a part that reads none and breaks, whose fields are that
+/// part's. A part a setting or the clock decides is judged by the create's
+/// own write. `ty` is as for [`fixed`].
 #[doc(hidden)]
 pub fn breaks<'t>(
     ty: &'t TypeDecl,
@@ -297,14 +290,7 @@ pub fn breaks<'t>(
     BTreeSet<FieldName>,
 )> {
     let fields = bare(ty, value_types);
-    let scope = WriteScope {
-        after: &fields,
-        before: None,
-        retiring: false,
-        meta: None,
-        settings: None,
-        now: Timestamp(0),
-    };
+    let scope = alone(&fields);
     let key: BTreeSet<FieldName> = ty.key.iter().cloned().collect();
     let keyless = |e: &Expr| leaves(ty, &reads(e)).is_disjoint(&key);
     let breaks = |e: &Expr| decided(ty, e) && !crate::expr::holds(e, &scope).unwrap_or(false);
