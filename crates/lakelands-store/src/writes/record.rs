@@ -796,8 +796,9 @@ impl Call<'_> {
     }
 
     /// `upsert_preflight`: `upsert`'s decision, at the head, appending
-    /// nothing. It reads as a preflight does, under no lock: the writer
-    /// that decides the write later may find a head that has moved.
+    /// nothing. It reads as a preflight does, at a turn but holding no
+    /// writer: the writer that decides the write later may find a head
+    /// that has moved.
     pub fn upsert_preflight(
         &self,
         ty: &TypeName,
