@@ -589,6 +589,19 @@ async fn every_host_operation_is_unbound_naming_it() {
                 .map(|_| ()),
         ),
         (
+            "upsert_preflight",
+            remote
+                .upsert_preflight(
+                    &owner(&lake),
+                    lakelands_api::WriteContext::default(),
+                    &ty,
+                    &key,
+                    lakelands_api::record::Patch::default(),
+                    None,
+                )
+                .await,
+        ),
+        (
             "forget_sources_preflight",
             remote
                 .forget_sources_preflight(&[SourceId::from("bank")])
