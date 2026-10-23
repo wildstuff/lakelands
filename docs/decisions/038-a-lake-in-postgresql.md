@@ -144,7 +144,12 @@ is raised whenever a table or a state changes so that an older
 projection would answer wrongly. At 6, a record's state leaves out what
 its row holds, its type, its key and its position, and its flags where
 they are false; every statement that reads a record selects the row's
-columns beside its state (lakelands#1318).
+columns beside its state (lakelands#1318). A vector's elements are kept
+once, in a row of `vectors` keyed by the state that wrote them, which
+the states naming it share; a read joins it (072, lakelands#1323). A
+projection a build between those two changes laid out, marked 6 with
+`vectors` a head index, is read as layout 5 by that table's shape and
+rebuilt; the check goes at the release that ships both.
 
 ### The rulebook decides
 
@@ -158,9 +163,10 @@ candidates:
 - exact text values;
 - links;
 - full-text tokens, one row per pipeline token of a record;
-- vectors, compared by brute-force cosine, or, for a field the lake asks
-  an index for, the candidates pgvector's HNSW index returns, ranked by
-  the same cosine (043).
+- vectors, the rows of `vectors` in force, compared by brute-force
+  cosine, or, for a field the lake asks an index for, the candidates
+  pgvector's HNSW index over those rows returns, ranked by the same
+  cosine (043, 072).
 
 Selection, order, scoring and ranking are `lakelands_core::engines`'
 (031), so an answer is the same on every engine; only a field the lake
@@ -224,6 +230,7 @@ file answers on disk: it dies with its holder.
   exported (lakelands#865).
 - The layout is 6: a record's state no longer holds its row's type, key
   and position or a false flag, and a count in force asks for a flag that
-  is absent (lakelands#1318). Layouts 3 to 5 kept provenance once a
+  is absent (lakelands#1318); nor a vector's elements, kept once in
+  `vectors` by the state that wrote them (lakelands#1323). Layouts 3 to 5 kept provenance once a
   record (lakelands#1018), routes by source (lakelands#1151) and the
   procedure a computed field names (lakelands#1191).

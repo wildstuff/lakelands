@@ -7,6 +7,12 @@
 //! layout back. A reader's open is refused naming the layouts; the
 //! writer's open rebuilds it from the log under its lease, saying why,
 //! and the next writer's open rebuilds nothing.
+//!
+//! A build between those leaner states and the vectors kept apart
+//! (lakelands#1323) marked the current layout with its states holding
+//! their vectors and `vectors` a head index: its projection is told apart
+//! by that table's shape and read as the layout before. The check goes at
+//! the release, which ships both changes as one layout.
 
 use std::sync::Arc;
 
@@ -16,7 +22,9 @@ use lakelands_api::ontology::FieldDecl;
 use lakelands_api::ontology::StorageKind::{Decimal, Text};
 use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
-use lakelands_core::conformance::fixture::{Lake, computed_by, source_record, sourced, type_decl};
+use lakelands_core::conformance::fixture::{
+    Lake, computed_by, source_record, sourced, type_decl, vector,
+};
 use lakelands_engine_sqlite::SqliteOpener;
 use serde_json::json;
 
@@ -160,4 +168,72 @@ fn rowid_free() -> i64 {
     let sql = "SELECT count(*) FROM sqlite_master WHERE name IN (?1, ?2, ?3) \
                AND sql LIKE '%WITHOUT ROWID%'";
     db.query_row(sql, ROWID_FREE, |r| r.get(0)).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_writers_open_rebuilds_a_projection_laid_out_between_the_two_changes() {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("between-layouts-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let location = Location::sqlite("between", &dir);
+    let store = open(&location, OpenMode::Create).await.unwrap();
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl("pin", vec![vector("v", 3)]))
+        .await
+        .unwrap();
+    let elements = json!([0.1, -0.5, 3]);
+    l.upsert("pin", "k", json!({"v": elements})).await.unwrap();
+    store.close().await.unwrap();
+    drop((l, store));
+    let db = || rusqlite::Connection::open(dir.join("projection.db")).unwrap();
+    let wanted: i64 =
+        (db().query_row("SELECT v FROM meta WHERE k = 'layout'", [], |r| r.get(0))).unwrap();
+    // The in-between build's projection: the elements in the state, as
+    // `f32`s in a head index, the mark the current one.
+    let data: Vec<u8> = [0.1f32, -0.5, 3.0]
+        .iter()
+        .flat_map(|x| x.to_le_bytes())
+        .collect();
+    db().execute_batch(
+        "UPDATE records SET state = json_remove(json_set(state, '$.fields.v', \
+         json('[0.1,-0.5,3]')), '$.vectors'); DROP TABLE vectors; \
+         CREATE TABLE vectors (ty TEXT NOT NULL, field TEXT NOT NULL, key TEXT NOT NULL, \
+         data BLOB NOT NULL, PRIMARY KEY (ty, field, key));",
+    )
+    .unwrap();
+    db().execute("INSERT INTO vectors VALUES ('pin', 'v', 'k', ?1)", [&data])
+        .unwrap();
+    let refused = open(&location, OpenMode::Read).await.err().unwrap();
+    assert!(
+        matches!(refused.situation(), Some(Situation::ProjectionLayout { found, .. }) if *found == Some(wanted as u64 - 1)),
+        "a reader's open of the in-between layout is refused as the layout before: {refused:?}"
+    );
+    let store = open(&location, OpenMode::Write).await.unwrap();
+    let why = store.rebuilt_at_open();
+    assert!(
+        why.as_ref()
+            .is_some_and(|w| w.contains(&format!("layout {}", wanted - 1))),
+        "the writer's open says why it rebuilt: {why:?}"
+    );
+    let pin = Lake::of(store.as_ref()).read("pin", "k").await.unwrap();
+    assert_eq!(
+        pin.fields["v"], elements,
+        "the rebuilt projection reads the elements"
+    );
+    let inline: i64 = (db().query_row(
+        "SELECT count(*) FROM records WHERE json_type(state, '$.fields.v') IS NOT NULL",
+        [],
+        |r| r.get(0),
+    ))
+    .unwrap();
+    assert_eq!(inline, 0, "no state holds a vector's elements");
+    store.close().await.unwrap();
+    let store = open(&location, OpenMode::Write).await.unwrap();
+    assert_eq!(
+        store.rebuilt_at_open(),
+        None,
+        "the next writer's open rebuilds nothing"
+    );
+    store.close().await.unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
 }

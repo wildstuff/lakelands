@@ -35,8 +35,13 @@ state that names another row or none, or the record's retirement, whose
 state still names it. A re-key ends the old key's row at its position,
 as it ends the old key's state. A record written again after its
 retirement starts from no fields, so its state writes a row anew if it
-holds a vector, as a re-key's state at the new key does and a state a
-migration writes, under the field's name in force.
+holds a vector, as a re-key's state at the new key does. A state a
+migration writes names the row in force where it keeps the field's name
+and elements, and writes one under the new name where it renames the
+field, ending the old name's row: the engine is handed a state, not the
+migration, so it shares a row by name and elements alone. A vector the
+vector index is handed with no state naming it has a row of its own
+(`since` -1), which a state that names the field replaces.
 
 ### Elements are doubles, or `f32`s where every one is exactly an `f32`
 
@@ -128,7 +133,11 @@ Three risks are taken with it:
   beside the projection it replaces
   (`071 § The projection is never emptied for a rebuild`), at a time
   that grows with the lake. It is taken in the one raise of
-  lakelands#1318, so a lake is rebuilt once.
+  lakelands#1318, so a lake is rebuilt once. A projection a build
+  between the two laid out bears the raised mark with `vectors` still a
+  head index: the open tells it apart by that table's shape, reads it as
+  the layout before and rebuilds it; the check goes at the release that
+  ships both.
 
 ## What it is not
 
@@ -139,7 +148,12 @@ Three risks are taken with it:
   elements to the bit, and every ranking the same keys, order and
   scores, as the rows above hold.
 - It does not round a caller's doubles to `f32`, nor quantise.
-- It does not compute PostgreSQL's `unit` from `data`. That saves 1.5 to
-  1.7 KB more a record, and lakelands#1323 takes it only if the cosine
-  comes out bit for bit the same.
+- It does not compute PostgreSQL's `unit` from `data`. That would save
+  1.5 to 1.7 KB more a record, but PostgreSQL casts no `bytea` to
+  `float4` or to pgvector's `vector`, so an index over `data` needs a
+  function of the engine's own to decode the elements, and the
+  candidates it finds are not shown to be those `unit`, normalised by
+  the one Rust code, finds. A ranking's scores are the cosine over
+  `data` either way; `unit` stays, filled for the rows in force of a
+  field the lake asks an index for (lakelands#1323).
 - It keeps no ranking of an earlier position.

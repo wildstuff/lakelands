@@ -1791,9 +1791,14 @@ fn unreadable(what: &str, e: &serde_json::Error) -> Error {
 /// block, so a record keeps it once, not once a field. What the row holds
 /// beside the state is not kept in it: its type, its key and its position,
 /// the row's `since`; nor is a flag that is false, nor `base`'s position
-/// where it is the row's (lakelands#1318).
+/// where it is the row's (lakelands#1318); nor a vector's elements, which
+/// a row of their own holds ([`Elements`]), the state naming its position.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct State {
+    /// Each field kept apart, with the position of the row holding its
+    /// elements: first, so a state naming none starts otherwise.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    vectors: BTreeMap<FieldName, Position>,
     version: lakelands_api::id::Version,
     fields: BTreeMap<FieldName, Value>,
     /// The provenance most of the fields share, its position left out
@@ -1814,8 +1819,9 @@ struct State {
 }
 
 /// The state an engine keeps for a record: [`State`]'s form, kept in a
-/// row that holds its type, its key and its position as `since`.
-pub fn record_state(r: &StoredRecord) -> String {
+/// row that holds its type, its key and its position as `since`, the
+/// fields `apart` names left to their rows ([`put_vectors`]).
+pub fn record_state(r: &StoredRecord, apart: &BTreeMap<FieldName, Position>) -> String {
     // The block most fields with a value share; ties to the first field's.
     let mut shared: Vec<(&FieldMeta, usize)> = Vec::new();
     for m in r.fields.keys().filter_map(|f| r.meta.get(f)) {
@@ -1841,9 +1847,11 @@ pub fn record_state(r: &StoredRecord) -> String {
         }
         block
     };
+    let fields = r.fields.iter().filter(|(f, _)| !apart.contains_key(*f));
     let state = State {
+        vectors: apart.clone(),
         version: r.version,
-        fields: r.fields.clone(),
+        fields: fields.map(|(f, v)| (f.clone(), v.clone())).collect(),
         meta: meta.collect(),
         bare: bare.cloned().collect(),
         base: base.map(block),
@@ -1854,11 +1862,21 @@ pub fn record_state(r: &StoredRecord) -> String {
     serde_json::to_string(&state).expect("a record serialises")
 }
 
+/// The fields a state keeps apart, each with the position of the row
+/// holding its elements.
+pub type Apart = Vec<(FieldName, Position)>;
+
 /// A record from the state [`record_state`] kept in the row of `ty`'s
-/// `key` put at `since`: each field with a value and no provenance of its
-/// own takes `base`, but a bare one, and `base` takes `since` where it
-/// holds no position.
-pub fn decode_record(ty: &str, key: &str, since: Position, state: &str) -> Result<StoredRecord> {
+/// `key` put at `since`, and the fields it keeps apart, whose elements
+/// the caller reads from their rows: each field with a value and no
+/// provenance of its own takes `base`, but a bare one, and `base` takes
+/// `since` where it holds no position.
+pub fn decode_record(
+    ty: &str,
+    key: &str,
+    since: Position,
+    state: &str,
+) -> Result<(StoredRecord, Apart)> {
     let s: State = decode(state, "a record")?;
     let mut meta = s.meta;
     if let Some(mut base) = s.base {
@@ -1866,11 +1884,12 @@ pub fn decode_record(ty: &str, key: &str, since: Position, state: &str) -> Resul
         base.entry("position").or_insert_with(at);
         let base: FieldMeta =
             serde_json::from_value(Value::Object(base)).map_err(|e| unreadable("a record", &e))?;
-        for f in s.fields.keys().filter(|f| !s.bare.contains(f)) {
+        let valued = s.fields.keys().chain(s.vectors.keys());
+        for f in valued.filter(|f| !s.bare.contains(f)) {
             meta.entry(f.clone()).or_insert_with(|| base.clone());
         }
     }
-    Ok(StoredRecord {
+    let r = StoredRecord {
         ty: TypeName::from(ty),
         key: RecordKey::from(key),
         version: s.version,
@@ -1880,7 +1899,163 @@ pub fn decode_record(ty: &str, key: &str, since: Position, state: &str) -> Resul
         made: s.made,
         retired: s.retired,
         restricted: s.restricted,
-    })
+    };
+    Ok((r, s.vectors.into_iter().collect()))
+}
+
+/// A vector's elements as the projection keeps them apart from its
+/// record's state (`docs/decisions/072-a-vector-is-stored-once.md`): as
+/// little-endian `f32`s where every element is exactly one (`single`),
+/// else as doubles.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Elements {
+    pub single: bool,
+    pub data: Vec<u8>,
+}
+
+impl Elements {
+    /// The elements of `v` where it is a vector they give back exactly:
+    /// an array of numbers, each the one its double reads as in the log's
+    /// number form ([`number`]). Anything else stays in the state.
+    pub fn of(v: &Value) -> Option<Elements> {
+        let a = v.as_array().filter(|a| !a.is_empty())?;
+        let xs: Vec<f64> = (a.iter())
+            .map(|e| e.as_f64().filter(|x| number(*x) == *e))
+            .collect::<Option<_>>()?;
+        let single = xs.iter().all(|x| f64::from(*x as f32) == *x);
+        let data = match single {
+            true => xs.iter().flat_map(|x| (*x as f32).to_le_bytes()).collect(),
+            false => xs.iter().flat_map(|x| x.to_le_bytes()).collect(),
+        };
+        Some(Elements { single, data })
+    }
+
+    fn doubles(&self) -> Vec<f64> {
+        match self.single {
+            true => vector_of(&self.data).into_iter().map(f64::from).collect(),
+            false => (self.data.as_chunks::<8>().0.iter())
+                .map(|c| f64::from_le_bytes(*c))
+                .collect(),
+        }
+    }
+
+    /// The vector they hold, as the record held it.
+    pub fn value(&self) -> Value {
+        Value::Array(self.doubles().into_iter().map(number).collect())
+    }
+
+    /// The vector as a ranking reads it: each element as an `f32`.
+    pub fn ranked(&self) -> Vec<f32> {
+        match self.single {
+            true => vector_of(&self.data),
+            false => self.doubles().into_iter().map(|x| x as f32).collect(),
+        }
+    }
+}
+
+/// Put back into `r` the vector of `field` its row holds, `row`: a state
+/// naming a row the projection does not hold is one it cannot read.
+pub fn rejoin(r: &mut StoredRecord, field: FieldName, row: Option<Elements>) -> Result<()> {
+    let missing = || <serde_json::Error as serde::de::Error>::custom("its row is missing");
+    let e = row.ok_or_else(|| unreadable("a record's vector", &missing()))?;
+    r.fields.insert(field, e.value());
+    Ok(())
+}
+
+/// A double as the log's number form reads it: an integral one within
+/// ±(2^53 − 1) an integer, `-0` among them as `0`; any other the double.
+fn number(x: f64) -> Value {
+    const SAFE: f64 = 9_007_199_254_740_991.0;
+    match x.fract() == 0.0 && x.abs() <= SAFE {
+        true => Value::from(x as i64),
+        false => serde_json::Number::from_f64(x).map_or(Value::Null, Value::Number),
+    }
+}
+
+/// A row of a record's vector in force at the head: its field, the
+/// position it was written at, and its elements.
+pub type VectorRow = (FieldName, Position, Elements);
+
+/// What putting a record's state does to its vector rows ([`put_vectors`]).
+#[derive(Debug, Default)]
+pub struct VectorPut {
+    /// The fields kept apart, each with the position of the row the state
+    /// names.
+    pub apart: BTreeMap<FieldName, Position>,
+    /// The rows written at the state's position, each ending there too
+    /// where `ends`.
+    pub written: Vec<(FieldName, Elements)>,
+    pub ends: bool,
+    /// The rows written before that end at the state's position.
+    pub ended: Vec<(FieldName, Position)>,
+    /// The rows written at the state's own position, by a state it
+    /// replaces, that it does not name: they go.
+    pub gone: Vec<FieldName>,
+    /// The record's rows in force after it.
+    pub held: Vec<VectorRow>,
+}
+
+/// Whether `ty`'s states keep their vectors in place: the store's own
+/// names, `sys.` and `sys:`, which some reads take without a join, but a
+/// link type's, whose vector fields a caller declares.
+pub fn vectors_in_place(ty: &TypeName) -> bool {
+    let own = ["sys.", "sys:"].iter().any(|p| ty.as_str().starts_with(p));
+    own && !ty.as_str().starts_with(lakelands_api::key::LINK_PREFIX)
+}
+
+/// What putting `r`'s state does to the vector rows of its record, `held`
+/// those in force before it (`docs/decisions/072-a-vector-is-stored-once.md`):
+/// each vector a row in force holds bit for bit, the state names; any
+/// other is written at the state's position, and so is every one of a
+/// state after a retirement. A row the state does not name ends at its
+/// position, and so does every row a retired state names, so a row in
+/// force is one of the head. Where a `later` state is kept already every
+/// vector is written anew, ending at once, and no row held changes. The
+/// store's own names (`sys.`, `sys:`), which engines read by statements of
+/// their own, keep their vectors in their states.
+pub fn put_vectors(r: &StoredRecord, held: Vec<VectorRow>, later: bool) -> VectorPut {
+    let at = r.position;
+    let mut put = VectorPut {
+        ends: r.retired || later,
+        ..VectorPut::default()
+    };
+    let mut was = BTreeMap::new();
+    for (f, since, e) in held {
+        match later {
+            true => put.held.push((f, since, e)),
+            false => drop(was.insert(f, (since, e))),
+        }
+    }
+    let own = vectors_in_place(&r.ty);
+    let kept = (r.fields.iter()).filter(|_| !own);
+    for (f, e) in kept.filter_map(|(f, v)| Some((f, Elements::of(v)?))) {
+        let since = match was.remove(f) {
+            Some((since, h)) if h == e => {
+                if put.ends {
+                    put.ended.push((f.clone(), since));
+                }
+                since
+            }
+            other => {
+                if let Some((since, _)) = other.filter(|(since, _)| *since != at) {
+                    put.ended.push((f.clone(), since));
+                }
+                put.written.push((f.clone(), e.clone()));
+                at
+            }
+        };
+        put.apart.insert(f.clone(), since);
+        if !put.ends {
+            put.held.push((f.clone(), since, e));
+        }
+    }
+    for (f, (since, _)) in was {
+        match since == at {
+            true => put.gone.push(f),
+            false => put.ended.push((f, since)),
+        }
+    }
+    put
 }
 
 /// A vector as an index stores it: its components as little-endian

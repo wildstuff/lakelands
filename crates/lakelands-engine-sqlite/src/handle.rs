@@ -24,7 +24,7 @@ use lakelands_api::id::{LakeId, Position, RecordKey, SourceId, TypeName};
 use lakelands_api::location::SqliteTuning;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
-use lakelands_core::engines::{self, vector_bytes, vector_of};
+use lakelands_core::engines;
 use rusqlite::{Connection, OpenFlags, params};
 
 use crate::lease::{Held, LeaseFile};
@@ -951,17 +951,24 @@ fn nearest(
     k: u32,
 ) -> Result<Vec<(RecordKey, f64)>> {
     let mut stmt = conn
-        .prepare_cached("SELECT key, data FROM vectors WHERE ty = ?1 AND field = ?2 ORDER BY key")
+        .prepare_cached(
+            "SELECT key, single, data FROM vectors WHERE ty = ?1 AND field = ?2 \
+             AND until IS NULL ORDER BY key",
+        )
         .map_err(sql)?;
     let rows = stmt
         .query_map(params![ty.as_str(), field], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+            let e = engines::Elements {
+                single: r.get(1)?,
+                data: r.get(2)?,
+            };
+            Ok((r.get::<_, String>(0)?, e))
         })
         .map_err(sql)?;
     let mut top = lakelands_core::engines::TopK::new(k);
     for row in rows {
-        let (key, data) = row.map_err(sql)?;
-        let v = vector_of(&data);
+        let (key, e) = row.map_err(sql)?;
+        let v = e.ranked();
         if v.len() != query.len() {
             return Err(engines::dimensions(query.len(), v.len(), ty, field));
         }
@@ -973,32 +980,31 @@ fn nearest(
     Ok(top.into_ranked())
 }
 
-/// The vector index's write side and its size: each field's vectors in
-/// one table, indexed at the head only, in the fold's transaction.
+/// The vector index's write side and its size: the rows the records'
+/// states hold in force, each field's ranked together, in the fold's
+/// transaction. The state's row holds a vector the fold puts already; one
+/// put alone has a row of its own until it is taken out.
 impl VectorIndex for SqliteLake {
     fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()> {
-        self.write(|conn| {
-            projection::run(
-                conn,
-                "INSERT INTO vectors (ty, field, key, data) VALUES (?1, ?2, ?3, ?4) \
-                 ON CONFLICT (ty, field, key) DO UPDATE SET data = ?4",
-                params![ty.as_str(), field, key.as_str(), vector_bytes(vector)],
-            )
-        })
+        self.write(|conn| projection::put_vector(conn, (ty.as_str(), key.as_str(), field), vector))
     }
 
     fn remove(&self, ty: &TypeName, key: &RecordKey, field: &str) -> Result<()> {
         self.write(|conn| {
-            conn.prepare_cached("DELETE FROM vectors WHERE ty = ?1 AND field = ?2 AND key = ?3")
-                .and_then(|mut s| s.execute(params![ty.as_str(), field, key.as_str()]))
-                .map(|_| ())
-                .map_err(sql)
+            conn.prepare_cached(
+                "DELETE FROM vectors WHERE ty = ?1 AND field = ?2 AND key = ?3 AND since = -1",
+            )
+            .and_then(|mut s| s.execute(params![ty.as_str(), field, key.as_str()]))
+            .map(|_| ())
+            .map_err(sql)
         })
     }
 
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64> {
         lock(&self.reader)
-            .prepare_cached("SELECT count(*) FROM vectors WHERE ty = ?1 AND field = ?2")
+            .prepare_cached(
+                "SELECT count(*) FROM vectors WHERE ty = ?1 AND field = ?2 AND until IS NULL",
+            )
             .and_then(|mut s| s.query_row(params![ty.as_str(), field], |r| r.get::<_, i64>(0)))
             .map(|n| n as u64)
             .map_err(sql)

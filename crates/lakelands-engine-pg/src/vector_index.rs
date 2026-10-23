@@ -2,9 +2,11 @@
 //! (`docs/decisions/043-an-index-asked-for-answers-its-set.md`).
 //!
 //! **What it is.** The `sys.setting` `vector_index.<type>` names vector
-//! fields of the type. For each, the engine keeps every vector's unit
-//! vector in the `unit` column of `vectors` and one partial HNSW index over
-//! it, ordered by L2 distance, which on unit vectors is cosine's order.
+//! fields of the type. For each, the engine keeps the unit vector of every
+//! row of `vectors` in force (`until` empty) in its `unit` column and one
+//! partial HNSW index over those rows, ordered by L2 distance, which on
+//! unit vectors is cosine's order. A row that ends gives its unit vector
+//! up.
 //! A search over such a field reads its candidates from the index, as many
 //! as it asks for, and ranks them by the one cosine
 //! (`lakelands_api::query::cosine`), ties by key: the answer is the
@@ -27,8 +29,9 @@
 //!
 //! **Only while it describes the head.** Each indexed field has a mark
 //! (`vindex.<type>.<field>`, its dimensions beside it) that the fold keeps
-//! at `folded`. A `put` fills `unit` for a marked field in the same
-//! statement, so the index follows every write. A search uses the index
+//! at `folded`. The write of a state's rows fills `unit` for a marked
+//! field in the same statement, as a `put` of a vector no state names
+//! does, so the index follows every write. A search uses the index
 //! only while the mark equals `folded`; otherwise it scans, with the exact
 //! answer. The commit of the setting's write rebuilds its type's indexes, in
 //! the fold's transaction; a writer's open rebuilds those whose mark is behind.
@@ -86,7 +89,7 @@ pub(crate) struct Pgvector {
 
 impl Pgvector {
     /// The `vector` type, of `n` dimensions when given.
-    fn ty(&self, n: Option<u32>) -> String {
+    pub(crate) fn ty(&self, n: Option<u32>) -> String {
         match n {
             Some(n) => format!("{}.vector({n})", self.schema),
             None => format!("{}.vector", self.schema),
@@ -265,7 +268,7 @@ pub(crate) fn rebuild(
         db.batch(&format!(
             "CREATE INDEX {name} ON {vectors} USING hnsw ((unit::{vt}) {s}.vector_l2_ops) \
              WITH (m = {M}, ef_construction = {EF_CONSTRUCTION}) \
-             WHERE ty = {ty} AND field = {field}",
+             WHERE ty = {ty} AND field = {field} AND until IS NULL",
             name = index_bare(ty, field.as_str()),
             vectors = names.t("vectors"),
             vt = v.ty(Some(n)),
@@ -316,8 +319,8 @@ fn fill(db: &mut Db, names: &Names, ty: &TypeName, field: &str, v: &Pgvector) ->
     loop {
         let rows = db.query(
             &format!(
-                "SELECT key, data FROM {} WHERE ty = $1 AND field = $2 AND key COLLATE \"C\" > $3 \
-                 ORDER BY key COLLATE \"C\" LIMIT $4",
+                "SELECT key, single, data FROM {} WHERE ty = $1 AND field = $2 AND until IS NULL \
+                 AND key > $3 ORDER BY key LIMIT $4",
                 names.t("vectors")
             ),
             &[&ty.as_str(), &field, &after, &FILL_PAGE],
@@ -328,15 +331,18 @@ fn fill(db: &mut Db, names: &Names, ty: &TypeName, field: &str, v: &Pgvector) ->
             .iter()
             .map(|r| {
                 let key: String = r.get(0);
-                let unit = unit_text(&lakelands_core::engines::vector_of(&r.get::<_, Vec<u8>>(1)));
-                (key, unit)
+                let e = engines::Elements {
+                    single: r.get(1),
+                    data: r.get(2),
+                };
+                (key, unit_text(&e.ranked()))
             })
             .unzip();
         db.execute(
             &format!(
                 "UPDATE {vectors} AS t SET unit = CAST(u.unit AS {vt}) \
                  FROM unnest($3::text[], $4::text[]) AS u (key, unit) \
-                 WHERE t.ty = $1 AND t.field = $2 AND t.key = u.key",
+                 WHERE t.ty = $1 AND t.field = $2 AND t.key = u.key AND t.until IS NULL",
                 vectors = names.t("vectors"),
                 vt = v.ty(None),
             ),
@@ -454,8 +460,8 @@ pub(crate) fn candidates_sql(
     n: u32,
 ) -> String {
     format!(
-        "SELECT key, data FROM {vectors} WHERE ty = {ty} AND field = {field} \
-         ORDER BY (unit::{vt}) OPERATOR({s}.<->) CAST($1::text AS {vt}) LIMIT $2",
+        "SELECT key, single, data FROM {vectors} WHERE ty = {ty} AND field = {field} \
+         AND until IS NULL ORDER BY (unit::{vt}) OPERATOR({s}.<->) CAST($1::text AS {vt}) LIMIT $2",
         vectors = names.t("vectors"),
         ty = literal(ty.as_str()),
         field = literal(field),
@@ -499,16 +505,29 @@ pub(crate) fn search_settings(k: u32) -> String {
     )
 }
 
-/// The statement a `put` writes one vector with, filling its unit vector
-/// when its field is marked; `$5` the mark, `$6` the unit vector.
-pub(crate) fn put_sql(names: &Names, v: &Pgvector) -> String {
+/// The statement a `put` writes a vector with, as a row of its own
+/// (`since` -1) where no row of a state holds one in force, filling its
+/// unit vector when its field is marked; `$5` the mark, `$6` the unit
+/// vector, unbound without pgvector.
+pub(crate) fn put_sql(names: &Names, v: Option<&Pgvector>) -> String {
+    let (column, unit, set) = match v {
+        Some(v) => (
+            ", unit",
+            format!(
+                ", CASE WHEN EXISTS (SELECT 1 FROM {} WHERE k = $5) THEN CAST($6::text AS {}) END",
+                names.t("meta"),
+                v.ty(None)
+            ),
+            ", unit = EXCLUDED.unit",
+        ),
+        None => ("", String::new(), ""),
+    };
     format!(
-        "INSERT INTO {vectors} (ty, field, key, data, unit) VALUES ($1, $2, $3, $4, \
-         CASE WHEN EXISTS (SELECT 1 FROM {meta} WHERE k = $5) THEN CAST($6::text AS {vt}) END) \
-         ON CONFLICT (ty, field, key) DO UPDATE SET data = EXCLUDED.data, unit = EXCLUDED.unit",
+        "INSERT INTO {vectors} (ty, key, field, since, single, data{column}) \
+         SELECT $1, $3, $2, -1, true, $4{unit} WHERE NOT EXISTS (SELECT 1 FROM {vectors} \
+         WHERE ty = $1 AND key = $3 AND field = $2 AND since >= 0 AND until IS NULL) \
+         ON CONFLICT (ty, key, field, since) DO UPDATE SET data = EXCLUDED.data{set}",
         vectors = names.t("vectors"),
-        meta = names.t("meta"),
-        vt = v.ty(None),
     )
 }
 

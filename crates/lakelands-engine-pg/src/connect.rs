@@ -209,12 +209,16 @@ impl Db {
     }
 
     /// The records a query's rows hold, each from its first column on as
-    /// [`crate::projection::record_at`] reads it.
-    pub(crate) fn records(&mut self, query: &str, params: Params<'_>) -> Result<Vec<StoredRecord>> {
-        self.query(query, params)?
-            .iter()
-            .map(|r| crate::projection::record_at(r, 0))
-            .collect()
+    /// [`crate::projection::record_at`] reads it, joined to the rows of
+    /// the vectors their states keep apart in `names`' lake.
+    pub(crate) fn records(
+        &mut self,
+        names: &crate::projection::Names,
+        query: &str,
+        params: Params<'_>,
+    ) -> Result<Vec<StoredRecord>> {
+        let rows = self.query(query, params)?;
+        crate::projection::records_at(self, names, &rows, 0)
     }
 
     pub(crate) fn query_opt(&mut self, statement: &str, params: Params<'_>) -> Result<Option<Row>> {
