@@ -3,6 +3,10 @@
 
 use super::*;
 
+/// Drafts sealed: the lease they go under, the events, and the events as
+/// the engine stores them.
+pub(crate) type Stamped = (Lease, Vec<Event>, Vec<CanonicalEvent>);
+
 impl Lake {
     /// Seal drafts after the tip, append them durably, fold them. Answers
     /// the sealed events.
@@ -19,7 +23,18 @@ impl Lake {
         drafts: Vec<Draft>,
         reads: Reads,
     ) -> Result<Vec<Event>> {
-        let (lease, events, stored) = self.stamp(w, drafts)?;
+        let stamped = self.stamp(w, drafts)?;
+        self.append_stamped(w, stamped, reads)
+    }
+
+    /// Append events [`Self::stamp`] sealed durably, fold them, and answer
+    /// them.
+    pub(crate) fn append_stamped(
+        &self,
+        w: &mut Writer,
+        (lease, events, stored): Stamped,
+        reads: Reads,
+    ) -> Result<Vec<Event>> {
         if let Err(e) = self.engine.append(&lease, &stored) {
             self.lose(w, &e);
             return Err(e);
@@ -27,9 +42,10 @@ impl Lake {
         self.landed(w, events, reads)
     }
 
-    /// The events `drafts` become after the tip, as the log writes them
-    /// and as the engine stores them, under the writer's lease: refused
-    /// where an append of them would be. Nothing is changed.
+    /// The events `drafts` become after the tip, or after what a batch
+    /// staged past it, as the log writes them and as the engine stores
+    /// them, under the writer's lease: refused where an append of them
+    /// would be. Nothing is changed.
     ///
     /// The seal judges every event as the log's own reading will
     /// (`docs/log-format.md` §1.2, §1.3): one that holds a number written
@@ -38,11 +54,7 @@ impl Lake {
     /// its value came through. Every door refuses such a value itself and
     /// names where it stands; a refusal from here names no place, and is a
     /// defect of the door that let the value pass.
-    pub(super) fn stamp(
-        &self,
-        w: &Writer,
-        drafts: Vec<Draft>,
-    ) -> Result<(Lease, Vec<Event>, Vec<CanonicalEvent>)> {
+    pub(crate) fn stamp(&self, w: &Writer, drafts: Vec<Draft>) -> Result<Stamped> {
         let Some(lease) = w.lease.clone() else {
             return Err(no_lease());
         };
@@ -71,8 +83,9 @@ impl Lake {
         }
         let mut events = Vec::with_capacity(drafts.len());
         let mut stored: Vec<CanonicalEvent> = Vec::with_capacity(drafts.len());
-        let mut prev_pos = head;
-        let mut prev_hash = w.tip.as_ref().map_or_else(Digest::zero, |(_, h)| h.clone());
+        let after = w.staged.as_ref().or(w.tip.as_ref());
+        let mut prev_pos = after.map(|(p, _)| *p);
+        let mut prev_hash = after.map_or_else(Digest::zero, |(_, h)| h.clone());
         for d in drafts {
             let position = prev_pos.map_or(Position::GENESIS, Position::next);
             // Position 0 is written before any lease exists in the lake.

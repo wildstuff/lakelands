@@ -44,9 +44,18 @@ use crate::writes::{self, Call, External, MadeDue, When};
 /// first page where it continues one.
 type Clocked = (ReadAt, Option<Timestamp>);
 
+/// A record write asked: who asks, the write and its options.
+pub(crate) type Asked = (Principal, writes::Write, WriteOpts);
+
 /// Open a lake at a location. The host passes the engines it compiled in
 /// (and any seams it binds) in `seams`; the store depends on no engine.
 pub async fn open(location: Location, seams: Seams, mode: OpenMode) -> Result<Arc<dyn LakeStore>> {
+    let lake = opened(location, seams, mode).await?;
+    Ok(Arc::new(Store { lake }))
+}
+
+/// The lake [`open`] opens.
+pub(crate) async fn opened(location: Location, seams: Seams, mode: OpenMode) -> Result<Arc<Lake>> {
     let lake = exec::run(move || Lake::open(&location, seams, mode)).await?;
     let lake = Arc::new(lake);
     let owing = lake.clone();
@@ -55,7 +64,7 @@ pub async fn open(location: Location, seams: Seams, mode: OpenMode) -> Result<Ar
         Ok(())
     })
     .await?;
-    Ok(Arc::new(Store { lake }))
+    Ok(lake)
 }
 
 /// Build the projection this release lays out beside the lake at
@@ -112,7 +121,10 @@ pub async fn import(
 /// its lock (024, extended). The head is read only for one whose grants
 /// hide something once they are followed: following may hide what the
 /// grants as given do not.
-fn seen(lake: &Lake, who: Principal) -> Result<(Principal, Option<usize>, Option<writes::Shown>)> {
+pub(crate) fn seen(
+    lake: &Lake,
+    who: Principal,
+) -> Result<(Principal, Option<usize>, Option<writes::Shown>)> {
     let none = Vec::<lakelands_api::engine::Declared>::new();
     let (mut sight, mut followed) = lake.sight(who.clone(), None, None, &none)?;
     let head = || lake.engine.view(None).and_then(|v| lake.shape(v.as_ref()));
@@ -195,6 +207,23 @@ fn reading<T>(
 }
 
 impl Doors {
+    /// The doors of `lake` under `context`.
+    pub(crate) fn new(lake: &Arc<Lake>, context: WriteContext) -> Doors {
+        let lake = lake.clone();
+        Doors { lake, context }
+    }
+
+    /// One record write decided and appended alone ([`crate::batch`]).
+    pub(crate) async fn alone(
+        &self,
+        who: &Principal,
+        write: writes::Write,
+        opts: WriteOpts,
+    ) -> Result<Outcome> {
+        self.write_settled(who, move |c| c.record(&write, opts))
+            .await
+    }
+
     /// What the bound reranker scores a window at, by key. A read: nothing
     /// is recorded, and a window with no candidate asks nothing. A failure,
     /// or other scores than candidates, is `Unavailable`; the stage is
@@ -316,6 +345,54 @@ impl Doors {
             })
         })
         .await
+    }
+
+    /// Record writes, queued as one entry ([`writes::write_many`]), each
+    /// answered as [`Self::write_settled`] answers.
+    pub(crate) async fn records(&self, writes: Vec<Asked>) -> Vec<Result<Outcome>> {
+        let (mut jobs, mut asked) = (Vec::new(), Vec::new());
+        for (who, write, opts) in writes {
+            let (answer, rx) = tokio::sync::oneshot::channel();
+            let same = same_lake(&self.lake, &who).map(|()| {
+                let context = self.context;
+                let who = who.clone();
+                jobs.push(writes::Job {
+                    who,
+                    context,
+                    write,
+                    opts,
+                    answer,
+                });
+            });
+            asked.push((who, same.map(|()| rx)));
+        }
+        if !jobs.is_empty() {
+            exec::records(&self.lake, jobs);
+        }
+        let mut answers = Vec::new();
+        for (who, rx) in asked {
+            let answer = match rx {
+                Ok(rx) => rx.await.unwrap_or_else(|_| Err(exec::halted(true))),
+                Err(e) => Err(e),
+            };
+            let by = MadeDue::Call { keyed: false };
+            answers.push(match answer {
+                Ok((outcome, own)) => self.handed(&who, ((outcome, None), own), by).await,
+                Err(e) => Err(e),
+            });
+        }
+        answers
+    }
+
+    /// One record write, as [`Self::records`] answers it.
+    async fn record(
+        &self,
+        who: &Principal,
+        write: writes::Write,
+        opts: WriteOpts,
+    ) -> Result<Outcome> {
+        let mut answers = self.records(vec![(who.clone(), write, opts)]).await;
+        answers.remove(0)
     }
 
     /// Make the calls of backed functions the write made due, and answer
@@ -530,9 +607,8 @@ impl Catalog for Doors {
         patch: Patch,
         opts: WriteOpts,
     ) -> Result<Outcome> {
-        let (ty, key) = (ty.clone(), key.clone());
-        self.write_settled(who, move |c| c.upsert(&ty, &key, patch, opts))
-            .await
+        let write = writes::Write::Upsert(ty.clone(), key.clone(), patch);
+        self.record(who, write, opts).await
     }
 
     async fn retire(
@@ -542,9 +618,8 @@ impl Catalog for Doors {
         key: &RecordKey,
         opts: WriteOpts,
     ) -> Result<Outcome> {
-        let (ty, key) = (ty.clone(), key.clone());
-        self.write_settled(who, move |c| c.retire(&ty, &key, opts))
-            .await
+        let write = writes::Write::Retire(ty.clone(), key.clone());
+        self.record(who, write, opts).await
     }
 
     async fn link(
@@ -558,9 +633,11 @@ impl Catalog for Doors {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         let (ty, key, relation, to) = (ty.clone(), key.clone(), relation.clone(), to.clone());
-        self.write_settled(who, move |c| {
-            c.link(&ty, &key, &relation, &to, fields, opts)
-        })
+        self.record(
+            who,
+            writes::Write::Link(ty, key, relation, to, fields),
+            opts,
+        )
         .await
     }
 
@@ -574,7 +651,7 @@ impl Catalog for Doors {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         let (ty, key, relation, to) = (ty.clone(), key.clone(), relation.clone(), to.clone());
-        self.write_settled(who, move |c| c.unlink(&ty, &key, &relation, &to, opts))
+        self.record(who, writes::Write::Unlink(ty, key, relation, to), opts)
             .await
     }
 
@@ -947,10 +1024,7 @@ impl LakeStore for Store {
     }
 
     fn catalog(&self, context: WriteContext) -> Arc<dyn Catalog> {
-        Arc::new(Doors {
-            lake: self.lake.clone(),
-            context,
-        })
+        Arc::new(Doors::new(&self.lake, context))
     }
 
     fn feed(&self) -> Arc<dyn ChangeFeed> {

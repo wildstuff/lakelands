@@ -9,20 +9,47 @@
 //! hand-off in this crate: no nested runtime, no thread that parks the
 //! caller.
 //!
-//! **The queue.** A lake's writes wait their turn in an async queue, in
-//! the order they came, before they take a thread: one write at a time
-//! holds a blocking thread on the writer's lock, so a crowd of writers
-//! parks no thread, and a read beside them finds the pool free. The
-//! writer's lock stays; the queue only decides who takes it next, which
-//! the lock itself does not do fairly. The log's order is still the order
-//! the writer appends in.
+//! **The queue.** A lake's writes wait their turn in one queue, in the
+//! order they came, before they take a thread: the first to find nobody
+//! holding the turn takes a blocking thread and runs the entries from the
+//! head until the queue is empty, so a crowd of writers parks no thread,
+//! and a read beside them finds the pool free. The writer's lock stays;
+//! the queue only decides who takes it next, which the lock itself does
+//! not do fairly. The log's order is still the order the writer appends
+//! in. An entry is a job that runs alone, or record writes as data, which
+//! the turn decides together ([`crate::writes::write_many`]).
 
-use std::sync::Arc;
+use std::any::Any;
+use std::collections::VecDeque;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Arc, Mutex, Weak};
 
 use lakelands_api::Result;
 use lakelands_api::error::{Detail, Error, Situation};
 
 use crate::lake::Lake;
+use crate::writes::Job;
+
+/// A lake's queue: its entries, oldest first, and whether a thread holds
+/// the turn and runs them.
+#[derive(Default)]
+pub(crate) struct Queue {
+    entries: VecDeque<Entry>,
+    held: bool,
+}
+
+/// One entry of the queue.
+enum Entry {
+    /// A job that runs alone, its answer given after it.
+    Alone(Box<dyn FnOnce(&Turn<'_>) -> Reply + Send>),
+    /// Record writes.
+    Records(Vec<Job>),
+}
+
+/// An answer decided and not given yet. The turn gives it once it has let
+/// the lake go, so a caller who drops the lake on its answer finds it
+/// gone, its lease released, as when the work's own thread ended first.
+pub(crate) type Reply = Box<dyn FnOnce() + Send>;
 
 /// Run `work` on the blocking pool and answer its result. A panic inside
 /// the work is reported as the lake being unavailable, never propagated
@@ -39,9 +66,11 @@ where
 }
 
 /// A turn at `lake`'s writer: what [`Turn::writer`] and [`Turn::for_write`]
-/// are taken with. It is lent to a write's job by `write` (and by
-/// `write_soon` inline, where no runtime is there to queue it), and to
-/// an owner of the lake by [`Lake::turn`]; it reads as the lake.
+/// are taken with. The thread that holds the queue lends it to each
+/// entry in turn: to a write's job queued by [`write()`], and to a batch of
+/// record writes queued by [`records`] (`write_soon` lends it inline,
+/// where no runtime is there to queue on), and it is lent to an owner of
+/// the lake by [`Lake::turn`]; it reads as the lake.
 pub struct Turn<'l>(&'l Lake);
 
 impl<'l> Turn<'l> {
@@ -68,31 +97,128 @@ impl Lake {
     }
 }
 
-/// Run `work` on the blocking pool when its turn in `lake`'s queue comes,
-/// lent the turn, and answer its result as [`run`] does. The turn goes
-/// into the blocking work with it, and one that is waited for is waited
-/// for in a task of its own, so a caller who goes away does not stop a
-/// job between its turn and its end, and the next job's turn comes when
-/// the work ends, however it ends. A free turn is taken at once: the
-/// queue hands a turn that comes free to its first waiter, so no write
-/// already waiting is passed.
+/// Run `work` when its turn in `lake`'s queue comes, lent the turn, and
+/// answer its result as [`run`] does. The work runs on the thread that
+/// holds the turn, so a caller who goes away does not stop a job between
+/// its turn and its end, and the next job's turn comes when the work
+/// ends, however it ends.
 pub async fn write<T, F>(lake: &Arc<Lake>, work: F) -> Result<T>
 where
     T: Send + 'static,
     F: FnOnce(&Turn<'_>) -> Result<T> + Send + 'static,
 {
-    let (lake, turns) = (lake.clone(), lake.turns.clone());
-    let at = move |turn| {
-        run(move || {
-            let _turn = turn;
-            work(&Turn(&lake))
-        })
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let job = move |t: &Turn<'_>| -> Reply {
+        let answer = catch_unwind(AssertUnwindSafe(|| work(t)));
+        let answer = answer.unwrap_or_else(|p| Err(stopped_by_panic(p)));
+        Box::new(move || drop(tx.send(answer)))
     };
-    match turns.clone().try_lock_owned() {
-        Ok(turn) => at(turn).await,
-        Err(_) => {
-            let job = tokio::spawn(async move { at(turns.lock_owned().await).await });
-            job.await.unwrap_or_else(|e| Err(stopped(&e)))
+    queue(lake, Entry::Alone(Box::new(job)));
+    rx.await.unwrap_or_else(|_| Err(halted(true)))
+}
+
+/// Queue record writes as one entry; each job is answered on its own.
+pub(crate) fn records(lake: &Arc<Lake>, jobs: Vec<Job>) {
+    queue(lake, Entry::Records(jobs));
+}
+
+/// How many entries wait in `lake`'s queue.
+pub(crate) fn queued(lake: &Lake) -> usize {
+    lakelands_core::lock(&lake.queue).entries.len()
+}
+
+/// Put `entry` at the end of `lake`'s queue, and take the turn where
+/// nobody holds it.
+fn queue(lake: &Arc<Lake>, entry: Entry) {
+    let mut q = lakelands_core::lock(&lake.queue);
+    q.entries.push_back(entry);
+    let held = std::mem::replace(&mut q.held, true);
+    drop(q);
+    if !held {
+        hold(lake.queue.clone(), Arc::downgrade(lake));
+    }
+}
+
+/// Hold the turn of `queue`'s lake on a blocking thread: run the entries
+/// from the head until none is left, giving each entry's answers after it.
+fn hold(queue: Arc<Mutex<Queue>>, lake: Weak<Lake>) {
+    let mut holding = Holding {
+        queue,
+        lake,
+        began: false,
+        replies: Vec::new(),
+    };
+    drop(tokio::task::spawn_blocking(move || {
+        holding.began = true;
+        while let Some(entry) = holding.next() {
+            holding.run(entry);
+            holding.reply();
+        }
+    }));
+}
+
+/// The turn, held. It holds its lake only while an entry runs: an entry
+/// whose lake is gone, every caller having let it go, is dropped unrun.
+/// A panic that unwinds out of it gives the answers decided, answers the
+/// jobs it took and had not answered `Stopped`, as their dropped answers
+/// are read, and hands the turn on to the entries still queued; a hold
+/// the runtime never ran (it was shutting down) lets the turn go and
+/// answers every queued job `Stopped` the same way.
+struct Holding {
+    queue: Arc<Mutex<Queue>>,
+    lake: Weak<Lake>,
+    began: bool,
+    replies: Vec<Reply>,
+}
+
+impl Holding {
+    /// The head entry; with none left, the turn is let go.
+    fn next(&self) -> Option<Entry> {
+        let mut q = lakelands_core::lock(&self.queue);
+        let entry = q.entries.pop_front();
+        q.held = entry.is_some();
+        entry
+    }
+
+    /// Run `entry` on the lake, while it is there; the lake is let go
+    /// before any of its answers is given.
+    fn run(&mut self, entry: Entry) {
+        let Some(lake) = self.lake.upgrade() else {
+            return;
+        };
+        match entry {
+            Entry::Alone(job) => self.replies.push(job(&Turn(&lake))),
+            Entry::Records(jobs) => {
+                crate::writes::write_many(&Turn(&lake), jobs, &mut self.replies);
+            }
+        }
+    }
+
+    /// Give the answers decided.
+    fn reply(&mut self) {
+        for reply in self.replies.drain(..) {
+            reply();
+        }
+    }
+}
+
+impl Drop for Holding {
+    fn drop(&mut self) {
+        if self.began && !std::thread::panicking() {
+            return;
+        }
+        self.reply();
+        let mut q = lakelands_core::lock(&self.queue);
+        let unrun = match self.began {
+            true => VecDeque::new(),
+            false => std::mem::take(&mut q.entries),
+        };
+        q.held = !q.entries.is_empty();
+        let held = q.held;
+        drop(q);
+        drop(unrun);
+        if held {
+            hold(self.queue.clone(), self.lake.clone());
         }
     }
 }
@@ -122,7 +248,19 @@ where
 /// The store's work stopped: whether it panicked or was cancelled, never
 /// what a panic said, which may quote a record.
 pub(crate) fn stopped(e: &tokio::task::JoinError) -> Error {
-    let detail = Detail::scrubbed(if e.is_panic() {
+    halted(e.is_panic())
+}
+
+/// [`stopped`], for work that panicked where it was caught: what it said
+/// is dropped unread.
+pub(crate) fn stopped_by_panic(payload: Box<dyn Any + Send>) -> Error {
+    drop(payload);
+    halted(true)
+}
+
+/// The store's work stopped, as it panicked or as it was cancelled.
+pub(crate) fn halted(panicked: bool) -> Error {
+    let detail = Detail::scrubbed(if panicked {
         "it panicked"
     } else {
         "it was cancelled"
