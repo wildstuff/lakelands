@@ -16,10 +16,9 @@
 //! and a read beside them finds the pool free. The writer's lock stays;
 //! the queue only decides who takes it next, which the lock itself does
 //! not do fairly. The log's order is still the order the writer appends
-//! in. An entry is a job that runs alone, or record writes as data; the
-//! record writes queued one after another, up to the first job that runs
-//! alone, are taken together, and the turn decides them in batches that
-//! share one durable append, each answered before the next is decided
+//! in. An entry is a job that runs alone, or record writes as data; those
+//! queued one after another are taken together and decided in batches of
+//! one durable append, each answered before the next
 //! ([`crate::writes::write_many`]).
 
 use std::any::Any;
@@ -216,8 +215,6 @@ impl Holding {
         match entry {
             Entry::Alone(job) => self.replies.push(job(&Turn(&lake))),
             Entry::Records(jobs) => {
-                // One batch a turn, so its answers are given before the
-                // next: what it left goes back to the head of the queue.
                 let left = crate::writes::write_many(&Turn(&lake), jobs, &mut self.replies);
                 if !left.is_empty() {
                     let mut q = lakelands_core::lock(&self.queue);

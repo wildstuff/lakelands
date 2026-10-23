@@ -513,10 +513,9 @@ impl Lake {
             || !crate::remove::removed_list(view.as_ref(), &none)?.is_empty())
     }
 
-    /// The log's tip, read again, and how far the projection is folded: a
-    /// write that stopped midway may have left the writer's behind the
-    /// log, or past it; an append whose fold failed and that never landed
-    /// is owed nothing.
+    /// The log's tip read again, which a write that stopped midway may
+    /// have left the writer's off, and how far the projection is folded;
+    /// a failed append that never landed is owed nothing.
     fn retip(&self, w: &mut Writer) -> Result<Option<Position>> {
         let folded;
         (folded, w.tip) = ends(self.engine.as_ref())?;

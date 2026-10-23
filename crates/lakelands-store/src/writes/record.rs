@@ -1131,17 +1131,15 @@ enum Told {
     Replayed(Outcome),
 }
 
-/// The head of record writes queued together, decided under one turn,
-/// and the jobs left behind it. It runs alone, as [`Call::record`]
-/// decides it, where the writer must first catch up, regain its lease or
-/// append a held answer, and where it does not batch
+/// The head of record writes queued together, decided under one turn;
+/// the jobs left behind it are answered. The head runs alone, as
+/// [`Call::record`] decides it, where the writer must first catch up,
+/// regain its lease or append a held answer, and where it does not batch
 /// ([`Write::batches`]). Otherwise it and the jobs behind it that batch
 /// are decided one by one, each against the drafts of those before it,
-/// and appended together, until their events reach the lake's
-/// `commit_window_events`; none is answered before that append returns.
-/// A job refused, or stopped, is answered alone and leaves nothing
-/// behind; one that stopped ends its batch. Each answer goes to
-/// `replies`, given once the turn lets the lake go.
+/// and appended together, up to `commit_window_events`; none is answered
+/// before that append returns. A job refused, or stopped, is answered
+/// alone and leaves nothing behind; one that stopped ends its batch.
 pub(crate) fn write_many(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) -> Vec<Job> {
     let mut jobs = std::collections::VecDeque::from(jobs);
     let Some(head) = jobs.pop_front() else {
@@ -1246,11 +1244,7 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) -> Vec<Job
             call.moved(&w)?;
             let at = (&*w, view.as_ref(), now);
             let told = match call.decided(at, &mut pending, (op, &opts), again)? {
-                Decided::Drafts(drafts) => {
-                    // Its door refused what the seal would, and the batch
-                    // opened on a writer that may append.
-                    (Told::Events(0..0), Some(turn.stamp(&w, drafts)?))
-                }
+                Decided::Drafts(drafts) => (Told::Events(0..0), Some(turn.stamp(&w, drafts)?)),
                 Decided::Again(j, tip) => (Told::Again(j, tip), None),
                 Decided::Replayed(first) => (Told::Replayed(first), None),
             };

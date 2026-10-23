@@ -24,7 +24,7 @@ pub use crate::writes::Write;
 pub type Asked = (WriteContext, Principal, Write, WriteOpts);
 
 /// The record writes the queues took, in the order taken, while recorded.
-static ORDER: Mutex<Option<Vec<Asked>>> = Mutex::new(None);
+static ORDER: Mutex<Vec<Asked>> = Mutex::new(Vec::new());
 
 /// Whether [`ORDER`] is recorded: read first, so a queue of a lake whose
 /// order nobody records takes no lock the lakes share.
@@ -33,7 +33,7 @@ static RECORDED: AtomicBool = AtomicBool::new(false);
 /// Record the order record writes are taken from every queue in, or, at
 /// `false`, stop.
 pub fn record_order(on: bool) {
-    *lakelands_core::lock(&ORDER) = on.then(Vec::new);
+    lakelands_core::lock(&ORDER).clear();
     RECORDED.store(on, Ordering::SeqCst);
 }
 
@@ -42,17 +42,14 @@ pub fn record_order(on: bool) {
 pub fn order(lake: &str) -> Vec<Asked> {
     let order = lakelands_core::lock(&ORDER);
     let of = |a: &&Asked| a.1.lake.as_str() == lake;
-    order.iter().flatten().filter(of).cloned().collect()
+    order.iter().filter(of).cloned().collect()
 }
 
 /// `jobs`, queued in this order, which the queue takes them in.
 pub(crate) fn taken(jobs: &[Job]) {
-    if !RECORDED.load(Ordering::SeqCst) {
-        return;
-    }
-    if let Some(order) = lakelands_core::lock(&ORDER).as_mut() {
+    if RECORDED.load(Ordering::SeqCst) {
         let asked = |j: &Job| (j.context, j.who.clone(), j.write.clone(), j.opts.clone());
-        order.extend(jobs.iter().map(asked));
+        lakelands_core::lock(&ORDER).extend(jobs.iter().map(asked));
     }
 }
 

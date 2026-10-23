@@ -388,9 +388,8 @@ impl Doors {
         write: writes::Write,
         opts: WriteOpts,
     ) -> Result<Outcome> {
-        let mut answers = self
-            .records(vec![(self.context, who.clone(), write, opts)])
-            .await;
+        let asked = (self.context, who.clone(), write, opts);
+        let mut answers = self.records(vec![asked]).await;
         answers.remove(0)
     }
 
