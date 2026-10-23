@@ -38,7 +38,11 @@ use rusqlite::{Connection, OptionalExtension, Params, ToSql, params};
 
 use crate::sql;
 
-/// The schema. `state` columns hold the state as JSON.
+/// The schema. `state` columns hold the state as JSON; a record's leaves
+/// out what its row holds ([`engines::record_state`]). A table whose
+/// primary key is the whole row keeps no rowid beside it (`WITHOUT ROWID`),
+/// which would hold every row twice. `search_rows` holds a row only for a
+/// record with full-text tokens.
 pub(crate) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (
     k TEXT PRIMARY KEY,
@@ -77,7 +81,7 @@ CREATE TABLE IF NOT EXISTS outputs (
 CREATE TABLE IF NOT EXISTS applied (
     id TEXT PRIMARY KEY,
     at INTEGER NOT NULL
-);
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS routes (
     at INTEGER NOT NULL, kind TEXT NOT NULL, ty TEXT, key TEXT, source TEXT
 );
@@ -88,7 +92,7 @@ CREATE INDEX IF NOT EXISTS routes_source ON routes (source, at);
 CREATE TABLE IF NOT EXISTS text_index (
     ty TEXT NOT NULL, field TEXT NOT NULL, value TEXT NOT NULL, key TEXT NOT NULL,
     PRIMARY KEY (ty, field, value, key)
-);
+) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS text_index_key ON text_index (ty, key);
 CREATE TABLE IF NOT EXISTS lookup_fields (
     ty TEXT NOT NULL, field TEXT NOT NULL, PRIMARY KEY (ty, field)
@@ -102,7 +106,7 @@ CREATE INDEX IF NOT EXISTS edges_dst ON edges (dst_ty, dst_key);
 CREATE TABLE IF NOT EXISTS sort_index (
     ty TEXT NOT NULL, field TEXT NOT NULL, key TEXT NOT NULL, sort_key BLOB NOT NULL,
     PRIMARY KEY (ty, key, field)
-);
+) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS sort_index_asc ON sort_index (ty, field, sort_key, key);
 CREATE INDEX IF NOT EXISTS sort_index_desc ON sort_index (ty, field, sort_key DESC, key);
 CREATE TABLE IF NOT EXISTS search_rows (
@@ -320,7 +324,7 @@ pub(crate) fn routes(
 /// raised whenever a table changes so that a projection made before
 /// would answer wrongly, not fail: one made with another layout is never
 /// read, and is rebuilt from the log.
-pub(crate) const LAYOUT: u64 = 4;
+pub(crate) const LAYOUT: u64 = 5;
 
 /// The layout `conn`'s projection was made with: none where it holds no
 /// `meta`, or was made before projections were marked.
@@ -533,16 +537,14 @@ fn fill_chosen(
     limit: u32,
 ) -> Result<Option<RecordKey>> {
     let after = after.map_or("", RecordKey::as_str);
-    let page: Vec<String> = column(
+    let page = records(
         conn,
-        "SELECT state FROM records WHERE ty = ?1 AND until IS NULL AND key > ?2 \
+        "SELECT ty, key, since, state FROM records WHERE ty = ?1 AND until IS NULL AND key > ?2 \
          ORDER BY key LIMIT ?3",
         params![ty.as_str(), after, limit],
-        Ok,
     )?;
     let mut last = None;
-    for state in &page {
-        let r = decode_record(state)?;
+    for r in &page {
         run(
             conn,
             "DELETE FROM sort_index WHERE ty = ?1 AND field = ?2 AND key = ?3",
@@ -555,7 +557,7 @@ fn fill_chosen(
                 params![ty.as_str(), field.as_str(), r.key.as_str(), sort_key],
             )?;
         }
-        last = Some(r.key);
+        last = Some(r.key.clone());
     }
     Ok(last.filter(|_| page.len() == limit as usize))
 }
@@ -587,16 +589,14 @@ pub(crate) fn rebuild_sorted(conn: &Connection, ty: &TypeName, through: Position
     // A page of the type at a time, so the pass holds a page, not the type.
     let mut after = String::new();
     loop {
-        let page: Vec<String> = column(
+        let page = records(
             conn,
-            "SELECT state FROM records WHERE ty = ?1 AND until IS NULL AND key > ?2 \
-             ORDER BY key LIMIT 1024",
+            "SELECT ty, key, since, state FROM records WHERE ty = ?1 AND until IS NULL \
+             AND key > ?2 ORDER BY key LIMIT 1024",
             params![ty.as_str(), after],
-            Ok,
         )?;
-        for state in &page {
-            let r = decode_record(state)?;
-            for (field, sort_key) in engines::order_rows(&fields, &r) {
+        for r in &page {
+            for (field, sort_key) in engines::order_rows(&fields, r) {
                 run(
                     conn,
                     "INSERT INTO sort_index (ty, field, key, sort_key) VALUES (?1, ?2, ?3, ?4)",
@@ -772,16 +772,38 @@ pub(crate) fn head_record(
     ty: &TypeName,
     key: &RecordKey,
 ) -> Result<Option<StoredRecord>> {
-    let state: Option<String> = one(
-        conn,
-        "SELECT state FROM records WHERE ty = ?1 AND key = ?2 AND until IS NULL",
-        params![ty.as_str(), key.as_str()],
-    )?;
-    state.as_deref().map(decode_record).transpose()
+    let head = "SELECT ty, key, since, state FROM records WHERE ty = ?1 AND key = ?2 \
+                AND until IS NULL";
+    let mut found = records(conn, head, params![ty.as_str(), key.as_str()])?;
+    Ok(found.pop())
 }
 
-pub(crate) fn decode_record(state: &str) -> Result<StoredRecord> {
-    engines::decode_record(state)
+/// A record as a statement answers it from the column `at` on: its row's
+/// type, key and position, then its state ([`engines::decode_record`]).
+pub(crate) fn record_at(row: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Kept4> {
+    Ok((row.get(at)?, row.get(at + 1)?, row.get(at + 2)?, row.get(at + 3)?))
+}
+
+/// A record's row and state as [`record_at`] reads them.
+pub(crate) type Kept4 = (String, String, i64, String);
+
+/// The record [`record_at`] read.
+pub(crate) fn decode_record((ty, key, since, state): &Kept4) -> Result<StoredRecord> {
+    engines::decode_record(ty, key, Position(*since as u64), state)
+}
+
+/// The records a cached statement answers, each as [`record_at`] reads
+/// it from its first column; decoded once all are read.
+pub(crate) fn records(
+    conn: &Connection,
+    statement: &str,
+    args: impl Params,
+) -> Result<Vec<StoredRecord>> {
+    let mut stmt = conn.prepare_cached(statement).map_err(sql)?;
+    let rows: Vec<Kept4> = (stmt.query_map(args, |r| record_at(r, 0)))
+        .and_then(Iterator::collect)
+        .map_err(sql)?;
+    rows.iter().map(decode_record).collect()
 }
 
 /// Whether a record's state put at `position` is its latest.
@@ -837,16 +859,11 @@ pub(crate) fn index_record(
             .map_err(sql)?;
         }
     }
-    let row: i64 = {
-        conn.prepare_cached("INSERT OR IGNORE INTO search_rows (ty, key) VALUES (?1, ?2)")
-            .and_then(|mut s| s.execute(params![ty, key]))
-            .map_err(sql)?;
-        conn.prepare_cached("SELECT id FROM search_rows WHERE ty = ?1 AND key = ?2")
-            .and_then(|mut s| s.query_row(params![ty, key], |r| r.get(0)))
-            .map_err(sql)?
-    };
     if !fresh {
-        run(conn, "DELETE FROM full_text WHERE rowid = ?1", params![row])?;
+        drop(
+            "DELETE FROM full_text WHERE rowid = \
+             (SELECT id FROM search_rows WHERE ty = ?1 AND key = ?2)",
+        )?;
     }
     for (field, sort_key) in engines::order_rows(sorted, r) {
         conn.prepare_cached(
@@ -854,6 +871,30 @@ pub(crate) fn index_record(
         )
         .and_then(|mut s| s.execute(params![ty, field.as_str(), key, sort_key]))
         .map_err(sql)?;
+    }
+    // A record keeps a search row only while it has tokens: most have none.
+    let tokens = decl.map(|d| engines::record_tokens(d, r)).unwrap_or_default();
+    if tokens.is_empty() {
+        if !fresh {
+            drop("DELETE FROM search_rows WHERE ty = ?1 AND key = ?2")?;
+        }
+    } else {
+        let row: i64 = {
+            conn.prepare_cached("INSERT OR IGNORE INTO search_rows (ty, key) VALUES (?1, ?2)")
+                .and_then(|mut s| s.execute(params![ty, key]))
+                .map_err(sql)?;
+            conn.prepare_cached("SELECT id FROM search_rows WHERE ty = ?1 AND key = ?2")
+                .and_then(|mut s| s.query_row(params![ty, key], |r| r.get(0)))
+                .map_err(sql)?
+        };
+        let doc = tokens
+            .iter()
+            .map(|t| fts_term(t))
+            .collect::<Vec<_>>()
+            .join(" ");
+        conn.prepare_cached("INSERT INTO full_text (rowid, tokens) VALUES (?1, ?2)")
+            .and_then(|mut s| s.execute(params![row, doc]))
+            .map_err(sql)?;
     }
     let Some(decl) = decl else {
         return Ok(());
@@ -871,19 +912,6 @@ pub(crate) fn index_record(
                 e.to.1.as_str()
             ],
         )?;
-    }
-    // Every head state is indexed, whatever its flags: a view at an
-    // earlier position may keep a record the head has retired.
-    let tokens = engines::record_tokens(decl, r);
-    if !tokens.is_empty() {
-        let doc = tokens
-            .iter()
-            .map(|t| fts_term(t))
-            .collect::<Vec<_>>()
-            .join(" ");
-        conn.prepare_cached("INSERT INTO full_text (rowid, tokens) VALUES (?1, ?2)")
-            .and_then(|mut s| s.execute(params![row, doc]))
-            .map_err(sql)?;
     }
     Ok(())
 }
@@ -1086,12 +1114,11 @@ pub(crate) fn index_older(conn: &Connection, ty: &TypeName, at: Position) -> Res
     // A page of the type at a time; an ended key has no index rows.
     let mut after = String::new();
     loop {
-        let older: Vec<StoredRecord> = column(
+        let older = records(
             conn,
-            "SELECT state FROM records WHERE ty = ?1 AND until IS NULL AND since < ?2 \
-             AND key > ?3 ORDER BY key LIMIT 1024",
+            "SELECT ty, key, since, state FROM records WHERE ty = ?1 AND until IS NULL \
+             AND since < ?2 AND key > ?3 ORDER BY key LIMIT 1024",
             params![ty.as_str(), at.0 as i64, after],
-            |s: String| decode_record(&s),
         )?;
         for r in older.iter().filter(|r| !r.is_ended()) {
             index_record(conn, (head.as_ref(), &sorted, looked.as_ref()), false, r)?;

@@ -469,11 +469,9 @@ fn a_state_keeps_shared_provenance_once_and_reads_every_fields_back() {
     ];
     for r in &cases {
         let state = record_state(r);
-        assert_eq!(&decode_record(&state).unwrap(), r, "{state}");
-        assert_eq!(
-            &decode_record(&serde_json::to_string(r).unwrap()).unwrap(),
-            r
-        );
+        assert_eq!(&decode_record("t", "k", r.position, &state).unwrap(), r, "{state}");
+        let whole = serde_json::to_string(r).unwrap();
+        assert_eq!(&decode_record("t", "k", r.position, &whole).unwrap(), r);
     }
     let shared = record_state(&cases[0]);
     assert_eq!(
@@ -481,6 +479,71 @@ fn a_state_keeps_shared_provenance_once_and_reads_every_fields_back() {
         1,
         "one block for three fields: {shared}"
     );
+}
+
+/// The state leaves out what its row holds and what is false, and reads
+/// back every record whole from it and the row (lakelands#1318): over
+/// records drawn from a seed, of keys with `:`, `%` and non-ASCII, fields
+/// with and without provenance, blocks at the record's position and at
+/// others, either flag, and a key ended. `base`'s position is left out
+/// only where it is the row's.
+#[test]
+fn a_state_round_trips_through_its_row_whatever_the_record() {
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = |n: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % n
+    };
+    let keys = ["k", "a%3Ab", "50%25", "zürich:ü", "日本", ""];
+    for _ in 0..2000 {
+        let position = Position(1 + next(40));
+        let block = |at: u64, source: bool| {
+            let mut b = json!({"origin": if source {"source"} else {"authored"},
+                "known_at": "2026-01-01T00:00:00Z", "position": at, "writer": "w"});
+            if source {
+                b["source"] = json!("crm");
+            }
+            b
+        };
+        let blocks = [
+            block(position.0, true),
+            block(position.0, false),
+            block(1 + next(40), true),
+        ];
+        let (mut fields, mut meta) = (json!({}), json!({}));
+        for f in ["a", "b", "c", "d"].iter().take(next(5) as usize) {
+            match next(4) {
+                0 => meta[f] = blocks[next(3) as usize].clone(),
+                1 => fields[f] = json!(keys[next(6) as usize]),
+                _ => {
+                    fields[f] = json!(next(9));
+                    meta[f] = blocks[next(3) as usize].clone();
+                }
+            }
+        }
+        let key = keys[next(6) as usize];
+        let mut r: StoredRecord = serde_json::from_value(json!({"type": "t.ü", "key": key,
+            "version": next(5), "fields": fields, "meta": meta, "position": position.0,
+            "made": 1 + next(position.0), "retired": next(2) == 0, "restricted": next(2) == 0}))
+        .unwrap();
+        if next(10) == 0 {
+            r = StoredRecord::ended(r.ty, r.key, r.position);
+        }
+        let state = record_state(&r);
+        let back = decode_record("t.ü", key, position, &state).unwrap();
+        assert_eq!(back, r, "{state}");
+        let kept: serde_json::Value = serde_json::from_str(&state).unwrap();
+        for member in ["type", "key", "position"] {
+            assert!(kept.get(member).is_none(), "{member} kept in {state}");
+        }
+        for flag in ["retired", "restricted"] {
+            assert_ne!(kept.get(flag), Some(&json!(false)), "{state}");
+        }
+        let base = kept.get("base").and_then(|b| b.get("position"));
+        assert_ne!(base, Some(&json!(position.0)), "{state}");
+    }
 }
 
 #[test]
