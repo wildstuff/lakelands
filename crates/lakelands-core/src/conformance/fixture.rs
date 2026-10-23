@@ -741,6 +741,7 @@ pub fn write_verb(name: &str, on: &str, field: &str, value: &str) -> Declaration
         scope: Default::default(),
         payload: vec![],
         risk: Risk::Low,
+        preconditions: Vec::new(),
         requires: None,
         effect: VerbEffect::Write { set },
         description: None,

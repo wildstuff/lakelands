@@ -57,9 +57,9 @@ use lakelands_api::write::{
     Withdrawal, WriteOpts,
 };
 use lakelands_api::{
-    Access, ConstraintName, Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal,
-    ProposalId, RecordKey, Refusal, RelationName, Result, SourceId, Timestamp, TypeName, Value,
-    VerbName, Version,
+    Access, ConstraintName, Error, FieldName, IdempotencyKey, Missing, Patch, Position,
+    PreconditionName, Principal, ProposalId, RecordKey, Refusal, RelationName, Result, SourceId,
+    Timestamp, TypeName, Value, VerbName, Version,
 };
 use lakelands_core::expr::{self, Place as Eval, RecordScope, Scope, WriteScope};
 use lakelands_core::rights::{self, Door};
@@ -1796,7 +1796,7 @@ pub(crate) fn call_reads(
         && let Some(r) = view.get(&v.on, k)?
     {
         // Only what the condition reads is wanted here, not its answer.
-        let _ = requires(settings, v, k, &r, now, &across, &|_| true);
+        let _ = requires(settings, (v, payload), k, &r, (now, &across), &|_| true);
         set = assigned(o, settings, v, &r, payload, (now, &across)).ok();
     }
     let read = across.read.borrow().keys().cloned().collect();
@@ -1836,71 +1836,76 @@ pub(crate) fn position_after(w: &Writer, n: usize) -> Position {
     Position(first.0 + n as u64)
 }
 
-/// Refuse a verb whose `requires` does not hold on `record`, naming the
-/// first of its conjuncts that does not where every setting it and the
-/// ones before it read is `told` its caller, and before that one whose
-/// `requires` reads across a reference that reaches no record
-/// (`across`). The conjuncts are evaluated in order, as the `and`
-/// evaluates them, so they read what it reads (006).
+/// Refuse a verb whose `requires` or a precondition does not hold on
+/// `record` and the call's `payload`, in the write it guards, naming the
+/// precondition and the first of its conjuncts that does not where every
+/// setting it and the ones before it read is `told` its caller, and
+/// before that one whose conditions read across a reference that reaches
+/// no record (`across`). The conjuncts are evaluated in order, `requires`
+/// first, as an `and` of them all evaluates them, so they read what it
+/// reads (006).
 fn requires(
     settings: &BTreeMap<String, Value>,
-    verb: &VerbDecl,
+    (verb, payload): (&VerbDecl, &Patch),
     key: &RecordKey,
     record: &StoredRecord,
-    now: Timestamp,
-    across: &Across<'_>,
+    (now, across): (Timestamp, &Across<'_>),
     told: &dyn Fn(&str) -> bool,
 ) -> Result<()> {
-    let Some(r) = &verb.requires else {
-        return Ok(());
+    let at = |n: Option<&PreconditionName>| {
+        let name = verb.name.clone();
+        let of = n.map_or(Place::Requires, |n| Place::Precondition { name: n.clone() });
+        [Place::Verb { name }, of]
     };
-    let at = [
-        Place::Verb {
-            name: verb.name.clone(),
-        },
-        Place::Requires,
-    ];
-    let e = declare::condition(r, Eval::Verb, &at)?;
+    let named = (verb.preconditions.iter()).map(|p| (Some(&p.name), &p.holds));
+    let mut conditions = Vec::new();
+    for (n, c) in verb.requires.iter().map(|r| (None, r)).chain(named) {
+        conditions.push((n, declare::condition(c, Eval::Verb, &at(n))?));
+    }
     let record = RecordScope {
         fields: &record.fields,
         meta: Some(&record.meta),
         settings: Some(settings),
         now,
     };
-    let payload = None;
+    let payload = Some(payload);
     let scope = VerbScope {
         fields: record.fields,
         record,
         payload,
         across,
     };
-    let parts = e.conjuncts();
+    let parts: Vec<_> = (conditions.iter())
+        .flat_map(|(n, e)| e.conjuncts().into_iter().map(move |p| (*n, p)))
+        .collect();
     let unmet = parts
         .iter()
-        .position(|p| !expr::holds(p, &scope).unwrap_or(false));
+        .position(|(_, p)| !expr::holds(p, &scope).unwrap_or(false));
     across.reached()?;
     let Some(at) = unmet else {
         return Ok(());
     };
     let (verb, ty, key) = (verb.name.clone(), verb.on.clone(), key.clone());
-    // Naming a part tells that every part before it held.
+    // Naming a part, or its precondition, tells that every part before it
+    // held.
     let mut read = BTreeSet::new();
-    for p in &parts[..=at] {
+    for (_, p) in &parts[..=at] {
         lakelands_core::derive::settings(p, &mut read);
     }
-    let part = parts[at];
+    let (precondition, part) = parts[at];
     let shown = read.iter().all(|k| told(k));
     let part = shown.then(|| Box::new(Printed(expr::print(part))));
-    let case = Case::RequiresUnmet {
+    let said = Said::from(Case::RequiresUnmet {
         verb,
         ty,
         key,
         part,
+    });
+    let said = match precondition.filter(|_| shown) {
+        Some(name) => said.within(Place::Precondition { name: name.clone() }),
+        None => said,
     };
-    Err(Error::refused(
-        None,
-        Refusal::Precondition(Box::new(case.into())),
-    ))
+    Err(Error::refused(None, Refusal::Precondition(Box::new(said))))
 }
 
 /// The values a write verb's assignments give `record` for a call with
