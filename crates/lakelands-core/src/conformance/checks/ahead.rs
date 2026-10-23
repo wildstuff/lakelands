@@ -105,9 +105,6 @@ async fn a_lake_built_ahead_then_written_answers_as_rebuilt(store: Store, given:
                 .map_err(|e| Failure::new(format!("the older release's open: {e}")))
         }
     };
-    let Some(location) = given.location.clone() else {
-        return Err(Failure::new("the harness names no location of the lake"));
-    };
     let store = older(store).await?;
     let l = Lake::of(store.as_ref());
     l.declare(person()).await?;
@@ -128,6 +125,9 @@ async fn a_lake_built_ahead_then_written_answers_as_rebuilt(store: Store, given:
         .await
         .must("ingesting from web")?;
     let head = store.head().await.must("reading the head")?;
+    let Some(location) = given.location.clone() else {
+        return Err(Failure::new("the harness names no location of the lake"));
+    };
     let built = (given.ahead)(location.clone(), seams()).await;
     if let Err(Error::Unbound { .. }) = &built {
         let after = store.head().await.must("reading the head")?;
