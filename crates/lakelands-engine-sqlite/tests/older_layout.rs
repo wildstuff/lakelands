@@ -45,6 +45,8 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
     let a = source_record("note", "a", json!({"text": "kept", "n": "2"}));
     l.ingest("crm", vec![a]).await.unwrap();
     store.close().await.unwrap();
+    // The upgrade's swap waits for every handle onto the projection (071).
+    drop((l, store));
     let db = || rusqlite::Connection::open(dir.join("projection.db")).unwrap();
     let layout = || -> i64 {
         db().query_row("SELECT v FROM meta WHERE k = 'layout'", [], |r| r.get(0))

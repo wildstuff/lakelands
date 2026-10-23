@@ -58,6 +58,19 @@ pub async fn open(location: Location, seams: Seams, mode: OpenMode) -> Result<Ar
     Ok(Arc::new(Store { lake }))
 }
 
+/// Build the projection this release lays out beside the lake at
+/// `location`, ahead of the writer's open that upgrades it
+/// ([`Lake::build_ahead`]).
+pub async fn build_ahead(location: Location, seams: Seams) -> Result<crate::lake::Built> {
+    exec::run(move || Lake::build_ahead(&location, seams)).await
+}
+
+/// Remove the scratch built ahead beside the lake at `location`
+/// ([`Lake::discard_ahead`]).
+pub async fn discard_ahead(location: Location, seams: Seams) -> Result<bool> {
+    exec::run(move || Lake::discard_ahead(&location, seams)).await
+}
+
 /// The log format the newest event of the lake at `location` is written
 /// in, read from the log's ends alone, nothing opened or folded; `None`
 /// where there is no lake. A lake of a format this release does not read

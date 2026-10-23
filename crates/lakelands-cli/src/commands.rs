@@ -992,6 +992,76 @@ pub async fn rebuild(out: Out<'_>, store: &Arc<dyn LakeStore>) -> Result<(), Fai
     )
 }
 
+/// `build-ahead`: build the projection this release lays out beside the
+/// lake's, while an older release still serves it, saying first how much
+/// room it takes; the writer's open that upgrades the lake then folds only
+/// what was written since, and swaps it in. `discard` removes a build
+/// ahead instead.
+pub async fn build_ahead(
+    out: Out<'_>,
+    location: lakelands_api::Location,
+    seams: lakelands_api::seam::Seams,
+    discard: bool,
+) -> Result<(), Failure> {
+    let lake = location.lake.clone();
+    if discard {
+        let said = match lakelands_store::discard_ahead(location, seams).await? {
+            true => format!("removed the projection built ahead beside {lake}"),
+            false => format!("{lake} kept no projection built ahead: nothing was removed"),
+        };
+        return put(out, said);
+    }
+    put(out, room(&location))?;
+    let started = std::time::Instant::now();
+    let built = lakelands_store::build_ahead(location, seams).await?;
+    let secs = started.elapsed().as_secs_f64();
+    let (events, through) = (built.events, built.through.map_or(0, |p| p.0));
+    let from = match built.ahead {
+        Some(at) => format!(", on from position {at}"),
+        None => String::new(),
+    };
+    put(
+        out,
+        format!(
+            "built {lake}'s projection ahead through position {through}: {events} events \
+             folded in {secs:.1} s{from}; `lakelands upgrade` with this release folds what is \
+             written after it and swaps it in"
+        ),
+    )
+}
+
+/// How much room a build ahead takes: about what the projection it is
+/// built beside takes, measured on SQLite without opening it.
+fn room(location: &lakelands_api::Location) -> String {
+    use lakelands_api::location::EngineConfig;
+    match &location.engine {
+        EngineConfig::Sqlite { dir, .. } => {
+            let bytes: u64 = ["projection.db", "projection.db-wal"]
+                .iter()
+                .filter_map(|f| std::fs::metadata(dir.join(f)).ok())
+                .map(|m| m.len())
+                .sum();
+            let mib = bytes as f64 / (1024.0 * 1024.0);
+            format!(
+                "building ahead takes about {mib:.1} MiB in {}, as much as the projection beside it, \
+                 until the upgrade puts it in that one's place",
+                dir.display()
+            )
+        }
+        EngineConfig::Postgres { schema, .. } => {
+            let schema = schema
+                .clone()
+                .unwrap_or_else(|| format!("lakelands_{}", location.lake));
+            format!(
+                "building ahead takes about as much room in the database as the projection's \
+                 tables in schema `{schema}`, in a schema of its own beside them, until the \
+                 upgrade puts it in their place; the projection is not opened to measure it"
+            )
+        }
+        _ => "building ahead keeps nothing on this engine".to_owned(),
+    }
+}
+
 /// `upgrade`: say which log format the lake is written in, as a
 /// read-only open finds it, and, where it is older than the one this
 /// release writes, open it for writing once: that open appends
@@ -1040,6 +1110,10 @@ pub async fn upgrade(
                 let secs = started.elapsed().as_secs_f64();
                 // Another writer may have rebuilt it since the read-only open.
                 let said = match store.rebuilt_at_open() {
+                    Some(why) if why.contains("build ahead") => format!(
+                        "rebuilt the projection of {lake} from layout {found} in {secs:.1} s, \
+                         folding only what was written after the build ahead"
+                    ),
                     Some(_) => {
                         format!(
                             "rebuilt the projection of {lake} from layout {found} in {secs:.1} s"

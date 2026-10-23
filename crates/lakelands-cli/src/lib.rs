@@ -328,7 +328,23 @@ fn command() -> Command {
                         .arg(Arg::new("report").long("report").value_name("ID").help("Take back, only under the id of a preflight of this removal at this head")),
                 ),
         )
-        .subcommand(Command::new("rebuild").about("Delete the lake's projection and rebuild it from the log"))
+        .subcommand(Command::new("rebuild").about("Rebuild the lake's projection from the log beside it, and put it in the old one's place"))
+        .subcommand(
+            Command::new("build-ahead")
+                .about("Build the projection this release lays out beside the lake's, from its log, while an older release still serves it: the upgrade's open then folds only what was written since, and swaps it in")
+                .after_help(
+                    "It says how much room it takes before it starts. It opens the lake's log and \
+                     its own scratch only, never the projection or the lease, so it runs beside the \
+                     writer; run again, it goes on from where it stopped. `lakelands upgrade` with \
+                     this release swaps the build in, once the older release is stopped.",
+                )
+                .arg(
+                    Arg::new("discard")
+                        .long("discard")
+                        .action(ArgAction::SetTrue)
+                        .help("Remove the build ahead kept beside the lake, of this release or another, instead"),
+                ),
+        )
         .subcommand(Command::new("compact").about("Give back the storage the lake's projection no longer uses"))
         .subcommand(
             Command::new("upgrade")
@@ -548,6 +564,14 @@ async fn dispatch(
     if name == "upgrade" {
         let check = sub.get_flag("check");
         return commands::upgrade(out, location, root.seams(), check, open).await;
+    }
+    // `build-ahead` opens the log and its own scratch, never the lake.
+    if name == "build-ahead" {
+        let seams = Seams {
+            engines: engines(),
+            ..root.seams()
+        };
+        return commands::build_ahead(out, location, seams, sub.get_flag("discard")).await;
     }
     // `feed` and `export` only read: they take no lease and append
     // nothing, so they run beside a `serve` that holds the writer, and an

@@ -18,6 +18,13 @@ fn older_layout(e: &Error) -> Option<String> {
     }
 }
 
+/// What a build ahead is refused on an engine that keeps no scratch.
+fn keeps_no_scratch() -> Error {
+    Error::unbound(Seam::Operation {
+        op: "open_scratch".to_owned(),
+    })
+}
+
 /// The opener `seams` passes for the engine `location` names, for a
 /// location whose bounds a lake may be opened under.
 pub(crate) fn opener(
@@ -54,9 +61,11 @@ impl Lake {
     /// Open a lake: find its engine among the openers the host passed,
     /// take the lease unless opening read-only, create the lake if asked
     /// and absent, and fold whatever the log holds beyond the projection.
-    /// Opened for a rebuild, the projection is cleared under the lease
-    /// first, so the whole log is folded: that open is the rebuild. So is
-    /// a writer's open of a projection an older build laid out.
+    /// Opened for a rebuild, the whole log is folded under the lease into
+    /// a scratch beside the projection, which is then swapped in: that open
+    /// is the rebuild. So is a writer's open of a projection an older
+    /// build laid out, which goes on from where a build ahead stopped
+    /// ([`build_ahead`]).
     pub fn open(location: &Location, seams: Seams, mode: OpenMode) -> Result<Lake> {
         let opener = opener(location, &seams)?;
         // A lake of a format this release does not read is not opened: its
@@ -94,11 +103,34 @@ impl Lake {
         };
         let rebuilds = mode == OpenMode::Rebuild || rebuilt_at_open.is_some();
         let began = std::time::Instant::now();
-        if rebuilds {
-            engine.projection().clear()?;
-        }
         let mut lake = Lake::assemble(location, seams, engine, lease.clone());
-        lake.rebuilt_at_open = rebuilt_at_open;
+        // The rebuild folds beside the projection and swaps the scratch in
+        // (071): an upgrade's goes on from where a build ahead stopped, an
+        // open to rebuild folds the whole log. Either is folded as the
+        // catch-up below would fold it in place, where the engine keeps no
+        // scratch.
+        let how = match mode {
+            OpenMode::Rebuild => Beside::Open,
+            _ => Beside::Resume,
+        };
+        let built = match rebuilds {
+            true => lake.rebuilt_beside(&mut lake.writer(), how)?,
+            false => None,
+        };
+        if rebuilds && built.is_none() {
+            lake.engine.projection().clear()?;
+        }
+        lake.rebuilt_at_open = rebuilt_at_open.map(|why| match built {
+            Some(Built {
+                ahead: Some(at),
+                events,
+                ..
+            }) => format!(
+                "{why}; a build ahead had folded it through position {}, and the open folded the {events} events after it",
+                at.0
+            ),
+            _ => why,
+        });
         lake.catch_up()?;
         // A reader is refused a lake that holds a type of its vocabulary
         // in an older form, as one written in an older format is: only a
@@ -114,8 +146,8 @@ impl Lake {
             }
         }
         if rebuilds {
-            let folded = lake.writer().tip.as_ref().map_or(0, |t| t.0.0);
-            lake.measured(began, folded);
+            let tip = lake.writer().tip.as_ref().map_or(0, |t| t.0.0);
+            lake.measured(began, built.map_or(tip, |b| b.events));
         }
         if let Some(lease) = lease {
             let mut w = lake.writer();
@@ -254,6 +286,58 @@ impl Lake {
         Ok(lake)
     }
 
+    /// Build the projection this release lays out beside the one the lake
+    /// at `location` answers from, ahead of the writer's open that upgrades
+    /// it, while an older release still holds its lease (071). It opens
+    /// the log and the scratch only, never the projection or the lease, so
+    /// it runs beside any writer; run again, it goes on from where it
+    /// stopped. The writer's open of a projection an older build laid out
+    /// then folds only the events after it, and swaps.
+    ///
+    /// A build whose fold met an act that erased values, a source
+    /// forgotten or values removed, may hold what the act erased: it folds
+    /// the whole log again, told the acts, as a rebuild does, so the
+    /// scratch holds nothing an act erased. Refused as unbound by an
+    /// engine that keeps no scratch.
+    pub fn build_ahead(location: &Location, seams: Seams) -> Result<Built> {
+        let opener = opener(location, &seams)?;
+        log::one_format(&location.lake, opener.log_ends(location)?.as_ref())?;
+        let builder = Lake::scratch(location, &seams)?.ok_or_else(keeps_no_scratch)?;
+        let mut w = builder.writer();
+        w.rebuilding = builder.engine.projection().folded_through()?.is_none();
+        let built = builder.build(&mut w, false)?;
+        let (list, acts) = builder.acts_listed()?;
+        if !list.values().chain(acts.values()).any(|s| s == "owed") {
+            return Ok(built);
+        }
+        let view = builder.engine.view(None)?;
+        w.removals = crate::remove::told(&builder, view.as_ref())?;
+        drop(view);
+        w.rebuilding = true;
+        let again = builder.build(&mut w, true)?;
+        Ok(Built {
+            ahead: None,
+            events: built.events + again.events,
+            ..again
+        })
+    }
+
+    /// Remove the scratch built ahead beside the lake at `location`, of
+    /// this release's layout or another's: what a build ahead left that no
+    /// writer's open will swap in is the operator's to remove (071).
+    /// Answers whether one was marked built. Refused `rebuilding` while a
+    /// builder holds it, and as unbound by an engine that keeps no scratch.
+    pub fn discard_ahead(location: &Location, seams: Seams) -> Result<bool> {
+        let opener = opener(location, &seams)?;
+        // Opening it removes one another layout marked, and one unfit.
+        let scratch = opener.open_scratch(location)?;
+        let marked = scratch.projection().folded_through()?.is_some();
+        // Emptied, it no longer holds its mark, and goes with its handle.
+        scratch.projection().clear()?;
+        drop(scratch);
+        Ok(marked)
+    }
+
     /// The types of the host's vocabulary this lake may hold.
     fn vocabulary(&self) -> Vec<TypeDecl> {
         let Some(v) = &self.seams.vocabulary else {
@@ -280,6 +364,7 @@ impl Lake {
             rerank: Mutex::new(seams.rerank.take()),
             seams,
             limits: location.limits,
+            location: location.clone(),
             calls: tokio::sync::Mutex::new(()),
             waiting: Mutex::new(BTreeMap::new()),
             sorted_whole: Mutex::new(BTreeMap::new()),

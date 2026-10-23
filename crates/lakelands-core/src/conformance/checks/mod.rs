@@ -14,6 +14,7 @@ mod admitted;
 mod after;
 mod aggregates;
 mod aging;
+mod ahead;
 mod annotations;
 mod authored_reads;
 mod authors_view;
@@ -804,6 +805,7 @@ pub const ALL: &[Check] = &[
     upgrade::FORMAT_16_UPGRADED,
     upgrade::FORMAT_17_UPGRADED,
     upgrade::LAYOUT_REBUILT,
+    ahead::BUILT_AHEAD,
     verb_written::VERB_ONLY,
     verb_written::VERB_ONLY_TOLD,
     admitted::ADMITTED,

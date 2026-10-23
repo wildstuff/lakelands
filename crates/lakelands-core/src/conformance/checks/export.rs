@@ -797,6 +797,7 @@ async fn an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from(
     let crate::conformance::ImportedLake {
         store: imported,
         writer,
+        ..
     } = (given.import)(from.clone(), lake.clone(), None, import_seams())
         .await
         .map_err(|e| Failure::new(format!("importing the export into a fresh lake: {e}")))?;

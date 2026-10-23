@@ -43,6 +43,15 @@ pub(crate) fn lock(db: &mut Db, live: &str, session: bool) -> Result<bool> {
     Ok(db.query_one(&statement, &[&live])?.get(0))
 }
 
+/// Give the builder's session lock on the lake whose schema is `live` up,
+/// as its handle is dropped: the server lets a session's locks go only
+/// once it sees the connection close, which may be after a swap that
+/// follows the drop has been refused `rebuilding`.
+pub(crate) fn unlock(db: &mut Db, live: &str) -> Result<()> {
+    let statement = "SELECT pg_advisory_unlock(hashtextextended('lakelands rebuild ' || $1, 0))";
+    db.query_one(statement, &[&live]).map(|_| ())
+}
+
 /// The statement that removes the scratch `names` keeps.
 pub(crate) fn remove_sql(names: &Names) -> String {
     format!("DROP SCHEMA IF EXISTS {} CASCADE", names.schema())

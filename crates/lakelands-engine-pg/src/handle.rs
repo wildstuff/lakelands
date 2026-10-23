@@ -519,7 +519,7 @@ impl Drop for PgLake {
             let _ = self.release_lease(&lease);
         }
         // A scratch not marked built through what it folded is removed
-        // before its lock goes with the session.
+        // before its lock is given up.
         if let (Some(bare), Some(writing)) = (&self.scratch, &self.writing) {
             let mut db = lock(&writing.projection);
             let _ = db.batch("ROLLBACK");
@@ -529,6 +529,8 @@ impl Drop for PgLake {
             ) {
                 let _ = db.batch(&scratch::remove_sql(&self.names));
             }
+            drop(db);
+            let _ = scratch::unlock(&mut lock(&writing.lease), &self.target.schema);
         }
     }
 }
