@@ -21,6 +21,9 @@ provenance and, in place of its elements, the position of the row of
 `vectors` that holds them. A read joins that row, at the head and as of
 any position, and answers the elements the write gave, bit for bit. A
 field that holds no vector names no row.
+The store's own names, `sys.` and `sys:` other than the link types,
+keep a vector in their state as before: an engine reads them, settings
+among them, by statements of its own that join no row, and they are few.
 
 ### A row is keyed by the state that wrote it
 
