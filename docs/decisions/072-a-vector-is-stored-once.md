@@ -2,15 +2,17 @@
 
 ## What is decided
 
-**Proposed** on lakelands#1319 (2026-10-22), for 0.18.0; it comes in
-force when lakelands#1323 builds it, under the one layout raise of
-lakelands#1318. Until then the SQLite and PostgreSQL projections keep a
-vector twice, as JSON in the stored state and as `f32`s in `vectors`,
-and the suite's rows hold what both layouts answer
+**In force** since lakelands#1323 (2026-10-23), for 0.18.0, under the
+one layout raise of lakelands#1318; proposed on lakelands#1319
+(2026-10-22). The SQLite and PostgreSQL projections keep a vector once,
+in `vectors`, and the suite's rows hold it on every engine
 (`a_vector_reads_the_elements_written_at_each_position_bit_for_bit`,
 `a_backends_vector_reads_its_f32_elements_widened_at_each_position`,
 `a_sealed_vector_reads_its_bits_until_its_source_is_forgotten`,
-`a_links_vector_reads_through_a_walk_at_each_position`).
+`a_links_vector_reads_through_a_walk_at_each_position`,
+`a_restriction_and_its_lifting_keep_a_records_vector`,
+`a_rekey_ends_the_old_keys_vector_at_its_position`,
+`a_migration_that_renames_a_vector_field_reads_its_elements_under_the_new_name`).
 
 ### The stored state carries no vector elements
 
