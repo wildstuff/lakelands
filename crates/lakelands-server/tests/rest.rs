@@ -71,6 +71,7 @@ async fn rest_lake(backend: Backend) -> Arc<dyn LakeStore> {
                 scope: Default::default(),
                 payload: Vec::new(),
                 risk: Risk::Low,
+                preconditions: Vec::new(),
                 requires: None,
                 effect: VerbEffect::External {
                     executor: "mailer".into(),

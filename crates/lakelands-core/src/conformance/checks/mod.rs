@@ -96,6 +96,7 @@ mod renamed_grants;
 mod report_names;
 mod required_at_create;
 mod requires_parts;
+mod requires_payload;
 mod rerank;
 mod restated;
 mod restriction;
@@ -183,6 +184,9 @@ pub const ALL: &[Check] = &[
     link_paths::LINK_PATH_HELD,
     link_paths::LINK_PATH_PROPOSED,
     requires_parts::REQUIRES_PART,
+    requires_payload::PAYLOAD_REQUIRED,
+    requires_payload::PRECONDITION_NAMED,
+    requires_payload::PRECONDITION_GRANTED,
     verb_grants::VERB_GRANTED,
     latest::LATEST_ORDER,
     decimals::AS_WRITTEN,
@@ -808,6 +812,7 @@ pub const ALL: &[Check] = &[
     upgrade::FORMAT_15_UPGRADED,
     upgrade::FORMAT_16_UPGRADED,
     upgrade::FORMAT_17_UPGRADED,
+    upgrade::FORMAT_18_UPGRADED,
     upgrade::LAYOUT_REBUILT,
     ahead::BUILT_AHEAD,
     verb_written::VERB_ONLY,

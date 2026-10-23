@@ -31,9 +31,9 @@ use lakelands_api::expr::Condition;
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
     Assignment, AtIngest, Authority, Cardinality, ComputedAt, ConstraintDecl, EmbedDecl, FieldDecl,
-    FieldType, FunctionInput, Measure, OnInputChange, RelationDecl, RetiredBy, Risk, StorageKind,
-    TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewParam,
-    ViewSource,
+    FieldType, FunctionInput, Measure, OnInputChange, Precondition, RelationDecl, RetiredBy, Risk,
+    StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl,
+    ViewParam, ViewSource,
 };
 use lakelands_api::principal::{Renamed, TypeGrants};
 use lakelands_api::query::{
@@ -299,6 +299,14 @@ fn constraint_decl() -> ConstraintDecl {
         holds: cond(),
         description: Some("d".into()),
         at_ingest: AtIngest::Admit,
+    }
+}
+
+/// A verb's precondition with every member set.
+fn precondition() -> Precondition {
+    Precondition {
+        name: "paid_in_full".into(),
+        holds: cond(),
     }
 }
 
@@ -982,6 +990,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     scope: VerbScope::Type,
                     payload: vec![field_decl()],
                     risk: Risk::Low,
+                    preconditions: vec![precondition()],
                     requires: Some(cond()),
                     effect: VerbEffect::External {
                         executor: "x".into(),
@@ -1009,6 +1018,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         ),
         ("migration_report", members(&migration_report())),
         ("constraint_decl", members(&constraint_decl())),
+        ("precondition", members(&precondition())),
         ("breach", members(&breach())),
         // A case is flattened into its object: its parameters (here `type`
         // and `field`) are members beside `at`, `code` and `message`, and
@@ -2107,6 +2117,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     scope: VerbScope::Record,
                     payload: vec![],
                     risk: Risk::Low,
+                    preconditions: Vec::new(),
                     requires: None,
                     effect: VerbEffect::Write { set: vec![] },
                     description: None,

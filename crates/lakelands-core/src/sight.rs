@@ -265,7 +265,7 @@ impl<'o> Sight<'o> {
         keys.iter().all(|k| self.setting(k, Value::Null).is_some())
     }
 
-    /// Whether its principal is told every setting `verb`'s `requires` and
+    /// Whether its principal is told every setting `verb`'s conditions and
     /// the values it sets read ([`Self::told_settings`]): judged once for
     /// every caller, what they decide is told only to such a principal.
     pub fn told_verb(&self, verb: &VerbDecl) -> bool {
@@ -276,7 +276,7 @@ impl<'o> Sight<'o> {
             VerbEffect::Write { set } => set.iter().map(|a| &a.value).collect(),
             _ => Vec::new(),
         };
-        verb.requires.iter().chain(values).all(told)
+        verb.conditions().chain(values).all(told)
     }
 
     /// Whether its principal reads `ty` whole: its grants keep no field of

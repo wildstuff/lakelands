@@ -1551,10 +1551,10 @@ fn conditions_of(d: &Declaration) -> Vec<&Condition> {
         Declaration::Trigger(t) => t.when.iter().collect(),
         Declaration::ObjectSet(s) => vec![&s.filter],
         Declaration::Verb(v) => match &v.effect {
-            VerbEffect::Write { set } => (v.requires.iter())
+            VerbEffect::Write { set } => (v.conditions())
                 .chain(set.iter().map(|a| &a.value))
                 .collect(),
-            _ => v.requires.iter().collect(),
+            _ => v.conditions().collect(),
         },
         _ => vec![],
     }
@@ -1842,13 +1842,13 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             }];
             let ty = v.on.clone();
             // A verb on its type has no record: nothing for a write effect
-            // to set or a retirement to retire, nothing for `requires` to
-            // read (013, extended).
+            // to set or a retirement to retire, nothing for `requires` or a
+            // precondition to read (013, extended).
             if v.scope == VerbScope::Type {
                 if !matches!(v.effect, VerbEffect::External { .. }) {
                     return Err(Error::invalid(at(&on, Case::TypeVerbWrites { ty })));
                 }
-                if v.requires.is_some() {
+                if v.conditions().next().is_some() {
                     return Err(Error::invalid(at(&on, Case::TypeVerbRequires { ty })));
                 }
             }
@@ -1885,8 +1885,36 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 field_type(o, &payload, f, &v.on, None)?;
                 computed_here(&payload, f)?;
             }
+            // A member the verb's payload does not have is never given: the
+            // condition or the value would read null at every call.
+            let given = |e: &Expr, on: &[Place]| {
+                let (_, members) = derive::verb_reads(e);
+                let has = |m: &&FieldName| v.payload.iter().any(|f| &f.name == *m);
+                let Some(m) = members.iter().find(|m| !has(m)) else {
+                    return Ok(());
+                };
+                let member = m.clone();
+                Err(Error::invalid(at(on, Case::PayloadNoMember { member })))
+            };
             if let Some(r) = &v.requires {
-                condition(r, Eval::Verb, &[on[0].clone(), Place::Requires])?;
+                let on = [on[0].clone(), Place::Requires];
+                given(&condition(r, Eval::Verb, &on)?, &on)?;
+            }
+            let mut named = BTreeSet::new();
+            for p in &v.preconditions {
+                let on = [
+                    on[0].clone(),
+                    Place::Precondition {
+                        name: p.name.clone(),
+                    },
+                ];
+                name(Naming::Precondition, p.name.as_str()).map_err(|e| e.within(on[0].clone()))?;
+                if !named.insert(&p.name) {
+                    let (what, name) = (Naming::Precondition, p.name.to_string());
+                    let case = Case::DeclaredTwice { what, name };
+                    return Err(Error::invalid(at(&on[..1], case)));
+                }
+                given(&condition(&p.holds, Eval::Verb, &on)?, &on)?;
             }
             match &v.effect {
                 VerbEffect::Write { set } => {
@@ -1908,15 +1936,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                             let end = a.field.clone();
                             return Err(Error::invalid(at(&on, Case::LinkEndAsField { end })));
                         }
-                        let value = condition(&a.value, Eval::Verb, &on)?;
-                        // A member the verb's payload does not have is never
-                        // given: the value would read null at every call.
-                        let (_, members) = lakelands_core::derive::verb_reads(&value);
-                        let has = |m: &&FieldName| v.payload.iter().any(|f| &f.name == *m);
-                        if let Some(m) = members.iter().find(|m| !has(m)) {
-                            let member = m.clone();
-                            return Err(Error::invalid(at(&on, Case::PayloadNoMember { member })));
-                        }
+                        given(&condition(&a.value, Eval::Verb, &on)?, &on)?;
                     }
                 }
                 VerbEffect::External { executor } => name(Naming::Executor, executor)?,
