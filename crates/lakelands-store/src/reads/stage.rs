@@ -7,13 +7,11 @@
 //! window ([`Reader::rerank_window`]), calls the reranker, and reads again
 //! ([`Reader::stage`]) at the position and on the clock of the first read.
 //! That read, and every later page, answers the scored keys themselves,
-//! each read by its key at the read's position and judged for its reader:
-//! it never ranks the first stage again, so a write that would move the
-//! ranking since cannot push a scored hit out. A cursor carries the
-//! stage's order, each entry a key of the window and its score, and what
-//! the first page said of the first stage. A key whose record its reader
-//! is not answered at the cursor's position, held since or not shown to
-//! that reader, leaves its place empty.
+//! each judged for its reader and never ranked again, so a later write
+//! cannot push a scored hit out. A cursor carries the stage's order (a key
+//! of the window and its score) and what the first page said of the first
+//! stage. A key whose record its reader is not answered leaves its place
+//! empty.
 
 use lakelands_api::error::{Case, Seam};
 use lakelands_api::query::{Axis, Hit, Hits, Pattern, Search, SearchMode};
@@ -25,8 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{CursorState, Judged, Pulled, Reader, encode, resume, same_read, search_read};
 
-/// A window of the first stage, as the reranker is asked to rank it, with
-/// what the first stage said of itself.
+/// A window of the first stage, as the reranker ranks it.
 pub struct Window {
     /// The searched type.
     pub ty: TypeName,
@@ -83,11 +80,10 @@ impl Staged {
     }
 }
 
-/// The second stage of one read: what the door handed it, what a pattern's
-/// cursor carried, and what the read applied.
+/// The second stage of one read.
 #[derive(Default)]
 pub(super) struct Second {
-    /// The order the reranker's call gave, for a first page.
+    /// The order the door's reranker call gave, for a first page.
     pub staged: Option<Staged>,
     /// The order a pattern's cursor carried, for a later page.
     pub resumed: Option<Staged>,
@@ -97,7 +93,6 @@ pub(super) struct Second {
     pub judging: bool,
 }
 
-/// The first stage of a search as ranked.
 pub(super) struct First {
     pub hits: Vec<Hit>,
     pub ranked_by: String,
@@ -107,8 +102,7 @@ pub(super) struct First {
 }
 
 impl Reader<'_> {
-    /// Hand the reader the order the reranker's scores gave the window of
-    /// this read's first page.
+    /// Hand the reader the order the reranker gave this first page's window.
     pub fn stage(&self, staged: Staged) {
         self.second.borrow_mut().staged = Some(staged);
     }

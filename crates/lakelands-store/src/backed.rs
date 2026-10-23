@@ -413,20 +413,17 @@ const TWO_SOURCES: &str = "its inputs hold erasable values of two sources, and a
 /// The digest of `call`, as `computer` makes it from `fields`: by the
 /// sources of the erasable values it reads, through the fields it reads
 /// and those they are derived from. One source's are digested under the
-/// keys `version` names, a recorded output's own, else under the
-/// oldest of those that sealed the values it reads: the last first used
-/// at or before each value's position ([`crate::sealing::USED`]), as the
-/// fold keeps it and a write's plan stages it for its own events. A value
-/// written in plaintext, before its field was erasable, counts as sealed
-/// by the version in force at its position, which only ever makes an
-/// output die sooner, and as none before any; where no value names one,
-/// the first is taken. That version is composed with every key of a
-/// delivery sealed apart that sealed a value it reads (065). So the
-/// digest is a function of the log, whatever the key store holds now, and
-/// the output lives as long as the oldest key period it read and every
-/// delivery sealed apart it read: destroying a version, and every older
-/// one with it, or one apart key takes the outputs of its values. A
-/// source that sealed nothing has no key to digest under.
+/// keys `version` names, a recorded output's own, else under the oldest of
+/// those that sealed the values it reads: the last first used at or before
+/// each value's position ([`crate::sealing::USED`]). A value written in
+/// plaintext, before its field was erasable, counts as sealed by the
+/// version in force at its position, which only ever makes an output die
+/// sooner, and as none before any; where no value names one, the first is
+/// taken. That version is composed with every key of a delivery sealed
+/// apart that sealed a value it reads (065). So the digest is a function
+/// of the log, whatever the key store holds now, and the output lives as
+/// long as the oldest key period and every delivery sealed apart it read.
+/// A source that sealed nothing has no key to digest under.
 fn input_of(
     (decl, computer): (&TypeDecl, &Computer<'_>),
     (fields, metas): (&BTreeMap<FieldName, Value>, &BTreeMap<FieldName, FieldMeta>),
@@ -582,11 +579,10 @@ fn put(
 }
 
 /// The fields a computed field reads: a derived expression's reads, the
-/// inputs of the function that computes it, or the fields an embedding
-/// is made from. `None` for a field the fold does not compute, and for an
-/// expression whose reads cannot be told. A derived expression is read as
-/// its declaration is checked, in a write, where `previous` and `changed`
-/// read the field they name.
+/// inputs of its function, or the fields an embedding is made from. `None`
+/// for a field the fold does not compute, and for an expression whose
+/// reads cannot be told. A derived expression is read as its declaration
+/// is checked, where `previous` and `changed` read the field they name.
 pub(crate) fn computed_reads(o: &Ontology, f: &FieldDecl) -> Option<BTreeSet<FieldName>> {
     if let Some(e) = &f.embed {
         return Some(e.from.iter().cloned().collect());
@@ -644,11 +640,10 @@ pub fn computed_order(
 /// `event` is a value type's rename, which retries nothing.
 ///
 /// A backed field that reads, directly or through derived fields, one
-/// that is waiting for its output waits too: it is cleared and not
-/// called, since its call would carry an input that is not computed yet
-/// and record an output under that input for good. It is settled when
-/// what it reads is filled, by the fill's own pass. Answers the fields it
-/// changed.
+/// that is waiting waits too: it is cleared and not called, since its call
+/// would carry an input not computed yet and record an output under that
+/// input for good. It is settled by the fill's own pass. Answers the
+/// fields it changed.
 #[allow(clippy::too_many_arguments)]
 pub fn settle_fields(
     ontology: &Ontology,
@@ -1088,12 +1083,11 @@ fn bound(lake: &Lake, call: &Call) -> bool {
 
 /// The records the next page of an entry holds, by key, each with the
 /// calls it owes and the output the lake holds for each; and whether the
-/// page ends the entry. Read under the writer taken for a write, released
-/// after the page. A record owes what [`settle_fields`] makes due over it
-/// as it stands, forced in a sweep, and a waiting field whose output is
-/// recorded; a waiting sweep reads only the records an embedding of the
-/// bound backend is empty on, and owes those embeddings alone. An entry
-/// whose type is gone ends.
+/// page ends the entry. Read under the writer taken for a write. A record
+/// owes what [`settle_fields`] makes due over it as it stands, forced in a
+/// sweep, and a waiting field whose output is recorded; a waiting sweep
+/// reads only the records an embedding of the bound backend is empty on,
+/// and owes those embeddings alone. An entry whose type is gone ends.
 #[allow(clippy::type_complexity)]
 pub fn page(
     lake: &Turn<'_>,
@@ -1273,10 +1267,9 @@ fn empty_on(fields: &[FieldName]) -> Expr {
 /// Make what fell due to the embedding backend bound now while none made
 /// it: on a writer, each type with an embedding of its model and
 /// dimensions that a live record holds none of is owed a sweep of those
-/// records, unless a sweep of the type is owed already (one that waits
-/// reads from the first record again, for the backend bound now), and a
-/// task of its own makes the
-/// waiting calls, a batch at a time, while the lake is open. A call that
+/// records, unless one is owed already (one that waits reads from the
+/// first record again, for the backend bound now), and a task of its own
+/// makes the waiting calls, a batch at a time, while the lake is open. A call that
 /// failed is not made again; `recompute` makes it. Outside a runtime the
 /// sweeps stay owed, made as orphans by the writes after. A handle the
 /// host drops gives its lease up once the batch in flight is recorded.
@@ -1399,15 +1392,12 @@ fn owe_waiting(lake: &Turn<'_>) -> Result<BTreeSet<Position>> {
 /// out. An entry leaves the list once its batch is recorded, so a drain
 /// that fails or is dropped loses nothing, and an answer is held until it
 /// is recorded, so no input is sent to a backing twice by one handle. The
-/// calls a fill makes due are owed to the same write; they end, since a
-/// type's computed fields read one another without a cycle (refused at
-/// declare).
+/// calls a fill makes due are owed to the same write; they end, since
+/// computed fields read one another without a cycle (refused at declare).
 ///
 /// `own` is what [`crate::lake::owing`] answered for the write. Answers
-/// the lake's head read once nothing of it is left, from which its
-/// computed fields are visible, whoever recorded them, whatever the
-/// orphans' batch then answers; `None` when it owed nothing: the write's
-/// own position stands.
+/// the lake's head read once nothing of it is left, whoever recorded the
+/// computed fields; `None` when it owed nothing.
 pub async fn settle(lake: &Arc<Lake>, own: &BTreeSet<Position>) -> Result<Option<Position>> {
     if own.is_empty() {
         return Ok(None);
@@ -1466,19 +1456,17 @@ impl Drop for Waits<'_> {
 /// write's failure. The write is answered as itself, its computed fields
 /// waiting. The failure is not lost: where a recording's fold failed the
 /// writer is behind, and the next write catches up first or is answered
-/// `unavailable` in that fold's words; what was not recorded stays owed on
-/// this handle, its answer held, and the next write's drain records it.
+/// `unavailable`; what was not recorded stays owed, its answer held.
 pub async fn settle_after(lake: &Arc<Lake>, own: &BTreeSet<Position>) -> Option<Position> {
     settle(lake, own).await.unwrap_or(None)
 }
 
 /// Read the next batch: the entries `ours` holds first, then the others,
-/// entry by entry, a page each, until it is full. A record whose calls do
-/// not all join stops its entry there; the batch goes on with the next.
-/// A call no backing bound here makes is left out, unless its output is
-/// recorded and not a failure to call again: its field waits. `None`
-/// where `whose` has no entry. The list is one job and each page another,
-/// so a write waits for a page, never for a batch.
+/// a page each, until it is full. A record whose calls do not all join
+/// stops its entry there. A call no backing bound here makes is left out,
+/// unless its output is recorded and not a failure to call again: its
+/// field waits. `None` where `whose` has no entry. Each page is a job of
+/// its own, so a write waits for a page, never for a batch.
 async fn take(lake: &Arc<Lake>, whose: Whose) -> Result<Option<Batch>> {
     let Some((entries, risky)) = exec::write(lake, move |l| Ok(listed(l, &whose))).await? else {
         return Ok(None);
@@ -1576,12 +1564,10 @@ fn listed(lake: &Turn<'_>, whose: &Whose) -> Option<(Vec<(usize, Owed)>, BTreeSe
 /// Make a batch's calls and record each answer, then leave its entries as
 /// it took them, unless a migration moved one meanwhile. A call is
 /// answered by the answer held for it, else by the output recorded, else
-/// by its backing; a sweep calls a failure again, recorded or held, once,
-/// and notes the call in its entry before it is made. Every answer is
-/// held before the first is recorded, and until its first recording.
-/// What takes the writer is a job of its own in the lake's queue: what is
-/// answered already, each recording, and the proposals with the entries
-/// left; the backings are asked between them, holding no turn.
+/// by its backing; a sweep calls a failure again once, and notes the call
+/// in its entry before it is made. Every answer is held before the first
+/// is recorded. What takes the writer is a job of its own in the lake's
+/// queue; the backings are asked between them, holding no turn.
 async fn make(lake: &Arc<Lake>, batch: Batch) -> Result<()> {
     let job = move |l: &Turn<'_>| Ok(answered(l, batch));
     let Answered {
@@ -1997,9 +1983,8 @@ async fn embed_each(backend: &dyn EmbedBackend, texts: &[String]) -> Vec<Value> 
 /// judged on the record as the fold will leave it, as for any write.
 ///
 /// An output the lake already holds (`known`) is recorded again only when
-/// it fills something: a due issued twice appends nothing the second time.
-/// Where it is the call's latest output, and no failure, the fill names it
-/// by `output_at` instead of carrying it again
+/// it fills something. Where it is the call's latest output, and no
+/// failure, the fill names it by `output_at` instead of carrying it again
 /// (`docs/decisions/053-a-recorded-output-is-recorded-once.md`).
 fn record(lake: &Turn<'_>, d: Due, output: Value, known: bool) -> Result<Option<Position>> {
     let mut w = lake.for_write()?;

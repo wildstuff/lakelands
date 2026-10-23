@@ -34,21 +34,18 @@ use lakelands_api::ontology::TypeDecl;
 use lakelands_api::principal::Renamed;
 use lakelands_api::record::{Origin, StoredRecord, Value};
 use lakelands_api::write::{
-    Breach, ForgetRecords, RecordField, RemoveReport, RemovedField, Selection, TypeRetired,
+    Breach, RecordField, RemoveReport, RemovedField, Selection, TypeRetired,
 };
 use lakelands_api::{Error, FieldName, Position, RecordKey, Result, SourceId, Timestamp, TypeName};
 use lakelands_core::sight::Sight;
 
 use crate::exec::Turn;
-use crate::forget::{History, each_of, named_now};
+use crate::forget::{History, count, counted, each_of, named_now};
 use crate::lake::{Lake, Staged, Writer};
 use crate::log::Draft;
 use crate::ontology::Ontology;
 use crate::purge::made_by;
 use crate::writes::{self, Call, Judging, Walked};
-
-/// How many keys a report names per type.
-const NAMED: usize = 10;
 
 /// The store's own seam under which the fold keeps the acts of removal
 /// the log holds, by position, each with what of it is owed: `owed`
@@ -56,15 +53,13 @@ const NAMED: usize = 10;
 /// reclaim ran, then `done`.
 pub(crate) const REMOVED: &str = "sys:removed";
 
-/// The input [`REMOVED`] keeps its one list under.
 pub(crate) fn removed_at() -> Digest {
     crate::backed::digest(&Value::from("removed"))
 }
 
-/// One act of removal, as its event names it.
 #[derive(Clone, Debug)]
 pub(crate) struct Removal {
-    /// The act's position: only events before it are selected.
+    /// Only events before it are selected.
     pub at: Position,
     pub source: SourceId,
     pub selection: Selection,
@@ -109,7 +104,6 @@ impl Fixed {
 }
 
 impl Removal {
-    /// The act an event is, if it is one.
     pub(crate) fn of(e: &Event) -> Option<Removal> {
         let EventBody::ValuesRemoved {
             source,
@@ -220,7 +214,6 @@ pub(crate) fn removed_list(
     Ok(all.filter_map(state).collect())
 }
 
-/// `list` as [`REMOVED`] keeps it.
 pub(crate) fn list_value(list: &BTreeMap<Position, String>) -> Value {
     let all = list
         .iter()
@@ -228,7 +221,6 @@ pub(crate) fn list_value(list: &BTreeMap<Position, String>) -> Value {
     Value::Object(all.collect())
 }
 
-/// The acts the list at `view` names, read from the log.
 pub(crate) fn acts(lake: &Lake, view: &dyn ProjectionView) -> Result<Vec<Removal>> {
     let at: Vec<Position> = removed_list(view, &Staged::default())?
         .into_keys()
@@ -263,7 +255,7 @@ fn found(
 ) -> Result<(RemoveReport, Vec<StoredRecord>)> {
     let ontology = &w.ontology;
     let head = view.position();
-    // The first position at or after the time: `known_at` never falls.
+    // `known_at` never falls.
     let before = match selection {
         Selection::WrittenBefore(t) => Some(match lake.position_at(Timestamp(t.0 - 1))? {
             Some(p) => p.next(),
@@ -291,12 +283,10 @@ fn found(
     // The values of the selected events it does not take, by the event's
     // position and the field's name now.
     let mut untaken: BTreeSet<(Position, FieldName)> = BTreeSet::new();
-    // Per field, the values taken, and of them those sealed, by version
-    // and the keys of a delivery sealed apart.
+    // Per field: values taken, and of them those sealed, by key.
     type Tally = (u64, BTreeMap<(KeyId, Vec<KeyId>), u64>);
     let mut fields: BTreeMap<(TypeName, FieldName), Tally> = BTreeMap::new();
-    // The keys sealing values it selects, and those sealing others: the
-    // versions, and the keys of deliveries sealed apart.
+    // Keys (versions, and of deliveries sealed apart) sealing values it selects / others.
     let (mut inside, mut outside) = (BTreeSet::new(), BTreeSet::new());
     let keys_of = |s: &lakelands_api::event::Sealed| -> Vec<(bool, KeyId)> {
         let apart = s.apart.iter().map(|k| (true, k.clone()));
@@ -373,14 +363,12 @@ fn found(
     let gone = |(k, a): &(KeyId, Vec<KeyId>)| {
         keys.contains(k) || a.iter().any(|a| apart.contains(a)) || forgot
     };
-    // Each selection counts only the events it cannot select.
     if !matches!(selection, Selection::Delivery(_) | Selection::Deliveries(_)) {
         undelivered = 0;
     }
     if !matches!(selection, Selection::SeenBefore(_)) {
         unseen = 0;
     }
-    // At the head: what each record reached keeps, and what it loses.
     let mine = |m: &lakelands_api::FieldMeta| {
         m.origin == Origin::Source
             && m.source.as_ref() == Some(source)
@@ -498,8 +486,6 @@ fn found(
             }),
         }
     }
-    // What is computed again: a computed field that reads a field it
-    // takes values of, and a view over a type it reaches.
     let mut unshredded = 0;
     let fields: Vec<RemovedField> = (fields.into_iter())
         .map(|((ty, field), (redacted, sealed))| {
@@ -566,20 +552,6 @@ fn found(
     Ok((report, retire))
 }
 
-/// Records of one type, counted with the first keys.
-fn counted(ty: &TypeName) -> ForgetRecords {
-    let (ty, records, first) = (ty.clone(), 0, Vec::new());
-    ForgetRecords { ty, records, first }
-}
-
-/// Count `r` into `of`.
-fn count(of: &mut ForgetRecords, r: &StoredRecord) {
-    of.records += 1;
-    if of.first.len() < NAMED {
-        of.first.push(r.key.clone());
-    }
-}
-
 /// The id of the preflight of taking back `selection` of `source`, read
 /// at `head`: the report is a function of the three.
 fn id(source: &SourceId, selection: &Selection, head: Option<Position>) -> String {
@@ -613,8 +585,7 @@ fn settled(selection: Selection) -> Selection {
     }
 }
 
-/// What [`run`] would do, appending nothing, under the id the act may
-/// repeat.
+/// What [`run`] would do, appending nothing, under the id the act may repeat.
 pub fn preflight(lake: &Lake, source: &SourceId, selection: &Selection) -> Result<RemoveReport> {
     let selection = &checked(selection)?;
     let began = std::time::Instant::now();
@@ -628,7 +599,6 @@ pub fn preflight(lake: &Lake, source: &SourceId, selection: &Selection) -> Resul
         (None, &earlier),
     )?;
     report.report_id = id(source, selection, view.position());
-    // The act walks the log again under the lock, as this walk did.
     report.expected_ms = (report.expected_ms).saturating_add(crate::lake::elapsed_ms(began));
     Ok(report)
 }

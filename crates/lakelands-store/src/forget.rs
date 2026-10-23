@@ -58,24 +58,22 @@ use crate::writes::{self, Call};
 const NAMED: usize = 10;
 
 /// Records of one type, counted with the first keys.
-fn counted(ty: &TypeName) -> ForgetRecords {
+pub(crate) fn counted(ty: &TypeName) -> ForgetRecords {
     let (ty, records, first) = (ty.clone(), 0, Vec::new());
     ForgetRecords { ty, records, first }
 }
 
 /// Count `r` into `of`.
-fn count(of: &mut ForgetRecords, r: &StoredRecord) {
+pub(crate) fn count(of: &mut ForgetRecords, r: &StoredRecord) {
     of.records += 1;
     if of.first.len() < NAMED {
         of.first.push(r.key.clone());
     }
 }
 
-/// Each source's report, with whether the log holds an event of it.
 type Known = Vec<(ForgetReport, bool)>;
 
-/// What one source of a set takes: its report as it is gathered, and
-/// whether the log holds an event of it.
+/// One source's report as it is gathered; `known`: the log holds an event of it.
 struct Taken {
     types: Vec<ForgetRecords>,
     co_owned: Vec<ForgetRecords>,
@@ -304,7 +302,6 @@ pub(crate) fn each_of(
     Ok(())
 }
 
-/// How many positions of a source one read of the feed index answers.
 const MATCHED: u32 = 1024;
 
 /// The names a type and a field bear now, from those an event at `at`
@@ -340,13 +337,9 @@ pub(crate) fn named_now(
 pub(crate) struct History {
     states: BTreeMap<TypeName, Vec<(Position, TypeDecl)>>,
     pub renames: Vec<Renamed>,
-    /// By position, in the log's order: each key it moved, by the type's
-    /// name and the key there.
     rekeys: Vec<(Position, Moved)>,
 }
 
-/// The keys one re-keying migration moved, by the type's name and the key
-/// before.
 type Moved = BTreeMap<(TypeName, RecordKey), RecordKey>;
 
 impl History {
@@ -385,14 +378,12 @@ impl History {
         })
     }
 
-    /// The declaration of the type named `ty` at `at`, or the first held.
     pub(crate) fn ty(&self, ty: &TypeName, at: Position) -> Option<&TypeDecl> {
         let states = self.states.get(ty)?;
         let then = states.iter().rev().find(|(since, _)| *since <= at);
         then.or(states.first()).map(|(_, d)| d)
     }
 
-    /// The names at `to` of a type and a field an event at `at` wrote.
     pub(crate) fn named(
         &self,
         (at, to): (Position, Position),
@@ -426,7 +417,6 @@ impl History {
     }
 }
 
-/// `ty` after the rename `r`.
 fn renamed(r: &Renamed, ty: TypeName) -> TypeName {
     match &r.to {
         Some(to) if r.ty == ty => to.clone(),
@@ -486,7 +476,6 @@ fn of_set(
     set
 }
 
-/// Give each source's report the set's time, position and owed reclaim.
 fn settle(set: &mut ForgetSetReport) {
     for r in &mut set.sources {
         r.expected_ms = set.expected_ms;
@@ -496,7 +485,6 @@ fn settle(set: &mut ForgetSetReport) {
     }
 }
 
-/// The report of forgetting one source, from the set of it alone.
 fn alone(set: ForgetSetReport) -> ForgetReport {
     let mut report = (set.sources.into_iter().next()).expect("a set of one has one report");
     report.reclaimed = set.reclaimed;
@@ -511,8 +499,7 @@ fn way(lake: &Lake, view: &dyn ProjectionView, set: &[SourceId]) -> Result<Forge
     Ok(plan.way(lake, view.position().map_or(0, |p| p.0)))
 }
 
-/// What [`run`] would do, appending nothing, under the id the act may
-/// repeat.
+/// What [`run`] would do, appending nothing, under the id the act may repeat.
 pub fn preflight(lake: &Lake, source: &SourceId) -> Result<ForgetReport> {
     preflight_of(lake, std::slice::from_ref(source), false).map(alone)
 }
@@ -524,8 +511,6 @@ pub fn preflight_set(lake: &Lake, sources: &[SourceId]) -> Result<ForgetSetRepor
     preflight_of(lake, &set(sources)?, true)
 }
 
-/// The preflight of forgetting `set`, a source the log holds no event of
-/// refused where `known` asks for one.
 fn preflight_of(lake: &Lake, set: &[SourceId], known: bool) -> Result<ForgetSetReport> {
     let began = std::time::Instant::now();
     let view = lake.engine.view(None)?;
@@ -535,8 +520,6 @@ fn preflight_of(lake: &Lake, set: &[SourceId], known: bool) -> Result<ForgetSetR
     let way = way(lake, view.as_ref(), set)?;
     let mut report = of_set(reports, view.as_ref(), lake, way);
     report.report_id = id(set, view.position());
-    // The act walks the log again under the lock, as this walk did, once
-    // for the whole set.
     report.expected_ms = (report.expected_ms).saturating_add(crate::lake::elapsed_ms(began));
     settle(&mut report);
     Ok(report)
@@ -580,8 +563,6 @@ pub fn run_set(
     run_of(lake, &set(sources)?, report_id, true)
 }
 
-/// The act over `set`, a source the log holds no event of refused where
-/// `known` asks for one.
 fn run_of(
     lake: &Turn<'_>,
     set: &[SourceId],
@@ -645,7 +626,6 @@ fn run_of(
     drop(view);
     lake.append(&mut w, drafts)?;
     report.reclaimed = lake.finish_forgetting(&mut w)?;
-    // The way the act took, chosen again over the log it appended to.
     report.way = lake.forget_way().unwrap_or(report.way);
     report.reclaim_owed = lake.reclaim_owed();
     report.position = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);

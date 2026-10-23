@@ -24,18 +24,16 @@ impl<'a> Reader<'a> {
             ..filter.clone()
         };
         let me = self.who.writer();
-        // The lake as its reader is described it, and the types it is
-        // shown, each read once for the listing and only where a proposal
-        // asks.
+        // The lake as its reader is described it and the types it is shown,
+        // each read once, only where a proposal asks.
         let (lake, seen) = (OnceCell::new(), OnceCell::new());
         let stands = |ident: &str| stands(&self.shape.ontology, ident);
-        // In the engine's order, newest first, a page is its first entries:
+        // In the engine's order, newest first, a page is its first entries;
         // those past it are not judged, each a read of the past where its
-        // subject was declared again since (lakelands#888), and the engine
-        // is asked for them a page at a time, the next only while the
-        // listing's is not full, each twice the last, so a reader kept from
-        // many asks a few (lakelands#1063). Another order, or an engine
-        // without pages, judges every entry.
+        // subject was declared again since (lakelands#888). The engine is
+        // asked a page at a time, each twice the last, while the listing is
+        // not full, so a reader kept from many asks a few (lakelands#1063).
+        // Another order, or an engine without pages, judges every entry.
         let end = offset.saturating_add(limit);
         let paged = filter.order_by.is_empty();
         let (mut mine, mut before) = (Vec::new(), None);
@@ -61,9 +59,8 @@ impl<'a> Reader<'a> {
                     };
                     (p.write, p.more) = shown;
                 }
-                // A withdrawal names the type of what it withdrew as the
-                // lake held that when it was proposed, whatever stands
-                // under its name since.
+                // A withdrawal names the type it withdrew as the lake held it
+                // when proposed, whatever stands under its name since.
                 let withdrawn: Vec<String> = match &p.write {
                     Some(ProposedWrite::Declare { declarations, .. }) => (declarations.iter())
                         .filter(|d| matches!(d, Declaration::Withdraw(_)))
@@ -145,13 +142,11 @@ impl<'a> Reader<'a> {
             return self.computed_entry(logged, at);
         }
         let (o, mut logged) = (&self.shape.ontology, logged.clone());
-        // A shape that is not in force is completed as one in force is
-        // before it is judged or compared.
+        // A shape not in force is completed as one in force is.
         let names = |t: &TypeDecl| t.names_against(o.ty(&t.name).ok());
         let (mut named, mut after): (Vec<TypeName>, _) = (Vec::new(), None);
-        // A tool's name taken by what its reader is not shown: the entry is
-        // not there, as a bundle under such a verb's name is not
-        // (lakelands#915).
+        // A tool's name taken by what its reader is not shown hides the
+        // entry (lakelands#915).
         let tools_shown = |set: &[Declaration]| {
             let seen = seen.get_or_init(|| crate::writes::types_shown(self.who, o));
             crate::writes::tools_as_shown(self.who, o, seen, set).is_ok()
@@ -179,17 +174,16 @@ impl<'a> Reader<'a> {
                 }
             }
             ProposedWrite::Declare { declarations, .. } => {
-                // One in force under a name the bundle declares, which its
-                // reader is not shown: the bundle would take its place, and
-                // its accept's refusal would name it (lakelands#915).
+                // One in force under a declared name that its reader is not
+                // shown would be replaced, and the accept's refusal would
+                // name it (lakelands#915).
                 let mut held = declarations.iter().filter_map(|d| in_force_under(o, d));
                 if !tools_shown(declarations) || held.any(|d| !self.sight.lists(&d)) {
                     return Ok(None);
                 }
-                // A withdrawal is judged by what it withdrew, as the lake
-                // held it when proposed, as well as by what stands under its
-                // name now: listed to a reader shown both, and naming the
-                // type it withdrew from.
+                // A withdrawal is judged by what it withdrew, as held when
+                // proposed, and by what stands under its name now: listed to
+                // a reader shown both.
                 let withdraws = |d: &&Declaration| matches!(d, Declaration::Withdraw(_));
                 let was = match declarations.iter().any(|d| withdraws(&d)) {
                     true => match self.ontology_at(at) {
@@ -238,8 +232,7 @@ impl<'a> Reader<'a> {
             | ProposedWrite::Compute { .. }
             | ProposedWrite::ComputeSweep { .. } => {}
         }
-        // The type an entry writes, reshapes or calls a verb on, and what
-        // its sight rests on (lakelands#913).
+        // The type an entry is on, and what its sight rests on (lakelands#913).
         let ty = match &logged {
             ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => Some(ty),
             ProposedWrite::Migrate { migration: m, .. } => Some(&m.to.name),
@@ -274,9 +267,8 @@ impl<'a> Reader<'a> {
             moved = self.rekeyed(n, at)?;
         }
         // A call of a verb withdrawn since is judged by the lake at its
-        // proposal, as a withdrawal is: the head names no type it calls on.
+        // proposal, as a withdrawal is.
         let gone = matches!(&logged, ProposedWrite::Call { verb, .. } if o.verb(verb).is_err());
-        // A lake that cannot be read there shows its entry to no one.
         let was = match moved && kept || gone {
             true => match self.ontology_at(at) {
                 Some(was) => Some(was),
@@ -842,7 +834,6 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// The members of a proposal an `order_by` may name.
 const PROPOSAL_MEMBERS: [&str; 9] = [
     "id",
     "position",
