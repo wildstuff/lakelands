@@ -1116,6 +1116,18 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   admits is named in the value type's or the migration's report, in
   `breaches`, with its type. See
   `docs/decisions/059-a-type-declares-its-constraints.md`.
+- **A host asks whether a record write would land without writing it
+  (lakelands#1329).** `LakeStore::upsert_preflight(who, context, ty,
+  key, patch, expected)` is `upsert`'s own decision at the head,
+  appending nothing: `Ok` where the write would land, and otherwise the
+  refusal it would give, `constraint_broken` on the record the patch
+  makes of the live one (its initial values, derived fields and a
+  setting's declaration included), a right, an unknown field or a
+  version among them. So a host that previews a save asks it and keeps
+  no copy of the store's rules. It reads under no lock and takes no
+  idempotency key: what the head becomes before the save, a retry, and
+  the writer's own state (its lease, a fold behind) are the write's to
+  answer. It is the host's, with no door.
 - **A host may state its declarations at every start.** A declaration
   that is the one in force is answered `applied` at the head and appends
   nothing, by `declare` and by `apply`: a type, a value type, a function,
