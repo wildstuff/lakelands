@@ -1218,7 +1218,9 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>) -> Vec<Job> {
         }));
         let told = match decided {
             Ok(Ok((_, Some((l, mut e, mut s))))) => {
-                w.staged = e.last().map(|e| (e.position, e.hash.clone()));
+                if let Some(last) = e.last() {
+                    w.staged = Some((last.position, last.hash.clone()));
+                }
                 let range = events.len()..events.len() + e.len();
                 events.append(&mut e);
                 stored.append(&mut s);
@@ -1280,7 +1282,7 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>) -> Vec<Job> {
             .map(|d| Err(failed(d, &e, first)))
             .collect(),
         Err(p) => {
-            turn.stopped_append(&mut w, first);
+            turn.stopped_append(&mut w, (first, owed));
             let e = stopped_by_panic(p);
             let stopped = |d: &Decision| d.told.as_ref().err().unwrap_or(&e).clone();
             decisions.iter().map(|d| Err(stopped(d))).collect()

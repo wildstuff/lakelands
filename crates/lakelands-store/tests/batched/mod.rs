@@ -19,11 +19,13 @@ use lakelands_api::engine::{
 };
 use lakelands_api::error::Situation;
 use lakelands_api::event::{Digest, Event, EventBody, SegmentDigest};
+use lakelands_api::principal::TypeGrants;
 use lakelands_api::seam::{FeedFilter, Seams};
 use lakelands_api::write::{Declaration, Outcome};
 use lakelands_api::{
-    Error, Grants, IdempotencyKey, LakeId, LakeStore, Location, Patch, Position, Principal,
-    PrincipalKind, RecordKey, Result, Timestamp, TypeName, Version, WriteContext, WriteOpts,
+    Access, Error, FieldName, Grants, IdempotencyKey, LakeId, LakeStore, Location, Patch, Position,
+    Principal, PrincipalKind, RecordKey, Result, Timestamp, TypeName, Version, WriteContext,
+    WriteOpts,
 };
 use lakelands_store::batch::{self, Batches, Write};
 use serde_json::json;
@@ -42,6 +44,25 @@ fn owner(lake: &str, id: &str) -> Principal {
         id: id.into(),
         lake: lake.into(),
         grants: Grants::owner(),
+    }
+}
+
+/// A writer of `item` who may write its tag and never read it: what
+/// each write answers it leaves the tag out.
+fn blind(lake: &str) -> Principal {
+    let item = TypeGrants {
+        default: Some(Access::Write),
+        fields: [(FieldName::from("tag"), Access::WriteOnly)].into(),
+        ..TypeGrants::default()
+    };
+    let grants = Grants {
+        default: Access::None,
+        types: [(TypeName::from("item"), item)].into(),
+        ..Grants::default()
+    };
+    Principal {
+        grants,
+        ..owner(lake, "cy")
     }
 }
 
@@ -89,7 +110,8 @@ async fn declared(store: &dyn LakeStore, lake: &str) {
 
 /// A generator of record writes, the same for the same seed: upserts,
 /// some at a version, retirements, links and unlinks over a few keys, by
-/// two writers, some under an idempotency key used again.
+/// two owners and a writer blind to the tag, some under an idempotency
+/// key used again.
 pub struct Writes(u64);
 
 impl Writes {
@@ -112,7 +134,10 @@ impl Writes {
         let item = TypeName::from("item");
         (0..n)
             .map(|_| {
-                let who = owner(lake, ["ann", "bob"][self.next(2) as usize]);
+                let who = match self.next(3) {
+                    2 => blind(lake),
+                    w => owner(lake, ["ann", "bob"][w as usize]),
+                };
                 let relation = ["next", "near"][self.next(2) as usize].into();
                 let write = match self.next(10) {
                     0..=4 => {

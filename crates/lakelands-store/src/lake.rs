@@ -75,7 +75,8 @@ pub struct Writer {
     pub tip: Option<(Position, Digest)>,
     /// The last event a batch of record writes stamped after `tip` and
     /// has not appended yet: where its next write is decided from
-    /// ([`crate::writes::write_many`]).
+    /// ([`crate::writes::write_many`]); cleared whenever the writer is
+    /// taken ([`Turn::writer`]).
     pub staged: Option<(Position, Digest)>,
     /// The last event's `known_at`.
     pub last_known_at: Timestamp,
@@ -448,9 +449,13 @@ impl Left {
 
 impl<'l> Turn<'l> {
     /// The writer state, locked: taken only on a turn, so a write that
-    /// takes it has waited its turn in the queue first.
+    /// takes it has waited its turn in the queue first. A batch's staged
+    /// tip lives only as long as the hold it was stamped under, so a hold
+    /// a panic gave up leaves none behind.
     pub fn writer(&self) -> MutexGuard<'l, Writer> {
-        lakelands_core::lock(&self.lake().writer)
+        let mut w = lakelands_core::lock(&self.lake().writer);
+        w.staged = None;
+        w
     }
 
     /// The writer for a write, locked and caught up. A writer whose fold

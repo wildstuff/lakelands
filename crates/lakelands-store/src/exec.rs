@@ -61,9 +61,11 @@ where
 }
 
 /// A turn at `lake`'s writer: what [`Turn::writer`] and [`Turn::for_write`]
-/// are taken with. It is lent to a write's job by [`write`] (and by
-/// `write_soon` inline, where no runtime is there to queue it), and to
-/// an owner of the lake by [`Lake::turn`]; it reads as the lake.
+/// are taken with. The thread that holds the queue lends it to each
+/// entry in turn: to a write's job queued by [`write`], and to a batch of
+/// record writes queued by [`records`] (`write_soon` lends it inline,
+/// where no runtime is there to queue on), and it is lent to an owner of
+/// the lake by [`Lake::turn`]; it reads as the lake.
 pub struct Turn<'l>(&'l Lake);
 
 impl<'l> Turn<'l> {
@@ -119,7 +121,9 @@ pub(crate) fn records(lake: &Arc<Lake>, jobs: Vec<Job>) {
 fn queue(lake: &Arc<Lake>, entry: Entry) {
     let mut q = lakelands_core::lock(&lake.queue);
     q.entries.push_back(entry);
-    if !std::mem::replace(&mut q.held, true) {
+    let held = std::mem::replace(&mut q.held, true);
+    drop(q);
+    if !held {
         hold(lake.clone());
     }
 }
@@ -127,40 +131,54 @@ fn queue(lake: &Arc<Lake>, entry: Entry) {
 /// Hold `lake`'s turn on a blocking thread: run the entries from the head
 /// until none is left.
 fn hold(lake: Arc<Lake>) {
+    let mut holding = Holding { lake, began: false };
     drop(tokio::task::spawn_blocking(move || {
-        let holding = Holding(&lake);
+        holding.began = true;
         while let Some(entry) = holding.next() {
             match entry {
-                Entry::Alone(job) => job(&Turn(&lake)),
-                Entry::Records(jobs) => crate::writes::write_many(&Turn(&lake), jobs),
+                Entry::Alone(job) => job(&Turn(&holding.lake)),
+                Entry::Records(jobs) => crate::writes::write_many(&Turn(&holding.lake), jobs),
             }
         }
     }));
 }
 
-/// The turn, held: a panic that unwinds out of it answers the jobs it took
-/// and had not answered `Stopped`, as their dropped answers are read, and
-/// hands the turn on to the entries still queued.
-struct Holding<'l>(&'l Arc<Lake>);
+/// The turn, held. A panic that unwinds out of it answers the jobs it
+/// took and had not answered `Stopped`, as their dropped answers are
+/// read, and hands the turn on to the entries still queued; a hold the
+/// runtime never ran (it was shutting down) lets the turn go and answers
+/// every queued job `Stopped` the same way.
+struct Holding {
+    lake: Arc<Lake>,
+    began: bool,
+}
 
-impl Holding<'_> {
+impl Holding {
     /// The head entry; with none left, the turn is let go.
     fn next(&self) -> Option<Entry> {
-        let mut q = lakelands_core::lock(&self.0.queue);
+        let mut q = lakelands_core::lock(&self.lake.queue);
         let entry = q.entries.pop_front();
         q.held = entry.is_some();
         entry
     }
 }
 
-impl Drop for Holding<'_> {
+impl Drop for Holding {
     fn drop(&mut self) {
-        if std::thread::panicking() {
-            let mut q = lakelands_core::lock(&self.0.queue);
-            q.held = !q.entries.is_empty();
-            if q.held {
-                hold(self.0.clone());
-            }
+        if self.began && !std::thread::panicking() {
+            return;
+        }
+        let mut q = lakelands_core::lock(&self.lake.queue);
+        let unrun = match self.began {
+            true => VecDeque::new(),
+            false => std::mem::take(&mut q.entries),
+        };
+        q.held = !q.entries.is_empty();
+        let held = q.held;
+        drop(q);
+        drop(unrun);
+        if held {
+            hold(self.lake.clone());
         }
     }
 }

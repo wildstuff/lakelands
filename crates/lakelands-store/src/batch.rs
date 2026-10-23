@@ -1,7 +1,9 @@
 //! Record writes queued as one entry of the writer's queue, for the tests
 //! that hold a batch to what each of its writes answers alone
 //! (lakelands#1332), and a clock they fix so two lakes written alike log
-//! alike. A seam of the tests, not of the store: no host reaches it.
+//! alike. A seam of the tests, not of the store: hidden from its
+//! documentation, and no host is to call it; a fixed clock holds for
+//! every lake of the process.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};

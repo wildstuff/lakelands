@@ -159,11 +159,13 @@ impl Lake {
 
     /// What a batch's append leaves where it stopped midway, from `first`
     /// on: the projection as its last commit left it, and the writer
-    /// behind, owing the calls of what landed, as a failed fold leaves it.
-    /// What it owed before, its lease and whether it lost that stay.
-    pub(crate) fn stopped_append(&self, w: &mut Writer, first: Option<Position>) {
+    /// behind, owing the `owed` calls it owed before, as a failed fold
+    /// leaves it; the fold that catches up owes those of what landed. Its
+    /// lease and whether it lost that stay.
+    pub(crate) fn stopped_append(&self, w: &mut Writer, (first, owed): (Option<Position>, usize)) {
         self.engine.projection().rollback();
         (w.behind, w.staged) = (true, None);
+        w.owed.truncate(owed);
         w.failed = first.or(w.failed);
         self.reload(w);
     }
