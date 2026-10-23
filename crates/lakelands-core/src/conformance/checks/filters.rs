@@ -5,7 +5,7 @@
 
 use lakelands_api::seam::SETTING_TYPE;
 
-use crate::conformance::fixture::{order, source_record};
+use crate::conformance::fixture::{order, source_record, sourced};
 use crate::conformance::prelude::*;
 
 check!(
@@ -39,9 +39,89 @@ check!(
 );
 
 check!(
+    TEXT_KEY_READ_BY_KEY = a_text_key_is_found_by_its_text_whatever_the_text_holds,
+    "057, extended (lakelands#1318): of a type keyed by one text field, a `where` that the field equals a text, or is one of texts, answers the records holding it and only those, whatever the text holds (`:`, `%`, the escape of `:` written out, non-ASCII), narrowed further, ordered, counted as listed, and as of a position before a record was put again or retired as it stood there"
+);
+
+check!(
     LONG_TEXT_AND_NUL = a_long_text_is_found_and_a_text_holding_nul_is_refused,
     "057: a text of 10 000 characters is found by equality whether its field is looked up or not, and the setting is written over it; a text holding U+0000 is refused as invalid, naming its field"
 );
+
+/// The texts [`a_text_key_is_found_by_its_text_whatever_the_text_holds`]
+/// keys `code` by: `a%3Ab` is the key `a:b` makes, and its own is not.
+const KEY_TEXTS: [&str; 6] = ["a:b", "a%3Ab", "50%", "zürich", "日本", "plain"];
+
+/// The keys of `code` a `where` answers at `as_of`, in key order, and
+/// the count `total` gives beside them.
+async fn codes(l: &Lake, filter: &str, as_of: Option<Position>) -> Result<Vec<String>, Failure> {
+    let find = Find {
+        total: true,
+        at: read_at(as_of),
+        order_by: vec![order("n", OrderBy::Value, Direction::Asc)],
+        ..find_where(filter)
+    };
+    let found = l.cat.find(&l.own, &TypeName::from("code"), find).await;
+    let Found::Records { rows, total, .. } = found.must(filter)?.data else {
+        return Err(Failure::new(format!("`{filter}` answered groups")));
+    };
+    let ids: Vec<String> = rows
+        .iter()
+        .map(|r| r.fields["id"].as_str().unwrap_or("").into())
+        .collect();
+    ensure!(
+        total == Some(ids.len() as u64),
+        "`{filter}` as of {as_of:?} listed {ids:?} and counted {total:?}"
+    );
+    Ok(ids)
+}
+
+async fn a_text_key_is_found_by_its_text_whatever_the_text_holds(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let fields = vec![
+        sourced("id", StorageKind::Text),
+        sourced("n", StorageKind::Number),
+    ];
+    let code = TypeDecl {
+        key: vec!["id".into()],
+        ..type_decl("code", fields)
+    };
+    l.declare(code).await?;
+    let key = |t: &str| lakelands_api::key::key_component(&json!(t)).unwrap_or_default();
+    let put = |t: &str, n: usize| source_record("code", &key(t), json!({"id": t, "n": n}));
+    let records = (KEY_TEXTS.iter().enumerate())
+        .map(|(n, t)| put(t, n))
+        .collect();
+    l.ingest("crm", records).await.must("ingesting the codes")?;
+    let before = store.head().await.must("reading the head")?;
+    l.ingest("crm", vec![put("a:b", 9)])
+        .await
+        .must("putting `a:b` again")?;
+    l.retire("code", &key("50%")).await?;
+    for (as_of, gone) in [(None, Some("50%")), (Some(before), None)] {
+        for t in KEY_TEXTS {
+            let want: Vec<&str> = Some(t).filter(|t| Some(*t) != gone).into_iter().collect();
+            let got = codes(&l, &format!("id = '{t}'"), as_of).await?;
+            ensure!(
+                got == want,
+                "as of {as_of:?}, `id = '{t}'` answered {got:?}"
+            );
+        }
+        let got = codes(&l, "id in ('日本', 'a:b', 'a%3Ab', 'absent')", as_of).await?;
+        let want = match as_of {
+            None => ["a%3Ab", "日本", "a:b"],
+            Some(_) => ["a:b", "a%3Ab", "日本"],
+        };
+        ensure!(got == want, "as of {as_of:?}, `in` answered {got:?}");
+        let got = codes(&l, "id = 'a:b' and n > 5", as_of).await?;
+        let want = if as_of.is_none() { vec!["a:b"] } else { vec![] };
+        ensure!(
+            got == want,
+            "as of {as_of:?}, narrowed, `a:b` answered {got:?}"
+        );
+    }
+    Ok(())
+}
 
 async fn lines(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);

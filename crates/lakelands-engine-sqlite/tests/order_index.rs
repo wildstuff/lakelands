@@ -44,7 +44,7 @@ fn a_stale_order_index_is_not_read_and_a_writers_open_rebuilds_it() {
         );
         let db = || rusqlite::Connection::open(dir.join("projection.db")).unwrap();
         db().execute_batch(&format!(
-            "DELETE FROM sort_index WHERE rowid % 2 = 0; \
+            "DELETE FROM sort_index WHERE unicode(substr(key, -1)) % 2 = 0; \
              UPDATE sort_index SET sort_key = x'00'; {tamper};"
         ))
         .unwrap();

@@ -39,7 +39,7 @@ check!(
 
 check!(
     RENAMES_NO_KEY = a_rename_of_a_value_a_key_field_holds_is_refused,
-    "027, extended (lakelands#553): a rename of a value a key field holds is refused as invalid, naming the type and the field and pointing to a re-key through the type's migration, and nothing is appended; a key field that holds no old value does not refuse it"
+    "027, extended (lakelands#553): a rename of a value a key field holds is refused as invalid, naming the type and the field and pointing to a re-key through the type's migration, and nothing is appended; a key field that holds no old value does not refuse it, and once the rename is applied a `where` on the key field still answers the record its text keys (057, lakelands#1318)"
 );
 
 check!(
@@ -415,6 +415,16 @@ async fn a_rename_of_a_value_a_key_field_holds_is_refused(store: Store) -> Held 
         "a key field that holds no old value does not refuse the rename; the report says \
          {report:?}"
     );
+    let m = renamed(&["active", "done"], &[("open", "active")]);
+    apply(store.as_ref(), &l, m).await?;
+    for (filter, want) in [("name = 'done'", vec!["done"]), ("name = 'active'", vec![])] {
+        let rows = l.all_found("stage", find_where(filter)).await?;
+        let keys: Vec<String> = rows.into_iter().map(|r| r.key.0).collect();
+        ensure!(
+            keys == want,
+            "after the rename, `{filter}` answers {keys:?}"
+        );
+    }
     Ok(())
 }
 

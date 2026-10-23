@@ -37,7 +37,7 @@ use postgres::types::ToSql;
 
 use crate::connect::Db;
 use crate::handle::PgLake;
-use crate::projection::{self, DECLARATIONS, MEMBERS, Names, PROPOSALS, decode_record};
+use crate::projection::{self, DECLARATIONS, MEMBERS, Names, PROPOSALS, RECORD, record_at};
 
 /// A read view of one lake's projection at one position.
 pub(crate) struct PgView<'a> {
@@ -75,7 +75,7 @@ fn in_force_sql(records: &str, head: bool) -> String {
         false => "x.since <= $2 ORDER BY x.since DESC",
     };
     format!(
-        "{records}_head h CROSS JOIN LATERAL (SELECT x.state FROM {records} x \
+        "{records}_head h CROSS JOIN LATERAL (SELECT x.* FROM {records} x \
          WHERE x.ty = h.ty AND x.key = h.key AND {at} LIMIT 1) r"
     )
 }
@@ -101,34 +101,35 @@ fn records_after_sql(records: &str, head: bool, after: bool, narrow: bool) -> St
     };
     if head && narrow {
         return format!(
-            "SELECT r.state FROM {records}_head h \
-             CROSS JOIN LATERAL (SELECT x.state FROM {records} x \
+            "SELECT {RECORD} FROM {records}_head h \
+             CROSS JOIN LATERAL (SELECT x.* FROM {records} x \
              WHERE x.ty = h.ty AND x.key = h.key AND x.since = h.since LIMIT 1) r \
              WHERE h.ty = $1 AND h.since <= $2 {from} {text} ORDER BY h.key LIMIT $3"
         );
     }
     if head {
         return format!(
-            "SELECT r.state FROM (SELECT * FROM {records}_head h \
+            "SELECT {RECORD} FROM (SELECT * FROM {records}_head h \
              WHERE h.ty = $1 AND h.since <= $2 {from} ORDER BY h.key LIMIT $3) h \
-             CROSS JOIN LATERAL (SELECT x.state FROM {records} x \
+             CROSS JOIN LATERAL (SELECT x.* FROM {records} x \
              WHERE x.ty = h.ty AND x.key = h.key AND x.since = h.since LIMIT 1) r \
              ORDER BY h.key"
         );
     }
     format!(
-        "SELECT r.state FROM {} WHERE h.ty = $1 {from} {text} ORDER BY h.key LIMIT $3",
+        "SELECT {RECORD} FROM {} WHERE h.ty = $1 {from} {text} ORDER BY h.key LIMIT $3",
         in_force_sql(records, false)
     )
 }
 
 /// The statement of [`Read::count_in_force`]: the records of `$1` in force
-/// at `$2`, under the two flags `$3` and `$4`.
+/// at `$2`, under the two flags `$3` and `$4`. A state holds a flag only
+/// where it is set.
 fn count_in_force_sql(records: &str, head: bool) -> String {
     format!(
         "SELECT COUNT(*) FROM {} WHERE h.ty = $1 \
-         AND ($3 OR NOT (r.state::jsonb ->> 'retired')::boolean) \
-         AND ($4 OR NOT (r.state::jsonb ->> 'restricted')::boolean)",
+         AND ($3 OR (r.state::jsonb -> 'retired') IS NULL) \
+         AND ($4 OR (r.state::jsonb -> 'restricted') IS NULL)",
         in_force_sql(records, head)
     )
 }
@@ -150,8 +151,8 @@ fn output_sql(outputs: &str) -> String {
 /// position (lakelands#575).
 fn records_by_key_sql(records: &str) -> String {
     format!(
-        "SELECT r.state FROM unnest($2::text[]) k(key) CROSS JOIN LATERAL (\
-         SELECT h.state FROM {records} h WHERE h.ty = $1 AND h.key = k.key \
+        "SELECT {RECORD} FROM unnest($2::text[]) k(key) CROSS JOIN LATERAL (\
+         SELECT h.* FROM {records} h WHERE h.ty = $1 AND h.key = k.key \
          AND h.since <= $3 ORDER BY h.since DESC LIMIT 1) r ORDER BY k.key COLLATE \"C\""
     )
 }
@@ -160,7 +161,7 @@ fn records_by_key_sql(records: &str) -> String {
 /// through its head: a seek into each primary key.
 fn head_of_sql(records: &str, key: &str) -> String {
     format!(
-        "CROSS JOIN LATERAL (SELECT x.state FROM {records}_head h \
+        "CROSS JOIN LATERAL (SELECT x.* FROM {records}_head h \
          JOIN {records} x ON x.ty = h.ty AND x.key = h.key AND x.since = h.since \
          WHERE h.ty = $1 AND h.key = {key} LIMIT 1) r"
     )
@@ -240,7 +241,7 @@ fn sorted_after_sql(
         ),
     };
     format!(
-        "{with}SELECT s.sort_key, r.state FROM \
+        "{with}SELECT s.sort_key, {RECORD} FROM \
          (SELECT s.sort_key, s.key FROM {rows} s.ty = $1 AND s.field = $2 {seek} \
           ORDER BY {by} LIMIT $3) s \
          {} ORDER BY {by}",
@@ -260,7 +261,7 @@ fn few_cursor_sql([sorted, text, records]: &[String; 3], dir: Direction) -> Stri
     format!(
         "DECLARE {FEW_CURSOR} NO SCROLL CURSOR FOR WITH t AS MATERIALIZED \
          (SELECT key FROM {text} WHERE ty = $1 AND field = $4 AND md5(value) = md5($5)) \
-         SELECT s.sort_key, r.state FROM \
+         SELECT s.sort_key, {RECORD} FROM \
          (SELECT s.sort_key, s.key FROM t CROSS JOIN LATERAL \
           (SELECT s.sort_key, s.key FROM {sorted} s \
            WHERE s.ty = $1 AND s.key = t.key AND s.field = $2 {seek} LIMIT 1) s \
@@ -283,7 +284,7 @@ fn unsorted_holding_sql([sorted, text, records]: &[String; 3], after: bool) -> S
         ""
     };
     format!(
-        "SELECT r.state FROM \
+        "SELECT {RECORD} FROM \
          (SELECT t.key FROM {text} t \
           WHERE t.ty = $1 AND t.field = $4 AND md5(t.value) = md5($5) {from} \
           AND (SELECT 1 FROM {sorted} s \
@@ -458,13 +459,13 @@ impl Read<'_> {
                 // The latest state at or before the position: no other
                 // state of the key is read.
                 &format!(
-                    "SELECT state FROM {} WHERE ty = $1 AND key = $2 AND since <= $3 \
-                     ORDER BY since DESC LIMIT 1",
+                    "SELECT ty, key, since, state FROM {} WHERE ty = $1 AND key = $2 \
+                     AND since <= $3 ORDER BY since DESC LIMIT 1",
                     self.names.t("records")
                 ),
                 &[&ty.as_str(), &key.as_str(), &self.at],
             )?
-            .map(|r| decode_record(&r.get::<_, String>(0)))
+            .map(|r| record_at(&r, 0))
             .transpose()
     }
 
@@ -571,7 +572,7 @@ impl Read<'_> {
             let from = after.map_or(0, |a| keys.partition_point(|k| k.as_str() <= a));
             let page: Vec<String> = keys[from..].iter().take(n as usize).cloned().collect();
             let query = format!(
-                "SELECT r.state FROM unnest($2::text[]) WITH ORDINALITY k(key, n) {} ORDER BY k.n",
+                "SELECT {RECORD} FROM unnest($2::text[]) WITH ORDINALITY k(key, n) {} ORDER BY k.n",
                 head_of_sql(&self.names.t("records"), "k.key")
             );
             return self.db.records(&query, &[&ty.as_str(), &page]);
@@ -586,7 +587,7 @@ impl Read<'_> {
         // (`engines::scan_in_key_order`), so this answers `n` records
         // whenever `n` holders of the text remain after `after`.
         let query = format!(
-            "SELECT r.state FROM \
+            "SELECT {RECORD} FROM \
              (SELECT t.key FROM {text} t \
               WHERE t.ty = $1 AND t.field = $2 AND md5(t.value) = md5($3) {from} \
               ORDER BY t.key COLLATE \"C\" LIMIT $4) t \
@@ -611,11 +612,11 @@ impl Read<'_> {
         let view = engines::kept_view(ty).map(|v| format!("type {v}"));
         let row = self.db.query_one(
             &format!(
-                "SELECT (SELECT n FROM {m} WHERE k = $1), \
-                 (SELECT r.state FROM {r} WHERE h.ty = $2 AND h.key = $3), \
+                "SELECT (SELECT n FROM {m} WHERE k = $1), s.state, \
                  (SELECT r.state FROM {d} WHERE h.ident = $4), \
-                 (SELECT t FROM {m} WHERE k = $5), \
-                 {held}",
+                 (SELECT t FROM {m} WHERE k = $5), {held}, s.since \
+                 FROM (SELECT) AS one LEFT JOIN LATERAL \
+                 (SELECT r.state, r.since FROM {r} WHERE h.ty = $2 AND h.key = $3) AS s ON true",
                 m = self.names.t("meta"),
                 held = projection::held(self.names, "$6"),
                 r = projection::RECORDS.at_head(self.names),
@@ -637,10 +638,7 @@ impl Read<'_> {
         if row.get::<_, Option<i64>>(0) != self.folded {
             return Ok(Vec::new());
         }
-        let setting = row
-            .get::<_, Option<String>>(1)
-            .map(|state| decode_record(&state))
-            .transpose()?;
+        let setting = projection::setting_at(&row, ty, [1, 5])?;
         // Chosen fields a writer that keeps none folded past are not read.
         let chosen = match row.get::<_, bool>(4) {
             true => projection::chosen_decoded(row.get(3)),
@@ -681,7 +679,7 @@ impl Read<'_> {
         }
         let rows = self.db.query(&query, &args)?;
         rows.iter()
-            .map(|r| Ok((r.get(0), decode_record(&r.get::<_, String>(1))?)))
+            .map(|r| Ok((r.get(0), record_at(r, 1)?)))
             .collect()
     }
 
@@ -729,8 +727,7 @@ impl Read<'_> {
                 .query(&format!("FETCH {ask} FROM {FEW_CURSOR}"), &[])?;
             few.ended = rows.len() < ask;
             for r in rows {
-                few.waiting
-                    .push_back((r.get(0), decode_record(&r.get::<_, String>(1))?));
+                few.waiting.push_back((r.get(0), record_at(&r, 1)?));
             }
         }
         let take = n.min(few.waiting.len());
@@ -777,7 +774,7 @@ impl Read<'_> {
         }
         let from = after.map_or("", |_| "AND h.key > $4");
         let query = format!(
-            "SELECT r.state FROM {records} WHERE h.ty = $1 {from} \
+            "SELECT {RECORD} FROM {records} WHERE h.ty = $1 {from} \
              AND NOT EXISTS (SELECT 1 FROM {sorted} s \
              WHERE s.ty = h.ty AND s.field = $2 AND s.key = h.key) \
              ORDER BY h.key LIMIT $3",
@@ -964,9 +961,14 @@ impl ProjectionView for PgView<'_> {
             {
                 return r.count_in_force(ty, scan.retired, scan.restricted);
             }
-            // At the head, a count that must hold a text reads the records
-            // holding it, not the type.
+            // A count that must hold a text in a text key reads the records
+            // at the keys it makes; at the head, one that must hold another
+            // text reads the records holding it, not the type.
             let decl = r.type_decl(ty)?;
+            if let Some(keys) = engines::key_lookup(decl.as_ref(), scan) {
+                let records = r.records_by_key(ty, keys)?;
+                return Ok(engines::count_of(decl.as_ref(), &records, scan));
+            }
             let looked = r.looked(ty, decl.as_ref())?;
             let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
             let lookup = engines::text_lookups(scan, &kept).filter(|_| r.head);
@@ -980,6 +982,10 @@ impl ProjectionView for PgView<'_> {
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         self.read(Vec::new(), |r| {
             let decl = r.type_decl(ty)?;
+            if let Some(keys) = engines::key_lookup(decl.as_ref(), scan) {
+                let records = r.records_by_key(ty, keys)?;
+                return Ok(engines::scan(decl.as_ref(), &records, scan));
+            }
             let looked = r.looked(ty, decl.as_ref())?;
             let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
             let lookup = engines::text_lookup(scan, &kept).filter(|_| r.head);
