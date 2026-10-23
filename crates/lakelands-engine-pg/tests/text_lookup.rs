@@ -505,17 +505,20 @@ fn read_by_key(engine: &dyn LakeEngine) {
                 found
             };
             let (listed, ordered) = (found(&page), found(&sorted));
+            // The count is not printed: CodeQL follows the engine's
+            // connection into it and calls that logging a certificate.
+            let count = match counted == want.len() as u64 {
+                true => "right",
+                false => "wrong",
+            };
             assert!(
-                counted == want.len() as u64
+                count == "right"
                     && listed == want
                     && ordered == want
                     && read <= 3 * want.len().max(1) as u64,
-                "as of {at:?}, {what} counted {counted}, found {} and {} in `n`'s order, of \
-                 {} wanted, from {read} rows handed to the rulebook, of a type of {N}; the \
-                 records at the keys the texts make are read",
-                listed.len(),
-                ordered.len(),
-                want.len()
+                "as of {at:?}, {what} counted {count}, found {listed:?}, and {ordered:?} in \
+                 `n`'s order, from {read} rows handed to the rulebook, of a type of {N}; the \
+                 records at the keys the texts make are read"
             );
         };
         let held = format!("id = 'a:b' and n = {n}");
