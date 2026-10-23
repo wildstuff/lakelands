@@ -213,3 +213,7 @@ reads the head as a read does and holds no lock, so the answer is the
 write's at that head: a write made later is judged again where it
 lands, and what only the writer's lock decides (its lease, a retry
 under an idempotency key) is the write's alone.
+Its clock is the wall clock when it reads, where the write's never runs
+behind the last `known_at` the log holds: on a host whose clock has gone
+back, a constraint that reads the time, or a field's `known_at` or
+`seen_at`, may be judged at an earlier instant than the write judges it.

@@ -342,7 +342,7 @@ belongs in the suite, not beside one engine:
 
 **upsert preflight**
 
-- `an_upsert_is_judged_as_it_would_be_written` — lakelands#1329: `upsert_preflight` answers what `upsert` of the same patch by the same principal then answers: `Ok` for a write that lands, and the same refusal for one that breaks a constraint, one sent by a writer kept from what the constraint reads, one the writer may not write, and one that names a field the type does not have; it appends nothing and changes no record
+- `an_upsert_is_judged_as_it_would_be_written` — lakelands#1329: `upsert_preflight` answers what `upsert` of the same patch by the same principal then answers: `Ok` for a write that lands, and the same refusal for one that breaks a constraint, one sent by a writer kept from what the constraint reads, one the writer may not write, one that names a field the type does not have, and one at an expected version: its own lands, a stale one and `0` on a record that exists conflict, and `0` on a create lands; it appends nothing and changes no record
 - `an_upsert_is_judged_on_the_record_it_would_make` — lakelands#1329: `upsert_preflight` judges a constraint on the record the write would make, as `upsert` does: a create with the initial values it is filled with, a constraint that reads a field derived or computed by a function from what the write sends, and a write of `sys.setting` with the setting's declaration; for each it answers what the write then answers, appending nothing and changing no record
 
 **logged ids**

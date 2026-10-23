@@ -12,7 +12,7 @@ use crate::conformance::prelude::*;
 
 check!(
     UPSERT_JUDGED_AS_WRITTEN = an_upsert_is_judged_as_it_would_be_written,
-    "lakelands#1329: `upsert_preflight` answers what `upsert` of the same patch by the same principal then answers: `Ok` for a write that lands, and the same refusal for one that breaks a constraint, one sent by a writer kept from what the constraint reads, one the writer may not write, and one that names a field the type does not have; it appends nothing and changes no record"
+    "lakelands#1329: `upsert_preflight` answers what `upsert` of the same patch by the same principal then answers: `Ok` for a write that lands, and the same refusal for one that breaks a constraint, one sent by a writer kept from what the constraint reads, one the writer may not write, one that names a field the type does not have, and one at an expected version: its own lands, a stale one and `0` on a record that exists conflict, and `0` on a create lands; it appends nothing and changes no record"
 );
 
 check!(
@@ -34,21 +34,34 @@ fn invoice() -> Value {
             {"name": "small_draft", "holds": "not (state = 'draft') or amount <= 100"}]})
 }
 
-/// Judges `fields` at `key` of `ty` as `who` through `upsert_preflight`;
-/// fails unless that appended nothing and left every record of `ty` as
-/// it was, then writes them through `upsert` and fails unless the two
-/// answers agree. Answers the judgement.
+/// [`judged_at`] with no expected version.
 async fn judged(
+    store: &dyn LakeStore,
+    l: &Lake,
+    at: (&Principal, &str, &str),
+    fields: Value,
+) -> Result<lakelands_api::Result<()>, Failure> {
+    judged_at(store, l, at, fields, None).await
+}
+
+/// Judges `fields` at `key` of `ty` as `who` through `upsert_preflight`,
+/// at the version `expected`; fails unless that appended nothing and left
+/// every record of `ty` as it was, then writes them through `upsert` at
+/// the same version and fails unless the two answers agree. Answers the
+/// judgement.
+async fn judged_at(
     store: &dyn LakeStore,
     l: &Lake,
     (who, ty, key): (&Principal, &str, &str),
     fields: Value,
+    expected: Option<Version>,
 ) -> Result<lakelands_api::Result<()>, Failure> {
     let head = store.head().await.must("reading the head")?;
     let held = all(l.cat.as_ref(), &l.own, ty).await?;
     let (t, k) = (TypeName::from(ty), RecordKey::from(key));
     let context = WriteContext::default();
-    let judged = (store.upsert_preflight(who, context, &t, &k, patch(fields.clone()), None)).await;
+    let sent = patch(fields.clone());
+    let judged = (store.upsert_preflight(who, context, &t, &k, sent.clone(), expected)).await;
     let moved = store.head().await.must("reading the head")?;
     ensure!(
         moved == head,
@@ -59,8 +72,11 @@ async fn judged(
         still == held,
         "judging {fields} at `{ty}` `{key}` changed its records: {held:?}, then {still:?}"
     );
-    let written = try_upsert(l.cat.as_ref(), who, ty, key, fields.clone()).await;
-    let written = written.map(drop);
+    let opts = WriteOpts {
+        expected_version: expected,
+        ..WriteOpts::default()
+    };
+    let written = l.cat.upsert(who, &t, &k, sent, opts).await.map(drop);
     ensure!(
         judged == written,
         "{fields} at `{ty}` `{key}` is judged {judged:?} and written {written:?}"
@@ -96,6 +112,21 @@ async fn an_upsert_is_judged_as_it_would_be_written(store: Store) -> Held {
     ensure!(
         broken(&over) == Some("never_overpaid"),
         "a payment beyond the amount is refused `never_overpaid`: {over:?}"
+    );
+    // At an expected version: the record's own lands, and then, stale,
+    // is refused; `0` lands on a create and is refused on a record.
+    let now = l.read("invoice", "I-1").await?.version;
+    let current = judged_at(s, &l, at, json!({"paid": 70}), Some(now)).await?;
+    let stale = judged_at(s, &l, at, json!({"paid": 60}), Some(now)).await?;
+    let fresh = (&l.own, "invoice", "I-9");
+    let made = json!({"no": "I-9", "amount": 10, "paid": 0});
+    let created = judged_at(s, &l, fresh, made, Some(Version(0))).await?;
+    let taken = judged_at(s, &l, at, json!({"paid": 60}), Some(Version(0))).await?;
+    let conflict = |a: &lakelands_api::Result<()>| matches!(a, Err(Error::Conflict { .. }));
+    ensure!(
+        current.is_ok() && conflict(&stale) && created.is_ok() && conflict(&taken),
+        "at its own version a write lands, at a stale one it conflicts, and at `0` it lands on a \
+         create and conflicts on a record: {current:?}, {stale:?}, {created:?}, {taken:?}"
     );
     let unknown = judged(s, &l, at, json!({"nope": 1})).await?;
     ensure!(
