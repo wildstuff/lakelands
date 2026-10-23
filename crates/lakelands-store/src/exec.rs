@@ -16,8 +16,10 @@
 //! and a read beside them finds the pool free. The writer's lock stays;
 //! the queue only decides who takes it next, which the lock itself does
 //! not do fairly. The log's order is still the order the writer appends
-//! in. An entry is a job that runs alone, or record writes as data, which
-//! the turn decides together ([`crate::writes::write_many`]).
+//! in. An entry is a job that runs alone, or record writes as data; the
+//! record writes queued one after another, up to the first job that runs
+//! alone, are taken together, and the turn decides them in batches that
+//! share one durable append ([`crate::writes::write_many`]).
 
 use std::any::Any;
 use std::collections::VecDeque;
@@ -116,6 +118,21 @@ pub(crate) fn records(lake: &Arc<Lake>, jobs: Vec<Job>) {
     queue(lake, Entry::Records(jobs));
 }
 
+/// Hold `lake`'s turn until what is answered is dropped ([`crate::batch`]).
+pub(crate) fn hold_turn(lake: &Arc<Lake>) -> std::sync::mpsc::Sender<()> {
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    queue(
+        lake,
+        Entry::Alone(Box::new(move |_| rx.recv().unwrap_or_default())),
+    );
+    tx
+}
+
+/// How many entries wait in `lake`'s queue.
+pub(crate) fn queued(lake: &Lake) -> usize {
+    lakelands_core::lock(&lake.queue).entries.len()
+}
+
 /// Put `entry` at the end of `lake`'s queue, and take the turn where
 /// nobody holds it.
 fn queue(lake: &Arc<Lake>, entry: Entry) {
@@ -154,10 +171,19 @@ struct Holding {
 }
 
 impl Holding {
-    /// The head entry; with none left, the turn is let go.
+    /// The head entry, with the record writes queued right behind record
+    /// writes taken into it, which the turn decides together; with none
+    /// left, the turn is let go.
     fn next(&self) -> Option<Entry> {
         let mut q = lakelands_core::lock(&self.lake.queue);
-        let entry = q.entries.pop_front();
+        let mut entry = q.entries.pop_front();
+        if let Some(Entry::Records(jobs)) = &mut entry {
+            while let Some(Entry::Records(more)) = q.entries.front_mut() {
+                jobs.append(more);
+                q.entries.pop_front();
+            }
+            crate::batch::taken(jobs);
+        }
         q.held = entry.is_some();
         entry
     }

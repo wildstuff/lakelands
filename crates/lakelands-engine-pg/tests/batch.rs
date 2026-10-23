@@ -1,7 +1,7 @@
-//! Record writes queued as batches on the PostgreSQL engine, held to the
-//! same writes made alone (lakelands#1332): each lake of a comparison is
-//! kept in a schema of its own on the server `LAKELANDS_TEST_PG_URL`
-//! names; without it the tests stand down.
+//! Record writes queued as batches on the PostgreSQL engine, held to the same
+//! writes made one by one (lakelands#1332, lakelands#1313): each lake of a
+//! comparison is kept in a schema of its own on the server
+//! `LAKELANDS_TEST_PG_URL` names; without it the tests stand down.
 
 mod common;
 
@@ -29,27 +29,34 @@ fn place(url: &str) -> (batched::Place, Arc<Mutex<Vec<String>>>) {
     (place, given)
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_batch_answers_and_logs_as_its_writes_alone() {
-    let Some(url) = common::url_or_skip("a_batch_answers_and_logs_as_its_writes_alone") else {
-        return;
+macro_rules! on {
+    ($(#[$m:meta])* $test:ident, $lake:literal) => {
+        $(#[$m])*
+        #[tokio::test(flavor = "multi_thread")]
+        async fn $test() {
+            let Some(url) = common::url_or_skip(stringify!($test)) else {
+                return;
+            };
+            let (place, given) = place(&url);
+            batched::$test(&place, $lake).await;
+            for schema in given.lock().unwrap().iter() {
+                common::drop_schema(&url, schema);
+            }
+        }
     };
-    let (place, given) = place(&url);
-    batched::a_batch_answers_and_logs_as_its_writes_alone(&place, "batch").await;
-    for schema in given.lock().unwrap().iter() {
-        common::drop_schema(&url, schema);
-    }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_failed_batch_answers_every_job_and_the_lake_writes_again() {
-    let test = "a_failed_batch_answers_every_job_and_the_lake_writes_again";
-    let Some(url) = common::url_or_skip(test) else {
-        return;
-    };
-    let (place, given) = place(&url);
-    batched::a_failed_batch_answers_every_job_and_the_lake_writes_again(&place, "faulty").await;
-    for schema in given.lock().unwrap().iter() {
-        common::drop_schema(&url, schema);
-    }
-}
+on!(a_batch_answers_and_logs_as_its_writes_one_by_one, "batch");
+on!(
+    a_failed_append_answers_every_job_and_a_rerun_is_serial,
+    "faulty"
+);
+on!(a_panicked_batch_answers_every_job_stopped, "panicked");
+on!(a_batch_that_panicked_once_durable_is_caught_up, "durable");
+on!(an_ingest_window_closes_a_batch, "ingest");
+on!(a_soak_replays_serially, "soak");
+on!(
+    #[ignore = "run by hand, --release: it measures"]
+    throughput,
+    "throughput"
+);

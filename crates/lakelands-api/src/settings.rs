@@ -154,7 +154,7 @@ pub const SETTINGS: &[Setting] = &[
     },
     Setting {
         range: "a count, 1 at least",
-        says: "The most events one group-commit window of an ingest holds.",
+        says: "The most records one group-commit window of an ingest holds, or events one batch of record writes holds; a batch closes after the write that reaches it.",
         ..location("limits.commit_window_events", "32")
     },
     Setting {
