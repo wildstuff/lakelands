@@ -824,10 +824,7 @@ pub(crate) fn decode_record(
         ))
         .and_then(|mut s| {
             let args = params![ty, key, field.as_str(), at.0 as i64];
-            let e = |r: &rusqlite::Row<'_>| {
-                let (single, data) = (r.get(0)?, r.get(1)?);
-                Ok(engines::Elements { single, data })
-            };
+            let e = |r: &rusqlite::Row<'_>| Ok(engines::Elements::new(r.get(0)?, r.get(1)?));
             s.query_row(args, e).optional()
         });
         engines::rejoin(&mut r, field, row.map_err(sql)?)?;
@@ -1023,8 +1020,8 @@ pub(crate) fn put_record(conn: &Connection, kept: &mut Kept, r: &StoredRecord) -
 
 /// Write the vector rows of `r`'s state ([`engines::put_vectors`]), `later`
 /// where a later state of its record is kept, and answer the fields of
-/// `vectors` it keeps apart. A vector the index put alone for a field the state names
-/// goes.
+/// `vectors` it keeps apart. A vector the index put alone for a field the
+/// state names goes.
 fn put_vectors(
     conn: &Connection,
     r: &StoredRecord,
@@ -1039,10 +1036,7 @@ fn put_vectors(
     .map_err(sql)?;
     let rows = stmt.query_map(params![ty, key], |row| {
         let (field, since): (String, i64) = (row.get(0)?, row.get(1)?);
-        let e = engines::Elements {
-            single: row.get(2)?,
-            data: row.get(3)?,
-        };
+        let e = engines::Elements::new(row.get(2)?, row.get(3)?);
         Ok((FieldName::from(field), since, e))
     });
     let rows: Vec<_> = rows.and_then(Iterator::collect).map_err(sql)?;
@@ -1136,11 +1130,14 @@ fn indexed(conn: &Connection, ty: &TypeName) -> Result<Indexed> {
         None => type_at(conn, ty, None)?,
     };
     let sorted = sorted_fields(conn, ty, decl.as_ref(), true)?;
+    let vectors = engines::vector_fields(ty, |t| match t == ty {
+        true => Ok(decl.clone()),
+        false => type_at(conn, t, None),
+    })?;
     let looked = match decl {
         Some(_) => Some(looked_fields(conn, ty)?),
         None => None,
     };
-    let vectors = engines::vector_fields(ty, |t| type_at(conn, t, None))?;
     Ok((decl, sorted, looked, vectors))
 }
 

@@ -330,12 +330,8 @@ fn fill(db: &mut Db, names: &Names, ty: &TypeName, field: &str, v: &Pgvector) ->
         let (keys, units): (Vec<String>, Vec<Option<String>>) = rows
             .iter()
             .map(|r| {
-                let key: String = r.get(0);
-                let e = engines::Elements {
-                    single: r.get(1),
-                    data: r.get(2),
-                };
-                (key, unit_text(&e.ranked()))
+                let e = engines::Elements::new(r.get(1), r.get(2));
+                (r.get(0), unit_text(&e.ranked()))
             })
             .unzip();
         db.execute(

@@ -152,24 +152,45 @@ async fn a_writers_open_rebuilds_a_projection_laid_out_between_the_two_changes()
           AND indexname LIKE 'vindex_%')"
     );
     let index = tokio::task::block_in_place(|| one(&url, &indexed));
-    assert_eq!(index, -1, "PLANT");
+    let pgvector = "SELECT count(*) FROM pg_extension WHERE extname = 'vector'";
+    let pgvector = tokio::task::block_in_place(|| one(&url, pgvector));
+    assert_eq!(
+        index,
+        11 * pgvector,
+        "with pgvector the field's index is built and marked"
+    );
     // The in-between build's projection: the elements in the state, as
-    // `f32`s in a head index, the mark the current one.
+    // `f32`s in a head index keyed by type, field and key, which keeps
+    // `unit`, the HNSW index and its mark where pgvector made them; the
+    // mark the current one.
     let between = format!(
         "UPDATE \"{schema}\".records SET state = jsonb_set(state::jsonb - 'vectors', \
-         '{{fields,v}}', '[0.1,-0.5,3]')::text; DROP TABLE \"{schema}\".vectors; \
-         CREATE TABLE \"{schema}\".vectors (ty TEXT NOT NULL, field TEXT NOT NULL, \
-         key TEXT NOT NULL, data BYTEA NOT NULL, PRIMARY KEY (ty, field, key))"
+         '{{fields,v}}', '[0.1,-0.5,3]')::text; ALTER TABLE \"{schema}\".vectors \
+         DROP COLUMN since, DROP COLUMN until, DROP COLUMN single; \
+         ALTER TABLE \"{schema}\".vectors ADD PRIMARY KEY (ty, field, key)"
     );
     let data: Vec<u8> = [0.1f32, -0.5, 3.0]
         .iter()
         .flat_map(|x| x.to_le_bytes())
         .collect();
-    let row = format!("INSERT INTO \"{schema}\".vectors VALUES ('pin', 'v', 'k', $1)");
+    let row = format!("UPDATE \"{schema}\".vectors SET data = $1");
+    let defs = format!(
+        "SELECT indexdef FROM pg_indexes WHERE schemaname = '{schema}' AND indexname LIKE 'vindex_%'"
+    );
     tokio::task::block_in_place(|| {
         let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        let defs: Vec<String> = (client.query(&defs, &[]).unwrap().iter())
+            .map(|r| r.get::<_, String>(0).replace(" AND (until IS NULL)", ""))
+            .collect();
         client.batch_execute(&between).unwrap();
+        // Its HNSW index ranked every row of the field: none ended.
+        defs.iter().for_each(|d| client.batch_execute(d).unwrap());
         client.execute(&row, &[&data]).unwrap();
+        assert_eq!(
+            one(&url, &indexed),
+            index,
+            "the in-between projection keeps its index"
+        );
     });
     let refused = open(&location, OpenMode::Read).await.err().unwrap();
     assert!(

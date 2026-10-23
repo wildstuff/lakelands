@@ -963,10 +963,7 @@ fn nearest(
         .map_err(sql)?;
     let rows = stmt
         .query_map(params![ty.as_str(), field], |r| {
-            let e = engines::Elements {
-                single: r.get(1)?,
-                data: r.get(2)?,
-            };
+            let e = engines::Elements::new(r.get(1)?, r.get(2)?);
             Ok((r.get::<_, String>(0)?, e))
         })
         .map_err(sql)?;
