@@ -147,10 +147,14 @@ impl Call<'_> {
         }
     }
 
-    /// Whether a change's plan or preview only tells its caller, judged
-    /// on the records it is told of: one who may not make it (062).
-    pub(crate) fn tells(&self) -> bool {
-        !self.who.grants.restricted
+    /// How a change is judged `when`: made, as an act; planned or
+    /// previewed for one who may not make it, only telling, on the records
+    /// it is told of, as a proposal's plan (062).
+    pub(crate) fn judging(&self, when: When) -> Judging {
+        match when == When::Plan && !self.who.grants.restricted {
+            true => Judging::Proposal,
+            false => Judging::Act,
+        }
     }
 
     /// A change made: planned now, compared with what it is made against,
@@ -284,8 +288,8 @@ impl Call<'_> {
                     When::Plan => w.last_known_at,
                     When::Act => self.lake.clock(w),
                 };
-                let telling = when == When::Plan && self.tells();
-                self.bundle_drafts(w, changed, (now, 0, telling))?
+                let judging = self.judging(when);
+                self.bundle_drafts(w, changed, (now, 0, judging))?
             }
         };
         let plan = plan_of(w, (bundled.types, Vec::new()));
@@ -320,8 +324,8 @@ impl Call<'_> {
             When::Act => self.lake.clock(w),
         };
         let judged = (&m, author.as_ref(), None);
-        let telling = when == When::Plan && self.tells();
-        let preflight = self.preflight_plan(w, view.as_ref(), judged, (Some(now), telling))?;
+        let judging = self.judging(when);
+        let preflight = self.preflight_plan(w, view.as_ref(), judged, (Some(now), judging))?;
         let report = self.shown(w, &m, preflight.report.clone())?;
         if against.report.is_some_and(|id| id != report.report_id) {
             return Err(Error::invalid(Case::MigrationStale));
@@ -366,8 +370,8 @@ impl Call<'_> {
             When::Plan => w.last_known_at,
             When::Act => self.lake.clock(w),
         };
-        let telling = when == When::Plan && self.tells();
-        let preflight = self.preflight_value_type(w, view.as_ref(), &m, (Some(now), telling))?;
+        let judging = self.judging(when);
+        let preflight = self.preflight_value_type(w, view.as_ref(), &m, (Some(now), judging))?;
         if against
             .report
             .is_some_and(|id| id != preflight.report.report_id)

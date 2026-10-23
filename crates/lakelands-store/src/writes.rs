@@ -174,28 +174,45 @@ pub(crate) struct Walked {
     told: Vec<bool>,
 }
 
+/// How a change is judged.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Judging {
+    /// As made: what it finds refuses it.
+    Act,
+    /// As a proposal's plan: only telling, on what its reader is told of;
+    /// the accept is the one refused (062).
+    Proposal,
+}
+
+impl Judging {
+    /// Whether it only tells.
+    pub(crate) fn tells(self) -> bool {
+        self == Judging::Proposal
+    }
+}
+
 impl Walked {
     /// For `decl` as `o` declares it, over the fields the walk may move.
     /// One who does not read every field a constraint that refuses and
     /// that it may move reads is not granted the walk, decided before any
     /// record is read, so the answer is the same whatever they hold.
-    /// Where `telling`, as a proposal's plan: one it may not read is not
-    /// judged and is not told, and nothing is refused (062).
+    /// Judged as a proposal's plan: one it may not read is not judged and
+    /// is not told, and nothing is refused (062).
     pub(crate) fn of(
         o: &crate::ontology::Ontology,
         decl: &TypeDecl,
         moving: &BTreeSet<FieldName>,
-        (sight, telling): (&Sight<'_>, bool),
+        (sight, judging): (&Sight<'_>, Judging),
     ) -> Result<Walked> {
         let plan = crate::record::Plans::default().get(o, decl);
         let reaches = |c: &crate::record::Constraint| !c.fed.is_disjoint(moving);
         let reads =
             |c: &crate::record::Constraint| c.reads.iter().all(|f| sight.reads_from(&decl.name, f));
         for c in (plan.constraints.iter()).filter(|c| reaches(c) && c.decl.at_ingest.refuses()) {
-            granted(telling || reads(c))?;
+            granted(judging.tells() || reads(c))?;
         }
         let broken = (plan.constraints.iter())
-            .map(|c| (reaches(c) && (!telling || reads(c))).then(|| (0, 0, Vec::new())))
+            .map(|c| (reaches(c) && (!judging.tells() || reads(c))).then(|| (0, 0, Vec::new())))
             .collect();
         let held = sight.who().grants.restricted;
         let told = plan.constraints.iter().map(reads).collect();
@@ -260,10 +277,10 @@ impl Walked {
 
     /// Refused where a record breaks one that refuses, appending nothing,
     /// naming the constraint, the type and the count; otherwise each that
-    /// admits and is broken, for the walk's report. Where `telling`, one
-    /// that refuses is listed too, and the walk is told it is not lossless
+    /// admits and is broken, for the walk's report. Judged as a proposal's
+    /// plan, one that refuses is listed too, and the walk is told it is not lossless
     /// where its reader is told of a record that breaks it.
-    pub(crate) fn kept(self, telling: bool) -> Result<(Vec<Breach>, bool)> {
+    pub(crate) fn kept(self, judging: Judging) -> Result<(Vec<Breach>, bool)> {
         let mut lossless = true;
         let mut breaches = Vec::new();
         let walked = self.plan.constraints.iter().zip(self.broken).zip(self.told);
@@ -272,7 +289,7 @@ impl Walked {
                 continue;
             };
             let (name, ty) = (c.decl.name.clone(), self.ty.clone());
-            if c.decl.at_ingest.refuses() && !telling {
+            if c.decl.at_ingest.refuses() && !judging.tells() {
                 let records = all;
                 let case = Case::ConstraintLeftBroken {
                     constraint: name,
@@ -1062,7 +1079,7 @@ fn satisfies(vt: &ValueTypeDecl, checked: &Value) -> Result<bool> {
 /// On a create, set the key fields the patch leaves out from the key's
 /// components (`docs/log-format.md` §2.3), each read in its field's kind.
 fn fill_key_fields(
-    w: &Writer,
+    o: &Ontology,
     decl: &TypeDecl,
     key: &RecordKey,
     patch: &mut Patch,
@@ -1114,7 +1131,7 @@ fn fill_key_fields(
         filled.insert(name.clone(), v);
     }
     rights::check_write(who, decl, door, &filled)?;
-    patch.extend(check_values(&w.ontology, decl, &filled, &decl.fields)?);
+    patch.extend(check_values(o, decl, &filled, &decl.fields)?);
     Ok(())
 }
 
@@ -1127,7 +1144,7 @@ fn check_references(
     ty: &TypeName,
     key: &RecordKey,
     patch: &Patch,
-    who: &Principal,
+    sees: &Sight<'_>,
 ) -> Result<()> {
     let decl = ontology.ty(ty)?;
     for (name, v) in patch {
@@ -1141,7 +1158,7 @@ fn check_references(
         if target == ty && to == *key {
             continue;
         }
-        if live_for(view, pending, ontology, target, &to, who)?.is_none() {
+        if live_for(view, pending, target, &to, sees)?.is_none() {
             let (field, ty, key) = (name.clone(), target.clone(), to);
             return Err(Error::constraint(
                 Some(name.clone()),
@@ -1152,21 +1169,20 @@ fn check_references(
     Ok(())
 }
 
-/// The live record of `target` at `to` that `who` is answered, as the
-/// drafts so far leave it: what a reference may name (032).
+/// The live record of `target` at `to` that the principal `sees` is of
+/// is answered, as the drafts so far leave it: what a reference may name
+/// (032).
 fn live_for(
     view: &dyn ProjectionView,
     pending: &Pending,
-    ontology: &Ontology,
     target: &TypeName,
     to: &RecordKey,
-    who: &Principal,
+    sees: &Sight<'_>,
 ) -> Result<Option<StoredRecord>> {
     // A record a holder of `only` is not admitted, or one restricted, is
     // to it not there; under an `only` that cannot be applied, none is
     // (lakelands#771); nor is a record of a type it is not shown
     // (lakelands#1003).
-    let sees = Sight::held(who, ontology);
     let held = sees.ty(target).ok();
     let found = pending.record(view, target, to)?;
     let mut exists =
@@ -1174,7 +1190,7 @@ fn live_for(
     // A link record is there only with its ends, as a read of it
     // answers (006, 051; lakelands#871).
     if let (true, Some(d), Some(r)) = (exists, held, &found) {
-        exists = ends(view, pending, &sees, d, &r.fields)?;
+        exists = ends(view, pending, sees, d, &r.fields)?;
     }
     Ok(found.filter(|_| exists))
 }

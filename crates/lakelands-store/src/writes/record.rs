@@ -49,22 +49,37 @@ impl Envelope {
     }
 }
 
+/// What a decision reads beside its own drafts, the same from the
+/// writer's lock to its append.
+pub(crate) struct At<'a> {
+    /// What the judged principal is shown, made once under the lock: the
+    /// caller, or at an accept the proposer.
+    pub sight: Sight<'a>,
+    /// The view it reads.
+    pub view: &'a dyn ProjectionView,
+    /// The settings in force.
+    pub settings: &'a BTreeMap<String, Value>,
+    /// Its time.
+    pub now: Timestamp,
+    /// The most steps a path across an edge may take: the lake's
+    /// `max_depth`.
+    pub depth: u32,
+}
+
 /// What one write is decided in, from the writer's lock to its append: the
-/// writer and the view it reads, what its drafts so far leave, its time,
-/// where its next event lands, who is judged at which door, and the
-/// envelope of its own events.
+/// declarations in force and the plans their records are computed by,
+/// what it reads ([`At`]), what its drafts so far leave, where its next
+/// event lands, at which door, and the envelope of its own events.
 pub(crate) struct Decide<'a> {
     pub(super) call: &'a Call<'a>,
-    pub(super) w: &'a Writer,
-    pub(super) view: &'a dyn ProjectionView,
+    pub(super) ontology: &'a Ontology,
+    pub(super) plans: &'a crate::record::Plans,
+    pub at: At<'a>,
     /// The records and memberships its drafts change, not in the view yet.
     pub pending: Pending,
-    pub(super) now: Timestamp,
     /// Where the event being decided lands; [`Self::reactions`] moves it
     /// past that event and what it sets off.
     pub(super) next: Position,
-    /// Who is judged: the caller, or at an accept the proposer.
-    pub who: &'a Principal,
     /// The door its records are written through.
     pub door: Door,
     /// What its own events carry.
@@ -82,7 +97,7 @@ impl Decide<'_> {
     pub(crate) fn draft(&self, body: EventBody) -> Draft {
         let e = self.envelope.clone();
         let ingested = matches!(body, EventBody::RecordIngested { .. });
-        let own = self.call.draft(self.now, e.origin, body);
+        let own = self.call.draft(self.at.now, e.origin, body);
         Draft {
             sealed: e.sealed.filter(|_| ingested),
             writer: e.writer.unwrap_or(own.writer),
@@ -99,13 +114,10 @@ impl Decide<'_> {
     /// The record of `decl` at `key`, as the drafts so far leave it, for
     /// the judged principal.
     pub(crate) fn target(&self, decl: &TypeDecl, key: &RecordKey) -> Result<Target> {
-        let (view, pending, who) = (self.view, &self.pending, self.who);
+        let (view, pending, sees) = (self.at.view, &self.pending, &self.at.sight);
         let before = pending.record(view, &decl.name, key)?;
         let mine = match &before {
-            Some(b) => {
-                let sees = Sight::held(who, &self.w.ontology);
-                sees.answers(&decl.name, b) && ends(view, pending, &sees, decl, &b.fields)?
-            }
+            Some(b) => sees.answers(&decl.name, b) && ends(view, pending, sees, decl, &b.fields)?,
             None => false,
         };
         Ok(Target { before, mine })
@@ -125,9 +137,8 @@ impl Decide<'_> {
         expected: Option<Version>,
     ) -> Result<StoredRecord> {
         let t = self.target(decl, key)?;
-        let told = |b: &StoredRecord| Sight::held(self.who, &self.w.ontology).told(b).is_some();
         match t.before {
-            Some(b) if t.mine && !b.retired && told(&b) => {
+            Some(b) if t.mine && !b.retired && self.at.sight.told(&b).is_some() => {
                 cas(expected, Some(&b))?;
                 Ok(b)
             }
@@ -150,13 +161,13 @@ impl Decide<'_> {
         key: &RecordKey,
         expected: Option<Version>,
     ) -> Result<Plan> {
-        let decl = self.w.ontology.ty(ty)?;
+        let decl = self.ontology.ty(ty)?;
         rights::not_a_view(decl)?;
-        granted(rights::may_retire(self.who, decl))?;
+        granted(rights::may_retire(self.at.sight.who(), decl))?;
         if !self.door.admits_retirement(decl.retired_by) {
             return Err(self.retired_by_verbs(decl));
         }
-        untold_setting(&Sight::held(self.who, &self.w.ontology), decl, key)?;
+        untold_setting(&self.at.sight, decl, key)?;
         let before = self.reached(decl, key, expected)?;
         let own = self.draft(retirement(ty, key, before.version));
         let (drafts, after) = (self.retiring(&before, own)?, None);
@@ -173,7 +184,7 @@ impl Decide<'_> {
             Op::Link((ty, _, r, _), _) | Op::Unlink((ty, _, r, _)) => (ty, Some(r)),
             Op::Call(..) => return Ok(()),
         };
-        let sees = Sight::held(self.who, &self.w.ontology);
+        let sees = &self.at.sight;
         let decl = sees.ty(ty)?;
         let mut named = decl.relations.iter().filter(|r| Some(&r.name) == relation);
         match relation {
@@ -192,13 +203,13 @@ impl Decide<'_> {
             Op::Unlink(ends) => (ends, None),
             _ => return Ok(None),
         };
-        let decl = self.w.ontology.ty(ty)?;
+        let decl = self.ontology.ty(ty)?;
         rights::not_a_view(decl)?;
         let mut carried = decl.relations.iter();
         let r = carried.find(|r| &r.name == relation && r.carried_by_links());
         let r = r.ok_or_else(|| no_link_relation(ty, relation))?;
         let lt = links::link_type_name(ty, relation);
-        self.w.ontology.ty(&lt)?;
+        self.ontology.ty(&lt)?;
         if fields.is_some() && r.authority != Authority::Authored {
             return Err(Error::refused(None, Refusal::WrongDoor));
         }
@@ -239,8 +250,7 @@ impl Decide<'_> {
                     patch.insert(end.into(), Value::String(k.to_string()));
                 }
                 let plan = self.record(&lt, &links::link_key(key, to), &patch, expected, None)?;
-                let sees = Sight::held(self.who, &self.w.ontology);
-                cardinality((self.view, &sees), None, (ty, &r), key, to)?;
+                cardinality((self.at.view, &self.at.sight), None, (ty, &r), key, to)?;
                 self.planned(plan)
             }
             (Op::Unlink((_, key, _, to)), Some((lt, _))) => {
@@ -256,8 +266,9 @@ impl Decide<'_> {
     pub(crate) fn checked(&self, decl: &TypeDecl, key: &RecordKey, patch: &Patch) -> Result<Patch> {
         check_key(key)?;
         let door = (self.door, self.envelope.source.as_ref());
-        rights::check_write(self.who, decl, door, patch).map_err(|e| self.verbs_only(decl, e))?;
-        check_values(&self.w.ontology, decl, patch, &decl.fields)
+        rights::check_write(self.at.sight.who(), decl, door, patch)
+            .map_err(|e| self.verbs_only(decl, e))?;
+        check_values(self.ontology, decl, patch, &decl.fields)
     }
 
     /// A field only verbs write, refused here: named the verbs its writer is
@@ -271,9 +282,9 @@ impl Decide<'_> {
             return e;
         };
         let ours = |f: &FieldDecl| &f.name == field && f.authority == Authority::Verb;
-        let sees = Sight::held(self.who, &self.w.ontology);
+        let sees = &self.at.sight;
         let sets = |v: &VerbDecl| matches!(&v.effect, VerbEffect::Write { set } if set.iter().any(|a| &a.field == field));
-        let verbs: Vec<VerbName> = (self.w.ontology.verbs.values().map(|e| &e.decl))
+        let verbs: Vec<VerbName> = (self.ontology.verbs.values().map(|e| &e.decl))
             .filter(|v| v.on == decl.name && sets(v) && sees.verb_shown(v))
             .map(|v| v.name.clone())
             .collect();
@@ -287,8 +298,8 @@ impl Decide<'_> {
     /// door: named the verbs that retire it which its writer is shown and
     /// may call, else `wrong_door`, whatever the key (lakelands#1148).
     fn retired_by_verbs(&self, decl: &TypeDecl) -> Error {
-        let sees = Sight::held(self.who, &self.w.ontology);
-        let verbs: Vec<VerbName> = (self.w.ontology.verbs.values().map(|e| &e.decl))
+        let sees = &self.at.sight;
+        let verbs: Vec<VerbName> = (self.ontology.verbs.values().map(|e| &e.decl))
             .filter(|v| v.on == decl.name && matches!(v.effect, VerbEffect::Retire))
             .filter(|v| sees.verb_shown(v))
             .map(|v| v.name.clone())
@@ -310,7 +321,7 @@ impl Decide<'_> {
         expected: Option<Version>,
         reached: Option<StoredRecord>,
     ) -> Result<RecordPlan> {
-        let decl = self.w.ontology.ty(ty)?;
+        let decl = self.ontology.ty(ty)?;
         if patch.is_empty() {
             return Err(Error::invalid(Case::PatchEmpty));
         }
@@ -338,8 +349,8 @@ impl Decide<'_> {
         after: &StoredRecord,
         sent: &[FieldName],
     ) -> Result<()> {
-        let (w, who) = (self.w, self.who);
-        let plan = w.plans.get(&w.ontology, decl);
+        let who = self.at.sight.who();
+        let plan = self.plans.get(self.ontology, decl);
         let reads = |f: &FieldName| {
             let mut fields = decl.fields.iter().filter(|d| &d.name == f);
             fields.any(|d| rights::field_access(who, decl, d).reads())
@@ -360,8 +371,8 @@ impl Decide<'_> {
                 before,
                 retiring: false,
                 meta: Some(&after.meta),
-                settings: Some(&w.settings),
-                now: self.now,
+                settings: Some(self.at.settings),
+                now: self.at.now,
             };
             if !expr::holds(&c.holds, &scope).unwrap_or(false) {
                 let (constraint, ty) = (c.decl.name.clone(), decl.name.clone());
@@ -387,9 +398,9 @@ impl Decide<'_> {
         mut patch: Patch,
         expected: Option<Version>,
     ) -> Result<RecordPlan> {
-        let (w, view, who) = (self.w, self.view, self.who);
-        let sees = Sight::held(who, &w.ontology);
-        untold_setting(&sees, decl, key)?;
+        let (o, view, sees) = (self.ontology, self.at.view, &self.at.sight);
+        let who = sees.who();
+        untold_setting(sees, decl, key)?;
         // A holder of `only` is judged against the record it owns at the
         // key: another's is, to its write, a key that is free, refused
         // only once every check has passed, so no probe tells them apart
@@ -403,16 +414,16 @@ impl Decide<'_> {
                 .is_some_and(|b| !b.retired || sees.withheld(b));
         if live.is_none() {
             let door = (self.door, self.envelope.source.as_ref());
-            fill_key_fields(w, decl, key, &mut patch, door, who)?;
+            fill_key_fields(o, decl, key, &mut patch, door, who)?;
         }
         if decl.name.as_str() == SETTING_TYPE {
             let told = |s: &SettingDecl| sees.setting_visible(s);
             let before = live.map(|b| &b.fields);
-            stamped(&w.ontology, decl, key, before, &told, &mut patch)?;
+            stamped(o, decl, key, before, &told, &mut patch)?;
         }
         // A setting is judged as it was written, before its version is: one
         // of a type it is not shown is answered as one never declared (063).
-        let declared = |t: &TypeName| w.ontology.ty(t).ok();
+        let declared = |t: &TypeName| o.ty(t).ok();
         let shown = |t: &TypeName| sees.describe_type(t);
         let judged_early = sees.narrows(&decl.name);
         if judged_early {
@@ -432,8 +443,7 @@ impl Decide<'_> {
             .map(|(f, v)| (f.clone(), v.clone()))
             .collect();
         for judged in [&patch, &ends] {
-            let (pending, o) = (&self.pending, &w.ontology);
-            check_references(view, pending, o, &decl.name, key, judged, who)?;
+            check_references(view, &self.pending, o, &decl.name, key, judged, sees)?;
         }
         cas(expected, t.own())?;
         let sent: Vec<FieldName> = patch.keys().cloned().collect();
@@ -462,9 +472,9 @@ impl Decide<'_> {
         record::check_required(decl, &after.fields)?;
         self.constraints_hold(decl, live.filter(|_| !other), &after, &sent)?;
         if after.ty.as_str() == AGING_RULE_TYPE {
-            let rule = crate::aging::check(&w.ontology, &after.fields)
+            let rule = crate::aging::check(o, &after.fields)
                 .map_err(|(field, said)| Error::invalid_at(&field, *said))?;
-            crate::aging::check_authority(who, &w.ontology, &rule)?;
+            crate::aging::check_authority(who, o, &rule)?;
         }
         if after.ty.as_str() == SETTING_TYPE && !judged_early {
             let value = after.fields.get("value");
@@ -481,12 +491,12 @@ impl Decide<'_> {
             let mut fields = decl.fields.iter().filter(|d| &d.name == f);
             fields.any(|d| rights::field_access(who, decl, d).reads())
         };
-        let (pending, o) = (&self.pending, &w.ontology);
-        match check_references(view, pending, o, &decl.name, &after.key, &computed, who) {
+        let pending = &self.pending;
+        match check_references(view, pending, o, &decl.name, &after.key, &computed, sees) {
             Err(Error::Refused { field: Some(f), .. }) if !reads(&f) => granted(false)?,
             judged => judged?,
         }
-        granted(!other && owns(view, &self.pending, &sees, decl, &after.fields)?)?;
+        granted(!other && owns(view, &self.pending, sees, decl, &after.fields)?)?;
         Ok(RecordPlan {
             draft,
             after,
@@ -497,7 +507,7 @@ impl Decide<'_> {
     /// The record `d`, which lands next, makes of `before`: computed with
     /// the fold's own function, which hands out no call here.
     fn apply(&self, before: Option<&StoredRecord>, d: &Draft) -> Result<StoredRecord> {
-        let (w, event) = (self.w, provisional(self.call.lake, self.next, d));
+        let event = provisional(self.call.lake, self.next, d);
         // Its own keys sealed apart are read from its event, so only a
         // version's first use is staged (065).
         let mut kept = self.kept(d)?;
@@ -514,9 +524,9 @@ impl Decide<'_> {
         };
         let outputs = &mut Outputs {
             staged: Some(&staged),
-            ..Outputs::planning(self.view, &w.plans, &self.call.lake.keys)
+            ..Outputs::planning(self.at.view, self.plans, &self.call.lake.keys)
         };
-        let after = record::apply(&w.ontology, before, &event, &w.settings, outputs)?;
+        let after = record::apply(self.ontology, before, &event, self.at.settings, outputs)?;
         Ok(after.expect("a record event makes a record"))
     }
 
@@ -531,7 +541,7 @@ impl Decide<'_> {
         before: Option<&StoredRecord>,
         after: &StoredRecord,
     ) -> Result<Vec<Draft>> {
-        let (w, now, cause, context) = (self.w, self.now, self.next, self.call.context);
+        let (o, now, cause, context) = (self.ontology, self.at.now, self.next, self.call.context);
         let mut out = Vec::new();
         // A reaction carries the context of the write that caused it, so
         // a host acting on it writes one level deeper (021).
@@ -547,18 +557,18 @@ impl Decide<'_> {
         let decided = (|| {
             let on = |t: &&TriggerDecl| t.on == after.ty && fires_on(t, change);
             let created = before.is_none_or(|b| b.retired);
-            for t in w.ontology.triggers.values().map(|e| &e.decl).filter(on) {
+            for t in o.triggers.values().map(|e| &e.decl).filter(on) {
                 if self.fires(t, before, after)? {
                     let at = (&after.ty, &after.key);
                     out.push(system(self.firing(t, at, (change, created))));
                 }
             }
             let of = |s: &&ObjectSetDecl| s.of == after.ty;
-            for s in w.ontology.object_sets.values().map(|e| &e.decl).filter(of) {
+            for s in o.object_sets.values().map(|e| &e.decl).filter(of) {
                 let was = self
                     .pending
-                    .member(self.view, &s.name, &after.ty, &after.key)?;
-                let is = self.member(s, after, &w.settings)?;
+                    .member(self.at.view, &s.name, &after.ty, &after.key)?;
+                let is = self.member(s, after, self.at.settings)?;
                 if was != is {
                     own.insert((s.name.clone(), at.0.clone(), at.1.clone()), is);
                     let change = (s.name.clone(), at.0.clone(), at.1.clone(), is);
@@ -592,13 +602,13 @@ impl Decide<'_> {
     /// on the record its provisional event makes, then the closing of its
     /// calls' pending proposals (064).
     pub(crate) fn retiring(&mut self, before: &StoredRecord, d: Draft) -> Result<Vec<Draft>> {
-        let (at, now) = (self.next, self.now);
+        let (at, now) = (self.next, self.at.now);
         let after = self.apply(Some(before), &d)?;
         let mut drafts = vec![d];
         drafts.extend(self.reactions(self.retiring_as, Some(before), &after)?);
         let calls = match &mut self.pending.calls {
             Some(calls) => calls,
-            none => none.insert(crate::backed::pending_calls(self.view)?),
+            none => none.insert(crate::backed::pending_calls(self.at.view)?),
         };
         let mine = calls.remove(&(before.ty.clone(), before.key.clone()));
         let why = "its record is retired";
@@ -618,8 +628,8 @@ impl Decide<'_> {
         let (Some(sealed), Some(source), true) = (&d.sealed, d.source.as_ref(), ingested) else {
             return Ok(Vec::new());
         };
-        let used = (source, sealed, self.next, self.now);
-        let read = (&self.pending.sealed, self.view, &*self.call.lake.keys);
+        let used = (source, sealed, self.next, self.at.now);
+        let read = (&self.pending.sealed, self.at.view, &*self.call.lake.keys);
         crate::sealing::kept(read, used)
     }
 
@@ -660,7 +670,7 @@ impl Decide<'_> {
         payload: &Patch,
         expected: Option<Version>,
     ) -> Result<Plan> {
-        let (w, now) = (self.w, self.now);
+        let now = self.at.now;
         let called = self.draft(EventBody::VerbCalled {
             verb: verb.name.clone(),
             key: key.cloned(),
@@ -675,23 +685,23 @@ impl Decide<'_> {
         let Some(key) = key else {
             return Ok(plan);
         };
-        let (o, on) = (&w.ontology, w.ontology.ty(&verb.on)?);
+        let (o, on) = (self.ontology, self.ontology.ty(&verb.on)?);
         let record = self.reached(on, key, expected)?;
         // A record read across a reference is reached where a write that
         // sends the reference would be accepted, and by nothing else.
-        let (view, pending, who) = (self.view, &self.pending, self.who);
-        let far = |ty: &TypeName, k: &RecordKey| live_for(view, pending, o, ty, k, who);
+        let (view, pending, sees) = (self.at.view, &self.pending, &self.at.sight);
+        let far = |ty: &TypeName, k: &RecordKey| live_for(view, pending, ty, k, sees);
         let link = |r: &RelationName| link_from(view, &verb.on, r, key);
-        let limits = (self.call.lake.limits.max_depth, (&w.settings, now));
+        let limits = (self.at.depth, (self.at.settings, now));
         let stored = |ty: &TypeName, k: &RecordKey| pending.record(view, ty, k);
         let across = Across::new(o, on, (&far, &link, &stored), limits);
         // A part is named as the caller is shown what it reads: at an
         // accept, the reviewer.
         let told = |k: &str| {
-            let (value, declared) = (w.settings.get(k), o.settings.get(k).map(|e| &e.decl));
+            let (value, declared) = (self.at.settings.get(k), o.settings.get(k).map(|e| &e.decl));
             Sight::held(self.call.who, o).setting_shown(k, value, declared)
         };
-        requires(&w.settings, verb, key, &record, now, &across, &told)?;
+        requires(self.at.settings, verb, key, &record, now, &across, &told)?;
         // A verb on a link finds both its ends live and answered, whatever
         // its effect (035): one that writes the link has them judged where
         // the record is written, any other here, as `link` judges them.
@@ -700,13 +710,13 @@ impl Decide<'_> {
             let ends: Patch = (record.fields.iter().filter(|(f, _)| end(f)))
                 .map(|(f, v)| (f.clone(), v.clone()))
                 .collect();
-            check_references(view, pending, o, &verb.on, key, &ends, who)?;
+            check_references(view, pending, o, &verb.on, key, &ends, sees)?;
         }
-        let patch = assigned(o, &w.settings, verb, &record, payload, (now, &across))?;
+        let patch = assigned(o, self.at.settings, verb, &record, payload, (now, &across))?;
         let called_at = self.next;
         self.next = called_at.next();
         if matches!(verb.effect, VerbEffect::Write { .. } | VerbEffect::Retire) {
-            let version = w.ontology.verbs.get(&verb.name).map_or(1, |e| e.version);
+            let version = self.ontology.verbs.get(&verb.name).map_or(1, |e| e.version);
             let procedure = Some(Procedure {
                 name: verb.name.to_string(),
                 version: version.to_string(),
@@ -749,14 +759,22 @@ impl Call<'_> {
         now: Timestamp,
         n: usize,
     ) -> Decide<'a> {
+        let sight = Sight::held(self.who, &w.ontology);
+        let depth = self.lake.limits.max_depth;
+        let (settings, ontology, plans) = (&w.settings, &w.ontology, &w.plans);
         Decide {
             call: self,
-            w,
-            view,
+            ontology,
+            plans,
+            at: At {
+                sight,
+                view,
+                settings,
+                now,
+                depth,
+            },
             pending: Pending::default(),
-            now,
             next: position_after(w, n),
-            who: self.who,
             door: Door::Authored,
             envelope: Envelope::of(Origin::Authored),
             bound: true,

@@ -44,7 +44,7 @@ use crate::lake::{Lake, Staged, Writer};
 use crate::log::Draft;
 use crate::ontology::Ontology;
 use crate::purge::made_by;
-use crate::writes::{self, Call, Walked};
+use crate::writes::{self, Call, Judging, Walked};
 
 /// How many keys a report names per type.
 const NAMED: usize = 10;
@@ -455,11 +455,11 @@ fn found(
         }
         let moving: BTreeSet<FieldName> = judged.iter().flat_map(|j| j.2.iter().cloned()).collect();
         if !moving.is_empty() {
-            let mut walked = Walked::of(ontology, decl, &moving, (&sight, true))?;
+            let mut walked = Walked::of(ontology, decl, &moving, (&sight, Judging::Proposal))?;
             for (was, is, _) in &judged {
                 walked.judge((was, is), (w, w.last_known_at), &|_| Ok(true))?;
             }
-            breaches.extend(walked.kept(true)?.0);
+            breaches.extend(walked.kept(Judging::Proposal)?.0);
         }
         // A field declared `required` it leaves empty is listed too, as a
         // breach of `required` on that field: the act does not refuse it.
