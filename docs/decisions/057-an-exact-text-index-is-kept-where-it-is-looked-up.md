@@ -27,13 +27,18 @@ at the read.
 fields' values made components by the key rule (`docs/log-format.md`
 §2.3), and a single text component reads back into its value, so the
 only record that can hold a text there is the one at the key the text
-makes. A `where` that the field equals a text, or is one of texts, reads
-those keys' states (`engines::key_lookup`), at the head and at an
-earlier position alike, and the rulebook admits each. The index keeps
-no rows for the field: they would only repeat the key. What could break
-the inversion cannot happen: a rename of a value a key field holds is
-refused (027), a change of the key fields re-keys the type's records, and
-a link type's key is two fields.
+makes. A `where` that the field equals a text, or a derived relation's
+match asking for one of texts, reads those keys' states
+(`engines::key_lookup`), at the head and at an earlier position alike,
+and the rulebook admits each. The index keeps no rows for the field:
+they would only repeat the key. What holds the key and its field
+together is the store: it fills a record's key fields from its key and
+refuses a write whose key fields make another key (`KeyDisagrees`), and
+a key field cannot be erasable (`ErasableKey`), so no erasure blanks it
+while the key stays. What could break the inversion otherwise cannot
+happen: a rename of a value a key field holds is refused (027), a change
+of the key fields re-keys the type's records, and a link type's key is
+two fields.
 
 `lakelands_core::engines::looked_up` decides the set from the
 declarations and the setting at the head. Both engines call it, and no

@@ -503,16 +503,17 @@ impl HeadTypes {
 /// `ty`'s declaration at the head and the fields its order index keeps:
 /// those its `sort_index.<type>` setting at the head names that the
 /// declaration (a kept name's view's) declares with a kind the index
-/// keeps. A kept name has no declaration. One round trip.
+/// keeps. A kept name has no declaration. One round trip, the setting's
+/// head row read once.
 pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<HeadType> {
     let view = engines::kept_view(ty);
     let row = db.query_one(
         &format!(
-            "SELECT (SELECT r.state FROM {d} WHERE h.ident = $1), \
-             (SELECT r.state FROM {r} WHERE h.ty = $2 AND h.key = $3), \
+            "SELECT (SELECT r.state FROM {d} WHERE h.ident = $1), s.state, \
              (SELECT array_agg(field) FROM {l} WHERE ty = $4), \
-             (SELECT t FROM {m} WHERE k = $5), \
-             (SELECT r.since FROM {r} WHERE h.ty = $2 AND h.key = $3)",
+             (SELECT t FROM {m} WHERE k = $5), s.since \
+             FROM (SELECT) AS one LEFT JOIN LATERAL \
+             (SELECT r.state, r.since FROM {r} WHERE h.ty = $2 AND h.key = $3) AS s ON true",
             d = DECLARATIONS.at_head(names),
             r = RECORDS.at_head(names),
             l = names.t("lookup_fields"),

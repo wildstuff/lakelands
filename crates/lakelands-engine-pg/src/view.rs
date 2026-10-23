@@ -612,12 +612,11 @@ impl Read<'_> {
         let view = engines::kept_view(ty).map(|v| format!("type {v}"));
         let row = self.db.query_one(
             &format!(
-                "SELECT (SELECT n FROM {m} WHERE k = $1), \
-                 (SELECT r.state FROM {r} WHERE h.ty = $2 AND h.key = $3), \
+                "SELECT (SELECT n FROM {m} WHERE k = $1), s.state, \
                  (SELECT r.state FROM {d} WHERE h.ident = $4), \
-                 (SELECT t FROM {m} WHERE k = $5), \
-                 {held}, \
-                 (SELECT r.since FROM {r} WHERE h.ty = $2 AND h.key = $3)",
+                 (SELECT t FROM {m} WHERE k = $5), {held}, s.since \
+                 FROM (SELECT) AS one LEFT JOIN LATERAL \
+                 (SELECT r.state, r.since FROM {r} WHERE h.ty = $2 AND h.key = $3) AS s ON true",
                 m = self.names.t("meta"),
                 held = projection::held(self.names, "$6"),
                 r = projection::RECORDS.at_head(self.names),
@@ -968,10 +967,7 @@ impl ProjectionView for PgView<'_> {
             let decl = r.type_decl(ty)?;
             if let Some(keys) = engines::key_lookup(decl.as_ref(), scan) {
                 let records = r.records_by_key(ty, keys)?;
-                let admitted = records
-                    .iter()
-                    .filter(|x| engines::admits(decl.as_ref(), x, scan));
-                return Ok(admitted.count() as u64);
+                return Ok(engines::count_of(decl.as_ref(), &records, scan));
             }
             let looked = r.looked(ty, decl.as_ref())?;
             let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));

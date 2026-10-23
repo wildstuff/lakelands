@@ -863,10 +863,7 @@ impl ProjectionView for SqliteView<'_> {
             let decl = r.type_decl(ty)?;
             if let Some(keys) = engines::key_lookup(decl.as_ref(), scan) {
                 let records = r.records_by_key(ty, keys)?;
-                let admitted = records
-                    .iter()
-                    .filter(|x| engines::admits(decl.as_ref(), x, scan));
-                return Ok(admitted.count() as u64);
+                return Ok(engines::count_of(decl.as_ref(), &records, scan));
             }
             let looked = r.looked(ty, decl.as_ref())?;
             let kept = |f: &FieldName| looked.as_ref().is_none_or(|l| l.contains(f));
