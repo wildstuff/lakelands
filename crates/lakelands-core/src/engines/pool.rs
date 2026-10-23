@@ -1,10 +1,11 @@
 //! A pool of reader connections, so the reads of one lake run side by
 //! side, each in a read transaction on a connection of its own. One is
-//! opened only when every open one is taken, up to the pool's size: at
-//! most [`MOST`], since past 16, measured on 16 cores, they answered no
-//! more reads a second; and for an engine whose reads run on this
-//! machine's cores, at most one per core ([`per_core`]), since past that
-//! they wait on the cores instead.
+//! opened only when every open one is taken, up to the pool's size. For
+//! an engine whose reads run on this machine's cores, one per core
+//! ([`per_core`]), since past that they wait on the cores instead, and at
+//! most [`MOST`]: past 16, measured on 16 cores, they answered no more
+//! reads a second. An engine whose reads run on a server sizes its pool
+//! by the connections the server has to give.
 
 use std::ops::{Deref, DerefMut};
 use std::sync::{Condvar, Mutex, PoisonError};

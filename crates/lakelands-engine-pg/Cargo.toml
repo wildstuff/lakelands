@@ -25,7 +25,7 @@ tokio-postgres-rustls = { version = "0.14", default-features = false, features =
 serde_json.workspace = true
 lakelands-store.workspace = true
 peak_alloc.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 
 [lints]
 workspace = true

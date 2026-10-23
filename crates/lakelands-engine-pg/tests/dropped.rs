@@ -37,6 +37,11 @@ fn owner(lake: &str) -> Principal {
     }
 }
 
+/// Held by each test while it runs: [`drop_connections`] ends the readers
+/// every lake of the process shares, so tests run as threads of one
+/// process, as `cargo test` runs them, would end each other's.
+static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Ends every session the lake's handles hold: the lease and the
 /// projection, named by the lake's schema, and the readers this process's
 /// lakes share, named by the process. Answers how many of each it ended.
@@ -155,6 +160,7 @@ async fn a_served_lake_reads_and_writes_again_after_its_connections_are_dropped(
     let Some(url) = common::url_or_skip("dropped connections") else {
         return;
     };
+    let _alone = ONE_AT_A_TIME.lock().await;
     let (schema, store, cat, who) = served(&url).await;
     let before = fences(store.as_ref()).await;
     let (lakes, readers) = drop_connections(&url, &schema).await;
@@ -206,6 +212,7 @@ async fn a_dropped_writer_is_refused_while_another_holds_the_lease_and_writes_af
     let Some(url) = common::url_or_skip("dropped connections, a second writer") else {
         return;
     };
+    let _alone = ONE_AT_A_TIME.lock().await;
     let (schema, store, cat, who) = served(&url).await;
     drop_connections(&url, &schema).await;
     // Another writer takes the lease the dropped session let go of, and

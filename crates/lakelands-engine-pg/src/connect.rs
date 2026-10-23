@@ -24,15 +24,16 @@
 //! single-threaded runtime.
 //!
 //! **Prepared statements.** A connection prepares each statement text
-//! once and keeps it for as long as it lives, so a statement run again
-//! costs one round trip, not a parse and an execute. The texts are the
-//! engine's own, the schema's name and fixed SQL with every value bound as
-//! a parameter, so there are as many as the engine has statements, for
-//! each lake a reader served: past [`PREPARED_MOST`] a connection lets
-//! them all go and prepares anew, so a reader the process's lakes share
-//! does not grow with every lake it ever read. Each run is planned for its values (`plan_cache_mode`), set as the
-//! connection starts: a generic plan kept from when a table was small
-//! would go on scanning it whole.
+//! once and keeps it, so a statement run again costs one round trip, not
+//! a parse and an execute. The texts are the engine's own, the schema's
+//! name and fixed SQL with every value bound as a parameter, so there are
+//! as many as the engine has statements, for each lake a reader served.
+//! At [`PREPARED_MOST`] a connection lets one go for each it prepares,
+//! each time from the next place in its table, so no one statement goes
+//! more often than the rest: a reader the process's lakes share does not
+//! grow with every lake it ever read. Each run is planned for its values
+//! (`plan_cache_mode`), set as the connection starts: a generic plan kept
+//! from when a table was small would go on scanning it whole.
 //!
 //! **Session state.** The lease is a session-level lock, so a handle
 //! opened for writing first checks, with [`session_keeping_state`], that
@@ -46,7 +47,7 @@ use std::time::Duration;
 use lakelands_api::error::{Case, Detail, Error, Result, Situation, Tls};
 use lakelands_api::location::{PgTls, PgTlsMode, PgTuning};
 use lakelands_api::record::StoredRecord;
-use lakelands_core::engines::pool::{self, Pool};
+use lakelands_core::engines::pool::Pool;
 use postgres::types::{FromSql, ToSql};
 use postgres::{Client, NoTls, Row, SimpleQueryMessage, Statement};
 use rustls::pki_types::pem::PemObject;
@@ -130,10 +131,12 @@ const PREPARED_MOST: usize = 512;
 
 /// One connection, every statement through [`driver`]; closed through it
 /// too, since closing blocks on the driver's runtime as a statement does.
-/// It keeps the statements it prepared, by their text, until it is closed.
+/// It keeps the statements it prepared, by their text.
 pub(crate) struct Db {
     client: Option<Client>,
     prepared: HashMap<String, Statement>,
+    /// How many [`Db::prepared`] let go: the next goes from the next place.
+    let_go: usize,
     /// A `COMMIT` was sent since [`Db::transaction`] last began one.
     committing: bool,
 }
@@ -189,7 +192,11 @@ impl Db {
             None => {
                 let statement = driver(|| client.prepare(text)).map_err(sql)?;
                 if self.prepared.len() >= PREPARED_MOST {
-                    self.prepared.clear();
+                    self.let_go += 1;
+                    let at = self.let_go % self.prepared.len();
+                    if let Some(old) = self.prepared.keys().nth(at).cloned() {
+                        self.prepared.remove(&old);
+                    }
                 }
                 self.prepared.insert(text.to_owned(), statement.clone());
                 statement
@@ -343,13 +350,17 @@ fn tls_config_with(tls: &PgTls, bundles: &[&str]) -> Result<rustls::ClientConfig
     }
 }
 
+/// The most readers a process's lakes on one server share. A lake's reads
+/// still gained some past 16, but 16 leave a server's default 100
+/// connections to some 40 writing lakes.
+pub(crate) const SHARED_READERS: usize = 16;
+
 /// The readers a process's lakes on one server share: one pool per
 /// server, database, credentials, TLS and tuning, kept while a handle onto
-/// one of its lakes is open. So a process holds at most
-/// [`pool::MOST`] readers on a server,
-/// however many lakes it opens there, and not fewer on a machine of fewer
-/// cores: the reads run on the server's. Every statement names its schema,
-/// so a reader serves any lake on its server.
+/// one of its lakes is open. So a process holds at most [`SHARED_READERS`]
+/// for each of those, however many lakes it opens there, and not fewer on
+/// a machine of fewer cores: the reads run on the server's. Every
+/// statement names its schema, so a reader serves any lake there.
 pub(crate) fn shared_readers(target: &Target) -> Arc<Pool<Db>> {
     static POOLS: Mutex<Vec<(String, Weak<Pool<Db>>)>> = Mutex::new(Vec::new());
     let server = format!("{:?}", (&target.url, &target.tls, &target.tuning));
@@ -359,7 +370,7 @@ pub(crate) fn shared_readers(target: &Target) -> Arc<Pool<Db>> {
     if let Some(pool) = found.and_then(|(_, pool)| pool.upgrade()) {
         return pool;
     }
-    let pool = Arc::new(Pool::new(Vec::new(), pool::MOST));
+    let pool = Arc::new(Pool::new(Vec::new(), SHARED_READERS));
     pools.push((server, Arc::downgrade(&pool)));
     pool
 }
@@ -422,6 +433,7 @@ fn open(target: &Target, name: &str) -> Result<Db> {
     let mut db = Db {
         client: Some(client),
         prepared: HashMap::new(),
+        let_go: 0,
         committing: false,
     };
     let version: i32 = db

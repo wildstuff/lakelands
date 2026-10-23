@@ -59,7 +59,7 @@ use lakelands_api::location::{EngineConfig, Location};
 pub use connect::MIN_SERVER_VERSION;
 use handle::PgLake;
 #[doc(hidden)]
-pub use handle::{ANALYZE_AFTER, export};
+pub use handle::{ANALYZE_AFTER, LAKE_READERS, export};
 #[doc(hidden)]
 pub use view::{few_holders_statements, holding_statements, read_statements};
 

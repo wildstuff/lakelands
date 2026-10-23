@@ -1299,6 +1299,9 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   the retry under its key answers it. It is lost when the handle is
   closed or dropped before a write records it (the server ends so): a
   retry is then `unanswered`, and the first answer carried the output.
+  A host that needs more gives the executor its own record of what it
+  did, keyed by the call's position (`VerbInvocation.position`). See
+  `docs/decisions/013-verbs-run-by-declared-risk.md`, extended.
   **A dropped connection on PostgreSQL** (a restart of the server, a
   failover, a pooler's or a firewall's cut, an operator's
   `pg_terminate_backend`) costs a read one reconnect: the read opens its
@@ -1315,15 +1318,21 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   survives this and is recorded by that write. While another writer
   holds the lease, every write, rebuild and compaction is refused with
   the lease's situation and appends nothing, and the handle reads on.
-  The lake's connections carry `application_name` `lakelands <schema>`
-  in `pg_stat_activity`: two for a lake the process writes, two more
-  while a rebuild of it runs, none for a lake it only reads. The reads
-  run side by side on readers the process's lakes on one server share,
-  named `lakelands readers <pid>`: up to 16, however many lakes it opens
-  there and however many cores it has. A
-  host that needs more gives the executor its own record of what it did, keyed by
-  the call's position (`VerbInvocation.position`). See
-  `docs/decisions/013-verbs-run-by-declared-risk.md`, extended.
+- **Connections on PostgreSQL (lakelands#1324).** A process holds two
+  connections for a lake it writes, `lakelands <schema>` in
+  `pg_stat_activity`, two more while a rebuild of it runs, and none of
+  its own for a lake it only reads. The reads of its lakes run side by
+  side on readers they share, `lakelands readers <pid>`: up to 16 for
+  each server, database, credentials, TLS and tuning, however many lakes
+  and cores. One handle's reads hold at most 8 of them at once, so reads
+  of a handle that wait on a lock, another session's or a rebuild's
+  swap, leave the other 8 to the process's other handles; two handles
+  whose reads all wait, of two lakes or a lake and its rebuild, hold all
+  16. A read waits as long as the lock is held unless
+  `engine.tuning.statement_timeout_secs` is set (`0`, the default, does
+  not end it). At PostgreSQL's default `max_connections` of 100, three
+  of them kept for superusers, a process can write 40 lakes on one
+  server, where it wrote 32 when each lake had a reader of its own.
 - **An outage and a missing seam are cases, not sentences
   (lakelands#650).** `unavailable` carries a `Situation` and `unbound` a
   `Seam`: a code and its parameters (which lease and who holds it, which
