@@ -1056,7 +1056,7 @@ impl Call<'_> {
         view: &dyn ProjectionView,
         m: &Migration,
     ) -> Result<MigrationReport> {
-        granted(self.who.grants.schema && !rights::holds_only(self.who))?;
+        granted(self.authors())?;
         let mut m = m.clone();
         let author = self.authored(&w.ontology, &mut m)?;
         let judged = (&m, author.as_ref(), None);

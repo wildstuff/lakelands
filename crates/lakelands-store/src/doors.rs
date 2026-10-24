@@ -32,7 +32,7 @@ use lakelands_api::{
 };
 
 use lakelands_api::error::{Case, Exchange, Remote, Seam, Situation};
-use lakelands_core::{feed, rights};
+use lakelands_core::feed;
 
 use crate::batch::Asked;
 use crate::exec::{self, Turn};
@@ -126,7 +126,7 @@ pub(crate) fn seen(
     let none = Vec::<lakelands_api::engine::Declared>::new();
     let (mut sight, mut followed) = lake.sight(who.clone(), None, None, &none)?;
     let head = || lake.engine.view(None).and_then(|v| lake.shape(v.as_ref()));
-    let head = rights::hides_some(sight.who()).then(head).transpose()?;
+    let head = sight.hides_some().then(head).transpose()?;
     if let Some(head) = &head {
         let renames = Some(&head.renames[..]);
         (sight, followed) = lake.sight(who.clone(), None, renames, head.as_ref())?;
@@ -906,7 +906,7 @@ impl Catalog for Doors {
         m: ValueTypeMigration,
     ) -> Result<Reply<ValueTypeReport>> {
         self.write(who, move |c| {
-            crate::writes::granted(c.who.grants.schema && !rights::holds_only(c.who))?;
+            crate::writes::granted(c.authors())?;
             let w = c.writer()?;
             let view = c.lake.engine.view(None)?;
             let report = c

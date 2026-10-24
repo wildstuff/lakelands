@@ -194,10 +194,10 @@ pub(crate) fn answered_of(
     keys: &[&RecordKey],
     need: usize,
 ) -> Result<bool> {
-    let (Ok(decl), who) = (sees.ty(ty), sees.who()) else {
+    let Ok(decl) = sees.ty(ty) else {
         return Ok(false);
     };
-    if who.grants.restricted && !rights::holds_only(who) && !sees.narrows(ty) {
+    if sees.sees_all() && !sees.narrows(ty) {
         return Ok(keys.len() >= need);
     }
     let mut found = 0;

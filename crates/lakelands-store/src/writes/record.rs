@@ -484,7 +484,7 @@ impl Decide<'_> {
         if after.ty.as_str() == AGING_RULE_TYPE {
             let rule = crate::aging::check(o, &after.fields)
                 .map_err(|(field, said)| Error::invalid_at(&field, *said))?;
-            crate::aging::check_authority(who, o, &rule)?;
+            crate::aging::check_authority(sees, o, &rule)?;
         }
         if after.ty.as_str() == SETTING_TYPE && !judged_early {
             let value = after.fields.get("value");

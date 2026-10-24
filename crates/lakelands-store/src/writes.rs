@@ -685,6 +685,12 @@ impl Call<'_> {
         self.asked().draft(now, origin, body)
     }
 
+    /// Whether its caller may change a shape ([`Sight::authors`]): judged
+    /// by its grants alone, before any shape is read.
+    pub(crate) fn authors(&self) -> bool {
+        Sight::held(self.who, &Vec::<lakelands_api::engine::Declared>::new()).authors()
+    }
+
     fn changed(&self, change: Change, cause: Position, now: Timestamp) -> Draft {
         self.asked().changed(change, cause, now)
     }
@@ -2151,7 +2157,7 @@ pub fn cardinality(
         false => links::link_key(&end, to),
     };
     let answered = || -> Result<bool> {
-        let (Ok(decl), who) = (sees.ty(&lt), sees.who()) else {
+        let Ok(decl) = sees.ty(&lt) else {
             return Ok(false);
         };
         let Some(l) = get(&lt, &link)? else {
@@ -2160,8 +2166,8 @@ pub fn cardinality(
         let mut many = |t: &TypeName, ks: &[RecordKey]| -> Result<Vec<StoredRecord>> {
             ks.iter().filter_map(|k| get(t, k).transpose()).collect()
         };
-        let restricted = who.grants.restricted && !rights::holds_only(who);
-        Ok(restricted || sees.ends(decl, &[&l.fields], &mut many)?[0] && sees.answers(&lt, &l))
+        let all = sees.sees_all();
+        Ok(all || sees.ends(decl, &[&l.fields], &mut many)?[0] && sees.answers(&lt, &l))
     };
     let end_ty = if of_from { &r.target } else { ty };
     let named = (get(end_ty, &end)?.is_some() && answered()?).then_some(end);

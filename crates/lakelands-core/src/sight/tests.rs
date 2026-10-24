@@ -133,3 +133,26 @@ fn a_relation_and_a_verb_are_judged_by_the_sight() {
         assert!(!sight.callable(&invoice, &verb(vec![])));
     }
 }
+
+#[test]
+fn one_who_holds_only_neither_authors_a_shape_nor_sees_every_record() {
+    let declared = declared();
+    let only = TypeGrants {
+        only: [("n".into(), "x".into())].into(),
+        ..Default::default()
+    };
+    let judged = |schema: bool, restricted: bool, holds_only: bool| {
+        let mut who = who();
+        (who.grants.schema, who.grants.restricted) = (schema, restricted);
+        if holds_only {
+            who.grants.types.insert("note".into(), only.clone());
+        }
+        let sight = Sight::held(&who, &declared);
+        (sight.authors(), sight.sees_all())
+    };
+    assert_eq!(judged(true, false, false), (true, false));
+    assert_eq!(judged(false, true, false), (false, true));
+    assert_eq!(judged(true, true, false), (true, true));
+    assert_eq!(judged(true, true, true), (false, false));
+    assert_eq!(judged(false, false, false), (false, false));
+}

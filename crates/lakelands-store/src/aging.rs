@@ -34,12 +34,12 @@ use lakelands_api::principal::{WriteContext, WriteOrigin};
 use lakelands_api::record::Origin;
 use lakelands_api::write::{AGE_REFUSALS_SHOWN, AgeReport, RefusedMove, RuleRun};
 use lakelands_api::{
-    Error, FieldName, Patch, Position, Principal, RecordKey, Refusal, Result, Timestamp, TypeName,
-    Value,
+    Error, FieldName, Patch, Position, RecordKey, Refusal, Result, Timestamp, TypeName, Value,
 };
 use lakelands_core::derive;
 use lakelands_core::expr::{self, Place, RecordScope};
-use lakelands_core::rights::{self, Door};
+use lakelands_core::rights::Door;
+use lakelands_core::sight::Sight;
 use lakelands_core::{canonical, names};
 
 use crate::declare;
@@ -163,13 +163,13 @@ pub fn check(
 /// reads is probed and needs the author's right to read it
 /// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
 /// Refused as not granted, naming the field of `on`.
-pub fn check_authority(who: &Principal, ontology: &Ontology, rule: &Rule) -> Result<()> {
+pub fn check_authority(sees: &Sight, ontology: &Ontology, rule: &Rule) -> Result<()> {
     let decl = ontology.ty(&rule.on)?;
     // A rule moves every owner's records: never one a holder of `only` writes (051).
-    crate::writes::granted(!rights::only_holder(who, decl, ontology))?;
+    crate::writes::granted(!sees.only_holder(decl))?;
     let patch: Patch = [(rule.field.clone(), rule.to.clone())].into();
-    rights::check_write(who, decl, (Door::Verb, None), &patch)?;
-    rights::check_probe(who, decl, derive::reads(&rule.when).iter())
+    sees.check_write(decl, (Door::Verb, None), &patch)?;
+    sees.check_probe(decl, derive::reads(&rule.when).iter())
 }
 
 /// Counts a move the lake refused in `ran`, and lists it while the list
