@@ -79,11 +79,13 @@ struct Transaction {
 /// The records a writer puts between two analyses of its tables.
 pub const ANALYZE_AFTER: u64 = 5_000;
 
-/// The connections a handle opened for writing keeps, and the records
-/// put since the tables were last analysed.
+/// The connections a handle opened for writing keeps, what the writer
+/// carries into its appends, and the records put since the tables were
+/// last analysed.
 struct Writing {
     lease: Mutex<Db>,
     projection: Mutex<Db>,
+    carried: Mutex<Option<log::Carried>>,
     unanalysed: AtomicU64,
 }
 
@@ -155,6 +157,7 @@ impl PgLake {
                 let writing = Writing {
                     lease: Mutex::new(lease),
                     projection: Mutex::new(projection),
+                    carried: Mutex::new(None),
                     unanalysed: AtomicU64::new(0),
                 };
                 (Some(writing), found.ok())
@@ -167,6 +170,7 @@ impl PgLake {
                 let writing = Writing {
                     lease: Mutex::new(lease),
                     projection: Mutex::new(projection),
+                    carried: Mutex::new(None),
                     unanalysed: AtomicU64::new(0),
                 };
                 (Some(writing), found)
@@ -257,6 +261,7 @@ impl PgLake {
             writing: Some(Writing {
                 lease: Mutex::new(lease),
                 projection: Mutex::new(projection),
+                carried: Mutex::new(None),
                 unanalysed: AtomicU64::new(0),
             }),
             held: Mutex::new(None),
@@ -372,9 +377,13 @@ impl PgLake {
         self.writing.as_ref().ok_or_else(|| self.read_only())
     }
 
-    /// The lease connection, when this handle holds `lease`; otherwise
-    /// it is `undone`.
-    fn holding(&self, lease: &Lease, undone: Act) -> Result<MutexGuard<'_, Db>> {
+    /// The lease connection and what the writer carries, when this handle
+    /// holds `lease`; otherwise it is `undone`.
+    fn holding(
+        &self,
+        lease: &Lease,
+        undone: Act,
+    ) -> Result<(MutexGuard<'_, Db>, MutexGuard<'_, Option<log::Carried>>)> {
         let writing = self.writing()?;
         if lock(&self.held).as_ref() != Some(lease) {
             let (fence, undone) = (Some(lease.fence), Some(undone));
@@ -384,8 +393,8 @@ impl PgLake {
             }));
         }
         let db = lock(&writing.lease);
-        self.lost(&db, Some(lease.fence), Ok(()), Some(undone))
-            .map(|()| db)
+        self.lost(&db, Some(lease.fence), Ok(()), Some(undone))?;
+        Ok((db, lock(&writing.carried)))
     }
 
     /// Take a put into the open transaction: `f` holds it in the buffer,
@@ -655,7 +664,7 @@ impl LakeEngine for PgLake {
             return Err(self.read_only());
         }
         // The locks go in one order: `held`, the transaction, the lease's
-        // connection, the projection's.
+        // connection, the projection's, what the writer carries.
         let mut held = lock(&self.held);
         // A writer whose connection closed holds nothing: its lock went
         // with the session (lakelands#979). Both connections are opened
@@ -674,12 +683,13 @@ impl LakeEngine for PgLake {
         if let Some(h) = held.as_ref() {
             return Err(engines::lease_held(&h.holder, h.fence));
         }
-        let lease = lease::take(
+        let (lease, carried) = lease::take(
             &mut lock(&writing.lease),
             &self.names,
             &self.target.schema,
             holder,
         )?;
+        *lock(&writing.carried) = Some(carried);
         *held = Some(lease.clone());
         Ok(lease)
     }
@@ -704,14 +714,14 @@ impl LakeEngine for PgLake {
     }
 
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        let mut db = self.holding(lease, Act::Appended)?;
-        let appended = log::append(&mut db, &self.names, lease, events, false);
+        let (mut db, mut carried) = self.holding(lease, Act::Appended)?;
+        let appended = log::append(&mut db, &self.names, lease, &mut carried, events, false);
         self.lost(&db, Some(lease.fence), appended, Some(Act::Appended))
     }
 
     fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        let mut db = self.holding(lease, Act::Appended)?;
-        let imported = log::append(&mut db, &self.names, lease, events, true);
+        let (mut db, mut carried) = self.holding(lease, Act::Appended)?;
+        let imported = log::append(&mut db, &self.names, lease, &mut carried, events, true);
         self.lost(&db, Some(lease.fence), imported, Some(Act::Imported))
     }
 
@@ -725,8 +735,8 @@ impl LakeEngine for PgLake {
         imported: bool,
         first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
     ) -> Result<Option<SegmentDigest>> {
-        let mut db = self.holding(lease, Act::Sealed)?;
-        let sealed = log::seal(&mut db, &self.names, lease, imported, first);
+        let (mut db, mut carried) = self.holding(lease, Act::Sealed)?;
+        let sealed = log::seal(&mut db, &self.names, lease, &mut carried, imported, first);
         self.lost(&db, Some(lease.fence), sealed, Some(Act::Sealed))
     }
 

@@ -19,6 +19,16 @@
 //! continue the log, inserts them and commits. After a crash an append is
 //! either all there or not at all; nothing needs cutting off.
 //!
+//! **Carried.** The writer knows the log's end without asking: the take of
+//! the lease reads the tip and the active segment once ([`Carried`]), and
+//! every append and seal under that lease carries them on. No other writer
+//! appends while the lease row holds this lease's fence, which each append
+//! checks, so what the writer carries is what the server holds. A carried
+//! tip behind the server's would meet the log's key on the position,
+//! which refuses a second event at one position; nothing refuses one
+//! ahead of it, and nothing but this writer's commits moves it. An append
+//! that fails drops what it carried, and the next reads it again.
+//!
 //! **Synced.** An append's and a seal's commits wait for their flush
 //! whatever the server, the database or the role sets, so an answered
 //! append outlasts a crash, and it flushes the projection commits before
@@ -68,6 +78,40 @@ pub(crate) fn tip(db: &mut Db, names: &Names) -> Result<Option<(Position, Digest
         }))
 }
 
+/// What the writer under one lease carries from append to append: the
+/// log's tip and the active segment's first position.
+#[derive(Debug)]
+pub(crate) struct Carried {
+    fence: u64,
+    tip: Option<(Position, Digest)>,
+    segment: i64,
+}
+
+/// What the writer under `fence` carries, read from the server: by the
+/// take of the lease, in the transaction that wrote the fence, and by an
+/// append after a failed one.
+pub(crate) fn carried(db: &mut Db, names: &Names, fence: u64) -> Result<Carried> {
+    Ok(Carried {
+        fence,
+        tip: tip(db, names)?,
+        segment: active(db, names)?,
+    })
+}
+
+/// What `carried` holds for `lease`, or what the server holds where it
+/// holds nothing for it.
+fn carried_for(
+    db: &mut Db,
+    names: &Names,
+    lease: &Lease,
+    carried: Option<Carried>,
+) -> Result<Carried> {
+    match carried {
+        Some(c) if c.fence == lease.fence => Ok(c),
+        _ => self::carried(db, names, lease.fence),
+    }
+}
+
 /// The active segment's first position.
 fn active(db: &mut Db, names: &Names) -> Result<i64> {
     db.query_one(
@@ -112,34 +156,45 @@ fn fenced(db: &mut Db, names: &Names, lease: &Lease, undone: Act) -> Result<()> 
 /// must hold nothing but imported events, each event keeps its own fence,
 /// never below the one before it, and the `meta` rows `imported` (the last
 /// position imported) and `import_fence` (the greatest fence imported,
-/// which the next lease exceeds) follow in the same transaction.
+/// which the next lease exceeds) follow in the same transaction. The tip
+/// and the segment are `carried`'s, which the commit moves on.
 pub(crate) fn append(
     db: &mut Db,
     names: &Names,
     lease: &Lease,
+    carried: &mut Option<Carried>,
     events: &[CanonicalEvent],
     imported: bool,
 ) -> Result<()> {
     if events.is_empty() {
         return Ok(());
     }
-    db.transaction(SYNCED, |db| {
+    let held = carried.take();
+    let moved = db.transaction(SYNCED, |db| {
         fenced(db, names, lease, Act::Appended)?;
-        add(db, names, lease, events, imported)
-    })
+        let at = carried_for(db, names, lease, held)?;
+        add(db, names, lease, at, events, imported)
+    })?;
+    *carried = Some(moved);
+    Ok(())
 }
 
 /// What an append does inside its transaction, the lease row checked:
-/// `events` are checked to continue the log and inserted into the active
-/// segment.
+/// `events` are checked to continue the log at `at` and inserted into its
+/// segment. Answers what the writer carries once they are.
 fn add(
     db: &mut Db,
     names: &Names,
     lease: &Lease,
+    at: Carried,
     events: &[CanonicalEvent],
     imported: bool,
-) -> Result<()> {
-    let tip = tip(db, names)?;
+) -> Result<Carried> {
+    let Carried {
+        fence: under,
+        tip,
+        segment,
+    } = at;
     let first = tip.as_ref().map_or(0, |(p, _)| p.0 + 1);
     let mut floor = 0;
     if imported && let Some((at, _)) = &tip {
@@ -158,9 +213,8 @@ fn add(
         floor = row.get::<_, Option<i64>>(1).unwrap_or(0) as u64;
     }
     let fence = (!imported).then_some(lease.fence);
-    let prev = tip.map_or_else(Digest::zero, |(_, h)| h);
+    let prev = tip.as_ref().map_or_else(Digest::zero, |(_, h)| h.clone());
     lakelands_core::engines::append_fault(events, first, prev, fence, floor)?;
-    let segment = active(db, names)?;
     // The window's events in one statement, from arrays.
     let (mut positions, mut fences) = (Vec::new(), Vec::new());
     let (mut ids, mut prevs, mut hashes, mut bytes) =
@@ -192,7 +246,12 @@ fn add(
             &[&(last.position.0 as i64), &(last.fence as i64)],
         )?;
     }
-    Ok(())
+    let last = events.last().map(|e| (e.position, e.hash.clone()));
+    Ok(Carried {
+        fence: under,
+        tip: last.or(tip),
+        segment,
+    })
 }
 
 /// At most `limit` events from `from` on, as appended.
@@ -282,18 +341,23 @@ fn span(db: &mut Db, names: &Names, first: i64) -> Result<Option<(Position, Posi
 /// with the events `first` answers for it, appended as [`append`] does
 /// with `imported`: one transaction that checks the lease row holds the
 /// lease's fence, so the seal and those events are both there or neither.
+/// The segment it closes is `carried`'s, and the commit carries on the one
+/// it begins.
 pub(crate) fn seal(
     db: &mut Db,
     names: &Names,
     lease: &Lease,
+    carried: &mut Option<Carried>,
     imported: bool,
     first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
 ) -> Result<Option<SegmentDigest>> {
-    db.transaction(SYNCED, |db| {
+    let held = carried.take();
+    let (sealed, moved) = db.transaction(SYNCED, |db| {
         fenced(db, names, lease, Act::Sealed)?;
-        let active = active(db, names)?;
+        let mut at = carried_for(db, names, lease, held)?;
+        let active = at.segment;
         let Some((from, to)) = span(db, names, active)? else {
-            return Ok(None);
+            return Ok((None, at));
         };
         let digest = digest_of(db, names, active)?;
         let sealed = SegmentDigest {
@@ -313,9 +377,12 @@ pub(crate) fn seal(
             &format!("INSERT INTO {} (first) VALUES ($1)", names.t("segments")),
             &[&((to.0 + 1) as i64)],
         )?;
-        add(db, names, lease, &events, imported)?;
-        Ok(Some(sealed))
-    })
+        at.segment = (to.0 + 1) as i64;
+        let moved = add(db, names, lease, at, &events, imported)?;
+        Ok((Some(sealed), moved))
+    })?;
+    *carried = Some(moved);
+    Ok(sealed)
 }
 
 /// Every sealed segment, oldest first.

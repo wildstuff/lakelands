@@ -16,20 +16,31 @@
 //! what refuses a stale writer. Every append and every seal is checked
 //! against the row (`docs/decisions/008-one-writer-per-lake.md`,
 //! `docs/decisions/038-a-lake-in-postgresql.md`).
+//!
+//! The take reads the log's tip and its active segment in the transaction
+//! that writes the token, after it: a writer under an older token that
+//! was appending has committed by then or is refused, so what the new
+//! writer carries into its appends is the log's end (`crate::log`).
 
 use lakelands_api::engine::Lease;
 use lakelands_api::error::{Error, Result, Situation};
 
 use crate::connect::Db;
+use crate::log::{self, Carried};
 use crate::projection::Names;
 
 /// The advisory lock's key for a schema, bound as `$1`: a 64-bit hash of
 /// its name, computed by the server.
 const KEY: &str = "hashtextextended('lakelands lease ' || $1, 0)";
 
-/// Take the lease for `holder` on the lease connection, or say who holds
-/// it.
-pub(crate) fn take(db: &mut Db, names: &Names, schema: &str, holder: &str) -> Result<Lease> {
+/// Take the lease for `holder` on the lease connection, with what its
+/// appends carry, or say who holds it.
+pub(crate) fn take(
+    db: &mut Db,
+    names: &Names,
+    schema: &str,
+    holder: &str,
+) -> Result<(Lease, Carried)> {
     let locked: bool = db
         .query_one(&format!("SELECT pg_try_advisory_lock({KEY})"), &[&schema])?
         .get(0);
@@ -60,10 +71,10 @@ pub(crate) fn take(db: &mut Db, names: &Names, schema: &str, holder: &str) -> Re
             ),
             &[&holder],
         )?;
-        Ok(Lease {
-            fence: row.get::<_, i64>(0) as u64,
-            holder: holder.to_owned(),
-        })
+        let fence = row.get::<_, i64>(0) as u64;
+        let carried = log::carried(db, names, fence)?;
+        let holder = holder.to_owned();
+        Ok((Lease { fence, holder }, carried))
     });
     if taken.is_err() {
         let _ = release_lock(db, schema);
