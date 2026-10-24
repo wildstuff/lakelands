@@ -714,8 +714,9 @@ the head it read when it began; writes that land meanwhile are the next
 run's. It writes no manifest and no key; the line it prints names the
 head, how many events it wrote and the position the directory held
 before. It writes only into a new or empty directory, or one holding
-nothing beside `log/` and `export.json`, and never inside a lake's
-directory: any other is refused as `export_not_empty`. A run stopped
+nothing beside `log/` and `export.json`: any other is refused as
+`export_not_empty`, and one inside a lake's directory is refused by the
+command, naming that directory. A run stopped
 halfway leaves a torn last line, which the next run cuts and writes
 again. A directory whose last line is not the lake's own event at that
 position, another lake's backup, is refused as `backup_other_log`, and
@@ -726,12 +727,18 @@ lines before the last, so damage there is found by the restore, or by
 it holds, 1 damaged, 3 not checked). `lakelands restore <dir>` is
 `import` of the directory, with `--keys-from <dir>` putting the lake's
 keyring file back first, only where the root's keyring has none, and
-taking it out again where the import is refused:
+taking it out again where the import is refused. Both `--keys-to` and
+`--keys-from` need the root's file keyring named in its
+`lakelands.json`, `"keys": {"keyring": "<directory>"}`, which
+`lakelands init` does not write; without it each is refused, and a
+restore of a lake holding erasable values is refused as nothing being
+bound for a key store:
 
 ```sh
 lakelands --root /srv/lakes backup --to /backup/finance --keys-to /keys-backup
 lakelands --root /srv/lakes restore /backup/finance --check
 lakelands init restored
+# restored/lakelands.json: add "keys": {"keyring": "keys"}
 lakelands --root restored lake new finance
 lakelands --root restored restore /backup/finance --keys-from /keys-backup
 ```

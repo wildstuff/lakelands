@@ -291,6 +291,7 @@ pub async fn backup(store: &dyn LakeStore, feed: &dyn ChangeFeed, dir: &Path) ->
         let Some(path) = files.pop() else {
             removed(&torn)?;
             let _ = fs::remove_dir(dir.join("log"));
+            let _ = fs::remove_file(dir.join("export.json"));
             let m = write_from(store, feed, dir).await?;
             break (None, m.segments, m.hash, m.through);
         };

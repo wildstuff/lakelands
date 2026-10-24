@@ -66,7 +66,11 @@ only where the root's keyring holds none for the lake: the file the
 keyring holds knows every key destroyed since the copy. Where the
 import is then refused, the file it put back is taken out again, so a
 second try puts it back too. A lake the keyring holds no file for has
-no keys to copy, and `--keys-to` copies none and says so.
+no keys to copy, and `--keys-to` copies none and says so. Both flags
+need the root to name its file keyring (`keys.keyring` in
+`lakelands.json`), which `lakelands init` leaves out; without one each
+is refused. Where the import succeeds and only its line fails to be
+written, the keys put back stay.
 
 ### A backup older than a forgetting restores refused where its keys are gone
 

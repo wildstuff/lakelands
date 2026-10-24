@@ -1297,7 +1297,7 @@ pub fn restore_keys(
         return Err(Failure::new(what, todo));
     }
     let line = format!("put the keys of lake `{lake}` back from {}", keys.display());
-    put(out, line)?;
+    put(out, line).inspect_err(|_| drop(keyring.unrestore(lake)))?;
     Ok(keyring)
 }
 
@@ -1316,12 +1316,14 @@ pub fn exported_lake(dir: &Path) -> Option<String> {
 /// `import`: the export in `dir` becomes the lake at `location`, which
 /// must hold nothing. A lake kept in memory is refused before anything is
 /// read: this process ends when the command answers, and the lake with it.
+/// The outer error is the import refused; the inner one is its line not
+/// written, after the lake was made.
 pub async fn import(
     out: Out<'_>,
     location: lakelands_api::Location,
     seams: lakelands_api::seam::Seams,
     dir: &Path,
-) -> Result<(), Failure> {
+) -> Result<Result<(), Failure>, Failure> {
     if location.engine == lakelands_api::EngineConfig::Memory {
         return Err(Failure::new(
             format!(
@@ -1341,6 +1343,16 @@ pub async fn import(
                      for PostgreSQL), remove a lake there that holds events (its file or \
                      schema), and import again"
                 }
+                _ if e.seam().is_some()
+                    || matches!(
+                        e.situation(),
+                        Some(lakelands_api::error::Situation::KeyMissing { .. })
+                    ) =>
+                {
+                    "the lake's sealed values need its keys: name the keyring in the keys \
+                     section of the configuration, and restore with --keys-from the keys file \
+                     the backup copied"
+                }
                 _ => {
                     "a damaged export imports nothing: export the lake again; a failure of the \
                      target's storage leaves what it wrote, so remove that lake (its file or \
@@ -1349,11 +1361,11 @@ pub async fn import(
             };
             Failure::new(e.to_string(), todo)
         })?;
-    put(
+    Ok(put(
         out,
         format!(
             "imported lake `{}`: {} event(s) from {} file(s), head {}, hash {}",
             imported.lake, imported.events, imported.files, imported.through, imported.hash.0
         ),
-    )
+    ))
 }

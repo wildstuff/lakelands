@@ -18,6 +18,7 @@ use lakelands_api::engine::OpenMode;
 use lakelands_api::location::{EngineConfig, Location};
 use lakelands_api::seam::Seams;
 use lakelands_cli::Opening;
+use lakelands_core::conformance::fixture;
 
 fn block_on<F: Future>(f: F) -> F::Output {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -1949,16 +1950,51 @@ fn backup_grows_its_directory_and_restore_makes_the_lake_with_its_keys() {
         "{}",
         refused.err
     );
-    let restored = to.run(&["restore", &dir, "--keys-from", &keys]);
-    assert_eq!(restored.code, 0, "{}", restored.err);
+    // An output closed after its first line does not take the keys of a
+    // lake it imported out again.
+    struct Closed(Vec<u8>);
+    impl std::io::Write for Closed {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            if self.0.contains(&b'\n') {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            self.0.extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let (root, mut out, mut err) = (
+        to.root.display().to_string(),
+        Closed(Vec::new()),
+        Vec::new(),
+    );
+    let argv = [
+        "lakelands",
+        "--root",
+        &root,
+        "restore",
+        &dir,
+        "--keys-from",
+        &keys,
+    ];
+    let open = |l: Location, m: OpenMode, s: Seams| to.open(l, m, s);
+    let code = block_on(lakelands_cli::run(argv, &mut out, &mut err, &open));
     assert!(
-        restored.out.starts_with(&format!(
-            "put the keys of lake `finance` back from {keys}\nimported lake `finance`"
-        )),
+        code != 0
+            && out.0 == format!("put the keys of lake `finance` back from {keys}\n").as_bytes()
+            && to.root.join("keys/finance.keys.json").exists(),
         "{}",
-        restored.out
+        String::from_utf8_lossy(&err)
     );
     assert_eq!(to.run(&["feed"]).out, from.run(&["feed"]).out);
+    // The erasable value reads back under the keys put back.
+    let store = to.lakes.lock().unwrap()["finance"].clone();
+    let get = serde_json::from_value(serde_json::json!({"key": "c1"})).unwrap();
+    let (doors, owner) = (fixture::doors(&*store), fixture::owner(&*store));
+    let got = block_on(doors.get(&owner, &lakelands_api::id::TypeName::from("contact"), get));
+    assert!(format!("{got:?}").contains("ada@example.org"), "{got:?}");
     // The keyring's own file is never replaced by a copy.
     let twice = to.run(&["restore", &dir, "--keys-from", &keys]);
     assert!(

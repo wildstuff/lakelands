@@ -42,13 +42,13 @@ check!(
 
 check!(
     BACKUP_CUT = a_backup_taken_while_writes_land_restores_the_lake_at_its_cut,
-    "077: a backup run while writes land, each before a page of the feed it reads, holds the log through the head it read before them, its cut, and imported into a fresh lake answers at its head as the lake answers at the cut: the head, its hash, the feed, and every type's records with provenance",
+    "077: a backup run while writes land, each before a page of the feed it reads, holds the log through the head it read before them, its cut, and imported into a fresh lake answers at its head as the lake answers at the cut: the head, its hash, the feed, and every type's records with provenance; run again while writes land, it copies after its last line through its own cut",
     given
 );
 
 check!(
     BACKUP_TORN = a_backup_cuts_a_torn_tail_and_refuses_a_log_the_lake_does_not_continue,
-    "077: a run cuts the bytes after its directory's last line feed, a stopped run's, removing a file that holds no whole line, and continues; a directory whose last line is not the lake's event at its position, another lake's or another log's, is refused as a failed precondition, `backup_other_log` naming the position, and nothing in it is changed, its torn tail included",
+    "077: a run cuts the bytes after its directory's last line feed, a stopped run's, removing a file that holds no whole line, and continues; a directory whose last line is not the lake's event at its position, another lake's or another log's or one past the lake's head, is refused as a failed precondition, `backup_other_log` naming the position, and nothing in it is changed, its torn tail included",
     scratch
 );
 
@@ -60,7 +60,7 @@ check!(
 
 check!(
     NOT_EMPTY = an_export_into_a_directory_that_holds_anything_is_refused,
-    "030 and 077: an export writes only into an empty or absent directory, a backup only into one holding nothing beside `log/` and `export.json` (no lake's directory); into any other each is refused as a failed precondition, the export's directory not empty (no path on the host is named), and writes nothing",
+    "030 and 077: an export writes only into an empty or absent directory, a backup only into one holding nothing beside `log/` and `export.json` (no lake's directory), one holding only `export.json` taking the whole log; into any other each is refused as a failed precondition, the export's directory not empty (no path on the host is named), and writes nothing",
     scratch
 );
 
@@ -416,6 +416,23 @@ async fn a_backup_taken_while_writes_land_restores_the_lake_at_its_cut(
         "a run cuts at the head as it began, {before}, before the lake's head {after}: {}",
         cut.through
     );
+    let grown = scratch.dir("grown");
+    copied(&dir, &grown)?;
+    let more = export::backup(s, &Writing(store.clone()), &grown).await;
+    let (more, head) = (
+        more.must("backing up again")?,
+        s.head().await.must("reading the head")?,
+    );
+    let says = export::verify(&grown).must("verifying the grown backup")?;
+    ensure!(
+        more.since == Some(cut.through)
+            && after < more.through
+            && more.through < head
+            && (says.through, &says.hash) == (more.through, &more.hash),
+        "a run again while writes land copies after {} through its own cut, before the head \
+         {head}, and verifies to it: it answered {more:?}, the files {says:?}",
+        cut.through
+    );
     let imported = (given.import)(dir, store.lake().clone(), None, import_seams()).await;
     let imported = imported.map_err(|e| Failure::new(format!("restoring the backup: {e}")))?;
     let i = imported.store.as_ref();
@@ -472,17 +489,23 @@ async fn a_backup_cuts_a_torn_tail_and_refuses_a_log_the_lake_does_not_continue(
          export writes it; it answered {run:?}",
     );
     let mut lines = lines_of(&dir, &only)?;
-    for (member, value) in [("lake", json!("another-lake")), ("known_at", json!(1))] {
+    let past = Position(head.0 + 5);
+    let others = [
+        ("lake", json!("another-lake"), head),
+        ("known_at", json!(1), head),
+        ("position", json!(past.0), past),
+    ];
+    for (member, value, held) in others {
         let last = lines.len() - 1;
         lines[last] = rehashed(&lines_of(&export, &only)?[last], |e| e[member] = value)?;
         rewrite(&dir, &only, &lines)?;
         let before = tear()?;
         let said = export::backup(s, &*s.feed(), &dir).await;
         ensure!(
-            matches!(&said, Err(e) if e.case().map(|c| &c.case) == Some(&Case::BackupOtherLog { held: head }))
+            matches!(&said, Err(e) if e.case().map(|c| &c.case) == Some(&Case::BackupOtherLog { held }))
                 && [read(&dir, &only)?, read(&dir, &next)?] == *before,
             "a backup whose last line's `{member}` is another log's is refused as \
-             `backup_other_log` at {head}, changing nothing, and it answered {said:?}"
+             `backup_other_log` at {held}, changing nothing, and it answered {said:?}"
         );
     }
     Ok(())
@@ -563,6 +586,14 @@ async fn an_export_into_a_directory_that_holds_anything_is_refused(
             && read(&dir, &only)? == kept
             && read(&dir, "notes.txt")? == b"kept\n",
         "a refused export or backup writes nothing; the directory holds {left} entries"
+    );
+    let lone = scratch.dir("lone");
+    let made = fs::create_dir_all(&lone).and_then(|()| fs::write(lone.join("export.json"), "{}"));
+    made.map_err(|e| Failure::new(format!("writing into {lone:?}: {e}")))?;
+    let new = backup(s, &lone).await?;
+    ensure!(
+        new.since.is_none() && files(&lone)? == [only],
+        "a backup into a directory holding only export.json takes the whole log: {new:?}"
     );
     Ok(())
 }

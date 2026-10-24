@@ -622,7 +622,7 @@ async fn dispatch(
             if let (Err(_), Some(keyring)) = (&imported, put_back) {
                 keyring.unrestore(&lake)?;
             }
-            return imported;
+            return imported?;
         }
         "serve" if !sub.get_flag("mcp") => {
             return Err(Failure::new(
