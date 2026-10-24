@@ -6,8 +6,10 @@ MCP at `/lakes/<lake>/mcp`, and REST under every other path of
 root's `lakelands.json`, take the same API keys, and resolve them through
 the same resolver to the same principals. `lakelands serve --mcp` writes
 the address it listens on to standard error as
-`lakelands: serving HTTP at http://<address>/`, so a `bind` on port 0
-takes a free port and still says which.
+`lakelands: listening at http://<address>/ (starting)` once the door is
+bound, and as `lakelands: serving HTTP at http://<address>/` once every
+lake is open, so a `bind` on port 0 takes a free port and still says
+which.
 
 A REST route only translates. Its path, its query, its headers and its
 body become the arguments of one door, under the names that door's MCP

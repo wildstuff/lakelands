@@ -820,6 +820,7 @@ fn unmade(e: &Error) -> bool {
 
 /// The HTTP door of `serve`, bound and running before any lake is open.
 struct Door {
+    addr: std::net::SocketAddr,
     served: Arc<std::sync::RwLock<BTreeMap<LakeId, Arc<dyn LakeStore>>>>,
     health: lakelands_server::Health,
     task: tokio::task::JoinHandle<std::io::Result<()>>,
@@ -852,12 +853,13 @@ impl Door {
             .map_err(stopped)?;
         let health = http.health();
         // Standard output is the protocol's; the address goes to standard
-        // error, so a server bound to port 0 can be found.
-        if let Ok(addr) = http.local_addr() {
-            eprintln!("lakelands: serving HTTP at http://{addr}/");
-        }
+        // error, so a server bound to port 0 can be found. A caller that
+        // waits for the lakes reads the later "serving" line.
+        let addr = http.local_addr().map_err(stopped)?;
+        eprintln!("lakelands: listening at http://{addr}/ (starting)");
         let task = tokio::spawn(http.run());
         Ok(Some(Door {
+            addr,
             served,
             health,
             task,
@@ -869,6 +871,7 @@ impl Door {
         let held = lakes.values().cloned().collect();
         *self.served.write().unwrap_or_else(|e| e.into_inner()) = lakes;
         self.health.serving(held);
+        eprintln!("lakelands: serving HTTP at http://{}/", self.addr);
     }
 }
 
