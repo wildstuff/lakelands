@@ -276,8 +276,8 @@ impl Decide<'_> {
     pub(crate) fn checked(&self, decl: &TypeDecl, key: &RecordKey, patch: &Patch) -> Result<Patch> {
         check_key(key)?;
         let door = (self.door, self.envelope.source.as_ref());
-        rights::check_write(self.at.sight.who(), decl, door, patch)
-            .map_err(|e| self.verbs_only(decl, e))?;
+        let checked = self.at.sight.check_write(decl, door, patch);
+        checked.map_err(|e| self.verbs_only(decl, e))?;
         check_values(self.ontology, decl, patch, &decl.fields)
     }
 
@@ -424,7 +424,7 @@ impl Decide<'_> {
                 .is_some_and(|b| !b.retired || sees.withheld(b));
         if live.is_none() {
             let door = (self.door, self.envelope.source.as_ref());
-            fill_key_fields(o, decl, key, &mut patch, door, who)?;
+            fill_key_fields(o, decl, key, &mut patch, door, sees)?;
         }
         if decl.name.as_str() == SETTING_TYPE {
             let told = |s: &SettingDecl| sees.setting_visible(s);
@@ -1017,14 +1017,14 @@ impl Call<'_> {
         let decl = self.shown_verb(&w.ontology, verb)?.clone();
         scoped(&decl, key, expected)?;
         let on = w.ontology.ty(&decl.on)?;
-        granted(Sight::held(self.who, &w.ontology).callable(on, &decl))?;
+        let sees = Sight::held(self.who, &w.ontology);
+        granted(sees.callable(on, &decl))?;
         // A call is pinned to the records it reads across a reference too,
         // where its caller holds `only` on their type.
         let far = decl.reads_across(on, &|n| w.ontology.ty(n).ok());
         let mut far = far.iter().flatten();
         let pinned = (proposed || decl.risk != Risk::Low)
-            && (self.pin(w, on, Some(&decl))?
-                || far.any(|r| rights::only_holder(self.who, r.0, &w.ontology)));
+            && (self.pin(w, on, Some(&decl))? || far.any(|r| sees.only_holder(r.0)));
         if let VerbEffect::External { executor } = &decl.effect {
             bound_executor(self.lake, executor)?;
         }

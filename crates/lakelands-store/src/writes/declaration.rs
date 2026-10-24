@@ -142,7 +142,6 @@ impl Call<'_> {
             // But what stands in force listed to no one, as a verb whose
             // `requires` does not parse, is not its to declare again; nor is
             // a tool's name that such a verb bears (the slow path's `taken`).
-            let sees = Sight::held(self.who, o);
             let computes = |f: &str| {
                 let mut types = o.types.values();
                 types.any(|e| {
@@ -278,7 +277,7 @@ impl Call<'_> {
                     names.extend(x.fields.iter().filter_map(read).flatten());
                 }
                 let has = |n: &&FieldName| t.has_field(n);
-                rights::check_probe(self.who, t, names.iter().filter(has))?;
+                sees.check_probe(t, names.iter().filter(has))?;
             }
         }
         Ok(())
@@ -647,7 +646,7 @@ impl Call<'_> {
             if view.count(t, &every(false))? == 0 {
                 continue;
             }
-            let mut told = self.who.grants.reads_everything();
+            let mut told = sees.holds_all();
             if !told {
                 live(view.as_ref(), t, |r| {
                     told |= sees.answers(t, r);

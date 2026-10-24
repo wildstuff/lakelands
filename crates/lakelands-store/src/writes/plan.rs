@@ -129,14 +129,14 @@ impl Call<'_> {
     /// caller would tell of that record.
     pub(crate) fn enacting(&self) -> Result<()> {
         check_context(self.lake, &self.context)?;
-        granted(self.authors())?;
+        granted(self.grants().authors())?;
         self.restricted_to_act()
     }
 
     /// Refused `grant_needed` to one without `restricted`, whatever the
     /// lake holds (062).
     pub(crate) fn restricted_to_act(&self) -> Result<()> {
-        match self.who.grants.restricted {
+        match self.grants().sees_restricted() {
             true => Ok(()),
             false => Err(Error::refused(
                 None,
@@ -151,7 +151,7 @@ impl Call<'_> {
     /// previewed for one who may not make it, only telling, on the records
     /// it is told of, as a proposal's plan (062).
     pub(crate) fn judging(&self, when: When) -> Judging {
-        match when == When::Plan && !self.who.grants.restricted {
+        match when == When::Plan && !self.grants().sees_restricted() {
             true => Judging::Proposal,
             false => Judging::Act,
         }

@@ -280,7 +280,7 @@ impl Call<'_> {
     /// Whether a proposal by this caller on `decl`, or of a call of `verb`,
     /// is pinned, refusing one that may not be (051).
     pub(super) fn pin(&self, w: &Writer, decl: &TypeDecl, verb: Option<&VerbDecl>) -> Result<bool> {
-        let pinned = rights::only_holder(self.who, decl, &w.ontology);
+        let pinned = Sight::held(self.who, &w.ontology).only_holder(decl);
         granted(!pinned || rights::pinnable(self.who, decl, verb))?;
         Ok(pinned)
     }
@@ -331,7 +331,7 @@ impl Call<'_> {
         p: &lakelands_api::write::Proposal,
         listed: &(Option<ProposedWrite>, bool),
     ) -> Result<()> {
-        let o = &w.ontology;
+        let (o, sees) = (&w.ontology, Sight::held(self.who, &w.ontology));
         let Some(write) = p.write.as_ref().filter(|_| rights::holds_only(self.who)) else {
             return Ok(());
         };
@@ -343,7 +343,7 @@ impl Call<'_> {
             },
             _ => return granted(false),
         };
-        if o.ty(ty).is_ok_and(|t| !rights::only_holder(self.who, t, o)) {
+        if o.ty(ty).is_ok_and(|t| !sees.only_holder(t)) {
             return Ok(());
         }
         granted(listed.0.is_some() && !listed.1)
@@ -797,7 +797,7 @@ impl Call<'_> {
             }
             e => e,
         };
-        if !judged || self.who.grants.reads_everything() {
+        if !judged || sight.holds_all() {
             return e;
         }
         let read = |f: &FieldName| sight.reads_from(&ty, f);

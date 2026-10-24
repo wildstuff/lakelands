@@ -186,7 +186,7 @@ impl<'o> Sight<'o> {
 
     /// Whether nothing is held from its principal: it holds `restricted`
     /// and reads every field of every type.
-    fn holds_all(&self) -> bool {
+    pub fn holds_all(&self) -> bool {
         self.who.grants.reads_everything()
     }
 
