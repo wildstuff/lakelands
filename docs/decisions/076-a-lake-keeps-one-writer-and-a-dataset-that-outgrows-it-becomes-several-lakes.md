@@ -33,9 +33,11 @@ kept at a load average of 11 to 15, SQLite lakes on its local disk. Each
 caller writes one record of a plain type at a time, waiting for its
 answer before the next, with group commit at its default bound of 32
 events. SQLite is the store's own harness (`throughput` in
-`crates/lakelands-store/tests/batched/mod.rs`); the memory engine ran
-the same harness; several lakes at once ran in a test made for this
-record, with the same writes, which is not in the tree. Each is the
+`crates/lakelands-store/tests/batched/mod.rs`, run from the SQLite
+engine's `tests/batch.rs`). The memory engine ran the same harness from
+a call made for this record, and several lakes at once ran in a test
+made for this record, with the same writes; neither is in the tree, so
+those two columns cannot be run again from it. Each is the
 range over three rounds, the memory engine's over four. PostgreSQL's row
 is the mean of three rounds from the run of lakelands#1358 on the same
 machine, which landed group commit.
@@ -156,8 +158,9 @@ writer:
 ### A standby follows the log and takes the lease when the writer is gone
 
 A standby adds no writer: at every instant one process holds the lease.
-It is a handle opened read-only that follows the log, as one beside a
-writer does today, and tries the lease. When the writer is gone the
+It is a handle opened read-only, which folds nothing and reads what
+the writer folded, as one beside a writer does today, and it tries the
+lease. When the writer is gone the
 standby takes it: its `lease_taken` carries a token greater than every
 earlier one, it folds from the projection's mark as every writer's open
 does (`docs/decisions/061-a-projection-commit-waits-for-no-flush.md`),
@@ -238,8 +241,9 @@ does not meet.
 - **Forwarded writes.** The forwarding handle: the writer named in the
   location, the link between hosts that carries the write context, the
   answers above, read-your-writes, and the door checks run through a
-  forwarding handle on SQLite and PostgreSQL. Most of it is outside the
-  core crates, in the client and the server. Roughly 1 000 to 1 500
+  forwarding handle on SQLite and PostgreSQL. Most of its product is
+  outside the core crates, in the client and the server; its checks and
+  the read-your-writes wait are in them. Roughly 1 000 to 1 500
   product lines and 1 200 to 1 800 lines of specification: the REST
   client it builds on took 2 155 and 1 088 (lakelands#118).
 - **Standby and failover.** The standby's follow and takeover in the
@@ -247,9 +251,13 @@ does not meet.
   checks on SQLite and PostgreSQL, the old writer refused, and 008's
   line. Roughly 400 to 700 product lines and 600 to 1 000 of
   specification: readiness, which reads the lease's state, took 197 and
-  366 (lakelands#1379). The core crates stand 78 product and 122
-  specification lines under their ceilings, so this one cuts first and
-  raises by the rule of `docs/decisions/047-a-ceiling-is-raised-by-a-recorded-rule.md`.
+  366 (lakelands#1379).
+
+At develop `7ca9a668c` the core crates stand 16 product and 35
+specification lines under their ceilings, so each issue cuts first and
+raises by the rule of
+`docs/decisions/047-a-ceiling-is-raised-by-a-recorded-rule.md`, the
+standby most of all.
 
 ## Why
 
