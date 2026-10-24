@@ -28,8 +28,10 @@
 //!
 //! Two unauthenticated routes answer outside any lake, at fixed paths,
 //! with no data in them ([`Health`]): `GET /livez`, the process is up, and
-//! `GET /readyz`, every lake it serves is open, its writer lease held and
-//! its projection folded.
+//! `GET /readyz`, every lake it serves is open, holds its writer lease
+//! (as its handle knows it) and answers its head. Whether the projection
+//! has caught up with the log is not asked: the store facade has no cheap
+//! answer to that, and an open does not return before its fold is done.
 //!
 //! Everything is configured through [`HttpConfig`], which the root's
 //! `lakelands.json` carries; nothing is read from the environment.
@@ -166,6 +168,8 @@ type Lakes = Vec<Arc<dyn LakeStore>>;
 /// bound before the lakes are open, so liveness answers while an open
 /// rebuilds a projection.
 ///
+/// "Ready" means open and, as its handle knows it, holding the lease, with
+/// a head that answers; it does not compare the head with the log's end.
 /// An answer reads each lake's in-memory flags only: no fold, no scan, no
 /// engine call. A lease lost to another writer shows once the handle has
 /// noticed it, at its next write, rebuild or compaction.
@@ -179,9 +183,9 @@ pub struct Health {
 pub enum Readiness {
     /// The lakes are not all open yet.
     Starting,
-    /// A lake is open without its lease, or its projection is not folded.
+    /// A lake is open without its lease, or its head does not answer.
     NotReady,
-    /// Every lake is open, leased and folded.
+    /// Every lake is open, leased as its handle knows it, and answers a head.
     Ready,
 }
 

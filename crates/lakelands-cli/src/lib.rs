@@ -582,6 +582,14 @@ async fn dispatch(
     // stands, a damaged one among them, is not opened again for writing.
     // `rebuild` opens the lake for a rebuild, which that open is: a
     // projection of another layout opens only so.
+    // `serve` binds its door before it opens anything, the primary lake
+    // included, so that an open that rebuilds a projection is `starting`
+    // for `/readyz` and up for `/livez`.
+    let door = if name == "serve" {
+        Door::bind(&root).await?
+    } else {
+        None
+    };
     let store = if name == "rebuild" {
         open(location, OpenMode::Rebuild, root.seams()).await?
     } else if name == "feed"
@@ -689,7 +697,7 @@ async fn dispatch(
                 settings::list(out, &lake, &listed, &root.config)
             }
         },
-        "serve" => serve(&root, store, who, open).await,
+        "serve" => serve(&root, (store, door), who, open).await,
         other => unreachable!("clap knows no command `{other}`"),
     }
 }
@@ -810,6 +818,74 @@ fn unmade(e: &Error) -> bool {
     )
 }
 
+/// The HTTP door of `serve`, bound and running before any lake is open.
+struct Door {
+    served: Arc<std::sync::RwLock<BTreeMap<LakeId, Arc<dyn LakeStore>>>>,
+    health: lakelands_server::Health,
+    task: tokio::task::JoinHandle<std::io::Result<()>>,
+}
+
+impl Door {
+    /// Bind and run the door the root configures, answering `NotServed` for
+    /// every lake and `starting` at `/readyz` until [`Door::serving`]; none
+    /// where the root configures no server.
+    async fn bind(root: &root::Root) -> std::result::Result<Option<Door>, Failure> {
+        let Some(config) = root.config.server.clone() else {
+            return Ok(None);
+        };
+        let served: Arc<std::sync::RwLock<BTreeMap<LakeId, Arc<dyn LakeStore>>>> = Arc::default();
+        let lookup = {
+            let served = served.clone();
+            move |lake: &LakeId| -> Result<Arc<dyn LakeStore>> {
+                let served = served.read().unwrap_or_else(|e| e.into_inner());
+                served.get(lake).cloned().ok_or_else(|| {
+                    let lake = lake.to_string();
+                    Error::unavailable(lakelands_api::error::Situation::NotServed { lake })
+                })
+            }
+        };
+        let resolver = Arc::new(lakelands_server::resolver::StaticResolver::new(
+            root.config.principals.clone(),
+        ));
+        let http = lakelands_server::serve_http(config, resolver, Arc::new(lookup))
+            .await
+            .map_err(stopped)?;
+        let health = http.health();
+        // Standard output is the protocol's; the address goes to standard
+        // error, so a server bound to port 0 can be found.
+        if let Ok(addr) = http.local_addr() {
+            eprintln!("lakelands: serving HTTP at http://{addr}/");
+        }
+        let task = tokio::spawn(http.run());
+        Ok(Some(Door {
+            served,
+            health,
+            task,
+        }))
+    }
+
+    /// Every lake is open: the door serves them and says it is ready.
+    fn serving(&self, lakes: BTreeMap<LakeId, Arc<dyn LakeStore>>) {
+        let held = lakes.values().cloned().collect();
+        *self.served.write().unwrap_or_else(|e| e.into_inner()) = lakes;
+        self.health.serving(held);
+    }
+}
+
+/// A `serve` that fails after its bind does not leave the door answering.
+impl Drop for Door {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn stopped(e: std::io::Error) -> Failure {
+    Failure::new(
+        format!("the server stopped: {e}"),
+        "check the server section of the configuration and that the port is free",
+    )
+}
+
 /// `serve --mcp`: the lake on standard input and output, as the principal
 /// the command acts as; and, when the root configures the HTTP door, every
 /// lake of the root over HTTP, each caller resolved from the root's
@@ -818,70 +894,40 @@ fn unmade(e: &Error) -> bool {
 /// deliverers and writer leases end with it.
 async fn serve(
     root: &root::Root,
-    store: Arc<dyn LakeStore>,
+    (store, door): (Arc<dyn LakeStore>, Option<Door>),
     who: lakelands_api::Principal,
     open: &Opener<'_>,
 ) -> std::result::Result<(), Failure> {
-    let failed = |e: std::io::Error| {
-        Failure::new(
-            format!("the server stopped: {e}"),
-            "check the server section of the configuration and that the port is free",
-        )
-    };
-    let Some(config) = root.config.server.clone() else {
+    let Some(mut door) = door else {
         root.deliver(std::slice::from_ref(&store))?;
         ticker::start(root.config.aging.as_ref(), std::slice::from_ref(&store));
         orders::start(std::slice::from_ref(&store));
         root.mirror(std::slice::from_ref(&store), open).await?;
         return lakelands_server::serve_stdio(store, who)
             .await
-            .map_err(failed);
+            .map_err(stopped);
     };
-    // The door is bound before the lakes open, so that liveness answers
-    // while an open rebuilds a projection, and readiness says "starting".
-    let served: Arc<std::sync::RwLock<BTreeMap<LakeId, Arc<dyn LakeStore>>>> = Arc::default();
-    let lookup = {
-        let served = served.clone();
-        move |lake: &LakeId| -> Result<Arc<dyn LakeStore>> {
-            let served = served.read().unwrap_or_else(|e| e.into_inner());
-            served.get(lake).cloned().ok_or_else(|| {
-                let lake = lake.to_string();
-                Error::unavailable(lakelands_api::error::Situation::NotServed { lake })
-            })
-        }
-    };
-    let resolver = Arc::new(lakelands_server::resolver::StaticResolver::new(
-        root.config.principals.clone(),
-    ));
-    let http = lakelands_server::serve_http(config, resolver, Arc::new(lookup))
-        .await
-        .map_err(failed)?;
-    let health = http.health();
-    // Standard output is the protocol's; the address goes to standard
-    // error, so a server bound to port 0 can be found.
-    if let Ok(addr) = http.local_addr() {
-        eprintln!("lakelands: serving HTTP at http://{addr}/");
-    }
-    let door = tokio::spawn(http.run());
-    let mut lakes = BTreeMap::new();
+    // The primary lake is open already; the others open now.
+    let mut lakes = BTreeMap::from([(store.lake().clone(), store.clone())]);
     for name in root.lakes() {
         let location = root.location(Some(&name))?;
-        lakes.insert(
-            location.lake.clone(),
-            open(location, OpenMode::Create, root.seams()).await?,
-        );
+        if !lakes.contains_key(&location.lake) {
+            lakes.insert(
+                location.lake.clone(),
+                open(location, OpenMode::Create, root.seams()).await?,
+            );
+        }
     }
     let held: Vec<Arc<dyn LakeStore>> = lakes.values().cloned().collect();
     root.deliver(&held)?;
     ticker::start(root.config.aging.as_ref(), &held);
     orders::start(&held);
     root.mirror(&held, open).await?;
-    *served.write().unwrap_or_else(|e| e.into_inner()) = lakes;
-    health.serving(held);
+    door.serving(lakes);
     // The command ends with its stdio client: the HTTP door beside it, the
     // deliverers and the lake's writer lease end with the process.
     tokio::select! {
-        stdio = lakelands_server::serve_stdio(store, who) => stdio.map_err(failed),
-        http = door => http.expect("the HTTP door's task does not panic").map_err(failed),
+        stdio = lakelands_server::serve_stdio(store, who) => stdio.map_err(stopped),
+        http = &mut door.task => http.expect("the HTTP door's task does not panic").map_err(stopped),
     }
 }

@@ -323,14 +323,17 @@ not tools, so the catalog does not list them. `HEAD` is answered like
 | Route | Status | `status` | Meaning |
 |---|---|---|---|
 | `GET /livez` | `200` | `up` | The process is up and the door answers. |
-| `GET /readyz` | `200` | `ready` | Every lake it serves is open, its writer lease held, its projection folded. |
-| `GET /readyz` | `503` | `not_ready` | A lake does not hold its lease (another writer took it) or does not answer its head. |
+| `GET /readyz` | `200` | `ready` | Every lake it serves is open, holds its writer lease as its handle knows it, and answers its head. |
+| `GET /readyz` | `503` | `not_ready` | A lake's handle does not hold its lease, or does not answer its head. A lease another writer took shows only once the handle has noticed it (see below). |
 | `GET /readyz` | `503` | `starting` | The lakes are not all open yet, for instance while the open of an upgrade rebuilds a projection. |
 
 `lakelands serve` binds the door before it opens the lakes, so `/livez`
 answers `200` and `/readyz` `503 starting` throughout an open. A lease
-lost to another writer shows from the moment the handle has noticed it,
-at its next write, rebuild or compaction.
+lost to another writer shows only from the moment the handle has noticed it,
+at its next write, rebuild or compaction: until then `/readyz` can still say
+`ready`. Nor does `/readyz` compare the projection's head with the end of
+the log; an open does not return before its fold is done, so a lake that is
+open has folded what the log held then.
 
 ## A client in Rust
 

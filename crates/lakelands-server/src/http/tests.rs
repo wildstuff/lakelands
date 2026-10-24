@@ -88,14 +88,16 @@ async fn a_door_whose_lakes_are_open_and_leased_is_ready() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_lake_whose_lease_another_writer_took_is_not_ready_and_the_door_is_up() {
+async fn a_lake_whose_handle_gave_its_lease_up_is_not_ready_and_the_door_is_up() {
     let (addr, health) = door().await;
     let opener = lakelands_engine_mem::MemoryOpener::new();
     let mine = lake("a", OpenMode::Create, &opener).await;
     let healthy = lake("b", OpenMode::Create, &opener).await;
     health.serving(vec![healthy, mine.clone()]);
     assert_eq!(ask(addr, "GET", "/readyz").await.0, 200);
-    // The lease is given up and another writer takes it.
+    // The handle's lease is given up and another writer takes it. A lease
+    // lost without the handle noticing is not seen until its next write,
+    // which the docs state as the limit.
     mine.close().await.unwrap();
     let other = lake("a", OpenMode::Write, &opener).await;
     assert!(other.is_writer());
@@ -107,7 +109,7 @@ async fn a_lake_whose_lease_another_writer_took_is_not_ready_and_the_door_is_up(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_lake_opened_to_read_only_is_not_ready() {
+async fn a_lake_opened_to_read_only_holds_no_lease_and_is_not_ready() {
     let (addr, health) = door().await;
     let opener = lakelands_engine_mem::MemoryOpener::new();
     let writer = lake("a", OpenMode::Create, &opener).await;
