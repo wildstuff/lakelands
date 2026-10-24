@@ -311,6 +311,27 @@ every field of every record, withheld records included
 (`Grants::reads_everything`), may open it
 (`docs/decisions/037-the-feed-over-a-network-door.md`).
 
+## Health and readiness
+
+Two routes answer outside any lake, at fixed paths, for a supervisor or a
+load balancer. They take no key and no `Origin` is checked; they carry no
+lake name, count or position, only `{"status": "<word>"}`; they read a few
+flags each lake holds in memory, with no fold and no scan; and they are
+not tools, so the catalog does not list them. `HEAD` is answered like
+`GET`; any other method answers `405`.
+
+| Route | Status | `status` | Meaning |
+|---|---|---|---|
+| `GET /livez` | `200` | `up` | The process is up and the door answers. |
+| `GET /readyz` | `200` | `ready` | Every lake it serves is open, its writer lease held, its projection folded. |
+| `GET /readyz` | `503` | `not_ready` | A lake does not hold its lease (another writer took it) or does not answer its head. |
+| `GET /readyz` | `503` | `starting` | The lakes are not all open yet, for instance while the open of an upgrade rebuilds a projection. |
+
+`lakelands serve` binds the door before it opens the lakes, so `/livez`
+answers `200` and `/readyz` `503 starting` throughout an open. A lease
+lost to another writer shows from the moment the handle has noticed it,
+at its next write, rebuild or compaction.
+
 ## A client in Rust
 
 `lakelands-client` is a lake over this door: `RemoteLake` is the

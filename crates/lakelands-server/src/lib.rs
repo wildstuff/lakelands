@@ -35,6 +35,6 @@ pub mod session;
 pub mod stdio;
 pub mod watch;
 
-pub use http::{HttpConfig, HttpServer, LakeOpener, serve_http};
+pub use http::{Health, HttpConfig, HttpServer, LakeOpener, Readiness, serve_http};
 pub use session::Session;
 pub use stdio::{serve_io, serve_stdio};

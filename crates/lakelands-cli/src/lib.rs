@@ -837,6 +837,32 @@ async fn serve(
             .await
             .map_err(failed);
     };
+    // The door is bound before the lakes open, so that liveness answers
+    // while an open rebuilds a projection, and readiness says "starting".
+    let served: Arc<std::sync::RwLock<BTreeMap<LakeId, Arc<dyn LakeStore>>>> = Arc::default();
+    let lookup = {
+        let served = served.clone();
+        move |lake: &LakeId| -> Result<Arc<dyn LakeStore>> {
+            let served = served.read().unwrap_or_else(|e| e.into_inner());
+            served.get(lake).cloned().ok_or_else(|| {
+                let lake = lake.to_string();
+                Error::unavailable(lakelands_api::error::Situation::NotServed { lake })
+            })
+        }
+    };
+    let resolver = Arc::new(lakelands_server::resolver::StaticResolver::new(
+        root.config.principals.clone(),
+    ));
+    let http = lakelands_server::serve_http(config, resolver, Arc::new(lookup))
+        .await
+        .map_err(failed)?;
+    let health = http.health();
+    // Standard output is the protocol's; the address goes to standard
+    // error, so a server bound to port 0 can be found.
+    if let Ok(addr) = http.local_addr() {
+        eprintln!("lakelands: serving HTTP at http://{addr}/");
+    }
+    let door = tokio::spawn(http.run());
     let mut lakes = BTreeMap::new();
     for name in root.lakes() {
         let location = root.location(Some(&name))?;
@@ -850,27 +876,12 @@ async fn serve(
     ticker::start(root.config.aging.as_ref(), &held);
     orders::start(&held);
     root.mirror(&held, open).await?;
-    let lookup = move |lake: &LakeId| -> Result<Arc<dyn LakeStore>> {
-        lakes.get(lake).cloned().ok_or_else(|| {
-            let lake = lake.to_string();
-            Error::unavailable(lakelands_api::error::Situation::NotServed { lake })
-        })
-    };
-    let resolver = Arc::new(lakelands_server::resolver::StaticResolver::new(
-        root.config.principals.clone(),
-    ));
-    let http = lakelands_server::serve_http(config, resolver, Arc::new(lookup))
-        .await
-        .map_err(failed)?;
-    // Standard output is the protocol's; the address goes to standard
-    // error, so a server bound to port 0 can be found.
-    if let Ok(addr) = http.local_addr() {
-        eprintln!("lakelands: serving HTTP at http://{addr}/");
-    }
+    *served.write().unwrap_or_else(|e| e.into_inner()) = lakes;
+    health.serving(held);
     // The command ends with its stdio client: the HTTP door beside it, the
     // deliverers and the lake's writer lease end with the process.
     tokio::select! {
         stdio = lakelands_server::serve_stdio(store, who) => stdio.map_err(failed),
-        http = http.run() => http.map_err(failed),
+        http = door => http.expect("the HTTP door's task does not panic").map_err(failed),
     }
 }

@@ -26,6 +26,11 @@
 //! - A tool result's position is also sent in the `Lakelands-Position`
 //!   header.
 //!
+//! Two unauthenticated routes answer outside any lake, at fixed paths,
+//! with no data in them ([`Health`]): `GET /livez`, the process is up, and
+//! `GET /readyz`, every lake it serves is open, its writer lease held and
+//! its projection folded.
+//!
 //! Everything is configured through [`HttpConfig`], which the root's
 //! `lakelands.json` carries; nothing is read from the environment.
 
@@ -154,7 +159,60 @@ impl Slot {
     }
 }
 
+type Lakes = Vec<Arc<dyn LakeStore>>;
+
+/// What the door answers at `/readyz`: set by the host once every lake it
+/// serves is open. Until then the answer is "starting"; the door may be
+/// bound before the lakes are open, so liveness answers while an open
+/// rebuilds a projection.
+///
+/// An answer reads each lake's in-memory flags only: no fold, no scan, no
+/// engine call. A lease lost to another writer shows once the handle has
+/// noticed it, at its next write, rebuild or compaction.
+#[derive(Clone, Default)]
+pub struct Health {
+    lakes: Arc<Mutex<Option<Lakes>>>,
+}
+
+/// How ready the door is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Readiness {
+    /// The lakes are not all open yet.
+    Starting,
+    /// A lake is open without its lease, or its projection is not folded.
+    NotReady,
+    /// Every lake is open, leased and folded.
+    Ready,
+}
+
+impl Health {
+    /// A door that is starting: no lakes are open yet.
+    pub fn new() -> Health {
+        Health::default()
+    }
+
+    /// Every lake the host serves is open: readiness now follows them.
+    pub fn serving(&self, lakes: Lakes) {
+        *self.lakes.lock().unwrap_or_else(|e| e.into_inner()) = Some(lakes);
+    }
+
+    /// How ready the door is now.
+    pub async fn readiness(&self) -> Readiness {
+        let lakes = self.lakes.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let Some(lakes) = lakes else {
+            return Readiness::Starting;
+        };
+        for lake in &lakes {
+            if !lake.is_writer() || lake.head().await.is_err() {
+                return Readiness::NotReady;
+            }
+        }
+        Readiness::Ready
+    }
+}
+
 pub(crate) struct State {
+    health: Health,
     idle: Duration,
     pub(crate) feed_poll: Duration,
     pub(crate) feed_floor: Duration,
@@ -180,6 +238,7 @@ pub async fn serve_http(
     Ok(HttpServer {
         listener,
         state: Arc::new(State {
+            health: Health::new(),
             idle: Duration::from_secs(config.session_idle_secs),
             feed_poll: Duration::from_millis(config.feed_poll_millis),
             feed_floor: Duration::from_millis(config.feed_floor_millis),
@@ -195,6 +254,11 @@ impl HttpServer {
     /// The address the door listens on (useful when bound to port 0).
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.listener.local_addr()
+    }
+
+    /// The handle the host tells when its lakes are open, for `/readyz`.
+    pub fn health(&self) -> Health {
+        self.state.health.clone()
     }
 
     /// Serve connections until the task is dropped.
@@ -412,8 +476,37 @@ fn new_session_id() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// `GET /livez` and `GET /readyz`: a status and a one-word body, for a
+/// caller that holds no key. `HEAD` is answered like `GET`.
+async fn probe(state: &State, req: &Request<Incoming>, ready: bool) -> Answer {
+    if !matches!(*req.method(), Method::GET | Method::HEAD) {
+        let mut r = respond(StatusCode::METHOD_NOT_ALLOWED, None);
+        r.headers_mut()
+            .insert("allow", HeaderValue::from_static("GET, HEAD"));
+        return r.map(BodyExt::boxed);
+    }
+    let (status, word) = if !ready {
+        (StatusCode::OK, "up")
+    } else {
+        match state.health.readiness().await {
+            Readiness::Ready => (StatusCode::OK, "ready"),
+            Readiness::NotReady => (StatusCode::SERVICE_UNAVAILABLE, "not_ready"),
+            Readiness::Starting => (StatusCode::SERVICE_UNAVAILABLE, "starting"),
+        }
+    };
+    let mut r = json_response(status, &json!({ "status": word }));
+    r.headers_mut()
+        .insert("cache-control", HeaderValue::from_static("no-store"));
+    r.map(BodyExt::boxed)
+}
+
 async fn handle(state: &State, req: Request<Incoming>) -> Answer {
     let path = req.uri().path().to_owned();
+    match path.as_str() {
+        "/livez" => return probe(state, &req, false).await,
+        "/readyz" => return probe(state, &req, true).await,
+        _ => {}
+    }
     // `/lakes/<id>/mcp` is MCP; every other path under a lake is REST.
     match path.strip_prefix("/lakes/") {
         Some(rest)
@@ -730,3 +823,6 @@ async fn post(
         None => respond(StatusCode::ACCEPTED, None),
     }
 }
+
+#[cfg(test)]
+mod tests;
