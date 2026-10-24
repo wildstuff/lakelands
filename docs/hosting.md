@@ -1442,8 +1442,9 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   process is up) and `GET /readyz` (`200` when every lake it serves is
   open, holding its writer lease as its handle knows it, and answering
   its head; `503` with `not_ready` when a lake's handle does not hold its
-  lease (one lost to another writer shows once the handle has noticed it,
-  at its next write) or does not answer its head, `503` with
+  lease (one lost to another writer shows, on every engine, once the
+  engine has refused the handle an append or a rebuild's swap for it, and
+  until a write takes the lease again) or does not answer its head, `503` with
   `starting` until every lake is open). The door is bound before the lakes
   open, so an open that rebuilds the projection after an upgrade is
   `starting`, not down. Neither takes a key or says a lake's name, a count

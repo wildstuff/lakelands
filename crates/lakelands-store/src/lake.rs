@@ -107,9 +107,11 @@ pub struct Writer {
     /// records by.
     pub plans: record::Plans,
     /// The engine said this handle holds the lease no more: the session
-    /// it lived in closed under it (lakelands#979). The next write, rebuild
-    /// or compaction takes the lease again before it decides anything
-    /// ([`Lake::regain`]); until its `lease_taken` is appended this stays.
+    /// it lived in closed under it (lakelands#979), or the lease is stale,
+    /// another writer's now or no one's (lakelands#1385). The next write,
+    /// rebuild or compaction takes the lease again before it decides
+    /// anything ([`Lake::regain`]); until its `lease_taken` is appended
+    /// this stays.
     pub lost: bool,
     /// The sources the log forgot that a fold has met (058): a fact of
     /// the log, so kept over a rebuild.
@@ -557,10 +559,14 @@ impl Lake {
     }
 
     /// Marks the writer lost where the engine said its lease is not held
-    /// (lakelands#979): the lease goes, and the handle is no writer until
+    /// (lakelands#979) or stale, another writer's now or no one's
+    /// (lakelands#1385): the lease goes, and the handle is no writer until
     /// it takes one again.
     fn lose(&self, w: &mut Writer, e: &Error) {
-        if matches!(e.situation(), Some(Situation::LeaseNotHeld { .. })) {
+        if matches!(
+            e.situation(),
+            Some(Situation::LeaseNotHeld { .. } | Situation::LeaseStale { .. })
+        ) {
             (w.lost, w.lease) = (true, None);
             self.holds_lease.store(false, Ordering::Release);
         }
