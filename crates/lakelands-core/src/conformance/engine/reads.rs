@@ -146,6 +146,11 @@ engine_check!(
 );
 
 engine_check!(
+    PUT_OVER_A_STATE = put_and_remove_answer_alike_over_a_vector_a_state_holds,
+    "072, seams §VectorIndex: put and remove answer over a record whose state holds the field as they answer alone, in the state's transaction and after it: a put of a field the type does not keep apart is counted, a put of other elements replaces the state's, and a remove forgets them"
+);
+
+engine_check!(
     LINK_EDGES = edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_position,
     "035 and seams §edges: an engine answers a relation with neither `via` nor `derived` from its live link records at the view's position, out and in, each edge carrying the link's own fields"
 );
@@ -1556,6 +1561,50 @@ fn put_replaces_a_vector_and_remove_forgets_it(engine: &dyn LakeEngine) -> Held 
     ensure!(
         count == 1,
         "after removing `b` the field counts {count}; it holds one"
+    );
+    Ok(())
+}
+
+fn put_and_remove_answer_alike_over_a_vector_a_state_holds(engine: &dyn LakeEngine) -> Held {
+    let index = vectors(engine)?;
+    let decl = declare(json!({"declare": "type", "name": "t", "fields": [
+        {"name": "v", "type": {"kind": "vector", "dimensions": 2}}, {"name": "j", "type": {"kind": "json"}}
+    ]}));
+    let ty = TypeName::from("t");
+    let (east, north) = ([0.5, 0.25], [0.25, 0.5]);
+    // Each state is followed by the puts the store's fold makes for it.
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        p.put_record(&record("t", "a", json!({"v": east, "j": east}), 1))?;
+        index.put(&ty, &"a".into(), "v", &east)?;
+        index.put(&ty, &"a".into(), "j", &east)?;
+        p.put_record(&record("t", "b", json!({"v": east}), 1))?;
+        index.put(&ty, &"b".into(), "v", &east)?;
+        index.put(&ty, &"b".into(), "v", &north)?;
+        p.put_record(&record("t", "c", json!({"v": east}), 1))?;
+        index.put(&ty, &"c".into(), "v", &east)?;
+        index.remove(&ty, &"c".into(), "v")
+    })?;
+    let count = |field| index.count(&ty, field).must("counting");
+    let counts = (count("v")?, count("j")?);
+    ensure!(
+        counts == (2, 1),
+        "in one transaction `a`, `b` and `c` were put with v, `a` with j too, each followed by \
+         its puts, then `b` was put with other elements and `c` removed; v and j count \
+         {counts:?}, but they hold (2, 1)"
+    );
+    index.put(&ty, &"a".into(), "v", &north).must("putting")?;
+    let hits = nearest(engine, &ty, "v", &north, 3).must("searching")?;
+    ensure!(
+        hits.iter().all(|(_, s)| (s - 1.0).abs() < 1e-9) && hit_keys(&hits) == ["a", "b"],
+        "`a`'s v was replaced by {north:?} after its state and `b`'s in the state's \
+         transaction; the nearest to it answered {hits:?}, but both score 1"
+    );
+    index.remove(&ty, &"a".into(), "v").must("removing")?;
+    let count = count("v")?;
+    ensure!(
+        count == 1,
+        "after removing `a`'s v, which its state held, the field counts {count}; it holds one"
     );
     Ok(())
 }

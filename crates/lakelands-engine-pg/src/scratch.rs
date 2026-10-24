@@ -92,7 +92,7 @@ pub(crate) fn fit(
     if t("lake").as_deref() != Some(lake.as_str()) || held.is_none_or(|e| e.hash.0 != hash) {
         return Ok(None);
     }
-    if n("layout") != Some(projection::LAYOUT as i64) {
+    if projection::laid_out(db, names, n("layout"))? != Some(projection::LAYOUT) {
         return Ok(others.then_some(at));
     }
     Ok((n("folded") == Some(built)).then_some(at))

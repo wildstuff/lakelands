@@ -2,15 +2,19 @@
 
 ## What is decided
 
-**Proposed** on lakelands#1319 (2026-10-22), for 0.18.0; it comes in
-force when lakelands#1323 builds it, under the one layout raise of
-lakelands#1318. Until then the SQLite and PostgreSQL projections keep a
-vector twice, as JSON in the stored state and as `f32`s in `vectors`,
-and the suite's rows hold what both layouts answer
+**In force** since lakelands#1323 (2026-10-23), for 0.18.0, under the
+one layout raise of lakelands#1318; proposed on lakelands#1319
+(2026-10-22). The SQLite and PostgreSQL projections keep a vector once,
+in `vectors`, and the suite's rows hold it on every engine
 (`a_vector_reads_the_elements_written_at_each_position_bit_for_bit`,
 `a_backends_vector_reads_its_f32_elements_widened_at_each_position`,
 `a_sealed_vector_reads_its_bits_until_its_source_is_forgotten`,
-`a_links_vector_reads_through_a_walk_at_each_position`).
+`a_links_vector_reads_through_a_walk_at_each_position`,
+`a_restriction_and_its_lifting_keep_a_records_vector`,
+`a_rekey_ends_the_old_keys_vector_at_its_position`,
+`a_migration_that_renames_a_vector_field_reads_its_elements_under_the_new_name`,
+`a_json_array_of_numbers_reads_as_written_beside_a_vector`, and through
+the engine seam `a_vector_put_before_a_later_state_reads_as_put`).
 
 ### The stored state carries no vector elements
 
@@ -18,7 +22,14 @@ A state the SQLite or PostgreSQL engine stores keeps a vector field's
 provenance and, in place of its elements, the position of the row of
 `vectors` that holds them. A read joins that row, at the head and as of
 any position, and answers the elements the write gave, bit for bit. A
-field that holds no vector names no row.
+field that holds no vector names no row. Only a field the type's
+declaration in force declares a vector is kept apart, a link type's by
+its relation's fields and a kept name's by its view's: a value of any
+other field stays in its state whatever its shape, a `json` array of
+numbers among them.
+The store's own names, `sys.` and `sys:` other than the link types,
+keep a vector in their state as before: an engine reads them, settings
+among them, by statements of its own that join no row, and they are few.
 
 ### A row is keyed by the state that wrote it
 
@@ -35,8 +46,23 @@ state that names another row or none, or the record's retirement, whose
 state still names it. A re-key ends the old key's row at its position,
 as it ends the old key's state. A record written again after its
 retirement starts from no fields, so its state writes a row anew if it
-holds a vector, as a re-key's state at the new key does and a state a
-migration writes, under the field's name in force.
+holds a vector, as a re-key's state at the new key does. A state a
+migration writes names the row in force where it keeps the field's name
+and elements, and writes one under the new name where it renames the
+field, ending the old name's row: the engine is handed a state, not the
+migration, so it shares a row by name and elements alone. A vector the
+vector index is handed with no state naming it has a row of its own
+(`since` -1), which a state that names the field replaces. One handed
+for a field whose row in force a state names holds over it, as it does
+on the in-memory engine, whose index has no rows of states: a put of
+the same elements leaves the state's row, as the fold's put after the
+state does, and a put of others, or a remove, ends the state's row at
+its own position, so a read as of that state still finds it, and a put
+writes a row of its own. The record's next state writes its row anew.
+A state put
+at a position before a later state of its record keeps its vectors in
+place and writes no row: the row at its position may be one a later
+state names, with other elements, and it stays as that state wrote it.
 
 ### Elements are doubles, or `f32`s where every one is exactly an `f32`
 
@@ -128,7 +154,11 @@ Three risks are taken with it:
   beside the projection it replaces
   (`071 § The projection is never emptied for a rebuild`), at a time
   that grows with the lake. It is taken in the one raise of
-  lakelands#1318, so a lake is rebuilt once.
+  lakelands#1318, so a lake is rebuilt once. A projection a build
+  between the two laid out bears the raised mark with `vectors` still a
+  head index: the open tells it apart by that table's shape, reads it as
+  the layout before and rebuilds it; the check goes at the release that
+  ships both.
 
 ## What it is not
 
@@ -139,7 +169,12 @@ Three risks are taken with it:
   elements to the bit, and every ranking the same keys, order and
   scores, as the rows above hold.
 - It does not round a caller's doubles to `f32`, nor quantise.
-- It does not compute PostgreSQL's `unit` from `data`. That saves 1.5 to
-  1.7 KB more a record, and lakelands#1323 takes it only if the cosine
-  comes out bit for bit the same.
+- It does not compute PostgreSQL's `unit` from `data`. That would save
+  1.5 to 1.7 KB more a record, but PostgreSQL casts no `bytea` to
+  `float4` or to pgvector's `vector`, so an index over `data` needs a
+  function of the engine's own to decode the elements, and the
+  candidates it finds are not shown to be those `unit`, normalised by
+  the one Rust code, finds. A ranking's scores are the cosine over
+  `data` either way; `unit` stays, filled for the rows in force of a
+  field the lake asks an index for (lakelands#1323).
 - It keeps no ranking of an earlier position.

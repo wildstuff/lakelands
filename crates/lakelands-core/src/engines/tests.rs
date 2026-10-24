@@ -468,16 +468,16 @@ fn a_state_keeps_shared_provenance_once_and_reads_every_fields_back() {
         record(json!({"x": 1}), json!({})),
     ];
     for r in &cases {
-        let state = record_state(r);
+        let state = record_state(r, &BTreeMap::new());
         assert_eq!(
-            &decode_record("t", "k", r.position, &state).unwrap(),
+            &decode_record("t", "k", r.position, &state).unwrap().0,
             r,
             "{state}"
         );
         let whole = serde_json::to_string(r).unwrap();
-        assert_eq!(&decode_record("t", "k", r.position, &whole).unwrap(), r);
+        assert_eq!(&decode_record("t", "k", r.position, &whole).unwrap().0, r);
     }
-    let shared = record_state(&cases[0]);
+    let shared = record_state(&cases[0], &BTreeMap::new());
     assert_eq!(
         shared.matches("\"origin\"").count(),
         1,
@@ -535,8 +535,8 @@ fn a_state_round_trips_through_its_row_whatever_the_record() {
         if next(10) == 0 {
             r = StoredRecord::ended(r.ty, r.key, r.position);
         }
-        let state = record_state(&r);
-        let back = decode_record("t.ü", key, position, &state).unwrap();
+        let state = record_state(&r, &BTreeMap::new());
+        let back = decode_record("t.ü", key, position, &state).unwrap().0;
         assert_eq!(back, r, "{state}");
         let kept: serde_json::Value = serde_json::from_str(&state).unwrap();
         for member in ["type", "key", "position"] {

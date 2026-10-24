@@ -10,13 +10,19 @@
 //!
 //! **Head indexes.** Beside the history the engine keeps indexes of the
 //! latest states only: exact text values for equality lookups, the links
-//! of `via` relations, the full-text entries of searchable fields, and the
-//! vectors. They are rewritten in the fold's own transaction, from the
+//! of `via` relations, and the full-text entries of searchable fields.
+//! They are rewritten in the fold's own transaction, from the
 //! record and the declaration in force, so they always describe the head.
 //! A view uses them only when it reads the head, and only to find
 //! candidates: whether a candidate matches, where it sorts and what it
 //! scores is decided by `lakelands_core::engines`, the rules every engine
 //! shares, so no index can change an answer.
+//!
+//! **Vectors.** A vector's elements are kept once, in a row of `vectors`
+//! written by the state that changed them, which every later state naming
+//! it shares; a row ends where its record's state stops naming it, or is
+//! retired, so the rows in force (`until` none) are the head's, which a
+//! ranking reads (`docs/decisions/072-a-vector-is-stored-once.md`).
 //!
 //! **Transactions.** The fold writes between `begin` and `commit`, in one
 //! SQLite transaction on the writer's connection; `commit` records the
@@ -42,7 +48,9 @@ use crate::sql;
 /// out what its row holds ([`engines::record_state`]). A table whose
 /// primary key is the whole row keeps no rowid beside it (`WITHOUT ROWID`),
 /// which would hold every row twice. `search_rows` holds a row only for a
-/// record with full-text tokens.
+/// record with full-text tokens. `vectors` finds a record's rows by its
+/// key and a field's rows in force by `vectors_head`, which a ranking
+/// scans; `since` -1 marks a vector put by the index alone ([`put_vector`]).
 pub(crate) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (
     k TEXT PRIMARY KEY,
@@ -118,10 +126,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS full_text USING fts5(
     tokens, tokenize = 'ascii'
 );
 CREATE TABLE IF NOT EXISTS vectors (
-    ty TEXT NOT NULL, field TEXT NOT NULL, key TEXT NOT NULL,
-    data BLOB NOT NULL,
-    PRIMARY KEY (ty, field, key)
+    ty TEXT NOT NULL, key TEXT NOT NULL, field TEXT NOT NULL,
+    since INTEGER NOT NULL, until INTEGER, single INTEGER NOT NULL, data BLOB NOT NULL,
+    PRIMARY KEY (ty, key, field, since)
 );
+CREATE INDEX IF NOT EXISTS vectors_head ON vectors (ty, field, key) WHERE until IS NULL;
 ";
 
 /// Every table the projection holds, cleared by a rebuild.
@@ -337,7 +346,16 @@ pub(crate) fn layout(conn: &Connection) -> Result<Option<u64>> {
     if marked.is_none() {
         return Ok(None);
     }
-    one(conn, "SELECT v FROM meta WHERE k = 'layout'", []).map(|v: Option<i64>| v.map(|v| v as u64))
+    let found: Option<i64> = one(conn, "SELECT v FROM meta WHERE k = 'layout'", [])?;
+    // A build between the leaner states and the vectors kept apart
+    // (lakelands#1318, lakelands#1323) marked this layout with `vectors`
+    // still a head index: that projection is the layout before.
+    let apart = "SELECT 1 FROM pragma_table_info('vectors') WHERE name = 'since'";
+    let shape = |v: i64| match v as u64 == LAYOUT && one::<i64>(conn, apart, [])?.is_none() {
+        true => Ok(LAYOUT - 1),
+        false => Ok(v as u64),
+    };
+    found.map(shape).transpose()
 }
 
 /// Whether `conn`'s database holds a table. One that holds none is a
@@ -792,9 +810,26 @@ pub(crate) fn record_at(row: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<
 /// A record's row and state as [`record_at`] reads them.
 pub(crate) type Kept4 = (String, String, i64, String);
 
-/// The record [`record_at`] read.
-pub(crate) fn decode_record((ty, key, since, state): &Kept4) -> Result<StoredRecord> {
-    engines::decode_record(ty, key, Position(*since as u64), state)
+/// The record [`record_at`] read, each vector its state keeps apart read
+/// from its row.
+pub(crate) fn decode_record(
+    conn: &Connection,
+    (ty, key, since, state): &Kept4,
+) -> Result<StoredRecord> {
+    let (mut r, apart) = engines::decode_record(ty, key, Position(*since as u64), state)?;
+    for (field, at) in apart {
+        let row = (conn.prepare_cached(
+            "SELECT single, data FROM vectors WHERE ty = ?1 AND key = ?2 AND field = ?3 \
+             AND since = ?4",
+        ))
+        .and_then(|mut s| {
+            let args = params![ty, key, field.as_str(), at.0 as i64];
+            let e = |r: &rusqlite::Row<'_>| Ok(engines::Elements::new(r.get(0)?, r.get(1)?));
+            s.query_row(args, e).optional()
+        });
+        engines::rejoin(&mut r, field, row.map_err(sql)?)?;
+    }
+    Ok(r)
 }
 
 /// The records a cached statement answers, each as [`record_at`] reads
@@ -808,20 +843,7 @@ pub(crate) fn records(
     let rows: Vec<Kept4> = (stmt.query_map(args, |r| record_at(r, 0)))
         .and_then(Iterator::collect)
         .map_err(sql)?;
-    rows.iter().map(decode_record).collect()
-}
-
-/// Whether a record's state put at `position` is its latest.
-fn is_head(conn: &Connection, ty: &TypeName, key: &RecordKey, position: Position) -> Result<bool> {
-    conn.prepare_cached(
-        "SELECT until IS NULL FROM records WHERE ty = ?1 AND key = ?2 AND since = ?3",
-    )
-    .and_then(|mut s| {
-        s.query_row(params![ty.as_str(), key.as_str(), position.0 as i64], |r| {
-            r.get(0)
-        })
-    })
-    .map_err(sql)
+    rows.iter().map(|r| decode_record(conn, r)).collect()
 }
 
 /// Rewrite the head indexes of one record from its latest state, under
@@ -934,13 +956,15 @@ pub(crate) fn fts_term(token: &str) -> String {
 
 /// The types a transaction's records are indexed under, each as its
 /// records are: its declaration at the head, the fields its order index
-/// keeps, and those its exact-text index keeps.
+/// keeps, those its exact-text index keeps, and those its states keep
+/// apart ([`engines::vector_fields`]).
 pub(crate) type Kept = BTreeMap<TypeName, Indexed>;
 /// How one type's records are indexed: see [`Kept`].
 pub(crate) type Indexed = (
     Option<TypeDecl>,
     Vec<FieldName>,
     Option<BTreeSet<FieldName>>,
+    BTreeSet<FieldName>,
 );
 
 /// Put a record's state and, when it is the latest, its head indexes. Its
@@ -951,9 +975,9 @@ pub(crate) type Indexed = (
 /// the type it names may be the settings' own; the caller forgets them at
 /// a declaration.
 pub(crate) fn put_record(conn: &Connection, kept: &mut Kept, r: &StoredRecord) -> Result<()> {
-    let state = engines::record_state(r);
     // A head-only name keeps one state for each key and no row beside it.
     if lakelands_api::seam::is_head_only(&r.ty) {
+        let state = engines::record_state(r, &BTreeMap::new());
         let key = [r.ty.as_str(), r.key.as_str()];
         (conn.prepare_cached("DELETE FROM records WHERE ty = ?1 AND key = ?2"))
             .and_then(|mut s| s.execute(key))
@@ -968,12 +992,19 @@ pub(crate) fn put_record(conn: &Connection, kept: &mut Kept, r: &StoredRecord) -
         .map(drop)
         .map_err(sql);
     }
+    let later: Option<i64> = one(
+        conn,
+        "SELECT 1 FROM records WHERE ty = ?1 AND key = ?2 AND since > ?3 LIMIT 1",
+        params![r.ty.as_str(), r.key.as_str(), r.position.0 as i64],
+    )?;
+    if !kept.contains_key(&r.ty) {
+        kept.insert(r.ty.clone(), indexed(conn, &r.ty)?);
+    }
+    let apart = put_vectors(conn, r, later.is_some(), &kept[&r.ty].3)?;
+    let state = engines::record_state(r, &apart);
     let held = RECORDS.put(conn, &[&r.ty.as_str(), &r.key.as_str()], r.position, &state)?;
-    if is_head(conn, &r.ty, &r.key, r.position)? {
-        if !kept.contains_key(&r.ty) {
-            kept.insert(r.ty.clone(), indexed(conn, &r.ty)?);
-        }
-        let (decl, sorted, looked) = &kept[&r.ty];
+    if later.is_none() {
+        let (decl, sorted, looked, _) = &kept[&r.ty];
         index_record(conn, (decl.as_ref(), sorted, looked.as_ref()), !held, r)?;
         // The setting's write rebuilds the index it asks for, so the index
         // describes the head from the next read on.
@@ -987,11 +1018,115 @@ pub(crate) fn put_record(conn: &Connection, kept: &mut Kept, r: &StoredRecord) -
     Ok(())
 }
 
+/// Write the vector rows of `r`'s state ([`engines::put_vectors`]), `later`
+/// where a later state of its record is kept, and answer the fields of
+/// `vectors` it keeps apart. A vector the index put alone for a field the
+/// state names goes.
+fn put_vectors(
+    conn: &Connection,
+    r: &StoredRecord,
+    later: bool,
+    vectors: &BTreeSet<FieldName>,
+) -> Result<BTreeMap<FieldName, Position>> {
+    let (ty, key, at) = (r.ty.as_str(), r.key.as_str(), r.position.0 as i64);
+    let mut stmt = (conn.prepare_cached(
+        "SELECT field, since, single, data FROM vectors WHERE ty = ?1 AND key = ?2 \
+         AND until IS NULL",
+    ))
+    .map_err(sql)?;
+    let rows = stmt.query_map(params![ty, key], |row| {
+        let (field, since): (String, i64) = (row.get(0)?, row.get(1)?);
+        let e = engines::Elements::new(row.get(2)?, row.get(3)?);
+        Ok((FieldName::from(field), since, e))
+    });
+    let rows: Vec<_> = rows.and_then(Iterator::collect).map_err(sql)?;
+    let (loose, held): (Vec<_>, Vec<_>) = rows.into_iter().partition(|r| r.1 < 0);
+    let held = (held.into_iter()).map(|(f, since, e)| (f, Position(since as u64), e));
+    let put = engines::put_vectors(r, held.collect(), later, vectors);
+    let until = put.ends.then_some(at);
+    for (f, e) in &put.written {
+        run(
+            conn,
+            "INSERT INTO vectors (ty, key, field, since, until, single, data) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT DO UPDATE SET \
+             until = excluded.until, single = excluded.single, data = excluded.data",
+            params![ty, key, f.as_str(), at, until, e.single, e.data],
+        )?;
+    }
+    for (f, since) in &put.ended {
+        run(
+            conn,
+            "UPDATE vectors SET until = ?5 WHERE ty = ?1 AND key = ?2 AND field = ?3 \
+             AND since = ?4",
+            params![ty, key, f.as_str(), since.0 as i64, at],
+        )?;
+    }
+    let gone = (put.gone.iter().map(|f| (f, at))).chain(
+        (loose.iter()).filter_map(|(f, since, _)| put.apart.contains_key(f).then_some((f, *since))),
+    );
+    for (f, since) in gone {
+        run(
+            conn,
+            "DELETE FROM vectors WHERE ty = ?1 AND key = ?2 AND field = ?3 AND since = ?4",
+            params![ty, key, f.as_str(), since],
+        )?;
+    }
+    Ok(put.apart)
+}
+
+/// Put a vector the index is asked to hold for `ty`'s `key`, as a row of
+/// its own (`since` -1). The fold asks it after the state's row, which
+/// holds it already; a state's row holding other elements is taken out
+/// ([`remove_vector`]) and the vector put alone stands until the record's
+/// next state.
+pub(crate) fn put_vector(conn: &Connection, at: (&str, &str, &str), vector: &[f32]) -> Result<()> {
+    let held = (conn.prepare_cached(
+        "SELECT single, data FROM vectors WHERE ty = ?1 AND key = ?2 AND field = ?3 \
+         AND since >= 0 AND until IS NULL",
+    ))
+    .and_then(|mut s| {
+        s.query_row(params![at.0, at.1, at.2], |r| {
+            Ok(engines::Elements::new(r.get(0)?, r.get(1)?))
+        })
+        .optional()
+    })
+    .map_err(sql)?;
+    if held.is_some_and(|e| e.ranked() == vector) {
+        return Ok(());
+    }
+    remove_vector(conn, at)?;
+    run(
+        conn,
+        "INSERT INTO vectors (ty, key, field, since, until, single, data) \
+         VALUES (?1, ?2, ?3, -1, NULL, 1, ?4)",
+        params![at.0, at.1, at.2, engines::vector_bytes(vector)],
+    )
+}
+
+/// Forget the vector the index holds for `ty`'s `key`: one put alone goes,
+/// and a state's row in force ends at its own position, so a view of that
+/// state still reads it, a read joining a row by its position alone.
+pub(crate) fn remove_vector(conn: &Connection, (ty, key, field): (&str, &str, &str)) -> Result<()> {
+    let at = params![ty, key, field];
+    run(
+        conn,
+        "DELETE FROM vectors WHERE ty = ?1 AND key = ?2 AND field = ?3 AND since = -1",
+        at,
+    )?;
+    run(
+        conn,
+        "UPDATE vectors SET until = since WHERE ty = ?1 AND key = ?2 AND field = ?3 \
+         AND until IS NULL",
+        at,
+    )
+}
+
 /// Delete every state of a record, its memberships in every set the
 /// projection ever declared, and its rows in the engine's indexes.
 pub(crate) fn drop_record(conn: &Connection, ty: &TypeName, key: &RecordKey) -> Result<()> {
     for statement in [
         "DELETE FROM records WHERE ty = ?1 AND key = ?2",
+        "DELETE FROM vectors WHERE ty = ?1 AND key = ?2",
         "DELETE FROM members WHERE object_set IN (SELECT DISTINCT substr(ident, 12) \
          FROM declarations WHERE ident LIKE 'object\\_set %' ESCAPE '\\') AND ty = ?1 AND key = ?2",
         "DELETE FROM text_index WHERE ty = ?1 AND key = ?2",
@@ -1024,11 +1159,15 @@ fn indexed(conn: &Connection, ty: &TypeName) -> Result<Indexed> {
         None => type_at(conn, ty, None)?,
     };
     let sorted = sorted_fields(conn, ty, decl.as_ref(), true)?;
+    let vectors = engines::vector_fields(ty, |t| match t == ty {
+        true => Ok(decl.clone()),
+        false => type_at(conn, t, None),
+    })?;
     let looked = match decl {
         Some(_) => Some(looked_fields(conn, ty)?),
         None => None,
     };
-    Ok((decl, sorted, looked))
+    Ok((decl, sorted, looked, vectors))
 }
 
 /// The fields of a declared type the exact-text index keeps ([`relook`]).
@@ -1117,7 +1256,7 @@ pub(crate) fn put_declaration(conn: &Connection, d: &Declared) -> Result<Option<
 /// at `at` or after was indexed under that declaration when it was put: a
 /// migration puts every record again, and nothing is left to do here.
 pub(crate) fn index_older(conn: &Connection, ty: &TypeName, at: Position) -> Result<()> {
-    let (head, sorted, looked) = indexed(conn, ty)?;
+    let (head, sorted, looked, _) = indexed(conn, ty)?;
     // A page of the type at a time; an ended key has no index rows.
     let mut after = String::new();
     loop {

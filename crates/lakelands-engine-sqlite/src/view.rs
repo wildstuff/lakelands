@@ -619,7 +619,7 @@ impl Read<'_> {
             .and_then(Iterator::collect)
             .map_err(sql)?;
         rows.into_iter()
-            .map(|(k, state)| Ok((k, decode_record(&state)?)))
+            .map(|(k, state)| Ok((k, decode_record(self.conn, &state)?)))
             .collect()
     }
 

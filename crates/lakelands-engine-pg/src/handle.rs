@@ -41,7 +41,7 @@ use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::query::cosine;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
-use lakelands_core::engines::{self, vector_bytes, vector_of};
+use lakelands_core::engines;
 
 use crate::connect::{self, Db, Target};
 use crate::projection::{self, Buffer, HeadTypes, Names, PROJECTION_TABLES, RETIRED_TABLES};
@@ -121,7 +121,8 @@ impl PgLake {
         if exists && mode != OpenMode::Rebuild {
             let marked = format!("SELECT n FROM {} WHERE k = 'layout'", names.t("meta"));
             let found: Option<i64> = reader.query_opt(&marked, &[])?.and_then(|r| r.get(0));
-            engines::layout(&lake, found.map(|n| n as u64), projection::LAYOUT)?;
+            let found = projection::laid_out(&mut reader, &names, found)?;
+            engines::layout(&lake, found, projection::LAYOUT)?;
         }
         let (writing, pgvector) = match mode {
             OpenMode::Read => (None, vector_index::find(&mut reader, false).ok()),
@@ -396,8 +397,33 @@ impl PgLake {
             return Ok(());
         }
         let (page, mut db) = (std::mem::take(&mut t.buffer), self.projecting(writing)?);
-        t.put += page.write(&mut db, &self.names, &mut t.types, &mut t.asked)?;
+        let v = self.pgvector.as_ref();
+        t.put += page.write(&mut db, &self.names, &mut t.types, &mut t.asked, v)?;
         Ok(())
+    }
+
+    /// Put `vector` into the vector index for `ty`'s `key`, or remove it
+    /// where none: taken by the transaction's buffer where it holds a
+    /// state of the key, else made now.
+    fn index(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        field: &str,
+        vector: Option<&[f32]>,
+    ) -> Result<()> {
+        let writing = self.writing()?;
+        let at = (ty.as_str(), key.as_str(), field);
+        if let Some(t) = lock(&self.transaction).as_mut()
+            && t.buffer.index(at, vector)
+        {
+            return Ok(());
+        }
+        let (mut db, v) = (self.projecting(writing)?, self.pgvector.as_ref());
+        match vector {
+            Some(vector) => vector_index::put(&mut db, &self.names, v, at, vector),
+            None => vector_index::remove(&mut db, &self.names, v, at),
+        }
     }
 }
 
@@ -829,7 +855,13 @@ impl ProjectionStore for PgLake {
         // The last page, then the records a declaration left to index and
         // the vector indexes a setting asked for.
         let written = buffer
-            .write(&mut db, &self.names, &mut types, &mut asked)
+            .write(
+                &mut db,
+                &self.names,
+                &mut types,
+                &mut asked,
+                self.pgvector.as_ref(),
+            )
             .and_then(|rebuilt| {
                 if relook.any() {
                     let read = || projection::head_declarations(&mut db, &self.names);
@@ -1090,7 +1122,7 @@ impl PgLake {
                 let mut came = Vec::new();
                 db.batch(&vector_index::search_settings(depth))?;
                 db.query_each(&sql, &[&unit, &i64::from(depth)], |row| {
-                    let v = vector_of(&row.get::<_, Vec<u8>>(1));
+                    let v = engines::Elements::new(row.get(1), row.get(2)).ranked();
                     came.push((RecordKey::from(row.get::<_, String>(0)), cosine(query, &v)));
                     Ok(())
                 })?;
@@ -1115,13 +1147,14 @@ impl PgLake {
         let mut top = lakelands_core::engines::TopK::new(k);
         db.query_each(
             &format!(
-                "SELECT key, data FROM {} WHERE ty = $1 AND field = $2 ORDER BY key COLLATE \"C\"",
+                "SELECT key, single, data FROM {} WHERE ty = $1 AND field = $2 AND until IS NULL \
+                 ORDER BY key",
                 self.names.t("vectors")
             ),
             &[&ty.as_str(), &field],
             |row| {
                 let key: String = row.get(0);
-                let v = vector_of(&row.get::<_, Vec<u8>>(1));
+                let v = engines::Elements::new(row.get(1), row.get(2)).ranked();
                 if v.len() != query.len() {
                     return Err(engines::dimensions(query.len(), v.len(), ty, field));
                 }
@@ -1139,51 +1172,25 @@ impl PgLake {
     }
 }
 
-/// The vector index's write side and its size: each field's vectors in
-/// one table, indexed at the head only, in the fold's transaction.
+/// The vector index's write side and its size: the rows the records'
+/// states hold in force, each field's ranked together, in the fold's
+/// transaction. The state's row holds a vector the fold puts already; one
+/// put or removed after it holds over the state's until the record's next
+/// state. Of a key whose state the transaction's buffer holds, the buffer
+/// takes the put or the remove, made when it is written where the rows it
+/// leaves differ.
 impl VectorIndex for PgLake {
     fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()> {
-        let writing = self.writing()?;
-        let mut db = self.projecting(writing)?;
-        match &self.pgvector {
-            // The unit vector goes in with the vector when the lake asks
-            // for the field's index (`crate::vector_index`).
-            Some(v) => db.execute(
-                &vector_index::put_sql(&self.names, v),
-                &[
-                    &ty.as_str(),
-                    &field,
-                    &key.as_str(),
-                    &vector_bytes(vector),
-                    &vector_index::mark(ty, field),
-                    &vector_index::unit_text(vector),
-                ],
-            ),
-            None => db.execute(
-                &format!(
-                    "INSERT INTO {} (ty, field, key, data) VALUES ($1, $2, $3, $4) \
-                     ON CONFLICT (ty, field, key) DO UPDATE SET data = $4",
-                    self.names.t("vectors")
-                ),
-                &[&ty.as_str(), &field, &key.as_str(), &vector_bytes(vector)],
-            ),
-        }
+        self.index(ty, key, field, Some(vector))
     }
 
     fn remove(&self, ty: &TypeName, key: &RecordKey, field: &str) -> Result<()> {
-        let writing = self.writing()?;
-        self.projecting(writing)?.execute(
-            &format!(
-                "DELETE FROM {} WHERE ty = $1 AND field = $2 AND key = $3",
-                self.names.t("vectors")
-            ),
-            &[&ty.as_str(), &field, &key.as_str()],
-        )
+        self.index(ty, key, field, None)
     }
 
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64> {
         let statement = format!(
-            "SELECT count(*) FROM {} WHERE ty = $1 AND field = $2",
+            "SELECT count(*) FROM {} WHERE ty = $1 AND field = $2 AND until IS NULL",
             self.names.t("vectors")
         );
         let row = self.reading(|db| db.query_one(&statement, &[&ty.as_str(), &field]))?;

@@ -454,19 +454,18 @@ impl Read<'_> {
     }
 
     fn record(&mut self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
-        self.db
-            .query_opt(
-                // The latest state at or before the position: no other
-                // state of the key is read.
-                &format!(
-                    "SELECT ty, key, since, state FROM {} WHERE ty = $1 AND key = $2 \
+        let row = self.db.query_opt(
+            // The latest state at or before the position: no other
+            // state of the key is read.
+            &format!(
+                "SELECT ty, key, since, state FROM {} WHERE ty = $1 AND key = $2 \
                      AND since <= $3 ORDER BY since DESC LIMIT 1",
-                    self.names.t("records")
-                ),
-                &[&ty.as_str(), &key.as_str(), &self.at],
-            )?
-            .map(|r| record_at(&r, 0))
-            .transpose()
+                self.names.t("records")
+            ),
+            &[&ty.as_str(), &key.as_str(), &self.at],
+        )?;
+        let row = Vec::from_iter(row);
+        Ok(projection::records_at(self.db, self.names, &row, 0)?.pop())
     }
 
     /// Every record of a type at the view's position, in key order.
@@ -508,7 +507,7 @@ impl Read<'_> {
         args.extend(field.as_ref().map(|f| f as &(dyn ToSql + Sync)));
         args.extend(narrow.map(|(_, t)| t as &(dyn ToSql + Sync)));
         args.extend(after.as_ref().map(|a| a as &(dyn ToSql + Sync)));
-        self.db.records(&query, &args)
+        self.db.records(self.names, &query, &args)
     }
 
     /// The fields of `ty` the exact-text index keeps; `None`, every field,
@@ -575,7 +574,7 @@ impl Read<'_> {
                 "SELECT {RECORD} FROM unnest($2::text[]) WITH ORDINALITY k(key, n) {} ORDER BY k.n",
                 head_of_sql(&self.names.t("records"), "k.key")
             );
-            return self.db.records(&query, &[&ty.as_str(), &page]);
+            return self.db.records(self.names, &query, &[&ty.as_str(), &page]);
         }
         let limit = i64::from(n);
         let from = after.map_or("", |_| "AND t.key COLLATE \"C\" > $5");
@@ -597,8 +596,11 @@ impl Read<'_> {
         );
         let args: [&(dyn ToSql + Sync); 5] =
             [&ty.as_str(), &field.as_str(), &texts[0], &limit, &after];
-        self.db
-            .records(&query, &args[..4 + usize::from(after.is_some())])
+        (self.db).records(
+            self.names,
+            &query,
+            &args[..4 + usize::from(after.is_some())],
+        )
     }
 
     /// The fields of `ty` whose order index answers this read, in one round
@@ -678,9 +680,8 @@ impl Read<'_> {
             args.extend([&k as &(dyn ToSql + Sync), &key]);
         }
         let rows = self.db.query(&query, &args)?;
-        rows.iter()
-            .map(|r| Ok((r.get(0), record_at(r, 1)?)))
-            .collect()
+        let read = rows.iter().map(|r| Ok((r.get(0), record_at(r, 1)?)));
+        projection::joined(self.db, self.names, read.collect::<Result<_>>()?)
     }
 
     /// At most `n` of the head records holding the text `holders` names, in
@@ -726,9 +727,9 @@ impl Read<'_> {
                 .db
                 .query(&format!("FETCH {ask} FROM {FEW_CURSOR}"), &[])?;
             few.ended = rows.len() < ask;
-            for r in rows {
-                few.waiting.push_back((r.get(0), record_at(&r, 1)?));
-            }
+            let read = rows.iter().map(|r| Ok((r.get(0), record_at(r, 1)?)));
+            let read = projection::joined(self.db, self.names, read.collect::<Result<_>>()?)?;
+            few.waiting.extend(read);
         }
         let take = n.min(few.waiting.len());
         Ok(few.waiting.drain(..take).collect())
@@ -770,7 +771,7 @@ impl Read<'_> {
             let (ty, field) = (ty.as_str(), field.as_str());
             let args: [&(dyn ToSql + Sync); 6] = [&ty, &field, &limit, &f, &t, &after];
             let args = &args[..5 + usize::from(after.is_some())];
-            return self.db.records(&query, args);
+            return self.db.records(self.names, &query, args);
         }
         let from = after.map_or("", |_| "AND h.key > $4");
         let query = format!(
@@ -782,8 +783,11 @@ impl Read<'_> {
             records = projection::RECORDS.at_head(self.names),
         );
         let args: [&(dyn ToSql + Sync); 4] = [&ty.as_str(), &field.as_str(), &limit, &after];
-        self.db
-            .records(&query, &args[..3 + usize::from(after.is_some())])
+        (self.db).records(
+            self.names,
+            &query,
+            &args[..3 + usize::from(after.is_some())],
+        )
     }
 
     /// The keys of `ty` with a state put after the view's position, and
@@ -821,6 +825,7 @@ impl Read<'_> {
         }
         let keys: Vec<String> = keys.into_iter().collect();
         self.db.records(
+            self.names,
             &records_by_key_sql(&self.names.t("records")),
             &[&ty.as_str(), &keys, &self.at],
         )

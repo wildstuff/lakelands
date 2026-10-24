@@ -22,8 +22,8 @@
 //!
 //! **Head indexes.** Beside the history the engine keeps indexes of the
 //! latest states only: exact text values for equality lookups, the links
-//! of `via` relations, one row per full-text token of a record, and the
-//! vectors. They are rewritten in the fold's own transaction, from the
+//! of `via` relations, and one row per full-text token of a record. They
+//! are rewritten in the fold's own transaction, from the
 //! record and the declaration in force, so they always describe the head.
 //! A view uses them only when it reads the head, and only to find
 //! candidates: whether a candidate matches, where it sorts and what it
@@ -36,6 +36,14 @@
 //! exactly the set the shared scoring counts: there is no second tokenizer
 //! to agree with
 //! (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
+//!
+//! **Vectors.** A vector's elements are kept once, in a row of `vectors`
+//! written by the state that changed them, which every later state naming
+//! it shares; a row ends (`until`) where its record's state stops naming
+//! it, or is retired, so the rows in force are the head's, which a ranking
+//! reads and the vector index holds
+//! (`docs/decisions/072-a-vector-is-stored-once.md`). A read joins the rows
+//! its states name, in one statement for a batch of them ([`joined`]).
 //!
 //! **Recorded outputs** keep their history too: a later output for the
 //! same call (a failed call made again after its function was declared
@@ -59,6 +67,7 @@ use postgres::Row;
 use postgres::types::ToSql;
 
 use crate::connect::Db;
+use crate::vector_index::{self, Pgvector};
 
 /// The lake's tables, each named with its schema.
 #[derive(Clone, Debug)]
@@ -214,9 +223,11 @@ CREATE INDEX IF NOT EXISTS sort_index_asc ON {s}.sort_index (ty, field, sort_key
 CREATE INDEX IF NOT EXISTS sort_index_desc
     ON {s}.sort_index (ty, field, sort_key DESC, key COLLATE \"C\");
 CREATE TABLE IF NOT EXISTS {s}.vectors (
-    ty TEXT NOT NULL, field TEXT NOT NULL, key TEXT NOT NULL, data BYTEA NOT NULL,
-    PRIMARY KEY (ty, field, key)
+    ty TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, field TEXT NOT NULL,
+    since BIGINT NOT NULL, until BIGINT, single BOOLEAN NOT NULL, data BYTEA NOT NULL,
+    PRIMARY KEY (ty, key, field, since)
 );
+CREATE INDEX IF NOT EXISTS vectors_head ON {s}.vectors (ty, field, key) WHERE until IS NULL;
 "
         )
     }
@@ -250,6 +261,19 @@ fn heads_sql(s: &str) -> String {
 /// not fail: one made with another layout is never read, and is rebuilt
 /// from the log.
 pub(crate) const LAYOUT: u64 = 6;
+
+/// The layout of the projection `names` holds, by the mark `found` in its
+/// `meta`. A build between the leaner states and the vectors kept apart
+/// (lakelands#1318, lakelands#1323) marked this layout with `vectors`
+/// still a head index: that projection is the layout before.
+pub(crate) fn laid_out(db: &mut Db, names: &Names, found: Option<i64>) -> Result<Option<u64>> {
+    let apart = "SELECT 1 FROM pg_catalog.pg_attribute WHERE attrelid = to_regclass($1) \
+                 AND attname = 'since' AND NOT attisdropped";
+    Ok(match found.map(|n| n as u64) {
+        Some(LAYOUT) if db.query_opt(apart, &[&names.t("vectors")])?.is_none() => Some(LAYOUT - 1),
+        found => found,
+    })
+}
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
@@ -480,13 +504,15 @@ impl History {
 #[derive(Default)]
 pub(crate) struct HeadTypes(HashMap<TypeName, HeadType>);
 
-/// A type's declaration at the head, its order index's fields, and its
-/// exact-text index's (`None`, every field, for a kept name).
+/// A type's declaration at the head, its order index's fields, its
+/// exact-text index's (`None`, every field, for a kept name), and those
+/// its states keep apart ([`engines::vector_fields`]).
 #[derive(Clone, Default)]
 pub(crate) struct HeadType {
     pub(crate) decl: Option<TypeDecl>,
     pub(crate) sorted: Vec<FieldName>,
     pub(crate) looked: Option<BTreeSet<FieldName>>,
+    pub(crate) vectors: BTreeSet<FieldName>,
 }
 
 impl HeadTypes {
@@ -541,6 +567,11 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
         ),
         None => Vec::new(),
     };
+    let own = view.as_ref().unwrap_or(ty);
+    let vectors = engines::vector_fields(ty, |t| match t == own {
+        true => Ok(declared.clone()),
+        false => type_at(db, names, t, None),
+    })?;
     let decl = declared.filter(|_| view.is_none());
     let looked = decl
         .as_ref()
@@ -549,6 +580,7 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
         decl,
         sorted,
         looked,
+        vectors,
     })
 }
 
@@ -787,7 +819,8 @@ pub(crate) fn relook(
     let changes = engines::relooked(kept, moved, &was, |key| {
         let sql = format!("SELECT {RECORD} FROM {heads} WHERE h.ty = $1 AND h.key = $2");
         let row = db.query_opt(&sql, &[&SETTING_TYPE, &key])?;
-        row.map(|row| record_at(&row, 0)).transpose()
+        row.map(|row| record_at(&row, 0).map(|(r, _)| r))
+            .transpose()
     })?;
     let text = names.t("text_index");
     for (ty, f, comes) in changes {
@@ -1051,10 +1084,72 @@ pub(crate) fn catch_up_sorted(db: &mut Db, names: &Names) -> Result<()> {
 /// position, then its state, which leaves them out.
 pub(crate) const RECORD: &str = "r.ty, r.key, r.since, r.state";
 
-/// The record a row holds from the column `at` on, as [`RECORD`] selects it.
-pub(crate) fn record_at(row: &Row, at: usize) -> Result<StoredRecord> {
+/// The record a row holds from the column `at` on, as [`RECORD`] selects
+/// it, and the fields its state keeps apart ([`joined`] reads them).
+pub(crate) fn record_at(row: &Row, at: usize) -> Result<(StoredRecord, engines::Apart)> {
     let since = Position(row.get::<_, i64>(at + 2) as u64);
     engines::decode_record(row.get(at), row.get(at + 1), since, row.get(at + 3))
+}
+
+/// The records `read`, each vector its state keeps apart read from its
+/// row: one statement for them all, none where no state keeps one apart.
+pub(crate) fn joined<T>(
+    db: &mut Db,
+    names: &Names,
+    read: Vec<(T, (StoredRecord, engines::Apart))>,
+) -> Result<Vec<(T, StoredRecord)>> {
+    let mut asked = VectorRows::default();
+    for (_, (r, apart)) in &read {
+        let ident = [r.ty.to_string(), r.key.to_string()];
+        for (f, at) in apart {
+            asked.push(&ident, f, at.0 as i64, None);
+        }
+    }
+    // Each row found by its place among those asked for.
+    let mut rows = HashMap::new();
+    if !asked.since.is_empty() {
+        let [tys, keys, fields] = &asked.ident;
+        let found = db.query(
+            &format!(
+                "SELECT w.n, v.single, v.data FROM unnest($1::text[], $2::text[], $3::text[], \
+                 $4::int8[]) WITH ORDINALITY AS w(ty, key, field, since, n) \
+                 JOIN {} v ON v.ty = w.ty AND v.key = w.key AND v.field = w.field \
+                 AND v.since = w.since",
+                names.t("vectors")
+            ),
+            &[tys, keys, fields, &asked.since],
+        )?;
+        for row in found {
+            let e = engines::Elements::new(row.get(1), row.get(2));
+            rows.insert(row.get::<_, i64>(0), e);
+        }
+    }
+    let (mut out, mut n) = (Vec::with_capacity(read.len()), 0);
+    for (t, (mut r, apart)) in read {
+        for (f, _) in apart {
+            n += 1;
+            engines::rejoin(&mut r, f, rows.remove(&n))?;
+        }
+        out.push((t, r));
+    }
+    Ok(out)
+}
+
+/// The records `rows` hold from the column `at` on, joined ([`joined`]).
+pub(crate) fn records_at(
+    db: &mut Db,
+    names: &Names,
+    rows: &[Row],
+    at: usize,
+) -> Result<Vec<StoredRecord>> {
+    let read: Vec<_> = rows
+        .iter()
+        .map(|r| Ok(((), record_at(r, at)?)))
+        .collect::<Result<_>>()?;
+    Ok(joined(db, names, read)?
+        .into_iter()
+        .map(|(_, r)| r)
+        .collect())
 }
 
 /// The `sort_index.<type>` setting of `ty` a row holds as two scalar
@@ -1073,7 +1168,7 @@ pub(crate) fn setting_at(
     };
     let key = engines::sort_index_key(ty);
     let at = Position(at as u64);
-    engines::decode_record(SETTING_TYPE, &key, at, s).map(Some)
+    engines::decode_record(SETTING_TYPE, &key, at, s).map(|(r, _)| Some(r))
 }
 
 /// The declaration of a type in force at `at` (`None` for the head).
@@ -1124,6 +1219,7 @@ pub(crate) fn head_records_after(
     n: i64,
 ) -> Result<Vec<StoredRecord>> {
     db.records(
+        names,
         &format!(
             "SELECT {RECORD} FROM {} WHERE h.ty = $1 AND h.key > $2 ORDER BY h.key LIMIT $3",
             RECORDS.at_head(names)
@@ -1139,15 +1235,14 @@ pub(crate) fn head_record(
     ty: &TypeName,
     key: &RecordKey,
 ) -> Result<Option<StoredRecord>> {
-    db.query_opt(
+    let row = db.query_opt(
         &format!(
             "SELECT {RECORD} FROM {} WHERE h.ty = $1 AND h.key = $2",
             RECORDS.at_head(names)
         ),
         &[&ty.as_str(), &key.as_str()],
-    )?
-    .map(|r| record_at(&r, 0))
-    .transpose()
+    )?;
+    Ok(records_at(db, names, &Vec::from_iter(row), 0)?.pop())
 }
 
 /// The head index rows of records, as arrays for one statement each.
@@ -1350,6 +1445,10 @@ pub(crate) struct Buffer {
     dropped: BTreeSet<(String, String)>,
     /// The outputs whose every state goes, by seam and input, likewise.
     dropped_outputs: BTreeSet<(String, String)>,
+    /// The vector index's last put (`Some`) or remove of each field of a
+    /// key whose state it holds, by type, key and field: made when it is
+    /// written where the rows its last state leaves differ.
+    indexed: BTreeMap<(String, String, String), Option<Vec<f32>>>,
 }
 
 /// A row of the feed index: position, kind, type, key and source.
@@ -1378,6 +1477,7 @@ impl Buffer {
         let of = |ident: &[String]| ident[0] == ty && ident[1] == key;
         self.records.retain(|(ident, _), _| !of(ident));
         self.members.retain(|(ident, _), _| !of(&ident[1..]));
+        self.indexed.retain(|(t, k, _), _| t != ty || k != key);
         self.dropped.insert((ty.to_owned(), key.to_owned()));
     }
 
@@ -1388,9 +1488,32 @@ impl Buffer {
         (self.dropped_outputs).insert((seam.to_owned(), input.to_owned()));
     }
 
+    /// The state of `ty`'s `key` the buffer puts last, if any.
+    pub(crate) fn latest(&self, ty: &str, key: &str) -> Option<&StoredRecord> {
+        let ident = vec![ty.to_owned(), key.to_owned()];
+        let of = (ident.clone(), i64::MIN)..=(ident, i64::MAX);
+        self.records.range(of).next_back().map(|(_, r)| r)
+    }
+
+    /// Take the vector index's put (`Some`) or remove of `ty`'s `key`
+    /// where a state of it is held, answering whether it took it.
+    pub(crate) fn index(
+        &mut self,
+        (ty, key, field): (&str, &str, &str),
+        v: Option<&[f32]>,
+    ) -> bool {
+        let held = self.latest(ty, key).is_some();
+        if held {
+            let at = (ty.to_owned(), key.to_owned(), field.to_owned());
+            self.indexed.insert(at, v.map(<[f32]>::to_vec));
+        }
+        held
+    }
+
     pub(crate) fn record(&mut self, r: &StoredRecord) {
         if lakelands_api::seam::is_head_only(&r.ty) {
-            let state = (!r.is_ended()).then(|| lakelands_core::engines::record_state(r));
+            let apart = BTreeMap::new();
+            let state = (!r.is_ended()).then(|| engines::record_state(r, &apart));
             let key = (r.ty.to_string(), r.key.to_string());
             self.heads.insert(key, (r.position.0 as i64, state));
             return;
@@ -1451,13 +1574,14 @@ impl Buffer {
                 &format!(
                     "WITH d AS (SELECT * FROM unnest($1::text[], $2::text[]) AS d(ty, key)), \
                      r AS ({}), h AS ({}), m AS ({} AND t.object_set IN ({sets})), \
-                     x AS ({}), y AS ({}), z AS ({}) {}",
+                     x AS ({}), y AS ({}), z AS ({}), v AS ({}) {}",
                     gone("records", "ty", "key"),
                     gone("records_head", "ty", "key"),
                     gone("members", "ty", "key"),
                     gone("text_index", "ty", "key"),
                     gone("full_text", "ty", "key"),
                     gone("sort_index", "ty", "key"),
+                    gone("vectors", "ty", "key"),
                     gone("edges", "src_ty", "src_key"),
                 ),
                 &[&tys, &keys],
@@ -1492,12 +1616,15 @@ impl Buffer {
         names: &Names,
         types: &mut HeadTypes,
         asked: &mut BTreeMap<TypeName, Position>,
+        v: Option<&Pgvector>,
     ) -> Result<u64> {
         self.drop_rows(db, names)?;
-        let records: BTreeMap<(Vec<String>, i64), String> = self
-            .records
-            .iter()
-            .map(|(k, r)| (k.clone(), lakelands_core::engines::record_state(r)))
+        let mut apart = self.put_vectors(db, names, types, v)?;
+        let records: BTreeMap<(Vec<String>, i64), String> = (self.records.iter())
+            .map(|(k, r)| {
+                let apart = apart.remove(k).unwrap_or_default();
+                (k.clone(), engines::record_state(r, &apart))
+            })
             .collect();
         let heads = RECORDS.put_many(db, names, &records)?;
         // A head-only name's key is one row, written over in place, and its
@@ -1619,6 +1746,214 @@ impl Buffer {
     }
 }
 
+/// A record's rows of `vectors` in force, as [`Buffer::put_vectors`] reads
+/// them: those of its states, and those the index put alone (`since` -1).
+#[derive(Default)]
+struct Held {
+    rows: Vec<engines::VectorRow>,
+    alone: BTreeSet<String>,
+    head: Option<i64>,
+}
+
+/// The fields each buffered state keeps apart, by its row of `records`.
+type StatesApart = BTreeMap<(Vec<String>, i64), BTreeMap<FieldName, Position>>;
+
+/// The rows [`Buffer::put_vectors`] writes, as arrays for one statement.
+#[derive(Default)]
+struct VectorRows {
+    ident: [Vec<String>; 3],
+    since: Vec<i64>,
+    until: Vec<Option<i64>>,
+    single: Vec<bool>,
+    data: Vec<Vec<u8>>,
+    unit: Vec<Option<String>>,
+}
+
+impl VectorRows {
+    fn push(&mut self, ident: &[String], field: &FieldName, since: i64, until: Option<i64>) {
+        let ident = ident.iter().map(String::as_str).chain([field.as_str()]);
+        for (column, v) in self.ident.iter_mut().zip(ident) {
+            column.push(v.to_owned());
+        }
+        self.since.push(since);
+        self.until.push(until);
+    }
+}
+
+impl Buffer {
+    /// Write the vector rows of the buffered records' states
+    /// ([`engines::put_vectors`]), over the rows in force each record holds
+    /// and whether a later state of it is kept, and answer the fields each
+    /// state keeps apart, of those its type's declaration in `types` keeps.
+    /// A unit vector is filled for a row in force of a field whose index
+    /// is marked (`crate::vector_index`); a row that ends holds none. A
+    /// vector the index put alone for a field a state names goes.
+    fn put_vectors(
+        &self,
+        db: &mut Db,
+        names: &Names,
+        types: &mut HeadTypes,
+        v: Option<&Pgvector>,
+    ) -> Result<StatesApart> {
+        let mut apart = BTreeMap::new();
+        let mut held: BTreeMap<(String, String), Held> = BTreeMap::new();
+        for (ident, _) in self.records.keys() {
+            held.entry((ident[0].clone(), ident[1].clone()))
+                .or_default();
+        }
+        if held.is_empty() {
+            return Ok(apart);
+        }
+        let (tys, keys): (Vec<String>, Vec<String>) = held.keys().cloned().unzip();
+        let b = "unnest($1::text[], $2::text[]) AS b(ty, key)";
+        let rows = db.query(
+            &format!(
+                "SELECT v.ty, v.key, v.field, v.since, v.single, v.data FROM {b} JOIN {} v \
+                 ON v.ty = b.ty AND v.key = b.key AND v.until IS NULL",
+                names.t("vectors")
+            ),
+            &[&tys, &keys],
+        )?;
+        for row in rows {
+            let h = held
+                .get_mut(&(row.get(0), row.get(1)))
+                .expect("a key asked for");
+            let (field, since): (String, i64) = (row.get(2), row.get(3));
+            match since < 0 {
+                true => drop(h.alone.insert(field)),
+                false => {
+                    let e = engines::Elements::new(row.get(4), row.get(5));
+                    h.rows.push((field.into(), Position(since as u64), e));
+                }
+            }
+        }
+        let heads = db.query(
+            &format!(
+                "SELECT h.ty, h.key, h.since FROM {b} JOIN {} h ON h.ty = b.ty AND h.key = b.key",
+                names.t("records_head")
+            ),
+            &[&tys, &keys],
+        )?;
+        for row in heads {
+            held.get_mut(&(row.get(0), row.get(1)))
+                .expect("a key asked for")
+                .head = Some(row.get(2));
+        }
+        let (mut written, mut ended, mut gone) = <[VectorRows; 3]>::default().into();
+        // A unit vector is filled only where its field's index is marked.
+        let marks: BTreeSet<String> = match v {
+            Some(_) => db.column(
+                &format!("SELECT k FROM {} WHERE k LIKE 'vindex.%'", names.t("meta")),
+                &[],
+            )?,
+            None => BTreeSet::new(),
+        };
+        let mut vectors: BTreeMap<&TypeName, BTreeSet<FieldName>> = BTreeMap::new();
+        for ((ident, at), r) in &self.records {
+            if !vectors.contains_key(&r.ty) {
+                vectors.insert(&r.ty, types.get(db, names, &r.ty)?.vectors);
+            }
+            let h = held
+                .get_mut(&(ident[0].clone(), ident[1].clone()))
+                .expect("a key held");
+            let behind = h.head.is_some_and(|head| head > *at);
+            let put = engines::put_vectors(r, std::mem::take(&mut h.rows), behind, &vectors[&r.ty]);
+            h.rows = put.held;
+            let until = put.ends.then_some(*at);
+            for (f, e) in put.written {
+                let marked = marks.contains(&vector_index::mark(&r.ty, f.as_str()));
+                let unit =
+                    (marked && until.is_none()).then(|| vector_index::unit_text(&e.ranked()));
+                written.push(ident, &f, *at, until);
+                written.unit.push(unit.flatten());
+                written.single.push(e.single);
+                written.data.push(e.data);
+            }
+            for (f, since) in put.ended {
+                ended.push(ident, &f, since.0 as i64, Some(*at));
+            }
+            for f in put.gone {
+                gone.push(ident, &f, *at, None);
+            }
+            for f in put.apart.keys() {
+                if h.alone.remove(f.as_str()) {
+                    gone.push(ident, f, -1, None);
+                }
+            }
+            apart.insert((ident.clone(), *at), put.apart);
+        }
+        // An index put or remove after the states stands where the rows they
+        // leave hold otherwise: made once they are written.
+        let mut later = Vec::new();
+        for ((ty, key, field), vector) in &self.indexed {
+            let h = &held[&(ty.clone(), key.clone())];
+            let row = (h.rows.iter()).find(|(f, ..)| f.as_str() == field);
+            let row = row.map(|(.., e)| e.ranked());
+            if h.alone.contains(field) || row != *vector {
+                later.push(((ty.as_str(), key.as_str(), field.as_str()), vector));
+            }
+        }
+        let t = names.t("vectors");
+        let ident = "unnest($1::text[], $2::text[], $3::text[], $4::int8[]";
+        if !written.since.is_empty() {
+            let (unit, set, units) = match v {
+                Some(v) => (
+                    ", unit",
+                    ", unit = EXCLUDED.unit",
+                    format!(", CAST(u AS {})", v.ty(None)),
+                ),
+                None => ("", "", String::new()),
+            };
+            let w = &written;
+            let [tys, keys, fields] = &w.ident;
+            db.execute(
+                &format!(
+                    "INSERT INTO {t} (ty, key, field, since, until, single, data{unit}) \
+                     SELECT ty, key, field, since, until, single, data{units} FROM \
+                     {ident}, $5::int8[], $6::bool[], $7::bytea[], $8::text[]) \
+                     AS b(ty, key, field, since, until, single, data, u) \
+                     ON CONFLICT (ty, key, field, since) DO UPDATE SET until = EXCLUDED.until, \
+                     single = EXCLUDED.single, data = EXCLUDED.data{set}"
+                ),
+                &[
+                    tys, keys, fields, &w.since, &w.until, &w.single, &w.data, &w.unit,
+                ],
+            )?;
+        }
+        if !ended.since.is_empty() {
+            let unit = if v.is_some() { ", unit = NULL" } else { "" };
+            let [tys, keys, fields] = &ended.ident;
+            db.execute(
+                &format!(
+                    "UPDATE {t} t SET until = b.until{unit} FROM \
+                     {ident}, $5::int8[]) AS b(ty, key, field, since, until) \
+                     WHERE t.ty = b.ty AND t.key = b.key AND t.field = b.field \
+                     AND t.since = b.since"
+                ),
+                &[tys, keys, fields, &ended.since, &ended.until],
+            )?;
+        }
+        if !gone.since.is_empty() {
+            let [tys, keys, fields] = &gone.ident;
+            db.execute(
+                &format!(
+                    "DELETE FROM {t} t USING {ident}) AS b(ty, key, field, since) \
+                     WHERE t.ty = b.ty AND t.key = b.key AND t.field = b.field \
+                     AND t.since = b.since"
+                ),
+                &[tys, keys, fields, &gone.since],
+            )?;
+        }
+        for (at, vector) in later {
+            match vector {
+                Some(vector) => vector_index::put(db, names, v, at, vector)?,
+                None => vector_index::remove(db, names, v, at)?,
+            }
+        }
+        Ok(apart)
+    }
+}
+
 /// Put a declaration. `types` forgets every head declaration it held,
 /// since this one may change one. For a type now in force at the head its
 /// records' head indexes are to be rewritten under it, and it answers the
@@ -1676,7 +2011,7 @@ pub(crate) fn index_older(
     // A page of the type at a time; an ended key has no index rows.
     let mut after = String::new();
     loop {
-        let records = db.records(&page, &[&ty.as_str(), &(at.0 as i64), &after])?;
+        let records = db.records(names, &page, &[&ty.as_str(), &(at.0 as i64), &after])?;
         let live = || records.iter().filter(|r| !r.is_ended());
         let indexed: Vec<(&HeadType, &StoredRecord)> = live().map(|r| (&head, r)).collect();
         let stale: Vec<(&str, &str)> = live().map(|r| (r.ty.as_str(), r.key.as_str())).collect();

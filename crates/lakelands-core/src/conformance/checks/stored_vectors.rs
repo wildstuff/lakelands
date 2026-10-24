@@ -12,29 +12,50 @@ use lakelands_api::seam::EmbedBackend;
 use super::embeddings::with_embedder;
 use super::erasable::again;
 use super::links::{approved_by, invoice, link_ok, unlink, walked};
-use crate::conformance::fixture::{find_at, get_at, source_record};
+use crate::conformance::fixture::{find_at, get_at, restrict, source_record};
 use crate::conformance::prelude::*;
 
 check!(
     VECTOR_BITS_KEPT = a_vector_reads_the_elements_written_at_each_position_bit_for_bit,
-    "072 (proposed), 001, 009 and 025: a vector a caller writes reads, by `get` and by `find`, at the head and as of every position a write ended at, the elements written last at or before it, bit for bit in the log's number form, an integral element as an integer and `-0` as `0`: doubles that no `f32` holds and elements that are exactly `f32`s, through writes of the record's other fields, a vector written again, a vector cleared, from which on it reads none, and a retirement, as of before which the retired record answers its vector and after which a write of its other fields reads none; a vector search ranks the live records by the cosine of their elements as `f32`s, to the bit; a rebuild answers all of it the same"
+    "072, 001, 009 and 025: a vector a caller writes reads, by `get` and by `find`, at the head and as of every position a write ended at, the elements written last at or before it, bit for bit in the log's number form, an integral element as an integer and `-0` as `0`: doubles that no `f32` holds and elements that are exactly `f32`s, through writes of the record's other fields, a vector written again, a vector cleared, from which on it reads none, and a retirement, as of before which the retired record answers its vector and after which a write of its other fields reads none; a vector search ranks the live records by the cosine of their elements as `f32`s, to the bit; a rebuild answers all of it the same"
 );
 
 check!(
     VECTOR_WIDENED_KEPT = a_backends_vector_reads_its_f32_elements_widened_at_each_position,
-    "072 (proposed), 022, extended, 001 and 025: a vector an embedding backend makes reads each `f32` element widened to a double, bit for bit, at the head and as of every position from its fill on, and the vector of the text embedded again from that one on, through a write of the record's other fields and another record's fill; a vector search ranks by the cosine of those elements; a rebuild answers the same",
+    "072, 022, extended, 001 and 025: a vector an embedding backend makes reads each `f32` element widened to a double, bit for bit, at the head and as of every position from its fill on, and the vector of the text embedded again from that one on, through a write of the record's other fields and another record's fill; a vector search ranks by the cosine of those elements; a rebuild answers the same",
     reopens
 );
 
 check!(
     VECTOR_LINK_KEPT = a_links_vector_reads_through_a_walk_at_each_position,
-    "072 (proposed), 035 and 001: a vector field of a relation carried by link records reads on the walk's edge, at the head and as of every position a write ended at, the elements its link was written with last, bit for bit, through a write of the link's other fields, a vector written again and an unlink, as of before which the edge answers its vector; a rebuild answers the same"
+    "072, 035 and 001: a vector field of a relation carried by link records reads on the walk's edge, at the head and as of every position a write ended at, the elements its link was written with last, bit for bit, through a write of the link's other fields, a vector written again and an unlink, as of before which the edge answers its vector; a rebuild answers the same"
 );
 
 check!(
     VECTOR_ERASED_KEPT = a_sealed_vector_reads_its_bits_until_its_source_is_forgotten,
-    "072 (proposed), 058 and 001: a vector of an erasable field a source writes reads its elements bit for bit, at the head and as of every position from its write on, though the log holds it sealed; once the source is forgotten it reads as erased at all of them, its provenance saying so, and is no candidate of a vector search, while another source's vector reads and ranks as before; a rebuild answers the same",
+    "072, 058 and 001: a vector of an erasable field a source writes reads its elements bit for bit, at the head and as of every position from its write on, though the log holds it sealed; once the source is forgotten it reads as erased at all of them, its provenance saying so, and is no candidate of a vector search, while another source's vector reads and ranks as before; a rebuild answers the same",
     reopens
+);
+
+check!(
+    VECTOR_RESTRICTION_KEPT = a_restriction_and_its_lifting_keep_a_records_vector,
+    "072, 001 and 025: a restriction of a record that holds a vector, its lifting and a later write of its other fields leave its elements as they were: they read bit for bit, by `get` and by `find`, at the head and as of each of those positions; a vector search ranks the record the same while it is restricted and after; a rebuild answers the same"
+);
+
+check!(
+    VECTOR_REKEY_ENDED = a_rekey_ends_the_old_keys_vector_at_its_position,
+    "072, 027 and 001: a re-key moves a record's vector to its new key: as of before the re-key the old key reads its elements and the new one is no record, from the re-key on the new key reads them, bit for bit, through a write of its other fields, and the old key none; a vector search at the head ranks the new keys only, the old key's vector ended where the re-key ended its state; a rebuild answers the same"
+);
+
+check!(
+    VECTOR_RENAME_KEPT =
+        a_migration_that_renames_a_vector_field_reads_its_elements_under_the_new_name,
+    "072, 027 and 001: a migration that renames a vector field reads each record's elements under the old name as of before it and under the new one from it on, bit for bit, by `get` and by `find`, and neither name reads the other's; a vector search of the new name ranks them by the one cosine; a rebuild answers the same"
+);
+
+check!(
+    VECTOR_JSON_IN_PLACE = a_json_array_of_numbers_reads_as_written_beside_a_vector,
+    "072 and 001: a `json` field holding an array of numbers, beside a vector field of the same record, reads by `get` and by `find`, at the head and as of every position a write ended at, the array written last, bit for bit in the log's number form: doubles that no `f32` holds, `f32`s and integers; only a field declared a vector is kept apart, so a rebuild answers the same"
 );
 
 /// Doubles that no `f32` holds.
@@ -97,16 +118,21 @@ type Read<'a> = (Option<Position>, &'a str, Option<&'a Value>);
 type Wrote<'a> = (Option<Position>, &'a str, Option<Option<&'a Value>>);
 
 /// Every key's elements as of every position `writes` name and the head:
-/// the last a write left at or before it, none before the first.
+/// the last a write left at or before it, none before the first. Writes
+/// at one position, as a migration's are, are read together.
 fn grid<'a>(writes: &[Wrote<'a>]) -> Vec<Read<'a>> {
     let mut keys: Vec<&str> = writes.iter().map(|w| w.1).collect();
     keys.sort_unstable();
     keys.dedup();
     let positions = writes.iter().map(|w| w.0).chain([None]);
     let mut reads = Vec::new();
-    for (i, at) in positions.enumerate() {
+    for at in positions {
+        let upto = match at {
+            Some(_) => writes.iter().rposition(|w| w.0 == at).map_or(0, |i| i + 1),
+            None => writes.len(),
+        };
         for key in &keys {
-            let upto = writes.iter().take(i + 1).filter(|w| w.1 == *key);
+            let upto = writes.iter().take(upto).filter(|w| w.1 == *key);
             let left = upto.filter_map(|w| w.2).next_back().flatten();
             reads.push((at, *key, left));
         }
@@ -407,4 +433,145 @@ async fn a_sealed_vector_reads_its_bits_until_its_source_is_forgotten(
         ranks(&l, "sensor", "v", &left, what).await?;
     }
     Ok(())
+}
+
+/// `ty`: a vector `v` and a text `tag`, keyed by `key` when given, a
+/// required text field of the same name, beside `also` when given.
+fn keyed(ty: &str, key: Option<&str>, also: Option<&str>) -> TypeDecl {
+    let mut fields = vec![vector("v", 3), field("tag", StorageKind::Text)];
+    for name in key.iter().chain(&also) {
+        let required = key.is_some_and(|k| k == *name);
+        fields.push(FieldDecl {
+            required,
+            ..field(name, StorageKind::Text)
+        });
+    }
+    TypeDecl {
+        key: key.into_iter().map(FieldName::from).collect(),
+        ..type_decl(ty, fields)
+    }
+}
+
+async fn a_restriction_and_its_lifting_keep_a_records_vector(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(keyed("held", None, None)).await?;
+    let (doubles, singles) = (json!(DOUBLES), widened(&SINGLES));
+    let at = |o: Outcome| Some(o.position());
+    let mut writes = Vec::new();
+    for (key, patch, left) in [
+        ("r", json!({"v": doubles, "tag": "a"}), Some(Some(&doubles))),
+        ("s", json!({"v": singles}), Some(Some(&singles))),
+    ] {
+        writes.push((at(l.upsert("held", key, patch).await?), key, left));
+    }
+    let live = [("r", &doubles), ("s", &singles)];
+    let restricted = restrict(store.as_ref(), "held", "r", "a hold").await?;
+    writes.push((Some(restricted), "r", None));
+    ranks(&l, "held", "v", &live, "restricted").await?;
+    let lifted = store.unrestrict(&"held".into(), &"r".into()).await;
+    writes.push((Some(lifted.must("lifting the hold on `r`")?), "r", None));
+    let tagged = at(l.upsert("held", "r", json!({"tag": "b"})).await?);
+    writes.push((tagged, "r", None));
+    let want = grid(&writes);
+    holds(&l, "held", "v", &want, "restricted and lifted").await?;
+    ranks(&l, "held", "v", &live, "lifted").await?;
+    store.rebuild().await.must("rebuilding the lake")?;
+    holds(&l, "held", "v", &want, "after a rebuild").await?;
+    ranks(&l, "held", "v", &live, "after a rebuild").await
+}
+
+async fn a_rekey_ends_the_old_keys_vector_at_its_position(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(keyed("badge", Some("number"), Some("code")))
+        .await?;
+    let (doubles, singles) = (json!(DOUBLES), widened(&SINGLES));
+    let (d, s) = (Some(Some(&doubles)), Some(Some(&singles)));
+    let at = |o: Outcome| Some(o.position());
+    let mut writes = Vec::new();
+    for (key, patch, left) in [
+        ("n1", json!({"number": "n1", "code": "c1", "v": doubles}), d),
+        ("n2", json!({"number": "n2", "code": "c2", "v": singles}), s),
+    ] {
+        writes.push((at(l.upsert("badge", key, patch).await?), key, left));
+    }
+    let moved = at(l
+        .migrate(keyed("badge", Some("code"), Some("number")))
+        .await?);
+    writes.extend([(moved, "n1", Some(None)), (moved, "n2", Some(None))]);
+    writes.extend([(moved, "c1", d), (moved, "c2", s)]);
+    let tagged = at(l.upsert("badge", "c1", json!({"tag": "b"})).await?);
+    writes.push((tagged, "c1", None));
+    let want = grid(&writes);
+    let live = [("c1", &doubles), ("c2", &singles)];
+    holds(&l, "badge", "v", &want, "re-keyed").await?;
+    ranks(&l, "badge", "v", &live, "re-keyed").await?;
+    store.rebuild().await.must("rebuilding the lake")?;
+    holds(&l, "badge", "v", &want, "after a rebuild").await?;
+    ranks(&l, "badge", "v", &live, "after a rebuild").await
+}
+
+async fn a_migration_that_renames_a_vector_field_reads_its_elements_under_the_new_name(
+    store: Store,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(keyed("pin", None, None)).await?;
+    let (doubles, singles) = (json!(DOUBLES), widened(&SINGLES));
+    let (d, s) = (Some(Some(&doubles)), Some(Some(&singles)));
+    let at = |o: Outcome| Some(o.position());
+    let (mut old, mut new) = (Vec::new(), Vec::new());
+    for (key, patch, left) in [
+        ("k1", json!({"v": doubles, "tag": "a"}), d),
+        ("k2", json!({"v": singles}), s),
+    ] {
+        let written = at(l.upsert("pin", key, patch).await?);
+        old.push((written, key, left));
+        new.push((written, key, None));
+    }
+    let renamed = TypeDecl {
+        fields: vec![vector("w", 3), field("tag", StorageKind::Text)],
+        ..keyed("pin", None, None)
+    };
+    let migrated = at(l.migrate_renaming(renamed, &[("v", "w")]).await?);
+    old.extend([(migrated, "k1", Some(None)), (migrated, "k2", Some(None))]);
+    new.extend([(migrated, "k1", d), (migrated, "k2", s)]);
+    let tagged = at(l.upsert("pin", "k1", json!({"tag": "b"})).await?);
+    old.push((tagged, "k1", None));
+    new.push((tagged, "k1", None));
+    let live = [("k1", &doubles), ("k2", &singles)];
+    for what in ["renamed", "after a rebuild"] {
+        if what == "after a rebuild" {
+            store.rebuild().await.must("rebuilding the lake")?;
+        }
+        holds(&l, "pin", "v", &grid(&old), what).await?;
+        holds(&l, "pin", "w", &grid(&new), what).await?;
+        ranks(&l, "pin", "w", &live, what).await?;
+    }
+    Ok(())
+}
+
+async fn a_json_array_of_numbers_reads_as_written_beside_a_vector(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let doc = type_decl("doc", vec![vector("v", 3), field("j", StorageKind::Json)]);
+    l.declare(doc).await?;
+    let (doubles, singles, integral) = (json!(DOUBLES), widened(&SINGLES), json!([2, -3, 7]));
+    let (d, s, i) = (
+        Some(Some(&doubles)),
+        Some(Some(&singles)),
+        Some(Some(&integral)),
+    );
+    let at = |o: Outcome| Some(o.position());
+    let mut writes = Vec::new();
+    for (key, patch, left) in [
+        ("a", json!({"v": doubles, "j": doubles}), d),
+        ("b", json!({"j": singles}), s),
+        ("a", json!({"j": integral}), i),
+        ("b", json!({"v": singles}), None),
+        ("a", json!({"j": singles}), s),
+    ] {
+        writes.push((at(l.upsert("doc", key, patch).await?), key, left));
+    }
+    let want = grid(&writes);
+    holds(&l, "doc", "j", &want, "written").await?;
+    store.rebuild().await.must("rebuilding the lake")?;
+    holds(&l, "doc", "j", &want, "after a rebuild").await
 }
