@@ -438,7 +438,7 @@ impl Sight<'_> {
         let sources = std::iter::once((v.r#where.as_ref(), &v.measures));
         let sources = sources.chain(v.merge.iter().map(|m| (m.r#where.as_ref(), &m.measures)));
         let mut read = sources.flat_map(|(w, ms)| w.into_iter().chain(ms.iter().map(|m| &m.expr)));
-        who.grants.restricted
+        self.sees_restricted()
             && read.all(|c| parsed(c).is_some_and(|e| self.told_settings(&e)))
             && view_reads(v).is_some_and(|reads| {
                 reads.iter().all(|(from, names)| {

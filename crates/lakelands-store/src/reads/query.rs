@@ -538,7 +538,7 @@ impl<'a> Reader<'a> {
             for (t, f, _) in read.into_iter().flatten() {
                 let decl = self.shape.ontology.ty(&t)?;
                 if !self.lakes(decl, &f) {
-                    rights::check_known(self.who, decl, [&f])?;
+                    self.sight.check_known(decl, &f)?;
                 }
             }
         }
@@ -806,7 +806,7 @@ impl<'a> Reader<'a> {
             if self.lakes(decl, field) {
                 continue;
             }
-            let probed = rights::check_probe(self.who, decl, [field]);
+            let probed = self.sight.check_probe(decl, [field]);
             probed.map_err(|e| if *wide { of_type(ty, e) } else { e })?;
             if i < ordered {
                 Self::steady_order(decl, field.as_str())?;
@@ -1174,7 +1174,7 @@ impl<'a> Reader<'a> {
         rec: Option<StoredRecord>,
     ) -> Result<()> {
         let decl = self.shape.ontology.ty(&node.0)?;
-        if let Some(rec) = rec.and_then(|r| rights::visible(self.sight, decl, &r, false)) {
+        if let Some(rec) = rec.and_then(|r| self.sight.visible(decl, &r, false)) {
             let decl = self.shape.ontology.ty(&node.0)?;
             let key = match open.is_some() || self.keyed(decl, &FieldName::from("key")) {
                 true => Value::String(node.1.to_string()),
@@ -1213,7 +1213,7 @@ impl<'a> Reader<'a> {
                 continue;
             };
             let decl = self.shape.ontology.ty(&r.node.0)?;
-            if let Some(record) = rights::visible(self.sight, decl, &rec, false) {
+            if let Some(record) = self.sight.visible(decl, &rec, false) {
                 records.push(record);
                 depths.push(r.depth);
             }

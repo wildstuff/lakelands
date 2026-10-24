@@ -1,5 +1,5 @@
 use super::*;
-use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind};
+use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, ViewDecl};
 use lakelands_api::principal::{Grants, PrincipalKind, TypeGrants};
 use lakelands_api::{Access, Position};
 
@@ -259,4 +259,89 @@ fn a_report_is_shown_through_the_sights_own_lookup_and_description() {
     assert_eq!(report.rekeyed, [rekeyed("note")]);
     assert_eq!(report.carried, [carried("note")]);
     assert!(report.more);
+}
+
+#[test]
+fn a_read_names_searches_and_describes_only_what_its_principal_may_know() {
+    let (declared, who) = (declared(), who());
+    let sight = Sight::held(&who, &declared);
+    let ty = |n: &str| declared.ty(&n.into()).expect("declared").clone();
+    let (owner, mut invoice) = (ty("owner"), ty("invoice"));
+    // It may not know of `owner.name`, and knows `invoice.n`.
+    assert!(sight.check_known(&invoice, &"n".into()).is_ok());
+    assert!(sight.check_known(&owner, &"name".into()).is_err());
+    // Text weights name some searchable fields it reads.
+    let weights = |f: &str| [(f.into(), 1.0)].into();
+    let none = BTreeMap::new();
+    assert!(sight.check_text_weights(&invoice, &none).is_err());
+    assert!(sight.check_text_weights(&invoice, &weights("n")).is_err());
+    invoice.fields[1].searchable = true;
+    assert!(sight.check_text_weights(&invoice, &weights("n")).is_ok());
+    // `owner` is described to it without a field it may not know of.
+    let mut described = owner.clone();
+    sight.described_fields(&mut described, &|n| declared.ty(n));
+    assert!(described.fields.is_empty() && !owner.fields.is_empty());
+}
+
+#[test]
+fn an_only_and_a_verb_are_judged_for_a_read_by_the_sight() {
+    let mut declared = declared();
+    let view = ViewDecl {
+        source: "note".into(),
+        params: Vec::new(),
+        r#where: None,
+        group_by: Vec::new(),
+        measures: Vec::new(),
+        merge: Vec::new(),
+    };
+    let (by_note, note) = (TypeName::from("by_note"), TypeName::from("note"));
+    let Declaration::Type(t) = declared[2].declaration.clone() else {
+        unreachable!("the third declaration is `note`");
+    };
+    let mut d = declared[2].clone();
+    d.declaration = Declaration::Type(TypeDecl {
+        name: by_note.clone(),
+        view: Some(Box::new(view)),
+        ..t.clone()
+    });
+    declared.push(d);
+    let verb = VerbDecl {
+        name: "mark".into(),
+        on: note.clone(),
+        scope: Default::default(),
+        payload: vec![],
+        risk: lakelands_api::ontology::Risk::Low,
+        preconditions: Vec::new(),
+        requires: Some("text = 'x'".into()),
+        effect: VerbEffect::Retire,
+        description: None,
+        granted: true,
+    };
+    let only = |f: &str| TypeGrants {
+        only: [(f.into(), "x".into())].into(),
+        ..Default::default()
+    };
+    let find = |n: &TypeName| declared.ty(n);
+    let judged = |grant: Option<TypeGrants>| {
+        let mut who = who();
+        who.grants.types.extend(grant.map(|g| (note.clone(), g)));
+        let sight = Sight::held(&who, &declared);
+        let reads = sight.reads_what_verb_reads(&t, &verb, &find);
+        let held = sight.check_only(&t).is_ok();
+        let only = (held, sight.computed_only(&by_note, &find));
+        (only, sight.verb_granted(&verb), reads)
+    };
+    assert_eq!(judged(None), ((true, false), false, true));
+    // The view of a type held to some records is computed for it.
+    assert_eq!(judged(Some(only("text"))), ((true, true), false, true));
+    // An `only` on a field `note` does not declare cannot be applied.
+    assert_eq!(judged(Some(only("ghost"))).0, (false, true));
+    let mut named = TypeGrants {
+        verbs: ["mark".into()].into(),
+        ..Default::default()
+    };
+    assert_eq!(judged(Some(named.clone())), ((true, false), true, true));
+    // One kept from the field the verb reads may not call it.
+    named.fields.insert("text".into(), Access::None);
+    assert!(!judged(Some(named)).2);
 }

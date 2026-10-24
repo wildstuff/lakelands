@@ -18,7 +18,6 @@ use lakelands_api::query::{Axis, Hit, Hits, Pattern, Search, SearchMode};
 use lakelands_api::read::ReadAt;
 use lakelands_api::seam::RerankCandidate;
 use lakelands_api::{Error, FieldName, Params, RecordKey, Result, Timestamp, TypeName, Value};
-use lakelands_core::rights;
 use serde::{Deserialize, Serialize};
 
 use super::{CursorState, Judged, Pulled, Reader, encode, resume, same_read, search_read};
@@ -145,7 +144,7 @@ impl Reader<'_> {
         };
         // Only a field its reader reads, and the masked record holds no
         // value of any other.
-        let readable: Vec<&FieldName> = rights::searched_fields(self.who, decl)
+        let readable: Vec<&FieldName> = (self.sight.searched_fields(decl))
             .filter(|f| named.is_none_or(|n| n.contains(f)))
             .collect();
         let text = |h: &Hit| {

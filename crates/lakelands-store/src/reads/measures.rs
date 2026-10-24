@@ -17,7 +17,6 @@ use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Step, Walk};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::{Cursor, Error, Params, RecordKey, RelationName, Result, TypeName, Value};
 use lakelands_core::graph::{self, Components, Node};
-use lakelands_core::rights;
 
 use super::{CursorState, Judged, Pulled, Reader, Visible, encode};
 
@@ -299,7 +298,7 @@ impl Reader<'_> {
                 // A type whose `only` cannot be applied admits nothing to
                 // a walk, so it seeds nothing either.
                 let decl = self.visible_type(&ty)?.clone();
-                if rights::check_only(self.who, &decl).is_err() {
+                if self.sight.check_only(&decl).is_err() {
                     continue;
                 }
                 let filter = self.record_filter(&decl, None, &[Place::Start])?;

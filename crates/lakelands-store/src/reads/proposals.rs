@@ -23,7 +23,7 @@ impl<'a> Reader<'a> {
             ty: None,
             ..filter.clone()
         };
-        let me = self.who.writer();
+        let me = self.sight.who().writer();
         // The lake as its reader is described it and the types it is shown,
         // each read once, only where a proposal asks.
         let (lake, seen) = (OnceCell::new(), OnceCell::new());
@@ -49,7 +49,7 @@ impl<'a> Reader<'a> {
                     break;
                 }
                 before = Some(p.position);
-                if !self.who.grants.review && p.proposer != me {
+                if !self.sight.who().grants.review && p.proposer != me {
                     continue;
                 }
                 if let Some(logged) = p.write.take() {
@@ -148,8 +148,8 @@ impl<'a> Reader<'a> {
         // A tool's name taken by what its reader is not shown hides the
         // entry (lakelands#915).
         let tools_shown = |set: &[Declaration]| {
-            let seen = seen.get_or_init(|| crate::writes::types_shown(self.who, o));
-            crate::writes::tools_as_shown(self.who, o, seen, set).is_ok()
+            let seen = seen.get_or_init(|| crate::writes::types_shown(self.sight.who(), o));
+            crate::writes::tools_as_shown(self.sight.who(), o, seen, set).is_ok()
         };
         match &mut logged {
             ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => {
@@ -169,7 +169,7 @@ impl<'a> Reader<'a> {
                     to: None,
                 });
                 let left = Sight::new(asked.clone(), &renames, None, o);
-                if rights::holds_only(self.who) || !left.would_show(&m.to) {
+                if self.sight.holds_only() || !left.would_show(&m.to) {
                     return Ok(None);
                 }
             }
@@ -224,7 +224,7 @@ impl<'a> Reader<'a> {
                 }
                 after = Some((put.declared(), put));
             }
-            ProposedWrite::MigrateValueType { .. } if rights::holds_only(self.who) => {
+            ProposedWrite::MigrateValueType { .. } if self.sight.holds_only() => {
                 return Ok(None);
             }
             ProposedWrite::Call { .. }
@@ -254,7 +254,7 @@ impl<'a> Reader<'a> {
         let reads = |a: &Access| a.reads();
         let typed =
             |t: &TypeGrants| t.default.as_ref().is_none_or(reads) && t.fields.values().all(reads);
-        let g = &self.who.grants;
+        let g = &self.sight.who().grants;
         let kept = !(reads(&g.default) && g.types.values().all(typed));
         // Or one of the types its sight rests on was re-keyed since: an old
         // key, in a key or a reference, may be a value of a field its
@@ -291,14 +291,14 @@ impl<'a> Reader<'a> {
             // shows what it kept (070).
             let mut now = [force, then].into_iter().flatten();
             let now = now.find_map(|(s, o)| Some((s, o.verb(verb).ok()?)));
-            if now.is_some_and(|(s, v)| !rights::verb_granted(s.who(), v)) {
+            if now.is_some_and(|(s, v)| !s.verb_granted(v)) {
                 return Ok(None);
             }
             for (sees, o) in [force, then].into_iter().flatten() {
                 let Ok(v) = o.verb(verb) else { continue };
                 let on = o.ty(&v.on);
                 let far = |n: &TypeName| o.ty(n).ok();
-                if on.is_ok_and(|on| !rights::reads_what_verb_reads(sees.who(), on, v, &far)) {
+                if on.is_ok_and(|on| !sees.reads_what_verb_reads(on, v, &far)) {
                     return Ok(None);
                 }
                 // Nor to one not told a setting the verb reads: what its
@@ -333,7 +333,7 @@ impl<'a> Reader<'a> {
             // holds a restricted record, none is withheld from a reader who
             // holds no `only`, and its values are not walked (lakelands#1071).
             let types = crate::writes::retarget_types(o, &logged)?;
-            let mut free = !types.is_empty() && !rights::holds_only(self.who);
+            let mut free = !types.is_empty() && !self.sight.holds_only();
             for t in &types {
                 if !free {
                     break;
@@ -423,7 +423,7 @@ impl<'a> Reader<'a> {
         // holder of `only` it counts records outside its pairs. Either is
         // shown none; one who holds `schema` asks `plan` for one made now
         // (062).
-        if (kept || rights::holds_only(self.who))
+        if (kept || self.sight.holds_only())
             && let ProposedWrite::Declare { plan, .. } = &mut shown
         {
             *plan = None;
@@ -501,10 +501,7 @@ impl<'a> Reader<'a> {
         // plans it: its derived values computed (lakelands#914).
         let o = &self.shape.ontology;
         let view = self.view.as_ref();
-        let holder = |ty: &TypeName| {
-            o.ty(ty)
-                .is_ok_and(|t| lakelands_core::rights::only_holder(self.who, t, o))
-        };
+        let holder = |ty: &TypeName| o.ty(ty).is_ok_and(|t| self.sight.only_holder(t));
         let now = || Ok::<_, Error>((crate::lake::settings_in(view, o)?, self.judged));
         // A plan that fails on the engine is its outage (lakelands#927);
         // one the write itself fails leaves the record not admitted.
@@ -623,7 +620,7 @@ impl<'a> Reader<'a> {
                 let made = listing.ty(&migration.to.name).unwrap_or(was);
                 let then = judge.who();
                 let sees = |ty: &TypeName| self.sight.ty(ty).ok();
-                let all = || self.sight.describe(&self.who.lake);
+                let all = || self.sight.describe(&self.sight.who().lake);
                 let described = || lake.get_or_init(all);
                 rights::shown_report(then, made, migration, report, described, sees);
                 // One kept before a report counted what it computes again
@@ -652,10 +649,10 @@ impl<'a> Reader<'a> {
                 }
                 // One listing: its `to` hash is that of the `to` it lists.
                 let find = |n: &TypeName| listing.ty(n).ok();
-                rights::shown_hashes(then, made, migration, report, &find);
+                judge.shown_hashes(made, migration, report, &find);
                 let before = Position(at.0.saturating_sub(1));
                 report.report_id = crate::writes::report_id(report, Some(before));
-                rights::known_migration(then, made, migration, &find);
+                judge.known_migration(made, migration, &find);
                 Ok(true)
             }
             // Each declaration as `describe` would show it once the bundle
@@ -674,7 +671,7 @@ impl<'a> Reader<'a> {
                 declarations.retain(|d| sight.lists(d));
                 for d in declarations.iter_mut() {
                     if let Declaration::Type(t) = d {
-                        rights::described_fields(sight.who(), t, &|n| after.ty(n).ok());
+                        sight.described_fields(t, &|n| after.ty(n).ok());
                     }
                 }
                 Ok(!declarations.is_empty())
