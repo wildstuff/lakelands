@@ -1228,6 +1228,74 @@ pub async fn export(out: Out<'_>, store: &Arc<dyn LakeStore>, to: &Path) -> Resu
     )
 }
 
+/// `backup`: `to` brought up to the lake's head, and the lake's keyring
+/// file copied into `keys` where it is named, apart from the backup.
+pub async fn backup(
+    out: Out<'_>,
+    store: &Arc<dyn LakeStore>,
+    root: &crate::root::Root,
+    to: &Path,
+    keys: Option<&Path>,
+) -> Result<(), Failure> {
+    // The keys are judged before anything is written.
+    let keyring = match keys {
+        Some(keys) => {
+            root.keys_apart(keys, to)?;
+            let Some(keyring) = root.file_keyring() else {
+                let what = "--keys-to was given, and the root names no file keyring";
+                let todo = "leave --keys-to out, and back the keys up as the key store's host does";
+                return Err(Failure::new(what, todo));
+            };
+            Some((keyring, keys))
+        }
+        None => None,
+    };
+    let b = export::backup(store.as_ref(), to).await?;
+    let since = b
+        .since
+        .map_or_else(|| "new".to_owned(), |p| format!("since {p}"));
+    let line = format!(
+        "backed up {} through position {} ({} new event(s), {since}) to {}",
+        b.lake,
+        b.through,
+        b.copied,
+        to.display()
+    );
+    put(out, line)?;
+    if let Some((keyring, keys)) = keyring {
+        let file = keyring.back_up(&b.lake, keys)?;
+        put(out, format!("copied the lake's keys to {}", file.display()))?;
+    }
+    Ok(())
+}
+
+/// `restore --keys-from`: the lake's keyring file put back from `keys`,
+/// only where the root's keyring has none: the file it holds knows every
+/// destroy, and an older copy would bring back a forgotten source's keys.
+pub fn restore_keys(
+    out: Out<'_>,
+    root: &crate::root::Root,
+    lake: &lakelands_api::LakeId,
+    keys: &Path,
+) -> Result<(), Failure> {
+    let Some(keyring) = root.file_keyring() else {
+        let what = "--keys-from was given, and the root names no file keyring";
+        return Err(Failure::new(
+            what,
+            "name the keyring in the keys section of the configuration",
+        ));
+    };
+    if !keyring.restore(lake, keys)? {
+        let what = format!("the root's keyring already holds a file for lake `{lake}`");
+        let todo = "leave --keys-from out: the keyring's own file knows every key destroyed since";
+        return Err(Failure::new(what, todo));
+    }
+    put(
+        out,
+        format!("put the keys of lake `{lake}` back from {}", keys.display()),
+    )
+}
+
 /// The lake an export holds, as its first event names it: the manifest is
 /// never trusted. `None` when the first event cannot be read; the import's
 /// own verification then says why.

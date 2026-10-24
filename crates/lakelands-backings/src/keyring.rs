@@ -122,6 +122,33 @@ impl FileKeyring {
         Ok(out)
     }
 
+    /// Copy `lake`'s file into `dir`, written as this keyring writes its
+    /// own, and answer the file written. `dir` is kept apart from the
+    /// lake's backup: a backup that holds both holds what forgetting
+    /// destroys (`docs/decisions/077-a-backup-is-an-export-that-grows.md`).
+    pub fn back_up(&self, lake: &LakeId, dir: &Path) -> Result<PathBuf> {
+        let _held = lakelands_core::lock(&self.lock);
+        let ring = self.read(&self.path(lake))?;
+        let to = FileKeyring::new(dir);
+        to.write(&to.path(lake), &ring)?;
+        Ok(to.path(lake))
+    }
+
+    /// Put `lake`'s file back from the copy in `dir`, only where this
+    /// keyring holds none: its own file holds destroys an older copy may
+    /// not. `false`, and nothing written, where it holds one.
+    pub fn restore(&self, lake: &LakeId, dir: &Path) -> Result<bool> {
+        let _held = lakelands_core::lock(&self.lock);
+        let (path, from) = (self.path(lake), FileKeyring::new(dir).path(lake));
+        if path.exists() {
+            return Ok(false);
+        }
+        // A copy that is not there restores nothing, rather than no keys.
+        fs::metadata(&from).map_err(|e| failed(Doing::Read, Detail::io(&e)))?;
+        self.write(&path, &self.read(&from)?)?;
+        Ok(true)
+    }
+
     fn versions(&self, lake: &LakeId, source: &SourceId) -> Result<Option<Versions>> {
         let _held = lakelands_core::lock(&self.lock);
         Ok(self.read(&self.path(lake))?.sources.remove(source))

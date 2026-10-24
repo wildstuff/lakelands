@@ -2055,6 +2055,10 @@
    "position": 1
   },
   {
+   "code": "backup_other_log",
+   "held": 1
+  },
+  {
    "code": "client_cert_half"
   },
   {

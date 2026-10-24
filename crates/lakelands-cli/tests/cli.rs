@@ -1846,6 +1846,94 @@ fn import_makes_the_exported_lake_in_an_empty_lake_of_its_name() {
     );
 }
 
+/// `backup` brings its directory up to the head, writing only what is new,
+/// and copies the keys apart from it; `restore --check` verifies it, and
+/// `restore` puts the keys back where the keyring holds none, then imports.
+#[test]
+fn backup_grows_its_directory_and_restore_makes_the_lake_with_its_keys() {
+    let keyring = r#"{"lakelands": 1, "owner": "owner", "keys": {"keyring": "keys"}}"#;
+    let from = Shell::on("backup-from", Backend::Store);
+    from.lake();
+    fs::write(from.root.join("lakelands.json"), keyring).unwrap();
+    from.run(&["apply", &from.fixture()]);
+    let (dir, keys) = (from.root.join("backup"), from.root.join("backup-keys"));
+    let (dir, keys) = (dir.display().to_string(), keys.display().to_string());
+    let (head, _) = last_event(&from.run(&["feed"]).out);
+    ok(
+        &from.run(&["backup", "--to", &dir, "--keys-to", &keys]),
+        &format!(
+            "backed up finance through position {head} ({} new event(s), new) to <root>/backup\n\
+             copied the lake's keys to <root>/backup-keys/finance.keys.json\n",
+            head + 1
+        ),
+    );
+    ok(
+        &from.run(&["backup", "--to", &dir]),
+        &format!(
+            "backed up finance through position {head} (0 new event(s), since {head}) to <root>/backup\n"
+        ),
+    );
+    from.run(&[
+        "apply",
+        &from.bundle(
+            "more",
+            &[
+                ("types/partner.yaml", PARTNER),
+                ("types/note.yaml", "name: note\nfields:\n  text: text\n"),
+            ],
+        ),
+    ]);
+    let (now, hash) = last_event(&from.run(&["feed"]).out);
+    assert!(now > head);
+    let grown = from.run(&["backup", "--to", &dir]);
+    assert!(
+        grown
+            .out
+            .contains(&format!("({} new event(s), since {head})", now - head)),
+        "{}",
+        grown.err
+    );
+    // The keys are never kept with the backup.
+    let inside = format!("{dir}/keys");
+    let mixed = from.run(&["backup", "--to", &dir, "--keys-to", &inside]);
+    assert!(
+        mixed.code == 1 && mixed.err.contains("one inside the other"),
+        "{}",
+        mixed.err
+    );
+
+    let check = from.run(&["restore", &dir, "--check"]);
+    assert_eq!(check.code, 0, "{}", check.err);
+    assert!(
+        check
+            .out
+            .contains(&format!("through {now} (last hash {hash})")),
+        "{}",
+        check.out
+    );
+
+    let to = Shell::on("backup-to", Backend::Store);
+    to.lake();
+    fs::write(to.root.join("lakelands.json"), keyring).unwrap();
+    let restored = to.run(&["restore", &dir, "--keys-from", &keys]);
+    assert_eq!(restored.code, 0, "{}", restored.err);
+    assert!(
+        restored.out.starts_with(&format!(
+            "put the keys of lake `finance` back from {keys}\nimported lake `finance`"
+        )),
+        "{}",
+        restored.out
+    );
+    assert_eq!(to.run(&["feed"]).out, from.run(&["feed"]).out);
+    // The keyring's own file is never replaced by a copy.
+    let twice = to.run(&["restore", &dir, "--keys-from", &keys]);
+    assert!(
+        twice.code == 1 && twice.err.contains("already holds a file"),
+        "{}",
+        twice.err
+    );
+}
+
 #[test]
 fn import_refuses_a_lake_that_holds_events_another_lake_memory_and_a_damaged_export() {
     let from = Shell::on("import-refusals-from", Backend::Store);

@@ -176,7 +176,10 @@ file's contents; the operating system's lock does not.
 - It is not a promise that the index or the projection can be read by
   another program. They are the engine's; only the segments are the
   format. The projection is derived and a rebuild makes it again; the
-  index is not, and goes into a backup with the segments.
+  index is not, and a file copy of the directory takes it with the
+  segments. A backup the store writes holds the segments alone, and its
+  import makes the index again
+  (`docs/decisions/077-a-backup-is-an-export-that-grows.md`).
 - It is not a replication scheme. Copying a directory while a writer
   appends can catch an uncommitted tail, which the next writer cuts off.
 - It is not a requirement on other engines. An engine that keeps events
@@ -222,3 +225,6 @@ file's contents; the operating system's lock does not.
 - An append syncs its segment and its index at once, and every open
   checks the active segment's last group against its hashes; before, it
   synced the segment, then the index (lakelands#1037).
+- The index goes into a file copy of the directory, and a backup the
+  store writes holds the segments alone; before, every backup was said
+  to hold the index (lakelands#1369).

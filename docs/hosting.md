@@ -365,10 +365,20 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   - **Keep backups honest:** a key restored from a backup restores what
     it sealed. The key store's backups must follow its destroys, and the
     keyring stays out of the lake's backup set: a backup that carries
-    both carries what forgetting destroys. A disk snapshot, a PostgreSQL
+    both carries what forgetting destroys. `lakelands backup` never
+    writes a key into its directory; `--keys-to <dir>` copies the lake's
+    keyring file into a directory of its own, and is refused inside the
+    backup's, around it or inside a lake's. A disk snapshot, a PostgreSQL
     WAL archive or a copy outside the lake is out of the act's reach. An
     import finishes a forgetting its export holds, so a key store
     restored beside it has that source's keys destroyed again.
+  - **A log backup older than a forgetting** does not hold the act.
+    Restored beside the key store that destroyed the source's keys, its
+    import needs a key that is gone and is refused `key_missing`: it
+    fails closed and brings no value back. Restore a backup taken after
+    the act instead; running `lakelands backup` again into the same
+    directory makes one
+    (`docs/decisions/077-a-backup-is-an-export-that-grows.md`).
   - **Backups under key periods:** back the key directory up at least
     once a period. A backup older than the newest version the log used
     leaves the lake refusing a source's writes, `key_missing`, since the
@@ -519,7 +529,9 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   understand or a range outside the log, and 3 when it could not check
   (no lake yet, no projection, a memory lake, the database
   unreachable). `index/` is part of the
-  log, not derived data: back it up and restore it with `log/`. A
+  log, not derived data: a file copy of a SQLite lake's directory takes
+  it with `log/` (`lakelands backup` takes neither, and the import
+  makes the index again). A
   segment without its index file, a `projection.db` with no segment
   beside it, and a log whose segments do not follow each other (a
   sealed segment gone, or another lake's in its place) are refused as
@@ -563,8 +575,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   answered, and at a writer's open that finds one past it; never on a
   read-only handle or in an import
   (`docs/decisions/074-a-segment-is-sealed-by-size.md`). So a lake never
-  checkpointed still has sealed files that never change: a file backup
-  copies each sealed segment once and the active one each time. The
+  checkpointed still has sealed files that never change: a file copy
+  takes each sealed segment once and the active one each time
+  (`lakelands backup` writes only the events after its last line, on
+  every engine). The
   write that crosses the bound waits for
   the seal, about 0.5 s at the default. A seal that fails does not fail
   that write; it is tried after the next one.
@@ -690,6 +704,38 @@ long run imported 257 606 events (100 000 records) in 40 s on the memory
 engine, 136 s on SQLite and 335 s on PostgreSQL, holding at most 23 MiB
 of heap, on a 12-core machine at a load of 17 to 31.
 
+**Backing a lake up.** `lakelands backup --to <dir>` writes the lake's
+log as an export does, and run again into the same directory writes
+only the events after its last line
+(`docs/decisions/077-a-backup-is-an-export-that-grows.md`). It reads
+only, on every engine, beside a `serve` that holds the lake. Its cut is
+the head it read when it began; writes that land meanwhile are the next
+run's. It writes no manifest and no key; the line it prints names the
+head, how many events it wrote and the position the directory held
+before. A run stopped halfway leaves a torn last line, which the next
+run cuts and writes again. A directory whose last line is not the
+lake's own event at that position, another lake's backup or one of the
+lake before an upgrade, is refused as `backup_other_log`, and nothing
+in it is changed: back up into a new directory. A run reads none of the
+lines before the last, so damage there is found by the restore, or by
+`lakelands restore <dir> --check`, whose exit status is `verify`'s (0
+it holds, 1 damaged, 3 not checked). `lakelands restore <dir>` is
+`import` of the directory, with `--keys-from <dir>` putting the lake's
+keyring file back first, only where the root's keyring has none:
+
+```sh
+lakelands --root /srv/lakes backup --to /backup/finance --keys-to /keys-backup
+lakelands --root /srv/lakes restore /backup/finance --check
+lakelands init restored
+lakelands --root restored lake new finance
+lakelands --root restored restore /backup/finance --keys-from /keys-backup
+```
+
+The restored lake answers as the lake did at the backup's cut. A file
+copy of a SQLite lake's directory is a backup too, for SQLite only and
+taken with the writer stopped: a copy made while it appends can catch
+an append half written, which the next writer cuts off.
+
 **A projection is read only by the layout that made it.** A SQLite or
 PostgreSQL projection is marked with its engine's layout number when it
 is made, and a build whose engine lays the projection out otherwise does
@@ -792,9 +838,13 @@ release with real installations, to it (`docs/log-format.md` §6;
   one append. `lakelands upgrade` runs that open by itself at a moment
   the operator picks, and `lakelands upgrade --check` says what it would
   do and opens nothing.
-- **Take a backup before, and stop every older process first.** There is
-  no downgrade: a lake a release upgraded is not opened by the release
-  before. A writer of the release before that still holds the lake is
+- **Take a backup into a new directory before, and stop every older
+  process first.** There is no downgrade: a lake a release upgraded is
+  not opened by the release before, and neither is a backup run after
+  the upgrade, which holds its `lake_upgraded`: so the way back is
+  `lakelands backup --to <new dir>` before the upgrade, kept apart from
+  the backup that grows
+  (`docs/decisions/077-a-backup-is-an-export-that-grows.md`). A writer of the release before that still holds the lake is
   refused at its next append once the upgrade's lease is taken (its
   fence is below it), so stop every older process before the first
   writer of the new release opens the lake.

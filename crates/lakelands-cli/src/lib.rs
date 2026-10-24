@@ -405,6 +405,60 @@ fn command() -> Command {
                 ),
         )
         .subcommand(
+            Command::new("backup")
+                .about("Bring a backup directory up to the lake's head, writing only what is new; it only reads, beside a running serve")
+                .long_about(
+                    "Bring a backup directory up to the lake's head: a new or empty directory takes \
+                     the whole log, one an earlier backup of this lake wrote takes only the events \
+                     after its last; it only reads, beside a running serve. The lake's keys are \
+                     never written into it: --keys-to copies them into a directory of their own \
+                     (`docs/hosting.md`, Backups).",
+                )
+                .arg(
+                    Arg::new("to")
+                        .long("to")
+                        .value_name("DIR")
+                        .required(true)
+                        .value_parser(clap::builder::NonEmptyStringValueParser::new())
+                        .help("The backup's directory: new, empty, or one this lake's backup wrote"),
+                )
+                .arg(
+                    Arg::new("keys-to")
+                        .long("keys-to")
+                        .value_name("DIR")
+                        .value_parser(clap::builder::NonEmptyStringValueParser::new())
+                        .help("Copy the lake's file of the root's keyring into this directory, apart from the backup"),
+                ),
+        )
+        .subcommand(
+            Command::new("restore")
+                .about("Make the backup's lake from its directory, in the root's empty lake of that name; --check only verifies it")
+                .after_help(
+                    "Exit status of --check: 0 the backup holds; 1 it is damaged; 2 the command line \
+                     was not understood; 3 it could not be checked.",
+                )
+                .arg(
+                    Arg::new("dir")
+                        .value_name("DIR")
+                        .required(true)
+                        .value_parser(clap::builder::NonEmptyStringValueParser::new())
+                        .help("A directory `lakelands backup` or `lakelands export` wrote"),
+                )
+                .arg(
+                    Arg::new("keys-from")
+                        .long("keys-from")
+                        .value_name("DIR")
+                        .value_parser(clap::builder::NonEmptyStringValueParser::new())
+                        .help("Put the lake's keyring file back from this copy first, where the root's keyring holds none"),
+                )
+                .arg(
+                    Arg::new("check")
+                        .long("check")
+                        .action(ArgAction::SetTrue)
+                        .help("Verify the backup's chain and change nothing"),
+                ),
+        )
+        .subcommand(
             Command::new("settings")
                 .about("Show every setting with its value for the lake; set or unset a lake setting")
                 .long_about(
@@ -457,6 +511,11 @@ where
     };
     if m.subcommand_name() == Some("verify") {
         return verify(&m, out, err, open).await;
+    }
+    if let Some(("restore", sub)) = m.subcommand()
+        && sub.get_flag("check")
+    {
+        return restore_check(sub, out, err);
     }
     let lake = |m: &ArgMatches| {
         let root = PathBuf::from(m.get_one::<String>("root").map_or(".", String::as_str));
@@ -533,7 +592,7 @@ async fn dispatch(
                 ),
             );
         }
-        "import" => {
+        "import" | "restore" => {
             let root = root::Root::open(&root_dir)?;
             let dir = PathBuf::from(text(sub, "dir").unwrap_or_default());
             // The export's lake, which is inside every hash and cannot be
@@ -541,6 +600,14 @@ async fn dispatch(
             // mismatch naming both.
             let lake = text(sub, "lake").or_else(|| commands::exported_lake(&dir));
             let location = root.location(lake.as_deref())?;
+            // A restore is an import, its keys put back first where the
+            // keyring has lost them.
+            if let Some(keys) = (name == "restore")
+                .then(|| text(sub, "keys-from"))
+                .flatten()
+            {
+                commands::restore_keys(out, &root, &location.lake, Path::new(&keys))?;
+            }
             let seams = Seams {
                 engines: engines(),
                 ..root.seams()
@@ -573,7 +640,7 @@ async fn dispatch(
         };
         return commands::build_ahead(out, location, seams, sub.get_flag("discard")).await;
     }
-    // `feed` and `export` only read: they take no lease and append
+    // `feed`, `export` and `backup` only read: they take no lease and append
     // nothing, so they run beside a `serve` that holds the writer, and an
     // export's head is the lake's as it stood
     // (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`).
@@ -586,6 +653,7 @@ async fn dispatch(
         open(location, OpenMode::Rebuild, root.seams()).await?
     } else if name == "feed"
         || name == "export"
+        || name == "backup"
         || (name == "settings" && sub.subcommand().is_none())
     {
         match open(location.clone(), OpenMode::Read, root.seams()).await {
@@ -678,6 +746,11 @@ async fn dispatch(
         "export" => {
             commands::export(out, &store, Path::new(&text(sub, "to").unwrap_or_default())).await
         }
+        "backup" => {
+            let to = PathBuf::from(text(sub, "to").unwrap_or_default());
+            let keys = text(sub, "keys-to").map(PathBuf::from);
+            commands::backup(out, &store, &root, &to, keys.as_deref()).await
+        }
         "settings" => match sub.subcommand() {
             Some((change, of)) => {
                 let key = settings::key_of(of);
@@ -691,6 +764,43 @@ async fn dispatch(
         },
         "serve" => serve(&root, store, who, open).await,
         other => unreachable!("clap knows no command `{other}`"),
+    }
+}
+
+/// Run `restore --check`: the backup's chain verified as an import would,
+/// nothing opened or written. Its exit status is `verify`'s: 0 the backup
+/// holds, 1 it is damaged, 3 it could not be checked.
+fn restore_check(sub: &ArgMatches, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
+    use lakelands_api::error::Situation;
+    let dir = PathBuf::from(sub.get_one::<String>("dir").map_or("", String::as_str));
+    let (code, line) = match lakelands_core::export::verify(&dir) {
+        Ok(v) => (
+            0,
+            format!(
+                "the backup in {} holds lake `{}` from position 0 through {} (last hash {})",
+                dir.display(),
+                commands::exported_lake(&dir).unwrap_or_default(),
+                v.through,
+                v.hash.0
+            ),
+        ),
+        Err(Error::Unavailable { situation })
+            if matches!(*situation, Situation::Damaged { .. }) =>
+        {
+            let todo = "  what to do: restore from another backup; nothing was changed";
+            (
+                1,
+                format!("the backup in {}: {situation}\n{todo}", dir.display()),
+            )
+        }
+        Err(e) => {
+            let _ = write!(err, "{}", Failure::from(e));
+            return 3;
+        }
+    };
+    match writeln!(out, "{line}") {
+        Ok(()) => code,
+        Err(_) => 3,
     }
 }
 
