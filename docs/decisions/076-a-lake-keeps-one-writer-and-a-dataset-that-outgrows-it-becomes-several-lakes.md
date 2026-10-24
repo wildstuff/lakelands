@@ -127,8 +127,8 @@ accepted, a host reads each lake on its own.
 A leader that appends what several writers send keeps one chain, so 020
 and 030 hold unchanged. But the leader is a writer as today's is, and
 today any number of callers, in the writer's process or over a network
-door, already send writes to the one writer, which orders them (008).
-A second writing process adds something only if it decides writes while
+door, already send writes to the one writer, which orders them (008). A
+second writing process adds something only if it decides writes while
 the leader decides others. Every write is decided over the writes before
 it (073), so deciding side by side means deciding against a state that
 may be stale and having the leader refuse, at the append, a write whose
@@ -138,7 +138,8 @@ rule a write is held to (grants with `only`, references, sets,
 constraints, triggers). It buys at most the deciding, and the memory
 measurement bounds that: with deciding and folding free, SQLite would
 still spend about 150 µs a write in its append and its projection, which
-stay one, so about 6 700 writes a second rather than 5 000. The projection, one per lake, is still folded in one order.
+stay one, so about 6 700 writes a second rather than 5 000. The
+projection, one per lake, is still folded in one order.
 
 ### Standby and failover rest on the same lease
 
@@ -180,14 +181,14 @@ writer does.
 
 ## Why
 
-One order is what lets a lake be verified from its files alone and
-every answer be repeated at one position. The measurements show that
-the writer is not the bound one would give that up for: one SQLite lake
+One order is what lets a lake be verified from its files alone and every
+answer be repeated at one position. The measurements show that the
+writer is not the bound one would give that up for: one SQLite lake
 takes about 5 000 writes a second, most of it in the sync and the
 projection's writes that a second writer would not share, and eight
 lakes take five times one lake's rate, each at about two thirds of a
-lone lake's on a busy machine. Splitting a dataset into lakes asks the host
-to name the split, which a host that keeps one lake per company or
+lone lake's on a busy machine. Splitting a dataset into lakes asks the
+host to name the split, which a host that keeps one lake per company or
 client already does; partitions inside a lake would make the store guess
 it, and then pay at every write that crosses it.
 
