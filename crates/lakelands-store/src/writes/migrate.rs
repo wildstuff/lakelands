@@ -235,6 +235,7 @@ impl Call<'_> {
         (now, judging): (Option<Timestamp>, Judging),
     ) -> Result<MigrationPlan> {
         let before = w.ontology.ty(&m.to.name)?.clone();
+        let sees = Sight::held(self.who, &w.ontology);
         // A migration reshapes stored records, and a view stores none. A
         // view changes, or becomes a stored type, by being declared again;
         // a stored type never becomes a view, since its records would
@@ -325,38 +326,37 @@ impl Call<'_> {
             let name = m.to.name.clone();
             Error::invalid(said.within(Place::AfterMigration { name }))
         };
-        let gone = |reader: Option<Place>,
-                    names: &BTreeSet<FieldName>,
-                    was: &TypeDecl,
-                    is: &TypeDecl| {
-            let n = names.iter().find(|n| has(was, n) && !has(is, n))?;
-            // At an accept the field may be one the accepter may not know of,
-            // taken away knowingly by the proposer: it is told neither the
-            // field nor its reader (013, extended).
-            let unknown = |f: &&FieldDecl| rights::field_access(self.who, was, f) == Access::None;
-            if was
-                .fields
-                .iter()
-                .filter(|f| &f.name == n)
-                .any(|f| unknown(&f))
-            {
-                return Some(after_it(Case::ReadsTakenAway.into()));
-            }
-            let renamed = |(from, _): &&(FieldName, FieldName)| from == n && is.name == m.to.name;
-            let renamed = m.renames.iter().find(renamed).map(|(_, to)| to.clone());
-            let (unnamed, field, ty) = (reader.is_none(), n.clone(), is.name.clone());
-            let case = Case::MigrationTakesRead {
-                unnamed,
-                field,
-                ty,
-                renamed,
+        let gone =
+            |reader: Option<Place>, names: &BTreeSet<FieldName>, was: &TypeDecl, is: &TypeDecl| {
+                let n = names.iter().find(|n| has(was, n) && !has(is, n))?;
+                // At an accept the field may be one the accepter may not know of,
+                // taken away knowingly by the proposer: it is told neither the
+                // field nor its reader (013, extended).
+                let unknown = |f: &&FieldDecl| sees.field_access(was, f) == Access::None;
+                if was
+                    .fields
+                    .iter()
+                    .filter(|f| &f.name == n)
+                    .any(|f| unknown(&f))
+                {
+                    return Some(after_it(Case::ReadsTakenAway.into()));
+                }
+                let renamed =
+                    |(from, _): &&(FieldName, FieldName)| from == n && is.name == m.to.name;
+                let renamed = m.renames.iter().find(renamed).map(|(_, to)| to.clone());
+                let (unnamed, field, ty) = (reader.is_none(), n.clone(), is.name.clone());
+                let case = Case::MigrationTakesRead {
+                    unnamed,
+                    field,
+                    ty,
+                    renamed,
+                };
+                let said = Said::from(case);
+                Some(after_it(match reader {
+                    Some(reader) => said.within(reader),
+                    None => said,
+                }))
             };
-            let said = Said::from(case);
-            Some(after_it(match reader {
-                Some(reader) => said.within(reader),
-                None => said,
-            }))
-        };
         for reader in w.ontology.types.values().map(|e| &e.decl) {
             let Some(v) = reader.view.as_deref() else {
                 continue;
@@ -385,7 +385,7 @@ impl Call<'_> {
             // definition to (027, extended); another is told that a
             // declaration reads the field, or that one could not be declared.
             let Err(named) = named else { continue };
-            if Sight::held(self.who, &w.ontology).shows(&view) {
+            if sees.shows(&view) {
                 return Err(named);
             }
             return Err(taken(None).unwrap_or_else(|| {
@@ -412,12 +412,12 @@ impl Call<'_> {
                 // (lakelands#662). Another is told that a declaration reads
                 // the field. The field is one the author knows of: one
                 // hidden from it was put back (`as_author`).
-                if Sight::held(self.who, &w.ontology).shows(&d.declaration) {
+                if sees.shows(&d.declaration) {
                     let Declaration::Type(t) = &d.declaration else {
                         return Err(named);
                     };
                     let mut t = t.clone();
-                    rights::known_fields(self.who, &mut t, &|n| w.ontology.ty(n).ok());
+                    sees.known_fields(&mut t, &|n| w.ontology.ty(n).ok());
                     let seen = Declaration::Type(t);
                     let seen = describe::declaration_reads(&seen, &was.name, &|_| None);
                     if let Some(named) = gone(Some(d.declaration.place()), &seen, was, is) {
@@ -431,10 +431,7 @@ impl Call<'_> {
         // so a relation is not removed while a verb in force is declared on
         // its link type (035; 027, extended). The verb is named to an author
         // `describe` shows it to.
-        let (kept, sees) = (
-            links::link_types_of(&m.to),
-            Sight::held(self.who, &w.ontology),
-        );
+        let kept = links::link_types_of(&m.to);
         for r in before.relations.iter().filter(|r| r.carried_by_links()) {
             let ty = links::link_type_name(&before.name, &r.name);
             // A renamed relation is the rename's to judge, below.
@@ -474,9 +471,8 @@ impl Call<'_> {
             if referring.peek().is_some() {
                 let shown = referring.find_map(|t| {
                     let related = |o: &&RelationDecl| o.target == ty && sees.relation(t, o);
-                    let known = |f: &&FieldDecl| {
-                        field(t, f) && rights::field_access(self.who, t, f) != Access::None
-                    };
+                    let known =
+                        |f: &&FieldDecl| field(t, f) && sees.field_access(t, f) != Access::None;
                     let place = match t.relations.iter().find(related) {
                         Some(o) => Place::Relation {
                             name: o.name.clone(),
@@ -507,7 +503,6 @@ impl Call<'_> {
         // check above ends at the reshaping, before it comes to the reads.
         declare::reads_its_type(&after, &Declaration::Type(m.to.clone()))?;
         // So does every verb that reads into it (028, 055).
-        let sees = Sight::held(self.who, &w.ontology);
         let shows = |d: &Declaration| sees.shows(d);
         verbs_judged_again((&w.ontology, &after), &before, &m.to, &shows).map_err(after_it)?;
         // A record that does not convert is already not lossless; its
@@ -693,9 +688,8 @@ impl Call<'_> {
             .map(|f| f.name.clone())
             .collect();
         let shape = record::Plans::default().get(&after, &m.to);
-        let told = |c: &record::Constraint| {
-            (c.reads.iter()).all(|f| rights::reads_both(self.who, &before, m, f))
-        };
+        let told =
+            |c: &record::Constraint| (c.reads.iter()).all(|f| sees.reads_both(&before, m, f));
         for c in shape
             .constraints
             .iter()
@@ -797,7 +791,7 @@ impl Call<'_> {
         // A colliding key is the new key's fields' values: named to one
         // who reads each of them and is answered two of the records that
         // would take it, a collision it can see for itself.
-        let reads = (m.to.key_fields().iter()).all(|f| rights::reads_both(self.who, &before, m, f));
+        let reads = (m.to.key_fields().iter()).all(|f| sees.reads_both(&before, m, f));
         let seen = |ty: &TypeName, keys: &[&RecordKey]| match reads {
             true => crate::reads::answered_of(view, &sees, ty, keys, 2),
             false => Ok(false),
@@ -1028,7 +1022,6 @@ impl Call<'_> {
                 let mut referring = types.filter(|t| t.name != old && refers(t)).peekable();
                 if referring.peek().is_some() {
                     // The type is named only to an author `describe` shows it to.
-                    let sees = Sight::held(self.who, &w.ontology);
                     let named = referring.find(|t| sees.ty(&t.name).is_ok());
                     let ty = named.map(|t| t.name.clone());
                     let links = old.clone();
