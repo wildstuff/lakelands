@@ -6,8 +6,10 @@ MCP at `/lakes/<lake>/mcp`, and REST under every other path of
 root's `lakelands.json`, take the same API keys, and resolve them through
 the same resolver to the same principals. `lakelands serve --mcp` writes
 the address it listens on to standard error as
-`lakelands: serving HTTP at http://<address>/`, so a `bind` on port 0
-takes a free port and still says which.
+`lakelands: listening at http://<address>/ (starting)` once the door is
+bound, and as `lakelands: serving HTTP at http://<address>/` once every
+lake is open, so a `bind` on port 0 takes a free port and still says
+which.
 
 A REST route only translates. Its path, its query, its headers and its
 body become the arguments of one door, under the names that door's MCP
@@ -310,6 +312,30 @@ The feed is the log itself, unmasked, so only a principal that reads
 every field of every record, withheld records included
 (`Grants::reads_everything`), may open it
 (`docs/decisions/037-the-feed-over-a-network-door.md`).
+
+## Health and readiness
+
+Two routes answer outside any lake, at fixed paths, for a supervisor or a
+load balancer. They take no key and no `Origin` is checked; they carry no
+lake name, count or position, only `{"status": "<word>"}`; they read a few
+flags each lake holds in memory, with no fold and no scan; and they are
+not tools, so the catalog does not list them. `HEAD` is answered like
+`GET`; any other method answers `405`.
+
+| Route | Status | `status` | Meaning |
+|---|---|---|---|
+| `GET /livez` | `200` | `up` | The process is up and the door answers. |
+| `GET /readyz` | `200` | `ready` | Every lake it serves is open, holds its writer lease as its handle knows it, and answers its head. |
+| `GET /readyz` | `503` | `not_ready` | A lake's handle does not hold its lease, or does not answer its head. A lease another writer took shows only once the handle has noticed it (see below). |
+| `GET /readyz` | `503` | `starting` | The lakes are not all open yet, for instance while the open of an upgrade rebuilds a projection. |
+
+`lakelands serve` binds the door before it opens the lakes, so `/livez`
+answers `200` and `/readyz` `503 starting` throughout an open. A lease
+lost to another writer shows only from the moment the handle has noticed it,
+at its next write, rebuild or compaction: until then `/readyz` can still say
+`ready`. Nor does `/readyz` compare the projection's head with the end of
+the log; an open does not return before its fold is done, so a lake that is
+open has folded what the log held then.
 
 ## A client in Rust
 
