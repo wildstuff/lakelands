@@ -1022,7 +1022,7 @@ impl Call<'_> {
         let far = decl.reads_across(on, &|n| w.ontology.ty(n).ok());
         let mut far = far.iter().flatten();
         let pinned = (proposed || decl.risk != Risk::Low)
-            && (self.pin(w, on, Some(&decl))? || far.any(|r| sees.only_holder(r.0)));
+            && (Self::pin(&sees, on, Some(&decl))? || far.any(|r| sees.only_holder(r.0)));
         if let VerbEffect::External { executor } = &decl.effect {
             bound_executor(self.lake, executor)?;
         }

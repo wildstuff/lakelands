@@ -177,3 +177,86 @@ fn one_who_holds_restricted_is_shown_restricted_records_its_only_aside() {
     assert_eq!(judged(true, true), (true, false));
     assert_eq!(judged(false, false), (false, false));
 }
+
+#[test]
+fn a_retire_a_pin_and_an_only_are_judged_of_the_sights_principal() {
+    let declared = declared();
+    let note = declared.ty(&"note".into()).expect("declared").clone();
+    let mut derived = note.clone();
+    derived.fields[0].authority = lakelands_api::ontology::Authority::Derived;
+    let (reader, mut owner) = (who(), who());
+    owner.grants = Grants::owner();
+    let mut holder = owner.clone();
+    let only = TypeGrants {
+        only: [("text".into(), "x".into())].into(),
+        ..Default::default()
+    };
+    holder.grants.types.insert("note".into(), only);
+    let judged = |who: &Principal| {
+        let sight = Sight::held(who, &declared);
+        let pins = (sight.pinnable(&note, None), sight.pinnable(&derived, None));
+        (sight.may_retire(&note), sight.holds_only(), pins)
+    };
+    assert_eq!(judged(&reader), (false, false, (true, true)));
+    assert_eq!(judged(&owner), (true, false, (true, true)));
+    // A pair on a computed field would move off itself at the accept.
+    assert_eq!(judged(&holder), (true, true, (true, false)));
+}
+
+#[test]
+fn a_migration_is_known_as_the_sights_principal_reads_it() {
+    let declared = declared();
+    let to = declared.ty(&"invoice".into()).expect("declared").clone();
+    let mut was = to.clone();
+    was.fields[1].name = "was".into();
+    let mut m = Migration::to(to);
+    m.renames.push(("was".into(), "n".into()));
+    let (reader, mut owner) = (who(), who());
+    owner.grants = Grants::owner();
+    let find = |n: &TypeName| declared.ty(n);
+    let judged = |who: &Principal| {
+        let sight = Sight::held(who, &declared);
+        let mut known = m.clone();
+        sight.known_migration(&was, &mut known, &find);
+        let mut report = MigrationReport {
+            ty: "invoice".into(),
+            from_schema_hash: "whole".into(),
+            ..Default::default()
+        };
+        sight.shown_hashes(&was, &m, &mut report, &find);
+        let (reads, whole) = (sight.reads_both(&was, &m, &"n".into()), "whole");
+        (reads, known.renames, report.from_schema_hash == whole)
+    };
+    // The reader may not know `n` by the name it had.
+    assert_eq!(judged(&reader), (false, vec![], false));
+    assert_eq!(judged(&owner), (true, m.renames.clone(), true));
+}
+
+#[test]
+fn a_report_is_shown_through_the_sights_own_lookup_and_description() {
+    use lakelands_api::write::{Carried, Rekeyed};
+    let declared = declared();
+    let sight = Sight::new(who(), &[], None, &declared);
+    let invoice = declared.ty(&"invoice".into()).expect("declared").clone();
+    let rekeyed = |ty: &str| Rekeyed {
+        ty: ty.into(),
+        records: 1,
+        collisions: 0,
+        missing: 0,
+    };
+    let carried = |name: &str| Carried {
+        kind: "type".into(),
+        name: name.into(),
+    };
+    let mut report = MigrationReport {
+        ty: "invoice".into(),
+        rekeyed: vec![rekeyed("owner"), rekeyed("note")],
+        carried: vec![carried("owner"), carried("note")],
+        ..Default::default()
+    };
+    sight.shown_report(&invoice, &Migration::to(invoice.clone()), &mut report);
+    // `owner`, which it is not shown, is neither found nor described.
+    assert_eq!(report.rekeyed, [rekeyed("note")]);
+    assert_eq!(report.carried, [carried("note")]);
+    assert!(report.more);
+}

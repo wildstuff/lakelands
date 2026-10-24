@@ -906,7 +906,7 @@ impl Catalog for Doors {
         m: ValueTypeMigration,
     ) -> Result<Reply<ValueTypeReport>> {
         self.write(who, move |c| {
-            crate::writes::granted(c.grants().authors())?;
+            crate::writes::granted(c.authors())?;
             let w = c.writer()?;
             let view = c.lake.engine.view(None)?;
             let report = c

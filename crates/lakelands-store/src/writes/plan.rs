@@ -129,14 +129,14 @@ impl Call<'_> {
     /// caller would tell of that record.
     pub(crate) fn enacting(&self) -> Result<()> {
         check_context(self.lake, &self.context)?;
-        granted(self.grants().authors())?;
+        granted(self.authors())?;
         self.restricted_to_act()
     }
 
     /// Refused `grant_needed` to one without `restricted`, whatever the
     /// lake holds (062).
     pub(crate) fn restricted_to_act(&self) -> Result<()> {
-        match self.grants().sees_restricted() {
+        match self.sees_restricted() {
             true => Ok(()),
             false => Err(Error::refused(
                 None,
@@ -151,7 +151,7 @@ impl Call<'_> {
     /// previewed for one who may not make it, only telling, on the records
     /// it is told of, as a proposal's plan (062).
     pub(crate) fn judging(&self, when: When) -> Judging {
-        match when == When::Plan && !self.grants().sees_restricted() {
+        match when == When::Plan && !self.sees_restricted() {
             true => Judging::Proposal,
             false => Judging::Act,
         }
@@ -260,7 +260,7 @@ impl Call<'_> {
     ) -> Result<Planned> {
         self.redeclared(&w.ontology, std::slice::from_mut(&mut declaration))?;
         // One who reads every field was judged against the lake itself.
-        if !self.grants().reads_all_fields() {
+        if !Sight::held(self.who, &w.ontology).reads_all_fields() {
             declare::check_declaration(&w.ontology, &declaration, false)?;
         }
         self.check_bound(&declaration, Some(&w.ontology), None)?;
@@ -338,7 +338,7 @@ impl Call<'_> {
         types.extend(others_shown(&sight, preflight.others.clone()));
         let plan = plan_of(w, (types, Vec::new()));
         stale(&plan, against)?;
-        let renamed = self.known_renames(&w.ontology, &m);
+        let renamed = Self::known_renames(&sight, &w.ontology, &m);
         let nothing = unchanged(&w.ontology, &m, &preflight);
         // A plan of a lossy change tells it; any other refuses what its act
         // refuses, past `max_set_changes` too.

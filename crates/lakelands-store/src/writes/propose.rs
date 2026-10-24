@@ -114,11 +114,11 @@ impl Call<'_> {
         let now = self.lake.clock(&mut w);
         // A holder of `only` changes no shape, and proposes no write that
         // anything but the write itself could move off its pairs (051).
-        granted(!write.is_schema() || !self.grants().holds_only())?;
+        granted(!write.is_schema() || !Sight::held(self.who, &w.ontology).holds_only())?;
         let mut d = self.decide(&w, view.as_ref(), now, 1);
         let pin = |d: &Decide<'_>, ty: &TypeName| {
             ordinary_door(ty)?;
-            self.pin(&w, d.at.sight.ty(ty)?, None)
+            Self::pin(&d.at.sight, d.at.sight.ty(ty)?, None)
         };
         let (mut pinned, judging) = (false, Judging::Proposal);
         // A change of the ontology keeps what it would do as its proposer
@@ -277,10 +277,9 @@ impl Call<'_> {
         Ok(outcome)
     }
 
-    /// Whether a proposal by this caller on `decl`, or of a call of `verb`,
-    /// is pinned, refusing one that may not be (051).
-    pub(super) fn pin(&self, w: &Writer, decl: &TypeDecl, verb: Option<&VerbDecl>) -> Result<bool> {
-        let sees = Sight::held(self.who, &w.ontology);
+    /// Whether a proposal by the principal of `sees` on `decl`, or of a
+    /// call of `verb`, is pinned, refusing one that may not be (051).
+    pub(super) fn pin(sees: &Sight<'_>, decl: &TypeDecl, verb: Option<&VerbDecl>) -> Result<bool> {
         let pinned = sees.only_holder(decl);
         granted(!pinned || sees.pinnable(decl, verb))?;
         Ok(pinned)
@@ -685,9 +684,9 @@ impl Call<'_> {
                 if plan.report.restated != report.restated {
                     return Err(changed());
                 }
-                renamed = self.known_renames(&w.ontology, migration);
-                sections.0 = vec![self.shown(&w, migration, plan.report.clone())?];
                 let sight = Sight::held(self.who, &w.ontology);
+                renamed = Self::known_renames(&sight, &w.ontology, migration);
+                sections.0 = vec![self.shown(&w, migration, plan.report.clone())?];
                 (sections.0).extend(plan::others_shown(&sight, plan.others.clone()));
                 let (first, same) = (drafts.len(), unchanged(&w.ontology, migration, &plan));
                 let own = self.migration_drafts(&w, (**migration).clone(), plan, now, first)?;
@@ -832,12 +831,16 @@ impl Call<'_> {
         }
     }
 
-    /// A migration's renames as the one answered may know of them, taken
-    /// before the append, while the type stands as it was.
-    pub(super) fn known_renames(&self, o: &Ontology, m: &Migration) -> Vec<(FieldName, FieldName)> {
+    /// A migration's renames as the principal of `sees` may know of them,
+    /// taken before the append, while the type stands as it was in `o`.
+    pub(super) fn known_renames(
+        sees: &Sight<'_>,
+        o: &Ontology,
+        m: &Migration,
+    ) -> Vec<(FieldName, FieldName)> {
         let mut m = m.clone();
         if let Ok(was) = o.ty(&m.to.name) {
-            Sight::held(self.who, o).known_migration(was, &mut m, &|n| o.ty(n).ok());
+            sees.known_migration(was, &mut m, &|n| o.ty(n).ok());
         }
         m.renames
     }

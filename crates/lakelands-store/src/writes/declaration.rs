@@ -335,11 +335,12 @@ impl Call<'_> {
     /// Reads each type of `declarations` that is declared already as its
     /// author's view of it ([`as_author`]).
     pub(super) fn redeclared(&self, o: &Ontology, declarations: &mut [Declaration]) -> Result<()> {
+        let sees = Sight::held(self.who, o);
         for d in declarations.iter() {
             if let Declaration::Type(t) = d
                 && let Some(before) = o.types.get(&t.name)
             {
-                reads_stand(&Sight::held(self.who, o), &before.decl, t, None)?;
+                reads_stand(&sees, &before.decl, t, None)?;
             }
         }
         self.reads_as_author(o, declarations, false)?;
@@ -353,7 +354,7 @@ impl Call<'_> {
             let Declaration::Type(t) = d else { continue };
             initials(&after, t);
             if let Some(before) = o.types.get(&t.name) {
-                as_author(&Sight::held(self.who, o), &before.decl, t, &[])?;
+                as_author(&sees, &before.decl, t, &[])?;
             }
         }
         Ok(())

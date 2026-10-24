@@ -685,12 +685,17 @@ impl Call<'_> {
         self.asked().draft(now, origin, body)
     }
 
-    /// Its caller's sight over no declarations, for what its grants alone
-    /// answer ([`Sight::authors`], [`Sight::sees_restricted`]): asked where
-    /// no declarations are at hand, as before the writer is taken.
-    pub(crate) fn grants(&self) -> Sight<'_> {
-        static NONE: Vec<lakelands_api::engine::Declared> = Vec::new();
-        Sight::held(self.who, &NONE)
+    /// Whether its caller may change a shape ([`Sight::authors`]), asked
+    /// where it is refused before the writer is taken and before anything
+    /// is read: so of a sight over no declarations, since the answer reads
+    /// its grants alone.
+    pub(crate) fn authors(&self) -> bool {
+        Sight::held(self.who, &Vec::<lakelands_api::engine::Declared>::new()).authors()
+    }
+
+    /// [`Sight::sees_restricted`] of its caller, asked as [`Self::authors`] is.
+    pub(crate) fn sees_restricted(&self) -> bool {
+        Sight::held(self.who, &Vec::<lakelands_api::engine::Declared>::new()).sees_restricted()
     }
 
     fn changed(&self, change: Change, cause: Position, now: Timestamp) -> Draft {
