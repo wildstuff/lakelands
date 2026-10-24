@@ -1504,8 +1504,8 @@ pub(crate) fn types_shown(who: &Principal, o: &Ontology) -> Ontology {
     // (lakelands#943): any other is the lake's own.
     let find = |n: &TypeName| o.ty(n).ok();
     for e in seen.types.values_mut() {
-        if rights::keeps_from(who, &e.decl, &find) {
-            rights::known_fields(who, &mut Arc::make_mut(e).decl, &find);
+        if sees.keeps_from(&e.decl, &find) {
+            sees.known_fields(&mut Arc::make_mut(e).decl, &find);
         }
     }
     seen

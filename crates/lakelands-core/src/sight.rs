@@ -21,12 +21,12 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::Declared;
-use lakelands_api::ontology::{RelationDecl, TypeDecl, VerbDecl, VerbEffect};
+use lakelands_api::ontology::{FieldDecl, RelationDecl, TypeDecl, VerbDecl, VerbEffect};
 use lakelands_api::principal::Renamed;
 use lakelands_api::record::StoredRecord;
-use lakelands_api::write::Declaration;
+use lakelands_api::write::{Declaration, Migration, MigrationReport};
 use lakelands_api::{
-    Error, FieldName, Missing, Position, Principal, RecordKey, SourceId, TypeName, Value,
+    Access, Error, FieldName, Missing, Position, Principal, RecordKey, SourceId, TypeName, Value,
     ValueTypeName,
 };
 
@@ -430,6 +430,68 @@ impl<'o> Sight<'o> {
     /// (006). [`Self::sees_all`] asks no `only` beside it.
     pub fn sees_restricted(&self) -> bool {
         self.who.grants.restricted
+    }
+
+    /// What its principal may do with `field` of `decl` ([`rights::field_access`]).
+    pub fn field_access(&self, decl: &TypeDecl, field: &FieldDecl) -> Access {
+        rights::field_access(&self.who, decl, field)
+    }
+
+    /// Whether its principal holds `only` on some type ([`rights::holds_only`]).
+    pub fn holds_only(&self) -> bool {
+        rights::holds_only(&self.who)
+    }
+
+    /// Whether its principal reads every field and holds no `only` ([`rights::reads_all`]).
+    pub fn reads_all_fields(&self) -> bool {
+        rights::reads_all(&self.who)
+    }
+
+    /// Whether its principal may retire records of `decl` ([`rights::may_retire`]).
+    pub fn may_retire(&self, decl: &TypeDecl) -> bool {
+        rights::may_retire(&self.who, decl)
+    }
+
+    /// Whether its proposal on `decl` may be pinned ([`rights::pinnable`]).
+    pub fn pinnable(&self, decl: &TypeDecl, verb: Option<&VerbDecl>) -> bool {
+        rights::pinnable(&self.who, decl, verb)
+    }
+
+    /// Whether its principal is kept from some of `t` ([`rights::keeps_from`]).
+    pub fn keeps_from(&self, t: &TypeDecl, find: rights::Find<'_, '_>) -> bool {
+        rights::keeps_from(&self.who, t, find)
+    }
+
+    /// `t` as its principal may know it ([`rights::known_fields`]).
+    pub fn known_fields(&self, t: &mut TypeDecl, find: rights::Find<'_, '_>) {
+        rights::known_fields(&self.who, t, find)
+    }
+
+    /// Whether its principal reads `f` before and after `m` ([`rights::reads_both`]).
+    pub fn reads_both(&self, was: &TypeDecl, m: &Migration, f: &FieldName) -> bool {
+        rights::reads_both(&self.who, was, m, f)
+    }
+
+    /// `m` as its principal may know it ([`rights::known_migration`]).
+    pub fn known_migration(&self, was: &TypeDecl, m: &mut Migration, find: rights::Find<'_, '_>) {
+        rights::known_migration(&self.who, was, m, find)
+    }
+
+    /// A report's hashes as its principal is shown them ([`rights::shown_hashes`]).
+    pub fn shown_hashes(
+        &self,
+        made: &TypeDecl,
+        m: &Migration,
+        r: &mut MigrationReport,
+        find: rights::Find<'_, '_>,
+    ) {
+        rights::shown_hashes(&self.who, made, m, r, find)
+    }
+
+    /// A report as its principal is shown it ([`rights::shown_report`]).
+    pub fn shown_report(&self, was: &TypeDecl, m: &Migration, report: &mut MigrationReport) {
+        let described = || self.describe(&self.who.lake);
+        rights::shown_report(&self.who, was, m, report, described, |n| self.ty(n).ok());
     }
 }
 

@@ -138,7 +138,7 @@ impl Call<'_> {
             Err(e) if reshapes => declare::unless_a_migration(e),
             checked => checked,
         };
-        if rights::reads_all(self.who) && self.who.grants.schema {
+        if sees.reads_all_fields() && self.who.grants.schema {
             // But what stands in force listed to no one, as a verb whose
             // `requires` does not parse, is not its to declare again; nor is
             // a tool's name that such a verb bears (the slow path's `taken`).
@@ -314,8 +314,8 @@ impl Call<'_> {
     /// and answers that view, for [`Self::preflight_plan`] to judge its
     /// names against.
     pub(super) fn authored(&self, o: &Ontology, m: &mut Migration) -> Result<Option<Authored>> {
+        let sees = Sight::held(self.who, o);
         if let Some(before) = o.types.get(&m.to.name) {
-            let sees = Sight::held(self.who, o);
             sees.ty(&m.to.name)?;
             reads_stand(&sees, &before.decl, &m.to, Some(m))?;
         }
@@ -326,9 +326,9 @@ impl Call<'_> {
         };
         let find = |n: &TypeName| o.ty(n).ok();
         let (sent, mut known) = (m.clone(), before.decl.clone());
-        rights::known_fields(self.who, &mut known, &find);
+        sees.known_fields(&mut known, &find);
         let (to, pairs) = (&mut m.to, &m.relation_renames);
-        as_author(&Sight::held(self.who, o), &before.decl, to, pairs)?;
+        as_author(&sees, &before.decl, to, pairs)?;
         Ok(Some(Authored { sent, known }))
     }
 
@@ -793,7 +793,7 @@ impl Call<'_> {
             }
             let known: BTreeSet<FieldName> = (decl.fields.iter())
                 .filter(|f| moving.contains(&f.name) && again.contains(&f.name))
-                .filter(|f| rights::field_access(self.who, decl, f) != Access::None)
+                .filter(|f| sight.field_access(decl, f) != Access::None)
                 .map(|f| f.name.clone())
                 .collect();
             let mut unlived = Unlived::of(decl, &known, &sight);
@@ -861,7 +861,7 @@ impl Call<'_> {
                 ..MigrationReport::default()
             };
             let same = Migration::to(decl.clone());
-            rights::shown_hashes(self.who, decl, &same, &mut report, &|n| whole.ty(n).ok());
+            sight.shown_hashes(decl, &same, &mut report, &|n| whole.ty(n).ok());
             report.more = (report.unlive.iter()).any(|u| u.records > u.sample_keys.len() as u64)
                 || (report.breaches.iter()).any(|b| b.records > b.sample_keys.len() as u64);
             out.push(report);
@@ -1076,12 +1076,10 @@ impl Call<'_> {
     ) -> Result<MigrationReport> {
         let view = self.lake.engine.view(None)?;
         let sight = Sight::held(self.who, &w.ontology);
-        let sees = |ty: &TypeName| sight.ty(ty).ok();
         let (was, mut m) = (w.ontology.ty(&m.to.name)?, m.clone());
         w.ontology.complete(&mut m.to);
-        let described = || sight.describe(&self.who.lake);
-        rights::shown_report(self.who, was, &m, &mut report, described, sees);
-        rights::shown_hashes(self.who, was, &m, &mut report, &|n| w.ontology.ty(n).ok());
+        sight.shown_report(was, &m, &mut report);
+        sight.shown_hashes(was, &m, &mut report, &|n| w.ontology.ty(n).ok());
         report.report_id = report_id(&report, view.position());
         Ok(report)
     }
@@ -1133,13 +1131,12 @@ fn as_author(
     to: &mut TypeDecl,
     relations: &[(RelationName, RelationName)],
 ) -> Result<()> {
-    let who = sees.who();
     fn put_back<T: Clone>(declared: &[T], hidden: impl Fn(&T) -> bool, into: &mut Vec<T>) {
         for (i, x) in declared.iter().enumerate().filter(|(_, x)| hidden(x)) {
             into.insert(i.min(into.len()), x.clone());
         }
     }
-    let hidden = |t: &TypeDecl, f: &FieldDecl| rights::field_access(who, t, f) == Access::None;
+    let hidden = |t: &TypeDecl, f: &FieldDecl| sees.field_access(t, f) == Access::None;
     let unshown = |r: &RelationDecl| !sees.relation(before, r);
     let unknown: Vec<&FieldDecl> = (before.fields.iter().filter(|f| hidden(before, f))).collect();
     put_back(&before.fields, |f| hidden(before, f), &mut to.fields);
@@ -1224,8 +1221,7 @@ fn reads_stand(
     let (renames, relations, fill) = m.map_or((&[][..], &[][..], &[][..]), |m| {
         (&m.renames[..], &m.relation_renames[..], &m.fill[..])
     });
-    let who = sees.who();
-    let hidden = |t: &TypeDecl, f: &FieldDecl| rights::field_access(who, t, f) == Access::None;
+    let hidden = |t: &TypeDecl, f: &FieldDecl| sees.field_access(t, f) == Access::None;
     let known = |t: &TypeDecl, fields: &[FieldDecl], n: &FieldName| {
         fields.iter().any(|f| &f.name == n && !hidden(t, f))
     };

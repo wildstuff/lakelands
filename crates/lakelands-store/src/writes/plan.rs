@@ -211,7 +211,8 @@ impl Call<'_> {
         when: When,
         against: Against<'_>,
     ) -> Result<Planned> {
-        granted(Sight::held(self.who, &w.ontology).authors())?;
+        let sees = Sight::held(self.who, &w.ontology);
+        granted(sees.authors())?;
         match change {
             Changed::Declare { mut declarations } => {
                 self.redeclared(&w.ontology, &mut declarations)?;
@@ -225,9 +226,9 @@ impl Call<'_> {
                 Ok(planned)
             }
             Changed::AddField { ty, field } => {
-                let mut t = (Sight::held(self.who, &w.ontology).ty(&ty)?).clone();
+                let mut t = sees.ty(&ty)?.clone();
                 // The field is added to its author's view of the type (027).
-                rights::known_fields(self.who, &mut t, &|n| w.ontology.ty(n).ok());
+                sees.known_fields(&mut t, &|n| w.ontology.ty(n).ok());
                 if t.has_field(&field.name) {
                     let (ty, name) = (ty.clone(), field.name.clone());
                     let case = Case::FieldExists { ty, field: name };
@@ -259,7 +260,7 @@ impl Call<'_> {
     ) -> Result<Planned> {
         self.redeclared(&w.ontology, std::slice::from_mut(&mut declaration))?;
         // One who reads every field was judged against the lake itself.
-        if !rights::reads_all(self.who) {
+        if !self.grants().reads_all_fields() {
             declare::check_declaration(&w.ontology, &declaration, false)?;
         }
         self.check_bound(&declaration, Some(&w.ontology), None)?;

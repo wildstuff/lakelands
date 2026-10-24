@@ -114,7 +114,7 @@ impl Call<'_> {
         let now = self.lake.clock(&mut w);
         // A holder of `only` changes no shape, and proposes no write that
         // anything but the write itself could move off its pairs (051).
-        granted(!write.is_schema() || !rights::holds_only(self.who))?;
+        granted(!write.is_schema() || !self.grants().holds_only())?;
         let mut d = self.decide(&w, view.as_ref(), now, 1);
         let pin = |d: &Decide<'_>, ty: &TypeName| {
             ordinary_door(ty)?;
@@ -280,8 +280,9 @@ impl Call<'_> {
     /// Whether a proposal by this caller on `decl`, or of a call of `verb`,
     /// is pinned, refusing one that may not be (051).
     pub(super) fn pin(&self, w: &Writer, decl: &TypeDecl, verb: Option<&VerbDecl>) -> Result<bool> {
-        let pinned = Sight::held(self.who, &w.ontology).only_holder(decl);
-        granted(!pinned || rights::pinnable(self.who, decl, verb))?;
+        let sees = Sight::held(self.who, &w.ontology);
+        let pinned = sees.only_holder(decl);
+        granted(!pinned || sees.pinnable(decl, verb))?;
         Ok(pinned)
     }
 
@@ -332,7 +333,7 @@ impl Call<'_> {
         listed: &(Option<ProposedWrite>, bool),
     ) -> Result<()> {
         let (o, sees) = (&w.ontology, Sight::held(self.who, &w.ontology));
-        let Some(write) = p.write.as_ref().filter(|_| rights::holds_only(self.who)) else {
+        let Some(write) = p.write.as_ref().filter(|_| sees.holds_only()) else {
             return Ok(());
         };
         let ty = match write {
@@ -836,7 +837,7 @@ impl Call<'_> {
     pub(super) fn known_renames(&self, o: &Ontology, m: &Migration) -> Vec<(FieldName, FieldName)> {
         let mut m = m.clone();
         if let Ok(was) = o.ty(&m.to.name) {
-            rights::known_migration(self.who, was, &mut m, &|n| o.ty(n).ok());
+            Sight::held(self.who, o).known_migration(was, &mut m, &|n| o.ty(n).ok());
         }
         m.renames
     }

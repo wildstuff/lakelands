@@ -167,7 +167,7 @@ impl Decide<'_> {
     ) -> Result<Plan> {
         let decl = self.ontology.ty(ty)?;
         rights::not_a_view(decl)?;
-        granted(rights::may_retire(self.at.sight.who(), decl))?;
+        granted(self.at.sight.may_retire(decl))?;
         if !self.door.admits_retirement(decl.retired_by) {
             return Err(self.retired_by_verbs(decl));
         }
@@ -359,11 +359,10 @@ impl Decide<'_> {
         after: &StoredRecord,
         sent: &[FieldName],
     ) -> Result<()> {
-        let who = self.at.sight.who();
         let plan = self.plans.get(self.ontology, decl);
         let reads = |f: &FieldName| {
             let mut fields = decl.fields.iter().filter(|d| &d.name == f);
-            fields.any(|d| rights::field_access(who, decl, d).reads())
+            fields.any(|d| self.at.sight.field_access(decl, d).reads())
         };
         for c in &plan.constraints {
             let admits = matches!(self.door, Door::Source) && !c.decl.at_ingest.refuses();
@@ -409,7 +408,6 @@ impl Decide<'_> {
         expected: Option<Version>,
     ) -> Result<RecordPlan> {
         let (o, view, sees) = (self.ontology, self.at.view, &self.at.sight);
-        let who = sees.who();
         untold_setting(sees, decl, key)?;
         // A holder of `only` is judged against the record it owns at the
         // key: another's is, to its write, a key that is free, refused
@@ -499,7 +497,7 @@ impl Decide<'_> {
         let computed = computed_references(decl, live.map(|b| &b.fields), &after.fields, &sent);
         let reads = |f: &FieldName| {
             let mut fields = decl.fields.iter().filter(|d| &d.name == f);
-            fields.any(|d| rights::field_access(who, decl, d).reads())
+            fields.any(|d| sees.field_access(decl, d).reads())
         };
         let pending = &self.pending;
         match check_references(view, pending, o, &decl.name, &after.key, &computed, sees) {
