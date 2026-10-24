@@ -53,12 +53,22 @@ fn placed(url: &str, schema: &str) -> Vec<(i64, i64)> {
     rows.iter().map(|r| (r.get(0), r.get(1))).collect()
 }
 
+/// The schema, dropped when the test ends, also when it fails.
+struct Schema<'u>(&'u str, String);
+
+impl Drop for Schema<'_> {
+    fn drop(&mut self) {
+        common::drop_schema(self.0, &self.1);
+    }
+}
+
 #[test]
 fn a_held_lease_appends_without_asking_for_the_tip_or_the_active_segment() {
     let Some(url) = common::url_or_skip("the carried tip") else {
         return;
     };
-    let schema = common::fresh_schema();
+    let kept = Schema(&url, common::fresh_schema());
+    let schema = kept.1.clone();
     let engine = PgOpener
         .open(
             &common::location(&url, "carried", &schema),
@@ -89,6 +99,4 @@ fn a_held_lease_appends_without_asking_for_the_tip_or_the_active_segment() {
         engine.tip().unwrap(),
         Some((next[2].position, next[2].hash.clone()))
     );
-    drop(engine);
-    common::drop_schema(&url, &schema);
 }
