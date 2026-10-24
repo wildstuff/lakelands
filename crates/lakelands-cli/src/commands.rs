@@ -1228,6 +1228,79 @@ pub async fn export(out: Out<'_>, store: &Arc<dyn LakeStore>, to: &Path) -> Resu
     )
 }
 
+/// `backup`: `to` brought up to the lake's head, and the lake's keyring
+/// file copied into `keys` where it is named, apart from the backup.
+pub async fn backup(
+    out: Out<'_>,
+    store: &Arc<dyn LakeStore>,
+    root: &crate::root::Root,
+    to: &Path,
+    keys: Option<&Path>,
+) -> Result<(), Failure> {
+    // The directories are judged before anything is written.
+    root.outside_the_lakes(to, "backup's")?;
+    let keyring = match keys {
+        Some(keys) => {
+            root.keys_apart(keys, to)?;
+            let Some(keyring) = root.file_keyring() else {
+                let what = "--keys-to was given, and the root names no file keyring";
+                let todo = "leave --keys-to out, and back the keys up as the key store's host does";
+                return Err(Failure::new(what, todo));
+            };
+            Some((keyring, keys))
+        }
+        None => None,
+    };
+    let b = export::backup(store.as_ref(), &*store.feed(), to).await?;
+    let since = b
+        .since
+        .map_or_else(|| "new".to_owned(), |p| format!("since {p}"));
+    let line = format!(
+        "backed up {} through position {} ({} new event(s), {since}) to {}",
+        b.lake,
+        b.through,
+        b.copied,
+        to.display()
+    );
+    put(out, line)?;
+    if let Some((keyring, keys)) = keyring {
+        let line = match keyring.back_up(&b.lake, keys)? {
+            Some(file) => format!("copied the lake's keys to {}", file.display()),
+            None => "the root's keyring holds no keys for the lake; none were copied".to_owned(),
+        };
+        put(out, line)?;
+    }
+    Ok(())
+}
+
+/// `restore --keys-from`: the lake's keyring file put back from `keys`,
+/// only where the root's keyring has none: the file it holds knows every
+/// destroy, and an older copy would bring back a forgotten source's keys.
+/// Answers the keyring, for the file to be taken out again where the
+/// import is refused.
+pub fn restore_keys(
+    out: Out<'_>,
+    root: &crate::root::Root,
+    lake: &lakelands_api::LakeId,
+    keys: &Path,
+) -> Result<lakelands_backings::keyring::FileKeyring, Failure> {
+    let Some(keyring) = root.file_keyring() else {
+        let what = "--keys-from was given, and the root names no file keyring";
+        return Err(Failure::new(
+            what,
+            "name the keyring in the keys section of the configuration",
+        ));
+    };
+    if !keyring.restore(lake, keys)? {
+        let what = format!("the root's keyring already holds a file for lake `{lake}`");
+        let todo = "leave --keys-from out: the keyring's own file knows every key destroyed since";
+        return Err(Failure::new(what, todo));
+    }
+    let line = format!("put the keys of lake `{lake}` back from {}", keys.display());
+    put(out, line).inspect_err(|_| drop(keyring.unrestore(lake)))?;
+    Ok(keyring)
+}
+
 /// The lake an export holds, as its first event names it: the manifest is
 /// never trusted. `None` when the first event cannot be read; the import's
 /// own verification then says why.
@@ -1243,12 +1316,14 @@ pub fn exported_lake(dir: &Path) -> Option<String> {
 /// `import`: the export in `dir` becomes the lake at `location`, which
 /// must hold nothing. A lake kept in memory is refused before anything is
 /// read: this process ends when the command answers, and the lake with it.
+/// The outer error is the import refused; the inner one is its line not
+/// written, after the lake was made.
 pub async fn import(
     out: Out<'_>,
     location: lakelands_api::Location,
     seams: lakelands_api::seam::Seams,
     dir: &Path,
-) -> Result<(), Failure> {
+) -> Result<Result<(), Failure>, Failure> {
     if location.engine == lakelands_api::EngineConfig::Memory {
         return Err(Failure::new(
             format!(
@@ -1268,6 +1343,16 @@ pub async fn import(
                      for PostgreSQL), remove a lake there that holds events (its file or \
                      schema), and import again"
                 }
+                _ if e.seam().is_some()
+                    || matches!(
+                        e.situation(),
+                        Some(lakelands_api::error::Situation::KeyMissing { .. })
+                    ) =>
+                {
+                    "the lake's sealed values need its keys: name the keyring in the keys \
+                     section of the configuration, and restore with --keys-from the keys file \
+                     the backup copied"
+                }
                 _ => {
                     "a damaged export imports nothing: export the lake again; a failure of the \
                      target's storage leaves what it wrote, so remove that lake (its file or \
@@ -1276,11 +1361,11 @@ pub async fn import(
             };
             Failure::new(e.to_string(), todo)
         })?;
-    put(
+    Ok(put(
         out,
         format!(
             "imported lake `{}`: {} event(s) from {} file(s), head {}, hash {}",
             imported.lake, imported.events, imported.files, imported.through, imported.hash.0
         ),
-    )
+    ))
 }

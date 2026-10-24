@@ -19,21 +19,26 @@
 //! time, writing each line as it comes; it writes only into an empty or
 //! absent directory, and a failed export leaves nothing behind.
 //!
+//! [`backup`] writes the same files and no manifest, and run again into
+//! its directory writes only what follows its last line; it writes into
+//! no directory holding anything beside `log/` and `export.json`
+//! (`docs/decisions/077-a-backup-is-an-export-that-grows.md`).
+//!
 //! [`verify`] reads only `log/`, a line at a time: canonical lines,
 //! consecutive positions, the hash chain from 64 zeros, every checkpoint
 //! against the files before it, one format version this release reads, and
 //! no member a reader of the lake refuses (`crate::log::misplaced`), so an
 //! import refuses it before it writes.
 
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, BufWriter, Write as _};
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufRead, BufReader, BufWriter, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 
 use lakelands_api::catalog::Verification;
 use lakelands_api::error::{Case, Detail, Doing, Flaw, Part};
 use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_VERSION};
-use lakelands_api::seam::FeedFilter;
-use lakelands_api::{Error, LakeStore, Position, Result};
+use lakelands_api::seam::{ChangeFeed, FeedFilter};
+use lakelands_api::{Error, LakeId, LakeStore, Position, Refusal, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -60,7 +65,7 @@ pub struct SegmentFile {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     /// The lake.
-    pub lake: lakelands_api::LakeId,
+    pub lake: LakeId,
     /// The head the export read through.
     pub through: Position,
     /// The hash of the event at `through`.
@@ -90,20 +95,21 @@ pub fn file_name(first: Position) -> String {
 /// must be absent or empty. On failure what was written is removed, so no
 /// partial export passes for a shorter log.
 pub async fn write(store: &dyn LakeStore, dir: &Path) -> Result<Manifest> {
+    write_from(store, &*store.feed(), dir).await
+}
+
+async fn write_from(store: &dyn LakeStore, feed: &dyn ChangeFeed, dir: &Path) -> Result<Manifest> {
     let existed = match fs::read_dir(dir) {
         Ok(mut entries) => {
             if entries.next().is_some() {
                 let said = Box::new(Case::ExportNotEmpty.into());
-                return Err(Error::refused(
-                    None,
-                    lakelands_api::Refusal::Precondition(said),
-                ));
+                return Err(Error::refused(None, Refusal::Precondition(said)));
             }
             true
         }
         Err(_) => false,
     };
-    let written = write_into(store, dir).await;
+    let written = write_into(store, feed, dir).await;
     if written.is_err() {
         let _ = fs::remove_dir_all(dir.join("log"));
         let _ = fs::remove_file(dir.join("export.json"));
@@ -129,7 +135,9 @@ impl Segment {
     fn start(dir: &Path, first: Position) -> Result<Segment> {
         let file = file_name(first);
         let path = dir.join(&file);
-        let out = File::create(&path).map_err(|e| io(Doing::Create, &path, e))?;
+        // Appended to, so a backup writes on after its last file's end.
+        let out = OpenOptions::new().create(true).append(true).open(&path);
+        let out = out.map_err(|e| io(Doing::Create, &path, e))?;
         Ok(Segment {
             file,
             path,
@@ -166,15 +174,35 @@ impl Segment {
     }
 }
 
-async fn write_into(store: &dyn LakeStore, dir: &Path) -> Result<Manifest> {
+async fn write_into(store: &dyn LakeStore, feed: &dyn ChangeFeed, dir: &Path) -> Result<Manifest> {
     let through = store.head().await?;
     let log = dir.join("log");
     fs::create_dir_all(&log).map_err(|e| io(Doing::Create, &log, e))?;
-    let feed = store.feed();
+    let start = (None, Position::GENESIS, Digest::zero());
+    let (segments, hash) = copy(feed, dir, start, through).await?;
+    let manifest = Manifest {
+        lake: store.lake().clone(),
+        through,
+        hash,
+        format: LOG_FORMAT_VERSION,
+        segments,
+    };
+    let path = dir.join("export.json");
+    let text = serde_json::to_string_pretty(&manifest).expect("a manifest serialises");
+    fs::write(&path, text + "\n").map_err(|e| io(Doing::Write, &path, e))?;
+    Ok(manifest)
+}
+
+/// Write the feed from `next`, whose event before has `hash`, through
+/// `through` into `dir`, after the lines `open` holds: the files written
+/// and the hash at `through`, `log/` synced after them.
+async fn copy(
+    feed: &dyn ChangeFeed,
+    dir: &Path,
+    (mut open, mut next, mut hash): (Option<Segment>, Position, Digest),
+    through: Position,
+) -> Result<(Vec<SegmentFile>, Digest)> {
     let mut segments = Vec::new();
-    let mut open: Option<Segment> = None;
-    let mut next = Position::GENESIS;
-    let mut hash = Digest::zero();
     'feed: while next <= through {
         let batch = feed.poll(next, &FeedFilter::default(), PAGE).await?;
         if batch.events.is_empty() {
@@ -212,17 +240,123 @@ async fn write_into(store: &dyn LakeStore, dir: &Path) -> Result<Manifest> {
         let flaw = Flaw::EndsBefore { position: through };
         return Err(crate::damaged(Part::Feed, Some(next), flaw));
     }
-    let manifest = Manifest {
+    let log = dir.join("log");
+    File::open(&log)
+        .and_then(|d| d.sync_all())
+        .map_err(|e| io(Doing::Write, &log, e))?;
+    Ok((segments, hash))
+}
+
+/// What a backup run wrote.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Backup {
+    /// The lake.
+    pub lake: LakeId,
+    /// The cut: the head the run read through.
+    pub through: Position,
+    /// The hash of the event at `through`.
+    pub hash: Digest,
+    /// The last position the directory held before the run; `None` for a
+    /// new backup.
+    pub since: Option<Position>,
+    /// The events the run wrote.
+    pub copied: u64,
+    /// The files it wrote into, the one it extended first.
+    pub files: Vec<String>,
+}
+
+/// Back `store`'s log up into `dir`, reading it through `feed`, the
+/// store's own or one in front of it: an empty or absent directory takes
+/// the whole log, as [`write`] writes it; one holding a backup takes the
+/// events after its last line, which must be the lake's own at its
+/// position, through the head as it stood once that line was found. A
+/// refused run changes nothing: what a stopped run left after the last
+/// line is cut only once that line is the lake's.
+pub async fn backup(store: &dyn LakeStore, feed: &dyn ChangeFeed, dir: &Path) -> Result<Backup> {
+    let refused = |case: Case| Error::refused(None, Refusal::Precondition(Box::new(case.into())));
+    let names: std::io::Result<Vec<_>> = match fs::read_dir(dir) {
+        Ok(entries) => entries.map(|e| e.map(|e| e.file_name())).collect(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e),
+    };
+    let names = names.map_err(|e| io(Doing::Read, dir, e))?;
+    if names.iter().any(|n| n != "log" && n != "export.json") {
+        return Err(refused(Case::ExportNotEmpty));
+    }
+    let (mut files, mut torn) = (Vec::new(), Vec::new());
+    if names.iter().any(|n| n == "log") {
+        files = segment_files(dir)?;
+    }
+    let (since, segments, hash, through) = loop {
+        let Some(path) = files.pop() else {
+            removed(&torn)?;
+            let _ = fs::remove_dir(dir.join("log"));
+            let _ = fs::remove_file(dir.join("export.json"));
+            let m = write_from(store, feed, dir).await?;
+            break (None, m.segments, m.hash, m.through);
+        };
+        let Some((line, len)) = last_line(&path)? else {
+            torn.push(path);
+            continue;
+        };
+        let held = serde_json::from_slice::<Value>(&line).ok();
+        let held = Position(
+            held.and_then(|v| v["position"].as_u64())
+                .unwrap_or(u64::MAX),
+        );
+        let found = feed.poll(held, &FeedFilter::default(), 1).await?;
+        let found = found.events.into_iter().next();
+        let Some(event) = found.filter(|e| e.position == held && canonical::of(e) == line) else {
+            return Err(refused(Case::BackupOtherLog { held }));
+        };
+        removed(&torn)?;
+        let cut = OpenOptions::new().write(true).open(&path);
+        let cut = cut.and_then(|f| f.set_len(len).and_then(|()| f.sync_all()));
+        cut.map_err(|e| io(Doing::Write, &path, e))?;
+        let through = store.head().await?;
+        let open = Segment::start(dir, Position(first_of(&path).unwrap_or(held.0)))?;
+        let (segments, hash) =
+            copy(feed, dir, (Some(open), held.next(), event.hash), through).await?;
+        break (Some(held), segments, hash, through);
+    };
+    let _ = fs::remove_file(dir.join("export.json"));
+    Ok(Backup {
         lake: store.lake().clone(),
         through,
         hash,
-        format: LOG_FORMAT_VERSION,
-        segments,
-    };
-    let path = dir.join("export.json");
-    let text = serde_json::to_string_pretty(&manifest).expect("a manifest serialises");
-    fs::write(&path, text + "\n").map_err(|e| io(Doing::Write, &path, e))?;
-    Ok(manifest)
+        since,
+        copied: through.0 + 1 - since.map_or(0, |p| p.0 + 1),
+        files: segments.into_iter().map(|s| s.file).collect(),
+    })
+}
+
+/// Remove the files a stopped run left holding no whole line.
+fn removed(paths: &[PathBuf]) -> Result<()> {
+    let gone = |p: &PathBuf| fs::remove_file(p).map_err(|e| io(Doing::Write, p, e));
+    paths.iter().try_for_each(gone)
+}
+
+/// The last whole line of the file at `path`, without its line feed, and
+/// the length the file is cut to after it; `None` where it holds none.
+fn last_line(path: &Path) -> Result<Option<(Vec<u8>, u64)>> {
+    let failed = |e: std::io::Error| io(Doing::Read, path, e);
+    let mut file = File::open(path).map_err(failed)?;
+    let (len, mut back) = (file.metadata().map_err(failed)?.len(), 64 << 10);
+    loop {
+        let (from, mut bytes) = (len.saturating_sub(back), Vec::new());
+        file.seek(SeekFrom::Start(from)).map_err(failed)?;
+        file.read_to_end(&mut bytes).map_err(failed)?;
+        let end = bytes.iter().rposition(|b| *b == b'\n');
+        let start = end.map(|end| bytes[..end].iter().rposition(|b| *b == b'\n'));
+        match (end, start) {
+            (None, _) if from == 0 => return Ok(None),
+            (Some(end), Some(start)) if start.is_some() || from == 0 => {
+                let line = bytes[start.map_or(0, |s| s + 1)..end].to_vec();
+                return Ok(Some((line, from + end as u64 + 1)));
+            }
+            _ => back *= 2,
+        }
+    }
 }
 
 /// Where a verification stands: the next position, the hash before it,

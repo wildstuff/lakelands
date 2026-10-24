@@ -18,6 +18,7 @@ use lakelands_api::engine::OpenMode;
 use lakelands_api::location::{EngineConfig, Location};
 use lakelands_api::seam::Seams;
 use lakelands_cli::Opening;
+use lakelands_core::conformance::fixture;
 
 fn block_on<F: Future>(f: F) -> F::Output {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -1843,6 +1844,163 @@ fn import_makes_the_exported_lake_in_an_empty_lake_of_its_name() {
     assert!(
         now.starts_with(&was),
         "the imported lake exports the source's bytes"
+    );
+}
+
+/// `backup` brings its directory up to the head, writing only what is new,
+/// and copies the keys apart from it; `restore --check` verifies it, and
+/// `restore` puts the keys back where the keyring holds none, then imports.
+#[test]
+fn backup_grows_its_directory_and_restore_makes_the_lake_with_its_keys() {
+    let keyring = r#"{"lakelands": 1, "owner": "owner", "keys": {"keyring": "keys"}}"#;
+    let from = Shell::on("backup-from", Backend::Store);
+    from.lake();
+    fs::write(from.root.join("lakelands.json"), keyring).unwrap();
+    from.run(&["apply", &from.fixture()]);
+    // A source's erasable value, sealed under a key of the keyring.
+    let contact =
+        "name: contact\nfields:\n  email: { type: text, authority: source, erasable: true }\n";
+    let applied = from.run(&[
+        "apply",
+        &from.bundle("contact", &[("types/contact.yaml", contact)]),
+    ]);
+    assert_eq!(applied.code, 0, "{}", applied.err);
+    let row =
+        "{\"type\": \"contact\", \"key\": \"c1\", \"fields\": {\"email\": \"ada@example.org\"}}\n";
+    let fed = from.run(&["ingest", &from.file("crm.ndjson", row), "--source", "crm"]);
+    assert_eq!(fed.code, 0, "{}", fed.err);
+    let (dir, keys) = (from.root.join("backup"), from.root.join("backup-keys"));
+    let (dir, keys) = (dir.display().to_string(), keys.display().to_string());
+    let (head, _) = last_event(&from.run(&["feed"]).out);
+    ok(
+        &from.run(&["backup", "--to", &dir, "--keys-to", &keys]),
+        &format!(
+            "backed up finance through position {head} ({} new event(s), new) to <root>/backup\n\
+             copied the lake's keys to <root>/backup-keys/finance.keys.json\n",
+            head + 1
+        ),
+    );
+    ok(
+        &from.run(&["backup", "--to", &dir]),
+        &format!(
+            "backed up finance through position {head} (0 new event(s), since {head}) to <root>/backup\n"
+        ),
+    );
+    from.run(&[
+        "apply",
+        &from.bundle(
+            "more",
+            &[
+                ("types/partner.yaml", PARTNER),
+                ("types/note.yaml", "name: note\nfields:\n  text: text\n"),
+            ],
+        ),
+    ]);
+    let (now, hash) = last_event(&from.run(&["feed"]).out);
+    assert!(now > head);
+    let grown = from.run(&["backup", "--to", &dir]);
+    assert!(
+        grown
+            .out
+            .contains(&format!("({} new event(s), since {head})", now - head)),
+        "{}",
+        grown.err
+    );
+    // The keys are never kept with the backup.
+    let inside = format!("{dir}/keys");
+    let mixed = from.run(&["backup", "--to", &dir, "--keys-to", &inside]);
+    assert!(
+        mixed.code == 1 && mixed.err.contains("one inside the other"),
+        "{}",
+        mixed.err
+    );
+    // Nor is a backup written into a lake's directory.
+    let lake = from.root.join("lakes/finance").display().to_string();
+    let live = from.run(&["backup", "--to", &lake]);
+    assert!(
+        live.code == 1 && live.err.contains("inside the lake `finance`'s directory"),
+        "{}",
+        live.err
+    );
+
+    let check = from.run(&["restore", &dir, "--check"]);
+    assert_eq!(check.code, 0, "{}", check.err);
+    assert!(
+        check
+            .out
+            .contains(&format!("through {now} (last hash {hash})")),
+        "{}",
+        check.out
+    );
+
+    let to = Shell::on("backup-to", Backend::Store);
+    to.lake();
+    fs::write(to.root.join("lakelands.json"), keyring).unwrap();
+    // A refused restore takes the keys it put back out again.
+    let empty = to.root.join("empty");
+    fs::create_dir_all(&empty).unwrap();
+    let refused = to.run(&[
+        "restore",
+        &empty.display().to_string(),
+        "--keys-from",
+        &keys,
+    ]);
+    assert!(
+        refused.code != 0 && !to.root.join("keys/finance.keys.json").exists(),
+        "{}",
+        refused.err
+    );
+    // An output closed after its first line does not take the keys of a
+    // lake it imported out again.
+    struct Closed(Vec<u8>);
+    impl std::io::Write for Closed {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            if self.0.contains(&b'\n') {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            self.0.extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let (root, mut out, mut err) = (
+        to.root.display().to_string(),
+        Closed(Vec::new()),
+        Vec::new(),
+    );
+    let argv = [
+        "lakelands",
+        "--root",
+        &root,
+        "restore",
+        &dir,
+        "--keys-from",
+        &keys,
+    ];
+    let open = |l: Location, m: OpenMode, s: Seams| to.open(l, m, s);
+    let code = block_on(lakelands_cli::run(argv, &mut out, &mut err, &open));
+    assert!(
+        code != 0
+            && out.0 == format!("put the keys of lake `finance` back from {keys}\n").as_bytes()
+            && to.root.join("keys/finance.keys.json").exists(),
+        "{}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(to.run(&["feed"]).out, from.run(&["feed"]).out);
+    // The erasable value reads back under the keys put back.
+    let store = to.lakes.lock().unwrap()["finance"].clone();
+    let get = serde_json::from_value(serde_json::json!({"key": "c1"})).unwrap();
+    let (doors, owner) = (fixture::doors(&*store), fixture::owner(&*store));
+    let got = block_on(doors.get(&owner, &lakelands_api::id::TypeName::from("contact"), get));
+    assert!(format!("{got:?}").contains("ada@example.org"), "{got:?}");
+    // The keyring's own file is never replaced by a copy.
+    let twice = to.run(&["restore", &dir, "--keys-from", &keys]);
+    assert!(
+        twice.code == 1 && twice.err.contains("already holds a file"),
+        "{}",
+        twice.err
     );
 }
 
