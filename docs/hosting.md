@@ -1352,12 +1352,13 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   on a runtime of its own there. On one thread that driver had to start
   a thread of its own for every statement. Through REST, one record
   after another per caller (`crates/lakelands-cli/examples/serve_bench.rs`),
-  on 14 cores, PostgreSQL 16 on loopback wrote 657, 1 229 and 2 887
-  writes/s at 1, 4 and 16 callers on one thread and 986, 1 751 and
-  3 818 on eight, its p99 1.8, 4.0 and 6.4 ms against 1.2, 2.6 and
-  4.8 ms. SQLite was the same on both, bound by its durable commit
-  (about 10 ms on that machine's disk), and the memory engine within
-  7 %.
+  on 14 cores, PostgreSQL 16 on loopback wrote 661, 1 196 and 2 899
+  writes/s at 1, 4 and 16 callers on one thread and 998, 1 752 and
+  3 828 on eight, its p99 1.8, 4.0 and 6.4 ms against 1.2, 2.6 and
+  4.8 ms: the medians of three runs of 5 s each, as the table on
+  lakelands#1373 gives them. SQLite was the same on both, bound by its
+  durable commit (about 10 ms on that machine's disk), and the memory
+  engine within 7 %.
 - **Connections on PostgreSQL (lakelands#1324).** A process holds two
   connections for a lake it writes, `lakelands <schema>` in
   `pg_stat_activity`, two more while a rebuild of it runs, and none of
