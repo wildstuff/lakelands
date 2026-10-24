@@ -127,8 +127,7 @@ impl PgLake {
         if exists && mode != OpenMode::Rebuild {
             let marked = format!("SELECT n FROM {} WHERE k = 'layout'", names.t("meta"));
             let found: Option<i64> = reader.query_opt(&marked, &[])?.and_then(|r| r.get(0));
-            let found = projection::laid_out(&mut reader, &names, found)?;
-            engines::layout(&lake, found, projection::LAYOUT)?;
+            engines::layout(&lake, found.map(|v| v as u64), projection::LAYOUT)?;
         }
         let read = mode == OpenMode::Read;
         let read = read.then(|| vector_index::find(&mut reader, false).ok());

@@ -262,19 +262,6 @@ fn heads_sql(s: &str) -> String {
 /// from the log.
 pub(crate) const LAYOUT: u64 = 6;
 
-/// The layout of the projection `names` holds, by the mark `found` in its
-/// `meta`. A build between the leaner states and the vectors kept apart
-/// (lakelands#1318, lakelands#1323) marked this layout with `vectors`
-/// still a head index: that projection is the layout before.
-pub(crate) fn laid_out(db: &mut Db, names: &Names, found: Option<i64>) -> Result<Option<u64>> {
-    let apart = "SELECT 1 FROM pg_catalog.pg_attribute WHERE attrelid = to_regclass($1) \
-                 AND attname = 'since' AND NOT attisdropped";
-    Ok(match found.map(|n| n as u64) {
-        Some(LAYOUT) if db.query_opt(apart, &[&names.t("vectors")])?.is_none() => Some(LAYOUT - 1),
-        found => found,
-    })
-}
-
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
 pub(crate) const LAKE_TABLES: [&str; 19] = [

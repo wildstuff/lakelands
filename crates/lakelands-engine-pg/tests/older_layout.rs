@@ -5,12 +5,6 @@
 //! (lakelands#1318), and its mark one layout back. A reader's open is refused naming the layouts; the
 //! writer's open rebuilds it from the log under its lease, saying why,
 //! and the next writer's open rebuilds nothing.
-//!
-//! A build between those leaner states and the vectors kept apart
-//! (lakelands#1323) marked the current layout with its states holding
-//! their vectors and `vectors` a head index: its projection is told apart
-//! by that table's shape and read as the layout before. The check goes at
-//! the release, which ships both changes as one layout.
 
 mod common;
 
@@ -19,13 +13,9 @@ use std::sync::Arc;
 use lakelands_api::engine::OpenMode;
 use lakelands_api::error::Situation;
 use lakelands_api::ontology::StorageKind::{Decimal, Text};
-use lakelands_api::query::{Search, SearchMode};
-use lakelands_api::read::ReadAt;
 use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
-use lakelands_core::conformance::fixture::{
-    Lake, computed_by, source_record, sourced, type_decl, vector,
-};
+use lakelands_core::conformance::fixture::{Lake, computed_by, source_record, sourced, type_decl};
 use lakelands_engine_pg::PgOpener;
 use serde_json::json;
 
@@ -122,113 +112,6 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
         None,
         "the next writer's open rebuilds nothing"
     );
-    store.close().await.unwrap();
-    common::drop_schema(&url, &schema);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_writers_open_rebuilds_a_projection_laid_out_between_the_two_changes() {
-    let Some(url) = common::url_or_skip("in-between layout") else {
-        return;
-    };
-    let schema = common::fresh_schema();
-    let location = common::location(&url, "between", &schema);
-    let store = open(&location, OpenMode::Create).await.unwrap();
-    let l = Lake::of(store.as_ref());
-    let pin = type_decl("pin", vec![vector("v", 3)]);
-    l.declare(pin).await.unwrap();
-    let elements = json!([0.1, -0.5, 3]);
-    l.upsert("pin", "k", json!({"v": elements})).await.unwrap();
-    // The lake asks for the field's index: with pgvector it is built and
-    // marked, and the rebuilt projection keeps both.
-    l.set("vector_index.pin", json!(["v"])).await.unwrap();
-    store.close().await.unwrap();
-    let layout = format!("SELECT n FROM \"{schema}\".meta WHERE k = 'layout'");
-    let wanted = tokio::task::block_in_place(|| one(&url, &layout));
-    let indexed = format!(
-        "SELECT (SELECT count(*) FROM \"{schema}\".meta WHERE k = 'vindex.pin.v') * 10 + \
-         (SELECT count(*) FROM pg_indexes WHERE schemaname = '{schema}' \
-          AND indexname LIKE 'vindex_%')"
-    );
-    let index = tokio::task::block_in_place(|| one(&url, &indexed));
-    let pgvector = "SELECT count(*) FROM pg_extension WHERE extname = 'vector'";
-    let pgvector = tokio::task::block_in_place(|| one(&url, pgvector));
-    assert_eq!(
-        index,
-        11 * pgvector,
-        "with pgvector the field's index is built and marked"
-    );
-    // The in-between build's projection: the elements in the state, as
-    // `f32`s in a head index keyed by type, field and key, which keeps
-    // `unit`, the HNSW index and its mark where pgvector made them; the
-    // mark the current one.
-    let between = format!(
-        "UPDATE \"{schema}\".records SET state = jsonb_set(state::jsonb - 'vectors', \
-         '{{fields,v}}', '[0.1,-0.5,3]')::text; ALTER TABLE \"{schema}\".vectors \
-         DROP COLUMN since, DROP COLUMN until, DROP COLUMN single; \
-         ALTER TABLE \"{schema}\".vectors ADD PRIMARY KEY (ty, field, key)"
-    );
-    let data = lakelands_core::engines::vector_bytes(&[0.1, -0.5, 3.0]);
-    let row = format!("UPDATE \"{schema}\".vectors SET data = $1");
-    let defs = format!(
-        "SELECT indexdef FROM pg_indexes WHERE schemaname = '{schema}' AND indexname LIKE 'vindex_%'"
-    );
-    tokio::task::block_in_place(|| {
-        let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-        let defs: Vec<String> = (client.query(&defs, &[]).unwrap().iter())
-            .map(|r| r.get::<_, String>(0).replace(" AND (until IS NULL)", ""))
-            .collect();
-        client.batch_execute(&between).unwrap();
-        // Its HNSW index ranked every row of the field: none ended.
-        defs.iter().for_each(|d| client.batch_execute(d).unwrap());
-        client.execute(&row, &[&data]).unwrap();
-        assert_eq!(
-            one(&url, &indexed),
-            index,
-            "the in-between projection keeps its index"
-        );
-    });
-    let refused = open(&location, OpenMode::Read).await.err().unwrap();
-    assert!(
-        matches!(refused.situation(), Some(Situation::ProjectionLayout { found, .. }) if *found == Some(wanted as u64 - 1)),
-        "a reader's open of the in-between layout is refused as the layout before: {refused:?}"
-    );
-    let store = open(&location, OpenMode::Write).await.unwrap();
-    let why = store.rebuilt_at_open();
-    assert!(
-        why.as_ref()
-            .is_some_and(|w| w.contains(&format!("layout {}", wanted - 1))),
-        "the writer's open says why it rebuilt: {why:?}"
-    );
-    let l = Lake::of(store.as_ref());
-    let pin = l.read("pin", "k").await.unwrap();
-    assert_eq!(pin.fields["v"], elements, "the rebuild reads the elements");
-    assert_eq!(
-        tokio::task::block_in_place(|| one(&url, &indexed)),
-        index,
-        "the rebuilt projection keeps the vector index the lake asks for, and its mark"
-    );
-    let asked = Search {
-        ty: "pin".into(),
-        mode: SearchMode::vector("v", vec![0.1, -0.5, 3.0]),
-        k: 10,
-        cursor: None,
-        filter: None,
-        with_meta: false,
-        at: ReadAt::default(),
-        rerank: None,
-    };
-    let hits = l.cat.search(&l.own, asked).await.unwrap().data.hits;
-    let keys: Vec<&str> = hits.iter().map(|h| h.record.key.0.as_str()).collect();
-    assert_eq!(keys, ["k"], "a vector search ranks the record");
-    drop(l);
-    let inline =
-        format!("SELECT count(*) FROM \"{schema}\".records WHERE state::jsonb -> 'fields' ? 'v'");
-    let inline = tokio::task::block_in_place(|| one(&url, &inline));
-    assert_eq!(inline, 0, "no state holds a vector's elements");
-    store.close().await.unwrap();
-    let store = open(&location, OpenMode::Write).await.unwrap();
-    assert_eq!(store.rebuilt_at_open(), None, "the next open rebuilds none");
     store.close().await.unwrap();
     common::drop_schema(&url, &schema);
 }
