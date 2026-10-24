@@ -29,7 +29,7 @@ use lakelands_api::query::Edge;
 use lakelands_api::read::Direction;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
-use lakelands_core::engines;
+use lakelands_core::engines::{self, Elements};
 
 /// The states of one thing, each valid from a position, oldest first.
 #[derive(Clone, Debug)]
@@ -71,6 +71,47 @@ impl<T> History<T> {
     }
 }
 
+/// A record as the projection keeps it: in the state form the other
+/// engines keep, which shares one provenance block among the fields that
+/// have it, with every field that is a vector of numbers apart as its
+/// elements, not as a value each.
+#[derive(Clone, Debug)]
+pub(crate) struct Held {
+    ty: TypeName,
+    key: RecordKey,
+    since: Position,
+    state: Box<str>,
+    apart: Vec<(FieldName, Elements)>,
+}
+
+impl Held {
+    fn of(r: &StoredRecord) -> Held {
+        let apart: Vec<_> = (r.fields.iter())
+            .filter_map(|(f, v)| Some((f.clone(), Elements::of(v)?)))
+            .collect();
+        let named = apart.iter().map(|(f, _)| (f.clone(), r.position)).collect();
+        let state = engines::record_state(r, &named).into();
+        let (ty, key, since) = (r.ty.clone(), r.key.clone(), r.position);
+        Held {
+            ty,
+            key,
+            since,
+            state,
+            apart,
+        }
+    }
+
+    pub(crate) fn record(&self) -> StoredRecord {
+        let state =
+            engines::decode_record(self.ty.as_str(), self.key.as_str(), self.since, &self.state);
+        let (mut r, _) = state.expect("a state this projection wrote reads");
+        for (field, e) in &self.apart {
+            r.fields.insert(field.clone(), e.value());
+        }
+        r
+    }
+}
+
 /// One write of the fold, held until its transaction commits.
 #[derive(Clone, Debug)]
 pub(crate) enum Put {
@@ -82,41 +123,22 @@ pub(crate) enum Put {
     /// the place of whatever the key held, and nothing indexes it.
     Head(StoredRecord),
     /// Every key of a head-only name ended at once, at `at`.
-    HeadsEnded {
-        /// The name.
-        ty: TypeName,
-        /// The position.
-        at: Position,
-    },
+    HeadsEnded { ty: TypeName, at: Position },
     /// A proposal's state from `at`.
-    Proposal {
-        /// The proposal.
-        proposal: Proposal,
-        /// From when.
-        at: Position,
-    },
+    Proposal { proposal: Proposal, at: Position },
     /// Membership of a record in an object set from `at`.
     Membership {
-        /// The object set.
         set: String,
-        /// The record's type.
         ty: TypeName,
-        /// The record's key.
         key: RecordKey,
-        /// Whether it is a member.
         member: bool,
-        /// From when.
         at: Position,
     },
     /// A seam's recorded output, from `at`.
     Output {
-        /// The seam.
         seam: String,
-        /// The input's digest.
         input: Digest,
-        /// The output.
         output: Value,
-        /// From when.
         at: Position,
     },
     /// An event applied, with what the feed's index keeps of it.
@@ -148,7 +170,7 @@ impl Put {
 #[derive(Debug, Default)]
 pub(crate) struct Projection {
     pub(crate) declarations: BTreeMap<String, History<Declared>>,
-    pub(crate) records: BTreeMap<(TypeName, RecordKey), History<StoredRecord>>,
+    pub(crate) records: BTreeMap<(TypeName, RecordKey), History<Held>>,
     pub(crate) proposals: BTreeMap<ProposalId, History<Proposal>>,
     /// Each proposal's id by its position, newest last (lakelands#1063).
     pub(crate) by_position: BTreeMap<Position, ProposalId>,
@@ -276,25 +298,9 @@ impl Projection {
         // A whole type, a page of keys at a time, so a rebuild that refolds
         // a declaration or a setting holds a page, not the type.
         for ty in &types {
-            let mut after = RecordKey::from("");
-            let mut first = true;
-            loop {
-                let keys: Vec<RecordKey> = self
-                    .records
-                    .range((ty.clone(), after.clone())..)
-                    .take_while(|((t, _), _)| t == ty)
-                    .map(|((_, k), _)| k.clone())
-                    .filter(|k| first || *k != after)
-                    .take(1024)
-                    .collect();
-                let Some(last) = keys.last().cloned() else {
-                    break;
-                };
-                for key in &keys {
-                    self.index(ty, key);
-                }
-                after = last;
-                first = false;
+            let mut after = None;
+            while let Some((last, _)) = self.index_page(ty, after.as_ref(), 1024) {
+                after = Some(last);
             }
         }
         self.folded = Some(through);
@@ -322,14 +328,8 @@ impl Projection {
             }
             keys.insert(key.clone());
         }
-        let states = keys
-            .iter()
-            .filter_map(|k| {
-                self.records
-                    .get(&(ty.clone(), k.clone()))?
-                    .at(Some(at))
-                    .cloned()
-            })
+        let states = (keys.iter())
+            .filter_map(|k| self.record_of(ty, k, Some(at)))
             .collect();
         Some(engines::Changed { keys, states })
     }
@@ -349,11 +349,14 @@ impl Projection {
                 TypeName::from(lakelands_api::seam::SETTING_TYPE),
                 RecordKey::from(lakelands_core::engines::sort_index_key(ty)),
             ))
-            .and_then(History::latest);
+            .and_then(History::latest)
+            .map(Held::record);
         lakelands_core::engines::sorted_fields(
             ty,
             decl,
-            setting.and_then(lakelands_core::engines::setting_value),
+            setting
+                .as_ref()
+                .and_then(lakelands_core::engines::setting_value),
         )
     }
 
@@ -404,21 +407,10 @@ impl Projection {
             return None;
         }
         if let Choose::Fill { after, limit, .. } = step {
-            let from = after.clone().unwrap_or_else(|| RecordKey::from(""));
-            let page: Vec<RecordKey> = (self.records)
-                .range((ty.clone(), from)..)
-                .take_while(|((t, _), _)| t == ty)
-                .map(|((_, k), _)| k.clone())
-                .filter(|k| after.as_ref() != Some(k))
-                .take(*limit as usize)
-                .collect();
-            for key in &page {
-                self.index(ty, key);
-            }
+            let page = self.index_page(ty, after.as_ref(), *limit as usize);
             return page
-                .last()
-                .cloned()
-                .filter(|_| page.len() == *limit as usize);
+                .filter(|(_, n)| *n == *limit as usize)
+                .map(|(last, _)| last);
         }
         match chosen == Chosen::default() {
             true => self.chosen.remove(ty),
@@ -426,16 +418,29 @@ impl Projection {
         };
         // A field dropped takes its rows out of every record's.
         if matches!(step, Choose::Drop(_)) {
-            let keys: Vec<RecordKey> = (self.records)
-                .range((ty.clone(), RecordKey::from(""))..)
-                .take_while(|((t, _), _)| t == ty)
-                .map(|((_, k), _)| k.clone())
-                .collect();
-            for key in &keys {
-                self.index(ty, key);
-            }
+            self.index_page(ty, None, usize::MAX);
         }
         None
+    }
+
+    /// Re-indexes up to `limit` records of `ty` after the key `after`,
+    /// and answers the last key and how many it did.
+    fn index_page(
+        &mut self,
+        ty: &TypeName,
+        after: Option<&RecordKey>,
+        limit: usize,
+    ) -> Option<(RecordKey, usize)> {
+        let from = after.cloned().unwrap_or_else(|| RecordKey::from(""));
+        let keys: Vec<RecordKey> = (self.records)
+            .range((ty.clone(), from)..)
+            .take_while(|((t, _), _)| t == ty)
+            .map(|((_, k), _)| k.clone())
+            .filter(|k| after != Some(k))
+            .take(limit)
+            .collect();
+        keys.iter().for_each(|key| self.index(ty, key));
+        keys.last().map(|last| (last.clone(), keys.len()))
     }
 
     /// Rewrite one record's rows in the head indexes from its latest
@@ -466,8 +471,7 @@ impl Projection {
                 }
             }
         }
-        let head = self.records.get(&id).and_then(History::latest).cloned();
-        let Some(record) = head else {
+        let Some(record) = self.record_of(ty, key, Some(Position(u64::MAX))) else {
             return;
         };
         if lakelands_core::links::is_link_type(ty) {
@@ -613,7 +617,7 @@ impl Projection {
                 self.records
                     .entry((r.ty.clone(), r.key.clone()))
                     .or_default()
-                    .put(from, r);
+                    .put(from, Held::of(&r));
             }
             Put::Proposal { proposal, at } => {
                 (self.by_position).insert(proposal.position, proposal.id.clone());
@@ -651,7 +655,10 @@ impl Projection {
                 let id = (r.ty.clone(), r.key.clone());
                 match r.is_ended() {
                     true => drop(self.records.remove(&id)),
-                    false => drop(self.records.insert(id, History(vec![(r.position, r)]))),
+                    false => drop(
+                        self.records
+                            .insert(id, History(vec![(r.position, Held::of(&r))])),
+                    ),
                 }
             }
             Put::DroppedRecord(ty, key) => {
@@ -717,17 +724,29 @@ impl Projection {
             })
     }
 
+    /// The record of `ty` at `key` in its state at `at`.
+    pub(crate) fn record_of(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        at: Option<Position>,
+    ) -> Option<StoredRecord> {
+        let h = self.records.get(&(ty.clone(), key.clone()))?;
+        h.at(at).map(Held::record)
+    }
+
     /// Every record of `ty` in its state at `at`, in key order, whatever
     /// its flags.
     pub(crate) fn records_at<'a>(
         &'a self,
         ty: &'a TypeName,
         at: Option<Position>,
-    ) -> impl Iterator<Item = &'a StoredRecord> + 'a {
+    ) -> impl Iterator<Item = StoredRecord> + 'a {
         self.records
             .range((ty.clone(), RecordKey::from(""))..)
             .take_while(move |((t, _), _)| t == ty)
             .filter_map(move |(_, h)| h.at(at))
+            .map(Held::record)
     }
 
     /// At most `n` records of `ty` in their state at `at` after the key
@@ -750,7 +769,7 @@ impl Projection {
             .take_while(|((t, _), _)| t == ty)
             .filter_map(|(_, h)| h.at(at))
             .take(n as usize)
-            .cloned()
+            .map(Held::record)
             .collect()
     }
 }

@@ -151,3 +151,66 @@ fn an_output_is_valid_from_its_own_event_not_the_commit() {
     assert_eq!(h.at(Some(Position(3))), None);
     assert_eq!(h.at(Some(Position(4))), Some(&json!(7)));
 }
+
+fn meta(writer: &str, at: u64) -> lakelands_api::record::FieldMeta {
+    lakelands_api::record::FieldMeta {
+        upstream: None,
+        origin: lakelands_api::record::Origin::Authored,
+        known_at: lakelands_api::time::Timestamp(7),
+        seen_at: None,
+        position: Position(at),
+        writer: writer.into(),
+        source: None,
+        procedure: None,
+        procedure_version: None,
+        error: None,
+        erased: false,
+    }
+}
+
+/// Eight fields written by one event, a ninth by another, a vector whose
+/// elements are not `f32`s, one that are, and arrays that are no vector.
+fn wide() -> StoredRecord {
+    let mut r = record("a", 1, 4);
+    let vectors = [
+        ("double", json!([0.1, -2.5e-8, 3, 0])),
+        ("single", json!([0.5, 0.25, 1.5])),
+        ("mixed", json!([1, "x", 2])),
+        ("empty", json!([])),
+    ];
+    for (f, v) in vectors {
+        r.fields.insert(f.into(), v);
+    }
+    for i in 0..8 {
+        r.fields
+            .insert(format!("f{i}").into(), json!(format!("value {i}")));
+    }
+    for f in r.fields.keys() {
+        r.meta.insert(f.clone(), meta("human:long-writer-name", 4));
+    }
+    r.meta.insert("f3".into(), meta("human:other", 2));
+    r.meta.insert("gone".into(), meta("human:gone", 1));
+    r.restricted = true;
+    r
+}
+
+#[test]
+fn a_held_record_reads_back_whole() {
+    let r = wide();
+    assert_eq!(Held::of(&r).record(), r);
+    let ended = StoredRecord::ended("t".into(), "k".into(), Position(9));
+    assert_eq!(Held::of(&ended).record(), ended);
+}
+
+#[test]
+fn a_held_record_shares_its_provenance_and_keeps_vectors_as_elements() {
+    let held = Held::of(&wide());
+    assert_eq!(held.state.matches("long-writer-name").count(), 1);
+    assert_eq!(
+        held.state.matches("0.1").count(),
+        0,
+        "a vector is not in the state"
+    );
+    let apart: Vec<&str> = held.apart.iter().map(|(f, _)| f.as_str()).collect();
+    assert_eq!(apart, ["double", "single"]);
+}
