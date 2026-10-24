@@ -1329,6 +1329,19 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   survives this and is recorded by that write. While another writer
   holds the lease, every write, rebuild and compaction is refused with
   the lease's situation and appends nothing, and the handle reads on.
+- **Health and readiness of `lakelands serve`.** With the `server`
+  section configured, the HTTP door answers `GET /livez` (`200`, the
+  process is up) and `GET /readyz` (`200` when every lake it serves is
+  open, holding its writer lease as its handle knows it, and answering
+  its head; `503` with `not_ready` when a lake's handle does not hold its
+  lease (one lost to another writer shows once the handle has noticed it,
+  at its next write) or does not answer its head, `503` with
+  `starting` until every lake is open). The door is bound before the lakes
+  open, so an open that rebuilds the projection after an upgrade is
+  `starting`, not down. Neither takes a key or says a lake's name, a count
+  or a position (`docs/rest.md`, Health and readiness). A host that embeds
+  `lakelands-server` tells the door when its lakes are open with
+  `HttpServer::health().serving(lakes)`; until then it is `starting`.
 - **Connections on PostgreSQL (lakelands#1324).** A process holds two
   connections for a lake it writes, `lakelands <schema>` in
   `pg_stat_activity`, two more while a rebuild of it runs, and none of
