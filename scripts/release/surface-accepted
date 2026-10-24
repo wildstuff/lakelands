@@ -5,4 +5,4 @@
 # any other, and any line here that no change answers. At a release the
 # baseline becomes the new tag and the list empties
 # (docs/decisions/056-the-host-surface-changes-by-one-release-of-deprecation.md).
-baseline v0.17.0
+baseline v0.18.0
