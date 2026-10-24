@@ -273,6 +273,13 @@ How often, at most, the log is read for the feeds that follow one lake with one 
 - **Takes:** milliseconds.
 - **Default:** `10`.
 
+### `server.workers`
+
+The threads `serve` runs its doors and sessions on; absent, the machine's cores, at most 8.
+
+- **Takes:** a count above zero.
+- **Default:** `null`.
+
 ### `aging.utc_offset`
 
 The UTC offset `serve` reads the date at, to age each lake it writes once a day.

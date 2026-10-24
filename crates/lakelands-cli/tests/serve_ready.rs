@@ -1,5 +1,6 @@
 //! `lakelands serve` answers `/livez` and `/readyz` from the moment its
-//! door is bound, before any lake is open.
+//! door is bound, before any lake is open, and runs on the threads its
+//! server configuration names.
 
 use std::fs;
 use std::future::Future;
@@ -56,6 +57,14 @@ fn get(addr: SocketAddr, path: &str) -> Option<(u16, String)> {
 
 /// A root with one lake and a door on `port`.
 fn made(name: &str, port: u16) -> PathBuf {
+    made_with(
+        name,
+        serde_json::json!({"bind": format!("127.0.0.1:{port}")}),
+    )
+}
+
+/// A root with one lake and the server section `server`.
+fn made_with(name: &str, server: serde_json::Value) -> PathBuf {
     let dir = root(name);
     let _ = fs::remove_dir_all(&dir);
     let bin = env!("CARGO_BIN_EXE_lakelands");
@@ -77,7 +86,7 @@ fn made(name: &str, port: u16) -> PathBuf {
     let file = dir.join("lakelands.json");
     let mut config: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
-    config["server"] = serde_json::json!({"bind": format!("127.0.0.1:{port}")});
+    config["server"] = server;
     fs::write(&file, serde_json::to_string_pretty(&config).unwrap()).unwrap();
     dir
 }
@@ -173,4 +182,29 @@ fn a_served_lake_is_ready() {
     assert_eq!(get(addr, "/livez").map(|a| a.0), Some(200));
     drop(server.stdin.take());
     assert!(server.wait().unwrap().success());
+}
+
+/// `serve` runs on the threads the server section names, every other
+/// command on one.
+#[test]
+fn serve_runs_on_the_servers_threads_and_every_other_command_on_one() {
+    use tokio::runtime::RuntimeFlavor;
+    let dir = made_with(
+        "threads",
+        serde_json::json!({"bind": "127.0.0.1:0", "workers": 3}),
+    );
+    let on = |args: &[&str]| {
+        let argv = ["lakelands", "--root", dir.to_str().unwrap()];
+        let r = lakelands_cli::runtime(argv.iter().chain(args)).unwrap();
+        (r.handle().runtime_flavor(), r.metrics().num_workers())
+    };
+    assert_eq!(on(&["serve", "--mcp"]), (RuntimeFlavor::MultiThread, 3));
+    for other in [
+        &["verify"][..],
+        &["export", "--to", "x"],
+        &["--help"],
+        &["nonsense"],
+    ] {
+        assert_eq!(on(other).0, RuntimeFlavor::CurrentThread, "{other:?}");
+    }
 }

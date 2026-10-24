@@ -97,7 +97,7 @@ impl<'a> Reader<'a> {
                 }
             }
         }
-        rights::check_probe(self.who, &decl, probed.iter())?;
+        self.sight.check_probe(&decl, probed.iter())?;
         for o in find.order_by.iter().filter(|o| o.by != OrderBy::Latest) {
             Self::steady_order(&decl, o.field.as_str())?;
         }
@@ -202,7 +202,7 @@ impl<'a> Reader<'a> {
         });
         let rows = keyed
             .into_iter()
-            .filter_map(|(_, r)| rights::visible(self.sight, &decl, &r, find.with_meta))
+            .filter_map(|(_, r)| self.sight.visible(&decl, &r, find.with_meta))
             .collect();
         // Counted at the same position, so every page of a walk agrees.
         let total = (find.total)
@@ -399,7 +399,7 @@ impl<'a> Reader<'a> {
                 .map(|(r, _)| r)
         };
         stored
-            .and_then(|r| rights::visible(self.sight, &decl, &r, get.with_meta))
+            .and_then(|r| self.sight.visible(&decl, &r, get.with_meta))
             .ok_or_else(missing)
     }
 }

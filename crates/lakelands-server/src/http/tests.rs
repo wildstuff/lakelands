@@ -23,6 +23,7 @@ async fn door() -> (SocketAddr, super::Health) {
         session_idle_secs: 1800,
         feed_poll_millis: 250,
         feed_floor_millis: 10,
+        workers: None,
     };
     let server = serve_http(config, Arc::new(StaticResolver::new(vec![])), open)
         .await
@@ -187,4 +188,37 @@ async fn a_lease_another_writer_took_is_refused_but_the_handle_keeps_its_flag() 
     assert!(declare(store.as_ref()).await.is_err());
     assert!(store.is_writer());
     assert_eq!(ask(addr, "GET", "/readyz").await.0, 200);
+}
+
+/// A server runs on as many threads as `workers` names, and, where it
+/// names none, on the machine's cores, at most [`super::WORKERS_MOST`];
+/// `workers` is a count above zero.
+#[test]
+fn a_server_runs_on_the_threads_its_configuration_names() {
+    use tokio::runtime::RuntimeFlavor;
+    let config = |workers: serde_json::Value| -> serde_json::Result<HttpConfig> {
+        let mut c = serde_json::json!({"bind": "127.0.0.1:0"});
+        if !workers.is_null() {
+            c["workers"] = workers;
+        }
+        serde_json::from_value(c)
+    };
+    let threads = |c: Option<&HttpConfig>| {
+        let r = super::runtime(c).unwrap();
+        assert_eq!(r.handle().runtime_flavor(), RuntimeFlavor::MultiThread);
+        r.metrics().num_workers()
+    };
+    assert_eq!(threads(Some(&config(3.into()).unwrap())), 3);
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let named_none = config(serde_json::Value::Null).unwrap();
+    assert_eq!(threads(Some(&named_none)), cores.min(super::WORKERS_MOST));
+    assert_eq!(threads(None), cores.min(super::WORKERS_MOST));
+    assert!(config(0.into()).is_err(), "no threads is refused");
+    // Named none, it is written as none.
+    assert!(
+        serde_json::to_value(&named_none)
+            .unwrap()
+            .get("workers")
+            .is_none()
+    );
 }

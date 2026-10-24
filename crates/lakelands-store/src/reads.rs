@@ -69,9 +69,7 @@ use lakelands_core::expr::{self, Place as Eval, RecordScope, aggregate};
 use lakelands_core::graph::{self, EdgeSource};
 use lakelands_core::rights::Admit;
 use lakelands_core::sight::Sight;
-use lakelands_core::{
-    canonical, derive as core_derive, engines as core_engines, rights, valid_time,
-};
+use lakelands_core::{canonical, derive as core_derive, engines as core_engines, valid_time};
 
 use crate::declare::condition;
 use crate::kept;
@@ -86,9 +84,7 @@ type Under<'s> = Option<(&'s Sight<'s>, &'s Ontology)>;
 pub struct Reader<'a> {
     /// The lake.
     pub lake: &'a Lake,
-    /// Who reads, as [`Self::sight`] judges it.
-    pub who: &'a Principal,
-    /// What the reader is shown of the read's shape.
+    /// Who reads, and what it is shown of the read's shape.
     pub sight: &'a Sight<'a>,
     /// The projection at the read's position.
     pub view: Box<dyn ProjectionView + 'a>,
@@ -654,7 +650,6 @@ impl<'a> Reader<'a> {
         let now = clock.or(at.valid_at).or(at.clock).unwrap_or(judged);
         Ok(Reader {
             lake,
-            who: sight.who(),
             sight,
             view,
             shape,
@@ -1000,8 +995,8 @@ impl<'a> Reader<'a> {
         // so it probes them as a `where` on them would (024): those it is
         // shown.
         if self.valid_at.is_some() {
-            let timed = lakelands_core::valid_time::bounds(decl);
-            rights::check_probe(self.who, decl, timed.filter(|n| self.knows(decl, n)))?;
+            let timed = valid_time::bounds(decl).filter(|n| self.knows(decl, n));
+            self.sight.check_probe(decl, timed)?;
         }
         Ok(decl)
     }
@@ -1009,7 +1004,7 @@ impl<'a> Reader<'a> {
     /// Whether the reader may know of `decl`'s field `name`.
     fn knows(&self, decl: &TypeDecl, name: &FieldName) -> bool {
         let f = decl.field(name);
-        !f.is_some_and(|f| rights::field_access(self.who, decl, f) == lakelands_api::Access::None)
+        !f.is_some_and(|f| self.sight.field_access(decl, f) == lakelands_api::Access::None)
     }
 
     /// The read's valid time for `decl`, as `describe` shows it to the
@@ -1081,7 +1076,7 @@ impl<'a> Reader<'a> {
     /// its reader's `only` on it cannot be applied (051).
     fn named_type(&self, ty: &TypeName) -> Result<&TypeDecl> {
         let decl = self.visible_type(ty)?;
-        rights::check_only(self.who, decl)?;
+        self.sight.check_only(decl)?;
         Ok(decl)
     }
 
@@ -1139,8 +1134,8 @@ impl<'a> Reader<'a> {
         let settings = |s: &&TypeName| {
             s.as_str() == SETTING || (find(s).is_some_and(|d| d.view.is_some()) && self.computes(s))
         };
-        rights::computed_only(self.who, ty, &find)
-            || (!self.who.grants.restricted && sources.iter().any(links))
+        self.sight.computed_only(ty, &find)
+            || (!self.sight.sees_restricted() && sources.iter().any(links))
             || (narrowed
                 && (find(ty).is_some_and(|d| crate::kept::names_settings(&self.shape.ontology, d))
                     || sources.iter().any(settings)))
@@ -1180,9 +1175,8 @@ impl<'a> Reader<'a> {
             let filter = crate::declare::set_filter(&all, s, at);
             let reads = filter.map(|e| core_derive::reads(&e));
             let of = self.sight.ty(&s.of);
-            of.is_ok_and(|t| {
-                reads.is_ok_and(|r| rights::check_probe(self.who, t, r.iter()).is_ok())
-            }) && self.sight.set_across_unheld(s)
+            of.is_ok_and(|t| reads.is_ok_and(|r| self.sight.check_probe(t, r.iter()).is_ok()))
+                && self.sight.set_across_unheld(s)
         };
         let set = |n: &str| self.shape.ontology.set(n).filter(shown);
         // A set across an edge is read by its kept membership, its members
@@ -1213,7 +1207,7 @@ impl<'a> Reader<'a> {
     ) -> Result<Option<Expr>> {
         let Some(c) = c else { return Ok(None) };
         let e = self.named_sets(&decl.name, c, at)?;
-        rights::check_probe(self.who, decl, core_derive::reads(&e).iter())?;
+        self.sight.check_probe(decl, &core_derive::reads(&e))?;
         crate::declare::evaluates(&e, decl, at)?;
         Ok(Some(e))
     }
