@@ -195,6 +195,7 @@ fn location(engine: &Engine, dir: &std::path::Path, lake: &str) -> Location {
                         ..Default::default()
                     },
                     tuning: Default::default(),
+                    tablespaces: Default::default(),
                 },
                 ..Location::memory(lake)
             }

@@ -99,17 +99,22 @@ fn fail(what: impl std::fmt::Display) -> ! {
 }
 
 /// The lake's location, as the root keeps it: a relative SQLite
-/// directory is the root's.
+/// directory, the lake's or its projection's, is the root's.
 fn location(a: &Args) -> Location {
     let file = a.root.join("lakes").join(format!("{}.json", a.lake));
     let text = std::fs::read_to_string(&file)
         .unwrap_or_else(|e| fail(format!("cannot read {}: {e}", file.display())));
     let mut location: Location = serde_json::from_str(&text)
         .unwrap_or_else(|e| fail(format!("{} is not a location: {e}", file.display())));
-    if let EngineConfig::Sqlite { dir, .. } = &mut location.engine
-        && dir.is_relative()
+    if let EngineConfig::Sqlite {
+        dir,
+        projection_dir,
+        ..
+    } = &mut location.engine
     {
-        *dir = a.root.join(&*dir);
+        for dir in std::iter::once(dir).chain(projection_dir) {
+            *dir = a.root.join(&*dir);
+        }
     }
     location
 }

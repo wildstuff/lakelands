@@ -34,6 +34,7 @@ impl Location {
         Location {
             engine: EngineConfig::Sqlite {
                 dir: dir.into(),
+                projection_dir: None,
                 tuning: SqliteTuning::default(),
             },
             ..Location::memory(lake)
@@ -49,6 +50,7 @@ impl Location {
                 schema: None,
                 tls: PgTls::default(),
                 tuning: PgTuning::default(),
+                tablespaces: None,
             },
             ..Location::memory(lake)
         }
@@ -70,11 +72,14 @@ impl Location {
 #[serde(tag = "engine", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum EngineConfig {
-    /// The SQLite engine: the lake's log segments and its projection
-    /// file live in `dir`.
+    /// The SQLite engine: the lake's log segments live in `dir`, its
+    /// projection file in `projection_dir`.
     Sqlite {
         /// The lake's directory; created on first open.
         dir: PathBuf,
+        /// The projection's directory, one lake's alone; `dir` when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        projection_dir: Option<PathBuf>,
         /// How the engine sizes its caches and checkpoints its projection.
         #[serde(default)]
         tuning: SqliteTuning,
@@ -96,6 +101,9 @@ pub enum EngineConfig {
         /// Timeouts the engine sets on its connections.
         #[serde(default)]
         tuning: PgTuning,
+        /// The tablespaces the lake's tables and indexes are made in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tablespaces: Option<PgTablespaces>,
     },
     /// An engine this crate does not name, selected by `name` and
     /// configured by `settings` (a host's own engine, for instance).
@@ -137,6 +145,21 @@ pub enum PgTlsMode {
     /// Plaintext, for a server on the same machine or a network the
     /// operator secures otherwise.
     Disable,
+}
+
+/// Where a lake's parts are made, each where `default_tablespace` puts it
+/// if unnamed; a part is not moved, but a rebuild remakes all but the log and `meta`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PgTablespaces {
+    /// The log's and the lease's tables, with their indexes.
+    pub log: Option<String>,
+    /// The projection's tables but `vectors`.
+    pub projection: Option<String>,
+    /// Their indexes, primary keys included.
+    pub indexes: Option<String>,
+    /// The `vectors` table and its indexes, vector indexes included.
+    pub vectors: Option<String>,
 }
 
 /// The PostgreSQL engine's timeouts. None of them can change an answer.

@@ -72,6 +72,18 @@ pub struct Config {
     /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keys: Option<KeysConfig>,
+    /// Where `lake new` makes a SQLite lake's directory, relative to the
+    /// root where it is relative: `lakes` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lakes_dir: Option<PathBuf>,
+    /// Where `export` writes when it is given no `--to`, as `lakes_dir`:
+    /// `exports` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exports_dir: Option<PathBuf>,
+    /// Where backups are to be kept, as `lakes_dir`: `backups` when
+    /// absent. Nothing writes there yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backups_dir: Option<PathBuf>,
 }
 
 /// Where the root's key store keeps its keys.
@@ -120,6 +132,9 @@ pub fn init(dir: &Path, owner: &str) -> Result<(), Failure> {
         aging: None,
         mirror: None,
         keys: None,
+        lakes_dir: None,
+        exports_dir: None,
+        backups_dir: None,
     };
     fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
     write_new(&file, &config)?;
@@ -263,6 +278,19 @@ impl Root {
         }
     }
 
+    /// Where `export` writes lake `lake` when it is given no `--to`: a
+    /// directory of its own in `exports_dir`, named by the time, in UTC.
+    pub fn export_dir(&self, lake: &LakeId) -> PathBuf {
+        use crate::ticker::Clock as _;
+        let now = crate::ticker::SystemClock.now().to_string();
+        let stamp: String = (now[..19].chars())
+            .filter(|c| *c != '-' && *c != ':')
+            .collect();
+        let exports = self.config.exports_dir.as_deref();
+        let exports = self.dir.join(exports.unwrap_or(Path::new("exports")));
+        exports.join(format!("{lake}-{stamp}Z"))
+    }
+
     /// The keyring's directory, where `keys` names one.
     fn keyring(&self) -> Option<PathBuf> {
         let named = &self.config.keys.as_ref()?.keyring;
@@ -272,9 +300,9 @@ impl Root {
         })
     }
 
-    /// A keyring inside a lake's directory would go wherever the lake's
-    /// files go, a backup or a copy, and a destroyed key with them: it is
-    /// refused (058).
+    /// A keyring inside a lake's directory, or its projection's, would go
+    /// wherever the lake's files go, a backup or a copy, and a destroyed key
+    /// with them: it is refused (058).
     fn keyring_outside_the_lakes(&self) -> Result<(), Failure> {
         let Some(keyring) = self.keyring() else {
             return Ok(());
@@ -295,8 +323,17 @@ impl Root {
     /// The lake whose directory holds `path`, canonical, if one does.
     fn lake_holding(&self, path: &Path) -> Result<Option<String>, Failure> {
         for lake in self.lakes() {
-            if let EngineConfig::Sqlite { dir, .. } = self.location(Some(&lake))?.engine
-                && path.starts_with(canonical(&dir))
+            let EngineConfig::Sqlite {
+                dir,
+                projection_dir,
+                ..
+            } = self.location(Some(&lake))?.engine
+            else {
+                continue;
+            };
+            if std::iter::once(dir)
+                .chain(projection_dir)
+                .any(|dir| path.starts_with(canonical(&dir)))
             {
                 return Ok(Some(lake));
             }
@@ -464,7 +501,10 @@ impl Root {
             ));
         }
         let location = match engine {
-            "sqlite" => Location::sqlite(id, Path::new("lakes").join(id)),
+            "sqlite" => {
+                let lakes = self.config.lakes_dir.as_deref();
+                Location::sqlite(id, lakes.unwrap_or(Path::new("lakes")).join(id))
+            }
             "memory" => Location::memory(id),
             "postgres" => pg.location(id)?,
             other => {
@@ -701,10 +741,15 @@ impl Root {
                 "correct the file, or remove it and run `lakelands lake new` again",
             )
         })?;
-        if let EngineConfig::Sqlite { dir, .. } = &mut location.engine
-            && dir.is_relative()
+        if let EngineConfig::Sqlite {
+            dir,
+            projection_dir,
+            ..
+        } = &mut location.engine
         {
-            *dir = self.dir.join(&*dir);
+            for dir in std::iter::once(dir).chain(projection_dir) {
+                *dir = self.dir.join(&*dir);
+            }
         }
         Ok(location)
     }

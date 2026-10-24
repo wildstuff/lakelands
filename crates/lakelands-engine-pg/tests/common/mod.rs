@@ -67,6 +67,7 @@ pub fn location(url: &str, lake: &str, schema: &str) -> Location {
                 ..PgTls::default()
             },
             tuning: PgTuning::default(),
+            tablespaces: Default::default(),
         },
         ..Location::memory(lake)
     }

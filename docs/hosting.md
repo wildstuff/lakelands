@@ -772,7 +772,7 @@ moment before, and opens a moment later.
   step for a release whose engine lays the projection out anew:
   1. With the new release, run `lakelands build-ahead` while the old one
      still serves the lake. It folds the log into the scratch beside the
-     projection (`projection.db.rebuild` in the lake's directory on
+     projection (`projection.db.rebuild` in the projection's directory on
      SQLite, a schema of its own on PostgreSQL) and marks it built at
      the log's tip. It opens the log and its own scratch only, never the
      projection the old release answers from and never the lease, so the
@@ -930,6 +930,52 @@ and an optional key handle reach a lake through `Location`, and a
 server through its server configuration; Lakelands never reads the
 environment. A host that keeps settings in its environment reads them
 and passes them in. See `docs/decisions/005-no-environment-reads.md`.
+
+**Placement.** Each member below is optional, and absent it keeps the
+placement of the release before it. A SQLite lake's `projection_dir`
+puts its projection on a disk of its own, apart from `dir`, which keeps
+the log, the lease and the indexes: `projection.db` and its `-wal` and
+`-shm` files, the scratch a rebuild or `lakelands build-ahead` builds
+beside it, which swaps in by a rename within that directory, and a
+`lake` file naming the lake, so a second lake's location that names the
+same directory is refused. The lake still verifies from `dir` alone
+(`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`).
+Created at the first open. A PostgreSQL lake's `tablespaces` names, for
+each of `log` (the log, its segments and the lease), `projection` (the
+projection's tables), `indexes` (their indexes) and `vectors` (the
+vectors and their index), the tablespace its relations are made in; a
+part named by none goes where the role's or the database's
+`default_tablespace` puts it, as before, and that setting is not
+changed. The tablespaces exist before the open, made by the operator,
+and the lake's role holds `CREATE` on each. A part made before its
+member was named stays where it is; a rebuild beside moves every part
+but the log and the `meta` table. A SQLite lake that is given a `projection_dir` later
+finds no projection there: its next writer's open folds one from the
+log (or swaps in what `lakelands build-ahead` built there), and the
+old `projection.db` in `dir` is the operator's to remove. In a root's `lakelands.json`, `lakes_dir` (`lakes` when
+absent, relative to the root) is where `lakelands lake new` puts a new
+SQLite lake, `exports_dir` (`exports`) where `lakelands export` writes
+when no `--to` is given, to a directory named by the lake and the
+moment in UTC, and `backups_dir` (`backups`) where the backups of
+lakelands#1369 are to go; nothing writes there yet.
+
+```json
+{
+  "lake": "finance",
+  "engine": {
+    "engine": "postgres",
+    "url": "postgres://lakelands@db.example:5432/lakes",
+    "tablespaces": { "log": "fast_log", "vectors": "big_disk" }
+  }
+}
+```
+
+Adding these members to `EngineConfig`'s `Sqlite` and `Postgres`
+variants breaks a host that builds either variant as a literal without
+`..`, or destructures it without `..`: add `projection_dir: None` or
+`tablespaces: None`, or `..`. A host that builds
+through `Location::sqlite` and `Location::postgres`, or reads a location
+file, changes nothing.
 
 ## How a host switches onto Lakelands
 

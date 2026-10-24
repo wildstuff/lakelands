@@ -1,7 +1,7 @@
 //! The projection a rebuild builds beside the lake's own
 //! (`docs/decisions/071-a-rebuild-builds-beside-the-projection.md`).
 //!
-//! The scratch is `projection.db.rebuild`, in the lake's directory, so the
+//! The scratch is `projection.db.rebuild`, in the projection's directory, so the
 //! swap is a rename within one directory: atomic, and the projection the
 //! lake answers from is whole on either side of it. Beside it,
 //! `projection.db.rebuild.mark` is the file a handle building the scratch
@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use crate::log::Log;
 use crate::{io_error, projection, sql};
 
-/// The scratch's file, in the lake's directory.
+/// The scratch's file, in the projection's directory.
 pub(crate) const SCRATCH: &str = "projection.db.rebuild";
 
 /// The file locked while the scratch is open, holding its mark.

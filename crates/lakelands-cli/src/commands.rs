@@ -1046,7 +1046,11 @@ async fn room(
     };
     let mib = bytes as f64 / (1024.0 * 1024.0);
     let place = match &location.engine {
-        EngineConfig::Sqlite { dir, .. } => format!("in {}", dir.display()),
+        EngineConfig::Sqlite {
+            dir,
+            projection_dir,
+            ..
+        } => format!("in {}", projection_dir.as_ref().unwrap_or(dir).display()),
         EngineConfig::Postgres { schema, .. } => {
             let schema = schema
                 .clone()

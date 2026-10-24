@@ -403,7 +403,12 @@ pub const BINDINGS: &[Binding] = &[
     Binding {
         key: "engine.dir",
         layer: Layer::Location,
-        says: "SQLite: the directory that holds the lake's log segments and its projection.",
+        says: "SQLite: the directory that holds the lake's log segments, and its projection where `engine.projection_dir` is absent.",
+    },
+    Binding {
+        key: "engine.projection_dir",
+        layer: Layer::Location,
+        says: "SQLite: the directory that holds the lake's projection and the one a rebuild builds beside it, one lake's alone.",
     },
     Binding {
         key: "engine.url",
@@ -419,6 +424,11 @@ pub const BINDINGS: &[Binding] = &[
         key: "engine.tls",
         layer: Layer::Location,
         says: "PostgreSQL: how the connection is secured.",
+    },
+    Binding {
+        key: "engine.tablespaces",
+        layer: Layer::Location,
+        says: "PostgreSQL: the tablespaces the lake's `log`, `projection`, `indexes` and `vectors` are made in, each the database's default where it is absent.",
     },
     Binding {
         key: "key",
@@ -474,6 +484,21 @@ pub const BINDINGS: &[Binding] = &[
         key: "mirror.connections",
         layer: Layer::Root,
         says: "Each mirror's source lake, target lake, principal, the types that cross, and where a type with no position begins (`start`: a snapshot of its records, or the feed from now).",
+    },
+    Binding {
+        key: "lakes_dir",
+        layer: Layer::Root,
+        says: "Where `lake new` makes a SQLite lake's directory; `lakes` in the root when absent.",
+    },
+    Binding {
+        key: "exports_dir",
+        layer: Layer::Root,
+        says: "Where `export` writes when it is given no `--to`; `exports` in the root when absent.",
+    },
+    Binding {
+        key: "backups_dir",
+        layer: Layer::Root,
+        says: "Where the root's backups are to be kept, nothing yet; `backups` in the root when absent.",
     },
 ];
 

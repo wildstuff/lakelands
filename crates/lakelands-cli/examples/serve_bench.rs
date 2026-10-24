@@ -85,6 +85,7 @@ fn prepare(bin: &Path, root: &Path, pg: Option<(&str, bool)>, workers: Option<us
                         ..PgTls::default()
                     },
                     tuning: PgTuning::default(),
+                    tablespaces: None,
                 },
                 key: None,
                 limits: Limits::default(),

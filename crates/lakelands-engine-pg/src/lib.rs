@@ -153,6 +153,7 @@ pub(crate) fn target(location: &Location) -> Result<connect::Target> {
         schema,
         tls,
         tuning,
+        tablespaces,
     } = &location.engine
     else {
         let (engine, kind) = (NAME.to_owned(), "postgres".to_owned());
@@ -170,5 +171,6 @@ pub(crate) fn target(location: &Location) -> Result<connect::Target> {
             .unwrap_or_else(|| format!("lakelands_{}", location.lake)),
         tls: tls.clone(),
         tuning: *tuning,
+        tablespaces: tablespaces.clone().unwrap_or_default(),
     })
 }

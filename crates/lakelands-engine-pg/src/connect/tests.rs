@@ -23,6 +23,7 @@ fn a_reader_keeps_at_most_its_most_statements_and_each_answers() {
         schema,
         tls,
         tuning,
+        tablespaces: Default::default(),
     })
     .unwrap();
     for _ in 0..2 {
