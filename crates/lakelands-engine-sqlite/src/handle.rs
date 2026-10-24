@@ -154,12 +154,12 @@ impl SqliteLake {
             let (lake, schema) = (lake.to_string(), None);
             return Err(Error::unavailable(Situation::NoLake { lake, schema }));
         };
-        // A scratch an earlier builder left unfit to swap in is removed by
-        // the next writer, before it opens the projection.
         let path = projection.join("projection.db");
         if mode != OpenMode::Read || path.is_file() {
             check_name(&projection, &lake, mode != OpenMode::Read)?;
         }
+        // A scratch an earlier builder left unfit to swap in is removed by
+        // the next writer, before it opens the projection.
         if mode != OpenMode::Read {
             scratch::sweep(&projection, &lake, &mut log)?;
         }

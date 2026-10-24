@@ -887,7 +887,7 @@ part named by none goes where the role's or the database's
 changed. The tablespaces exist before the open, made by the operator,
 and the lake's role holds `CREATE` on each. A part made before its
 member was named stays where it is; a rebuild beside moves every part
-but the log. A SQLite lake that is given a `projection_dir` later
+but the log and the `meta` table. A SQLite lake that is given a `projection_dir` later
 finds no projection there: its next writer's open folds one from the
 log (or swaps in what `lakelands build-ahead` built there), and the
 old `projection.db` in `dir` is the operator's to remove. In a root's `lakelands.json`, `lakes_dir` (`lakes` when

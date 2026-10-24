@@ -148,7 +148,7 @@ pub enum PgTlsMode {
 }
 
 /// Where a lake's parts are made, each where `default_tablespace` puts it
-/// if unnamed; a part is not moved, but a rebuild remakes all but the log.
+/// if unnamed; a part is not moved, but a rebuild remakes all but the log and `meta`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PgTablespaces {

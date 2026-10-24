@@ -2301,16 +2301,25 @@ fn values_remove_takes_back_part_of_a_source_and_prints_what_it_did() {
     }
 }
 
-/// A keyring inside a lake's directory would travel with the lake's
-/// files, a destroyed key with it: the root refuses it (058).
+/// A keyring inside a lake's directory, or its projection's, would travel
+/// with the lake's files, a destroyed key with it: the root refuses it (058).
 #[test]
 fn a_keyring_inside_a_lakes_directory_is_refused() {
     let sh = Shell::on("keyring-inside", Backend::Store);
     sh.lake();
+    let file = sh.root.join("lakes/finance.json");
+    let mut location: serde_json::Value =
+        serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    location["engine"]["projection_dir"] = "projections/finance".into();
+    fs::write(&file, location.to_string()).unwrap();
     // Named straight, through `..`, and through a link, which is followed.
     #[cfg(unix)]
     std::os::unix::fs::symlink(sh.root.join("lakes"), sh.root.join("shelf")).unwrap();
-    let mut named = vec!["lakes/finance/keys", "elsewhere/../lakes/finance/keys"];
+    let mut named = vec![
+        "lakes/finance/keys",
+        "elsewhere/../lakes/finance/keys",
+        "projections/finance/keys",
+    ];
     if cfg!(unix) {
         named.push("shelf/finance/keys");
     }

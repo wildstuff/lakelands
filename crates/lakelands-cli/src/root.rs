@@ -300,17 +300,26 @@ impl Root {
         })
     }
 
-    /// A keyring inside a lake's directory would go wherever the lake's
-    /// files go, a backup or a copy, and a destroyed key with them: it is
-    /// refused (058).
+    /// A keyring inside a lake's directory, or its projection's, would go
+    /// wherever the lake's files go, a backup or a copy, and a destroyed key
+    /// with them: it is refused (058).
     fn keyring_outside_the_lakes(&self) -> Result<(), Failure> {
         let Some(keyring) = self.keyring() else {
             return Ok(());
         };
         let keyring = canonical(&keyring);
         for lake in self.lakes() {
-            if let EngineConfig::Sqlite { dir, .. } = self.location(Some(&lake))?.engine
-                && keyring.starts_with(canonical(&dir))
+            let EngineConfig::Sqlite {
+                dir,
+                projection_dir,
+                ..
+            } = self.location(Some(&lake))?.engine
+            else {
+                continue;
+            };
+            if std::iter::once(dir)
+                .chain(projection_dir)
+                .any(|dir| keyring.starts_with(canonical(&dir)))
             {
                 return Err(Failure::new(
                     format!(
