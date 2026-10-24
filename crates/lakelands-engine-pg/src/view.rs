@@ -2,7 +2,7 @@
 //!
 //! A read of more than one statement, or one that asks whether the view
 //! is at the head, runs in one `REPEATABLE READ READ ONLY` transaction on
-//! the handle's reader connection, so all of it sees one committed state
+//! one reader connection, so all of it sees one committed state
 //! of the projection; a read of one statement runs alone, since one
 //! statement already sees one. A read reads the history rows that hold at
 //! the view's position. When that position is the one the projection

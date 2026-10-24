@@ -37,9 +37,15 @@ fn owner(lake: &str) -> Principal {
     }
 }
 
-/// Ends every session the lake's handles hold: the reader, the lease and
-/// the projection; the connections are named by the lake's schema.
-async fn drop_connections(url: &str, schema: &str) -> usize {
+/// Held by each test while it runs: [`drop_connections`] ends the readers
+/// every lake of the process shares, so tests run as threads of one
+/// process, as `cargo test` runs them, would end each other's.
+static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Ends every session the lake's handles hold: the lease and the
+/// projection, named by the lake's schema, and the readers this process's
+/// lakes share, named by the process. Answers how many of each it ended.
+async fn drop_connections(url: &str, schema: &str) -> (usize, usize) {
     let (url, schema) = (url.to_owned(), schema.to_owned());
     tokio::task::spawn_blocking(move || dropped(&url, &schema))
         .await
@@ -54,17 +60,22 @@ async fn gone(url: &str, schema: &str) {
         .unwrap();
 }
 
-fn dropped(url: &str, schema: &str) -> usize {
+fn dropped(url: &str, schema: &str) -> (usize, usize) {
     let mut client = postgres::Client::connect(url, postgres::NoTls).unwrap();
     let ended = client
         .query(
-            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1",
-            &[&format!("lakelands {schema}")],
+            "SELECT application_name = $1, pg_terminate_backend(pid) FROM pg_stat_activity \
+             WHERE application_name IN ($1, $2)",
+            &[
+                &format!("lakelands {schema}"),
+                &format!("lakelands readers {}", std::process::id()),
+            ],
         )
         .unwrap();
     // The server ends a session a moment after it is asked.
     std::thread::sleep(std::time::Duration::from_millis(300));
-    ended.len()
+    let lakes = ended.iter().filter(|row| row.get::<_, bool>(0)).count();
+    (lakes, ended.len() - lakes)
 }
 
 async fn put(cat: &dyn Catalog, who: &Principal, key: &str) -> Result<(), Error> {
@@ -149,13 +160,12 @@ async fn a_served_lake_reads_and_writes_again_after_its_connections_are_dropped(
     let Some(url) = common::url_or_skip("dropped connections") else {
         return;
     };
+    let _alone = ONE_AT_A_TIME.lock().await;
     let (schema, store, cat, who) = served(&url).await;
     let before = fences(store.as_ref()).await;
-    assert_eq!(
-        drop_connections(&url, &schema).await,
-        3,
-        "the reader, the lease and the projection"
-    );
+    let (lakes, readers) = drop_connections(&url, &schema).await;
+    assert_eq!(lakes, 2, "the lease and the projection");
+    assert!(readers >= 1, "a reader");
     // A read opens the reader again and is answered.
     assert_eq!(
         keys(cat.as_ref(), &who).await.unwrap(),
@@ -202,6 +212,7 @@ async fn a_dropped_writer_is_refused_while_another_holds_the_lease_and_writes_af
     let Some(url) = common::url_or_skip("dropped connections, a second writer") else {
         return;
     };
+    let _alone = ONE_AT_A_TIME.lock().await;
     let (schema, store, cat, who) = served(&url).await;
     drop_connections(&url, &schema).await;
     // Another writer takes the lease the dropped session let go of, and

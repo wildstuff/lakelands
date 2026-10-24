@@ -406,7 +406,7 @@ impl SqliteView<'_> {
         let Some(at) = self.at else {
             return Ok(empty);
         };
-        let conn = crate::lock(&self.lake.reader);
+        let conn = self.lake.reader()?;
         conn.execute_batch("BEGIN").map_err(sql)?;
         let result = projection::folded(&conn).and_then(|folded| {
             f(&Read {

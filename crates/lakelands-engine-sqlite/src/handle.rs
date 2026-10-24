@@ -25,6 +25,7 @@ use lakelands_api::location::SqliteTuning;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
 use lakelands_core::engines;
+use lakelands_core::engines::pool::{self, Pool, Taken};
 use rusqlite::{Connection, OpenFlags, params};
 
 use crate::lease::{Held, LeaseFile};
@@ -62,7 +63,7 @@ pub struct SqliteLake {
     lease_file: LeaseFile,
     held: Mutex<Option<Held>>,
     writer: Mutex<Option<Connection>>,
-    pub(crate) reader: Mutex<Connection>,
+    readers: Pool<Connection>,
     transaction: Mutex<Option<Transaction>>,
     /// The head's declarations as the last commit left them, and the
     /// position it folded through, for the next one's relook.
@@ -206,7 +207,7 @@ impl SqliteLake {
             log: Mutex::new(log),
             held: Mutex::new(None),
             writer: Mutex::new(writer),
-            reader: Mutex::new(reader),
+            readers: Pool::new(vec![reader], pool::per_core()),
             transaction: Mutex::new(None),
             heads: Mutex::new(None),
             dir,
@@ -249,7 +250,7 @@ impl SqliteLake {
             log: Mutex::new(log),
             held: Mutex::new(None),
             writer: Mutex::new(Some(conn)),
-            reader: Mutex::new(reader),
+            readers: Pool::new(vec![reader], pool::per_core()),
             transaction: Mutex::new(None),
             heads: Mutex::new(None),
             dir,
@@ -260,22 +261,19 @@ impl SqliteLake {
     }
 
     /// Close this handle's connections to its projection, so that its file
-    /// can be replaced or removed; the reader is left on an empty database
-    /// until [`reconnect`](Self::reconnect).
-    fn disconnect(&self) -> Result<()> {
+    /// can be replaced or removed, once the reads on them have ended; a
+    /// read waits until the readers are opened again.
+    fn disconnect(&self) {
         *lock(&self.transaction) = None;
         *lock(&self.heads) = None;
         drop(lock(&self.writer).take());
-        *lock(&self.reader) = Connection::open_in_memory().map_err(sql)?;
-        Ok(())
+        self.readers.shut();
     }
 
-    /// Connect this handle to its projection again, after
-    /// [`disconnect`](Self::disconnect).
-    fn reconnect(&self) -> Result<()> {
-        *lock(&self.writer) = Some(connect(&self.path, &self.tuning, true)?);
-        *lock(&self.reader) = connect(&self.path, &self.tuning, false)?;
-        Ok(())
+    /// A reader connection of this handle's own, for one read.
+    pub(crate) fn reader(&self) -> Result<Taken<'_, Connection>> {
+        self.readers
+            .take(|| connect(&self.path, &self.tuning, false))
     }
 
     /// Put the scratch in the projection's place, checked as
@@ -310,7 +308,7 @@ impl SqliteLake {
             }));
         }
         building.settle(&self.lake)?;
-        self.disconnect()?;
+        self.disconnect();
         let replaced = (|| {
             let opened = self.opened.as_ref().ok_or_else(|| self.read_only())?;
             match FileExt::try_lock(opened) {
@@ -345,14 +343,21 @@ impl SqliteLake {
             building.set(None)
         })();
         // Taking the hold exclusively may have given up the shared one,
-        // whether it was taken or not: it is taken again.
-        if let Some(opened) = &self.opened {
-            FileExt::lock_shared(opened).map_err(|e| io_error(Doing::Lock, Part::Projection, e))?;
-        }
-        self.reconnect()?;
+        // whether it was taken or not: it is taken again. The writer puts
+        // the file back in its write-ahead journal before a read opens it,
+        // and the reads are let in whether that failed or not.
+        let back = self.opened.as_ref().map_or(Ok(()), |opened| {
+            FileExt::lock_shared(opened).map_err(|e| io_error(Doing::Lock, Part::Projection, e))
+        });
+        let back = back.and_then(|()| {
+            *lock(&self.writer) = Some(connect(&self.path, &self.tuning, true)?);
+            Ok(())
+        });
+        self.readers.open();
+        back?;
         replaced?;
         drop(building);
-        projection::folded(&lock(&self.reader))
+        projection::folded(&*self.reader()?)
     }
 
     /// Run `f` on the writer connection; a handle opened read-only has
@@ -489,7 +494,7 @@ impl Drop for SqliteLake {
             let _ = self.lease_file.release(held);
         }
         if let Some(mut building) = lock(&self.building).take() {
-            let _ = self.disconnect();
+            self.disconnect();
             let log = self
                 .log
                 .get_mut()
@@ -607,14 +612,14 @@ impl LakeEngine for SqliteLake {
     }
 
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
-        let folded = projection::folded(&lock(&self.reader))?;
+        let folded = projection::folded(&*self.reader()?)?;
         let at = engines::view_at(as_of, folded)?;
         Ok(Box::new(SqliteView { lake: self, at }))
     }
 
     /// One read transaction holds the position and every list.
     fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked> {
-        let conn = lock(&self.reader);
+        let conn = self.reader()?;
         conn.execute_batch("BEGIN").map_err(sql)?;
         let ranked = projection::folded(&conn).and_then(|position| {
             let mut lists = Vec::new();
@@ -747,7 +752,7 @@ impl ProjectionStore for SqliteLake {
     }
 
     fn folded_through(&self) -> Result<Option<Position>> {
-        projection::folded(&lock(&self.reader))
+        projection::folded(&*self.reader()?)
     }
 
     fn put_declaration(
@@ -996,7 +1001,7 @@ impl VectorIndex for SqliteLake {
     }
 
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64> {
-        lock(&self.reader)
+        self.reader()?
             .prepare_cached(
                 "SELECT count(*) FROM vectors WHERE ty = ?1 AND field = ?2 AND until IS NULL",
             )

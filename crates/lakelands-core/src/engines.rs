@@ -50,6 +50,8 @@ use lakelands_api::write::{Declaration, DeclarationKind, Proposal, ProposalFilte
 pub use crate::expr::order::{cmp_values, sort_key};
 use crate::expr::{RecordScope, holds};
 
+pub mod pool;
+
 /// The clock an engine evaluates a filter with. The store hands an engine
 /// only filters that do not read the clock, so any fixed instant will do.
 const NO_CLOCK: Timestamp = Timestamp(0);
