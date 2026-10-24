@@ -27,16 +27,16 @@ impl<'a> Reader<'a> {
             }
             SearchMode::Vector { .. } => None,
         };
-        rights::check_search(self.who, &decl, fields, &vector_fields)?;
+        self.sight.check_search(&decl, fields, &vector_fields)?;
         if let Some(weights) = own_text_weights(&s.mode) {
-            rights::check_text_weights(self.who, &decl, weights)?;
+            self.sight.check_text_weights(&decl, weights)?;
         }
         // The names, the rights and the `where` are read at the read's
         // position; the rankings are judged by the head's declaration, whose
         // indexes they read, each field under the name it bears there (025).
         let texts = match fields {
             Some(n) => Box::new(n.iter()) as Box<dyn Iterator<Item = &FieldName>>,
-            None => Box::new(rights::searched_fields(self.who, &decl)),
+            None => Box::new(self.sight.searched_fields(&decl)),
         };
         let ranks = self.ranks(&decl, vector_fields.iter().copied().chain(texts))?;
         // A vector ranking reads a vector field, and a hybrid search without
@@ -111,7 +111,7 @@ impl<'a> Reader<'a> {
         named: impl Iterator<Item = &'n FieldName>,
     ) -> Result<Ranks> {
         let (shape, who) = match (self.at_head, &self.head) {
-            (true, _) => (&self.shape, self.who),
+            (true, _) => (&self.shape, self.sight.who()),
             (false, Some(h)) => (&h.shape, &h.who),
             (false, None) => {
                 let (ty, decl, fields) = (decl.name.clone(), None, BTreeMap::new());
@@ -135,10 +135,11 @@ impl<'a> Reader<'a> {
             }
         }
         let decl = shape.ontology.ty(&ty).ok().cloned();
+        let sees = Sight::held(who, shape.as_ref());
         let shown = |now: &FieldName| {
             let d = decl.as_ref()?;
             let f = d.field(now)?;
-            rights::field_access(who, d, f).reads().then(|| f.clone())
+            sees.field_access(d, f).reads().then(|| f.clone())
         };
         let fields = (names.iter())
             .filter_map(|(asked, now)| Some((asked.clone(), shown(now)?)))
@@ -205,9 +206,9 @@ impl<'a> Reader<'a> {
         // A search that names no fields reads the searchable fields the
         // principal reads (024), each before the head under its name there.
         let hidden = (decl.fields.iter())
-            .any(|f| f.searchable && !rights::field_access(self.who, &decl, f).reads());
+            .any(|f| f.searchable && !self.sight.field_access(&decl, f).reads());
         let named = text_fields.map(|n| n.iter().collect::<Vec<_>>());
-        let named = named.unwrap_or_else(|| rights::searched_fields(self.who, &decl).collect());
+        let named = named.unwrap_or_else(|| self.sight.searched_fields(&decl).collect());
         let searched = || {
             let now = named.iter().map(|n| (*n, ranks.fields.get(*n)));
             now.filter_map(|(n, f)| Some((n, f.filter(|f| f.searchable)?)))
@@ -424,7 +425,7 @@ impl<'a> Reader<'a> {
         // path to the one that reads.
         let open = self.at_head
             && self.whole(decl)
-            && self.who.grants.restricted
+            && self.sight.sees_restricted()
             && filter.is_none()
             && !self.timed(decl);
         {
@@ -542,7 +543,7 @@ impl<'a> Reader<'a> {
             if filter.is_some_and(|e| !self.holds(e, &r, true)) {
                 continue;
             }
-            if let Some(record) = rights::visible(self.sight, decl, &r, with_meta) {
+            if let Some(record) = self.sight.visible(decl, &r, with_meta) {
                 hits.push(Hit { record, score });
             }
         }
@@ -607,12 +608,12 @@ impl<'a> Reader<'a> {
             if relation.is_some_and(|n| r.name != *n) || !reach.walks(here, walk, t, r) {
                 continue;
             }
-            rights::check_probe(self.who, t, r.via.iter())?;
+            self.sight.check_probe(t, r.via.iter())?;
             let Some(d) = &r.derived else { continue };
             let [from, to] = d.reads();
-            rights::check_probe(self.who, t, from.iter())?;
+            self.sight.check_probe(t, from.iter())?;
             let target = self.shape.ontology.ty(&r.target)?;
-            rights::check_probe(self.who, target, to.iter())?;
+            self.sight.check_probe(target, to.iter())?;
         }
         Ok(())
     }

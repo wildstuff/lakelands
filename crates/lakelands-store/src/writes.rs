@@ -217,7 +217,7 @@ impl Walked {
         let broken = (plan.constraints.iter())
             .map(|c| (reaches(c) && (!judging.tells() || reads(c))).then(|| (0, 0, Vec::new())))
             .collect();
-        let held = sight.who().grants.restricted;
+        let held = sight.sees_restricted();
         let told = plan.constraints.iter().map(reads).collect();
         let ty = decl.name.clone();
         Ok(Walked {
@@ -350,7 +350,7 @@ impl Unlived {
             .filter(|f| moving.contains(&f.name))
             .filter_map(|f| f.ty.target.clone().map(|t| (f.name.clone(), t, Vec::new())))
             .collect();
-        let held = sight.who().grants.restricted;
+        let held = sight.sees_restricted();
         Unlived { fields, held }
     }
 
@@ -691,6 +691,11 @@ impl Call<'_> {
     /// its grants alone.
     pub(crate) fn authors(&self) -> bool {
         Sight::held(self.who, &Vec::<lakelands_api::engine::Declared>::new()).authors()
+    }
+
+    /// [`Sight::sees_restricted`] of its caller, asked as [`Self::authors`] is.
+    pub(crate) fn sees_restricted(&self) -> bool {
+        Sight::held(self.who, &Vec::<lakelands_api::engine::Declared>::new()).sees_restricted()
     }
 
     fn changed(&self, change: Change, cause: Position, now: Timestamp) -> Draft {
@@ -1168,7 +1173,7 @@ fn fill_key_fields(
     key: &RecordKey,
     patch: &mut Patch,
     door: (Door, Option<&SourceId>),
-    who: &Principal,
+    sees: &Sight<'_>,
 ) -> Result<()> {
     if decl.key.is_empty() || decl.key.iter().all(|k| patch.contains_key(k)) {
         return Ok(());
@@ -1214,7 +1219,7 @@ fn fill_key_fields(
         };
         filled.insert(name.clone(), v);
     }
-    rights::check_write(who, decl, door, &filled)?;
+    sees.check_write(decl, door, &filled)?;
     patch.extend(check_values(o, decl, &filled, &decl.fields)?);
     Ok(())
 }
@@ -1504,8 +1509,8 @@ pub(crate) fn types_shown(who: &Principal, o: &Ontology) -> Ontology {
     // (lakelands#943): any other is the lake's own.
     let find = |n: &TypeName| o.ty(n).ok();
     for e in seen.types.values_mut() {
-        if rights::keeps_from(who, &e.decl, &find) {
-            rights::known_fields(who, &mut Arc::make_mut(e).decl, &find);
+        if sees.keeps_from(&e.decl, &find) {
+            sees.known_fields(&mut Arc::make_mut(e).decl, &find);
         }
     }
     seen

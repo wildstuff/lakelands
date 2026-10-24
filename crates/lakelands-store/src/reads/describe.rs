@@ -28,7 +28,7 @@ impl<'a> Reader<'a> {
                 declared: Some(e.decl.clone()),
             });
         let host: Vec<_> = host.collect();
-        if self.who.grants.schema {
+        if self.sight.who().grants.schema {
             // A setting of a type it is not shown is told as were the type
             // absent, one naming fields of a type whole or not at all, and
             // one for a source only where nothing is held from it.
@@ -108,7 +108,7 @@ impl<'a> Reader<'a> {
         // head only, where it is kept (041).
         let chosen = self.view.chosen(&t.name).ok().filter(|_| self.at_head);
         let chosen = chosen.unwrap_or_default();
-        let schema = self.who.grants.schema;
+        let schema = self.sight.who().grants.schema;
         let reads = |f: &&FieldName| schema && self.sight.reads(&t.name, f) && seen(f);
         t.lifecycle.chosen = chosen.kept.iter().filter(reads).cloned().collect();
         // What was ordered by a whole sort, told to a holder of `schema`
@@ -117,7 +117,7 @@ impl<'a> Reader<'a> {
         // its time grows with records a reader may not be answered
         // (lakelands#1029).
         let tally = lakelands_core::lock(&self.lake.sorted_whole).clone();
-        let schema = self.who.grants.schema;
+        let schema = self.sight.who().grants.schema;
         let told = |f: &FieldName| {
             schema
                 && self.sight.reads(&t.name, f)
@@ -159,7 +159,7 @@ impl<'a> Reader<'a> {
                 && !self.held_now
                 && self.probe_view(view, false).is_ok()
             {
-                let face = usize::from(self.who.grants.restricted);
+                let face = usize::from(self.sight.sees_restricted());
                 t.lifecycle.kept = Some(match self.kept_read(&t.name, view, face) {
                     Ok(Some((_, 0))) => Kept::Kept,
                     Ok(Some((_, not_exact))) => Kept::Computed {
@@ -258,7 +258,7 @@ impl<'a> Reader<'a> {
             equal,
             valid_at: self.valid_at_for(decl),
             retired: self.retired.get(),
-            restricted: self.who.grants.restricted,
+            restricted: self.sight.sees_restricted(),
             ..Default::default()
         };
         self.view.count(&decl.name, &scan)
@@ -359,7 +359,7 @@ impl<'a> Reader<'a> {
             limit: u32::try_from(want).unwrap_or(u32::MAX),
             valid_at: self.valid_at_for(decl),
             retired: self.retired.get(),
-            restricted: self.who.grants.restricted,
+            restricted: self.sight.sees_restricted(),
             ..Default::default()
         };
         let mut out = Vec::new();
@@ -521,7 +521,7 @@ impl<'a> Reader<'a> {
         decl: &TypeDecl,
         v: &lakelands_api::ontology::ViewDecl,
     ) -> Result<Option<(TypeDecl, bool)>> {
-        let face = usize::from(self.who.grants.restricted);
+        let face = usize::from(self.sight.sees_restricted());
         if self.held_now || (self.valid_at.is_some() && self.timed_tree(decl)) {
             return Ok(None);
         }
@@ -591,7 +591,7 @@ impl<'a> Reader<'a> {
             equal,
             limit: u32::MAX,
             valid_at: self.valid_at_for(stored),
-            restricted: self.who.grants.restricted,
+            restricted: self.sight.sees_restricted(),
             ..Default::default()
         };
         let rows = self.view.scan(&stored.name, &scan)?;
@@ -961,11 +961,12 @@ impl<'a> Reader<'a> {
         }
         // The probe is the view's own, so its refusal names nothing of the
         // source to a reader `describe` withholds the definition from (024).
-        let unnamed = |e| match self.who.grants.schema {
+        let unnamed = |e| match self.sight.who().grants.schema {
             true => e,
             false => Error::refused(None, Refusal::NotGranted),
         };
-        rights::check_probe(self.who, &source, probed.iter()).map_err(unnamed)?;
+        let probed = self.sight.check_probe(&source, probed.iter());
+        probed.map_err(unnamed)?;
         Ok((source, where_, measures))
     }
 

@@ -372,9 +372,9 @@ impl EdgeSource for Visible<'_, '_> {
                     }
                     if let Ok(decl) = decl {
                         e.fields.retain(|name, _| {
-                            decl.fields.iter().any(|f| {
-                                &f.name == name && rights::field_access(r.who, decl, f).reads()
-                            })
+                            decl.fields
+                                .iter()
+                                .any(|f| &f.name == name && r.sight.field_access(decl, f).reads())
                         });
                     }
                 }
