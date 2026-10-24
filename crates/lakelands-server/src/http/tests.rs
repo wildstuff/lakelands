@@ -128,3 +128,63 @@ async fn the_routes_take_no_key_carry_no_lake_and_refuse_other_methods() {
     assert_eq!(ask(addr, "POST", "/livez").await.0, 405);
     assert_eq!(ask(addr, "DELETE", "/readyz").await.0, 405);
 }
+
+/// Takes the lake's lease from under the handle: released behind the
+/// store's back, as a lost session does on PostgreSQL, and then taken by
+/// another writer. Answers the engine holding it.
+fn lease_taken(
+    opener: &lakelands_engine_mem::MemoryOpener,
+    name: &str,
+) -> Box<dyn lakelands_api::engine::LakeEngine> {
+    use lakelands_api::engine::{EngineOpener, Lease};
+    use lakelands_api::error::Situation;
+
+    let engine = opener
+        .open(&Location::memory(name), OpenMode::Write)
+        .unwrap();
+    let held = engine.take_lease("another writer").unwrap_err();
+    let Some(Situation::LeaseHeld { holder, fence }) = held.situation().cloned() else {
+        panic!("the lease is held: {held:?}");
+    };
+    engine.release_lease(&Lease { fence, holder }).unwrap();
+    engine.take_lease("another writer").unwrap();
+    engine
+}
+
+/// A write through the lake: its answer.
+async fn declare(store: &dyn LakeStore) -> lakelands_api::Result<()> {
+    use lakelands_api::principal::{Grants, PrincipalKind};
+    use lakelands_api::{Principal, WriteContext};
+
+    let who = Principal {
+        kind: PrincipalKind::Human,
+        id: "owner".into(),
+        lake: "a".into(),
+        grants: Grants::owner(),
+    };
+    let d = serde_json::json!({"declare": "type", "name": "t", "fields": [{"name": "n", "type": {"kind": "number"}}]});
+    let d: lakelands_api::write::Declaration = serde_json::from_value(d).unwrap();
+    store
+        .catalog(WriteContext::default())
+        .declare(&who, d)
+        .await
+        .map(|_| ())
+}
+
+/// The limit: a lease another writer took is refused a write as stale
+/// (`LeaseStale`, on the memory and SQLite engines), and the handle keeps
+/// its flag, so `/readyz` still says ready. Only a lease the engine says
+/// is not held (`LeaseNotHeld`: a lost PostgreSQL session) clears it, as
+/// `lakelands-engine-pg`'s `dropped.rs` pins; carrying the stale case too
+/// is a change to the store's handle (`Lake::lose`), not to the door.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lease_another_writer_took_is_refused_but_the_handle_keeps_its_flag() {
+    let (addr, health) = door().await;
+    let opener = lakelands_engine_mem::MemoryOpener::new();
+    let store = lake("a", OpenMode::Create, &opener).await;
+    health.serving(vec![store.clone()]);
+    let _engine = lease_taken(&opener, "a");
+    assert!(declare(store.as_ref()).await.is_err());
+    assert!(store.is_writer());
+    assert_eq!(ask(addr, "GET", "/readyz").await.0, 200);
+}
