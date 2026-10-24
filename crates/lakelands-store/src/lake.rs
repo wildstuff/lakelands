@@ -107,9 +107,11 @@ pub struct Writer {
     /// records by.
     pub plans: record::Plans,
     /// The engine said this handle holds the lease no more: the session
-    /// it lived in closed under it (lakelands#979). The next write, rebuild
-    /// or compaction takes the lease again before it decides anything
-    /// ([`Lake::regain`]); until its `lease_taken` is appended this stays.
+    /// it lived in closed under it (lakelands#979), or the lease is stale,
+    /// another writer's now or no one's (lakelands#1385). The next write,
+    /// rebuild or compaction takes the lease again before it decides
+    /// anything ([`Lake::regain`]); until its `lease_taken` is appended
+    /// this stays.
     pub lost: bool,
     /// The sources the log forgot that a fold has met (058): a fact of
     /// the log, so kept over a rebuild.
@@ -557,13 +559,23 @@ impl Lake {
     }
 
     /// Marks the writer lost where the engine said its lease is not held
-    /// (lakelands#979): the lease goes, and the handle is no writer until
-    /// it takes one again.
+    /// (lakelands#979) or stale (lakelands#1385): the lease goes, and the
+    /// handle is no writer until it takes one again. Only another take
+    /// moves the fence, so a stale lease is never this writer's own: it is
+    /// given back, which leaves the current holder's lease as it is and
+    /// lets the engine hand this handle one again once it is free.
     fn lose(&self, w: &mut Writer, e: &Error) {
-        if matches!(e.situation(), Some(Situation::LeaseNotHeld { .. })) {
-            (w.lost, w.lease) = (true, None);
-            self.holds_lease.store(false, Ordering::Release);
+        match e.situation() {
+            Some(Situation::LeaseNotHeld { .. }) => {}
+            Some(Situation::LeaseStale { .. }) => {
+                if let Some(stale) = &w.lease {
+                    let _ = self.engine.release_lease(stale);
+                }
+            }
+            _ => return,
         }
+        (w.lost, w.lease) = (true, None);
+        self.holds_lease.store(false, Ordering::Release);
     }
 
     /// A lost writer takes the lease again before its next write, as an
