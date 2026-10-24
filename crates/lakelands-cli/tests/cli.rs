@@ -2735,6 +2735,7 @@ server.allowed_origins                  root      not configured: lakelands.json
 server.session_idle_secs                root      not configured: lakelands.json has no `server`
 server.feed_poll_millis                 root      not configured: lakelands.json has no `server`
 server.feed_floor_millis                root      not configured: lakelands.json has no `server`
+server.workers                          root      not configured: lakelands.json has no `server`
 aging.utc_offset                        root      not configured: lakelands.json has no `aging`
 aging.check_secs                        root      not configured: lakelands.json has no `aging`
 deliver.poll_millis                     root      not configured: lakelands.json has no `deliver`

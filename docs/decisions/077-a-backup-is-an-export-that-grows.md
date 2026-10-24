@@ -2,7 +2,7 @@
 
 ## What is decided
 
-**Proposed** on lakelands#1369 (2026-10-24).
+**Accepted** on lakelands#1369 (2026-10-24), by the operator.
 
 ### A backup holds the export's segment files and nothing else
 

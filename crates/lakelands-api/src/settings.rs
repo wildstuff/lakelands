@@ -280,6 +280,11 @@ pub const SETTINGS: &[Setting] = &[
         ..root("server.feed_floor_millis", "10")
     },
     Setting {
+        range: "a count above zero",
+        says: "The threads `serve` runs its doors and sessions on; absent, the machine's cores, at most 8.",
+        ..root("server.workers", "null")
+    },
+    Setting {
         range: "`Z`, or `+HH:MM` or `-HH:MM` within fourteen hours",
         says: "The UTC offset `serve` reads the date at, to age each lake it writes once a day.",
         ..root("aging.utc_offset", "\"Z\"")

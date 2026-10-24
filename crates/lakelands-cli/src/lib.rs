@@ -487,6 +487,28 @@ fn command() -> Command {
         )
 }
 
+/// The runtime a command line runs on: `serve` on the threads the root's
+/// server section names ([`lakelands_server::runtime`]), every other
+/// command on the one thread that starts it. A command line that does not
+/// parse, or a root that does not open, is left to [`run`] to say.
+pub fn runtime<I, T>(args: I) -> std::io::Result<tokio::runtime::Runtime>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let m = command().try_get_matches_from(args).ok();
+    match m.filter(|m| m.subcommand_name() == Some("serve")) {
+        Some(m) => {
+            let dir = PathBuf::from(m.get_one::<String>("root").map_or(".", String::as_str));
+            let server = root::Root::open(&dir).ok().and_then(|r| r.config.server);
+            lakelands_server::runtime(server.as_ref())
+        }
+        None => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build(),
+    }
+}
+
 /// Run one command line. Output goes to `out`, failures to `err`; the
 /// answer is the process's exit status: 0 done, 1 refused or failed,
 /// 2 the command line was not understood, or `settings` was asked to
