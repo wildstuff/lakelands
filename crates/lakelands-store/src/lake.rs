@@ -614,6 +614,7 @@ impl Lake {
         ) {
             (w.lost, w.lease) = (true, None);
             self.holds_lease.store(false, Ordering::Release);
+            self.level(Level::LeaseHeld, 0);
         }
     }
 

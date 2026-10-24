@@ -47,7 +47,7 @@ every write answered and folded, the head at the last append.
 | `lakelands_folded_through` | level | after each commit of the projection |
 | `lakelands_rebuilding` | level | 1 when a rebuild begins, 0 when it ends |
 | `lakelands_active_segment_bytes` | level | when the writer weighs its segment for a seal by size, on an engine that reports it |
-| `lakelands_lease_held` | level | when the writer publishes: 1 with its lease, 0 without |
+| `lakelands_lease_held` | level | when the writer publishes: 1 with its lease, 0 without; 0 when the engine says the lease is lost or stale |
 | `lakelands_lease_fence` | level | with the lease, its fence |
 | `lakelands_append_seconds` | spread | around the engine's append |
 | `lakelands_fold_seconds` | spread | around an append's fold |
