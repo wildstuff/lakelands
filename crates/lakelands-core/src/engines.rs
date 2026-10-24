@@ -1438,9 +1438,9 @@ fn field_tokens<'r>(
 /// An engine may hand in any superset of the hits as `head`: a record
 /// whose named fields hold no query token scores nothing and is dropped
 /// here, before the ranking is cut at `k`.
-pub fn lexical<'a>(
+pub fn lexical(
     decl: &TypeDecl,
-    head: impl IntoIterator<Item = &'a StoredRecord>,
+    head: impl IntoIterator<Item = impl std::borrow::Borrow<StoredRecord>>,
     text: &str,
     fields: Option<&[FieldName]>,
     weights: &BTreeMap<FieldName, f64>,
@@ -1449,8 +1449,9 @@ pub fn lexical<'a>(
     let query = tokens(text, decl.language.as_deref().unwrap_or(""));
     let mut hits: Vec<(RecordKey, f64)> = head
         .into_iter()
-        .filter(|r| !r.retired)
+        .filter(|r| !r.borrow().retired)
         .filter_map(|r| {
+            let r = r.borrow();
             let held: Vec<(f64, BTreeSet<String>)> = field_tokens(decl, r, fields)
                 .map(|(f, t)| (weights.get(f).copied().unwrap_or(1.0), t))
                 .collect();

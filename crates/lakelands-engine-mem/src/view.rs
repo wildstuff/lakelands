@@ -28,7 +28,7 @@ use lakelands_api::write::{Proposal, ProposalFilter};
 use lakelands_core::engines;
 use lakelands_core::feed::{self, Seek};
 
-use crate::projection::{History, Projection};
+use crate::projection::Projection;
 use crate::{Lake, lock};
 
 /// A read view of one lake's projection at one position.
@@ -75,24 +75,14 @@ impl ProjectionView for MemView {
     }
 
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
-        Ok(self.read(|p, at| {
-            p.records
-                .get(&(ty.clone(), key.clone()))
-                .and_then(|h| h.at(at))
-                .cloned()
-        }))
+        Ok(self.read(|p, at| p.record_of(ty, key, at)))
     }
 
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
         Ok(self.read(|p, at| {
             let keys: std::collections::BTreeSet<&RecordKey> = keys.iter().collect();
             keys.into_iter()
-                .filter_map(|key| {
-                    p.records
-                        .get(&(ty.clone(), key.clone()))
-                        .and_then(|h| h.at(at))
-                        .cloned()
-                })
+                .filter_map(|key| p.record_of(ty, key, at))
                 .collect()
         }))
     }
@@ -131,7 +121,10 @@ impl ProjectionView for MemView {
                     Some(at) if Some(at) != p.folded => {
                         match p.changed(ty, at, engines::changed_ceiling(scan.limit)) {
                             Some(changed) => Some(changed),
-                            None => return engines::scan(decl, p.records_at(ty, Some(at)), scan),
+                            None => {
+                                let all: Vec<_> = p.records_at(ty, Some(at)).collect();
+                                return engines::scan(decl, &all, scan);
+                            }
                         }
                     }
                     _ => None,
@@ -139,12 +132,7 @@ impl ProjectionView for MemView {
                 // The index and the records without a row answer the head,
                 // a key put since included: the changed keys' states at
                 // `at` take their place.
-                let head = |key: &RecordKey| {
-                    p.records
-                        .get(&(ty.clone(), key.clone()))
-                        .and_then(History::latest)
-                        .cloned()
-                };
+                let head = |key: &RecordKey| p.record_of(ty, key, p.folded);
                 let sorted = |from: Option<(&[u8], &str)>, n| {
                     Ok(p.sorted_after(ty, &first.field, first.dir, from, n)
                         .into_iter()
@@ -179,7 +167,7 @@ impl ProjectionView for MemView {
                 };
                 return page.unwrap_or_else(|never| match never {});
             }
-            engines::scan(decl, p.records_at(ty, at), scan)
+            engines::scan(decl, &p.records_at(ty, at).collect::<Vec<_>>(), scan)
         }))
     }
 
@@ -200,12 +188,9 @@ impl ProjectionView for MemView {
                 .map(|key| {
                     let mut edges = Vec::new();
                     if matches!(walk, Walk::Out | Walk::Both) {
-                        let record = p
-                            .records
-                            .get(&(ty.clone(), key.clone()))
-                            .and_then(|h| h.at(at));
+                        let record = p.record_of(ty, key, at);
                         if let (Some(decl), Some(record)) = (p.type_at(ty, at), record) {
-                            edges.extend(engines::links_of(decl, record, relation));
+                            edges.extend(engines::links_of(decl, &record, relation));
                         }
                     }
                     if matches!(walk, Walk::In | Walk::Both) {
@@ -222,7 +207,7 @@ impl ProjectionView for MemView {
                             let into =
                                 engines::in_links(ty, key, relation, p.types_at(at), |name| {
                                     Ok::<_, std::convert::Infallible>(
-                                        p.records_at(name, at).cloned().collect(),
+                                        p.records_at(name, at).collect(),
                                     )
                                 });
                             edges.extend(into.unwrap_or_else(|never| match never {}));
@@ -248,17 +233,12 @@ impl ProjectionView for MemView {
                                     .into_iter()
                                     .flatten()
                             })
-                            .filter_map(|lk| {
-                                p.records
-                                    .get(&(lt.clone(), lk.clone()))
-                                    .and_then(|h| h.at(at))
-                            })
-                            .cloned()
+                            .filter_map(|lk| p.record_of(lt, lk, at))
                             .collect()
                     } else {
                         // The link type at the position, whole: the
                         // rulebook keeps the links whose end a record is.
-                        p.records_at(lt, at).cloned().collect()
+                        p.records_at(lt, at).collect()
                     })
                 },
             );
