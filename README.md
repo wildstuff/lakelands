@@ -148,9 +148,10 @@ terrain Lakelands is built for, and where it is not the right tool.
 
 **Choose something else when:**
 
-- **many writers hammer one dataset at once.** A lake has one writing
-  process per lake, any number of concurrent callers; throughput comes
-  from many lakes, not from one.
+- **many processes must each write one dataset directly.** A lake takes
+  any number of concurrent callers, and writes from several processes go
+  through its one writing process; past what one writer takes (about
+  5 000 writes a second on SQLite), throughput comes from more lakes.
 - **you need queries across tenants.** There is no query across lakes;
   data crosses only as a mirror that carries its provenance.
 - **the work is heavy graph analytics.** Walks have ceilings, and a walk

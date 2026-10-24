@@ -2,9 +2,9 @@
 
 ## What is decided
 
-**Proposed** on lakelands#1376 (2026-10-24). Nothing of it is built in
-0.19.0: it comes in force with the issue that builds it, once the
-operator accepts it, and until then
+**Accepted** on lakelands#1376 (2026-10-24, by the operator). Nothing
+of it is built in 0.19.0: it comes in force with the issue that builds
+it, and until then
 `docs/decisions/042-water-crosses-only-as-a-mirror.md` stands as
 written and nothing reads across lakes.
 
@@ -293,5 +293,5 @@ report: it is either over every lake named, or it is not answered.
 - **Not a change feed across lakes.** The feed stays one lake's log
   (`docs/decisions/004-the-change-feed-is-the-log.md`).
 - **Nothing of it in 0.19.0.** The record is the round's; the read, its
-  doors and its rows are built in a later round, once the operator has
-  accepted it.
+  doors and its rows are built in a later round, by an issue of their
+  own.
