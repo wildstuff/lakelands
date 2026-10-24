@@ -1856,6 +1856,18 @@ fn backup_grows_its_directory_and_restore_makes_the_lake_with_its_keys() {
     from.lake();
     fs::write(from.root.join("lakelands.json"), keyring).unwrap();
     from.run(&["apply", &from.fixture()]);
+    // A source's erasable value, sealed under a key of the keyring.
+    let contact =
+        "name: contact\nfields:\n  email: { type: text, authority: source, erasable: true }\n";
+    let applied = from.run(&[
+        "apply",
+        &from.bundle("contact", &[("types/contact.yaml", contact)]),
+    ]);
+    assert_eq!(applied.code, 0, "{}", applied.err);
+    let row =
+        "{\"type\": \"contact\", \"key\": \"c1\", \"fields\": {\"email\": \"ada@example.org\"}}\n";
+    let fed = from.run(&["ingest", &from.file("crm.ndjson", row), "--source", "crm"]);
+    assert_eq!(fed.code, 0, "{}", fed.err);
     let (dir, keys) = (from.root.join("backup"), from.root.join("backup-keys"));
     let (dir, keys) = (dir.display().to_string(), keys.display().to_string());
     let (head, _) = last_event(&from.run(&["feed"]).out);
@@ -1901,6 +1913,14 @@ fn backup_grows_its_directory_and_restore_makes_the_lake_with_its_keys() {
         "{}",
         mixed.err
     );
+    // Nor is a backup written into a lake's directory.
+    let lake = from.root.join("lakes/finance").display().to_string();
+    let live = from.run(&["backup", "--to", &lake]);
+    assert!(
+        live.code == 1 && live.err.contains("inside the lake `finance`'s directory"),
+        "{}",
+        live.err
+    );
 
     let check = from.run(&["restore", &dir, "--check"]);
     assert_eq!(check.code, 0, "{}", check.err);
@@ -1915,6 +1935,20 @@ fn backup_grows_its_directory_and_restore_makes_the_lake_with_its_keys() {
     let to = Shell::on("backup-to", Backend::Store);
     to.lake();
     fs::write(to.root.join("lakelands.json"), keyring).unwrap();
+    // A refused restore takes the keys it put back out again.
+    let empty = to.root.join("empty");
+    fs::create_dir_all(&empty).unwrap();
+    let refused = to.run(&[
+        "restore",
+        &empty.display().to_string(),
+        "--keys-from",
+        &keys,
+    ]);
+    assert!(
+        refused.code != 0 && !to.root.join("keys/finance.keys.json").exists(),
+        "{}",
+        refused.err
+    );
     let restored = to.run(&["restore", &dir, "--keys-from", &keys]);
     assert_eq!(restored.code, 0, "{}", restored.err);
     assert!(

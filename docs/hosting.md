@@ -368,7 +368,8 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     both carries what forgetting destroys. `lakelands backup` never
     writes a key into its directory; `--keys-to <dir>` copies the lake's
     keyring file into a directory of its own, and is refused inside the
-    backup's, around it or inside a lake's. A disk snapshot, a PostgreSQL
+    backup's, around it or inside a lake's; it copies nothing, and says
+    so, where the keyring holds no file for the lake. A disk snapshot, a PostgreSQL
     WAL archive or a copy outside the lake is out of the act's reach. An
     import finishes a forgetting its export holds, so a key store
     restored beside it has that source's keys destroyed again.
@@ -712,16 +713,20 @@ only, on every engine, beside a `serve` that holds the lake. Its cut is
 the head it read when it began; writes that land meanwhile are the next
 run's. It writes no manifest and no key; the line it prints names the
 head, how many events it wrote and the position the directory held
-before. A run stopped halfway leaves a torn last line, which the next
-run cuts and writes again. A directory whose last line is not the
-lake's own event at that position, another lake's backup or one of the
-lake before an upgrade, is refused as `backup_other_log`, and nothing
-in it is changed: back up into a new directory. A run reads none of the
+before. It writes only into a new or empty directory, or one holding
+nothing beside `log/` and `export.json`, and never inside a lake's
+directory: any other is refused as `export_not_empty`. A run stopped
+halfway leaves a torn last line, which the next run cuts and writes
+again. A directory whose last line is not the lake's own event at that
+position, another lake's backup, is refused as `backup_other_log`, and
+nothing in it is changed, its torn tail included: back up into a new
+directory. A run reads none of the
 lines before the last, so damage there is found by the restore, or by
 `lakelands restore <dir> --check`, whose exit status is `verify`'s (0
 it holds, 1 damaged, 3 not checked). `lakelands restore <dir>` is
 `import` of the directory, with `--keys-from <dir>` putting the lake's
-keyring file back first, only where the root's keyring has none:
+keyring file back first, only where the root's keyring has none, and
+taking it out again where the import is refused:
 
 ```sh
 lakelands --root /srv/lakes backup --to /backup/finance --keys-to /keys-backup

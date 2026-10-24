@@ -13,6 +13,7 @@ use std::path::Path;
 use lakelands_api::error::Flaw;
 use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::principal::PrincipalKind;
+use lakelands_api::seam::{ChangeFeed, FeedBatch};
 use sha2::{Digest as _, Sha256};
 
 use super::rekey;
@@ -41,13 +42,13 @@ check!(
 
 check!(
     BACKUP_CUT = a_backup_taken_while_writes_land_restores_the_lake_at_its_cut,
-    "077: a backup run while writes land holds the log through the head it read, its cut, and imported into a fresh lake answers at its head as the lake answers at the cut: the head, its hash, the feed, and every type's records with provenance",
+    "077: a backup run while writes land, each before a page of the feed it reads, holds the log through the head it read before them, its cut, and imported into a fresh lake answers at its head as the lake answers at the cut: the head, its hash, the feed, and every type's records with provenance",
     given
 );
 
 check!(
     BACKUP_TORN = a_backup_cuts_a_torn_tail_and_refuses_a_log_the_lake_does_not_continue,
-    "077: a run cuts the bytes after its directory's last line feed, a stopped run's, removing a file that holds no whole line, and continues; a directory whose last line is not the lake's event at its position, another lake's or another log's, is refused as a failed precondition, `backup_other_log` naming the position, and nothing in it is changed",
+    "077: a run cuts the bytes after its directory's last line feed, a stopped run's, removing a file that holds no whole line, and continues; a directory whose last line is not the lake's event at its position, another lake's or another log's, is refused as a failed precondition, `backup_other_log` naming the position, and nothing in it is changed, its torn tail included",
     scratch
 );
 
@@ -59,7 +60,7 @@ check!(
 
 check!(
     NOT_EMPTY = an_export_into_a_directory_that_holds_anything_is_refused,
-    "030: an export writes only into an empty or absent directory; into any other it is refused as a failed precondition, the export's directory not empty (no path on the host is named), and writes nothing",
+    "030 and 077: an export writes only into an empty or absent directory, a backup only into one holding nothing beside `log/` and `export.json` (no lake's directory); into any other each is refused as a failed precondition, the export's directory not empty (no path on the host is named), and writes nothing",
     scratch
 );
 
@@ -309,8 +310,8 @@ async fn an_export_verifies_to_the_through_and_hash_the_lake_answers(
 }
 
 async fn backup(store: &dyn LakeStore, dir: &Path) -> Result<export::Backup, Failure> {
-    let fut = export::backup(store, dir);
-    fut.await
+    export::backup(store, &*store.feed(), dir)
+        .await
         .must(&format!("backing up into {}", dir.display()))
 }
 
@@ -346,14 +347,12 @@ async fn a_backup_writes_an_exports_files_and_grows_by_what_follows(
     let new = backup(s, &dir).await?;
     let only = export::file_name(Position::GENESIS);
     ensure!(
-        files(&dir)? == [only.clone()] && as_exported(s, &dir, &scratch.dir("a")).await?,
-        "a lake never checkpointed exports and backs up one file, {only}, the same, through its \
-         head {first}; the backup wrote other files",
-    );
-    ensure!(
-        (new.since, new.through, new.copied) == (None, first, first.0 + 1)
+        files(&dir)? == [only.clone()]
+            && as_exported(s, &dir, &scratch.dir("a")).await?
+            && (new.since, new.through, new.copied) == (None, first, first.0 + 1)
             && !dir.join("export.json").exists(),
-        "a new backup copies the log through {first} and writes no manifest; it answered {new:?}"
+        "a lake never checkpointed exports and backs up one file, {only}, the same, through its \
+         head {first}, and the backup no manifest; it answered {new:?}",
     );
     let sealed_at = store.checkpoint().await.must("checkpointing")?;
     let head = invoices(s, 2, 3).await?;
@@ -373,44 +372,30 @@ async fn a_backup_writes_an_exports_files_and_grows_by_what_follows(
         late.copied == 2
             && read(&dir, &only)? == sealed
             && is.len() > was.len()
-            && is.starts_with(&was),
+            && is.starts_with(&was)
+            && as_exported(s, &dir, &scratch.dir("c")).await?,
         "a later run copies 2 events, leaves the file sealed at {sealed_at} as it was and \
-         extends the active one: it answered {late:?}, the active file {} bytes then {}",
+         extends the active one, as an export writes them: it answered {late:?}, the active \
+         file {} bytes then {}",
         was.len(),
         is.len()
-    );
-    ensure!(
-        as_exported(s, &dir, &scratch.dir("c")).await?,
-        "a later export and the backup grown to the head, {}, hold the same files",
-        late.through
     );
     Ok(())
 }
 
-/// Both futures to their ends, polled in turn, so the second's writes
-/// land while the first runs wherever the engine lets go between them.
-async fn both<A: Future, B: Future>(a: A, b: B) -> (A::Output, B::Output) {
-    use std::task::Poll::{Pending, Ready};
-    let (mut a, mut b, mut x, mut y) = (std::pin::pin!(a), std::pin::pin!(b), None, None);
-    std::future::poll_fn(|cx| {
-        if x.is_none()
-            && let Ready(v) = a.as_mut().poll(cx)
-        {
-            x = Some(v);
-        }
-        if y.is_none()
-            && let Ready(v) = b.as_mut().poll(cx)
-        {
-            y = Some(v);
-        }
-        if x.is_some() && y.is_some() {
-            Ready(())
-        } else {
-            Pending
-        }
-    })
-    .await;
-    (x.expect("polled to its end"), y.expect("polled to its end"))
+/// The store's feed, writing an invoice before it answers each poll: the
+/// run reading it runs while every one of those writes lands.
+struct Writing(Store);
+
+#[async_trait::async_trait]
+impl ChangeFeed for Writing {
+    async fn poll(&self, from: Position, filter: &FeedFilter, n: u32) -> Result<FeedBatch, Error> {
+        let _ = invoices(self.0.as_ref(), 100 + from.0 as u32, 1).await;
+        self.0.feed().poll(from, filter, n).await
+    }
+    async fn ack(&self, consumer: &str, through: Position) -> Result<(), Error> {
+        self.0.feed().ack(consumer, through).await
+    }
 }
 
 async fn a_backup_taken_while_writes_land_restores_the_lake_at_its_cut(
@@ -421,9 +406,16 @@ async fn a_backup_taken_while_writes_land_restores_the_lake_at_its_cut(
     let scratch = Scratch::new(given.scratch.clone());
     let (store, _) = exported_lake(store, &given.reopen).await?;
     let (dir, s) = (scratch.dir("backup"), store.as_ref());
-    let (cut, wrote) = both(backup(s, &dir), invoices(s, 20, 6)).await;
-    let (cut, _) = (cut?, wrote?);
-    invoices(s, 26, 1).await?;
+    let before = s.head().await.must("reading the head")?;
+    let cut = export::backup(s, &Writing(store.clone()), &dir)
+        .await
+        .must("backing up")?;
+    let after = s.head().await.must("reading the head")?;
+    ensure!(
+        before == cut.through && cut.through < after,
+        "a run cuts at the head as it began, {before}, before the lake's head {after}: {}",
+        cut.through
+    );
     let imported = (given.import)(dir, store.lake().clone(), None, import_seams()).await;
     let imported = imported.map_err(|e| Failure::new(format!("restoring the backup: {e}")))?;
     let i = imported.store.as_ref();
@@ -464,11 +456,14 @@ async fn a_backup_cuts_a_torn_tail_and_refuses_a_log_the_lake_does_not_continue(
     backup(s, &dir).await?;
     let only = export::file_name(Position::GENESIS);
     // A stopped run: half a line after the last, and a file of half a line.
-    let mut torn = read(&dir, &only)?;
-    torn.extend_from_slice(b"{\"body\":{\"kind\"");
-    let next = dir.join(export::file_name(held.next()));
-    let wrote = fs::write(dir.join(&only), torn).and_then(|()| fs::write(next, b"{\"v\""));
-    wrote.map_err(|e| Failure::new(format!("tearing the backup: {e}")))?;
+    let (next, half) = (export::file_name(Position(99)), b"{\"body\":{\"kind\"");
+    let tear = || -> Result<Vec<Vec<u8>>, Failure> {
+        let torn = [read(&dir, &only)?, half.to_vec()].concat();
+        let w = fs::write(dir.join(&only), torn).and_then(|()| fs::write(dir.join(&next), half));
+        w.map_err(|e| Failure::new(format!("tearing the backup: {e}")))?;
+        Ok(vec![read(&dir, &only)?, read(&dir, &next)?])
+    };
+    tear()?;
     let head = invoices(s, 3, 1).await?;
     let run = backup(s, &dir).await?;
     ensure!(
@@ -481,11 +476,11 @@ async fn a_backup_cuts_a_torn_tail_and_refuses_a_log_the_lake_does_not_continue(
         let last = lines.len() - 1;
         lines[last] = rehashed(&lines_of(&export, &only)?[last], |e| e[member] = value)?;
         rewrite(&dir, &only, &lines)?;
-        let before = read(&dir, &only)?;
-        let said = export::backup(s, &dir).await;
+        let before = tear()?;
+        let said = export::backup(s, &*s.feed(), &dir).await;
         ensure!(
             matches!(&said, Err(e) if e.case().map(|c| &c.case) == Some(&Case::BackupOtherLog { held: head }))
-                && read(&dir, &only)? == before,
+                && [read(&dir, &only)?, read(&dir, &next)?] == *before,
             "a backup whose last line's `{member}` is another log's is refused as \
              `backup_other_log` at {head}, changing nothing, and it answered {said:?}"
         );
@@ -544,26 +539,30 @@ async fn an_export_into_a_directory_that_holds_anything_is_refused(
     store: Store,
     scratch: PathBuf,
 ) -> Held {
-    let scratch = Scratch::new(scratch);
-    invoices(store.as_ref(), 0, 1).await?;
+    let (scratch, s) = (Scratch::new(scratch), store.as_ref());
+    invoices(s, 0, 1).await?;
     let dir = scratch.dir("full");
-    fs::create_dir_all(&dir).map_err(|e| Failure::new(format!("creating {dir:?}: {e}")))?;
+    backup(s, &dir).await?;
+    let only = export::file_name(Position::GENESIS);
+    let kept = read(&dir, &only)?;
     fs::write(dir.join("notes.txt"), b"kept\n")
         .map_err(|e| Failure::new(format!("writing into {dir:?}: {e}")))?;
-    let said = export::write(store.as_ref(), &dir).await;
+    let said = export::write(s, &dir).await.map(|_| ());
+    let again = export::backup(s, &*s.feed(), &dir).await.map(|_| ());
     ensure!(
-        matches!(reason(&said), Some(Refusal::Precondition(said)) if said.case == Case::ExportNotEmpty),
-        "an export into {dir:?}, which holds a file, is refused as a failed precondition, the \
-         export's directory not empty, and it answered {said:?}"
+        [&said, &again].iter().all(|said| matches!(reason(said), Some(Refusal::Precondition(said)) if said.case == Case::ExportNotEmpty)),
+        "an export, and a backup, into {dir:?}, which holds a file beside a backup's log/, are \
+         refused as a failed precondition, the export's directory not empty, and they answered \
+         {said:?} and {again:?}"
     );
-    let left: Vec<String> = fs::read_dir(&dir)
-        .map_err(|e| Failure::new(format!("listing {dir:?}: {e}")))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
+    let left = fs::read_dir(&dir).map(Iterator::count);
+    let left = left.map_err(|e| Failure::new(format!("listing {dir:?}: {e}")))?;
     ensure!(
-        left == ["notes.txt"] && read(&dir, "notes.txt")? == b"kept\n",
-        "a refused export writes nothing, and the directory holds {left:?}"
+        left == 2
+            && files(&dir)? == [only.clone()]
+            && read(&dir, &only)? == kept
+            && read(&dir, "notes.txt")? == b"kept\n",
+        "a refused export or backup writes nothing; the directory holds {left} entries"
     );
     Ok(())
 }

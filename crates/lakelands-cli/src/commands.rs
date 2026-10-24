@@ -1237,7 +1237,8 @@ pub async fn backup(
     to: &Path,
     keys: Option<&Path>,
 ) -> Result<(), Failure> {
-    // The keys are judged before anything is written.
+    // The directories are judged before anything is written.
+    root.outside_the_lakes(to, "backup's")?;
     let keyring = match keys {
         Some(keys) => {
             root.keys_apart(keys, to)?;
@@ -1250,7 +1251,7 @@ pub async fn backup(
         }
         None => None,
     };
-    let b = export::backup(store.as_ref(), to).await?;
+    let b = export::backup(store.as_ref(), &*store.feed(), to).await?;
     let since = b
         .since
         .map_or_else(|| "new".to_owned(), |p| format!("since {p}"));
@@ -1263,8 +1264,11 @@ pub async fn backup(
     );
     put(out, line)?;
     if let Some((keyring, keys)) = keyring {
-        let file = keyring.back_up(&b.lake, keys)?;
-        put(out, format!("copied the lake's keys to {}", file.display()))?;
+        let line = match keyring.back_up(&b.lake, keys)? {
+            Some(file) => format!("copied the lake's keys to {}", file.display()),
+            None => "the root's keyring holds no keys for the lake; none were copied".to_owned(),
+        };
+        put(out, line)?;
     }
     Ok(())
 }
@@ -1272,12 +1276,14 @@ pub async fn backup(
 /// `restore --keys-from`: the lake's keyring file put back from `keys`,
 /// only where the root's keyring has none: the file it holds knows every
 /// destroy, and an older copy would bring back a forgotten source's keys.
+/// Answers the keyring, for the file to be taken out again where the
+/// import is refused.
 pub fn restore_keys(
     out: Out<'_>,
     root: &crate::root::Root,
     lake: &lakelands_api::LakeId,
     keys: &Path,
-) -> Result<(), Failure> {
+) -> Result<lakelands_backings::keyring::FileKeyring, Failure> {
     let Some(keyring) = root.file_keyring() else {
         let what = "--keys-from was given, and the root names no file keyring";
         return Err(Failure::new(
@@ -1290,10 +1296,9 @@ pub fn restore_keys(
         let todo = "leave --keys-from out: the keyring's own file knows every key destroyed since";
         return Err(Failure::new(what, todo));
     }
-    put(
-        out,
-        format!("put the keys of lake `{lake}` back from {}", keys.display()),
-    )
+    let line = format!("put the keys of lake `{lake}` back from {}", keys.display());
+    put(out, line)?;
+    Ok(keyring)
 }
 
 /// The lake an export holds, as its first event names it: the manifest is

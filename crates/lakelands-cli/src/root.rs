@@ -326,11 +326,20 @@ impl Root {
             );
             return Err(Failure::new(what, todo));
         }
-        if let Some(lake) = self.lake_holding(&keys)? {
+        self.outside_the_lakes(&keys, "keys'")
+    }
+
+    /// A backup, and a copy of a lake's keys, are written outside every
+    /// lake's directory: a run into one would write into the files its
+    /// writer appends to.
+    pub fn outside_the_lakes(&self, dir: &Path, whose: &str) -> Result<(), Failure> {
+        let dir = canonical(dir);
+        if let Some(lake) = self.lake_holding(&dir)? {
             let what = format!(
-                "the keys' directory {} is inside the lake `{lake}`'s directory",
-                show(&keys)
+                "the {whose} directory {} is inside the lake `{lake}`'s directory",
+                show(&dir)
             );
+            let todo = "name a directory of its own, outside every lake's directory";
             return Err(Failure::new(what, todo));
         }
         Ok(())

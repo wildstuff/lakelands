@@ -123,15 +123,28 @@ impl FileKeyring {
     }
 
     /// Copy `lake`'s file into `dir`, written as this keyring writes its
-    /// own, and answer the file written. `dir` is kept apart from the
-    /// lake's backup: a backup that holds both holds what forgetting
-    /// destroys (`docs/decisions/077-a-backup-is-an-export-that-grows.md`).
-    pub fn back_up(&self, lake: &LakeId, dir: &Path) -> Result<PathBuf> {
+    /// own, and answer the file written; `None`, and nothing written,
+    /// where this keyring holds no file for the lake. `dir` is kept apart
+    /// from the lake's backup: a backup that holds both holds what
+    /// forgetting destroys
+    /// (`docs/decisions/077-a-backup-is-an-export-that-grows.md`).
+    pub fn back_up(&self, lake: &LakeId, dir: &Path) -> Result<Option<PathBuf>> {
         let _held = lakelands_core::lock(&self.lock);
-        let ring = self.read(&self.path(lake))?;
-        let to = FileKeyring::new(dir);
+        let from = self.path(lake);
+        if !from.exists() {
+            return Ok(None);
+        }
+        let (ring, to) = (self.read(&from)?, FileKeyring::new(dir));
         to.write(&to.path(lake), &ring)?;
-        Ok(to.path(lake))
+        Ok(Some(to.path(lake)))
+    }
+
+    /// Remove `lake`'s file, which [`Self::restore`] put back for an
+    /// import that was then refused.
+    pub fn unrestore(&self, lake: &LakeId) -> Result<()> {
+        let _held = lakelands_core::lock(&self.lock);
+        let path = self.path(lake);
+        fs::remove_file(&path).map_err(|e| failed(Doing::Write, Detail::io(&e)))
     }
 
     /// Put `lake`'s file back from the copy in `dir`, only where this

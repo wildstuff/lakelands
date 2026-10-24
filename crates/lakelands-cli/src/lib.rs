@@ -601,18 +601,28 @@ async fn dispatch(
             let lake = text(sub, "lake").or_else(|| commands::exported_lake(&dir));
             let location = root.location(lake.as_deref())?;
             // A restore is an import, its keys put back first where the
-            // keyring has lost them.
-            if let Some(keys) = (name == "restore")
-                .then(|| text(sub, "keys-from"))
-                .flatten()
-            {
-                commands::restore_keys(out, &root, &location.lake, Path::new(&keys))?;
-            }
+            // keyring has lost them, and taken out again where the import
+            // is refused, so the next try puts them back too.
+            let keys = (name == "restore").then(|| text(sub, "keys-from"));
+            let put_back = match keys.flatten() {
+                Some(keys) => Some(commands::restore_keys(
+                    out,
+                    &root,
+                    &location.lake,
+                    Path::new(&keys),
+                )?),
+                None => None,
+            };
+            let lake = location.lake.clone();
             let seams = Seams {
                 engines: engines(),
                 ..root.seams()
             };
-            return commands::import(out, location, seams, &dir).await;
+            let imported = commands::import(out, location, seams, &dir).await;
+            if let (Err(_), Some(keyring)) = (&imported, put_back) {
+                keyring.unrestore(&lake)?;
+            }
+            return imported;
         }
         "serve" if !sub.get_flag("mcp") => {
             return Err(Failure::new(

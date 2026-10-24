@@ -7,13 +7,18 @@
 ### A backup holds the export's segment files and nothing else
 
 `lakelands_core::export::backup` writes into a new or empty directory
-the files an export of the same head writes: `log/<first>.jsonl`, each
+the files an export of the same head writes, reading the log through
+the feed it is handed, the store's own or one in front of it: `log/<first>.jsonl`, each
 event's canonical bytes and a line feed, a file per segment
 (`docs/log-format.md` §4.2). It writes no `export.json`, removes one an
 export it continues left, and holds no index, projection, lease or key.
-`lakelands backup --to <DIR>` runs it on a handle opened to read, beside
-a running `serve`, on every engine; a backup taken on one engine
-restores on any other.
+A directory holding anything beside `log/` and `export.json` is refused
+as `export_not_empty` before anything is written: a lake's own
+directory holds its index and lease, and a run into it would append to
+the file its writer appends to. `lakelands backup --to <DIR>` refuses a
+directory inside a lake's too, and runs it on a handle opened to read,
+beside a running `serve`, on every engine; a backup taken on one engine
+restores on any other. `log/` is synced after the files a run wrote.
 
 ### Its cut is a head
 
@@ -28,13 +33,14 @@ cut and are the next run's. A seal during the run reaches it as a
 ### A run into a backup writes only what follows its last line
 
 Run again into its directory, the run finds the last whole line of its
-last file. Bytes after that line's line feed are what a stopped run
-left; they are cut, and a file holding no whole line is removed. The
-line must be the lake's own event at the position it names, byte for
-byte as the feed answers it; otherwise the directory holds another
-lake's or another log's backup and the run is refused as a failed
-precondition, `backup_other_log`, naming the position, with nothing in
-the directory changed. Then it reads the head and appends the events
+last file, passing over files that hold none. The line must be the
+lake's own event at the position it names, byte for byte as the feed
+answers it; otherwise the directory holds another lake's or another
+log's backup and the run is refused as a failed precondition,
+`backup_other_log`, naming the position, with nothing in the directory
+changed. Only then are the bytes after that line's line feed, which a
+stopped run left, cut, and the files holding no whole line removed.
+Then it reads the head and appends the events
 after that line to the last file, and every later file as a
 `checkpoint` starts it, synced as an export syncs them. Sealed files are
 never rewritten. The lines before the last are not read again: a byte
@@ -57,7 +63,10 @@ file of the root's file keyring into a directory of its own, refused
 where it is the backup's directory, inside it, around it, or inside a
 lake's directory. `restore --keys-from <DIR>` puts that file back first,
 only where the root's keyring holds none for the lake: the file the
-keyring holds knows every key destroyed since the copy.
+keyring holds knows every key destroyed since the copy. Where the
+import is then refused, the file it put back is taken out again, so a
+second try puts it back too. A lake the keyring holds no file for has
+no keys to copy, and `--keys-to` copies none and says so.
 
 ### A backup older than a forgetting restores refused where its keys are gone
 
@@ -120,4 +129,7 @@ always at hand.
 - It reads no line before the directory's last on a run, so it finds no
   damage there; `restore --check` does.
 - It writes nothing into a directory that holds anything but a backup
-  or an export, and does not refuse a run across an upgrade.
+  or an export, nor inside a lake's directory, and does not refuse a
+  run across an upgrade.
+- It takes no lock: two runs into one directory at once are the
+  operator's to keep apart.
