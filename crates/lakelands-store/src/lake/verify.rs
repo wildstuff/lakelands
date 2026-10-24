@@ -216,6 +216,9 @@ impl Turn<'_> {
         }
         w.sized = tip;
         let (size, bound) = (self.engine.active_segment_bytes(), self.limits.seal_bound());
+        if let Some(n) = size {
+            self.level(Level::ActiveSegmentBytes, n);
+        }
         if matches!((size, bound), (Some(n), Some(b)) if n >= b) {
             let _ = self.seal(&mut w);
         }
@@ -247,6 +250,7 @@ impl Turn<'_> {
             return Ok(through);
         };
         let events = self.landed(w, events, Reads::default())?;
+        self.count(Count::Seals, 1);
         Ok(events.last().map_or(through, |e| e.position))
     }
 

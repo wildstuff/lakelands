@@ -28,6 +28,7 @@
 pub(crate) mod doors;
 pub mod http;
 pub(crate) mod hub;
+pub mod metrics;
 pub mod resolver;
 pub mod rest;
 pub mod say;
@@ -38,5 +39,6 @@ pub mod watch;
 pub use http::{
     Health, HttpConfig, HttpServer, LakeOpener, Readiness, WORKERS_MOST, runtime, serve_http,
 };
+pub use metrics::{Metrics, MetricsConfig, MetricsServer, serve_metrics};
 pub use session::Session;
 pub use stdio::{serve_io, serve_stdio};

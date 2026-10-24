@@ -21,7 +21,7 @@ enforce them.
 
 ## The roster
 
-Nine seams, this roster and no other. Adding one is a change to the
+Ten seams, this roster and no other. Adding one is a change to the
 contract and to this page.
 
 | Seam | Trait(s) | Default in Lakelands | A host plugs in |
@@ -35,6 +35,7 @@ contract and to this page.
 | Change feed | `ChangeFeed` | The log, read by kind from a position | A relay of the feed onto its own bus, as its own code |
 | System vocabulary | `SystemVocabulary` | Lakelands' four `sys.` types, allowed in every lake | Its own `sys.` types and which lakes may hold them |
 | Keys | `KeyStore` | None: a source's value of an erasable field is refused as `Unbound` | Its KMS; `lakelands-backings` ships `FileKeyring`, a key file per lake |
+| Measurement | `Meter` | None: nothing is measured and no clock is read for it | Its metrics system; `lakelands-server` ships `Metrics`, which `serve` exports at `GET /metrics` |
 
 `Location` is not a seam. It is the configuration every seam and every
 engine is configured through, passed at the call site; Lakelands reads no
@@ -44,7 +45,7 @@ The seams do not all point the same way:
 
 - **A host implements and passes in** the engines (`Seams::engines`),
   function backings, an embedding backend, verb executors, a system
-  vocabulary and a key store. Every slot but `engines` may stay empty and has a default;
+  vocabulary, a key store and a meter. Every slot but `engines` may stay empty and has a default;
   `engines` needs at least the opener of the engine a lake's `Location`
   names, and Lakelands' own openers are what a host usually passes.
 - **The doors hold** the `PrincipalResolver`: the CLI and the server
@@ -2168,6 +2169,33 @@ store bound. With none bound, it reads the export first: a source whose
 values are sealed and whose `source_forgotten` the export holds arrives
 erased, and any other refuses the import as `Unbound` before anything
 is written.
+
+## `Meter`
+
+A lake tells its meter what it does, and keeps no number of its own
+(`docs/decisions/079-a-lake-is-measured-through-a-meter-the-host-binds.md`).
+Each call is handed a `Metered`, the lake's id and its engine's name, and
+one number of a closed set, each `#[non_exhaustive]`, its `ALL` listing
+them and its `name()` the name a host exports it under.
+
+| Method | Contract |
+|---|---|
+| `count(at, Count, by)` | A number that only goes up went up by `by`: events appended, appends, appends that failed, writes, seals. |
+| `level(at, Level, value)` | A number stands at `value`: the queue's depth, the tip, the position folded through, a rebuild under way, the active segment's bytes, the lease held and its fence. |
+| `observe(at, Spread, value)` | One value of a spread: an append's, a fold's, a commit's or a read's time in microseconds, or a batch's writes. |
+
+The calls are synchronous and are made inside the writer's turn, so a
+meter keeps its numbers in atomics or hands them off; it is never asked
+anything back. Each call is made under `catch_unwind`: a meter that
+panics loses that number and nothing else, and an append's counts are
+told only after its fold has committed. No number names a type, a
+record, a principal or a value. With no meter bound, nothing is told and
+no clock is read for one.
+
+`lakelands_server::Metrics` is the meter `serve` binds to every lake it
+opens where the root's `lakelands.json` sets `server.metrics.bind`, and
+answers `GET /metrics` there in the Prometheus text format
+(`docs/hosting.md`).
 
 ## The facade and the doors
 

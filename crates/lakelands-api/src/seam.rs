@@ -1,11 +1,11 @@
 //! The seams beside the engine: how Lakelands reaches anything outside
 //! its deterministic core.
 //!
-//! Nine seams, this roster and no other: the engine seam
+//! Ten seams, this roster and no other: the engine seam
 //! ([`crate::engine`]), [`PrincipalResolver`], [`FunctionBacking`],
 //! [`EmbedBackend`], [`Reranker`], [`VerbExecutor`], [`ChangeFeed`],
-//! [`SystemVocabulary`] and [`KeyStore`]. Every seam has a default, so a host that plugs
-//! in nothing still has a working store. Whatever must reproduce from the
+//! [`SystemVocabulary`], [`KeyStore`] and [`Meter`]. Every seam has a
+//! default, so a host that plugs in nothing still has a working store. Whatever must reproduce from the
 //! log stays inside; whatever needs the outside world is here, and its
 //! output is recorded in the log and read back on replay
 //! (`docs/decisions/002-determinism-is-the-boundary.md`). Invariants —
@@ -386,6 +386,121 @@ pub trait KeyStore: Send + Sync {
         let _ = (lake, source, id);
         Err(crate::Error::unbound(crate::error::Seam::KeyApart))
     }
+}
+
+/// Where a number was measured: the lake and its engine, and nothing
+/// else. No type, field, key, source or principal can be named, so a meter
+/// has none to tell a scraper
+/// (`docs/decisions/079-a-lake-is-measured-through-a-meter-the-host-binds.md`).
+#[derive(Clone, Copy, Debug)]
+pub struct Metered<'a> {
+    /// The lake.
+    pub lake: &'a LakeId,
+    /// The engine's name.
+    pub engine: &'a str,
+}
+
+/// One kind of number: each variant with the name a host exports it
+/// under, and every variant in order.
+macro_rules! numbers {
+    ($(#[$m:meta])* $kind:ident { $($(#[$v:meta])* $variant:ident = $name:literal,)+ }) => {
+        $(#[$m])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[non_exhaustive]
+        pub enum $kind {
+            $($(#[$v])* $variant,)+
+        }
+
+        impl $kind {
+            /// Every number of the kind, in order.
+            pub const ALL: &'static [$kind] = &[$($kind::$variant,)+];
+
+            /// The name a host exports it under.
+            pub fn name(self) -> &'static str {
+                match self {
+                    $($kind::$variant => $name,)+
+                }
+            }
+        }
+    };
+}
+
+numbers! {
+    /// A number that only goes up.
+    Count {
+        /// Events this handle appended.
+        Events = "lakelands_events_appended_total",
+        /// Durable appends.
+        Appends = "lakelands_appends_total",
+        /// Appends the engine answered with an error.
+        AppendFailures = "lakelands_append_failures_total",
+        /// Record writes decided at the writer, batched or alone.
+        Writes = "lakelands_writes_total",
+        /// Segments sealed, by size or by a checkpoint.
+        Seals = "lakelands_seals_total",
+    }
+}
+
+numbers! {
+    /// A number that stands at a value.
+    Level {
+        /// Entries waiting in the writer's queue.
+        Queued = "lakelands_queue_depth",
+        /// The log's last position, as the handle knows it.
+        Tip = "lakelands_tip",
+        /// The position the projection is committed through.
+        FoldedThrough = "lakelands_folded_through",
+        /// 1 while a rebuild folds, else 0.
+        Rebuilding = "lakelands_rebuilding",
+        /// The active segment's size in bytes, as a seal by size weighs it.
+        ActiveSegmentBytes = "lakelands_active_segment_bytes",
+        /// 1 while this handle holds the writer lease, else 0.
+        LeaseHeld = "lakelands_lease_held",
+        /// The lease's fencing token.
+        LeaseFence = "lakelands_lease_fence",
+    }
+}
+
+numbers! {
+    /// A number observed many times: a duration in microseconds, or a
+    /// batch's size in writes.
+    Spread {
+        /// The engine's durable append.
+        Append = "lakelands_append_seconds",
+        /// The fold of an append, its commits included.
+        Fold = "lakelands_fold_seconds",
+        /// One commit of the projection.
+        Commit = "lakelands_commit_seconds",
+        /// One catalog read, its view to its answer.
+        Read = "lakelands_read_seconds",
+        /// Record writes per durable append.
+        BatchWrites = "lakelands_batch_writes",
+    }
+}
+
+impl Spread {
+    /// Whether it is observed in microseconds; otherwise in writes.
+    pub fn micros(self) -> bool {
+        self != Spread::BatchWrites
+    }
+}
+
+/// The host's meter: what the lake measures, told as it happens
+/// (`docs/decisions/079-a-lake-is-measured-through-a-meter-the-host-binds.md`).
+/// Synchronous, and it returns at once: it is called on the store's
+/// blocking threads, inside the writer's turn for the writer's numbers.
+/// It records into memory and exports elsewhere. A meter that panics is dropped from that call
+/// alone: the lake goes on as if it were not bound. None bound, the lake
+/// measures nothing and reads no clock for it.
+pub trait Meter: Send + Sync {
+    /// `n` went up by `by`.
+    fn count(&self, at: Metered<'_>, n: Count, by: u64);
+
+    /// `n` stands at `value`.
+    fn level(&self, at: Metered<'_>, n: Level, value: u64);
+
+    /// One observation of `n`, in microseconds or writes ([`Spread::micros`]).
+    fn observe(&self, at: Metered<'_>, n: Spread, value: u64);
 }
 
 /// The type holding a lake's named settings: `setting('key')` reads the
@@ -796,6 +911,8 @@ pub struct Seams {
     /// The key store a source's erasable values are sealed with, if any:
     /// without one such a value is refused as `Unbound`.
     pub keys: Option<Arc<dyn KeyStore>>,
+    /// The meter, if any: without one the lake measures nothing.
+    pub meter: Option<Arc<dyn Meter>>,
 }
 
 impl std::fmt::Debug for Seams {
@@ -820,6 +937,7 @@ impl std::fmt::Debug for Seams {
             )
             .field("vocabulary", &self.vocabulary.is_some())
             .field("keys", &self.keys.is_some())
+            .field("meter", &self.meter.is_some())
             .finish()
     }
 }
@@ -836,5 +954,6 @@ fn seams_are_dyn_compatible(
     _: &dyn ChangeFeed,
     _: &dyn SystemVocabulary,
     _: &dyn KeyStore,
+    _: &dyn Meter,
 ) {
 }

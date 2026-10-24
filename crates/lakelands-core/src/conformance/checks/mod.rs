@@ -69,6 +69,7 @@ mod links;
 mod logged_ids;
 mod made_of;
 mod masking;
+mod metered;
 mod migrate;
 mod only;
 mod only_proposals;
@@ -950,4 +951,5 @@ pub const ALL: &[Check] = &[
     export::INTEGER_DAMAGE,
     sized::SEALED_BY_SIZE,
     grid::GRID,
+    metered::METERED,
 ];

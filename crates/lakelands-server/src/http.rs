@@ -112,6 +112,11 @@ pub struct HttpConfig {
     /// [`WORKERS_MOST`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workers: Option<NonZeroUsize>,
+    /// Where `GET /metrics` answers, apart from this door
+    /// ([`crate::metrics`]). Absent, nothing is measured and nothing more
+    /// is listened for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<crate::metrics::MetricsConfig>,
 }
 
 /// The most threads [`runtime`] starts when the configuration names no

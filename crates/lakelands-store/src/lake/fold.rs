@@ -30,6 +30,19 @@ macro_rules! kept_at {
 }
 
 impl Lake {
+    /// Commit the projection through `through`, timed for a meter.
+    fn commit_at(
+        &self,
+        projection: &dyn lakelands_api::engine::ProjectionStore,
+        through: Position,
+    ) -> Result<()> {
+        let began = self.timer();
+        projection.commit(through)?;
+        self.since(Spread::Commit, began);
+        self.level(Level::FoldedThrough, through.0);
+        Ok(())
+    }
+
     /// Fold events into the projection: an append's in one transaction, a
     /// page `of_log` in one unless a recomputation was kept as a step.
     ///
@@ -95,7 +108,7 @@ impl Lake {
                 }
                 if flushed && of_log && !scoped {
                     drop(view);
-                    projection.commit(events[i - 1].position)?;
+                    self.commit_at(projection, events[i - 1].position)?;
                     // What is committed stays owed, whatever fails next.
                     due = w.owed.len();
                     if let Some(kept) = kept.as_mut() {
@@ -117,7 +130,7 @@ impl Lake {
             self.flush(w, view.as_ref(), &mut staged, events, owed)?;
             self.decide_whole(w, view.as_ref(), &mut staged)
         })()
-        .and_then(|()| projection.commit(last.position));
+        .and_then(|()| self.commit_at(projection, last.position));
         match result {
             Ok(()) => {
                 w.behind = false;
@@ -1328,6 +1341,7 @@ impl Lake {
         lakelands_core::lock(&self.shapes).clear();
         self.keys.unlist();
         let began = std::time::Instant::now();
+        self.level(Level::Rebuilding, 1);
         let folded = (|| {
             // It reads the recorded outputs and makes no call due but a
             // failed append's; the calls a write before it made due stay
@@ -1346,6 +1360,7 @@ impl Lake {
             w.rebuilding = false;
             folded
         })();
+        self.level(Level::Rebuilding, 0);
         self.rebuilds.fetch_add(1, Ordering::SeqCst);
         lakelands_core::lock(&self.shapes).clear();
         self.keys.unlist();

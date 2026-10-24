@@ -25,6 +25,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeInclusive;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -35,7 +36,7 @@ use lakelands_api::location::{EngineConfig, Limits, Location};
 use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
 use lakelands_api::principal::Renamed;
 use lakelands_api::record::StoredRecord;
-use lakelands_api::seam::{EmbedBackend, Reranker, Seams};
+use lakelands_api::seam::{Count, EmbedBackend, Level, Meter, Metered, Reranker, Seams, Spread};
 use lakelands_api::write::{
     Declaration, DeclarationKind, Migration, Proposal, ProposalFilter, ProposalState, ProposedWrite,
 };
@@ -518,10 +519,51 @@ impl Lake {
     }
 
     /// Make the writer's tip and lease readable without its lock.
+    /// The clock, where a meter is bound: what [`Self::since`] times from.
+    pub(crate) fn timer(&self) -> Option<std::time::Instant> {
+        self.seams.meter.as_ref().map(|_| std::time::Instant::now())
+    }
+
+    /// Tell the meter, if one is bound, as `tell` does: a meter that panics
+    /// is dropped from this call alone, so no hook parts an append from its
+    /// fold (079).
+    fn meter(&self, tell: impl FnOnce(&dyn Meter, Metered<'_>)) {
+        if let Some(m) = &self.seams.meter {
+            let at = Metered {
+                lake: &self.id,
+                engine: self.engine.name(),
+            };
+            drop(catch_unwind(AssertUnwindSafe(|| tell(m.as_ref(), at))));
+        }
+    }
+
+    /// The microseconds since `began`, observed as `n`.
+    pub(crate) fn since(&self, n: Spread, began: Option<std::time::Instant>) {
+        if let Some(t) = began {
+            let us = u64::try_from(t.elapsed().as_micros()).unwrap_or(u64::MAX);
+            self.meter(|m, at| m.observe(at, n, us));
+        }
+    }
+
+    pub(crate) fn observe(&self, n: Spread, value: u64) {
+        self.meter(|m, at| m.observe(at, n, value));
+    }
+
+    pub(crate) fn count(&self, n: Count, by: u64) {
+        self.meter(|m, at| m.count(at, n, by));
+    }
+
+    pub(crate) fn level(&self, n: Level, value: u64) {
+        self.meter(|m, at| m.level(at, n, value));
+    }
+
     fn publish(&self, w: &Writer) {
         self.set_head(w.tip.as_ref().map_or(0, |t| t.0.0));
         let holds = w.lease.is_some() && !w.lost;
         self.holds_lease.store(holds, Ordering::Release);
+        self.level(Level::Tip, w.tip.as_ref().map_or(0, |t| t.0.0));
+        self.level(Level::LeaseHeld, u64::from(holds));
+        self.level(Level::LeaseFence, w.lease.as_ref().map_or(0, |l| l.fence));
     }
 
     /// A system principal of this lake, named `id`, with every grant: the

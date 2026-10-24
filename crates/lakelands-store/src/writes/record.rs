@@ -3,6 +3,8 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use lakelands_api::seam::{Count, Spread};
+
 use super::*;
 use crate::exec::{Reply, stopped_by_panic};
 use crate::lake::{Reads, owing};
@@ -1169,6 +1171,8 @@ impl Job {
             owing(|| call(turn, &who, (context, followed, shown)).record(write, opts))
         }));
         let done = done.unwrap_or_else(|p| Err(stopped_by_panic(p)));
+        turn.observe(Spread::BatchWrites, 1);
+        turn.count(Count::Writes, 1);
         Box::new(move || drop(self.answer.send(done)))
     }
 }
@@ -1332,6 +1336,8 @@ fn batched(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Reply>) -> Vec<Job
         }
     };
     drop(w);
+    turn.observe(Spread::BatchWrites, decisions.len() as u64);
+    turn.count(Count::Writes, decisions.len() as u64);
     for (d, answer) in decisions.into_iter().zip(answers) {
         replies.push(Box::new(move || drop(d.answer.send(answer))));
     }

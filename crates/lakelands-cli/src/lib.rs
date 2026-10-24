@@ -701,7 +701,11 @@ async fn dispatch(
             Err(e) => return Err(e.into()),
         }
     } else {
-        open(location, OpenMode::Create, root.seams()).await?
+        let seams = match &door {
+            Some(door) => door.seams(&root, &location.lake),
+            None => root.seams(),
+        };
+        open(location, OpenMode::Create, seams).await?
     };
     let who = root
         .principal(store.lake(), text(sub, "as").as_deref())
@@ -966,6 +970,12 @@ struct Door {
     served: Arc<std::sync::RwLock<BTreeMap<LakeId, Arc<dyn LakeStore>>>>,
     health: lakelands_server::Health,
     task: tokio::task::JoinHandle<std::io::Result<()>>,
+    /// The meter of every lake served, and its door's task, where the
+    /// root configures `server.metrics`.
+    metrics: Option<(
+        Arc<lakelands_server::Metrics>,
+        tokio::task::JoinHandle<std::io::Result<()>>,
+    )>,
 }
 
 impl Door {
@@ -975,6 +985,18 @@ impl Door {
     async fn bind(root: &root::Root) -> std::result::Result<Option<Door>, Failure> {
         let Some(config) = root.config.server.clone() else {
             return Ok(None);
+        };
+        let metrics = match &config.metrics {
+            Some(at) => {
+                let metrics = lakelands_server::Metrics::new();
+                let door = lakelands_server::serve_metrics(at, metrics.clone())
+                    .await
+                    .map_err(stopped)?;
+                let addr = door.local_addr().map_err(stopped)?;
+                eprintln!("lakelands: metrics at http://{addr}/metrics");
+                Some((metrics, tokio::spawn(door.run())))
+            }
+            None => None,
         };
         let served: Arc<std::sync::RwLock<BTreeMap<LakeId, Arc<dyn LakeStore>>>> = Arc::default();
         let lookup = {
@@ -1005,7 +1027,17 @@ impl Door {
             served,
             health,
             task,
+            metrics,
         }))
+    }
+
+    /// The seams `lake` is opened with: the root's, and its meter where
+    /// the door measures.
+    fn seams(&self, root: &root::Root, lake: &LakeId) -> Seams {
+        Seams {
+            meter: self.metrics.as_ref().map(|(m, _)| m.lake(lake)),
+            ..root.seams()
+        }
     }
 
     /// Every lake is open: the door serves them and says it is ready.
@@ -1021,6 +1053,9 @@ impl Door {
 impl Drop for Door {
     fn drop(&mut self) {
         self.task.abort();
+        if let Some((_, scrape)) = &self.metrics {
+            scrape.abort();
+        }
     }
 }
 
@@ -1057,9 +1092,10 @@ async fn serve(
     for name in root.lakes() {
         let location = root.location(Some(&name))?;
         if !lakes.contains_key(&location.lake) {
+            let seams = door.seams(root, &location.lake);
             lakes.insert(
                 location.lake.clone(),
-                open(location, OpenMode::Create, root.seams()).await?,
+                open(location, OpenMode::Create, seams).await?,
             );
         }
     }

@@ -28,6 +28,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use lakelands_api::Result;
 use lakelands_api::error::{Detail, Error, Situation};
+use lakelands_api::seam::Level;
 
 use crate::lake::Lake;
 use crate::writes::Job;
@@ -149,7 +150,9 @@ fn queue(lake: &Arc<Lake>, entry: Entry) {
     }
     q.entries.push_back(entry);
     let held = std::mem::replace(&mut q.held, true);
+    let depth = q.entries.len() as u64;
     drop(q);
+    lake.level(Level::Queued, depth);
     if !held {
         hold(lake.queue.clone(), Arc::downgrade(lake));
     }
@@ -213,6 +216,7 @@ impl Holding {
         let Some(lake) = self.lake.upgrade() else {
             return;
         };
+        lake.level(Level::Queued, queued(&lake) as u64);
         match entry {
             Entry::Alone(job) => self.replies.push(job(&Turn(&lake))),
             Entry::Records(jobs) => {

@@ -2538,9 +2538,13 @@ fn members_of<'de, T: serde::Deserialize<'de>>() -> &'static [&'static str] {
 fn the_root_s_settings_are_the_list_s() {
     use lakelands_api::settings::{BINDINGS, Layer, SETTINGS};
     use std::collections::BTreeSet;
-    let sections: [(&str, &[&str]); 10] = [
+    let sections: [(&str, &[&str]); 11] = [
         ("", members_of::<lakelands_cli::Config>()),
         ("server", members_of::<lakelands_server::HttpConfig>()),
+        (
+            "server.metrics",
+            members_of::<lakelands_server::MetricsConfig>(),
+        ),
         ("aging", members_of::<lakelands_cli::ticker::AgingConfig>()),
         ("deliver", members_of::<lakelands_backings::DeliverConfig>()),
         ("embed", members_of::<lakelands_backings::EmbedConfig>()),
@@ -2784,6 +2788,7 @@ server.session_idle_secs                root      not configured: lakelands.json
 server.feed_poll_millis                 root      not configured: lakelands.json has no `server`
 server.feed_floor_millis                root      not configured: lakelands.json has no `server`
 server.workers                          root      not configured: lakelands.json has no `server`
+server.metrics.bind                     root      not configured: lakelands.json has no `server.metrics`
 aging.utc_offset                        root      not configured: lakelands.json has no `aging`
 aging.check_secs                        root      not configured: lakelands.json has no `aging`
 deliver.poll_millis                     root      not configured: lakelands.json has no `deliver`
