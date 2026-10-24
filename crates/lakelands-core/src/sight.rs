@@ -26,8 +26,8 @@ use lakelands_api::principal::Renamed;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Declaration, Migration, MigrationReport};
 use lakelands_api::{
-    Access, Error, FieldName, Missing, Position, Principal, RecordKey, SourceId, TypeName, Value,
-    ValueTypeName,
+    Access, Error, FieldName, Missing, Position, Principal, Record, RecordKey, SourceId, TypeName,
+    Value, ValueTypeName,
 };
 
 use crate::{describe, rights};
@@ -488,10 +488,81 @@ impl<'o> Sight<'o> {
         rights::shown_hashes(&self.who, made, m, r, find)
     }
 
-    /// A report as its principal is shown it ([`rights::shown_report`]).
-    pub fn shown_report(&self, was: &TypeDecl, m: &Migration, report: &mut MigrationReport) {
-        let described = || self.describe(&self.who.lake);
-        rights::shown_report(&self.who, was, m, report, described, |n| self.ty(n).ok());
+    /// A report as its principal is shown it, of the lake `described` and
+    /// the declarations `sees` finds ([`rights::shown_report`]).
+    pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDescription>>(
+        &self,
+        was: &TypeDecl,
+        m: &Migration,
+        report: &mut MigrationReport,
+        described: impl FnOnce() -> D,
+        sees: impl Fn(&TypeName) -> Option<&'a TypeDecl>,
+    ) {
+        rights::shown_report(&self.who, was, m, report, described, sees);
+    }
+
+    /// Refuse a read of `decl` where its principal's `only` cannot apply ([`rights::check_only`]).
+    pub fn check_only(&self, decl: &TypeDecl) -> Result<(), Error> {
+        rights::check_only(&self.who, decl)
+    }
+
+    /// Whether the view `ty` is computed for its principal ([`rights::computed_only`]).
+    pub fn computed_only(&self, ty: &TypeName, find: rights::Find<'_, '_>) -> bool {
+        rights::computed_only(&self.who, ty, find)
+    }
+
+    /// Refuse `name`, of `decl`, where its principal may not know of it ([`rights::check_known`]).
+    pub fn check_known(&self, decl: &TypeDecl, name: &FieldName) -> Result<(), Error> {
+        rights::check_known(&self.who, decl, [name])
+    }
+
+    /// Refuse a search its principal may not make ([`rights::check_search`]).
+    pub fn check_search(
+        &self,
+        decl: &TypeDecl,
+        fields: Option<&[FieldName]>,
+        vectors: &[&FieldName],
+    ) -> Result<(), Error> {
+        rights::check_search(&self.who, decl, fields, vectors)
+    }
+
+    /// Refuse text weights its principal could not give ([`rights::check_text_weights`]).
+    pub fn check_text_weights(
+        &self,
+        decl: &TypeDecl,
+        weights: &BTreeMap<FieldName, f64>,
+    ) -> Result<(), Error> {
+        rights::check_text_weights(&self.who, decl, weights)
+    }
+
+    /// The searchable fields of `decl` its principal reads ([`rights::searched_fields`]).
+    pub fn searched_fields<'d>(&self, decl: &'d TypeDecl) -> impl Iterator<Item = &'d FieldName> {
+        rights::searched_fields(&self.who, decl)
+    }
+
+    /// Whether its principal holds `verb`'s own grant ([`rights::verb_granted`]).
+    pub fn verb_granted(&self, verb: &VerbDecl) -> bool {
+        rights::verb_granted(&self.who, verb)
+    }
+
+    /// Whether its principal reads what `verb` reads ([`rights::reads_what_verb_reads`]).
+    pub fn reads_what_verb_reads<'d>(
+        &self,
+        decl: &'d TypeDecl,
+        verb: &VerbDecl,
+        ty: rights::Find<'_, 'd>,
+    ) -> bool {
+        rights::reads_what_verb_reads(&self.who, decl, verb, ty)
+    }
+
+    /// `t`'s fields as `describe` shows them to its principal ([`rights::described_fields`]).
+    pub fn described_fields(&self, t: &mut TypeDecl, find: rights::Find<'_, '_>) {
+        rights::described_fields(&self.who, t, find)
+    }
+
+    /// `stored` as its principal may see it ([`rights::visible`]).
+    pub fn visible(&self, decl: &TypeDecl, stored: &StoredRecord, meta: bool) -> Option<Record> {
+        rights::visible(self, decl, stored, meta)
     }
 }
 
