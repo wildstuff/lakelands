@@ -66,7 +66,7 @@ use lakelands_core::engines::{self, decode};
 use postgres::Row;
 use postgres::types::ToSql;
 
-use crate::connect::Db;
+use crate::connect::{Db, Target};
 use crate::vector_index::{self, Pgvector};
 
 /// The lake's tables, each named with its schema.
@@ -75,6 +75,8 @@ pub(crate) struct Names {
     schema: String,
     /// For a scratch, the lake's schema, which keeps the log's tables.
     log: Option<String>,
+    /// Where the lake's parts are made.
+    pub(crate) at: lakelands_api::location::PgTablespaces,
 }
 
 /// The tables of the log and the lease, which a scratch reads in the
@@ -82,12 +84,10 @@ pub(crate) struct Names {
 const LOG_TABLES: [&str; 3] = ["lease", "segments", "log"];
 
 impl Names {
-    /// The tables of the schema written as `quoted`.
-    pub(crate) fn new(quoted: String) -> Names {
-        Names {
-            schema: quoted,
-            log: None,
-        }
+    /// The tables of the lake `target` names.
+    pub(crate) fn of(target: &Target) -> Result<Names> {
+        let (schema, log, at) = (target.quoted_schema()?, None, target.tablespaces.clone());
+        Ok(Names { schema, log, at })
     }
 
     /// The tables of a scratch in the schema written as `quoted`, beside
@@ -97,7 +97,20 @@ impl Names {
         Names {
             schema: quoted,
             log: Some(live.schema.clone()),
+            at: live.at.clone(),
         }
+    }
+
+    /// The clause that makes a table or an index in `space`, if named.
+    pub(crate) fn space(space: &Option<String>) -> String {
+        let named = space.as_deref().map(Target::quote);
+        named.map_or_else(String::new, |t| format!(" TABLESPACE {t}"))
+    }
+
+    /// The statement that makes what follows in the transaction in `space`.
+    fn default_space(space: &Option<String>) -> String {
+        let named = space.as_deref().map_or("DEFAULT".into(), Target::quote);
+        format!("SET LOCAL default_tablespace = {named};\n")
     }
 
     /// The schema, as SQL writes it.
@@ -132,14 +145,19 @@ impl Names {
     /// for that seek; ending at `since`, it filtered a type's states put at
     /// one position row by row, every head read paying for all of them
     /// (lakelands#1018).
+    ///
+    /// Each part goes in its tablespace where named: a table by its clause,
+    /// its keys and indexes by `default_tablespace`, set for the transaction.
     pub(crate) fn schema_sql(&self) -> String {
-        let (s, heads) = (&self.schema, heads_sql(&self.schema));
+        let (s, pt, a) = (&self.schema, Names::space(&self.at.projection), &self.at);
+        let [ix, lg, vs] = [&a.indexes, &a.log, &a.vectors].map(Names::default_space);
+        let heads = heads_sql(s, &pt);
         // A scratch reads the log's tables in the lake's schema.
         let log = match self.log {
             Some(_) => String::new(),
             None => format!(
                 "
-CREATE TABLE IF NOT EXISTS {s}.lease (
+{lg}CREATE TABLE IF NOT EXISTS {s}.lease (
     one INTEGER PRIMARY KEY CHECK (one = 1),
     fence BIGINT NOT NULL, holder TEXT NOT NULL
 );
@@ -156,73 +174,73 @@ CREATE INDEX IF NOT EXISTS log_segment ON {s}.log (segment, position);"
         format!(
             "
 CREATE SCHEMA IF NOT EXISTS {s};
-CREATE TABLE IF NOT EXISTS {s}.meta (
+{ix}CREATE TABLE IF NOT EXISTS {s}.meta (
     k TEXT PRIMARY KEY, n BIGINT, t TEXT
-);{log}
-CREATE TABLE IF NOT EXISTS {s}.declarations (
+){pt};{log}
+{ix}CREATE TABLE IF NOT EXISTS {s}.declarations (
     ident TEXT NOT NULL, since BIGINT NOT NULL, state TEXT NOT NULL,
     PRIMARY KEY (ident, since)
-);
+){pt};
 CREATE INDEX IF NOT EXISTS declarations_since ON {s}.declarations (since);
 CREATE TABLE IF NOT EXISTS {s}.records (
     ty TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, since BIGINT NOT NULL,
     state TEXT NOT NULL,
     PRIMARY KEY (ty, key, since)
-);
+){pt};
 CREATE INDEX IF NOT EXISTS records_since ON {s}.records (ty, since, key);
 CREATE TABLE IF NOT EXISTS {s}.proposals (
     id TEXT NOT NULL, since BIGINT NOT NULL, state TEXT NOT NULL,
     PRIMARY KEY (id, since)
-);
+){pt};
 CREATE INDEX IF NOT EXISTS proposals_newest ON {s}.proposals (((state::jsonb ->> 'position')::int8));
 CREATE TABLE IF NOT EXISTS {s}.members (
     object_set TEXT NOT NULL, ty TEXT NOT NULL, key TEXT NOT NULL,
     since BIGINT NOT NULL, state BOOLEAN NOT NULL,
     PRIMARY KEY (object_set, ty, key, since)
-);
+){pt};
 CREATE TABLE IF NOT EXISTS {s}.outputs (
     seam TEXT NOT NULL, input TEXT NOT NULL, since BIGINT NOT NULL,
     state TEXT NOT NULL,
     PRIMARY KEY (seam, input, since)
-);
+){pt};
 {heads}CREATE TABLE IF NOT EXISTS {s}.applied (
     id TEXT PRIMARY KEY, at BIGINT NOT NULL
-);
+){pt};
 CREATE TABLE IF NOT EXISTS {s}.routes (
     at BIGINT NOT NULL, kind TEXT NOT NULL, ty TEXT, key TEXT, source TEXT
-);
+){pt};
 CREATE INDEX IF NOT EXISTS routes_kind ON {s}.routes (kind, at);
 CREATE INDEX IF NOT EXISTS routes_ty ON {s}.routes (ty, at);
 CREATE INDEX IF NOT EXISTS routes_key ON {s}.routes (key, at);
 CREATE INDEX IF NOT EXISTS routes_source ON {s}.routes (source, at);
 CREATE TABLE IF NOT EXISTS {s}.text_index (
     ty TEXT NOT NULL, field TEXT NOT NULL, value TEXT NOT NULL, key TEXT NOT NULL
-);
+){pt};
 CREATE UNIQUE INDEX IF NOT EXISTS text_index_value
     ON {s}.text_index (ty, field, md5(value), key COLLATE \"C\");
 CREATE INDEX IF NOT EXISTS text_index_key ON {s}.text_index (ty, key);
 CREATE TABLE IF NOT EXISTS {s}.lookup_fields (
     ty TEXT NOT NULL, field TEXT NOT NULL, PRIMARY KEY (ty, field)
-);
+){pt};
 CREATE TABLE IF NOT EXISTS {s}.edges (
     src_ty TEXT NOT NULL, src_key TEXT NOT NULL, relation TEXT NOT NULL,
     dst_ty TEXT NOT NULL, dst_key TEXT NOT NULL
-);
+){pt};
 CREATE INDEX IF NOT EXISTS edges_src ON {s}.edges (src_ty, src_key);
 CREATE INDEX IF NOT EXISTS edges_dst ON {s}.edges (dst_ty, dst_key);
 CREATE TABLE IF NOT EXISTS {s}.full_text (
     ty TEXT NOT NULL, token TEXT NOT NULL, key TEXT NOT NULL,
     PRIMARY KEY (ty, token, key)
-);
+){pt};
 CREATE INDEX IF NOT EXISTS full_text_key ON {s}.full_text (ty, key);
 CREATE TABLE IF NOT EXISTS {s}.sort_index (
     ty TEXT NOT NULL, field TEXT NOT NULL, key TEXT NOT NULL, sort_key BYTEA NOT NULL,
     PRIMARY KEY (ty, key, field)
-);
+){pt};
 CREATE INDEX IF NOT EXISTS sort_index_asc ON {s}.sort_index (ty, field, sort_key, key COLLATE \"C\");
 CREATE INDEX IF NOT EXISTS sort_index_desc
     ON {s}.sort_index (ty, field, sort_key DESC, key COLLATE \"C\");
-CREATE TABLE IF NOT EXISTS {s}.vectors (
+{vs}CREATE TABLE IF NOT EXISTS {s}.vectors (
     ty TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, field TEXT NOT NULL,
     since BIGINT NOT NULL, until BIGINT, single BOOLEAN NOT NULL, data BYTEA NOT NULL,
     PRIMARY KEY (ty, key, field, since)
@@ -236,7 +254,7 @@ CREATE INDEX IF NOT EXISTS vectors_head ON {s}.vectors (ty, field, key) WHERE un
 /// The heads tables, one per history that keeps heads: each thing's
 /// identifying columns, as its history types them, and the position of
 /// its latest state.
-fn heads_sql(s: &str) -> String {
+fn heads_sql(s: &str, pt: &str) -> String {
     HISTORIES
         .iter()
         .filter(|h| h.head)
@@ -247,7 +265,7 @@ fn heads_sql(s: &str) -> String {
             });
             format!(
                 "CREATE TABLE IF NOT EXISTS {s}.{t}_head ({columns}, since BIGINT NOT NULL, \
-                 PRIMARY KEY ({ident})) WITH (fillfactor = 70);\n",
+                 PRIMARY KEY ({ident})) WITH (fillfactor = 70){pt};\n",
                 t = h.table,
                 ident = h.ident.join(", "),
             )

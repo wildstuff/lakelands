@@ -417,10 +417,12 @@ The most events a mirror reads from its source's feed at once, and the most reco
 
 What says only where or how to connect, or which keys to use, is a binding and no setting: it steers no behaviour of the lake, and a lake moved or restored names it anew. Each is kept beside the settings of its layer. The rest of `lakelands.json` is neither: `lakelands` is the file's format number, and `owner` and `principals` say who the root's callers are and what each may do.
 
-- **`engine.dir`** (the location): SQLite: the directory that holds the lake's log segments and its projection.
+- **`engine.dir`** (the location): SQLite: the directory that holds the lake's log segments, and its projection where `engine.projection_dir` is absent.
+- **`engine.projection_dir`** (the location): SQLite: the directory that holds the lake's projection and the one a rebuild builds beside it, one lake's alone.
 - **`engine.url`** (the location): PostgreSQL: the database the lake is kept in, as a `postgres://` URL.
 - **`engine.schema`** (the location): PostgreSQL: the schema that holds the lake; `lakelands_<lake>` when absent.
 - **`engine.tls`** (the location): PostgreSQL: how the connection is secured.
+- **`engine.tablespaces`** (the location): PostgreSQL: the tablespaces the lake's `log`, `projection`, `indexes` and `vectors` are made in, each the database's default where it is absent.
 - **`key`** (the location): A handle naming the key the lake is encrypted with, which the host resolves.
 - **`keys.keyring`** (`lakelands.json`): The directory of the key store that seals a source's values of erasable fields.
 - **`deliver.endpoints`** (`lakelands.json`): The endpoints `serve` delivers fired triggers and object-set changes to, the only places a deliverer sends anything.
@@ -432,3 +434,6 @@ What says only where or how to connect, or which keys to use, is a binding and n
 - **`backings.http.ca_file`** (`lakelands.json`): The certificate authorities the `http` backing trusts over `https`.
 - **`backings.exec.commands`** (`lakelands.json`): The commands a function may name, each a program and its arguments, the only ones the `exec` backing runs.
 - **`mirror.connections`** (`lakelands.json`): Each mirror's source lake, target lake, principal, the types that cross, and where a type with no position begins (`start`: a snapshot of its records, or the feed from now).
+- **`lakes_dir`** (`lakelands.json`): Where `lake new` makes a SQLite lake's directory; `lakes` in the root when absent.
+- **`exports_dir`** (`lakelands.json`): Where `export` writes when it is given no `--to`; `exports` in the root when absent.
+- **`backups_dir`** (`lakelands.json`): Where the root's backups are to be kept, nothing yet; `backups` in the root when absent.

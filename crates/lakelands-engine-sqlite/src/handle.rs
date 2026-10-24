@@ -68,8 +68,8 @@ pub struct SqliteLake {
     /// The head's declarations as the last commit left them, and the
     /// position it folded through, for the next one's relook.
     heads: Mutex<Option<(Position, engines::Heads)>>,
-    /// The lake's directory and the tuning its connections are made with,
-    /// for a swap that connects again.
+    /// The projection's directory and the tuning its connections are made
+    /// with, for a swap that connects again.
     dir: PathBuf,
     tuning: SqliteTuning,
     /// On a handle onto the scratch, its lock and mark (`scratch.rs`).
@@ -134,7 +134,7 @@ fn hold(dir: &std::path::Path) -> Result<File> {
 impl SqliteLake {
     pub(crate) fn open(
         lake: LakeId,
-        dir: PathBuf,
+        (dir, projection): (PathBuf, PathBuf),
         tuning: SqliteTuning,
         mode: OpenMode,
     ) -> Result<SqliteLake> {
@@ -156,11 +156,14 @@ impl SqliteLake {
         };
         // A scratch an earlier builder left unfit to swap in is removed by
         // the next writer, before it opens the projection.
+        let path = projection.join("projection.db");
+        if mode != OpenMode::Read || path.is_file() {
+            check_name(&projection, &lake, mode != OpenMode::Read)?;
+        }
         if mode != OpenMode::Read {
-            scratch::sweep(&dir, &lake, &mut log)?;
+            scratch::sweep(&projection, &lake, &mut log)?;
         }
         let opened = hold(&dir)?;
-        let path = dir.join("projection.db");
         let no_projection = || {
             let lake = lake.to_string();
             Error::unavailable(Situation::NoProjection { lake })
@@ -210,7 +213,7 @@ impl SqliteLake {
             readers: Pool::new(vec![reader], pool::per_core()),
             transaction: Mutex::new(None),
             heads: Mutex::new(None),
-            dir,
+            dir: projection,
             tuning,
             building: Mutex::new(None),
             opened: Some(opened),
@@ -222,7 +225,7 @@ impl SqliteLake {
     /// A scratch unfit to keep is removed and made anew.
     pub(crate) fn open_scratch(
         lake: LakeId,
-        dir: PathBuf,
+        (dir, projection): (PathBuf, PathBuf),
         tuning: SqliteTuning,
     ) -> Result<SqliteLake> {
         if !crate::log::kept(&dir)? {
@@ -231,7 +234,8 @@ impl SqliteLake {
         }
         let mut log = Log::open(&dir, false)?;
         check_name(&dir, &lake, false)?;
-        let mut building = scratch::lock(&dir)?.ok_or_else(|| scratch::rebuilding(&lake))?;
+        check_name(&projection, &lake, true)?;
+        let mut building = scratch::lock(&projection)?.ok_or_else(|| scratch::rebuilding(&lake))?;
         if building.fit(&lake, &mut log, false)?.is_none() {
             building.remove()?;
         }
@@ -253,7 +257,7 @@ impl SqliteLake {
             readers: Pool::new(vec![reader], pool::per_core()),
             transaction: Mutex::new(None),
             heads: Mutex::new(None),
-            dir,
+            dir: projection,
             tuning,
             building: Mutex::new(Some(building)),
             opened: None,
@@ -478,8 +482,9 @@ fn check_name(dir: &std::path::Path, lake: &LakeId, create: bool) -> Result<()> 
             Err(Error::invalid(Case::LakeOther { schema, held, lake }))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && create => {
-            std::fs::write(&path, format!("{lake}\n"))
-                .map_err(|e| io_error(Doing::Write, Part::File, e))
+            let made = std::fs::create_dir_all(dir)
+                .and_then(|()| std::fs::write(&path, format!("{lake}\n")));
+            made.map_err(|e| io_error(Doing::Write, Part::File, e))
         }
         Err(e) => Err(io_error(Doing::Read, Part::File, e)),
     }

@@ -394,6 +394,7 @@ fn location(plan: &Plan, root: &Path, tag: &str) -> Location {
                     ..PgTls::default()
                 },
                 tuning: PgTuning::default(),
+                tablespaces: Default::default(),
             },
             key: None,
             limits: Limits::default(),

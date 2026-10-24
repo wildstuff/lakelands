@@ -16,8 +16,9 @@ projection as it was. A rebuild that fails, is stopped or is killed
 leaves it answering, and the scratch is removed: by its own handle when
 it ends, else by the next writer's open of the lake.
 
-On SQLite the scratch is `projection.db.rebuild`, in the lake's
-directory. On PostgreSQL it is a schema of its own, named from the
+On SQLite the scratch is `projection.db.rebuild`, beside
+`projection.db` in the projection's directory (the lake's, unless its
+location names a `projection_dir`). On PostgreSQL it is a schema of its own, named from the
 lake's, which holds the projection's tables and reads the log from the
 lake's schema. Opening it opens the log and the scratch only: the
 projection the lake answers from is not opened, whatever layout made

@@ -45,7 +45,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use lakelands_api::error::{Case, Detail, Error, Result, Situation, Tls};
-use lakelands_api::location::{PgTls, PgTlsMode, PgTuning};
+use lakelands_api::location::{PgTablespaces, PgTls, PgTlsMode, PgTuning};
 use lakelands_api::record::StoredRecord;
 use lakelands_core::engines::pool::Pool;
 use postgres::types::{FromSql, ToSql};
@@ -78,6 +78,7 @@ pub(crate) struct Target {
     pub(crate) schema: String,
     pub(crate) tls: PgTls,
     pub(crate) tuning: PgTuning,
+    pub(crate) tablespaces: PgTablespaces,
 }
 
 impl Target {

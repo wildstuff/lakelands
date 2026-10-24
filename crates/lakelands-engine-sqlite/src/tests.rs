@@ -70,7 +70,8 @@ fn a_fold_committed_inside_one_ranked_call_is_in_none_of_its_lists() {
     let dir = std::env::temp_dir().join(format!("lakelands-ranked-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let tuning = Default::default();
-    let lake = SqliteLake::open("ranked".into(), dir.clone(), tuning, OpenMode::Create).unwrap();
+    let dirs = (dir.clone(), dir.clone());
+    let lake = SqliteLake::open("ranked".into(), dirs, tuning, OpenMode::Create).unwrap();
     let lake = Arc::new(lake);
     fold(&lake, "a", 1);
     let writer = lake.clone();

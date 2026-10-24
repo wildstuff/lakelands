@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use super::*;
-use crate::location::{Limits, PgTuning, SqliteTuning};
+use crate::location::{Limits, PgTablespaces, PgTuning, SqliteTuning};
 
 /// The listed settings under `prefix`, each with its default.
 fn listed(prefix: &str) -> BTreeMap<String, Value> {
@@ -193,13 +193,29 @@ fn a_search_weight_out_of_range_weighs_nothing() {
 #[test]
 fn the_location_s_bindings_are_the_list_s() {
     use crate::location::{EngineConfig, KeyHandle, Location};
-    let mut pg = Location::postgres("l", "postgres://h/d");
-    if let EngineConfig::Postgres { schema, .. } = &mut pg.engine {
+    let (mut pg, mut sqlite) = (
+        Location::postgres("l", "postgres://h/d"),
+        Location::sqlite("l", "d"),
+    );
+    if let EngineConfig::Postgres {
+        schema,
+        tablespaces,
+        ..
+    } = &mut pg.engine
+    {
         *schema = Some("s".into());
+        let log = Some("t".into());
+        *tablespaces = Some(PgTablespaces {
+            log,
+            ..Default::default()
+        });
+    }
+    if let EngineConfig::Sqlite { projection_dir, .. } = &mut sqlite.engine {
+        *projection_dir = Some("p".into());
     }
     pg.key = Some(KeyHandle("k".into()));
     let mut members = std::collections::BTreeSet::new();
-    for l in [Location::sqlite("l", "d"), pg] {
+    for l in [sqlite, pg] {
         let v = serde_json::to_value(l).expect("it serialises");
         for (k, _) in v.as_object().expect("an object") {
             if !matches!(k.as_str(), "lake" | "engine" | "limits") {

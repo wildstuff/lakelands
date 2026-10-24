@@ -388,9 +388,8 @@ fn command() -> Command {
                     Arg::new("to")
                         .long("to")
                         .value_name("DIR")
-                        .required(true)
                         .value_parser(clap::builder::NonEmptyStringValueParser::new())
-                        .help("An empty or new directory to write into"),
+                        .help("An empty or new directory to write into; by default one of its own in the root's exports_dir"),
                 ),
         )
         .subcommand(
@@ -684,7 +683,8 @@ async fn dispatch(
         "rebuild" => commands::rebuild(out, &store).await,
         "compact" => commands::compact(out, &store).await,
         "export" => {
-            commands::export(out, &store, Path::new(&text(sub, "to").unwrap_or_default())).await
+            let to = text(sub, "to").map_or_else(|| root.export_dir(store.lake()), PathBuf::from);
+            commands::export(out, &store, &to).await
         }
         "settings" => match sub.subcommand() {
             Some((change, of)) => {

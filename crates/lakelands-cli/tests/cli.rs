@@ -1287,6 +1287,45 @@ fn export_prints_its_files_and_the_head_it_read_and_refuses_a_directory_in_use()
     }
 }
 
+/// A root's `lakes_dir` is where `lake new` puts a SQLite lake, and its
+/// `exports_dir` where `export` writes with no `--to`: a directory of
+/// its own, named by the lake and the moment.
+#[test]
+fn lake_new_and_export_place_by_the_root_s_directories() {
+    let sh = Shell::on("placed", Backend::Store);
+    let root = sh.root.display().to_string();
+    assert_eq!(sh.raw(&["lakelands", "init", &root]).code, 0);
+    let file = sh.root.join("lakelands.json");
+    let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    config["lakes_dir"] = "stores".into();
+    config["exports_dir"] = "out".into();
+    fs::write(&file, config.to_string()).unwrap();
+    assert_eq!(sh.run(&["lake", "new", "finance"]).code, 0);
+    let location = fs::read_to_string(sh.root.join("lakes/finance.json")).unwrap();
+    let location: Location = serde_json::from_str(&location).unwrap();
+    assert_eq!(location, Location::sqlite("finance", "stores/finance"));
+    sh.run(&["apply", &sh.fixture()]);
+    let said = sh.run(&["export"]);
+    assert_eq!(said.code, 0, "{}", said.err);
+    let made: Vec<_> = fs::read_dir(sh.root.join("out"))
+        .unwrap()
+        .flatten()
+        .collect();
+    let name = made[0].file_name().into_string().unwrap();
+    assert_eq!(
+        (made.len(), name.len()),
+        (1, "finance-20261024T120000Z".len()),
+        "{name}"
+    );
+    assert!(
+        name.starts_with("finance-2") && name.ends_with('Z'),
+        "{name}"
+    );
+    let files = lakelands_core::export::verify(&made[0].path()).unwrap();
+    assert_eq!(files.through, lakelands_api::Position(7));
+    assert!(sh.root.join("stores/finance/log").is_dir());
+}
+
 /// `feed` and `export` open a place that holds no lake yet to create
 /// it. A lake that is refused as it stands is not such a place: a lake
 /// whose projection is ahead of its log is asked for once, to read, and

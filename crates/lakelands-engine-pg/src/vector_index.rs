@@ -268,7 +268,7 @@ pub(crate) fn rebuild(
         ))?;
         db.batch(&format!(
             "CREATE INDEX {name} ON {vectors} USING hnsw ((unit::{vt}) {s}.vector_l2_ops) \
-             WITH (m = {M}, ef_construction = {EF_CONSTRUCTION}) \
+             WITH (m = {M}, ef_construction = {EF_CONSTRUCTION}){place} \
              WHERE ty = {ty} AND field = {field} AND until IS NULL",
             name = index_bare(ty, field.as_str()),
             vectors = names.t("vectors"),
@@ -276,6 +276,7 @@ pub(crate) fn rebuild(
             s = v.schema,
             ty = literal(ty.as_str()),
             field = literal(field.as_str()),
+            place = Names::space(&names.at.vectors),
         ))?;
         db.execute(
             &format!(

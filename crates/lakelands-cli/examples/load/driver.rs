@@ -560,6 +560,7 @@ fn prepare(plan: &Plan, root: &Path) -> Result<Option<String>, String> {
                         ..PgTls::default()
                     },
                     tuning: PgTuning::default(),
+                    tablespaces: Default::default(),
                 },
                 key: None,
                 limits: Limits::default(),
@@ -2646,6 +2647,7 @@ async fn ingest_rate(plan: &Plan, dir: &Path, report: &mut Report) -> Result<(),
                     schema: Some(schema),
                     tls,
                     tuning,
+                    tablespaces: Default::default(),
                 };
                 Location {
                     engine,

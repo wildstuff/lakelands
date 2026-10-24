@@ -113,7 +113,7 @@ pub struct PgLake {
 
 impl PgLake {
     pub(crate) fn open(lake: LakeId, target: Target, mode: OpenMode) -> Result<PgLake> {
-        let names = Names::new(target.quoted_schema()?);
+        let names = Names::of(&target)?;
         let (readers, turns) = (connect::shared_readers(&target), turns());
         let shaped = |db: &mut Db| shape(db, &target.schema, false);
         let (mut reader, turn, shaped) = read_on(&readers, &turns, &target, shaped)?;
@@ -199,7 +199,7 @@ impl PgLake {
     /// never the projection. A scratch unfit to keep is removed and made
     /// anew.
     pub(crate) fn open_scratch(lake: LakeId, target: Target) -> Result<PgLake> {
-        let live = Names::new(target.quoted_schema()?);
+        let live = Names::of(&target)?;
         let (readers, turns) = (connect::shared_readers(&target), turns());
         // The projection's tables are another layout's, perhaps: only the
         // log's are judged.
@@ -445,7 +445,7 @@ impl PgLake {
 /// The first and the last event of the log in the target's schema, when
 /// it holds a lake with any: read, never made or changed.
 pub(crate) fn log_ends(target: &Target) -> Result<Option<(CanonicalEvent, CanonicalEvent)>> {
-    let names = Names::new(target.quoted_schema()?);
+    let names = Names::of(target)?;
     let mut db = connect::connect(target)?;
     if !matches!(shape(&mut db, &target.schema, false)?, Shape::Lake) {
         return Ok(None);
@@ -1260,7 +1260,7 @@ impl VectorIndex for PgLake {
 /// projection is read, so one of another layout, or none, is no bar.
 pub fn export(location: &lakelands_api::Location, dir: &std::path::Path) -> Result<()> {
     let target = crate::target(location)?;
-    let names = Names::new(target.quoted_schema()?);
+    let names = Names::of(&target)?;
     let mut db = connect::connect(&target)?;
     if !matches!(shape(&mut db, &target.schema, false)?, Shape::Lake) {
         let (lake, schema) = (location.lake.to_string(), Some(target.schema.clone()));
