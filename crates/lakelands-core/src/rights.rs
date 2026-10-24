@@ -37,7 +37,7 @@ use crate::sight::Sight;
 
 /// The prefix every system type's name carries
 /// (`docs/decisions/003-reservation-by-namespace.md`).
-pub const SYSTEM_PREFIX: &str = "sys.";
+const SYSTEM_PREFIX: &str = "sys.";
 
 /// Whether a type name is reserved for system types.
 pub fn is_system(ty: &TypeName) -> bool {
@@ -53,14 +53,14 @@ pub fn is_system(ty: &TypeName) -> bool {
 /// `sensitive` field nobody granted or denied by name is shown masked
 /// rather than dropped; a `none` given by name, or handed down by a
 /// source, hides it (`docs/decisions/006-grants-not-roles.md`).
-pub fn field_access(who: &Principal, decl: &TypeDecl, field: &FieldDecl) -> Access {
+pub(crate) fn field_access(who: &Principal, decl: &TypeDecl, field: &FieldDecl) -> Access {
     settled(who, decl, field).1
 }
 
 /// What the grants give a field, before `sensitive` raises it: a type
 /// is shown by this, and `sensitive` shows a field of a type that is
 /// shown, never the type.
-pub fn granted_access(who: &Principal, decl: &TypeDecl, field: &FieldDecl) -> Access {
+pub(crate) fn granted_access(who: &Principal, decl: &TypeDecl, field: &FieldDecl) -> Access {
     settled(who, decl, field).0
 }
 
@@ -182,7 +182,7 @@ fn built_from<'d>(
 
 /// The principal's access to a type as a whole: its type-level grant, or
 /// the lake-wide default.
-pub fn type_access(who: &Principal, ty: &TypeName) -> Access {
+pub(crate) fn type_access(who: &Principal, ty: &TypeName) -> Access {
     who.grants
         .types
         .get(ty)
@@ -379,14 +379,15 @@ impl Admit {
 
 impl Sight<'_> {
     /// Whether the records of the view `ty` are computed for its principal
-    /// from the admitted records of what it reads ([`only`]), a grant that
-    /// cannot be applied included.
+    /// from the admitted records of what it reads (`only`), a grant that
+    /// cannot be applied included. `find` is the lookup the caller reads
+    /// types with, not the sight's own, so a read judges the shape it reads.
     pub fn computed_only(&self, ty: &TypeName, find: Find<'_, '_>) -> bool {
         only(self.who(), ty, find).1
     }
 
     /// What its principal's grants admit of the records of `ty`, a kept
-    /// name's as its view's ([`only`]): nothing where the grant on the type,
+    /// name's as its view's (`only`): nothing where the grant on the type,
     /// or on the source a view reads, cannot be applied
     /// ([`Self::check_only`]) (051).
     pub fn admit(&self, ty: &TypeName) -> Admit {
@@ -445,7 +446,7 @@ pub(crate) fn held_ends<'d, 'a>(
 impl Sight<'_> {
     /// Whether its principal's grant admits only some records of `decl`, or
     /// of an end type of a link type, as deep as its ends go
-    /// ([`held_ends`]): its writes reach those records alone, and none
+    /// (`held_ends`): its writes reach those records alone, and none
     /// waits for review (051).
     pub fn only_holder(&self, decl: &TypeDecl) -> bool {
         let (who, find) = (self.who(), &|n: &TypeName| self.force.ty(n));
@@ -546,7 +547,7 @@ impl Sight<'_> {
 /// path with them. A set's `where` and a trigger's `when` are decided for
 /// no reader, so what they hold for a record tells what they read there
 /// (055, extended). With no path across, nothing is asked.
-pub fn holds_nothing_across<'d>(
+pub(crate) fn holds_nothing_across<'d>(
     who: &Principal,
     decl: &'d TypeDecl,
     paths: &[Vec<FieldName>],
@@ -581,7 +582,7 @@ pub fn holds_nothing_across<'d>(
 /// writes every field its `only` names at the authored door (051), or the
 /// field is one only verbs write whose `initial` a create gives it is the
 /// value its `only` names.
-pub fn creates(who: &Principal, decl: &TypeDecl) -> bool {
+pub(crate) fn creates(who: &Principal, decl: &TypeDecl) -> bool {
     own_only(who, &decl.name).iter().all(|(f, v)| {
         let field = decl.field(f);
         field.is_some_and(|d| match d.authority {
@@ -873,7 +874,7 @@ fn following(who: &Principal, m: &Migration) -> Principal {
 /// the fields it may not know of, the relations it is not shown and a
 /// view it is not described; `whole`, the stored hash, where nothing is
 /// left out.
-pub fn shown_hash<'a>(
+pub(crate) fn shown_hash<'a>(
     who: &Principal,
     t: &TypeDecl,
     view_shown: bool,
@@ -898,7 +899,7 @@ pub fn shown_hash<'a>(
 /// it is not shown, and a field it may not read left with its shape
 /// alone. A listing hands a declaration out so; an author's view of a
 /// type is made by [`known_fields`], and holds a field as declared.
-pub fn described_fields<'a>(who: &Principal, t: &mut TypeDecl, find: Find<'_, 'a>) {
+pub(crate) fn described_fields<'a>(who: &Principal, t: &mut TypeDecl, find: Find<'_, 'a>) {
     let whole = t.clone();
     (t.relations).retain(|r| crate::describe::relation_shown(&whole, r, find, who));
     let shown = |of: &TypeDecl, fields: &mut Vec<FieldDecl>| {
@@ -951,7 +952,7 @@ fn unread(who: &Principal, t: &TypeDecl, name: &FieldName) -> bool {
 /// `t` without the fields `who` may not know of, a relation's link fields
 /// too, and without the relations it is not shown. `find` answers a type
 /// by its name.
-pub fn known_fields<'a>(who: &Principal, t: &mut TypeDecl, find: Find<'_, 'a>) {
+pub(crate) fn known_fields<'a>(who: &Principal, t: &mut TypeDecl, find: Find<'_, 'a>) {
     if !keeps_from(who, t, find) {
         return;
     }
@@ -969,7 +970,7 @@ pub fn known_fields<'a>(who: &Principal, t: &mut TypeDecl, find: Find<'_, 'a>) {
 /// Whether [`known_fields`] takes anything out of `t` for `who`: a
 /// relation it is not shown, or a field or a link field it may not know
 /// of. Asked before a type is copied to take it out (lakelands#943).
-pub fn keeps_from(who: &Principal, t: &TypeDecl, find: Find<'_, '_>) -> bool {
+pub(crate) fn keeps_from(who: &Principal, t: &TypeDecl, find: Find<'_, '_>) -> bool {
     let none = |d: &TypeDecl, f: &FieldDecl| field_access(who, d, f) == Access::None;
     let relation = |r: &lakelands_api::ontology::RelationDecl| {
         let link = crate::links::link_type(&t.name, r);
@@ -1041,7 +1042,7 @@ pub(crate) fn hide_unshown_references(
 
 /// Whether `who` may not know of some field: only a `none` its grants
 /// give, to the lake, a type or a field, hides one.
-pub fn hides_some(who: &Principal) -> bool {
+pub(crate) fn hides_some(who: &Principal) -> bool {
     let (g, none) = (&who.grants, |a: &Access| *a == Access::None);
     let typed =
         |t: &TypeGrants| t.default.as_ref().is_some_and(none) || t.fields.values().any(none);
@@ -1051,7 +1052,7 @@ pub fn hides_some(who: &Principal) -> bool {
 /// Whether a shape holds what a migration's report names by `name`: a
 /// field, a link field (`relation.field`), or a relation, which a report
 /// lists as dropped by its own name.
-pub fn holds(t: &TypeDecl, name: &FieldName) -> bool {
+pub(crate) fn holds(t: &TypeDecl, name: &FieldName) -> bool {
     let relation = |r: &str| t.relations.iter().find(|x| x.name.as_str() == r);
     match name.as_str().split_once('.') {
         Some((r, f)) => relation(r).is_some_and(|x| x.fields.iter().any(|x| x.name.as_str() == f)),
@@ -1064,7 +1065,7 @@ pub fn holds(t: &TypeDecl, name: &FieldName) -> bool {
 /// holds; or a link field `relation.field` of a relation `known` holds,
 /// judged on its link type as `whole` declares it, under the grants on
 /// that link type, its ends `from` and `to` included (lakelands#1092).
-pub fn link_known(who: &Principal, whole: &TypeDecl, known: &TypeDecl, name: &FieldName) -> bool {
+fn link_known(who: &Principal, whole: &TypeDecl, known: &TypeDecl, name: &FieldName) -> bool {
     let Some((r, f)) = name.as_str().split_once('.') else {
         return holds(known, name);
     };
@@ -1080,7 +1081,7 @@ pub fn link_known(who: &Principal, whole: &TypeDecl, known: &TypeDecl, name: &Fi
 
 impl Sight<'_> {
     /// `m`, a migration not in force, as its principal may know it: the shape
-    /// it leaves as [`described_fields`] shows it, judged with grants held
+    /// it leaves as [`Self::described_fields`] shows it, judged with grants held
     /// through the migration's own renames (of fields, and of the link types
     /// its renamed relations move); a rename only where it may know the field
     /// under both names, the old one in `was`, the type it was written against.
@@ -1146,7 +1147,7 @@ impl Sight<'_> {
     /// know of the field: a conversion in the shape the migration leaves, and
     /// by the name it took its values from where renamed, as is a rewritten
     /// reference of the migrated type itself; a member restated (a link field's
-    /// entry, `relation.field`, judged on its link type by [`link_known`]), one
+    /// entry, `relation.field`, judged on its link type by `link_known`), one
     /// of [`FieldDecl::UNREAD`] only where the reader reads the field in `to`
     /// and as the type stands, under the name it had, since a migration may
     /// change a field's access with no rename; a dropped field or renamed

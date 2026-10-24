@@ -33,8 +33,8 @@ use lakelands_api::{
 use crate::{describe, rights};
 
 /// What a door names beside its sight: the door a write comes through,
-/// and what a grant admits of a type's records.
-pub use crate::rights::{Admit, Door};
+/// what a grant admits of a type's records, and a type found by its name.
+pub use crate::rights::{Admit, Door, Find};
 
 /// The declarations in force, as a sight asks for them.
 pub trait InForce {
@@ -391,8 +391,8 @@ impl<'o> Sight<'o> {
         self.who.grants.restricted && !self.holds_only()
     }
 
-    /// Whether its principal may not know of some field
-    /// ([`rights::hides_some`]).
+    /// Whether its principal may not know of some field: only a `none` its
+    /// grants give, to the lake, a type or a field, hides one.
     pub fn hides_some(&self) -> bool {
         rights::hides_some(&self.who)
     }
@@ -404,23 +404,27 @@ impl<'o> Sight<'o> {
         self.who.grants.restricted
     }
 
-    /// What its principal may do with `field` of `decl` ([`rights::field_access`]).
+    /// What its principal may do with `field` of `decl`: its grant, read no
+    /// further than every field `field` is built from (024).
     pub fn field_access(&self, decl: &TypeDecl, field: &FieldDecl) -> Access {
         rights::field_access(&self.who, decl, field)
     }
 
-    /// Whether its principal is kept from some of `t` ([`rights::keeps_from`]).
-    pub fn keeps_from(&self, t: &TypeDecl, find: rights::Find<'_, '_>) -> bool {
+    /// Whether its principal is kept from some of `t`: whether
+    /// [`Self::known_fields`] takes anything out.
+    pub fn keeps_from(&self, t: &TypeDecl, find: Find<'_, '_>) -> bool {
         rights::keeps_from(&self.who, t, find)
     }
 
-    /// `t` as its principal may know it ([`rights::known_fields`]).
-    pub fn known_fields(&self, t: &mut TypeDecl, find: rights::Find<'_, '_>) {
+    /// `t` as its principal may know it: without the fields and relations it
+    /// may not know of.
+    pub fn known_fields(&self, t: &mut TypeDecl, find: Find<'_, '_>) {
         rights::known_fields(&self.who, t, find)
     }
 
-    /// `t`'s fields as `describe` shows them to its principal ([`rights::described_fields`]).
-    pub fn described_fields(&self, t: &mut TypeDecl, find: rights::Find<'_, '_>) {
+    /// `t`'s fields as `describe` shows them to its principal, a relation's
+    /// link fields too.
+    pub fn described_fields(&self, t: &mut TypeDecl, find: Find<'_, '_>) {
         rights::described_fields(&self.who, t, find)
     }
 }
