@@ -683,9 +683,11 @@ check!(
 /// how many clears ran, one for each rebuild (lakelands#1183); which of
 /// the next commits of a transaction that dropped a key's states fails,
 /// counting from 1; how many keys' states were dropped (lakelands#1120);
-/// and how many times the engine reported its active segment's bytes
-/// (lakelands#1309).
-pub type Fails = Arc<[AtomicU32; 8]>;
+/// how many times the engine reported its active segment's bytes
+/// (lakelands#1309); how many of the next appends find the lease another
+/// writer took, and whether that writer gives it up at the next take of
+/// the lease (lakelands#1385).
+pub type Fails = Arc<[AtomicU32; 10]>;
 
 /// The harness's engine with a projection whose next reclaims and
 /// clears fail as [`Fails`] says (lakelands#1161).
@@ -694,6 +696,45 @@ struct Reclaims {
     fails: Fails,
     /// Whether the open transaction dropped a key's states.
     dropped: AtomicBool,
+    /// How another writer opens the lake, and the engine it took the
+    /// lease through, kept while this one lives.
+    other: (Arc<dyn EngineOpener>, Location),
+    taker: std::sync::Mutex<Option<(Box<dyn lakelands_api::engine::LakeEngine>, Lease)>>,
+}
+
+impl Reclaims {
+    fn new(
+        inner: Box<dyn lakelands_api::engine::LakeEngine>,
+        fails: &Fails,
+        opener: &Arc<dyn EngineOpener>,
+        location: &Location,
+    ) -> Box<Self> {
+        Box::new(Reclaims {
+            inner,
+            fails: fails.clone(),
+            dropped: AtomicBool::new(false),
+            other: (opener.clone(), location.clone()),
+            taker: Default::default(),
+        })
+    }
+
+    /// Another writer takes `lease` from under this handle: given up
+    /// behind its back, from the other's handle where the engine lets it
+    /// (one log shared by the process's handles) and else from this one,
+    /// as a lock lost without the writer knowing, and then taken.
+    fn taken_over(&self, lease: &Lease) -> lakelands_api::Result<()> {
+        let other = self.other.0.open(&self.other.1, OpenMode::Write)?;
+        other.release_lease(lease)?;
+        let taken = match other.take_lease("another writer") {
+            Ok(taken) => taken,
+            Err(_) => {
+                self.inner.release_lease(lease)?;
+                other.take_lease("another writer")?
+            }
+        };
+        *crate::lock(&self.taker) = Some((other, taken));
+        Ok(())
+    }
 }
 
 /// The harness's engine opener, making [`Reclaims`].
@@ -737,13 +778,8 @@ impl EngineOpener for ReclaimsOpener {
     ) -> lakelands_api::Result<Box<dyn lakelands_api::engine::LakeEngine>> {
         // A rebuild beside the projection clears and folds the scratch:
         // its clears and commits count and fail as the projection's do.
-        let (inner, fails) = (self.inner.open_scratch(location)?, self.fails.clone());
-        let dropped = AtomicBool::new(false);
-        Ok(Box::new(Reclaims {
-            inner,
-            fails,
-            dropped,
-        }))
+        let inner = self.inner.open_scratch(location)?;
+        Ok(Reclaims::new(inner, &self.fails, &self.inner, location))
     }
     fn open(
         &self,
@@ -753,13 +789,8 @@ impl EngineOpener for ReclaimsOpener {
         if mode != OpenMode::Rebuild && fails(&self.fails, 3) {
             crate::engines::layout(&location.lake, Some(1), 2)?;
         }
-        let (inner, fails) = (self.inner.open(location, mode)?, self.fails.clone());
-        let dropped = AtomicBool::new(false);
-        Ok(Box::new(Reclaims {
-            inner,
-            fails,
-            dropped,
-        }))
+        let inner = self.inner.open(location, mode)?;
+        Ok(Reclaims::new(inner, &self.fails, &self.inner, location))
     }
 }
 
@@ -786,6 +817,11 @@ impl lakelands_api::engine::LakeEngine for Reclaims {
         self.inner.lake()
     }
     fn take_lease(&self, holder: &str) -> lakelands_api::Result<Lease> {
+        if fails(&self.fails, 9)
+            && let Some((other, taken)) = crate::lock(&self.taker).take()
+        {
+            other.release_lease(&taken)?;
+        }
         self.inner.take_lease(holder)
     }
     fn release_lease(&self, lease: &Lease) -> lakelands_api::Result<()> {
@@ -795,6 +831,9 @@ impl lakelands_api::engine::LakeEngine for Reclaims {
         self.inner.tip()
     }
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> lakelands_api::Result<()> {
+        if fails(&self.fails, 8) {
+            self.taken_over(lease)?;
+        }
         self.inner.append(lease, events)
     }
     fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> lakelands_api::Result<()> {
