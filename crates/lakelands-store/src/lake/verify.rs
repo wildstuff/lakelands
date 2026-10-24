@@ -216,6 +216,9 @@ impl Turn<'_> {
         }
         w.sized = tip;
         let (size, bound) = (self.engine.active_segment_bytes(), self.limits.seal_bound());
+        if let Some(n) = size {
+            self.level(Level::ActiveSegmentBytes, n);
+        }
         if matches!((size, bound), (Some(n), Some(b)) if n >= b) {
             let _ = self.seal(&mut w);
         }
@@ -230,9 +233,11 @@ impl Turn<'_> {
         let now = self.clock(w);
         // The engine closes the segment and begins the next with the
         // checkpoint in one step: one refused before it has sealed
-        // nothing, and is sent again.
+        // nothing, and is sent again. It is the checkpoint's append, timed
+        // and counted as every other.
         let mut stamped = None;
-        self.engine.seal_segment(&lease, false, &mut |sealed| {
+        let began = self.timer();
+        let sealed = self.engine.seal_segment(&lease, false, &mut |sealed| {
             let segments = before.iter().chain([sealed]).cloned().collect();
             let body = EventBody::Checkpoint {
                 through,
@@ -242,11 +247,17 @@ impl Turn<'_> {
             let (_, events, stored) = self.stamp(w, vec![Draft::system(now, body)])?;
             stamped = Some(events);
             Ok(stored)
-        })?;
+        });
+        if sealed.is_err() {
+            self.count(Count::AppendFailures, 1);
+        }
+        sealed?;
         let Some(events) = stamped else {
             return Ok(through);
         };
+        self.since(Spread::Append, began);
         let events = self.landed(w, events, Reads::default())?;
+        self.count(Count::Seals, 1);
         Ok(events.last().map_or(through, |e| e.position))
     }
 
@@ -271,7 +282,7 @@ impl Turn<'_> {
         let mut w = self.writer();
         if let Some(lease) = w.lease.take() {
             // The head stays the last folded position; only the lease goes.
-            self.holds_lease.store(false, Ordering::Release);
+            self.unleased();
             self.engine.release_lease(&lease)?;
         }
         Ok(())

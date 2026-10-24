@@ -285,6 +285,12 @@ pub const SETTINGS: &[Setting] = &[
         ..root("server.workers", "null")
     },
     Setting {
+        range: "an address and port",
+        says: "Where `serve` answers `GET /metrics` in the Prometheus text format, apart from the door; absent, it measures nothing and listens for none.",
+        cost: "a write on the memory engine took 22.6 µs measured against 22.3 µs unmeasured with one caller, and 12.6 µs either way with sixteen; on SQLite the difference is inside a commit's noise; a scrape reads each lake's counters and takes nothing from its writer",
+        ..root("server.metrics.bind", "null")
+    },
+    Setting {
         range: "`Z`, or `+HH:MM` or `-HH:MM` within fourteen hours",
         says: "The UTC offset `serve` reads the date at, to age each lake it writes once a day.",
         ..root("aging.utc_offset", "\"Z\"")

@@ -31,6 +31,7 @@ pub async fn serve(store: Arc<dyn LakeStore>, resolver: Arc<StaticResolver>) -> 
         feed_poll_millis: 20,
         feed_floor_millis: 25,
         workers: None,
+        metrics: None,
     };
     let server = serve_http(config, resolver, open).await.unwrap();
     let addr = server.local_addr().unwrap();

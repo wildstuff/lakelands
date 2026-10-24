@@ -35,11 +35,27 @@ impl Lake {
         (lease, events, stored): Stamped,
         reads: Reads,
     ) -> Result<Vec<Event>> {
-        if let Err(e) = self.engine.append(&lease, &stored) {
+        self.durable(w, &lease, &stored)?;
+        self.landed(w, events, reads)
+    }
+
+    /// The engine's append of `stored` under `lease`, timed, a refusal
+    /// counted; one that says the lease is gone marks the writer lost.
+    /// Every append of the writer goes through it.
+    pub(super) fn durable(
+        &self,
+        w: &mut Writer,
+        lease: &Lease,
+        stored: &[CanonicalEvent],
+    ) -> Result<()> {
+        let began = self.timer();
+        if let Err(e) = self.engine.append(lease, stored) {
+            self.count(Count::AppendFailures, 1);
             self.lose(w, &e);
             return Err(e);
         }
-        self.landed(w, events, reads)
+        self.since(Spread::Append, began);
+        Ok(())
     }
 
     /// The events `drafts` become after the tip, or after what a batch
@@ -127,11 +143,15 @@ impl Lake {
         }
         // The events are durable whatever the fold answers: its failure is
         // told as that, so that it is not read as a write that did not land.
+        let began = self.timer();
         self.fold_all(w, &events, reads, false).map_err(|e| {
             let at = events.first().map_or(0, |e| e.position.0);
             let (from, cause) = (Position(at), Box::new(e));
             Error::unavailable(Situation::NotFolded { from, cause })
         })?;
+        self.since(Spread::Fold, began);
+        self.count(Count::Appends, 1);
+        self.count(Count::Events, events.len() as u64);
         // A shape holds over what is committed now unless an event ends a
         // range; it is carried only from where it stands, so a fold that
         // began after its range's end (another handle wrote, or a fold failed

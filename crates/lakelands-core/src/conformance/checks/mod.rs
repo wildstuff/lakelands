@@ -69,6 +69,7 @@ mod links;
 mod logged_ids;
 mod made_of;
 mod masking;
+mod metered;
 mod migrate;
 mod only;
 mod only_proposals;
@@ -952,4 +953,6 @@ pub const ALL: &[Check] = &[
     sized::SEALED_BY_SIZE,
     taken_lease::TAKEN_LEASE,
     grid::GRID,
+    metered::METERED,
+    metered::METERED_LEASE,
 ];

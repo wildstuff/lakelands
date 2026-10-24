@@ -280,6 +280,14 @@ The threads `serve` runs its doors and sessions on; absent, the machine's cores,
 - **Takes:** a count above zero.
 - **Default:** `null`.
 
+### `server.metrics.bind`
+
+Where `serve` answers `GET /metrics` in the Prometheus text format, apart from the door; absent, it measures nothing and listens for none.
+
+- **Takes:** an address and port.
+- **Default:** `null`.
+- **Cost:** a write on the memory engine took 22.6 µs measured against 22.3 µs unmeasured with one caller, and 12.6 µs either way with sixteen; on SQLite the difference is inside a commit's noise; a scrape reads each lake's counters and takes nothing from its writer.
+
 ### `aging.utc_offset`
 
 The UTC offset `serve` reads the date at, to age each lake it writes once a day.

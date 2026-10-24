@@ -83,6 +83,7 @@ pub async fn serve_pausing(
         feed_poll_millis,
         feed_floor_millis: 25,
         workers: None,
+        metrics: None,
     };
     let server = serve_http(config, Arc::new(StaticResolver::new(entries)), open)
         .await
