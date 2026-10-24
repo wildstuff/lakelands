@@ -518,7 +518,6 @@ impl Lake {
         })
     }
 
-    /// Make the writer's tip and lease readable without its lock.
     /// The clock, where a meter is bound: what [`Self::since`] times from.
     pub(crate) fn timer(&self) -> Option<std::time::Instant> {
         self.seams.meter.as_ref().map(|_| std::time::Instant::now())
@@ -545,18 +544,22 @@ impl Lake {
         }
     }
 
+    /// One value of `n`, observed.
     pub(crate) fn observe(&self, n: Spread, value: u64) {
         self.meter(|m, at| m.observe(at, n, value));
     }
 
+    /// `n` counted up by `by`.
     pub(crate) fn count(&self, n: Count, by: u64) {
         self.meter(|m, at| m.count(at, n, by));
     }
 
+    /// `n` told as it now stands.
     pub(crate) fn level(&self, n: Level, value: u64) {
         self.meter(|m, at| m.level(at, n, value));
     }
 
+    /// Make the writer's tip and lease readable without its lock.
     fn publish(&self, w: &Writer) {
         self.set_head(w.tip.as_ref().map_or(0, |t| t.0.0));
         let holds = w.lease.is_some() && !w.lost;
