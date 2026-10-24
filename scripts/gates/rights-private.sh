@@ -11,12 +11,19 @@
 #     (`pub use …rights;`, `pub use …rights as …`) or by a glob
 #     (`pub use …rights::*`); naming the items it re-exports is fine;
 #   - any `.rs` outside `crates/lakelands-core/src/` names a `rights::`
-#     path, or imports `rights` from `lakelands_core` in a braced list.
+#     path, or imports `rights` from `lakelands_core` in a braced list;
+#   - any `.rs` but `sight.rs` and `rights.rs` reads `grants.restricted`:
+#     whether a principal is shown held records is asked of its sight
+#     (`Sight::sees_restricted`). Setting the grant, `….grants.restricted
+#     = …` or as the last place of a tuple assigned, is no read.
+#     `MIRROR` (below) is exempt: it compares the grants two connections
+#     are configured with before any door is asked, and holds no sight.
 # Untracked files are checked too, so a local run sees new work.
 . "$(dirname "$0")/lib.sh"
 
 CORE='crates/lakelands-core/src'
 LIB="$CORE/lib.rs"
+MIRROR='crates/lakelands-cli/src/mirror.rs'
 
 [ -f "$LIB" ] || die "$LIB is missing"
 decl="$(grep -cE '^\s*mod rights;$|^\s*pub\(crate\) mod rights;$' "$LIB" || true)"
@@ -33,6 +40,12 @@ while IFS= read -r -d '' file; do
         BEGIN { ($pattern, $file) = splice @ARGV, 0, 2 }
         print "$file:$.: names the crate-private `rights` module\n" if /$pattern/;
     ' "$pattern" "$file" "$file")
+    case "$file" in "$CORE"/sight.rs|"$CORE"/rights.rs|"$MIRROR") continue ;; esac
+    while IFS= read -r hit; do fail "$hit"; done < <(perl -ne '
+        BEGIN { $file = shift }
+        print "$file:$.: reads `grants.restricted`; ask the sight (`Sight::sees_restricted`)\n"
+            if /\bgrants\.restricted\b(?!\s*=[^=])(?!\)\s*=[^=])/;
+    ' "$file" "$file")
 done < <(git ls-files -z --cached --others --exclude-standard -- ':(glob)**/*.rs')
 
 verdict "$files Rust file(s), \`rights\` private to $CORE"
