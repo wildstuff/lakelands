@@ -174,6 +174,12 @@ check!(
     given
 );
 
+check!(
+    LAKE_19_READ = the_lake_of_format_19_is_read_as_it_answered,
+    "054 (lakelands#962): the lake v0.18.0 made through its doors (`docs/log-format/lakes/19/`), in format 19, imported on this engine, is read as that release answered it, as `answers.json` keeps the answers: every live record of each type it names with its fields, an item a source the field admits wrote, a person of a delivery sealed apart and a meter a verb wrote through its call's payload among them; the members of its object set; the walk over its relation; and its sealed values read whole with the file keyring's file it ships, the apart delivery's through its composed key, each with its provenance, while the values a delivery, several deliveries, a delivery sealed apart and a cut by the time a source saw them took are gone with the records only they wrote (065); imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies; and it answers so again rebuilt, and built ahead beside its writer and swapped in by the writer's open of the layout before, which goes on from the build (071, lakelands#1322); on an engine that keeps no scratch the build ahead is refused as unbound",
+    given
+);
+
 async fn a_lake_the_release_before_made_is_read_as_it_answered(store: Store, given: Given) -> Held {
     kept_lake_answers(store, given, 14).await
 }
@@ -192,6 +198,10 @@ async fn the_lake_of_format_17_is_read_as_it_answered(store: Store, given: Given
 
 async fn the_lake_of_format_18_is_read_as_it_answered(store: Store, given: Given) -> Held {
     kept_lake_answers(store, given, 18).await
+}
+
+async fn the_lake_of_format_19_is_read_as_it_answered(store: Store, given: Given) -> Held {
+    kept_lake_answers(store, given, 19).await
 }
 
 /// The kept lake of `format` (`docs/log-format/lakes/<format>/`), imported

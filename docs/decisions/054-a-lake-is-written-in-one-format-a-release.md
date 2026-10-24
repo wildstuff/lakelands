@@ -119,8 +119,9 @@ writes 19, so a 0.17.0 binary refuses its lakes by their number
   its own format until a later one upgrades it, as 0.15.0 does;
   `docs/log-format/lakes/16/`, the lake v0.15.0 made, from that release
   on, `docs/log-format/lakes/17/`, the lake v0.16.0 made, from that one
-  on, and `docs/log-format/lakes/18/`, the lake v0.17.0 made, from that
-  one on. The vectors of each older format are imported and upgraded on
+  on, `docs/log-format/lakes/18/`, the lake v0.17.0 made, from that one on,
+  and `docs/log-format/lakes/19/`, the lake v0.18.0 made, from that one
+  on. The vectors of each older format are imported and upgraded on
   every engine too.
 
 At 100 000 events a step that changes no fold costs one append, and

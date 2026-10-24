@@ -1,0 +1,38 @@
+{
+  "sources": {
+    "crm": {
+      "keys": [
+        [
+          "fa2763beb8e4d0547f0ad934a3121f19",
+          "f683a1082de887b0bb46db2972acaa7894e853e029c44c0ac89d91ffc1123285"
+        ]
+      ]
+    },
+    "hr": {
+      "keys": [
+        [
+          "1a1e4dbc67de3fa689e1ad808ccb858f",
+          "91ef3300cf1ace5104d9d6d900f9bdc7111ac7442582fbcd48adf91829a24be8"
+        ]
+      ],
+      "apart": [
+        [
+          "59c1e0d55acfaed390ce440d10c3573f",
+          "d6a0cb88d827eebc464bdfc120a4d4274b28d7b10e9f99f38138f0cb6993ad1a"
+        ]
+      ]
+    },
+    "ledger": {
+      "keys": [
+        [
+          "f3330fb0403d3c67dbca594cf6a45901",
+          "b83a0461a15a993dde38cd6eba8f3cf3f99e4c81984bef755a7cb759d0ea0c41"
+        ]
+      ]
+    },
+    "web": {
+      "keys": [],
+      "destroyed": true
+    }
+  }
+}

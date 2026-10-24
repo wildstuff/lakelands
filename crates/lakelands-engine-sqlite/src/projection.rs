@@ -347,15 +347,7 @@ pub(crate) fn layout(conn: &Connection) -> Result<Option<u64>> {
         return Ok(None);
     }
     let found: Option<i64> = one(conn, "SELECT v FROM meta WHERE k = 'layout'", [])?;
-    // A build between the leaner states and the vectors kept apart
-    // (lakelands#1318, lakelands#1323) marked this layout with `vectors`
-    // still a head index: that projection is the layout before.
-    let apart = "SELECT 1 FROM pragma_table_info('vectors') WHERE name = 'since'";
-    let shape = |v: i64| match v as u64 == LAYOUT && one::<i64>(conn, apart, [])?.is_none() {
-        true => Ok(LAYOUT - 1),
-        false => Ok(v as u64),
-    };
-    found.map(shape).transpose()
+    Ok(found.map(|v| v as u64))
 }
 
 /// Whether `conn`'s database holds a table. One that holds none is a
