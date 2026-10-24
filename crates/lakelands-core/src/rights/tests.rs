@@ -1,4 +1,5 @@
 use super::*;
+use lakelands_api::engine::Declared;
 use lakelands_api::ontology::{RelationDecl, StorageKind};
 use lakelands_api::principal::{Grants, PrincipalKind, TypeGrants};
 use lakelands_api::{FieldMeta, Origin, Position, Timestamp, Version};
@@ -78,6 +79,11 @@ fn stored() -> StoredRecord {
     }
 }
 
+/// The sight of `who`, as it stands, over no declarations.
+fn held(who: &Principal) -> Sight<'_> {
+    Sight::held(who, const { &Vec::<Declared>::new() })
+}
+
 /// A refusal naming `field`, for `reason`.
 fn refused_on<T>(field: &str, reason: Refusal) -> Result<T, Error> {
     Err(Error::Refused {
@@ -89,9 +95,7 @@ fn refused_on<T>(field: &str, reason: Refusal) -> Result<T, Error> {
 #[test]
 fn a_reader_sees_granted_fields_and_a_sensitive_field_only_as_masked() {
     let who = principal(Access::None, &[("amount", Access::Read)]);
-    let none = Vec::new();
-    let sees = crate::sight::Sight::held(&who, &none);
-    let r = visible(&sees, &invoice(), &stored(), true).unwrap();
+    let r = held(&who).visible(&invoice(), &stored(), true).unwrap();
     assert_eq!(r.fields.keys().collect::<Vec<_>>(), ["amount"]);
     assert_eq!(r.masked, [FieldName::from("iban")]);
     assert_eq!(
@@ -104,7 +108,7 @@ fn a_reader_sees_granted_fields_and_a_sensitive_field_only_as_masked() {
 #[test]
 fn probing_an_unreadable_field_is_refused_not_masked() {
     let who = principal(Access::Read, &[("iban", Access::Masked)]);
-    let probe = |f: &str| check_probe(&who, &invoice(), [&FieldName::from(f)]);
+    let probe = |f: &str| held(&who).check_probe(&invoice(), [&FieldName::from(f)]);
     assert!(probe("amount").is_ok());
     assert_eq!(probe("iban"), refused_on("iban", Refusal::NotGranted));
     assert!(matches!(
@@ -121,14 +125,12 @@ fn a_search_probes_every_searchable_field_it_reads_and_the_vector_it_names() {
     let mut decl = invoice();
     decl.fields[2].searchable = true; // iban, sensitive
     let reader = principal(Access::Read, &[("iban", Access::Masked)]);
-    assert!(
-        check_search(&reader, &decl, None, &[]).is_ok(),
-        "`iban` is not searched"
-    );
-    assert_eq!(searched_fields(&reader, &decl).count(), 0);
+    let search = |who, v: &[&FieldName]| held(who).check_search(&decl, None, v);
+    assert!(search(&reader, &[]).is_ok(), "`iban` is not searched");
+    assert_eq!(held(&reader).searched_fields(&decl).count(), 0);
     let granted = principal(Access::Read, &[]);
-    assert!(check_search(&granted, &decl, None, &[]).is_ok());
-    assert!(check_search(&granted, &decl, None, &[&"nope".into()]).is_err());
+    assert!(search(&granted, &[]).is_ok());
+    assert!(search(&granted, &[&"nope".into()]).is_err());
 }
 
 #[test]
@@ -142,7 +144,7 @@ fn a_search_limited_to_named_fields_probes_those_and_judges_reading_first() {
         |field: &str, case: Case| refused_on(field, Refusal::Invalid(Box::new(case.into())));
     let search = |decl: &TypeDecl, named: &[&str]| {
         let named: Vec<FieldName> = named.iter().map(|&n| n.into()).collect();
-        check_search(&reader, decl, Some(&named), &[])
+        held(&reader).check_search(decl, Some(&named), &[])
     };
     let ty = || decl.name.clone();
     assert!(search(&decl, &["note"]).is_ok(), "`iban` is not named");
@@ -175,16 +177,14 @@ fn a_search_over_an_embedded_vector_probes_the_fields_it_is_embedded_from() {
     });
     let vec = FieldName::from("vec");
     let reader = principal(Access::Read, &[("note", Access::Masked)]);
+    let search = |who, v: &[&FieldName]| held(who).check_search(&decl, None, v);
     assert_eq!(
-        check_search(&reader, &decl, None, &[&vec]),
+        search(&reader, &[&vec]),
         refused_on("note", Refusal::NotGranted),
         "the vector is readable, but it encodes `note`"
     );
-    assert!(
-        check_search(&reader, &decl, None, &[]).is_ok(),
-        "no field is searchable"
-    );
-    assert!(check_search(&principal(Access::Read, &[]), &decl, None, &[&vec]).is_ok());
+    assert!(search(&reader, &[]).is_ok(), "no field is searchable");
+    assert!(search(&principal(Access::Read, &[]), &[&vec]).is_ok());
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn a_write_is_refused_whole_by_its_first_failing_field() {
     let owner = principal(Access::Write, &[]);
     let write = |who: &Principal, v: serde_json::Value| {
         let patch: BTreeMap<FieldName, Value> = serde_json::from_value(v).unwrap();
-        check_write(who, &invoice(), (Door::Authored, None), &patch)
+        held(who).check_write(&invoice(), (Door::Authored, None), &patch)
     };
     assert!(write(&owner, json!({"verdict": "x", "note": "y"})).is_ok());
     assert_eq!(
@@ -218,18 +218,19 @@ fn ingest_needs_the_ingest_grant_and_writes_source_and_shared_fields_only() {
     let crm = SourceId::from("crm");
     let from = |s| (Door::Source, Some(s));
     assert_eq!(
-        check_write(&feed, &invoice(), from(&crm), &patch),
+        held(&feed).check_write(&invoice(), from(&crm), &patch),
         Err(Error::Refused {
             field: None,
             reason: Refusal::NotGranted
         })
     );
     feed.grants.ingest = true;
-    assert!(check_write(&feed, &invoice(), from(&crm), &patch).is_ok());
+    let feed = held(&feed);
+    assert!(feed.check_write(&invoice(), from(&crm), &patch).is_ok());
     let authored: BTreeMap<FieldName, Value> =
         serde_json::from_value(json!({"verdict": "x"})).unwrap();
     assert!(matches!(
-        check_write(&feed, &invoice(), from(&crm), &authored),
+        feed.check_write(&invoice(), from(&crm), &authored),
         Err(Error::Refused {
             reason: Refusal::WrongDoor,
             ..
@@ -243,11 +244,9 @@ fn ingest_needs_the_ingest_grant_and_writes_source_and_shared_fields_only() {
         .find(|f| f.name.as_str() == "verdict");
     verdict.unwrap().admits = vec!["samples".into()];
     let samples = SourceId::from("samples");
-    assert!(check_write(&feed, &admitting, from(&samples), &authored).is_ok());
-    assert_eq!(
-        check_write(&feed, &admitting, from(&crm), &authored),
-        refused_on("verdict", Refusal::WrongDoor)
-    );
+    let from_source = |s| feed.check_write(&admitting, from(s), &authored);
+    assert!(from_source(&samples).is_ok());
+    assert_eq!(from_source(&crm), refused_on("verdict", Refusal::WrongDoor));
 }
 
 #[test]
@@ -278,7 +277,13 @@ fn a_view_carries_its_source_only_where_it_groups_by_the_owner() {
         view("all", &[], false),
         view("merged", &["owner"], true),
     ];
-    let find = |t: &TypeName| types.iter().find(|d| &d.name == t);
+    let type_of = |t| Declared {
+        declaration: lakelands_api::write::Declaration::Type(t),
+        version: 1,
+        schema_hash: None,
+        since: Position(1),
+    };
+    let force: Vec<_> = types.map(type_of).into();
     let mut who = principal(Access::Read, &[]);
     let alice = TypeGrants {
         only: [("owner".into(), json!("alice"))].into(),
@@ -286,7 +291,7 @@ fn a_view_carries_its_source_only_where_it_groups_by_the_owner() {
     };
     who.grants.types.insert("claim".into(), alice);
     let pairs = vec![(FieldName::from("owner"), json!("alice"))];
-    let admit = |who: &Principal, ty: &str| admit(who, &ty.into(), &find);
+    let admit = |who: &Principal, ty: &str| Sight::held(who, &force).admit(&ty.into());
     let only = Admit::Only(pairs);
     assert_eq!(admit(&who, "claim"), only);
     assert_eq!(admit(&who, "by_owner"), only, "rule 16 maps the pairs");
@@ -587,7 +592,7 @@ fn keeps_from_says_whether_known_fields_takes_anything_out() {
 
 #[test]
 fn one_reads_all_whom_no_grant_holds_below_read_and_no_only_bounds() {
-    let reads = |default, fields: &[(&str, Access)]| reads_all(&principal(default, fields));
+    let reads = |d, fields: &[(&str, Access)]| held(&principal(d, fields)).reads_all_fields();
     assert!(reads(Access::Write, &[]) && reads(Access::Read, &[("iban", Access::Write)]));
     for (default, field) in [
         (Access::None, Access::Read),
@@ -608,7 +613,7 @@ fn one_reads_all_whom_no_grant_holds_below_read_and_no_only_bounds() {
     let invoice = only.grants.types.get_mut("invoice").unwrap();
     invoice.only.insert("team".into(), json!("a"));
     assert!(
-        !reads_all(&typed) && !reads_all(&only),
+        !held(&typed).reads_all_fields() && !held(&only).reads_all_fields(),
         "a type's default, an `only`"
     );
 }

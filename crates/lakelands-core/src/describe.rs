@@ -36,7 +36,7 @@ use lakelands_api::{Access, FieldName, LakeId, Principal, TypeName, ValueTypeNam
 use std::collections::BTreeSet;
 
 use crate::derive;
-use crate::rights::{field_access, granted_access, only_holder, pinnable, type_access};
+use crate::rights::{field_access, granted_access, type_access};
 use crate::sight::Sight;
 
 impl Sight<'_> {
@@ -990,7 +990,7 @@ impl Sight<'_> {
         let is_link = crate::links::is_link_type(&t.name);
         // A holder of `only` writes its own records, and makes one only where
         // it writes every field its `only` names (051).
-        let held = only_holder(who, t, self.force);
+        let held = self.only_holder(t);
         let upsert = crate::rights::creates(who, t)
             && !is_view
             && !is_link
@@ -1003,7 +1003,7 @@ impl Sight<'_> {
             create: upsert && !closed,
             create_why: (upsert && closed).then(|| CREATE_CLOSED.to_owned()),
             // A type only its verbs retire is retired by calling one.
-            retire: !is_link && t.retired_by.is_authors() && crate::rights::may_retire(who, t),
+            retire: !is_link && t.retired_by.is_authors() && self.may_retire(t),
             link: t
                 .relations
                 .iter()
@@ -1026,7 +1026,7 @@ impl Sight<'_> {
                 .collect(),
             // Told only where it applies, so it names no field its reader may
             // not read (024).
-            only: match crate::rights::check_only(who, t) {
+            only: match self.check_only(t) {
                 Ok(()) => crate::rights::own_only(who, &t.name).into_iter().collect(),
                 Err(_) => Default::default(),
             },
@@ -1035,7 +1035,7 @@ impl Sight<'_> {
             Declaration::Verb(v)
                 if v.on == t.name
                     && self.callable(t, v)
-                    && (!held || v.risk == Risk::Low || pinnable(who, t, Some(v))) =>
+                    && (!held || v.risk == Risk::Low || self.pinnable(t, Some(v))) =>
             {
                 Some(v.name.clone())
             }
@@ -1121,11 +1121,11 @@ impl Sight<'_> {
     }
 
     fn verb_description(&self, v: &VerbDecl) -> Option<VerbDescription> {
-        let (who, t) = (self.who(), self.force.ty(&v.on)?);
+        let t = self.force.ty(&v.on)?;
         // A verb that waits for review is proposed, and a holder of `only`
         // proposes none that could move its pairs (051). One on a type not
         // shown would name it.
-        let held = only_holder(who, t, self.force) && !pinnable(who, t, Some(v));
+        let held = self.only_holder(t) && !self.pinnable(t, Some(v));
         if self.ty(&v.on).is_err() || !self.callable(t, v) || (held && v.risk != Risk::Low) {
             return None;
         }

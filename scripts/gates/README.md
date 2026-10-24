@@ -37,6 +37,7 @@ what it counts.
 | `conflict-markers` | no tracked file holds a line of an unresolved merge: seven `<` or seven `>` and a space at its start, or seven `=` alone |
 | `settings` | `docs/settings.md` is what the list of settings (`lakelands_api::settings::SETTINGS`) says; every lake setting the store reads is listed, and every listed one is read; no product file names a setting's key, or reads the settings, by a literal |
 | `brand-tokens` | `brand/tokens.css` is, byte for byte, what `scripts/brand/tokens-css.pl` makes from `brand/tokens.json` |
+| `rights-private` | `lakelands_core::rights` stays crate-private: `lib.rs` declares it `pub(crate) mod rights;`, no core file re-exports the module whole or by a glob, and no `.rs` outside `crates/lakelands-core/src/` names a `rights::` path; a door reaches the rules through its `Sight` |
 
 The three budget gates (`core-size`, `seam-width`, `cfg-budget`) let a
 number go down by itself. A ceiling or a ratchet base that is higher

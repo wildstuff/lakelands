@@ -38,8 +38,7 @@ pub mod graph;
 pub mod links;
 pub mod log;
 pub mod names;
-#[doc(hidden)]
-pub mod rights;
+pub(crate) mod rights;
 #[doc(hidden)]
 pub mod shape;
 #[doc(hidden)]
@@ -48,6 +47,13 @@ mod stem;
 #[doc(hidden)]
 pub mod valid_time;
 pub mod value;
+
+/// The rules of [`rights`] that judge no principal, which a door applies
+/// beside its sight ([`sight::Sight`]): a system type's name, a view where a
+/// record is written, a source's write over another hand's. Every other
+/// rule is asked of a sight.
+#[doc(hidden)]
+pub use rights::{check_admitted, is_system, not_a_view};
 
 use lakelands_api::error::{Detail, Doing, Flaw, Part, Situation};
 use lakelands_api::{Error, Position};

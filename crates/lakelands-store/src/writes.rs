@@ -62,9 +62,8 @@ use lakelands_api::{
     Timestamp, TypeName, Value, VerbName, Version,
 };
 use lakelands_core::expr::{self, Place as Eval, RecordScope, Scope, WriteScope};
-use lakelands_core::rights::{self, Door};
-use lakelands_core::sight::Sight;
-use lakelands_core::{describe, links, shape, value};
+use lakelands_core::sight::{Door, Sight};
+use lakelands_core::{describe, links, not_a_view, shape, value};
 
 use crate::backed::{Outputs, is_backed};
 use crate::declare::{self};
@@ -2310,7 +2309,7 @@ pub fn restrict(
     reason: Option<String>,
 ) -> Result<Position> {
     let mut w = lake.for_write()?;
-    rights::not_a_view(w.ontology.ty(ty)?)?;
+    not_a_view(w.ontology.ty(ty)?)?;
     let view = lake.engine.view(None)?;
     // A hold is placed and lifted on a retired record too: the host holds
     // what it keeps, live or not (006).
