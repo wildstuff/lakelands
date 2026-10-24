@@ -1371,7 +1371,8 @@ belongs in the suite, not beside one engine:
 
 **metered**
 
-- `a_bound_meter_is_told_the_lakes_writes_its_tip_and_its_fold` — 079: a lake opened with a meter tells it, labelled with the lake and one engine name, the writes it made, alone and batched, as many as the batches' sizes add to; its tip and the position folded through, both last told at the head; its lease held; a rebuild begun and ended; a checkpoint's seal; and the time a read took
+- `a_bound_meter_is_told_the_lakes_writes_its_tip_and_its_fold` — 079: a lake opened with a meter tells it, labelled with the lake and one engine name, the writes it made, alone and batched, as many as the batches' sizes add to; its tip and the position folded through, both last told at the head; its lease held, then held no more and its fence 0 once it is given up; a rebuild begun and ended; a checkpoint's seal; the time a read took; and every append both timed and counted
+- `a_bound_meter_is_told_a_lease_another_writer_took` — 079: a handle opened with a meter whose lease another writer took tells it, at the append the engine refuses, the append failed and the lease held no more, its fence 0 (lakelands#1385)
 
 ### Through the engine seam
 

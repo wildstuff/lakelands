@@ -29,9 +29,20 @@ call is made under `catch_unwind`: a meter that panics loses that one
 number, and the turn goes on as if none were bound. The counts of an
 append, `lakelands_appends_total` and `lakelands_events_appended_total`,
 are told only after its fold has committed, so a number never says an
-append happened that the projection does not hold. A conformance check
-on the memory engine binds a meter that panics on every call and shows
-every write answered and folded, the head at the last append.
+append happened that the projection does not hold. A store test,
+`crates/lakelands-store/tests/meter_panics.rs`, binds a meter that
+panics on every call and shows every write answered and folded, the head
+at the last append.
+
+Every append of the writer, a checkpoint's included, goes through one
+path that times it and counts its failure, so `lakelands_appends_total`
+and the count of `lakelands_append_seconds` agree. A level that a
+rebuild sets is set back however the rebuild ends, an unwind included.
+
+A meter that panics still goes through the process's panic hook on each
+call, which by default prints a message every time. A host's meter is
+expected not to panic; the guard keeps the lake's turn whole when it
+does, not its standard error quiet.
 
 ### Where each number is told
 
@@ -40,20 +51,20 @@ every write answered and folded, the head at the last append.
 | `lakelands_events_appended_total` | count | after an append's fold, by its events |
 | `lakelands_appends_total` | count | after an append's fold |
 | `lakelands_append_failures_total` | count | when the engine answers an append with an error |
-| `lakelands_writes_total` | count | after a batch of record writes is decided, by its writes; a write alone by one |
+| `lakelands_writes_total` | count | after a batch of record writes is decided, by its writes; a write alone by one. Every decided write counts, whatever it answered: appended, refused, replayed or unchanged |
 | `lakelands_seals_total` | count | after a seal's checkpoint is folded |
 | `lakelands_queue_depth` | level | when a write joins the queue, and when a turn begins |
 | `lakelands_tip` | level | when the writer publishes its tip |
 | `lakelands_folded_through` | level | after each commit of the projection |
-| `lakelands_rebuilding` | level | 1 when a rebuild begins, 0 when it ends |
+| `lakelands_rebuilding` | level | 1 when a rebuild begins, 0 when it ends, by an unwind as well |
 | `lakelands_active_segment_bytes` | level | when the writer weighs its segment for a seal by size, on an engine that reports it |
-| `lakelands_lease_held` | level | when the writer publishes: 1 with its lease, 0 without; 0 when the engine says the lease is lost or stale |
-| `lakelands_lease_fence` | level | with the lease, its fence |
-| `lakelands_append_seconds` | spread | around the engine's append |
+| `lakelands_lease_held` | level | when the writer publishes: 1 with its lease, 0 without; 0 whenever the lease goes, given up by `close`, or lost or stale as the engine says |
+| `lakelands_lease_fence` | level | with the lease held, its fence; 0 whenever it goes |
+| `lakelands_append_seconds` | spread | around the engine's append, a checkpoint's included, where it succeeds |
 | `lakelands_fold_seconds` | spread | around an append's fold |
 | `lakelands_commit_seconds` | spread | around each commit of the projection |
-| `lakelands_read_seconds` | spread | around a read, from its view to its answer |
-| `lakelands_batch_writes` | spread | a batch's writes, a write alone as one |
+| `lakelands_read_seconds` | spread | around a read that answers, from its view to its answer; a refused read is not timed |
+| `lakelands_batch_writes` | spread | the writes a turn decided together, whatever each answered; a write alone as one |
 
 Times are told in microseconds; a host exports them as it chooses.
 
@@ -61,12 +72,14 @@ Times are told in microseconds; a host exports them as it chooses.
 
 `server.metrics.bind` in `lakelands.json` names an address. Where it is
 set, `lakelands serve` binds a meter to every lake it opens and answers
-`GET /metrics` there in the Prometheus text format, 0.0.4: counters,
+`GET /metrics` (and `HEAD`) there in the Prometheus text format, 0.0.4: counters,
 gauges and histograms, each line labelled `lake` and `engine`. A level
 never told and a lake told nothing are not printed. The listener is not
 the door: it asks no key and serves nothing else, answering any other
-path 404 and any other method 405. Where the setting is absent, nothing
-is measured and nothing more is listened for.
+path 404 and any other method 405. A connection carries one scrape: it
+is not kept alive, and one that has not been answered within ten seconds
+is closed, so a slow or idle client holds nothing. Where the setting is
+absent, nothing is measured and nothing more is listened for.
 
 A scrape tells which lakes the server holds, on which engine, how large
 their logs are, how fast they are written and read and whether each

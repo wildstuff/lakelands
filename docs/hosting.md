@@ -1473,7 +1473,8 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   they hold: no type, record, principal or value is ever a label. It
   asks no key and has no TLS, so bind it to loopback or to a private
   interface only the collector reaches, never to the address the door
-  answers callers on. Without the setting nothing is measured and
+  answers callers on. Each connection carries one scrape and is closed
+  after ten seconds at most. Without the setting nothing is measured and
   nothing more is listened for. Measured on one machine, a write on the
   memory engine took 22.6 µs with the meter against 22.3 µs without at
   one caller and 12.6 µs either way at sixteen; on SQLite the difference

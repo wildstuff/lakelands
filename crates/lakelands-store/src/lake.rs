@@ -560,7 +560,18 @@ impl Lake {
     pub(crate) fn level(&self, n: Level, value: u64) {
         self.meter(|m, at| m.level(at, n, value));
     }
+}
 
+/// A level told its value once this is dropped, by an unwind as well.
+pub(crate) struct Told<'a>(pub(crate) &'a Lake, pub(crate) Level, pub(crate) u64);
+
+impl Drop for Told<'_> {
+    fn drop(&mut self) {
+        self.0.level(self.1, self.2);
+    }
+}
+
+impl Lake {
     /// Make the writer's tip and lease readable without its lock.
     fn publish(&self, w: &Writer) {
         self.set_head(w.tip.as_ref().map_or(0, |t| t.0.0));
@@ -613,9 +624,16 @@ impl Lake {
             Some(Situation::LeaseNotHeld { .. } | Situation::LeaseStale { .. })
         ) {
             (w.lost, w.lease) = (true, None);
-            self.holds_lease.store(false, Ordering::Release);
-            self.level(Level::LeaseHeld, 0);
+            self.unleased();
         }
+    }
+
+    /// The lease held no more: readable as such without the writer's
+    /// lock, and told the meter, held 0 and its fence 0.
+    pub(crate) fn unleased(&self) {
+        self.holds_lease.store(false, Ordering::Release);
+        self.level(Level::LeaseHeld, 0);
+        self.level(Level::LeaseFence, 0);
     }
 
     /// A lost writer takes the lease again before its next write, as an
@@ -677,11 +695,8 @@ impl Lake {
             d.known_at = self.clock(w);
             let stamped = self.stamp(w, vec![d.clone()]);
             let held = stamped.and_then(|(lease, events, stored)| {
-                self.engine.append(&lease, &stored).map(|()| events)
+                self.durable(w, &lease, &stored).map(|()| events)
             });
-            if let Err(e) = &held {
-                self.lose(w, e);
-            }
             answer = match held {
                 Ok(events) => self.landed(w, events, Reads::default()),
                 Err(e) => {
@@ -731,7 +746,7 @@ impl Lake {
             // A read-only handle reads what the writer folded: its head is
             // the projection's position, which it can be read at.
             self.set_head(folded.map_or(0, |p| p.0));
-            self.holds_lease.store(false, Ordering::Release);
+            self.unleased();
         }
         Ok(())
     }

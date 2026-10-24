@@ -2181,7 +2181,7 @@ them and its `name()` the name a host exports it under.
 | Method | Contract |
 |---|---|
 | `count(at, Count, by)` | A number that only goes up went up by `by`: events appended, appends, appends that failed, writes, seals. |
-| `level(at, Level, value)` | A number stands at `value`: the queue's depth, the tip, the position folded through, a rebuild under way, the active segment's bytes, the lease held and its fence. |
+| `level(at, Level, value)` | A number stands at `value`: the queue's depth, the tip, the position folded through, a rebuild under way, the active segment's bytes, the lease held and its fence, both 0 whenever the lease goes. |
 | `observe(at, Spread, value)` | One value of a spread: an append's, a fold's, a commit's or a read's time in microseconds, or a batch's writes. |
 
 The calls are synchronous and are made inside the writer's turn, so a

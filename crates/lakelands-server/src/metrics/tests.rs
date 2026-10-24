@@ -120,7 +120,8 @@ async fn a_scrape_over_the_wire_shows_a_lakes_writes_and_nothing_it_holds() {
     let config = MetricsConfig {
         bind: "127.0.0.1:0".parse().unwrap(),
     };
-    let server = serve_metrics(&config, metrics).await.unwrap();
+    let mut server = serve_metrics(&config, metrics).await.unwrap();
+    server.scrape = std::time::Duration::from_millis(300);
     let addr = server.local_addr().unwrap();
     tokio::spawn(server.run());
     let (status, head, body) = ask(addr, "GET", "/metrics").await;
@@ -142,5 +143,19 @@ async fn a_scrape_over_the_wire_shows_a_lakes_writes_and_nothing_it_holds() {
     assert_eq!(ask(addr, "GET", "/other").await.0, 404);
     let (status, head, _) = ask(addr, "POST", "/metrics").await;
     assert_eq!(status, 405);
-    assert!(head.contains("allow: get"), "{head}");
+    assert!(head.contains("allow: get, head"), "{head}");
+    let (status, head, body) = ask(addr, "HEAD", "/metrics").await;
+    assert_eq!(status, 200);
+    assert!(head.contains(TEXT_FORMAT), "{head}");
+    assert!(body.is_empty(), "a HEAD is answered with a body: {body}");
+    let mut idle = TcpStream::connect(addr).await.unwrap();
+    let mut rest = Vec::new();
+    let closed = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        idle.read_to_end(&mut rest),
+    );
+    assert!(
+        closed.await.is_ok(),
+        "a connection that asks nothing is kept open past a scrape's time"
+    );
 }

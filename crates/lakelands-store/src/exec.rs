@@ -171,8 +171,8 @@ fn hold(queue: Arc<Mutex<Queue>>, lake: Weak<Lake>) {
     };
     drop(tokio::task::spawn_blocking(move || {
         holding.began = true;
-        while let Some(entry) = holding.next() {
-            holding.run(entry);
+        while let Some((entry, depth)) = holding.next() {
+            holding.run(entry, depth);
             holding.reply();
         }
     }));
@@ -195,8 +195,8 @@ struct Holding {
 impl Holding {
     /// The head entry, with the record writes queued right behind record
     /// writes taken into it, which the turn decides together; with none
-    /// left, the turn is let go.
-    fn next(&self) -> Option<Entry> {
+    /// left, the turn is let go. With it, how many entries stay queued.
+    fn next(&self) -> Option<(Entry, u64)> {
         let mut q = lakelands_core::lock(&self.queue);
         let mut entry = q.entries.pop_front();
         if let Some(Entry::Records(jobs)) = &mut entry {
@@ -206,17 +206,18 @@ impl Holding {
             }
         }
         q.held = entry.is_some();
-        entry
+        entry.map(|e| (e, q.entries.len() as u64))
     }
 
     /// Run `entry` on the lake, while it is there, and seal its active
     /// segment if the entry left it past its bound, before the answers
     /// are given (074); the lake is let go before any of them is given.
-    fn run(&mut self, entry: Entry) {
+    /// `depth` is what [`Self::next`] left queued, told the meter.
+    fn run(&mut self, entry: Entry, depth: u64) {
         let Some(lake) = self.lake.upgrade() else {
             return;
         };
-        lake.level(Level::Queued, queued(&lake) as u64);
+        lake.level(Level::Queued, depth);
         match entry {
             Entry::Alone(job) => self.replies.push(job(&Turn(&lake))),
             Entry::Records(jobs) => {

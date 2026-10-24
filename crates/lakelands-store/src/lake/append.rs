@@ -35,14 +35,27 @@ impl Lake {
         (lease, events, stored): Stamped,
         reads: Reads,
     ) -> Result<Vec<Event>> {
+        self.durable(w, &lease, &stored)?;
+        self.landed(w, events, reads)
+    }
+
+    /// The engine's append of `stored` under `lease`, timed, a refusal
+    /// counted; one that says the lease is gone marks the writer lost.
+    /// Every append of the writer goes through it.
+    pub(super) fn durable(
+        &self,
+        w: &mut Writer,
+        lease: &Lease,
+        stored: &[CanonicalEvent],
+    ) -> Result<()> {
         let began = self.timer();
-        if let Err(e) = self.engine.append(&lease, &stored) {
+        if let Err(e) = self.engine.append(lease, stored) {
             self.count(Count::AppendFailures, 1);
             self.lose(w, &e);
             return Err(e);
         }
         self.since(Spread::Append, began);
-        self.landed(w, events, reads)
+        Ok(())
     }
 
     /// The events `drafts` become after the tip, or after what a batch

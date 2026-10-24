@@ -17,6 +17,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::Full;
@@ -40,6 +41,11 @@ pub struct MetricsConfig {
 
 /// The content type of the Prometheus text format.
 pub const TEXT_FORMAT: &str = "text/plain; version=0.0.4; charset=utf-8";
+
+/// How long one connection to the metrics door may last, its request read
+/// and its answer written: a scrape is one request, so a connection that
+/// is kept or sends its request slowly is closed.
+const SCRAPE: Duration = Duration::from_secs(10);
 
 /// The upper bounds of a time's buckets, in microseconds: 100 µs to 10 s.
 const MICROS: &[u64] = &[
@@ -216,6 +222,8 @@ impl Histogram {
 pub struct MetricsServer {
     listener: TcpListener,
     metrics: Arc<Metrics>,
+    /// How long a connection may last, [`SCRAPE`].
+    scrape: Duration,
 }
 
 /// Bind the metrics door at `config.bind`. [`MetricsServer::run`] then
@@ -225,7 +233,11 @@ pub async fn serve_metrics(
     metrics: Arc<Metrics>,
 ) -> io::Result<MetricsServer> {
     let listener = TcpListener::bind(config.bind).await?;
-    Ok(MetricsServer { listener, metrics })
+    Ok(MetricsServer {
+        listener,
+        metrics,
+        scrape: SCRAPE,
+    })
 }
 
 impl MetricsServer {
@@ -238,16 +250,18 @@ impl MetricsServer {
     pub async fn run(self) -> io::Result<()> {
         loop {
             let (stream, _) = self.listener.accept().await?;
-            let metrics = self.metrics.clone();
+            let (metrics, limit) = (self.metrics.clone(), self.scrape);
             tokio::spawn(async move {
                 let service = hyper::service::service_fn(move |req| {
                     let metrics = metrics.clone();
                     async move { Ok::<_, Infallible>(scrape(&metrics, &req)) }
                 });
-                // A connection that fails affects only itself.
-                let _ = hyper::server::conn::http1::Builder::new()
-                    .serve_connection(TokioIo::new(stream), service)
-                    .await;
+                // A connection that fails, or outlasts a scrape, affects
+                // only itself.
+                let conn = hyper::server::conn::http1::Builder::new()
+                    .keep_alive(false)
+                    .serve_connection(TokioIo::new(stream), service);
+                let _ = tokio::time::timeout(limit, conn).await;
             });
         }
     }
@@ -256,7 +270,7 @@ impl MetricsServer {
 /// The answer to one request of the metrics door.
 fn scrape<B>(metrics: &Metrics, req: &Request<B>) -> Response<Full<Bytes>> {
     let (status, body) = match (req.uri().path(), req.method()) {
-        ("/metrics", &Method::GET) => (StatusCode::OK, metrics.render()),
+        ("/metrics", &Method::GET | &Method::HEAD) => (StatusCode::OK, metrics.render()),
         ("/metrics", _) => (StatusCode::METHOD_NOT_ALLOWED, String::new()),
         _ => (StatusCode::NOT_FOUND, String::new()),
     };
@@ -269,7 +283,7 @@ fn scrape<B>(metrics: &Metrics, req: &Request<B>) -> Response<Full<Bytes>> {
         }
         StatusCode::METHOD_NOT_ALLOWED => {
             r.headers_mut()
-                .insert(ALLOW, HeaderValue::from_static("GET"));
+                .insert(ALLOW, HeaderValue::from_static("GET, HEAD"));
         }
         _ => {}
     }

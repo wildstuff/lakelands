@@ -954,4 +954,5 @@ pub const ALL: &[Check] = &[
     taken_lease::TAKEN_LEASE,
     grid::GRID,
     metered::METERED,
+    metered::METERED_LEASE,
 ];

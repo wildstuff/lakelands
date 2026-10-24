@@ -434,7 +434,8 @@ numbers! {
         Appends = "lakelands_appends_total",
         /// Appends the engine answered with an error.
         AppendFailures = "lakelands_append_failures_total",
-        /// Record writes decided at the writer, batched or alone.
+        /// Record writes decided at the writer, batched or alone, whatever
+        /// each answered: appended, refused, replayed or unchanged.
         Writes = "lakelands_writes_total",
         /// Segments sealed, by size or by a checkpoint.
         Seals = "lakelands_seals_total",
@@ -456,7 +457,7 @@ numbers! {
         ActiveSegmentBytes = "lakelands_active_segment_bytes",
         /// 1 while this handle holds the writer lease, else 0.
         LeaseHeld = "lakelands_lease_held",
-        /// The lease's fencing token.
+        /// The lease's fencing token while it is held, else 0.
         LeaseFence = "lakelands_lease_fence",
     }
 }
@@ -465,15 +466,16 @@ numbers! {
     /// A number observed many times: a duration in microseconds, or a
     /// batch's size in writes.
     Spread {
-        /// The engine's durable append.
+        /// The engine's durable append, a checkpoint's included.
         Append = "lakelands_append_seconds",
         /// The fold of an append, its commits included.
         Fold = "lakelands_fold_seconds",
         /// One commit of the projection.
         Commit = "lakelands_commit_seconds",
-        /// One catalog read, its view to its answer.
+        /// One catalog read that answers, its view to its answer.
         Read = "lakelands_read_seconds",
-        /// Record writes per durable append.
+        /// Record writes a turn decided together, whatever each answered; a
+        /// write alone is one.
         BatchWrites = "lakelands_batch_writes",
     }
 }

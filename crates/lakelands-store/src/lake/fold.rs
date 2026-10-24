@@ -1342,6 +1342,8 @@ impl Lake {
         self.keys.unlist();
         let began = std::time::Instant::now();
         self.level(Level::Rebuilding, 1);
+        // Told ended however the rebuild ends, a panic out of it included.
+        let ended = Told(self, Level::Rebuilding, 0);
         let folded = (|| {
             // It reads the recorded outputs and makes no call due but a
             // failed append's; the calls a write before it made due stay
@@ -1360,7 +1362,7 @@ impl Lake {
             w.rebuilding = false;
             folded
         })();
-        self.level(Level::Rebuilding, 0);
+        drop(ended);
         self.rebuilds.fetch_add(1, Ordering::SeqCst);
         lakelands_core::lock(&self.shapes).clear();
         self.keys.unlist();
