@@ -1342,6 +1342,22 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   or a position (`docs/rest.md`, Health and readiness). A host that embeds
   `lakelands-server` tells the door when its lakes are open with
   `HttpServer::health().serving(lakes)`; until then it is `starting`.
+- **The threads of `lakelands serve` (lakelands#1373).** `serve` runs
+  on a multi-threaded runtime: as many threads as the `server` section's
+  `workers` names, or the machine's cores, at most 8; every other
+  command runs on one. The threads run the doors, the sessions and their
+  pumps. A lake's storage work runs on the runtime's blocking pool, never
+  on them: every engine call the store makes, the writer's turn
+  included, and every statement of the PostgreSQL driver, which blocks
+  on a runtime of its own there. On one thread that driver had to start
+  a thread of its own for every statement. Through REST, one record
+  after another per caller (`crates/lakelands-cli/examples/serve_bench.rs`),
+  on 14 cores, PostgreSQL 16 on loopback wrote 657, 1 229 and 2 887
+  writes/s at 1, 4 and 16 callers on one thread and 986, 1 751 and
+  3 818 on eight, its p99 1.8, 4.0 and 6.4 ms against 1.2, 2.6 and
+  4.8 ms. SQLite was the same on both, bound by its durable commit
+  (about 10 ms on that machine's disk), and the memory engine within
+  7 %.
 - **Connections on PostgreSQL (lakelands#1324).** A process holds two
   connections for a lake it writes, `lakelands <schema>` in
   `pg_stat_activity`, two more while a rebuild of it runs, and none of

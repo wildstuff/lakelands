@@ -40,6 +40,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::io;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -106,6 +107,33 @@ pub struct HttpConfig {
     /// reach the consumers in batches (lakelands#1061).
     #[serde(default = "default_feed_floor")]
     pub feed_floor_millis: u64,
+    /// The threads `lakelands serve` runs its doors and sessions on
+    /// ([`runtime`]). Absent, the machine's cores, at most
+    /// [`WORKERS_MOST`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workers: Option<NonZeroUsize>,
+}
+
+/// The most threads [`runtime`] starts when the configuration names no
+/// `workers`.
+pub const WORKERS_MOST: usize = 8;
+
+/// The runtime a server runs on: as many threads as `config` names in
+/// `workers`, or the machine's cores, at most [`WORKERS_MOST`]. The
+/// threads run the doors, the sessions and their pumps; no task on them
+/// blocks. A lake's storage work runs on the runtime's blocking pool, not
+/// on them: the store hands every engine call there, the writer's turn
+/// included, and the PostgreSQL driver blocks on its own runtime only
+/// from such a thread.
+pub fn runtime(config: Option<&HttpConfig>) -> io::Result<tokio::runtime::Runtime> {
+    let workers = config.and_then(|c| c.workers).map_or_else(
+        || std::thread::available_parallelism().map_or(1, |n| n.get().min(WORKERS_MOST)),
+        NonZeroUsize::get,
+    );
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers)
+        .enable_all()
+        .build()
 }
 
 fn default_idle() -> u64 {
