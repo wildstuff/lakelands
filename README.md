@@ -172,7 +172,7 @@ terrain Lakelands is built for, and where it is not the right tool.
 > 154 500, and 6 of 20 `cfg(feature)` sites. A ceiling rises only by a
 > recorded rule (decision 047): the count now holds the memory engine and
 > the tests beside `src/` (lakelands#1317), and the round's ceilings are
-> 83 500 and 155 000. Beside what `0.17.0` held, writes queue for the
+> 83 000 and 154 500. Beside what `0.17.0` held, writes queue for the
 > writer in order and share one append and one sync in a batch, and a
 > SQLite segment is sealed by size (lakelands#1311, lakelands#1313,
 > lakelands#1332, lakelands#1309). A rebuild is built beside the
