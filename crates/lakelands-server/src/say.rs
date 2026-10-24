@@ -100,6 +100,7 @@ fn advice(case: &Case) -> Option<String> {
         Case::BodyMediaType | Case::BodyNotJson { .. } => "send the body as JSON",
         Case::BodyTooLarge => "send a smaller body; many records go through ingest",
         Case::ExportNotEmpty => "export into an empty or new directory",
+        Case::BackupOtherLog { .. } => "back up into a new directory, or this lake's own backup",
         _ => return None,
     };
     Some(todo.to_owned())

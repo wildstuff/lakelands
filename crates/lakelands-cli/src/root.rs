@@ -308,6 +308,20 @@ impl Root {
             return Ok(());
         };
         let keyring = canonical(&keyring);
+        if let Some(lake) = self.lake_holding(&keyring)? {
+            return Err(Failure::new(
+                format!(
+                    "the keyring {} is inside the lake `{lake}`'s directory",
+                    show(&keyring)
+                ),
+                "name a keyring directory outside every lake's, in the keys section of the configuration",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The lake whose directory holds `path`, canonical, if one does.
+    fn lake_holding(&self, path: &Path) -> Result<Option<String>, Failure> {
         for lake in self.lakes() {
             let EngineConfig::Sqlite {
                 dir,
@@ -319,16 +333,51 @@ impl Root {
             };
             if std::iter::once(dir)
                 .chain(projection_dir)
-                .any(|dir| keyring.starts_with(canonical(&dir)))
+                .any(|dir| path.starts_with(canonical(&dir)))
             {
-                return Err(Failure::new(
-                    format!(
-                        "the keyring {} is inside the lake `{lake}`'s directory",
-                        show(&keyring)
-                    ),
-                    "name a keyring directory outside every lake's, in the keys section of the configuration",
-                ));
+                return Ok(Some(lake));
             }
+        }
+        Ok(None)
+    }
+
+    /// The root's file keyring, where `keys` names one.
+    pub fn file_keyring(&self) -> Option<lakelands_backings::keyring::FileKeyring> {
+        self.keyring()
+            .map(lakelands_backings::keyring::FileKeyring::new)
+    }
+
+    /// A copy of a lake's keys is kept apart from its backup, neither
+    /// directory inside the other, and outside every lake's directory: a
+    /// backup that holds both holds what forgetting destroys
+    /// (`docs/decisions/077-a-backup-is-an-export-that-grows.md`).
+    pub fn keys_apart(&self, keys: &Path, backup: &Path) -> Result<(), Failure> {
+        let (keys, backup) = (canonical(keys), canonical(backup));
+        let todo = "keep the keys' copy in a directory of its own, apart from the backup and \
+                    every lake's directory";
+        if keys.starts_with(&backup) || backup.starts_with(&keys) {
+            let what = format!(
+                "the keys' directory {} and the backup's {} are one inside the other",
+                show(&keys),
+                show(&backup)
+            );
+            return Err(Failure::new(what, todo));
+        }
+        self.outside_the_lakes(&keys, "keys'")
+    }
+
+    /// A backup, and a copy of a lake's keys, are written outside every
+    /// lake's directory: a run into one would write into the files its
+    /// writer appends to.
+    pub fn outside_the_lakes(&self, dir: &Path, whose: &str) -> Result<(), Failure> {
+        let dir = canonical(dir);
+        if let Some(lake) = self.lake_holding(&dir)? {
+            let what = format!(
+                "the {whose} directory {} is inside the lake `{lake}`'s directory",
+                show(&dir)
+            );
+            let todo = "name a directory of its own, outside every lake's directory";
+            return Err(Failure::new(what, todo));
         }
         Ok(())
     }

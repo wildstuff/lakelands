@@ -122,6 +122,46 @@ impl FileKeyring {
         Ok(out)
     }
 
+    /// Copy `lake`'s file into `dir`, written as this keyring writes its
+    /// own, and answer the file written; `None`, and nothing written,
+    /// where this keyring holds no file for the lake. `dir` is kept apart
+    /// from the lake's backup: a backup that holds both holds what
+    /// forgetting destroys
+    /// (`docs/decisions/077-a-backup-is-an-export-that-grows.md`).
+    pub fn back_up(&self, lake: &LakeId, dir: &Path) -> Result<Option<PathBuf>> {
+        let _held = lakelands_core::lock(&self.lock);
+        let from = self.path(lake);
+        if !from.exists() {
+            return Ok(None);
+        }
+        let (ring, to) = (self.read(&from)?, FileKeyring::new(dir));
+        to.write(&to.path(lake), &ring)?;
+        Ok(Some(to.path(lake)))
+    }
+
+    /// Remove `lake`'s file, which [`Self::restore`] put back for an
+    /// import that was then refused.
+    pub fn unrestore(&self, lake: &LakeId) -> Result<()> {
+        let _held = lakelands_core::lock(&self.lock);
+        let path = self.path(lake);
+        fs::remove_file(&path).map_err(|e| failed(Doing::Write, Detail::io(&e)))
+    }
+
+    /// Put `lake`'s file back from the copy in `dir`, only where this
+    /// keyring holds none: its own file holds destroys an older copy may
+    /// not. `false`, and nothing written, where it holds one.
+    pub fn restore(&self, lake: &LakeId, dir: &Path) -> Result<bool> {
+        let _held = lakelands_core::lock(&self.lock);
+        let (path, from) = (self.path(lake), FileKeyring::new(dir).path(lake));
+        if path.exists() {
+            return Ok(false);
+        }
+        // A copy that is not there restores nothing, rather than no keys.
+        fs::metadata(&from).map_err(|e| failed(Doing::Read, Detail::io(&e)))?;
+        self.write(&path, &self.read(&from)?)?;
+        Ok(true)
+    }
+
     fn versions(&self, lake: &LakeId, source: &SourceId) -> Result<Option<Versions>> {
         let _held = lakelands_core::lock(&self.lock);
         Ok(self.read(&self.path(lake))?.sources.remove(source))

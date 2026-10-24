@@ -1765,6 +1765,8 @@ catalog! {
         AppendNotNext { position: Position, next: u64 } => "the event at position {position} does not continue the log, whose next position is {next}; nothing was appended",
         /// An event whose `prev` is not the hash before it.
         AppendPrev { position: Position, named: String, hash: String } => "the event at position {position} names `{named}` as the hash before it, but that hash is `{hash}`; nothing was appended",
+        /// A backup's directory holding a log the lake's does not continue.
+        BackupOtherLog { held: Position } => "the backup's directory holds a log through position {held} that this lake's log does not continue; back up into a new directory",
         /// A PostgreSQL client certificate without its key, or a key without its certificate.
         ClientCertHalf => "a client certificate needs both `tls.client_cert` and `tls.client_key`",
         /// A commit through a position the projection is past.

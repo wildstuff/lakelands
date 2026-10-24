@@ -13,6 +13,7 @@ use std::path::Path;
 use lakelands_api::error::Flaw;
 use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::principal::PrincipalKind;
+use lakelands_api::seam::{ChangeFeed, FeedBatch};
 use sha2::{Digest as _, Sha256};
 
 use super::rekey;
@@ -34,14 +35,32 @@ check!(
 );
 
 check!(
-    PREFIX = a_later_export_repeats_the_sealed_files_and_extends_the_active_one,
-    "030: an export reads through the head as it stood when it began; a lake never checkpointed exports one file 00000000000000000000.jsonl, and a later export has the earlier sealed files byte for byte and an active file the earlier one begins",
+    GROWS = a_backup_writes_an_exports_files_and_grows_by_what_follows,
+    "030 and 077: an export, and a backup, read through the head as it stood when they began; a lake never checkpointed writes one file 00000000000000000000.jsonl; a backup writes the files an export of its head writes and no manifest, and run again into its directory writes only the events after its last line, leaving its sealed files byte for byte and extending its last",
     scratch
 );
 
 check!(
+    BACKUP_CUT = a_backup_taken_while_writes_land_restores_the_lake_at_its_cut,
+    "077: a backup run while writes land, each before a page of the feed it reads, holds the log through the head it read before them, its cut, and imported into a fresh lake answers at its head as the lake answers at the cut: the head, its hash, the feed, and every type's records with provenance; run again while writes land, it copies after its last line through its own cut",
+    given
+);
+
+check!(
+    BACKUP_TORN = a_backup_cuts_a_torn_tail_and_refuses_a_log_the_lake_does_not_continue,
+    "077: a run cuts the bytes after its directory's last line feed, a stopped run's, removing a file that holds no whole line, and continues; a directory whose last line is not the lake's event at its position, another lake's or another log's or one past the lake's head, is refused as a failed precondition, `backup_other_log` naming the position, and nothing in it is changed, its torn tail included",
+    scratch
+);
+
+check!(
+    BACKUP_DAMAGED = a_damaged_backup_is_refused_at_its_import,
+    "077: a backup restored is an import, which verifies it whole first: a byte changed in a sealed file or in its last line, or its first file removed, is refused as `damaged`",
+    given
+);
+
+check!(
     NOT_EMPTY = an_export_into_a_directory_that_holds_anything_is_refused,
-    "030: an export writes only into an empty or absent directory; into any other it is refused as a failed precondition, the export's directory not empty (no path on the host is named), and writes nothing",
+    "030 and 077: an export writes only into an empty or absent directory, a backup only into one holding nothing beside `log/` and `export.json` (no lake's directory), one holding only `export.json` taking the whole log; into any other each is refused as a failed precondition, the export's directory not empty (no path on the host is named), and writes nothing",
     scratch
 );
 
@@ -290,46 +309,252 @@ async fn an_export_verifies_to_the_through_and_hash_the_lake_answers(
     Ok(())
 }
 
-async fn a_later_export_repeats_the_sealed_files_and_extends_the_active_one(
+async fn backup(store: &dyn LakeStore, dir: &Path) -> Result<export::Backup, Failure> {
+    export::backup(store, &*store.feed(), dir)
+        .await
+        .must(&format!("backing up into {}", dir.display()))
+}
+
+/// Whether `dir` holds under `log/`, byte for byte, the files an export
+/// of the lake's head writes into `to`.
+async fn as_exported(store: &dyn LakeStore, dir: &Path, to: &Path) -> Result<bool, Failure> {
+    write(store, to).await?;
+    let names = files(dir)?;
+    for f in &names {
+        if read(dir, f)? != read(to, f)? {
+            return Ok(false);
+        }
+    }
+    Ok(names == files(to)?)
+}
+
+/// `from`'s files under `log/`, copied into `to`.
+fn copied(from: &Path, to: &Path) -> Result<(), Failure> {
+    fs::create_dir_all(to.join("log")).map_err(|e| Failure::new(format!("making {to:?}: {e}")))?;
+    for f in files(from)? {
+        let copy = fs::copy(from.join(&f), to.join(&f));
+        copy.map_err(|e| Failure::new(format!("copying {f}: {e}")))?;
+    }
+    Ok(())
+}
+
+async fn a_backup_writes_an_exports_files_and_grows_by_what_follows(
     store: Store,
     scratch: PathBuf,
 ) -> Held {
-    let scratch = Scratch::new(scratch);
-    let first = invoices(store.as_ref(), 0, 2).await?;
-    let (a, b, c) = (scratch.dir("a"), scratch.dir("b"), scratch.dir("c"));
-    let early = write(store.as_ref(), &a).await?;
+    let (scratch, s) = (Scratch::new(scratch), store.as_ref());
+    let (first, dir) = (invoices(s, 0, 2).await?, scratch.dir("backup"));
+    let new = backup(s, &dir).await?;
     let only = export::file_name(Position::GENESIS);
     ensure!(
-        files(&a)? == [only.clone()] && early.through == first,
-        "a lake never checkpointed exports one file, {only}, through its head {first}; it wrote \
-         {:?} through {}",
-        files(&a)?,
-        early.through
+        files(&dir)? == [only.clone()]
+            && as_exported(s, &dir, &scratch.dir("a")).await?
+            && (new.since, new.through, new.copied) == (None, first, first.0 + 1)
+            && !dir.join("export.json").exists(),
+        "a lake never checkpointed exports and backs up one file, {only}, the same, through its \
+         head {first}, and the backup no manifest; it answered {new:?}",
     );
     let sealed_at = store.checkpoint().await.must("checkpointing")?;
-    invoices(store.as_ref(), 2, 1).await?;
-    write(store.as_ref(), &b).await?;
-    invoices(store.as_ref(), 3, 2).await?;
-    let late = write(store.as_ref(), &c).await?;
+    let head = invoices(s, 2, 3).await?;
+    let grown = backup(s, &dir).await?;
     ensure!(
-        read(&a, &only)? == read(&c, &only)?,
-        "the segment sealed at {sealed_at} is exported byte for byte as the earlier export wrote \
-         it"
+        (grown.since, grown.copied) == (Some(first), head.0 - first.0)
+            && as_exported(s, &dir, &scratch.dir("b")).await?,
+        "a backup run again after {first} copies the events through {head}, into the files an \
+         export writes; it answered {grown:?}"
     );
-    let active = export::file_name(sealed_at);
-    let (was, is) = (read(&b, &active)?, read(&c, &active)?);
+    let (sealed, active) = (read(&dir, &only)?, export::file_name(sealed_at));
+    let was = read(&dir, &active)?;
+    invoices(s, 5, 2).await?;
+    let late = backup(s, &dir).await?;
+    let is = read(&dir, &active)?;
     ensure!(
-        is.len() > was.len() && is.starts_with(&was),
-        "a later export's active file begins with the earlier one's and is longer: {} bytes \
-         then {}",
+        late.copied == 2
+            && read(&dir, &only)? == sealed
+            && is.len() > was.len()
+            && is.starts_with(&was)
+            && as_exported(s, &dir, &scratch.dir("c")).await?,
+        "a later run copies 2 events, leaves the file sealed at {sealed_at} as it was and \
+         extends the active one, as an export writes them: it answered {late:?}, the active \
+         file {} bytes then {}",
         was.len(),
         is.len()
     );
+    Ok(())
+}
+
+/// The store's feed, writing an invoice before it answers each poll: the
+/// run reading it runs while every one of those writes lands.
+struct Writing(Store);
+
+#[async_trait::async_trait]
+impl ChangeFeed for Writing {
+    async fn poll(&self, from: Position, filter: &FeedFilter, n: u32) -> Result<FeedBatch, Error> {
+        let _ = invoices(self.0.as_ref(), 100 + from.0 as u32, 1).await;
+        self.0.feed().poll(from, filter, n).await
+    }
+    async fn ack(&self, consumer: &str, through: Position) -> Result<(), Error> {
+        self.0.feed().ack(consumer, through).await
+    }
+}
+
+async fn a_backup_taken_while_writes_land_restores_the_lake_at_its_cut(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    use lakelands_api::{Find, ReadAt};
+    let scratch = Scratch::new(given.scratch.clone());
+    let (store, _) = exported_lake(store, &given.reopen).await?;
+    let (dir, s) = (scratch.dir("backup"), store.as_ref());
+    let before = s.head().await.must("reading the head")?;
+    let cut = export::backup(s, &Writing(store.clone()), &dir)
+        .await
+        .must("backing up")?;
+    let after = s.head().await.must("reading the head")?;
     ensure!(
-        late.through == store.head().await.must("reading the head")?,
-        "an export reads through the head, {}",
-        late.through
+        before == cut.through && cut.through < after,
+        "a run cuts at the head as it began, {before}, before the lake's head {after}: {}",
+        cut.through
     );
+    let grown = scratch.dir("grown");
+    copied(&dir, &grown)?;
+    let more = export::backup(s, &Writing(store.clone()), &grown).await;
+    let (more, head) = (
+        more.must("backing up again")?,
+        s.head().await.must("reading the head")?,
+    );
+    let says = export::verify(&grown).must("verifying the grown backup")?;
+    ensure!(
+        more.since == Some(cut.through)
+            && after < more.through
+            && more.through < head
+            && (says.through, &says.hash) == (more.through, &more.hash),
+        "a run again while writes land copies after {} through its own cut, before the head \
+         {head}, and verifies to it: it answered {more:?}, the files {says:?}",
+        cut.through
+    );
+    let imported = (given.import)(dir, store.lake().clone(), None, import_seams()).await;
+    let imported = imported.map_err(|e| Failure::new(format!("restoring the backup: {e}")))?;
+    let i = imported.store.as_ref();
+    let mut feed = log_events(s).await?;
+    feed.truncate(cut.through.0 as usize + 1);
+    ensure!(
+        log_events(i).await? == feed && feed.last().map(|e| &e.hash) == Some(&cut.hash),
+        "the restored lake's feed is the lake's through the cut {}, hash {}",
+        cut.through,
+        cut.hash.0
+    );
+    let (own, cat, theirs, restored) = (owner(s), doors(s), owner(i), doors(i));
+    let described = cat.describe(&own, ReadAt::default()).await;
+    for t in &described.must("describing")?.data.types {
+        let wide = |at| Find {
+            limit: Some(1_000),
+            ..find_at(at)
+        };
+        let want = cat.find(&own, &t.name, wide(Some(cut.through))).await;
+        let got = restored.find(&theirs, &t.name, wide(None)).await;
+        ensure!(
+            format!("{:?}", want.map(|r| r.data)) == format!("{:?}", got.map(|r| r.data)),
+            "the restored lake finds `{}` at its head as the lake does at the cut {}",
+            t.name,
+            cut.through
+        );
+    }
+    Ok(())
+}
+
+async fn a_backup_cuts_a_torn_tail_and_refuses_a_log_the_lake_does_not_continue(
+    store: Store,
+    scratch: PathBuf,
+) -> Held {
+    let (scratch, s) = (Scratch::new(scratch), store.as_ref());
+    let (dir, export) = (scratch.dir("backup"), scratch.dir("export"));
+    let held = invoices(s, 0, 3).await?;
+    backup(s, &dir).await?;
+    let only = export::file_name(Position::GENESIS);
+    // A stopped run: half a line after the last, and a file of half a line.
+    let (next, half) = (export::file_name(Position(99)), b"{\"body\":{\"kind\"");
+    let tear = || -> Result<Vec<Vec<u8>>, Failure> {
+        let torn = [read(&dir, &only)?, half.to_vec()].concat();
+        let w = fs::write(dir.join(&only), torn).and_then(|()| fs::write(dir.join(&next), half));
+        w.map_err(|e| Failure::new(format!("tearing the backup: {e}")))?;
+        Ok(vec![read(&dir, &only)?, read(&dir, &next)?])
+    };
+    tear()?;
+    let head = invoices(s, 3, 1).await?;
+    let run = backup(s, &dir).await?;
+    ensure!(
+        (run.since, run.copied) == (Some(held), 1) && as_exported(s, &dir, &export).await?,
+        "a run over a torn tail cuts it and copies the event after {held} through {head}, as an \
+         export writes it; it answered {run:?}",
+    );
+    let mut lines = lines_of(&dir, &only)?;
+    let past = Position(head.0 + 5);
+    let others = [
+        ("lake", json!("another-lake"), head),
+        ("known_at", json!(1), head),
+        ("position", json!(past.0), past),
+    ];
+    for (member, value, held) in others {
+        let last = lines.len() - 1;
+        lines[last] = rehashed(&lines_of(&export, &only)?[last], |e| e[member] = value)?;
+        rewrite(&dir, &only, &lines)?;
+        let before = tear()?;
+        let said = export::backup(s, &*s.feed(), &dir).await;
+        ensure!(
+            matches!(&said, Err(e) if e.case().map(|c| &c.case) == Some(&Case::BackupOtherLog { held }))
+                && [read(&dir, &only)?, read(&dir, &next)?] == *before,
+            "a backup whose last line's `{member}` is another log's is refused as \
+             `backup_other_log` at {held}, changing nothing, and it answered {said:?}"
+        );
+    }
+    Ok(())
+}
+
+async fn a_damaged_backup_is_refused_at_its_import(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let (scratch, s) = (Scratch::new(given.scratch.clone()), store.as_ref());
+    invoices(s, 0, 3).await?;
+    store.checkpoint().await.must("checkpointing")?;
+    invoices(s, 3, 2).await?;
+    let from = scratch.dir("from");
+    backup(s, &from).await?;
+    let names = files(&from)?;
+    // A hex digit of a line's hash changed, so its hash no longer holds.
+    let flip = |file: &str, at_end: bool, dir: &Path| -> Held {
+        let mut lines = lines_of(dir, file)?;
+        let n = if at_end { lines.len() - 1 } else { 1 };
+        let line = &mut lines[n];
+        let at = line
+            .windows(8)
+            .position(|w| w == b"\"hash\":\"")
+            .unwrap_or(0)
+            + 8;
+        line[at] = if line[at] == b'a' { b'b' } else { b'a' };
+        rewrite(dir, file, &lines)
+    };
+    let damages = [
+        "a byte in a sealed file",
+        "a byte in its last line",
+        "its first file removed",
+    ];
+    for (n, damage) in damages.into_iter().enumerate() {
+        let dir = scratch.dir(&format!("damaged-{n}"));
+        copied(&from, &dir)?;
+        match n {
+            0 => flip(&names[0], false, &dir)?,
+            1 => flip(&names[names.len() - 1], true, &dir)?,
+            _ => fs::remove_file(dir.join(&names[0])).map_err(|e| Failure::new(format!("{e}")))?,
+        }
+        let imported = (given.import)(dir, store.lake().clone(), None, import_seams()).await;
+        let why = refused(imported, damage)?;
+        ensure!(
+            damaged(&why).is_some(),
+            "a backup with {damage} is refused as damaged at its import; it was refused with: {why}"
+        );
+    }
     Ok(())
 }
 
@@ -337,26 +562,38 @@ async fn an_export_into_a_directory_that_holds_anything_is_refused(
     store: Store,
     scratch: PathBuf,
 ) -> Held {
-    let scratch = Scratch::new(scratch);
-    invoices(store.as_ref(), 0, 1).await?;
+    let (scratch, s) = (Scratch::new(scratch), store.as_ref());
+    invoices(s, 0, 1).await?;
     let dir = scratch.dir("full");
-    fs::create_dir_all(&dir).map_err(|e| Failure::new(format!("creating {dir:?}: {e}")))?;
+    backup(s, &dir).await?;
+    let only = export::file_name(Position::GENESIS);
+    let kept = read(&dir, &only)?;
     fs::write(dir.join("notes.txt"), b"kept\n")
         .map_err(|e| Failure::new(format!("writing into {dir:?}: {e}")))?;
-    let said = export::write(store.as_ref(), &dir).await;
+    let said = export::write(s, &dir).await.map(|_| ());
+    let again = export::backup(s, &*s.feed(), &dir).await.map(|_| ());
     ensure!(
-        matches!(reason(&said), Some(Refusal::Precondition(said)) if said.case == Case::ExportNotEmpty),
-        "an export into {dir:?}, which holds a file, is refused as a failed precondition, the \
-         export's directory not empty, and it answered {said:?}"
+        [&said, &again].iter().all(|said| matches!(reason(said), Some(Refusal::Precondition(said)) if said.case == Case::ExportNotEmpty)),
+        "an export, and a backup, into {dir:?}, which holds a file beside a backup's log/, are \
+         refused as a failed precondition, the export's directory not empty, and they answered \
+         {said:?} and {again:?}"
     );
-    let left: Vec<String> = fs::read_dir(&dir)
-        .map_err(|e| Failure::new(format!("listing {dir:?}: {e}")))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
+    let left = fs::read_dir(&dir).map(Iterator::count);
+    let left = left.map_err(|e| Failure::new(format!("listing {dir:?}: {e}")))?;
     ensure!(
-        left == ["notes.txt"] && read(&dir, "notes.txt")? == b"kept\n",
-        "a refused export writes nothing, and the directory holds {left:?}"
+        left == 2
+            && files(&dir)? == [only.clone()]
+            && read(&dir, &only)? == kept
+            && read(&dir, "notes.txt")? == b"kept\n",
+        "a refused export or backup writes nothing; the directory holds {left} entries"
+    );
+    let lone = scratch.dir("lone");
+    let made = fs::create_dir_all(&lone).and_then(|()| fs::write(lone.join("export.json"), "{}"));
+    made.map_err(|e| Failure::new(format!("writing into {lone:?}: {e}")))?;
+    let new = backup(s, &lone).await?;
+    ensure!(
+        new.since.is_none() && files(&lone)? == [only],
+        "a backup into a directory holding only export.json takes the whole log: {new:?}"
     );
     Ok(())
 }
@@ -881,12 +1118,7 @@ async fn an_import_is_refused_for_a_damaged_export_another_lake_or_a_lake_holdin
     };
     // One byte changed in the first segment's third line.
     let damaged = scratch.dir("damaged");
-    fs::create_dir_all(damaged.join("log"))
-        .map_err(|e| Failure::new(format!("making the damaged export: {e}")))?;
-    for f in files(&from)? {
-        fs::copy(from.join(&f), damaged.join(&f))
-            .map_err(|e| Failure::new(format!("copying {f}: {e}")))?;
-    }
+    copied(&from, &damaged)?;
     let first = files(&damaged)?.remove(0);
     let mut lines = lines_of(&damaged, &first)?;
     let at = lines[2]
