@@ -16,10 +16,7 @@ check!(
     given
 );
 
-async fn a_handle_whose_lease_another_writer_took_is_no_writer(
-    store: Store,
-    given: Given,
-) -> Held {
+async fn a_handle_whose_lease_another_writer_took_is_no_writer(store: Store, given: Given) -> Held {
     let fails: Fails = Arc::default();
     let opened = (given.fault)(store, Seams::default(), failing(&fails));
     let store = opened
