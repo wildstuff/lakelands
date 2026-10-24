@@ -931,6 +931,8 @@ async fn serve(
     // deliverers and the lake's writer lease end with the process.
     tokio::select! {
         stdio = lakelands_server::serve_stdio(store, who) => stdio.map_err(stopped),
-        http = &mut door.task => http.expect("the HTTP door's task does not panic").map_err(stopped),
+        http = &mut door.task => http
+            .unwrap_or_else(|e| Err(std::io::Error::other(e)))
+            .map_err(stopped),
     }
 }
