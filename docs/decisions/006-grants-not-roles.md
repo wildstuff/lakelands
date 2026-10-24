@@ -178,8 +178,8 @@ embedded from. So a field is read no further than every field it is
 built from, its `depends_on` and its `embed.from`, and theirs in turn.
 A source the principal may not read hides the field. A masked source
 masks it, unless the field is already hidden. The rule lives in one
-place, the field's access (`lakelands_core::rights::field_access`), so
-it holds on every door: such a field is absent or masked in `get`,
+place, the field's access (`Sight::field_access` in `lakelands-core`),
+so it holds on every door: such a field is absent or masked in `get`,
 `find` and a pattern's rows, and in `describe` and the tools.
 Filtering, ordering or aggregating over it is refused as not granted,
 naming it, as for its source. A search over a vector embedded from a
@@ -1115,7 +1115,7 @@ literally, such a shape removes that field: a principal who was never
 told of `salary` would propose it away, and the lake could not tell that
 from a removal it meant. So a migration's `to`, and a type declared
 again, is read as its author's view of the type:
-- a field hidden from the author (`rights::field_access` answering
+- a field hidden from the author (`Sight::field_access` answering
   `none`, by its grant or through a field it is built from) is put back
   as declared, at its declared place, and so is such a link field of
   each relation the shape keeps;
