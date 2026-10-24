@@ -424,6 +424,13 @@ impl<'o> Sight<'o> {
     ) -> Result<(), Error> {
         rights::check_probe(&self.who, decl, probed)
     }
+
+    /// Whether its principal is shown restricted records: it holds
+    /// `restricted`, its `only` aside, which admits records of their own
+    /// (006). [`Self::sees_all`] asks no `only` beside it.
+    pub fn sees_restricted(&self) -> bool {
+        self.who.grants.restricted
+    }
 }
 
 /// Whether the setting `key` names fields of its type in its value: the

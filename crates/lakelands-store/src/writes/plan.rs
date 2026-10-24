@@ -211,7 +211,7 @@ impl Call<'_> {
         when: When,
         against: Against<'_>,
     ) -> Result<Planned> {
-        granted(self.authors())?;
+        granted(Sight::held(self.who, &w.ontology).authors())?;
         match change {
             Changed::Declare { mut declarations } => {
                 self.redeclared(&w.ontology, &mut declarations)?;

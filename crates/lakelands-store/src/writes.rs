@@ -685,8 +685,10 @@ impl Call<'_> {
         self.asked().draft(now, origin, body)
     }
 
-    /// Whether its caller may change a shape ([`Sight::authors`]): judged
-    /// by its grants alone, before any shape is read.
+    /// Whether its caller may change a shape ([`Sight::authors`]), asked
+    /// where it is refused before the writer is taken and before anything
+    /// is read: so of a sight over no declarations, since the answer reads
+    /// its grants alone.
     pub(crate) fn authors(&self) -> bool {
         Sight::held(self.who, &Vec::<lakelands_api::engine::Declared>::new()).authors()
     }

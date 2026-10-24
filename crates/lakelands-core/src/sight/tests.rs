@@ -156,3 +156,24 @@ fn one_who_holds_only_neither_authors_a_shape_nor_sees_every_record() {
     assert_eq!(judged(true, true, true), (false, false));
     assert_eq!(judged(false, false, false), (false, false));
 }
+
+#[test]
+fn one_who_holds_restricted_is_shown_restricted_records_its_only_aside() {
+    let declared = declared();
+    let only = TypeGrants {
+        only: [("n".into(), "x".into())].into(),
+        ..Default::default()
+    };
+    let judged = |restricted: bool, holds_only: bool| {
+        let mut who = who();
+        who.grants.restricted = restricted;
+        if holds_only {
+            who.grants.types.insert("note".into(), only.clone());
+        }
+        let sight = Sight::held(&who, &declared);
+        (sight.sees_restricted(), sight.sees_all())
+    };
+    assert_eq!(judged(true, false), (true, true));
+    assert_eq!(judged(true, true), (true, false));
+    assert_eq!(judged(false, false), (false, false));
+}

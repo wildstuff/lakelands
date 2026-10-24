@@ -184,17 +184,17 @@ fn reading<T>(
     let to_head = at.as_of.is_some() && ranks.is_some();
     let at_head = to_head.then(|| crate::reads::Head::new(lake, &who, then, head));
     let at_head = at_head.transpose()?;
-    // A record held now is not there at any position to a reader without
-    // the grant, and one released since is (006, extended).
-    let held_now = at.as_of.is_some() && !who.grants.restricted;
-    let view = match held_now {
-        true => Box::new(crate::reads::HeldNow::new(lake, view, at_head.as_ref())?),
-        false => view,
-    };
     let renames = at.as_of.is_none().then_some(&shape.renames[..]);
     // A reference to a type it is not shown is a field it may not know of,
     // by the types the read reads (024, extended).
     let (sight, _) = lake.sight(who, at.as_of, renames, shape.as_ref())?;
+    // A record held now is not there at any position to a reader without
+    // the grant, and one released since is (006, extended).
+    let held_now = at.as_of.is_some() && !sight.sees_restricted();
+    let view = match held_now {
+        true => Box::new(crate::reads::HeldNow::new(lake, view, at_head.as_ref())?),
+        false => view,
+    };
     let mut r = Reader::open(lake, &sight, (at, clock), view, shape.clone())?;
     (r.head, r.held_now) = (at_head, held_now);
     let data = f(&r)?;
