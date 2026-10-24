@@ -26,7 +26,8 @@ use lakelands_api::principal::Renamed;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::Declaration;
 use lakelands_api::{
-    Error, FieldName, Missing, Position, Principal, RecordKey, TypeName, Value, ValueTypeName,
+    Error, FieldName, Missing, Position, Principal, RecordKey, SourceId, TypeName, Value,
+    ValueTypeName,
 };
 
 use crate::{describe, rights};
@@ -377,6 +378,58 @@ impl<'o> Sight<'o> {
                 VerbEffect::Retire => rights::may_retire(&self.who, on),
                 _ => false,
             }
+    }
+
+    /// Whether its principal may change a shape: it holds `schema`, and no
+    /// `only` on any type, since a shape changes every record of its type.
+    pub fn authors(&self) -> bool {
+        self.who.grants.schema && !rights::holds_only(&self.who)
+    }
+
+    /// Whether its principal sees every record: it holds `restricted`, and
+    /// no `only` on any type (006, 051).
+    pub fn sees_all(&self) -> bool {
+        self.who.grants.restricted && !rights::holds_only(&self.who)
+    }
+
+    /// Whether its principal may not know of some field
+    /// ([`rights::hides_some`]).
+    pub fn hides_some(&self) -> bool {
+        rights::hides_some(&self.who)
+    }
+
+    /// Whether its principal's grant admits only some records of `decl`,
+    /// or of an end of it ([`rights::only_holder`]).
+    pub fn only_holder(&self, decl: &TypeDecl) -> bool {
+        rights::only_holder(&self.who, decl, self.force)
+    }
+
+    /// Refuse its principal's write of `patch` to `decl` through `door`
+    /// ([`rights::check_write`]).
+    pub fn check_write(
+        &self,
+        decl: &TypeDecl,
+        door: (rights::Door, Option<&SourceId>),
+        patch: &BTreeMap<FieldName, Value>,
+    ) -> Result<(), Error> {
+        rights::check_write(&self.who, decl, door, patch)
+    }
+
+    /// Refuse a read by its principal that probes a field of `decl` it may
+    /// not read ([`rights::check_probe`]).
+    pub fn check_probe<'a>(
+        &self,
+        decl: &TypeDecl,
+        probed: impl IntoIterator<Item = &'a FieldName>,
+    ) -> Result<(), Error> {
+        rights::check_probe(&self.who, decl, probed)
+    }
+
+    /// Whether its principal is shown restricted records: it holds
+    /// `restricted`, its `only` aside, which admits records of their own
+    /// (006). [`Self::sees_all`] asks no `only` beside it.
+    pub fn sees_restricted(&self) -> bool {
+        self.who.grants.restricted
     }
 }
 

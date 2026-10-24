@@ -32,7 +32,7 @@ use lakelands_api::{
 };
 
 use lakelands_api::error::{Case, Exchange, Remote, Seam, Situation};
-use lakelands_core::{feed, rights};
+use lakelands_core::feed;
 
 use crate::batch::Asked;
 use crate::exec::{self, Turn};
@@ -126,7 +126,7 @@ pub(crate) fn seen(
     let none = Vec::<lakelands_api::engine::Declared>::new();
     let (mut sight, mut followed) = lake.sight(who.clone(), None, None, &none)?;
     let head = || lake.engine.view(None).and_then(|v| lake.shape(v.as_ref()));
-    let head = rights::hides_some(sight.who()).then(head).transpose()?;
+    let head = sight.hides_some().then(head).transpose()?;
     if let Some(head) = &head {
         let renames = Some(&head.renames[..]);
         (sight, followed) = lake.sight(who.clone(), None, renames, head.as_ref())?;
@@ -184,17 +184,17 @@ fn reading<T>(
     let to_head = at.as_of.is_some() && ranks.is_some();
     let at_head = to_head.then(|| crate::reads::Head::new(lake, &who, then, head));
     let at_head = at_head.transpose()?;
-    // A record held now is not there at any position to a reader without
-    // the grant, and one released since is (006, extended).
-    let held_now = at.as_of.is_some() && !who.grants.restricted;
-    let view = match held_now {
-        true => Box::new(crate::reads::HeldNow::new(lake, view, at_head.as_ref())?),
-        false => view,
-    };
     let renames = at.as_of.is_none().then_some(&shape.renames[..]);
     // A reference to a type it is not shown is a field it may not know of,
     // by the types the read reads (024, extended).
     let (sight, _) = lake.sight(who, at.as_of, renames, shape.as_ref())?;
+    // A record held now is not there at any position to a reader without
+    // the grant, and one released since is (006, extended).
+    let held_now = at.as_of.is_some() && !sight.sees_restricted();
+    let view = match held_now {
+        true => Box::new(crate::reads::HeldNow::new(lake, view, at_head.as_ref())?),
+        false => view,
+    };
     let mut r = Reader::open(lake, &sight, (at, clock), view, shape.clone())?;
     (r.head, r.held_now) = (at_head, held_now);
     let data = f(&r)?;
@@ -906,7 +906,7 @@ impl Catalog for Doors {
         m: ValueTypeMigration,
     ) -> Result<Reply<ValueTypeReport>> {
         self.write(who, move |c| {
-            crate::writes::granted(c.who.grants.schema && !rights::holds_only(c.who))?;
+            crate::writes::granted(c.authors())?;
             let w = c.writer()?;
             let view = c.lake.engine.view(None)?;
             let report = c

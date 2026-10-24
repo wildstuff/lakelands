@@ -327,8 +327,8 @@ impl<'a> Reader<'a> {
         // trimmed (lakelands#867). A retired record that is not held is,
         // as to its writes, a free key, and so is a setting its reader is
         // not told (063).
-        let (g, view) = (&self.who.grants, self.view.as_ref());
-        if !g.restricted || rights::holds_only(self.who) {
+        let view = self.view.as_ref();
+        if !self.sight.sees_all() {
             // A retarget reaches records of its new targets alone: where none
             // holds a restricted record, none is withheld from a reader who
             // holds no `only`, and its values are not walked (lakelands#1071).
@@ -725,7 +725,7 @@ impl<'a> Reader<'a> {
         let (Ok(decl), Ok(_)) = (o.ty(ty), self.sight.ty(ty)) else {
             return Ok(None);
         };
-        let whole_sight = self.who.grants.restricted && !rights::holds_only(self.who);
+        let whole_sight = self.sight.sees_all();
         let mut earlier = false;
         if let Some(key) = key {
             if !answered(view, self.sight, ty, key)? {
