@@ -1363,7 +1363,7 @@ belongs in the suite, not beside one engine:
 
 **taken lease**
 
-- `a_handle_whose_lease_another_writer_took_is_no_writer` — 008: a write through a handle whose lease another writer took is refused and appends nothing, and the handle is no writer after it; its next write takes the lease again first and, while the other holds it, is refused as held, appends nothing, and leaves the handle no writer (lakelands#1385)
+- `a_handle_whose_lease_another_writer_took_is_no_writer` — 008: a write through a handle whose lease another writer took is refused and appends nothing, and the handle is no writer after it; its next write takes the lease again first and, while the other holds it, is refused as held, appends nothing, and leaves the handle no writer; once the other gave the lease up, the next write takes it, appends `lease_taken` and then its own record, and the handle is the writer again (lakelands#1385)
 
 **grid**
 

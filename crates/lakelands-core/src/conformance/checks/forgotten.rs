@@ -684,9 +684,10 @@ check!(
 /// the next commits of a transaction that dropped a key's states fails,
 /// counting from 1; how many keys' states were dropped (lakelands#1120);
 /// how many times the engine reported its active segment's bytes
-/// (lakelands#1309); and how many of the next appends find the lease
-/// another writer took (lakelands#1385).
-pub type Fails = Arc<[AtomicU32; 9]>;
+/// (lakelands#1309); how many of the next appends find the lease another
+/// writer took, and whether that writer gives it up at the next take of
+/// the lease (lakelands#1385).
+pub type Fails = Arc<[AtomicU32; 10]>;
 
 /// The harness's engine with a projection whose next reclaims and
 /// clears fail as [`Fails`] says (lakelands#1161).
@@ -698,7 +699,7 @@ struct Reclaims {
     /// How another writer opens the lake, and the engine it took the
     /// lease through, kept while this one lives.
     other: (Arc<dyn EngineOpener>, Location),
-    taker: std::sync::Mutex<Option<Box<dyn lakelands_api::engine::LakeEngine>>>,
+    taker: std::sync::Mutex<Option<(Box<dyn lakelands_api::engine::LakeEngine>, Lease)>>,
 }
 
 impl Reclaims {
@@ -724,11 +725,14 @@ impl Reclaims {
     fn taken_over(&self, lease: &Lease) -> lakelands_api::Result<()> {
         let other = self.other.0.open(&self.other.1, OpenMode::Write)?;
         other.release_lease(lease)?;
-        if other.take_lease("another writer").is_err() {
-            self.inner.release_lease(lease)?;
-            other.take_lease("another writer")?;
-        }
-        *crate::lock(&self.taker) = Some(other);
+        let taken = match other.take_lease("another writer") {
+            Ok(taken) => taken,
+            Err(_) => {
+                self.inner.release_lease(lease)?;
+                other.take_lease("another writer")?
+            }
+        };
+        *crate::lock(&self.taker) = Some((other, taken));
         Ok(())
     }
 }
@@ -813,6 +817,11 @@ impl lakelands_api::engine::LakeEngine for Reclaims {
         self.inner.lake()
     }
     fn take_lease(&self, holder: &str) -> lakelands_api::Result<Lease> {
+        if fails(&self.fails, 9)
+            && let Some((other, taken)) = crate::lock(&self.taker).take()
+        {
+            other.release_lease(&taken)?;
+        }
         self.inner.take_lease(holder)
     }
     fn release_lease(&self, lease: &Lease) -> lakelands_api::Result<()> {

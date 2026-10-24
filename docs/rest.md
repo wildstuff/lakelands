@@ -332,10 +332,10 @@ not tools, so the catalog does not list them. `HEAD` is answered like
 `lakelands serve` binds the door before it opens the lakes, so `/livez`
 answers `200` and `/readyz` `503 starting` throughout an open. A lease
 lost to another writer, taken over the handle or gone with a PostgreSQL
-session, shows only from the moment the handle has noticed it, at its next
-write, rebuild or compaction, which the engine refuses: until then `/readyz`
-can still say `ready`, and from then it says `not_ready` until a write takes
-the lease again. Nor does `/readyz` compare the projection's head with the end of
+session, shows only once the engine has refused the handle something for
+it: an append, at a write that appends, or a rebuild's swap. Until then
+`/readyz` can still say `ready`; from then it says `not_ready` until a write
+takes the lease again. Nor does `/readyz` compare the projection's head with the end of
 the log; an open does not return before its fold is done, so a lake that is
 open has folded what the log held then.
 

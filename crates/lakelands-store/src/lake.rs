@@ -559,23 +559,17 @@ impl Lake {
     }
 
     /// Marks the writer lost where the engine said its lease is not held
-    /// (lakelands#979) or stale (lakelands#1385): the lease goes, and the
-    /// handle is no writer until it takes one again. Only another take
-    /// moves the fence, so a stale lease is never this writer's own: it is
-    /// given back, which leaves the current holder's lease as it is and
-    /// lets the engine hand this handle one again once it is free.
+    /// (lakelands#979) or stale, another writer's now or no one's
+    /// (lakelands#1385): the lease goes, and the handle is no writer until
+    /// it takes one again.
     fn lose(&self, w: &mut Writer, e: &Error) {
-        match e.situation() {
-            Some(Situation::LeaseNotHeld { .. }) => {}
-            Some(Situation::LeaseStale { .. }) => {
-                if let Some(stale) = &w.lease {
-                    let _ = self.engine.release_lease(stale);
-                }
-            }
-            _ => return,
+        if matches!(
+            e.situation(),
+            Some(Situation::LeaseNotHeld { .. } | Situation::LeaseStale { .. })
+        ) {
+            (w.lost, w.lease) = (true, None);
+            self.holds_lease.store(false, Ordering::Release);
         }
-        (w.lost, w.lease) = (true, None);
-        self.holds_lease.store(false, Ordering::Release);
     }
 
     /// A lost writer takes the lease again before its next write, as an
