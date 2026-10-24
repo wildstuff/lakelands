@@ -1079,7 +1079,8 @@ impl Call<'_> {
         let sight = Sight::held(self.who, &w.ontology);
         let (was, mut m) = (w.ontology.ty(&m.to.name)?, m.clone());
         w.ontology.complete(&mut m.to);
-        sight.shown_report(was, &m, &mut report);
+        let described = || sight.describe(&sight.who().lake);
+        sight.shown_report(was, &m, &mut report, described, |n| sight.ty(n).ok());
         sight.shown_hashes(was, &m, &mut report, &|n| w.ontology.ty(n).ok());
         report.report_id = report_id(&report, view.position());
         Ok(report)

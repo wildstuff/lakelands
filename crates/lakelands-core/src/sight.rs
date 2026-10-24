@@ -488,10 +488,17 @@ impl<'o> Sight<'o> {
         rights::shown_hashes(&self.who, made, m, r, find)
     }
 
-    /// A report as its principal is shown it ([`rights::shown_report`]).
-    pub fn shown_report(&self, was: &TypeDecl, m: &Migration, report: &mut MigrationReport) {
-        let described = || self.describe(&self.who.lake);
-        rights::shown_report(&self.who, was, m, report, described, |n| self.ty(n).ok());
+    /// A report as its principal is shown it, of the lake `described` and
+    /// the declarations `sees` finds ([`rights::shown_report`]).
+    pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDescription>>(
+        &self,
+        was: &TypeDecl,
+        m: &Migration,
+        report: &mut MigrationReport,
+        described: impl FnOnce() -> D,
+        sees: impl Fn(&TypeName) -> Option<&'a TypeDecl>,
+    ) {
+        rights::shown_report(&self.who, was, m, report, described, sees);
     }
 
     /// Refuse a read of `decl` where its principal's `only` cannot apply ([`rights::check_only`]).

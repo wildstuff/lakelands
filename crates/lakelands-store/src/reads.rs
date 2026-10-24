@@ -69,9 +69,7 @@ use lakelands_core::expr::{self, Place as Eval, RecordScope, aggregate};
 use lakelands_core::graph::{self, EdgeSource};
 use lakelands_core::rights::Admit;
 use lakelands_core::sight::Sight;
-use lakelands_core::{
-    canonical, derive as core_derive, engines as core_engines, rights, valid_time,
-};
+use lakelands_core::{canonical, derive as core_derive, engines as core_engines, valid_time};
 
 use crate::declare::condition;
 use crate::kept;

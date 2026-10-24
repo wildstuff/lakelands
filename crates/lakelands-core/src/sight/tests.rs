@@ -233,7 +233,7 @@ fn a_migration_is_known_as_the_sights_principal_reads_it() {
 }
 
 #[test]
-fn a_report_is_shown_through_the_sights_own_lookup_and_description() {
+fn a_report_is_shown_only_as_its_principal_may_know_it() {
     use lakelands_api::write::{Carried, Rekeyed};
     let declared = declared();
     let sight = Sight::new(who(), &[], None, &declared);
@@ -254,7 +254,9 @@ fn a_report_is_shown_through_the_sights_own_lookup_and_description() {
         carried: vec![carried("owner"), carried("note")],
         ..Default::default()
     };
-    sight.shown_report(&invoice, &Migration::to(invoice.clone()), &mut report);
+    let m = Migration::to(invoice.clone());
+    let described = || sight.describe(&who().lake);
+    sight.shown_report(&invoice, &m, &mut report, described, |n| sight.ty(n).ok());
     // `owner`, which it is not shown, is neither found nor described.
     assert_eq!(report.rekeyed, [rekeyed("note")]);
     assert_eq!(report.carried, [carried("note")]);

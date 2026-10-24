@@ -618,11 +618,10 @@ impl<'a> Reader<'a> {
                 };
                 let (judge, listing) = then.unwrap_or((self.sight, &self.shape.ontology));
                 let made = listing.ty(&migration.to.name).unwrap_or(was);
-                let then = judge.who();
                 let sees = |ty: &TypeName| self.sight.ty(ty).ok();
                 let all = || self.sight.describe(&self.sight.who().lake);
                 let described = || lake.get_or_init(all);
-                rights::shown_report(then, made, migration, report, described, sees);
+                judge.shown_report(made, migration, report, described, sees);
                 // One kept before a report counted what it computes again
                 // computed none (062).
                 report.recomputed.get_or_insert(0);
