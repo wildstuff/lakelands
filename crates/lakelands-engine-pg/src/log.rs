@@ -23,10 +23,11 @@
 //! the lease reads the tip and the active segment once ([`Carried`]), and
 //! every append and seal under that lease carries them on. No other writer
 //! appends while the lease row holds this lease's fence, which each append
-//! checks, so what the writer carries is what the server holds; were it
-//! not, the log's key on the position would still refuse a second event
-//! at one position. An append that fails drops what it carried, and the
-//! next reads it again.
+//! checks, so what the writer carries is what the server holds. A carried
+//! tip behind the server's would meet the log's key on the position,
+//! which refuses a second event at one position; nothing refuses one
+//! ahead of it, and nothing but this writer's commits moves it. An append
+//! that fails drops what it carried, and the next reads it again.
 //!
 //! **Synced.** An append's and a seal's commits wait for their flush
 //! whatever the server, the database or the role sets, so an answered
@@ -79,7 +80,7 @@ pub(crate) fn tip(db: &mut Db, names: &Names) -> Result<Option<(Position, Digest
 
 /// What the writer under one lease carries from append to append: the
 /// log's tip and the active segment's first position.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct Carried {
     fence: u64,
     tip: Option<(Position, Digest)>,
@@ -103,10 +104,10 @@ fn carried_for(
     db: &mut Db,
     names: &Names,
     lease: &Lease,
-    carried: &Option<Carried>,
+    carried: Option<Carried>,
 ) -> Result<Carried> {
     match carried {
-        Some(c) if c.fence == lease.fence => Ok(c.clone()),
+        Some(c) if c.fence == lease.fence => Ok(c),
         _ => self::carried(db, names, lease.fence),
     }
 }
@@ -171,7 +172,7 @@ pub(crate) fn append(
     let held = carried.take();
     let moved = db.transaction(SYNCED, |db| {
         fenced(db, names, lease, Act::Appended)?;
-        let at = carried_for(db, names, lease, &held)?;
+        let at = carried_for(db, names, lease, held)?;
         add(db, names, lease, at, events, imported)
     })?;
     *carried = Some(moved);
@@ -353,7 +354,7 @@ pub(crate) fn seal(
     let held = carried.take();
     let (sealed, moved) = db.transaction(SYNCED, |db| {
         fenced(db, names, lease, Act::Sealed)?;
-        let mut at = carried_for(db, names, lease, &held)?;
+        let mut at = carried_for(db, names, lease, held)?;
         let active = at.segment;
         let Some((from, to)) = span(db, names, active)? else {
             return Ok((None, at));
