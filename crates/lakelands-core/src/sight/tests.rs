@@ -1,6 +1,7 @@
 use super::*;
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, ViewDecl};
 use lakelands_api::principal::{Grants, PrincipalKind, TypeGrants};
+use lakelands_api::write::{Migration, MigrationReport};
 use lakelands_api::{Access, Position};
 
 /// `owner`, `invoice` with a reference to it, and `note`.

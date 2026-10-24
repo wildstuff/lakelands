@@ -111,7 +111,10 @@ Each is red when:
   (`python3 scripts/settings.py --write` makes it), or a setting the
   store reads is not in the list;
 - `brand-tokens`: `brand/tokens.css` is not what
-  `scripts/brand/tokens-css.pl` makes from `brand/tokens.json`.
+  `scripts/brand/tokens-css.pl` makes from `brand/tokens.json`;
+- `rights-private`: code outside `lakelands-core` names its `rights`
+  module, the module is made public, or code outside the sight reads
+  `grants.restricted`; a door asks its `Sight`.
 
 `scripts/gates/README.md` says exactly what each one reads, and each
 script's header states its rule.

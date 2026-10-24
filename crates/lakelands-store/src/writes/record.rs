@@ -166,7 +166,7 @@ impl Decide<'_> {
         expected: Option<Version>,
     ) -> Result<Plan> {
         let decl = self.ontology.ty(ty)?;
-        rights::not_a_view(decl)?;
+        not_a_view(decl)?;
         granted(self.at.sight.may_retire(decl))?;
         if !self.door.admits_retirement(decl.retired_by) {
             return Err(self.retired_by_verbs(decl));
@@ -208,7 +208,7 @@ impl Decide<'_> {
             _ => return Ok(None),
         };
         let decl = self.ontology.ty(ty)?;
-        rights::not_a_view(decl)?;
+        not_a_view(decl)?;
         let mut carried = decl.relations.iter();
         let r = carried.find(|r| &r.name == relation && r.carried_by_links());
         let r = r.ok_or_else(|| no_link_relation(ty, relation))?;

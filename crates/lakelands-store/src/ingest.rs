@@ -45,7 +45,7 @@ use lakelands_api::write::Committed;
 use lakelands_api::{
     DeliveryId, Error, Principal, RecordKey, Result, SourceId, SourceRecord, Timestamp,
 };
-use lakelands_core::rights::Door;
+use lakelands_core::sight::Door;
 
 use crate::exec::{self, Turn};
 use crate::lake::{Lake, Reads, Writer};
@@ -318,7 +318,7 @@ fn judge(
                 Some(r) => Ok(made_by(lake, &[r], std::slice::from_ref(source))?.contains(&r.made)),
                 None => Ok(false),
             };
-            lakelands_core::rights::check_admitted(decl, (t.live(), source), &patch, made)?;
+            lakelands_core::check_admitted(decl, (t.live(), source), &patch, made)?;
             // An insert-only type's key is written once: a record stands
             // at it, live or retired, or this window wrote it. Another's
             // record and a held one are judged as before, so the mark

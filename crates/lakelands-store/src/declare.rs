@@ -48,9 +48,8 @@ use lakelands_api::write::{
 };
 use lakelands_api::{Error, FieldName, Refusal, RelationName, Result, TypeName, VerbName};
 use lakelands_core::expr::{Place as Eval, parse};
-use lakelands_core::rights::is_system;
 use lakelands_core::shape::{self, Change};
-use lakelands_core::{derive, links, names, value};
+use lakelands_core::{derive, is_system, links, names, value};
 
 use crate::ontology::Ontology;
 

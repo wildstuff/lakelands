@@ -48,7 +48,7 @@ use lakelands_api::expr::Expr;
 use lakelands_api::ontology::{OnInputChange, TypeDecl, ValueTypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
 use lakelands_api::{Error, FieldName, Position, Result, TypeName, Value};
-use lakelands_core::rights::Door;
+use lakelands_core::sight::Door;
 use lakelands_core::{damaged, derive, value};
 
 use crate::backed::{self, Outputs};

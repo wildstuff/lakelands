@@ -1320,7 +1320,7 @@ fn stands<'a>(
 }
 
 /// A migration as its author sent it, and the type as its author sees it
-/// (`rights::known_fields`): the fields it may know of and the relations
+/// (`Sight::known_fields`): the fields it may know of and the relations
 /// it is shown, with their link fields it may know of.
 pub(crate) struct Authored {
     pub(super) sent: Migration,

@@ -38,8 +38,7 @@ use lakelands_api::{
 };
 use lakelands_core::derive;
 use lakelands_core::expr::{self, Place, RecordScope};
-use lakelands_core::rights::Door;
-use lakelands_core::sight::Sight;
+use lakelands_core::sight::{Door, Sight};
 use lakelands_core::{canonical, names};
 
 use crate::declare;

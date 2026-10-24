@@ -17,6 +17,9 @@
 //!   that door's authority and be granted; one failing field refuses the
 //!   whole write
 //!   (`docs/decisions/012-writes-touch-only-their-fields.md`).
+//!
+//! The module is the crate's own: a door asks these rules of its principal's
+//! [`Sight`], and the `rights-private` gate keeps it so.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -30,9 +33,11 @@ use lakelands_api::{
     Value,
 };
 
+use crate::sight::Sight;
+
 /// The prefix every system type's name carries
 /// (`docs/decisions/003-reservation-by-namespace.md`).
-pub const SYSTEM_PREFIX: &str = "sys.";
+const SYSTEM_PREFIX: &str = "sys.";
 
 /// Whether a type name is reserved for system types.
 pub fn is_system(ty: &TypeName) -> bool {
@@ -48,14 +53,14 @@ pub fn is_system(ty: &TypeName) -> bool {
 /// `sensitive` field nobody granted or denied by name is shown masked
 /// rather than dropped; a `none` given by name, or handed down by a
 /// source, hides it (`docs/decisions/006-grants-not-roles.md`).
-pub fn field_access(who: &Principal, decl: &TypeDecl, field: &FieldDecl) -> Access {
+pub(crate) fn field_access(who: &Principal, decl: &TypeDecl, field: &FieldDecl) -> Access {
     settled(who, decl, field).1
 }
 
 /// What the grants give a field, before `sensitive` raises it: a type
 /// is shown by this, and `sensitive` shows a field of a type that is
 /// shown, never the type.
-pub fn granted_access(who: &Principal, decl: &TypeDecl, field: &FieldDecl) -> Access {
+pub(crate) fn granted_access(who: &Principal, decl: &TypeDecl, field: &FieldDecl) -> Access {
     settled(who, decl, field).0
 }
 
@@ -175,25 +180,9 @@ fn built_from<'d>(
     (access, from_source)
 }
 
-/// Whether the principal may retire records of a type: every field is
-/// writable as its grants resolve it, whatever its authority, since
-/// retiring removes them all. A type with no field falls back to its
-/// type-level grant. A view's records are computed, never retired.
-pub fn may_retire(who: &Principal, decl: &TypeDecl) -> bool {
-    if decl.view.is_some() {
-        return false;
-    }
-    if decl.fields.is_empty() {
-        return type_access(who, &decl.name).writes();
-    }
-    decl.fields
-        .iter()
-        .all(|f| who.grants.access(&decl.name, &f.name).writes())
-}
-
 /// The principal's access to a type as a whole: its type-level grant, or
 /// the lake-wide default.
-pub fn type_access(who: &Principal, ty: &TypeName) -> Access {
+pub(crate) fn type_access(who: &Principal, ty: &TypeName) -> Access {
     who.grants
         .types
         .get(ty)
@@ -201,60 +190,79 @@ pub fn type_access(who: &Principal, ty: &TypeName) -> Access {
         .unwrap_or(who.grants.default)
 }
 
-/// A stored record as a sight's principal may see it; `None` when the
-/// record is retired, or held from it ([`Sight::withheld`]), or a setting
-/// it is not told ([`Sight::told`]).
-pub fn visible(
-    sees: &crate::sight::Sight,
-    decl: &TypeDecl,
-    stored: &StoredRecord,
-    with_meta: bool,
-) -> Option<Record> {
-    if stored.retired || sees.withheld(stored) {
-        return None;
+impl Sight<'_> {
+    /// Whether its principal may retire records of `decl`: every field is
+    /// writable as its grants resolve it, whatever its authority, since
+    /// retiring removes them all. A type with no field falls back to its
+    /// type-level grant. A view's records are computed, never retired.
+    pub fn may_retire(&self, decl: &TypeDecl) -> bool {
+        let who = self.who();
+        if decl.view.is_some() {
+            return false;
+        }
+        if decl.fields.is_empty() {
+            return type_access(who, &decl.name).writes();
+        }
+        decl.fields
+            .iter()
+            .all(|f| who.grants.access(&decl.name, &f.name).writes())
     }
-    let stored = sees.told(stored)?;
-    let who = sees.who();
-    let mut fields = BTreeMap::new();
-    let mut masked = Vec::new();
-    let mut meta = BTreeMap::new();
-    for f in &decl.fields {
-        let Some(value) = stored.fields.get(&f.name).filter(|v| !v.is_null()) else {
-            // A computed field whose function failed holds no value; its
-            // metadata says why, to whoever may read the field. An
-            // embedding with nothing to embed keeps metadata without an
-            // error, which says so, and an erased value says it was
-            // written (058).
-            if with_meta
-                && let Some(m) = stored
-                    .meta
-                    .get(&f.name)
-                    .filter(|m| m.error.is_some() || m.erased || f.embed.is_some())
-                && field_access(who, decl, f).reads()
-            {
-                meta.insert(f.name.clone(), m.clone());
-            }
-            continue;
-        };
-        match field_access(who, decl, f) {
-            a if a.reads() => {
-                fields.insert(f.name.clone(), value.clone());
-                if with_meta && let Some(m) = stored.meta.get(&f.name) {
+
+    /// `stored` as its principal may see it; `None` when the record is
+    /// retired, or held from it ([`Sight::withheld`]), or a setting it is
+    /// not told ([`Sight::told`]).
+    pub fn visible(
+        &self,
+        decl: &TypeDecl,
+        stored: &StoredRecord,
+        with_meta: bool,
+    ) -> Option<Record> {
+        if stored.retired || self.withheld(stored) {
+            return None;
+        }
+        let stored = self.told(stored)?;
+        let who = self.who();
+        let mut fields = BTreeMap::new();
+        let mut masked = Vec::new();
+        let mut meta = BTreeMap::new();
+        for f in &decl.fields {
+            let Some(value) = stored.fields.get(&f.name).filter(|v| !v.is_null()) else {
+                // A computed field whose function failed holds no value; its
+                // metadata says why, to whoever may read the field. An
+                // embedding with nothing to embed keeps metadata without an
+                // error, which says so, and an erased value says it was
+                // written (058).
+                if with_meta
+                    && let Some(m) = stored
+                        .meta
+                        .get(&f.name)
+                        .filter(|m| m.error.is_some() || m.erased || f.embed.is_some())
+                    && field_access(who, decl, f).reads()
+                {
                     meta.insert(f.name.clone(), m.clone());
                 }
+                continue;
+            };
+            match field_access(who, decl, f) {
+                a if a.reads() => {
+                    fields.insert(f.name.clone(), value.clone());
+                    if with_meta && let Some(m) = stored.meta.get(&f.name) {
+                        meta.insert(f.name.clone(), m.clone());
+                    }
+                }
+                Access::Masked => masked.push(f.name.clone()),
+                _ => {}
             }
-            Access::Masked => masked.push(f.name.clone()),
-            _ => {}
         }
+        Some(Record {
+            ty: stored.ty.clone(),
+            key: stored.key.clone(),
+            version: stored.version,
+            fields,
+            masked,
+            meta,
+        })
     }
-    Some(Record {
-        ty: stored.ty.clone(),
-        key: stored.key.clone(),
-        version: stored.version,
-        fields,
-        masked,
-        meta,
-    })
 }
 
 /// The pairs `who`'s grant on `ty` admits records by: its `only`, empty
@@ -267,15 +275,15 @@ pub(crate) fn own_only(who: &Principal, ty: &TypeName) -> Vec<(FieldName, Value)
         .collect()
 }
 
-/// The one effective `only` of a type for `who`, and whether its records
-/// are computed for it; [`admit`] is made of it. A stored type's is its own
-/// pairs. A view's are its own plus, where it has one stored source, no
-/// merge, and groups by every field the source's pairs name, the source's
-/// pairs: each group's records share those values, so the admitted records
-/// are the groups that hold them. Otherwise a view that reads a type held
-/// to some records, or a link type whose end type is, is computed from the
-/// admitted records alone, then held to the view's own pairs. A kept name
-/// answers for its view. `find` answers a type by its name.
+/// The one effective `only` of a type for `who`, and whether its records are
+/// computed for it; [`Sight::admit`] is made of it. A stored type's is its own
+/// pairs. A view's are its own plus, where it has one stored source, no merge,
+/// and groups by every field the source's pairs name, the source's pairs: each
+/// group's records share those values, so the admitted records are the groups
+/// that hold them. Otherwise a view that reads a type held to some records, or
+/// a link type whose end type is, is computed from the admitted records alone,
+/// then held to the view's own pairs. A kept name answers for its view. `find`
+/// answers a type by its name.
 pub(crate) fn only<'a>(
     who: &Principal,
     ty: &TypeName,
@@ -369,43 +377,40 @@ impl Admit {
     }
 }
 
-/// Whether the records of the view `ty` are computed for `who` from the
-/// admitted records of what it reads ([`only`]), a grant that cannot be
-/// applied included.
-pub fn computed_only<'a>(
-    who: &Principal,
-    ty: &TypeName,
-    find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
-) -> bool {
-    only(who, ty, find).1
-}
+impl Sight<'_> {
+    /// Whether the records of the view `ty` are computed for its principal
+    /// from the admitted records of what it reads (`only`), a grant that
+    /// cannot be applied included. `find` is the lookup the caller reads
+    /// types with, not the sight's own, so a read judges the shape it reads.
+    pub fn computed_only(&self, ty: &TypeName, find: Find<'_, '_>) -> bool {
+        only(self.who(), ty, find).1
+    }
 
-/// What `who`'s grants admit of the records of `ty`, a kept name's as its
-/// view's ([`only`]): nothing where the grant on the type, or on the
-/// source a view reads, cannot be applied ([`check_only`]).
-pub fn admit<'a>(
-    who: &Principal,
-    ty: &TypeName,
-    find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
-) -> Admit {
-    if !holds_only(who) {
-        return Admit::All;
-    }
-    let kept = ty.as_str().strip_prefix(lakelands_api::seam::KEPT_PREFIX);
-    let decl = find(&kept.map_or_else(|| ty.clone(), TypeName::from));
-    let source = decl.and_then(|d| find(&d.view.as_ref()?.source));
-    if !decl
-        .into_iter()
-        .chain(source)
-        .all(|d| check_only(who, d).is_ok())
-    {
-        return Admit::Nothing;
-    }
-    match only(who, ty, find) {
-        (p, true) => Admit::Computed(p),
-        (p, false) if p.is_empty() => Admit::All,
-        (p, false) if decl.is_some() => Admit::Only(p),
-        _ => Admit::Nothing,
+    /// What its principal's grants admit of the records of `ty`, a kept
+    /// name's as its view's (`only`): nothing where the grant on the type,
+    /// or on the source a view reads, cannot be applied
+    /// ([`Self::check_only`]) (051).
+    pub fn admit(&self, ty: &TypeName) -> Admit {
+        if !self.holds_only() {
+            return Admit::All;
+        }
+        let find = &|n: &TypeName| self.force.ty(n);
+        let kept = ty.as_str().strip_prefix(lakelands_api::seam::KEPT_PREFIX);
+        let decl = find(&kept.map_or_else(|| ty.clone(), TypeName::from));
+        let source = decl.and_then(|d| find(&d.view.as_ref()?.source));
+        if !decl
+            .into_iter()
+            .chain(source)
+            .all(|d| self.check_only(d).is_ok())
+        {
+            return Admit::Nothing;
+        }
+        match only(self.who(), ty, find) {
+            (p, true) => Admit::Computed(p),
+            (p, false) if p.is_empty() => Admit::All,
+            (p, false) if decl.is_some() => Admit::Only(p),
+            _ => Admit::Nothing,
+        }
     }
 }
 
@@ -438,90 +443,102 @@ pub(crate) fn held_ends<'d, 'a>(
         .collect()
 }
 
-/// Whether `who`'s grant admits only some records of `decl`, or of an end
-/// type of a link type, as deep as its ends go ([`held_ends`]): its
-/// writes reach those records alone, and none waits for review (051).
-pub fn only_holder(who: &Principal, decl: &TypeDecl, force: &dyn crate::sight::InForce) -> bool {
-    !own_only(who, &decl.name).is_empty() || !held_ends(who, decl, &|n| force.ty(n)).is_empty()
-}
+impl Sight<'_> {
+    /// Whether its principal's grant admits only some records of `decl`, or
+    /// of an end type of a link type, as deep as its ends go
+    /// (`held_ends`): its writes reach those records alone, and none
+    /// waits for review (051).
+    pub fn only_holder(&self, decl: &TypeDecl) -> bool {
+        let (who, find) = (self.who(), &|n: &TypeName| self.force.ty(n));
+        !own_only(who, &decl.name).is_empty() || !held_ends(who, decl, find).is_empty()
+    }
 
-/// Whether a holder of `only` on `decl` may propose a write there, or a
-/// call of `verb`: no field its `only` names is computed, and the verb
-/// assigns none. Its accept applies the write as it was proposed, so
-/// only such a write leaves the pairs where the proposer was judged to
-/// leave them (051).
-pub fn pinnable(who: &Principal, decl: &TypeDecl, verb: Option<&VerbDecl>) -> bool {
-    let computed = |d: &FieldDecl| {
-        d.authority == Authority::Derived || d.function.is_some() || d.embed.is_some()
-    };
-    let assigned = |f: &FieldName| match verb.map(|v| &v.effect) {
-        Some(VerbEffect::Write { set }) => set.iter().any(|a| &a.field == f),
-        _ => false,
-    };
-    own_only(who, &decl.name)
-        .iter()
-        .all(|(f, _)| !assigned(f) && !decl.fields.iter().any(|d| &d.name == f && computed(d)))
-}
-
-/// Whether `who` holds the grant `verb` asks of its own: none for a verb
-/// not declared `granted`, else its name among `who`'s verbs on its type.
-/// No other grant stands in for it, the owner's included (070).
-pub fn verb_granted(who: &Principal, verb: &VerbDecl) -> bool {
-    let named = || (who.grants.types.get(&verb.on)).is_some_and(|t| t.verbs.contains(&verb.name));
-    !verb.granted || named()
-}
-
-/// Whether `who` may read every field `verb` reads, each judged as a
-/// filter on it is: a verb that reads one would answer its value, by
-/// running or not, or copy it whole (024, extended). So is each field it
-/// reads of another record, across a reference, on the type `ty` answers.
-/// A path through a relation's link is `who`'s only where nothing of the
-/// link type and its end types is held from it: it holds `restricted`, no
-/// `only` there, and is shown the relation (055, extended). So is one that
-/// begins at a derived relation, of its target and, for a link-type
-/// target, its ends: no record it matches can be one the caller is not
-/// answered.
-pub fn reads_what_verb_reads<'d>(
-    who: &Principal,
-    decl: &'d TypeDecl,
-    verb: &VerbDecl,
-    ty: &dyn Fn(&TypeName) -> Option<&'d TypeDecl>,
-) -> bool {
-    let reads = |n: &FieldName| {
-        let field = decl.field(n);
-        field.is_none_or(|f| field_access(who, decl, f).reads())
-    };
-    let far = verb.reads_across(decl, ty);
-    let free = |p: &Vec<FieldName>| {
-        let field = decl.has_field(&p[0]);
-        let r = decl
-            .relations
+    /// Whether its principal, holding `only` on `decl`, may propose a write
+    /// there, or a call of `verb`: no field its `only` names is computed,
+    /// and the verb assigns none. Its accept applies the write as it was
+    /// proposed, so only such a write leaves the pairs where the proposer
+    /// was judged to leave them (051).
+    pub fn pinnable(&self, decl: &TypeDecl, verb: Option<&VerbDecl>) -> bool {
+        let computed = |d: &FieldDecl| {
+            d.authority == Authority::Derived || d.function.is_some() || d.embed.is_some()
+        };
+        let assigned = |f: &FieldName| match verb.map(|v| &v.effect) {
+            Some(VerbEffect::Write { set }) => set.iter().any(|a| &a.field == f),
+            _ => false,
+        };
+        own_only(self.who(), &decl.name)
             .iter()
-            .find(|r| !field && r.name.as_str() == p[0].as_str());
-        // A derived relation's far side is its target: nothing of the
-        // target or the verb's own type is held from the caller (044 and
-        // 055, extended).
-        if let Some(r) = r.filter(|r| r.derived.is_some()) {
-            // A target that is a link type is held by its ends too (035).
-            let ends = ty(&r.target).is_some_and(|t| !held_ends(who, t, ty).is_empty());
-            let held = ends
-                || !own_only(who, &r.target).is_empty()
-                || !own_only(who, &decl.name).is_empty();
-            return who.grants.restricted
-                && !held
-                && crate::describe::relation_shown(decl, r, ty, who);
-        }
-        let lt = r.and_then(|r| ty(&crate::links::link_type_name(&decl.name, &r.name)));
-        r.zip(lt).is_none_or(|(r, lt)| {
-            let held = !own_only(who, &lt.name).is_empty() || !held_ends(who, lt, ty).is_empty();
-            who.grants.restricted && !held && crate::describe::relation_shown(decl, r, ty, who)
-        })
-    };
-    let paths = verb.record_paths();
-    verb.fields_read()
-        .is_some_and(|read| read.iter().all(reads))
-        && paths.is_some_and(|p| p.iter().all(free))
-        && far.is_some_and(|far| far.iter().all(|(t, f)| field_access(who, t, f).reads()))
+            .all(|(f, _)| !assigned(f) && !decl.fields.iter().any(|d| &d.name == f && computed(d)))
+    }
+
+    /// Whether its principal holds the grant `verb` asks of its own: none
+    /// for a verb not declared `granted`, else its name among its verbs on
+    /// its type. No other grant stands in for it, the owner's included
+    /// (070).
+    pub fn verb_granted(&self, verb: &VerbDecl) -> bool {
+        let types = &self.who().grants.types;
+        let named = || {
+            types
+                .get(&verb.on)
+                .is_some_and(|t| t.verbs.contains(&verb.name))
+        };
+        !verb.granted || named()
+    }
+
+    /// Whether its principal may read every field `verb` reads, each judged
+    /// as a filter on it is: a verb that reads one would answer its value,
+    /// by running or not, or copy it whole (024, extended). So is each
+    /// field it reads of another record, across a reference, on the type
+    /// `ty` answers. A path through a relation's link is its principal's
+    /// only where nothing of the link type and its end types is held from
+    /// it: it holds `restricted`, no `only` there, and is shown the
+    /// relation (055, extended). So is one that begins at a derived
+    /// relation, of its target and, for a link-type target, its ends: no
+    /// record it matches can be one the caller is not answered.
+    pub fn reads_what_verb_reads<'d>(
+        &self,
+        decl: &'d TypeDecl,
+        verb: &VerbDecl,
+        ty: Find<'_, 'd>,
+    ) -> bool {
+        let who = self.who();
+        let reads = |n: &FieldName| {
+            let field = decl.field(n);
+            field.is_none_or(|f| field_access(who, decl, f).reads())
+        };
+        let far = verb.reads_across(decl, ty);
+        let free = |p: &Vec<FieldName>| {
+            let field = decl.has_field(&p[0]);
+            let r = decl
+                .relations
+                .iter()
+                .find(|r| !field && r.name.as_str() == p[0].as_str());
+            // A derived relation's far side is its target: nothing of the
+            // target or the verb's own type is held from the caller (044 and
+            // 055, extended).
+            if let Some(r) = r.filter(|r| r.derived.is_some()) {
+                // A target that is a link type is held by its ends too (035).
+                let ends = ty(&r.target).is_some_and(|t| !held_ends(who, t, ty).is_empty());
+                let held = ends
+                    || !own_only(who, &r.target).is_empty()
+                    || !own_only(who, &decl.name).is_empty();
+                return who.grants.restricted
+                    && !held
+                    && crate::describe::relation_shown(decl, r, ty, who);
+            }
+            let lt = r.and_then(|r| ty(&crate::links::link_type_name(&decl.name, &r.name)));
+            r.zip(lt).is_none_or(|(r, lt)| {
+                let held =
+                    !own_only(who, &lt.name).is_empty() || !held_ends(who, lt, ty).is_empty();
+                who.grants.restricted && !held && crate::describe::relation_shown(decl, r, ty, who)
+            })
+        };
+        let paths = verb.record_paths();
+        verb.fields_read()
+            .is_some_and(|read| read.iter().all(reads))
+            && paths.is_some_and(|p| p.iter().all(free))
+            && far.is_some_and(|far| far.iter().all(|(t, f)| field_access(who, t, f).reads()))
+    }
 }
 
 /// Whether nothing `paths`, over `decl`, read across an edge is held from
@@ -530,7 +547,7 @@ pub fn reads_what_verb_reads<'d>(
 /// path with them. A set's `where` and a trigger's `when` are decided for
 /// no reader, so what they hold for a record tells what they read there
 /// (055, extended). With no path across, nothing is asked.
-pub fn holds_nothing_across<'d>(
+pub(crate) fn holds_nothing_across<'d>(
     who: &Principal,
     decl: &'d TypeDecl,
     paths: &[Vec<FieldName>],
@@ -565,7 +582,7 @@ pub fn holds_nothing_across<'d>(
 /// writes every field its `only` names at the authored door (051), or the
 /// field is one only verbs write whose `initial` a create gives it is the
 /// value its `only` names.
-pub fn creates(who: &Principal, decl: &TypeDecl) -> bool {
+pub(crate) fn creates(who: &Principal, decl: &TypeDecl) -> bool {
     own_only(who, &decl.name).iter().all(|(f, v)| {
         let field = decl.field(f);
         field.is_some_and(|d| match d.authority {
@@ -576,145 +593,174 @@ pub fn creates(who: &Principal, decl: &TypeDecl) -> bool {
     })
 }
 
-/// Whether `who`'s grant admits only some records of any type: such a
-/// principal changes no shape.
-pub fn holds_only(who: &Principal) -> bool {
-    who.grants.types.values().any(|t| !t.only.is_empty())
-}
+impl Sight<'_> {
+    /// Whether its principal's grant admits only some records of any type:
+    /// such a principal changes no shape.
+    pub fn holds_only(&self) -> bool {
+        self.who().grants.types.values().any(|t| !t.only.is_empty())
+    }
 
-/// Refuse a read that names `decl` where `who`'s `only` on it cannot be
-/// applied: a pair on an undeclared field, of a kind other than `text` or
-/// `reference`, with a non-text value, that the holder may not read, or
-/// computed at the read (an engine cannot filter by it). The refusal names
-/// the type, never the field, so an unknown field is not told.
-pub fn check_only(who: &Principal, decl: &TypeDecl) -> Result<(), Error> {
-    use lakelands_api::ontology::StorageKind;
-    let applies = |(f, v): &(FieldName, Value)| {
-        let field = decl.field(f);
-        field.is_some_and(|d| {
-            matches!(d.ty.kind, StorageKind::Text | StorageKind::Reference)
-                && v.is_string()
-                && field_access(who, decl, d).reads()
-                && !d.at_read()
-        })
-    };
-    if own_only(who, &decl.name).iter().all(applies) {
-        return Ok(());
-    }
-    let ty = decl.name.clone();
-    Err(Error::invalid(Case::OnlyUnappliable { ty }))
-}
-
-/// Refuse a read that probes a field the principal may not read, or a
-/// field the type does not declare. `probed` are the fields a filter,
-/// an ordering or an aggregate touches.
-pub fn check_probe<'a>(
-    who: &Principal,
-    decl: &TypeDecl,
-    probed: impl IntoIterator<Item = &'a FieldName>,
-) -> Result<(), Error> {
-    for name in probed {
-        let field = field_of(decl, name)?;
-        match field_access(who, decl, field) {
-            Access::None => return Err(no_field(decl, name)),
-            a if !a.reads() => return Err(Error::refused(Some(name.clone()), Refusal::NotGranted)),
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-/// Refuse a name of a field that `decl` does not declare, or one the
-/// principal may not know of, alike. A masked field is not refused: a
-/// projection that names it reads it as the record does.
-pub fn check_known<'a>(
-    who: &Principal,
-    decl: &TypeDecl,
-    named: impl IntoIterator<Item = &'a FieldName>,
-) -> Result<(), Error> {
-    for name in named {
-        if field_access(who, decl, field_of(decl, name)?) == Access::None {
-            return Err(no_field(decl, name));
-        }
-    }
-    Ok(())
-}
-
-/// Refuse a search the principal may not make: a lexical search probes
-/// every searchable field at once, so each must be readable; a vector
-/// search probes each vector field it names, in order, and before each
-/// every field it is embedded from.
-///
-/// A lexical or hybrid search naming `fields` probes those instead, in
-/// name order; the vector half is not narrowed. A named field must be
-/// declared, readable and searchable, judged in that order, so the refusal
-/// never tells a principal whether a field it may not read is searchable.
-pub fn check_search(
-    who: &Principal,
-    decl: &TypeDecl,
-    fields: Option<&[FieldName]>,
-    vector_fields: &[&FieldName],
-) -> Result<(), Error> {
-    let vectors = vector_fields.iter().flat_map(|v| {
-        let field = decl.field(v);
-        let embed = field.and_then(|f| f.embed.as_ref());
-        embed.into_iter().flat_map(|e| e.from.iter()).chain([*v])
-    });
-    let Some(named) = fields else {
-        return check_probe(who, decl, searched_fields(who, decl).chain(vectors));
-    };
-    if named.is_empty() {
-        return Err(Error::invalid(Case::SearchFieldsEmpty));
-    }
-    let named: BTreeSet<&FieldName> = named.iter().collect();
-    for name in named {
-        check_probe(who, decl, [name])?;
-        if !decl.fields.iter().any(|f| &f.name == name && f.searchable) {
-            let (field, ty) = (name.clone(), decl.name.clone());
-            return Err(Error::invalid_at(name, Case::NotSearchable { field, ty }));
-        }
-    }
-    check_probe(who, decl, vectors)
-}
-
-/// Refuse a search's own text weights the principal could not give, judged
-/// as `search_weights`' `text_fields` is: each field, in name order, probed
-/// as a searched field (undeclared and unshown answer alike), then
-/// searchable, then its weight one a search may give. An empty map is
-/// refused as an empty `fields` is.
-pub fn check_text_weights(
-    who: &Principal,
-    decl: &TypeDecl,
-    weights: &BTreeMap<FieldName, f64>,
-) -> Result<(), Error> {
-    if weights.is_empty() {
-        return Err(Error::invalid(Case::SearchTextFieldsEmpty));
-    }
-    for (name, w) in weights {
-        check_probe(who, decl, [name])?;
-        let (field, ty) = (name.clone(), decl.name.clone());
-        let case = if !decl.fields.iter().any(|f| &f.name == name && f.searchable) {
-            Case::NotSearchable { field, ty }
-        } else if !lakelands_api::query::weight_fits(*w) {
-            Case::WeightRange { field }
-        } else {
-            continue;
+    /// Refuse a read that names `decl` where its principal's `only` on it
+    /// cannot be applied: a pair on an undeclared field, of a kind other
+    /// than `text` or `reference`, with a non-text value, that the holder
+    /// may not read, or computed at the read (an engine cannot filter by
+    /// it). The refusal names the type, never the field, so an unknown
+    /// field is not told.
+    pub fn check_only(&self, decl: &TypeDecl) -> Result<(), Error> {
+        use lakelands_api::ontology::StorageKind;
+        let applies = |(f, v): &(FieldName, Value)| {
+            let field = decl.field(f);
+            field.is_some_and(|d| {
+                matches!(d.ty.kind, StorageKind::Text | StorageKind::Reference)
+                    && v.is_string()
+                    && field_access(self.who(), decl, d).reads()
+                    && !d.at_read()
+            })
         };
-        return Err(Error::invalid_at(name, case));
+        if own_only(self.who(), &decl.name).iter().all(applies) {
+            return Ok(());
+        }
+        let ty = decl.name.clone();
+        Err(Error::invalid(Case::OnlyUnappliable { ty }))
     }
-    Ok(())
-}
 
-/// The searchable fields a search that names none reads: those the
-/// principal reads. A field it may not read is never searched, so the
-/// search neither refuses, names nor ranks by it.
-pub fn searched_fields<'d>(
-    who: &Principal,
-    decl: &'d TypeDecl,
-) -> impl Iterator<Item = &'d FieldName> {
-    (decl.fields.iter())
-        .filter(move |f| f.searchable && field_access(who, decl, f).reads())
-        .map(|f| &f.name)
+    /// Refuse a read that probes a field its principal may not read, or a
+    /// field the type does not declare. `probed` are the fields a filter,
+    /// an ordering or an aggregate touches.
+    pub fn check_probe<'a>(
+        &self,
+        decl: &TypeDecl,
+        probed: impl IntoIterator<Item = &'a FieldName>,
+    ) -> Result<(), Error> {
+        for name in probed {
+            let field = field_of(decl, name)?;
+            match field_access(self.who(), decl, field) {
+                Access::None => return Err(no_field(decl, name)),
+                a if !a.reads() => {
+                    return Err(Error::refused(Some(name.clone()), Refusal::NotGranted));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuse `name`, a field `decl` does not declare or one its principal
+    /// may not know of, alike. A masked field is not refused: a projection
+    /// that names it reads it as the record does.
+    pub fn check_known(&self, decl: &TypeDecl, name: &FieldName) -> Result<(), Error> {
+        match field_access(self.who(), decl, field_of(decl, name)?) {
+            Access::None => Err(no_field(decl, name)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Refuse a search its principal may not make: a lexical search probes
+    /// every searchable field at once, so each must be readable; a vector
+    /// search probes each vector field it names, in order, and before each
+    /// every field it is embedded from.
+    ///
+    /// A lexical or hybrid search naming `fields` probes those instead, in
+    /// name order; the vector half is not narrowed. A named field must be
+    /// declared, readable and searchable, judged in that order, so the
+    /// refusal never tells a principal whether a field it may not read is
+    /// searchable.
+    pub fn check_search(
+        &self,
+        decl: &TypeDecl,
+        fields: Option<&[FieldName]>,
+        vector_fields: &[&FieldName],
+    ) -> Result<(), Error> {
+        let vectors = vector_fields.iter().flat_map(|v| {
+            let field = decl.field(v);
+            let embed = field.and_then(|f| f.embed.as_ref());
+            embed.into_iter().flat_map(|e| e.from.iter()).chain([*v])
+        });
+        let Some(named) = fields else {
+            return self.check_probe(decl, self.searched_fields(decl).chain(vectors));
+        };
+        if named.is_empty() {
+            return Err(Error::invalid(Case::SearchFieldsEmpty));
+        }
+        let named: BTreeSet<&FieldName> = named.iter().collect();
+        for name in named {
+            self.check_probe(decl, [name])?;
+            if !decl.fields.iter().any(|f| &f.name == name && f.searchable) {
+                let (field, ty) = (name.clone(), decl.name.clone());
+                return Err(Error::invalid_at(name, Case::NotSearchable { field, ty }));
+            }
+        }
+        self.check_probe(decl, vectors)
+    }
+
+    /// Refuse a search's own text weights its principal could not give,
+    /// judged as `search_weights`' `text_fields` is: each field, in name
+    /// order, probed as a searched field (undeclared and unshown answer
+    /// alike), then searchable, then its weight one a search may give. An
+    /// empty map is refused as an empty `fields` is.
+    pub fn check_text_weights(
+        &self,
+        decl: &TypeDecl,
+        weights: &BTreeMap<FieldName, f64>,
+    ) -> Result<(), Error> {
+        if weights.is_empty() {
+            return Err(Error::invalid(Case::SearchTextFieldsEmpty));
+        }
+        for (name, w) in weights {
+            self.check_probe(decl, [name])?;
+            let (field, ty) = (name.clone(), decl.name.clone());
+            let case = if !decl.fields.iter().any(|f| &f.name == name && f.searchable) {
+                Case::NotSearchable { field, ty }
+            } else if !lakelands_api::query::weight_fits(*w) {
+                Case::WeightRange { field }
+            } else {
+                continue;
+            };
+            return Err(Error::invalid_at(name, case));
+        }
+        Ok(())
+    }
+
+    /// The searchable fields of `decl` a search that names none reads:
+    /// those its principal reads. A field it may not read is never
+    /// searched, so the search neither refuses, names nor ranks by it.
+    pub fn searched_fields<'d>(&self, decl: &'d TypeDecl) -> impl Iterator<Item = &'d FieldName> {
+        let who = self.who();
+        (decl.fields.iter())
+            .filter(move |f| f.searchable && field_access(who, decl, f).reads())
+            .map(|f| &f.name)
+    }
+
+    /// Refuse its principal's write of `patch` to `decl`, whole, unless
+    /// every field it carries exists, is written through `door`, from
+    /// `source` where it is `ingest`, and is granted to it. Fields are
+    /// checked in name order, so the refusal names the same field every
+    /// time.
+    pub fn check_write(
+        &self,
+        decl: &TypeDecl,
+        (door, source): (Door, Option<&SourceId>),
+        patch: &BTreeMap<FieldName, Value>,
+    ) -> Result<(), Error> {
+        let who = self.who();
+        if door == Door::Source && !who.grants.ingest {
+            return Err(Error::not_granted());
+        }
+        not_a_view(decl)?;
+        for name in patch.keys() {
+            let field = field_of(decl, name)?;
+            if field_access(who, decl, field) == Access::None {
+                return Err(no_field(decl, name));
+            }
+            if !door.admits(field, source) {
+                return Err(Error::refused(Some(name.clone()), Refusal::WrongDoor));
+            }
+            if !who.grants.access(&decl.name, name).writes() {
+                return Err(Error::refused(Some(name.clone()), Refusal::NotGranted));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The door a write comes through.
@@ -753,41 +799,12 @@ impl Door {
     }
 }
 
-/// Refuse a write, whole, unless every field it carries exists, is written
-/// through this door, from `source` where it is `ingest`, and is granted
-/// to the principal. Fields are checked in name order, so the refusal
-/// names the same field every time.
-pub fn check_write(
-    who: &Principal,
-    decl: &TypeDecl,
-    (door, source): (Door, Option<&SourceId>),
-    patch: &BTreeMap<FieldName, Value>,
-) -> Result<(), Error> {
-    if door == Door::Source && !who.grants.ingest {
-        return Err(Error::not_granted());
-    }
-    not_a_view(decl)?;
-    for name in patch.keys() {
-        let field = field_of(decl, name)?;
-        if field_access(who, decl, field) == Access::None {
-            return Err(no_field(decl, name));
-        }
-        if !door.admits(field, source) {
-            return Err(Error::refused(Some(name.clone()), Refusal::WrongDoor));
-        }
-        if !who.grants.access(&decl.name, name).writes() {
-            return Err(Error::refused(Some(name.clone()), Refusal::NotGranted));
-        }
-    }
-    Ok(())
-}
-
-/// Refuse `source`'s write of an authored field it is admitted to where
-/// the record as it stands, `live`, holds another hand's write there: an
-/// author's value or clear, or another source's. Its own write and a field
-/// no hand wrote are written over, and the field's `initial` on a record
-/// the source made, which `made` answers, asked only for an `initial`
-/// (069). Fields are checked in name order, as [`check_write`] checks them.
+/// Refuse `source`'s write of an authored field it is admitted to where the
+/// record as it stands, `live`, holds another hand's write there: an author's
+/// value or clear, or another source's. Its own write and a field no hand wrote
+/// are written over, and the field's `initial` on a record the source made,
+/// which `made` answers, asked only for an `initial` (069). Fields are checked
+/// in name order, as [`Sight::check_write`] checks them.
 pub fn check_admitted(
     decl: &TypeDecl,
     (live, source): (Option<&StoredRecord>, &SourceId),
@@ -845,21 +862,6 @@ fn no_field(decl: &TypeDecl, name: &FieldName) -> Error {
     Error::invalid_at(name, Case::UnknownField { ty, field })
 }
 
-/// A migration not in force as `who` may know it: the shape it leaves as
-/// [`described_fields`] shows it, judged with grants held through the
-/// migration's own renames (of fields, and of the link types its renamed
-/// relations move); a rename only where `who` may know the field under both
-/// names, the old one in `was`, the type it was written against. A waiting
-/// proposal is judged by the names it was written with, so a restriction on
-/// a name taken since reaches the name it bore then.
-pub fn known_migration<'a>(who: &Principal, was: &TypeDecl, m: &mut Migration, find: Find<'_, 'a>) {
-    let (then, mut was) = (following(who, m), was.clone());
-    known_fields(who, &mut was, find);
-    described_fields(&then, &mut m.to, find);
-    (m.renames).retain(|(old, new)| holds(&was, old) && holds(&m.to, new));
-    m.fill.retain(|f| holds(&m.to, f));
-}
-
 /// `who` with its grants held through a migration's own renames, as the
 /// fold would record them.
 fn following(who: &Principal, m: &Migration) -> Principal {
@@ -872,7 +874,7 @@ fn following(who: &Principal, m: &Migration) -> Principal {
 /// the fields it may not know of, the relations it is not shown and a
 /// view it is not described; `whole`, the stored hash, where nothing is
 /// left out.
-pub fn shown_hash<'a>(
+pub(crate) fn shown_hash<'a>(
     who: &Principal,
     t: &TypeDecl,
     view_shown: bool,
@@ -892,32 +894,12 @@ pub fn shown_hash<'a>(
     }
 }
 
-/// A report's hashes as `who` is shown them, set after [`shown_report`]
-/// decided `more`: `from` of `made`, the type it was made from, `to` with
-/// the grants held through the renames; whole to one not shown the type.
-/// `find` is the lookup [`known_migration`] lists `to` with, so the `to`
-/// hash is that of the listed `to`.
-pub fn shown_hashes<'a>(
-    who: &Principal,
-    made: &TypeDecl,
-    m: &Migration,
-    report: &mut MigrationReport,
-    find: Find<'_, 'a>,
-) {
-    if report.ty != m.to.name {
-        return;
-    }
-    report.from_schema_hash = shown_hash(who, made, true, &report.from_schema_hash, find);
-    let then = following(who, m);
-    report.to_schema_hash = shown_hash(&then, &m.to, true, &report.to_schema_hash, find);
-}
-
 /// `t` as `describe` would show its fields to `who`, a relation's link
 /// fields too (024): without those it may not know of and the relations
 /// it is not shown, and a field it may not read left with its shape
 /// alone. A listing hands a declaration out so; an author's view of a
 /// type is made by [`known_fields`], and holds a field as declared.
-pub fn described_fields<'a>(who: &Principal, t: &mut TypeDecl, find: Find<'_, 'a>) {
+pub(crate) fn described_fields<'a>(who: &Principal, t: &mut TypeDecl, find: Find<'_, 'a>) {
     let whole = t.clone();
     (t.relations).retain(|r| crate::describe::relation_shown(&whole, r, find, who));
     let shown = |of: &TypeDecl, fields: &mut Vec<FieldDecl>| {
@@ -970,7 +952,7 @@ fn unread(who: &Principal, t: &TypeDecl, name: &FieldName) -> bool {
 /// `t` without the fields `who` may not know of, a relation's link fields
 /// too, and without the relations it is not shown. `find` answers a type
 /// by its name.
-pub fn known_fields<'a>(who: &Principal, t: &mut TypeDecl, find: Find<'_, 'a>) {
+pub(crate) fn known_fields<'a>(who: &Principal, t: &mut TypeDecl, find: Find<'_, 'a>) {
     if !keeps_from(who, t, find) {
         return;
     }
@@ -988,7 +970,7 @@ pub fn known_fields<'a>(who: &Principal, t: &mut TypeDecl, find: Find<'_, 'a>) {
 /// Whether [`known_fields`] takes anything out of `t` for `who`: a
 /// relation it is not shown, or a field or a link field it may not know
 /// of. Asked before a type is copied to take it out (lakelands#943).
-pub fn keeps_from(who: &Principal, t: &TypeDecl, find: Find<'_, '_>) -> bool {
+pub(crate) fn keeps_from(who: &Principal, t: &TypeDecl, find: Find<'_, '_>) -> bool {
     let none = |d: &TypeDecl, f: &FieldDecl| field_access(who, d, f) == Access::None;
     let relation = |r: &lakelands_api::ontology::RelationDecl| {
         let link = crate::links::link_type(&t.name, r);
@@ -1058,20 +1040,9 @@ pub(crate) fn hide_unshown_references(
     }
 }
 
-/// Whether `who` reads every field of every type: no grant below `read`
-/// and no `only`. Such a principal is shown the lake whole, `sensitive`
-/// fields too, since only a `none` masks one.
-pub fn reads_all(who: &Principal) -> bool {
-    let reads = |a: &Access| a.reads();
-    let typed = |t: &TypeGrants| {
-        t.default.as_ref().is_none_or(reads) && t.fields.values().all(reads) && t.only.is_empty()
-    };
-    reads(&who.grants.default) && who.grants.types.values().all(typed)
-}
-
 /// Whether `who` may not know of some field: only a `none` its grants
 /// give, to the lake, a type or a field, hides one.
-pub fn hides_some(who: &Principal) -> bool {
+pub(crate) fn hides_some(who: &Principal) -> bool {
     let (g, none) = (&who.grants, |a: &Access| *a == Access::None);
     let typed =
         |t: &TypeGrants| t.default.as_ref().is_some_and(none) || t.fields.values().any(none);
@@ -1081,7 +1052,7 @@ pub fn hides_some(who: &Principal) -> bool {
 /// Whether a shape holds what a migration's report names by `name`: a
 /// field, a link field (`relation.field`), or a relation, which a report
 /// lists as dropped by its own name.
-pub fn holds(t: &TypeDecl, name: &FieldName) -> bool {
+pub(crate) fn holds(t: &TypeDecl, name: &FieldName) -> bool {
     let relation = |r: &str| t.relations.iter().find(|x| x.name.as_str() == r);
     match name.as_str().split_once('.') {
         Some((r, f)) => relation(r).is_some_and(|x| x.fields.iter().any(|x| x.name.as_str() == f)),
@@ -1094,7 +1065,7 @@ pub fn holds(t: &TypeDecl, name: &FieldName) -> bool {
 /// holds; or a link field `relation.field` of a relation `known` holds,
 /// judged on its link type as `whole` declares it, under the grants on
 /// that link type, its ends `from` and `to` included (lakelands#1092).
-pub fn link_known(who: &Principal, whole: &TypeDecl, known: &TypeDecl, name: &FieldName) -> bool {
+fn link_known(who: &Principal, whole: &TypeDecl, known: &TypeDecl, name: &FieldName) -> bool {
     let Some((r, f)) = name.as_str().split_once('.') else {
         return holds(known, name);
     };
@@ -1108,155 +1079,212 @@ pub fn link_known(who: &Principal, whole: &TypeDecl, known: &TypeDecl, name: &Fi
         })
 }
 
-/// Whether `who` reads the field `f` of the type `m` leaves, there and as
-/// `was` declares it, under the name it had.
-pub fn reads_both(who: &Principal, was: &TypeDecl, m: &Migration, f: &FieldName) -> bool {
-    let had = m.renames.iter().find(|(_, new)| new == f);
-    !unread(who, &m.to, f) && !unread(who, was, had.map_or(f, |(old, _)| old))
-}
+impl Sight<'_> {
+    /// `m`, a migration not in force, as its principal may know it: the shape
+    /// it leaves as [`Self::described_fields`] shows it, judged with grants held
+    /// through the migration's own renames (of fields, and of the link types
+    /// its renamed relations move); a rename only where it may know the field
+    /// under both names, the old one in `was`, the type it was written against.
+    /// A waiting proposal is judged by the names it was written with, so a
+    /// restriction on a name taken since reaches the name it bore then.
+    pub fn known_migration(&self, was: &TypeDecl, m: &mut Migration, find: Find<'_, '_>) {
+        let who = self.who();
+        let (then, mut was) = (following(who, m), was.clone());
+        known_fields(who, &mut was, find);
+        described_fields(&then, &mut m.to, find);
+        (m.renames).retain(|(old, new)| holds(&was, old) && holds(&m.to, new));
+        m.fill.retain(|f| holds(&m.to, f));
+    }
 
-/// A migration's report as `who` may know it (013, 024 and 027, extended):
-/// every place that answers one calls this. `was` is the type the report
-/// was made against: as it stands, or, for a listed proposal, as it stood
-/// when proposed, read with `who`'s grants then. `sees` is a type the
-/// reader may see. An entry is shown where the reader may see the type and
-/// know of the field: a conversion in the shape the migration leaves, and
-/// by the name it took its values from where renamed, as is a rewritten
-/// reference of the migrated type itself; a member restated (a link
-/// field's entry, `relation.field`, judged on its link type by
-/// [`link_known`]), one of [`FieldDecl::UNREAD`] only where the reader
-/// reads the field in `to` and as the type stands, under the name it had,
-/// since a migration may change a field's access with no rename; a dropped
-/// field or renamed relation in the shape as it stands; a declaration the
-/// migration carries where `described`, the lake as `describe` shows it,
-/// names it, asked only for a report that carries one. The totals stay;
-/// `more` says something was left out here, or a count is larger than the
-/// keys named beside it, so it tells nothing the report does not. The
-/// hashes are [`shown_hashes`]'s, and the id is made again over what is
-/// shown. A reader not shown the migrated type is answered no migration at
-/// all, by every door (lakelands#762).
-pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDescription>>(
-    who: &Principal,
-    was: &TypeDecl,
-    m: &Migration,
-    report: &mut MigrationReport,
-    described: impl FnOnce() -> D,
-    sees: impl Fn(&TypeName) -> Option<&'a TypeDecl>,
-) {
-    let whole = report.clone();
-    let (stands, mut was, mut to) = (was, was.clone(), m.to.clone());
-    known_fields(who, &mut was, &sees);
-    known_fields(who, &mut to, &sees);
-    let sourced = |new: &FieldName| {
-        let mut from = m.renames.iter().filter(|(_, n)| n == new);
-        from.all(|(old, _)| holds(&was, old))
-    };
-    let known = |ty: &TypeName, field: &FieldName| {
-        let found = sees(ty).and_then(|t| Some((t, t.field(field)?)));
-        found.is_some_and(|(t, f)| field_access(who, t, f) != Access::None)
-    };
-    // A link field's row is judged on its link type (lakelands#1092).
-    let in_to = |f: &FieldName| link_known(who, &m.to, &to, f);
-    report
-        .fields
-        .retain(|c| in_to(&c.field) && sourced(&c.field));
-    // A member restated is the type's, or shown as its field's conversion
-    // is, and one beyond the shape where the field is read in both shapes.
-    let read = |f: &FieldName| reads_both(who, stands, m, f);
-    // A valid time over a field the reader may not know of is not named
-    // (024, extended).
-    let named =
-        |v: &serde_json::Value, t: &TypeDecl| v.as_str().is_none_or(|f| holds(t, &f.into()));
-    // A constraint is shown to one who reads every field it reads, in both
-    // shapes, as `describe_type` tells it (lakelands#1119).
-    let told = |c: &serde_json::Value| {
-        let c = serde_json::from_value::<lakelands_api::ontology::ConstraintDecl>(c.clone());
-        let e = c.ok().and_then(|c| c.holds.typed().ok());
-        e.is_some_and(|e| e.fields_read().into_iter().all(&read))
-    };
-    for r in (report.restated.iter_mut()).filter(|r| r.field.is_none() && r.member == "constraints")
-    {
-        for v in [&mut r.was, &mut r.to] {
-            if let Some(cs) = v.as_array_mut() {
-                cs.retain(told);
+    /// A report's hashes as its principal is shown them, set after
+    /// [`Self::shown_report`] decided `more`: `from` of `made`, the type it was
+    /// made from, `to` with the grants held through the renames; whole to one
+    /// not shown the type. `find` is the lookup [`Self::known_migration`] lists
+    /// `to` with, so the `to` hash is that of the listed `to`.
+    pub fn shown_hashes(
+        &self,
+        made: &TypeDecl,
+        m: &Migration,
+        report: &mut MigrationReport,
+        find: Find<'_, '_>,
+    ) {
+        let who = self.who();
+        if report.ty != m.to.name {
+            return;
+        }
+        report.from_schema_hash = shown_hash(who, made, true, &report.from_schema_hash, find);
+        let then = following(who, m);
+        report.to_schema_hash = shown_hash(&then, &m.to, true, &report.to_schema_hash, find);
+    }
+
+    /// Whether its principal reads every field of every type: no grant below
+    /// `read` and no `only`. Such a principal is shown the lake whole,
+    /// `sensitive` fields too, since only a `none` masks one.
+    pub fn reads_all_fields(&self) -> bool {
+        let who = self.who();
+        let reads = |a: &Access| a.reads();
+        let typed = |t: &TypeGrants| {
+            t.default.as_ref().is_none_or(reads)
+                && t.fields.values().all(reads)
+                && t.only.is_empty()
+        };
+        reads(&who.grants.default) && who.grants.types.values().all(typed)
+    }
+
+    /// Whether its principal reads the field `f` of the type `m` leaves, there
+    /// and as `was` declares it, under the name it had.
+    pub fn reads_both(&self, was: &TypeDecl, m: &Migration, f: &FieldName) -> bool {
+        let who = self.who();
+        let had = m.renames.iter().find(|(_, new)| new == f);
+        !unread(who, &m.to, f) && !unread(who, was, had.map_or(f, |(old, _)| old))
+    }
+
+    /// A migration's report as its principal may know it (013, 024 and 027,
+    /// extended): every place that answers one calls this. `was` is the type
+    /// the report was made against: as it stands, or, for a listed proposal, as
+    /// it stood when proposed, read with its grants then. `sees` is a type the
+    /// reader may see. An entry is shown where the reader may see the type and
+    /// know of the field: a conversion in the shape the migration leaves, and
+    /// by the name it took its values from where renamed, as is a rewritten
+    /// reference of the migrated type itself; a member restated (a link field's
+    /// entry, `relation.field`, judged on its link type by `link_known`), one
+    /// of [`FieldDecl::UNREAD`] only where the reader reads the field in `to`
+    /// and as the type stands, under the name it had, since a migration may
+    /// change a field's access with no rename; a dropped field or renamed
+    /// relation in the shape as it stands; a declaration the migration carries
+    /// where `described`, the lake as `describe` shows it, names it, asked only
+    /// for a report that carries one. The totals stay; `more` says something
+    /// was left out here, or a count is larger than the keys named beside it,
+    /// so it tells nothing the report does not. The hashes are
+    /// [`Self::shown_hashes`]'s, and the id is made again over what is shown. A
+    /// reader not shown the migrated type is answered no migration at all, by
+    /// every door (lakelands#762).
+    pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDescription>>(
+        &self,
+        was: &TypeDecl,
+        m: &Migration,
+        report: &mut MigrationReport,
+        described: impl FnOnce() -> D,
+        sees: impl Fn(&TypeName) -> Option<&'a TypeDecl>,
+    ) {
+        let who = self.who();
+        let whole = report.clone();
+        let (stands, mut was, mut to) = (was, was.clone(), m.to.clone());
+        known_fields(who, &mut was, &sees);
+        known_fields(who, &mut to, &sees);
+        let sourced = |new: &FieldName| {
+            let mut from = m.renames.iter().filter(|(_, n)| n == new);
+            from.all(|(old, _)| holds(&was, old))
+        };
+        let known = |ty: &TypeName, field: &FieldName| {
+            let found = sees(ty).and_then(|t| Some((t, t.field(field)?)));
+            found.is_some_and(|(t, f)| field_access(who, t, f) != Access::None)
+        };
+        // A link field's row is judged on its link type (lakelands#1092).
+        let in_to = |f: &FieldName| link_known(who, &m.to, &to, f);
+        report
+            .fields
+            .retain(|c| in_to(&c.field) && sourced(&c.field));
+        // A member restated is the type's, or shown as its field's conversion
+        // is, and one beyond the shape where the field is read in both shapes.
+        let read = |f: &FieldName| self.reads_both(stands, m, f);
+        // A valid time over a field the reader may not know of is not named
+        // (024, extended).
+        let named =
+            |v: &serde_json::Value, t: &TypeDecl| v.as_str().is_none_or(|f| holds(t, &f.into()));
+        // A constraint is shown to one who reads every field it reads, in both
+        // shapes, as `describe_type` tells it (lakelands#1119).
+        let told = |c: &serde_json::Value| {
+            let c = serde_json::from_value::<lakelands_api::ontology::ConstraintDecl>(c.clone());
+            let e = c.ok().and_then(|c| c.holds.typed().ok());
+            e.is_some_and(|e| e.fields_read().into_iter().all(&read))
+        };
+        for r in
+            (report.restated.iter_mut()).filter(|r| r.field.is_none() && r.member == "constraints")
+        {
+            for v in [&mut r.was, &mut r.to] {
+                if let Some(cs) = v.as_array_mut() {
+                    cs.retain(told);
+                }
             }
         }
-    }
-    let empty = |v: &serde_json::Value| v.as_array().is_none_or(Vec::is_empty);
-    report
-        .restated
-        .retain(|r| r.member != "constraints" || r.was != r.to && !(empty(&r.was) && empty(&r.to)));
-    report.restated.retain(|r| {
-        let shape = !FieldDecl::UNREAD.contains(&r.member.as_str());
-        let shown = |f| in_to(f) && sourced(f) && (shape || read(f));
-        let timed = r.field.is_none() && matches!(r.member.as_str(), "valid_from" | "valid_to");
-        r.field.as_ref().is_none_or(shown) && (!timed || named(&r.was, &was) && named(&r.to, &to))
-    });
-    report
-        .dropped
-        .retain(|(f, _)| link_known(who, stands, &was, f));
-    // A renamed relation is shown as a dropped one is: by the name it had.
-    let named = |r: &lakelands_api::write::RelationRename| holds(&was, &r.from.as_str().into());
-    report.relations.retain(named);
-    // A declaration the migration carries is named as `describe` names it:
-    // a trigger, a verb or a set to one who is described it, a view to one
-    // who is described the view. The lake is described only for a report
-    // that carries something.
-    if !report.carried.is_empty() {
-        let shown = described();
-        let shown = shown.borrow();
-        report.carried.retain(|c| match c.kind.as_str() {
-            "trigger" => shown.triggers.iter().any(|t| t.name.as_str() == c.name),
-            "verb" => shown.verbs.iter().any(|v| v.name.as_str() == c.name),
-            "object_set" => shown.object_sets.iter().any(|s| s.name == c.name),
-            _ => shown.types.iter().any(|t| t.name.as_str() == c.name),
+        let empty = |v: &serde_json::Value| v.as_array().is_none_or(Vec::is_empty);
+        report.restated.retain(|r| {
+            r.member != "constraints" || r.was != r.to && !(empty(&r.was) && empty(&r.to))
         });
-    }
-    report.rekeyed.retain(|r| sees(&r.ty).is_some());
-    report.filled.retain(|f| in_to(&f.field));
-    // A breach to one who reads every field its constraint reads: of the
-    // migrated type in both shapes, of another as it stands (lakelands#1119).
-    let constraint = |b: &lakelands_api::write::Breach| {
-        let own = b.ty == m.to.name;
-        let t = if own { Some(&m.to) } else { sees(&b.ty) };
-        let c = t.and_then(|t| t.constraints.iter().find(|c| c.name == b.constraint));
-        let e = c.and_then(|c| c.holds.typed().ok());
-        let reads = |f: &FieldName| match own {
-            true => read(f),
-            false => sees(&b.ty)
-                .and_then(|t| Some((t, t.field(f)?)))
-                .is_some_and(|(t, x)| field_access(who, t, x).reads()),
+        report.restated.retain(|r| {
+            let shape = !FieldDecl::UNREAD.contains(&r.member.as_str());
+            let shown = |f| in_to(f) && sourced(f) && (shape || read(f));
+            let timed = r.field.is_none() && matches!(r.member.as_str(), "valid_from" | "valid_to");
+            r.field.as_ref().is_none_or(shown)
+                && (!timed || named(&r.was, &was) && named(&r.to, &to))
+        });
+        report
+            .dropped
+            .retain(|(f, _)| link_known(who, stands, &was, f));
+        // A renamed relation is shown as a dropped one is: by the name it had.
+        let named = |r: &lakelands_api::write::RelationRename| holds(&was, &r.from.as_str().into());
+        report.relations.retain(named);
+        // A declaration the migration carries is named as `describe` names it:
+        // a trigger, a verb or a set to one who is described it, a view to one
+        // who is described the view. The lake is described only for a report
+        // that carries something.
+        if !report.carried.is_empty() {
+            let shown = described();
+            let shown = shown.borrow();
+            report.carried.retain(|c| match c.kind.as_str() {
+                "trigger" => shown.triggers.iter().any(|t| t.name.as_str() == c.name),
+                "verb" => shown.verbs.iter().any(|v| v.name.as_str() == c.name),
+                "object_set" => shown.object_sets.iter().any(|s| s.name == c.name),
+                _ => shown.types.iter().any(|t| t.name.as_str() == c.name),
+            });
+        }
+        report.rekeyed.retain(|r| sees(&r.ty).is_some());
+        report.filled.retain(|f| in_to(&f.field));
+        // A breach to one who reads every field its constraint reads: of the
+        // migrated type in both shapes, of another as it stands (lakelands#1119).
+        let constraint = |b: &lakelands_api::write::Breach| {
+            let own = b.ty == m.to.name;
+            let t = if own { Some(&m.to) } else { sees(&b.ty) };
+            let c = t.and_then(|t| t.constraints.iter().find(|c| c.name == b.constraint));
+            let e = c.and_then(|c| c.holds.typed().ok());
+            let reads = |f: &FieldName| match own {
+                true => read(f),
+                false => sees(&b.ty)
+                    .and_then(|t| Some((t, t.field(f)?)))
+                    .is_some_and(|(t, x)| field_access(who, t, x).reads()),
+            };
+            e.is_some_and(|e| e.fields_read().into_iter().all(reads))
         };
-        e.is_some_and(|e| e.fields_read().into_iter().all(reads))
-    };
-    report.breaches.retain(constraint);
-    // A reference left naming no live record, to one who reads it in both
-    // shapes and is shown its target type (062).
-    let target = |f: &FieldName| (m.to.field(f))?.ty.target.clone();
-    report
-        .unlive
-        .retain(|u| read(&u.field) && target(&u.field).is_some_and(|t| sees(&t).is_some()));
-    report.references.retain(|r| match r.ty == m.to.name {
-        true => holds(&to, &r.field) && sourced(&r.field),
-        false => known(&r.ty, &r.field),
-    });
-    let unnamed =
-        |c: &lakelands_api::write::FieldConversion| c.not_convertible > c.sample_keys.len() as u64;
-    let collide: u64 = report.rekeyed.iter().map(|r| r.collisions).sum();
-    let unfilled = |f: &lakelands_api::write::FieldFill| f.records > f.sample_keys.len() as u64;
-    // What a reference's count left out is told by the plan, from the
-    // declarations alone, never by what the count held (062).
-    let without = |r: &MigrationReport| MigrationReport {
-        unlive: Vec::new(),
-        ..r.clone()
-    };
-    report.more = without(report) != without(&whole)
-        || report.fields.iter().any(unnamed)
-        || report.filled.iter().any(unfilled)
-        || (report.breaches.iter()).any(|b| b.records > b.sample_keys.len() as u64)
-        || (report.unlive.iter()).any(|u| u.records > u.sample_keys.len() as u64)
-        || collide > report.sample_collisions.len() as u64;
+        report.breaches.retain(constraint);
+        // A reference left naming no live record, to one who reads it in both
+        // shapes and is shown its target type (062).
+        let target = |f: &FieldName| (m.to.field(f))?.ty.target.clone();
+        report
+            .unlive
+            .retain(|u| read(&u.field) && target(&u.field).is_some_and(|t| sees(&t).is_some()));
+        report.references.retain(|r| match r.ty == m.to.name {
+            true => holds(&to, &r.field) && sourced(&r.field),
+            false => known(&r.ty, &r.field),
+        });
+        let unnamed = |c: &lakelands_api::write::FieldConversion| {
+            c.not_convertible > c.sample_keys.len() as u64
+        };
+        let collide: u64 = report.rekeyed.iter().map(|r| r.collisions).sum();
+        let unfilled = |f: &lakelands_api::write::FieldFill| f.records > f.sample_keys.len() as u64;
+        // What a reference's count left out is told by the plan, from the
+        // declarations alone, never by what the count held (062).
+        let without = |r: &MigrationReport| MigrationReport {
+            unlive: Vec::new(),
+            ..r.clone()
+        };
+        report.more = without(report) != without(&whole)
+            || report.fields.iter().any(unnamed)
+            || report.filled.iter().any(unfilled)
+            || (report.breaches.iter()).any(|b| b.records > b.sample_keys.len() as u64)
+            || (report.unlive.iter()).any(|u| u.records > u.sample_keys.len() as u64)
+            || collide > report.sample_collisions.len() as u64;
+    }
 }
-
 #[cfg(test)]
 mod tests;
