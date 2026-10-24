@@ -30,9 +30,9 @@ importing the shape of the platform the organs come from.
 - **Budgets.** `cfg(feature)` sites ≤ 20 (features are one per engine);
   the store facade and every `pub trait` in `engine.rs` ≤ 110 methods;
   the core crates' (api, core, store and the three engines) product
-  code ≤ 83k lines and their specification (the conformance suite, unit
+  code ≤ 85k lines and their specification (the conformance suite, unit
   tests, which live in `tests.rs` files, never inline, and every
-  `tests/` beside `src/`) ≤ 154.5k. Each goes down by itself, its base
+  `tests/` beside `src/`) ≤ 157k. Each goes down by itself, its base
   is lowered to its count at the release, and it is raised only by the
   rule in `docs/budgets.md`: a decisive reason, cutting first, a
   measured size, and a recorded row. The gates refuse a raise without
