@@ -122,6 +122,7 @@ mod set_rewritten;
 mod sets_across;
 mod settings;
 mod shown_hash;
+mod sized;
 mod sorted_whole;
 mod stored_vectors;
 mod streaming;
@@ -943,5 +944,6 @@ pub const ALL: &[Check] = &[
     sealed::OUTPUT_EXACT,
     sealed::ANSWER_EXACT,
     export::INTEGER_DAMAGE,
+    sized::SEALED_BY_SIZE,
     grid::GRID,
 ];

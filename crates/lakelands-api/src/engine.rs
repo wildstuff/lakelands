@@ -165,6 +165,16 @@ pub trait LakeEngine: Send + Sync {
     /// Every sealed segment, oldest first.
     fn segments(&self) -> Result<Vec<SegmentDigest>>;
 
+    /// The bytes the active segment has committed, as this handle last
+    /// read them, with no I/O: what the store seals by size against
+    /// `limits.seal_after_bytes`
+    /// (`docs/decisions/074-a-segment-is-sealed-by-size.md`). An engine
+    /// whose segment is nothing to move or back up on its own answers
+    /// none, as this default does, and is never sealed by size.
+    fn active_segment_bytes(&self) -> Option<u64> {
+        None
+    }
+
     /// The projection's write side, for the fold.
     fn projection(&self) -> &dyn ProjectionStore;
 

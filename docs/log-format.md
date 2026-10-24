@@ -819,7 +819,10 @@ every later one starts with a `checkpoint`.
 Sealing the active segment ends it at its last event and starts a new one
 whose first event is a `checkpoint` (§2.6). The checkpoint repeats the
 sealed segment's last hash and lists every sealed segment's range and
-digest.
+digest. A segment is sealed by a `checkpoint` the host asks for, or by
+the writer once the active segment passes the size its host set
+(`docs/decisions/074-a-segment-is-sealed-by-size.md`); the two are one
+seal, and a reader cannot tell them apart.
 
 ### 4.3 Verifying
 

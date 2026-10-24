@@ -603,6 +603,10 @@ impl LakeEngine for SqliteLake {
         lock(&self.log).segments()
     }
 
+    fn active_segment_bytes(&self) -> Option<u64> {
+        lock(&self.log).active_end()
+    }
+
     fn projection(&self) -> &dyn ProjectionStore {
         self
     }

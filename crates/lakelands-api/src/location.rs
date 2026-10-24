@@ -279,6 +279,22 @@ pub struct Limits {
     /// refolding the records its sources wrote alone
     /// (`docs/decisions/058-a-source-may-be-forgotten.md`).
     pub forget_rebuild: bool,
+    /// The bytes past which the writer seals the active segment after an
+    /// append, on an engine that reports its size; 0 never seals by size,
+    /// and a bound below [`Limits::SEAL_FLOOR`] is read as it
+    /// (`docs/decisions/074-a-segment-is-sealed-by-size.md`).
+    pub seal_after_bytes: u64,
+}
+
+impl Limits {
+    /// The smallest bound a segment is sealed by size at: every checkpoint
+    /// lists every sealed segment, and an open reads each one's end.
+    pub const SEAL_FLOOR: u64 = 1 << 20;
+
+    /// The bound a segment is sealed by size at, none where it is off.
+    pub fn seal_bound(&self) -> Option<u64> {
+        (self.seal_after_bytes > 0).then(|| self.seal_after_bytes.max(Self::SEAL_FLOOR))
+    }
 }
 
 impl Default for Limits {
@@ -301,6 +317,7 @@ impl Default for Limits {
             order_unused_secs: 604_800,
             order_chunk: 10_000,
             forget_rebuild: false,
+            seal_after_bytes: 256 << 20,
         }
     }
 }

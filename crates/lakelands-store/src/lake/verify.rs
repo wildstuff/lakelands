@@ -198,13 +198,36 @@ impl Turn<'_> {
     /// next, as one step.
     pub fn checkpoint(&self) -> Result<Position> {
         // A segment is sealed only over events the projection has folded.
-        let mut w = self.for_write()?;
+        self.seal(&mut *self.for_write()?)
+    }
+
+    /// Seal the active segment where the engine reports it past
+    /// `limits.seal_after_bytes`, on the held writer between two entries
+    /// of the queue, so never inside a batch (074). A writer that is
+    /// behind, lost or without its lease does not seal, and the size is
+    /// weighed again only once the tip has moved: a seal that fails is
+    /// tried after the next append, the write before it answered by its
+    /// own events.
+    pub(crate) fn seal_by_size(&self) {
+        let mut w = self.writer();
+        let tip = w.tip.as_ref().map(|t| t.0);
+        if w.lease.is_none() || w.lost || w.behind || w.sized == tip {
+            return;
+        }
+        w.sized = tip;
+        let (size, bound) = (self.engine.active_segment_bytes(), self.limits.seal_bound());
+        if matches!((size, bound), (Some(n), Some(b)) if n >= b) {
+            let _ = self.seal(&mut w);
+        }
+    }
+
+    fn seal(&self, w: &mut Writer) -> Result<Position> {
         let lease = w.lease.clone().ok_or_else(read_only)?;
         let Some((through, hash)) = w.tip.clone() else {
             return Ok(Position::GENESIS);
         };
         let before = self.engine.segments()?;
-        let now = self.clock(&mut w);
+        let now = self.clock(w);
         // The engine closes the segment and begins the next with the
         // checkpoint in one step: one refused before it has sealed
         // nothing, and is sent again.
@@ -216,14 +239,14 @@ impl Turn<'_> {
                 hash: hash.clone(),
                 segments,
             };
-            let (_, events, stored) = self.stamp(&w, vec![Draft::system(now, body)])?;
+            let (_, events, stored) = self.stamp(w, vec![Draft::system(now, body)])?;
             stamped = Some(events);
             Ok(stored)
         })?;
         let Some(events) = stamped else {
             return Ok(through);
         };
-        let events = self.landed(&mut w, events, Reads::default())?;
+        let events = self.landed(w, events, Reads::default())?;
         Ok(events.last().map_or(through, |e| e.position))
     }
 

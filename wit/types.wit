@@ -1762,6 +1762,7 @@ interface types {
         order-unused-secs: u32,
         order-chunk: u32,
         forget-rebuild: bool,
+        seal-after-bytes: u64,
     }
 
     record feed-filter {
