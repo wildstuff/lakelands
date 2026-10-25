@@ -162,41 +162,44 @@ terrain Lakelands is built for, and where it is not the right tool.
   map first. An agent can draw it over MCP (`declare_type`, `add_field`),
   but there is always a map.
 
-> **Status: `0.18.0`.** Lakelands `0.18.0` is the `lakelands` CLI, its
+> **Status: `0.19.0`.** Lakelands `0.19.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (795 checks through the doors and 78 through the
-> engine seam), with 74 decision records and the event log at format
+> conformance suite (806 checks through the doors and 78 through the
+> engine seam), with 79 decision records and the event log at format
 > version 19, installable from the release. Its budgets: the store
 > facade and engine traits hold 89 of 110 methods, the core crates'
-> product code 82 714 of 83 000 lines and their specification 154 086 of
-> 154 500, and 6 of 20 `cfg(feature)` sites. A ceiling rises only by a
-> recorded rule (decision 047): the count now holds the memory engine and
-> the tests beside `src/` (lakelands#1317), and the round's ceilings are
-> 83 000 and 154 500. Beside what `0.17.0` held, writes queue for the
-> writer in order and share one append and one sync in a batch, and a
-> SQLite segment is sealed by size (lakelands#1311, lakelands#1313,
-> lakelands#1332, lakelands#1309). A rebuild is built beside the
-> projection and swapped in, so an upgrade can be built ahead, and the
-> projection is leaner, with a vector stored once
-> (lakelands#1322, lakelands#1318, lakelands#1319, lakelands#1323). The
-> reads of one lake run side by side on a pool of readers
-> (lakelands#1324). A host may ask whether a write would break a rule
-> without writing it (lakelands#1329), and a verb's `requires` and
-> preconditions may read the call's payload (lakelands#1330). A write a
-> UI follows carries an ETag, and a create-only conflict says so
-> (lakelands#1316). The code was reviewed for maintainability and
-> stability (lakelands#1295): the store's writes, reads and lake are
-> split by door, one `Sight` is carried per call, refusals have
-> constructors on `Error`, and the canonical encoder writes numbers
-> without intermediate strings (lakelands#1304, lakelands#1305,
-> lakelands#1306, lakelands#1314, lakelands#1331, lakelands#1308). The
-> budgets count what they claim and the ratchet goes down
-> (lakelands#1317), the specification is cut (lakelands#1315), and CI
-> gains a daily advisories run (lakelands#1307). A writer's open
-> upgrades a lake of format 14, 15, 16, 17 or 18 to 19 by appending and
-> rebuilds the projection, and the lake this release writes is kept
-> beside those of the releases before.
+> product code 84 511 of 85 000 lines and their specification 156 395 of
+> 157 000, and 6 of 20 `cfg(feature)` sites. A ceiling rises only by a
+> recorded rule (decision 047): the operator set the round's ceilings at
+> 85 000 and 157 000, and the ratchet bases stand at 85 000 and 156 500.
+> Beside what `0.18.0` held, `lakelands serve` runs on a multi-thread
+> runtime whose threads the server section sets (lakelands#1388), and
+> answers health and readiness (lakelands#1379). A lake is backed up and
+> restored by commands (lakelands#1386). A SQLite lake's projection may
+> live in a directory of its own, a PostgreSQL lake's parts in
+> tablespaces, and a root names the directories of its lakes, exports and
+> backups (lakelands#1390). A host binds a meter through which a lake is
+> measured, and `lakelands serve` can expose the metrics
+> (lakelands#1396). A handle whose lease another writer took is no
+> writer, and a server that holds it answers not ready (lakelands#1393).
+> The build bundles SQLite 3.54.1 with rusqlite 0.41, and the minimum
+> Rust version is 1.89 (lakelands#1397). Rights go through the `Sight`
+> on every door, and are private to the core (lakelands#1365,
+> lakelands#1384, lakelands#1387, lakelands#1391); PostgreSQL carries the
+> log's tip into the append and the memory engine shares provenance
+> (lakelands#1380, lakelands#1381). Under a vector index a search pages
+> one ranking of what its reader may see, where on PostgreSQL a record
+> kept from the reader could shift the pages it was shown
+> (lakelands#1254, decision 078); the security advisory is published
+> with this release. Decisions 075 and 076, a read across lakes and a
+> lake with one writer that many processes write through, are accepted
+> and not yet built (lakelands#1383, lakelands#1389). A writer's open
+> upgrades a lake of format 14, 15, 16, 17 or 18 to 19 by appending;
+> the first writer's open of 0.19.0 also rebuilds each PostgreSQL lake's
+> projection (its layout is 7) beside the one it replaces, the log
+> untouched, and the lake of format 19 is kept beside those of the
+> releases before.
 
 ## Try it
 

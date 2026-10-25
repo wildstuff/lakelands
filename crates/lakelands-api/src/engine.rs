@@ -520,6 +520,18 @@ pub struct Rankings {
     /// The weight of a match of the text in each of these fields, under
     /// their names at the head; a field not named weighs 1.
     pub text_weights: BTreeMap<FieldName, f64>,
+    /// The reader's selection. An engine that keeps an index streams an
+    /// indexed field only from the graph of the class `seen.restricted`
+    /// names, ranks exactly the records that hold `seen.equal`, and admits
+    /// each vector candidate by `seen` on its head record: a vector list
+    /// then holds the first `k` candidates of the field's sequence that it
+    /// admits. Only its selection is read, not its order, `after` or
+    /// `limit`. `None`: every live candidate, ranked as for a reader
+    /// holding `restricted`.
+    pub seen: Option<Scan>,
+    /// Rank every vector list exactly, from no graph: for a reader whose
+    /// records are no class.
+    pub exact: bool,
 }
 
 /// What [`LakeEngine::ranked`] answers.
@@ -533,6 +545,10 @@ pub struct Ranked {
     /// text scores as `docs/seams.md` §`ranked` says, a vector by the
     /// cosine (higher is closer).
     pub lists: Vec<Vec<(RecordKey, f64)>>,
+    /// Whether the vector lists were judged by `seen`. An engine that
+    /// answers `false` is judged by the store, at the cost of reading
+    /// every candidate.
+    pub judged: bool,
 }
 
 /// A read view of the projection at one position. Records come back

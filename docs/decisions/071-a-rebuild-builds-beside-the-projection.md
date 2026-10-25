@@ -129,6 +129,30 @@ close, which can be after the next statement of the process that dropped
 it. So a dropped builder gives the lock up itself, and a swap that
 follows the drop is not refused `rebuilding`.
 
+### On PostgreSQL a graph is built beside too
+
+A field the lake asks an index for keeps a graph per class of reader
+(`docs/decisions/078-under-an-index-a-search-pages-one-ranking-of-what-its-reader-may-see.md`),
+and a graph is the second thing built beside: B built again once a hold
+has made it stale, or A at the type's first hold. A thread of the writer
+builds it on a connection of its own. It names the next generation in
+the graph's row, copies the graph's entries into a table of their own in
+one snapshot and indexes them, then, in one short transaction under the
+fold's lock, applies the keys every write since touched and swaps the
+row to the new table. Until the swap, the class's readers are ranked
+exactly, never from a graph that no longer describes the head.
+
+A build that fails, is stopped or is killed leaves the row naming the
+generation it read, and the graph answers as it did. The builder tries
+again after a pause that doubles with each failure in a row, or when a
+commit wakes it. The next writer's open gives up every build a writer
+before left half done, in one transaction under the fold's lock, and
+drops every graph table no row reads, once no transaction holds the
+rows. A superseded generation is dropped once every search that might
+read it has ended. A rebuild's scratch builds its graphs at the end of
+its fold, and the swap above drops the projection's graph tables and
+moves the scratch's in with the rest.
+
 ## Why
 
 A rebuild folds the whole log, so its time grows with the lake. Done in

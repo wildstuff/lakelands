@@ -2,8 +2,7 @@
 
 ## What is decided
 
-**Proposed** on lakelands#1371 (2026-10-24); the operator decides at
-review.
+**Accepted** on lakelands#1371, by the operator on 2026-10-24.
 
 ### The store tells numbers and keeps none
 

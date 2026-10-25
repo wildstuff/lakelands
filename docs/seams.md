@@ -725,6 +725,17 @@ read through a view. `LakeEngine::ranked(type, asked, k)` reads them:
   a match in each field the store weighs, and each vector field with
   its query vector. The answer holds one list for each, the
   text's first, each cut at `k`.
+- **Whom the lists are for.** `asked.seen` is the reader's selection
+  (`Scan`: retired, `restricted`, its `only` pairs, `valid_at`, a
+  `where`), and `asked.exact` asks every vector list ranked exactly. An
+  engine that reads `seen` admits each vector candidate by it, on its
+  head record, through `engines::admits`, ranks the records holding
+  `seen.equal` exactly, and answers `Ranked.judged = true`: its vector
+  lists then hold only what the reader sees, and the store reads only
+  the page's records. One that does not answers `judged = false`, and
+  the store judges every candidate. Without `seen` the lists are of
+  every live candidate, ranked as for a reader holding `restricted`
+  (`docs/decisions/078-under-an-index-a-search-pages-one-ranking-of-what-its-reader-may-see.md`).
 - **One state.** The engine reads the lists and the position the
   projection is folded through in one transaction (one lock on the
   memory engine): the lists are of the head at exactly that position,
@@ -837,11 +848,18 @@ cosine ranks them, so an answer never depends on its arithmetic.
 The `sys.setting` `vector_index.<type>` names vector fields of a type. A
 search over one of them answers the index's set, ranked by the one
 cosine, ties by key, and says `ranked_by: index` (or `hybrid (index)`);
-`describe_type` names them as `indexed`. On PostgreSQL the index is
-pgvector's HNSW (`m = 16`, `ef_construction = 64`, `ef_search` at the
-candidates pulled, from 200 up to 1 000, iterative scans past it) over each vector's unit
-vector, used while its mark equals `folded`; SQLite and memory keep none
-and answer the exact ranking. Every other field answers the exact
+`describe_type` names them as `indexed`. On PostgreSQL the index is a
+graph per class of reader (078): B, of the live heads not held, and
+from the type's first hold A, of every live head, each a table of unit
+vectors under pgvector's HNSW (`m = 16`, `ef_construction = 64`), read
+as one stream at `ef_search` 1 000 in strict order while it is built
+and not stale; SQLite and memory keep none and answer the exact
+ranking. An engine that keeps an index promises that an indexed list
+is a prefix of the field's one sequence for the class `seen` names (the
+stream ranked by the one cosine, ties by key, then what the stream did
+not hand out, ranked alike), and that the graph it streams from holds
+nothing that class may not see; one that cannot keep that ranks the
+list exactly. Every other field answers the exact
 ranking on every engine. The suite holds the index's recall against the
 reference at each engine's floor (suite:
 `an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_floor`):

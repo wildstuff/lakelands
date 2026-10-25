@@ -12,7 +12,7 @@ at lakelands#817. The number is not reused.
 | groups: by their key's canonical bytes | `025 § Every answer of more than one thing has one order` |
 | ranked search: equal scores by key; one ranking's ties by the keys at the head, a fused tie by the key answered (lakelands#797, lakelands#826) | `025 § Equal scores of one ranking follow the keys at the head, and a fused tie the key answered` |
 | hybrid search fuses its rankings by reciprocal rank | `025 § Several rankings are fused by weighted reciprocal rank, among the hits the read may see` |
-| the exception: a vector field the lake asks an index for | `025 § Under an index a page is the index's answer at the depth that page asks for` |
+| the exception: a vector field the lake asks an index for | `025 § Under an index the pages of one query are one sequence of its reader's class` |
 | aggregates are the store's | `025 § Aggregates are the store's, except a count alone` |
 | Why: an order left to an engine | `025 § Why` |
 | What it is not: relevance scores across engines | `025 § A lexical hit's set, order and score are the same on every engine` |

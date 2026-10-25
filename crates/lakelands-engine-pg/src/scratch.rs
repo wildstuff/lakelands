@@ -26,6 +26,7 @@ use lakelands_api::id::{LakeId, Position};
 use crate::connect::{Db, Target};
 use crate::log;
 use crate::projection::{self, Names, PROJECTION_TABLES, RETIRED_TABLES};
+use crate::vector_index;
 
 /// The rows of `meta` the log keeps: everything else is the projection's.
 const LOG_KEYS: &str = "'lake', 'imported', 'import_fence'";
@@ -124,6 +125,7 @@ pub(crate) fn swap_sql(live: &Names, scratch: &Names) -> String {
     for t in PROJECTION_TABLES.iter().chain(RETIRED_TABLES) {
         sql += &format!("DROP TABLE IF EXISTS {} CASCADE; ", live.t(t));
     }
+    sql += &vector_index::tables_sql(live, None);
     for t in PROJECTION_TABLES {
         sql += &format!(
             "ALTER TABLE {} SET SCHEMA {}; ",
@@ -131,6 +133,7 @@ pub(crate) fn swap_sql(live: &Names, scratch: &Names) -> String {
             live.schema()
         );
     }
+    sql += &vector_index::tables_sql(scratch, Some(live));
     let (m, sm) = (live.t("meta"), scratch.t("meta"));
     sql += &format!(
         "DELETE FROM {m} WHERE k NOT IN ({LOG_KEYS}); \
