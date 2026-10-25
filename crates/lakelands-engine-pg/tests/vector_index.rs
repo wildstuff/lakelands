@@ -750,6 +750,138 @@ fn retiring_the_setting_drops_every_graph() {
     common::drop_schema(&url, &schema);
 }
 
+/// Searches that overlap without a pause, each locking `graphs` before
+/// its snapshot as a ranking does and reading the generation its row
+/// names, hold off neither the builder's drop of a generation swapped
+/// away nor a hold's build. Each search runs 0.3 s, and the second
+/// reader starts 0.15 s after the first, so `graphs` is never free; the
+/// second hold comes 8 s after the first, by when a builder that took a
+/// refused drop for a failure would be waiting out its back-off.
+#[test]
+fn searches_that_never_pause_hold_off_no_drop_and_no_build() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    let Some(url) = common::url_or_skip("the pg vector-index test") else {
+        return;
+    };
+    if !pgvector(&url) {
+        return;
+    }
+    let schema = common::fresh_schema();
+    let engine = PgOpener
+        .open(&common::location(&url, "vindex", &schema), OpenMode::Create)
+        .unwrap();
+    fill(engine.as_ref());
+    built(&url, &schema);
+    let (stop, failed) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    let readers: Vec<_> = (0..2)
+        .map(|n| {
+            let (url, schema) = (url.clone(), schema.clone());
+            let (stop, failed) = (Arc::clone(&stop), Arc::clone(&failed));
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(150 * n));
+                let mut c = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+                let s = format!("\"{schema}\"");
+                while !stop.load(Ordering::Relaxed) {
+                    let read = (|| -> Result<(), postgres::Error> {
+                        c.batch_execute(&format!(
+                            "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; \
+                             LOCK TABLE {s}.graphs IN ACCESS SHARE MODE"
+                        ))?;
+                        let g: i64 = c
+                            .query_one(
+                                &format!(
+                                    "SELECT gen FROM {s}.graphs WHERE field = 'e' AND class = 'b'"
+                                ),
+                                &[],
+                            )?
+                            .get(0);
+                        c.batch_execute(&format!(
+                            "SELECT count(*) FROM {s}.{}; SELECT pg_sleep(0.3); COMMIT",
+                            table("e", "b", g)
+                        ))
+                    })();
+                    if let Err(e) = read {
+                        failed.lock().unwrap().push(e.to_string());
+                        let _ = c.batch_execute("ROLLBACK");
+                    }
+                }
+            })
+        })
+        .collect();
+    std::thread::sleep(Duration::from_secs(1));
+    let b = |url: &str| {
+        rows(url, &schema)
+            .into_iter()
+            .find(|r| r.1 == "b" && r.3.is_none() && r.4.is_none())
+            .and_then(|r| r.2)
+    };
+    // The seconds until B is swapped past `from`, and those until no
+    // table is left but the ones the rows read.
+    let swap_and_drop = |from: i64| {
+        let asked = Instant::now();
+        while b(&url).is_none_or(|g| g <= from) {
+            assert!(
+                asked.elapsed() < Duration::from_secs(60),
+                "B is built again"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let swapped = asked.elapsed().as_secs_f64();
+        loop {
+            let rows = rows(&url, &schema);
+            let mut read: Vec<String> = rows
+                .iter()
+                .filter_map(|r| Some(table(&r.0, &r.1, r.2?)))
+                .collect();
+            read.sort();
+            if tables(&url, &schema) == read || asked.elapsed() > Duration::from_secs(60) {
+                return (
+                    swapped,
+                    asked.elapsed().as_secs_f64(),
+                    tables(&url, &schema),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let first = b(&url).unwrap();
+    hold(engine.as_ref(), 7, 2);
+    let once = swap_and_drop(first);
+    std::thread::sleep(Duration::from_secs(8));
+    let second = b(&url).unwrap();
+    hold(engine.as_ref(), 8, 3);
+    let twice = swap_and_drop(second);
+    stop.store(true, Ordering::Relaxed);
+    for r in readers {
+        r.join().unwrap();
+    }
+    assert!(
+        once.1 < 3.0 && twice.0 < 3.0 && twice.1 < 3.0,
+        "under searches that never pause, each old generation is dropped within 3 s of the \
+         hold and the second hold's B is swapped in within 3 s: after the first hold, swapped \
+         at {:.2} s, the tables as the rows read at {:.2} s ({:?}); after the second, at \
+         {:.2} s and {:.2} s ({:?})",
+        once.0,
+        once.1,
+        once.2,
+        twice.0,
+        twice.1,
+        twice.2
+    );
+    let failed = failed.lock().unwrap();
+    assert!(
+        failed.is_empty(),
+        "every search read its generation whole: {failed:?}"
+    );
+    drop(engine);
+    common::drop_schema(&url, &schema);
+}
+
 /// A pull deeper than pgvector's default `hnsw.max_scan_tuples` of
 /// 20 000 is streamed whole: a search lifts the bound. That takes a
 /// field larger than any row of the suite holds on every engine, so it
@@ -809,9 +941,12 @@ fn a_pull_past_the_default_scan_bound_is_streamed_whole() {
 /// is smaller than the pull, to a reader shown only part of it. Twin
 /// fields hold the same forty vectors and one of zeros; the second holds
 /// three hundred more, farther away, so its index fills the pull and the
-/// first's does not. Neither answers the vector of zeros, and the first
-/// answers the exact ranking of the forty. A field without the setting
-/// scores it 0, as every engine does.
+/// first's does not. After the build, two of the forty indexed are
+/// written over, one with zeros and one with a vector of another
+/// dimension. Neither field answers a vector without a unit vector, and
+/// the first answers the exact ranking of the other thirty-eight. A
+/// field without the setting scores the vector of zeros 0, as every
+/// engine does.
 ///
 /// It is this engine's own test and no row of the suite: what leaks is
 /// which of this engine's two ways answered, and an engine without an
@@ -861,6 +996,14 @@ fn the_scan_that_answers_for_an_index_holds_no_vector_of_zeros() {
         p.put_record(&setting(json!(["e"]), 1)).unwrap();
         p.commit(Position(1)).unwrap();
         assert_eq!(built(&url, &schema).len(), 1, "`e` is indexed");
+        // Over two built entries, one of zeros and one of another
+        // dimension: neither has a unit vector, so the graph keeps the
+        // key and no unit, and a pull past the stream's end reads the
+        // graph's other entries.
+        p.begin().unwrap();
+        index.put(&t, &key(5), "e", &[0.0; DIMENSIONS]).unwrap();
+        index.put(&t, &key(7), "e", &[1.0; DIMENSIONS + 1]).unwrap();
+        p.commit(Position(2)).unwrap();
         let shared = |field: &str| -> Vec<(RecordKey, f64)> {
             let got = nearest(engine.as_ref(), &t, field, &query, k).unwrap();
             got.into_iter()
@@ -879,13 +1022,14 @@ fn the_scan_that_answers_for_an_index_holds_no_vector_of_zeros() {
         common::drop_schema(&url, &schema);
     }
     let mut want: Vec<(RecordKey, f64)> = (0..41)
-        .filter(|i| *i != 20)
+        .filter(|i| ![5, 7, 20].contains(i))
         .map(|i| (key(i), lakelands_api::query::cosine(&query, &at(i))))
         .collect();
     engines::rank(&mut want, k);
     assert!(
         answers[0] == want,
-        "a field smaller than the pull answers every vector but the one of zeros, exactly: {:?}",
+        "a field smaller than the pull answers every vector but those without a unit vector, \
+         exactly: {:?}",
         answers[0]
     );
     assert!(

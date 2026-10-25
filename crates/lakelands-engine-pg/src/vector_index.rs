@@ -32,10 +32,12 @@
 //! with a row in the new table, or a mark set since the claim, which
 //! gives up the claim, starts a new copy. After a round that failed the
 //! builder closes its connection and waits, twice as long after each
-//! failure in a row, up to [`BACK_OFF_MOST`].
-//! Only the sweep drops a table a row read, once no reader holds
-//! `graphs`, so a search reads the generation its snapshot names whole; a
-//! swap or a release drops only a next generation no row read.
+//! failure in a row, up to [`BACK_OFF_MOST`], or until a commit wakes it.
+//! Only a sweep drops a table a row read: the builder's once every
+//! transaction that held `graphs` when it looked after the row moved off
+//! it has ended, taking no lock a search waits on, and a writer's open
+//! once no transaction holds `graphs`. So a search reads the generation its snapshot names whole;
+//! a swap or a release drops only a next generation no row read.
 //!
 //! **A search reads one stream.** A reader is streamed from the graph of
 //! its class, while that graph is built and not stale, at fixed settings
@@ -53,7 +55,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, TryLockError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -97,6 +99,11 @@ const FETCH_MOST: usize = 4096;
 const BACK_OFF: Duration = Duration::from_secs(1);
 /// The longest wait between failed rounds.
 const BACK_OFF_MOST: Duration = Duration::from_secs(64);
+/// The wait before the writer cancels its builder's statement again.
+const CANCEL_AGAIN: Duration = Duration::from_millis(20);
+/// The wait before the builder looks again whether the searches that
+/// might read an old table have ended.
+const DROP_AGAIN: Duration = Duration::from_millis(200);
 /// Whether a record's state `r` is held, as `records.state` writes it.
 const HELD: &str = "coalesce((r.state::jsonb ->> 'restricted') = 'true', false)";
 /// Whether a record's state `r` is retired, likewise.
@@ -705,16 +712,15 @@ fn unnamed(db: &mut Db, names: &Names) -> Result<Vec<String>> {
 }
 
 /// Drop every graph table of the schema that no row reads or builds,
-/// once no transaction holds `graphs`: waiting for that where `wait`,
-/// else failing at once, to try again later.
-pub(crate) fn sweep(db: &mut Db, names: &Names, wait: bool) -> Result<()> {
+/// once no transaction holds `graphs`, waiting for that: at a writer's
+/// open, and in a scratch no one reads.
+pub(crate) fn sweep(db: &mut Db, names: &Names) -> Result<()> {
     if unnamed(db, names)?.is_empty() {
         return Ok(());
     }
     db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
-        let nowait = if wait { "" } else { " NOWAIT" };
         db.batch(&format!(
-            "LOCK TABLE {} IN ACCESS EXCLUSIVE MODE{nowait}",
+            "LOCK TABLE {} IN ACCESS EXCLUSIVE MODE",
             names.t("graphs")
         ))?;
         for t in unnamed(db, names)? {
@@ -722,6 +728,61 @@ pub(crate) fn sweep(db: &mut Db, names: &Names, wait: bool) -> Result<()> {
         }
         Ok(())
     })
+}
+
+/// Graph tables no row read or built when the builder first saw them
+/// so, and the transactions that then held `graphs` or one of them.
+struct Old {
+    tables: Vec<String>,
+    readers: Vec<String>,
+}
+
+/// The builder's sweep, which takes no lock a search waits on: drop the
+/// tables of `old` once every transaction that held `graphs` or one of
+/// them at the first look has ended. A search locks `graphs` before its
+/// snapshot, so one that had not by then reads the rows as they stand,
+/// none naming these tables. Whether tables are left to drop.
+fn drop_old(db: &mut Db, names: &Names, old: &mut Option<Old>) -> Result<bool> {
+    if old.is_none() {
+        let tables = unnamed(db, names)?;
+        if tables.is_empty() {
+            return Ok(false);
+        }
+        let mut read: Vec<String> = tables.iter().map(|t| names.t(t)).collect();
+        read.push(names.t("graphs"));
+        let readers = db
+            .query_one(
+                "SELECT coalesce(array_agg(DISTINCT virtualtransaction), '{}') FROM pg_locks \
+                 WHERE granted AND pid <> pg_backend_pid() AND relation IN \
+                 (SELECT to_regclass(t)::oid FROM unnest($1::text[]) AS r(t)) AND database = \
+                 (SELECT oid FROM pg_database WHERE datname = current_database())",
+                &[&read],
+            )?
+            .get(0);
+        *old = Some(Old { tables, readers });
+    }
+    let Some(Old { tables, readers }) = old.as_ref() else {
+        return Ok(false);
+    };
+    let reading: bool = db
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'virtualxid' \
+             AND granted AND virtualxid = ANY($1))",
+            &[readers],
+        )?
+        .get(0);
+    if reading {
+        return Ok(true);
+    }
+    db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
+        db.batch("SET LOCAL lock_timeout = '1s'")?;
+        for t in tables {
+            db.batch(&format!("DROP TABLE IF EXISTS {}", names.t(t)))?;
+        }
+        Ok(())
+    })?;
+    *old = None;
+    Ok(!unnamed(db, names)?.is_empty())
 }
 
 /// The statement that drops every graph table of `from`'s schema, or,
@@ -934,7 +995,7 @@ fn release(
 /// its graphs.
 pub(crate) fn build_scratch(db: &mut Db, names: &Names, v: &Pgvector) -> Result<()> {
     build_all(db, names, v, &|| false)?;
-    sweep(db, names, true)
+    sweep(db, names)
 }
 
 /// What the writer and its builder share.
@@ -1011,19 +1072,24 @@ impl Builder {
 
     /// Hold the builder off until the answer is dropped: its statement
     /// is cancelled through `db`, the writer's own connection, and its
-    /// round ends at its next step.
+    /// round ends at its next step. A cancel that lands between two of
+    /// its statements cancels nothing, so it is sent again every
+    /// [`CANCEL_AGAIN`] until the round has ended.
     pub(crate) fn hold(&self, db: &mut Db) -> Held<'_> {
-        let pid = {
-            let mut s = lock(&self.shared.state);
-            s.held += 1;
-            s.pid
+        lock(&self.shared.state).held += 1;
+        let work = loop {
+            if let Some(pid) = lock(&self.shared.state).pid {
+                let _ = db.query_one("SELECT pg_cancel_backend($1)", &[&pid]);
+            }
+            match self.shared.work.try_lock() {
+                Ok(work) => break work,
+                Err(TryLockError::Poisoned(e)) => break e.into_inner(),
+                Err(TryLockError::WouldBlock) => std::thread::sleep(CANCEL_AGAIN),
+            }
         };
-        if let Some(pid) = pid {
-            let _ = db.query_one("SELECT pg_cancel_backend($1)", &[&pid]);
-        }
         Held {
             shared: &self.shared,
-            _work: lock(&self.shared.work),
+            _work: work,
         }
     }
 
@@ -1039,12 +1105,14 @@ impl Builder {
 }
 
 /// The builder's loop: on each wake, build what the rows ask for, then
-/// sweep, and close its connection once that is done; after a round the
-/// writer held off, again once it lets go; after a failure, with the
-/// connection closed, again after [`BACK_OFF`], doubled for each failure
-/// in a row up to [`BACK_OFF_MOST`].
+/// drop the old tables ([`drop_old`]), and close its connection once
+/// that is done. After a round the writer held off it goes again once
+/// the writer lets go; while old tables wait on searches, again after
+/// [`DROP_AGAIN`]; after a failure, with the connection closed, again
+/// after [`BACK_OFF`], doubled for each failure in a row up to
+/// [`BACK_OFF_MOST`]. A commit's wake ends either wait.
 fn run(shared: &Shared, target: &Target, names: &Names, v: &Pgvector) {
-    let (mut db, mut back_off) = (None::<Db>, BACK_OFF);
+    let (mut db, mut back_off, mut old) = (None::<Db>, BACK_OFF, None::<Old>);
     loop {
         {
             let mut s = lock(&shared.state);
@@ -1061,7 +1129,7 @@ fn run(shared: &Shared, target: &Target, names: &Names, v: &Pgvector) {
             let s = lock(&shared.state);
             s.held > 0 || s.stop
         };
-        let mut round = || -> Result<()> {
+        let mut round = || -> Result<bool> {
             if db.as_ref().is_none_or(Db::is_closed) {
                 let mut opened = connect::connect(target)?;
                 opened.batch("SET max_parallel_maintenance_workers = 0")?;
@@ -1070,32 +1138,45 @@ fn run(shared: &Shared, target: &Target, names: &Names, v: &Pgvector) {
                 db = Some(opened);
             }
             let Some(db) = db.as_mut() else {
-                return Ok(());
+                return Ok(false);
             };
             build_all(db, names, v, &hold)?;
             if hold() {
-                return Ok(());
+                return Ok(false);
             }
-            sweep(db, names, false)
+            drop_old(db, names, &mut old)
         };
-        let failed = round().is_err();
+        let done = round();
         drop(work);
         if hold() {
-            if let Some(db) = db.as_mut().filter(|_| failed) {
+            if let Some(db) = db.as_mut().filter(|_| done.is_err()) {
                 let _ = db.batch("ROLLBACK");
             }
             lock(&shared.state).wake = true;
             continue;
         }
-        lock(&shared.state).pid = None;
-        db = None;
-        if !failed {
-            back_off = BACK_OFF;
-            continue;
+        if !matches!(done, Ok(true)) {
+            lock(&shared.state).pid = None;
+            db = None;
         }
-        let until = Instant::now() + back_off;
+        let wait = match done {
+            Ok(true) => {
+                back_off = BACK_OFF;
+                DROP_AGAIN
+            }
+            Ok(false) => {
+                back_off = BACK_OFF;
+                continue;
+            }
+            Err(_) => {
+                let wait = back_off;
+                back_off = (back_off * 2).min(BACK_OFF_MOST);
+                wait
+            }
+        };
+        let until = Instant::now() + wait;
         let mut s = lock(&shared.state);
-        while !s.stop && Instant::now() < until {
+        while !s.stop && !s.wake && Instant::now() < until {
             let left = until.saturating_duration_since(Instant::now());
             s = shared
                 .turn
@@ -1104,7 +1185,6 @@ fn run(shared: &Shared, target: &Target, names: &Names, v: &Pgvector) {
                 .0;
         }
         s.wake = true;
-        back_off = (back_off * 2).min(BACK_OFF_MOST);
     }
 }
 
@@ -1286,6 +1366,9 @@ fn stream(
         v.schema,
         v.ty(query.len() as u32)
     );
+    // `g.unit IS NOT NULL` alone keeps an entry without a unit vector,
+    // zeros or another dimension, out of the exact tail as the index
+    // keeps it out of the stream.
     let from = format!(
         "FROM {} g JOIN {} v ON v.ty = {} AND v.field = {} AND v.key = g.key \
          AND v.until IS NULL AND g.unit IS NOT NULL",

@@ -156,7 +156,7 @@ impl PgLake {
                 let found = vector_index::find(&mut projection, true);
                 let why = found.as_ref().map_err(String::as_str);
                 vector_index::opened(&mut projection, &names, why, lake.as_str())?;
-                vector_index::sweep(&mut projection, &names, true)?;
+                vector_index::sweep(&mut projection, &names)?;
                 let writing = Writing {
                     lease: Mutex::new(lease),
                     projection: Mutex::new(projection),

@@ -193,16 +193,21 @@ principals there are.
   Otherwise it points the graph's row at the new generation and clears
   the mark. A search reads the graph's row and the generation it names
   in the one transaction that ranks it, under one snapshot, so one that
-  began before the swap reads the old generation whole, and the writer
-  drops the old one once no transaction that began before the swap is
-  running. At its open the writer drops every table of a graph but the
-  one its row reads, once no transaction that began before the open is
-  running, and starts again wherever the mark says B is stale. Where
-  holds come faster than a build, B stays stale and its readers keep the
-  exact ranking. A is built in the same way, once its row is written; a
-  held key in A is no taint. A build that fails is tried again after a
-  wait that doubles with each failure in a row, from one second up to 64,
-  the writer's connection for it closed meanwhile.
+  began before the swap reads the old generation whole. A search locks
+  the graphs' rows before it takes its snapshot, so the writer drops the
+  old generation once every transaction that held that lock when it
+  looked after the swap has ended, looking again every 200 ms and
+  taking no lock a search waits on: searches that overlap without a
+  pause delay the drop by the longest of them, never further. At its
+  open the writer drops every table of a graph but the one its row
+  reads, once no transaction holds that lock, and starts again wherever
+  the mark says B is stale. Where holds come faster than a build, B
+  stays stale and its readers keep the exact ranking. A is built in the
+  same way, once its row is written; a held key in A is no taint. A
+  build that fails is tried again after a wait that doubles with each
+  failure in a row, from one second up to 64, the writer's connection
+  for it closed meanwhile; a commit ends the wait. A drop that waits on
+  searches is no failure.
 - **Lifting a hold puts the entry into B.** From then on its class sees
   the record, at every position.
 - **What a graph keeps of a deleted entry is its own class's.** An entry
@@ -751,8 +756,8 @@ decision under `docs/budgets.md`, as rounds before it have; the fix
 does not shrink to fit it.
 
 Measured on the build, from 83 349 and 155 332 on `develop` at its base
-(metrics and the lease-stale flag merged): product 84 412 (+1 063) and
-specification 156 174 (+842), inside the ceilings, below the
+(metrics and the lease-stale flag merged): product 84 495 (+1 146) and
+specification 156 318 (+986), inside the ceilings, below the
 reckoning's lower end; no row is added.
 
 ## Why
