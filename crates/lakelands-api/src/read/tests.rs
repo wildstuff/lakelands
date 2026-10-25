@@ -52,7 +52,7 @@ fn a_request_reads_every_member_it_takes_and_refuses_any_other() {
         ["pattern", {"start": {"type": "t"}, "project": {"as": "degree"}}],
         ["pattern", {"start": {"type": "t"}, "project": {"as": "components"}}],
         ["search", {"type": "t", "k": 5, "cursor": "c", "where": "n > 1", "with_meta": true, "as_of": 7,
-            "mode": "lexical", "text": "a", "fields": ["t"]}],
+            "mode": "lexical", "text": "a", "fields": ["t"], "matches": true}],
         ["search", {"type": "t", "k": 5, "with_meta": false, "mode": "vector", "field": "v", "vector": [1.0],
             "weight": 0.5, "model": "m", "also": [{"field": "w", "vector": [2.0], "weight": 1.0, "model": "m"}]}],
         ["search", {"type": "t", "k": 5, "with_meta": false, "mode": "hybrid", "text": "a", "field": "v",

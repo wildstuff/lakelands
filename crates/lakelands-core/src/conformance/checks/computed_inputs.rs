@@ -59,6 +59,7 @@ pub(super) async fn told(
         cursor,
         filter: filtered,
         with_meta: false,
+        matches: false,
         at,
         rerank: None,
     };

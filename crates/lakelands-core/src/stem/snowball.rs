@@ -1,10 +1,10 @@
-//! The stemmers and the diacritic fold behind [`stem_text`] and
-//! [`fold_diacritics`].
+//! The stemmers and the diacritic fold behind [`stem_text`],
+//! [`stem_tokens`] and [`fold_diacritics`].
 
 use rust_stemmers::{Algorithm, Stemmer};
 use unicode_normalization::UnicodeNormalization;
 
-use super::{normalize, tokenize_lowercase};
+use super::walk;
 
 /// The Snowball algorithm a BCP-47 tag selects, by its primary language
 /// subtag (case-insensitive). `None` when that language has no stemmer.
@@ -47,14 +47,22 @@ pub(super) fn algorithm(tag: &str) -> Option<Algorithm> {
 /// safe: an identifier such as `EK-2026-0102` stems the same way on the
 /// index and the query side, so an exact lookup still matches.
 pub fn stem_text(text: &str, tag: &str) -> String {
-    let stemmed = match algorithm(tag) {
-        Some(algorithm) => {
-            let stemmer = Stemmer::create(algorithm);
-            normalize(text, |t| stemmer.stem(t).into_owned())
-        }
-        None => tokenize_lowercase(text),
-    };
-    fold_diacritics(&stemmed)
+    let terms: Vec<String> = stem_tokens(text, tag).map(|(_, _, term)| term).collect();
+    terms.join(" ")
+}
+
+/// Each token of `text` under the language of `tag`, where it stands in
+/// chars, its end exclusive, and the term [`stem_text`] makes of it: the
+/// fold is a char's own, so folding each term folds their join.
+pub fn stem_tokens<'t>(
+    text: &'t str,
+    tag: &str,
+) -> impl Iterator<Item = (usize, usize, String)> + 't {
+    let stemmer = algorithm(tag).map(Stemmer::create);
+    walk(text, move |t| match &stemmer {
+        Some(stemmer) => fold_diacritics(&stemmer.stem(t)),
+        None => fold_diacritics(t),
+    })
 }
 
 /// Strips combining marks after canonical decomposition: `Grüße` becomes

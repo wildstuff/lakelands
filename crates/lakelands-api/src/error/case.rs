@@ -1242,6 +1242,8 @@ catalog! {
         LatestTakesNoField { field: FieldName } => "`latest` orders by the position of each record's latest change and takes no field, and `{field}` was given",
         /// A limit out of range.
         LimitRange { max: u32 } => "a limit is between 1 and {max}",
+        /// A search that asks for `matches` and brings no text.
+        MatchesWithoutText => "`matches` says where a search's text matched each hit, and a vector search brings no text; a lexical or hybrid search is told it",
         /// A measure's step with a depth.
         MeasureNoDepth { measure: String } => "`{measure}` is a measure over the steps' relations and takes no step `depth`: it reads each record's links, not hops",
         /// A measure with an order.

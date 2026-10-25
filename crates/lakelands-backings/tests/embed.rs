@@ -487,6 +487,7 @@ fn search(mode: lakelands_api::query::SearchMode) -> lakelands_api::query::Searc
         cursor: None,
         filter: None,
         with_meta: false,
+        matches: false,
         at: lakelands_api::ReadAt::default(),
         rerank: None,
     }

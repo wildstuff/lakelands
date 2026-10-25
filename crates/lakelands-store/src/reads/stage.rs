@@ -20,6 +20,7 @@ use lakelands_api::seam::RerankCandidate;
 use lakelands_api::{Error, FieldName, Params, RecordKey, Result, Timestamp, TypeName, Value};
 use serde::{Deserialize, Serialize};
 
+use super::search::Marks;
 use super::{CursorState, Judged, Pulled, Reader, encode, resume, same_read, search_read};
 
 /// A window of the first stage, as the reranker ranks it.
@@ -101,6 +102,8 @@ pub(super) struct First {
     /// How many of the hits before `offset` were not read: those of a
     /// list the engine judged.
     pub skipped: usize,
+    /// What the page's hits are marked by, where the search asks.
+    pub marks: Option<Marks>,
 }
 
 impl Reader<'_> {
@@ -206,6 +209,7 @@ impl Reader<'_> {
             filter: p.start.filter.clone(),
             rerank: p.start.rerank.clone(),
             with_meta: false,
+            matches: false,
             at: ReadAt::default(),
         })
     }
@@ -217,7 +221,7 @@ impl Reader<'_> {
     /// leaves its place empty, so nothing after it is skipped or answered
     /// twice; the page may hold fewer than `k`.
     pub(super) fn reranked(&self, s: &Search, top: usize) -> Result<Hits> {
-        let (decl, _, filter, _) = self.searched(s)?;
+        let (decl, named, filter, ranks) = self.searched(s)?;
         let read = search_read(s);
         let (offset, carried) = match &s.cursor {
             Some(c) => {
@@ -242,7 +246,10 @@ impl Reader<'_> {
         };
         let k = s.k.max(1) as usize;
         let keys = stage.order.iter().skip(offset).take(k).cloned().collect();
-        let hits = self.visible_hits(&decl, filter.as_ref(), keys, s.with_meta)?;
+        let mut hits = self.visible_hits(&decl, filter.as_ref(), keys, s.with_meta)?;
+        if let Some(marks) = self.marks(s, &decl, named, &ranks) {
+            marks.mark(&mut hits);
+        }
         let more = stage.order.len() > offset + k;
         self.second.borrow_mut().decided = Some(stage.clone());
         let next_cursor = more.then(|| {

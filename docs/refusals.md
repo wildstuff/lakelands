@@ -485,6 +485,7 @@ What a refusal is about.
 | `latest_no_change` | `type` (TypeName, optional) | `order_by` `latest` orders records by their latest change, and [`{type}` is a view, whose records are computed and have none\|a query's rows are projections of a walk, not records] | A `latest` order where no record has a change of its own. |
 | `latest_takes_no_field` | `field` (FieldName) | `latest` orders by the position of each record's latest change and takes no field, and `{field}` was given | A `latest` order given a field. |
 | `limit_range` | `max` (u32) | a limit is between 1 and {max} | A limit out of range. |
+| `matches_without_text` | — | `matches` says where a search's text matched each hit, and a vector search brings no text; a lexical or hybrid search is told it | A search that asks for `matches` and brings no text. |
 | `measure_no_depth` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `depth`: it reads each record's links, not hops | A measure's step with a depth. |
 | `measure_no_order` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no `order_by`: its rows come in the measure's own order | A measure with an order. |
 | `measure_no_steps` | `measure` (String) | `{measure}` walks the relations its steps name; name at least one | A measure with no step. |

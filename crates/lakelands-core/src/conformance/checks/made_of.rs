@@ -143,6 +143,7 @@ async fn a_type_made_of_another_is_shown_only_with_it(store: Store) -> Held {
             cursor: None,
             filter: None,
             with_meta: false,
+            matches: false,
             at: Default::default(),
             rerank: None,
         };

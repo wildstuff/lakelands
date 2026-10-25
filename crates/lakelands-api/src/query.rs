@@ -692,9 +692,22 @@ pub struct Search {
     /// Return each field's provenance with its value.
     #[serde(default)]
     pub with_meta: bool,
+    /// Answer, on each hit, where the search's text matched it
+    /// ([`Hit::matches`]). A search with no text cannot ask for it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub matches: bool,
     /// The time axes.
     #[serde(default, flatten)]
     pub at: ReadAt,
+}
+
+impl Search {
+    /// What the search asks that no ranking can do
+    /// ([`SearchMode::misfit`]), or `matches` with no text to match.
+    pub fn misfit(&self) -> Option<(Option<FieldName>, Case)> {
+        let textless = self.matches && matches!(self.mode, SearchMode::Vector { .. });
+        (self.mode.misfit()).or_else(|| textless.then_some((None, Case::MatchesWithoutText)))
+    }
 }
 
 fn default_k() -> u32 {
@@ -719,6 +732,8 @@ struct SearchWire {
     rerank: Option<Rerank>,
     #[serde(default)]
     with_meta: bool,
+    #[serde(default)]
+    matches: bool,
     #[serde(default, flatten)]
     at: ReadAt,
 }
@@ -735,8 +750,16 @@ impl<'de> Deserialize<'de> for Search {
         let mode =
             serde_json::from_value(Value::Object(mode.collect())).map_err(D::Error::custom)?;
         let w: SearchWire = serde_json::from_value(Value::Object(own)).map_err(D::Error::custom)?;
-        let (ty, k, cursor, filter, rerank, with_meta, at) =
-            (w.ty, w.k, w.cursor, w.filter, w.rerank, w.with_meta, w.at);
+        let (ty, k, cursor, filter, rerank, with_meta, matches, at) = (
+            w.ty,
+            w.k,
+            w.cursor,
+            w.filter,
+            w.rerank,
+            w.with_meta,
+            w.matches,
+            w.at,
+        );
         Ok(Search {
             ty,
             mode,
@@ -745,6 +768,7 @@ impl<'de> Deserialize<'de> for Search {
             filter,
             rerank,
             with_meta,
+            matches,
             at,
         })
     }
@@ -807,6 +831,34 @@ pub struct Hit {
     pub record: Record,
     /// Higher is more relevant; comparable within one answer only.
     pub score: f64,
+    /// Each searched field of the record that its text matched, by name;
+    /// empty unless the search asked for `matches`. Only a field the
+    /// record answers its reader is named.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub matches: BTreeMap<FieldName, Matched>,
+}
+
+/// The most spans a field of a hit answers in [`Hit::matches`].
+pub const MATCH_SPANS: usize = 32;
+
+/// Where a search's text matched one field of a hit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Matched {
+    /// The first [`MATCH_SPANS`] matched tokens, in text order.
+    pub spans: Vec<Span>,
+    /// Every matched token in the field, so a caller knows the spans
+    /// were cut.
+    pub count: u32,
+}
+
+/// One matched token of a field's text, in chars (Unicode scalar
+/// values), its end exclusive: the unit refusals count offsets in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Span {
+    /// Its first char.
+    pub start: u32,
+    /// The char after its last.
+    pub end: u32,
 }
 
 /// The score of a vector search: the cosine of the angle between two
