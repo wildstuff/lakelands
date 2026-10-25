@@ -650,8 +650,8 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   before for each failure in a row, up to 64 s; the connection is
   closed while it waits, and the writer's close ends the wait. Until it
   is built, that graph's readers are ranked exactly: on a field of
-  100 000 × 32 with a quarter held, a hold took a median 19 ms, a
-  reader's first page right after it a median 65 ms (7 ms from the
+  100 000 × 32 with a quarter held, a hold took a median 13 ms, a
+  reader's first page right after it a median 77 ms (6 ms from the
   graph), and B was built again in about 33 s. Holds that come faster
   than a build keep them there.
   A reader without `restricted` is streamed from B, which never held a
@@ -691,7 +691,7 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   ends its stream there. The first writer's open of 0.19.0 rebuilds
   each PostgreSQL lake beside its projection (its layout becomes 7) and
   builds its graphs at the end: for a lake with a field of 100 000 × 32
-  under the index, the open took 95 s (67 s before 0.19.0).
+  under the index, the open took 89 s (67 s before 0.19.0).
   SQLite and in-memory lakes keep no such
   index and answer every search exactly; a SQLite lake that needs one
   moves to PostgreSQL by export and import (lakelands#215).

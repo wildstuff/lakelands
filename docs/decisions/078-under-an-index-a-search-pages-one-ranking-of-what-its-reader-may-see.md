@@ -858,25 +858,25 @@ quarter):
 
 | reader | today | the build |
 |---|---|---|
-| owner, no filter | 3.79 / 11.89 | 6.82 / 10.44 |
-| owner, a filter hiding a quarter | 5.78 / 28.46 | 10.87 / 19.25 |
-| owner, a filter keeping some 900 | 224.83 / 799.90 | 205.80 / 343.98 |
-| a reader without `restricted` | 5.74 / 25.93 | 6.74 / 8.69 |
-| the same, a filter keeping some 900 | 605.08 / 1 450.65 | 197.86 / 353.43 |
-| a reader holding `only` | 532.51 / 1 253.33 | 129.83 / 137.15 |
-| fused, two fields, owner | 15.35 / 54.43 | 36.59 / 34.13 |
-| fused, a reader without `restricted` | 70.90 / 102.43 | 40.16 / 48.32 |
+| owner, no filter | 3.79 / 11.89 | 7.55 / 12.87 |
+| owner, a filter hiding a quarter | 5.78 / 28.46 | 11.98 / 20.83 |
+| owner, a filter keeping some 900 | 224.83 / 799.90 | 239.32 / 423.30 |
+| a reader without `restricted` | 5.74 / 25.93 | 5.59 / 7.96 |
+| the same, a filter keeping some 900 | 605.08 / 1 450.65 | 183.75 / 399.17 |
+| a reader holding `only` | 532.51 / 1 253.33 | 133.95 / 137.23 |
+| fused, two fields, owner | 15.35 / 54.43 | 36.24 / 33.64 |
+| fused, a reader without `restricted` | 70.90 / 102.43 | 35.10 / 37.24 |
 
 At the 90th percentile a first page hiding a quarter took 230.75 ms
-today and 122.03 in the build. What the graphs cost, in the same runs:
+today and 138.98 in the build. What the graphs cost, in the same runs:
 
 | | today | the build |
 |---|---|---|
-| a quarter held, 25 000 holds | 123.5 s | 267.8 s, then A and B built in 97.0 s |
-| one written vector, median (p90) | 6.16 (10.21) ms | 14.10 (17.12) ms |
-| one hold, median (p90) | 4.21 (5.48) ms | 18.83 (24.94) ms, B built again in 31 to 34 s |
-| a reader's first page right after a hold | 3.21 ms | 64.98 ms, ranked exactly until B is built |
-| the first writer's open after the upgrade | 67.1 s | 94.7 s, the graphs built in it |
+| a quarter held, 25 000 holds | 123.5 s | 222.9 s, then A and B built in 88.2 s |
+| one written vector, median (p90) | 6.16 (10.21) ms | 8.73 (13.63) ms |
+| one hold, median (p90) | 4.21 (5.48) ms | 13.11 (15.79) ms, B built again in 32 to 35 s |
+| a reader's first page right after a hold | 3.21 ms | 76.99 ms, ranked exactly until B is built |
+| the first writer's open after the upgrade | 67.1 s | 89.2 s, the graphs built in it |
 
 ## What it is not
 
