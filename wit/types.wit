@@ -1028,6 +1028,14 @@ interface types {
         /// The name a row binds the reached record under; its type's name
         /// when none.
         %as: option<string>,
+        /// The name the step walks from; the previous step's when none.
+        %from: option<string>,
+        /// A name bound before it, whose record the step must reach.
+        join: option<string>,
+        /// The row is kept, the name bound to null, where it has no match.
+        optional: bool,
+        /// The row is kept only where it has no match.
+        absent: bool,
     }
 
     variant projection {

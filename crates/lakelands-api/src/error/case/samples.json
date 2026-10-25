@@ -1036,6 +1036,16 @@
    "code": "instant_not_text"
   },
   {
+   "bound": [
+    "a"
+   ],
+   "code": "join_never_holds",
+   "name": "s",
+   "reached": [
+    "a"
+   ]
+  },
+  {
    "code": "latest_no_change",
    "type": "t"
   },
@@ -1168,6 +1178,11 @@
    "code": "pattern_to_not_graph"
   },
   {
+   "code": "pattern_tree_member",
+   "member": "s",
+   "projection": "s"
+  },
+  {
    "code": "position_not_integer"
   },
   {
@@ -1209,6 +1224,27 @@
   {
    "asks": "s",
    "code": "start_no_type"
+  },
+  {
+   "code": "step_after_no_name"
+  },
+  {
+   "code": "step_binds_no_name",
+   "join": true,
+   "member": "s"
+  },
+  {
+   "code": "step_name_unbound",
+   "member": "s",
+   "name": "s"
+  },
+  {
+   "code": "step_optional_no_name",
+   "join": true
+  },
+  {
+   "code": "step_past_optional",
+   "name": "s"
   },
   {
    "also": [

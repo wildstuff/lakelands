@@ -1219,6 +1219,10 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 filter: Some(cond()),
                 depth: Depth { min: 1, max: 2 },
                 named: Some("by".into()),
+                from: Some("a".into()),
+                join: Some("b".into()),
+                optional: true,
+                absent: true,
             }),
         ),
         (
