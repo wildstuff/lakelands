@@ -192,14 +192,14 @@ terrain Lakelands is built for, and where it is not the right tool.
 > one ranking of what its reader may see, where on PostgreSQL a record
 > kept from the reader could shift the pages it was shown
 > (lakelands#1254, decision 078); the security advisory is published
-> with this release. Decisions 075 and 076, a read across
-> lakes and a lake with one writer that many processes write through,
-> are accepted and not yet built (lakelands#1383, lakelands#1389). A
-> writer's open upgrades a lake of format 14, 15, 16, 17 or 18 to 19 by
-> appending; the first writer's open of 0.19.0 also rebuilds each
-> PostgreSQL lake's projection (its layout is 7) beside the one it
-> replaces, the log untouched, and the lake of format 19 is kept beside
-> those of the releases before.
+> with this release. Decisions 075 and 076, a read across lakes and a
+> lake with one writer that many processes write through, are accepted
+> and not yet built (lakelands#1383, lakelands#1389). A writer's open
+> upgrades a lake of format 14, 15, 16, 17 or 18 to 19 by appending;
+> the first writer's open of 0.19.0 also rebuilds each PostgreSQL lake's
+> projection (its layout is 7) beside the one it replaces, the log
+> untouched, and the lake of format 19 is kept beside those of the
+> releases before.
 
 ## Try it
 
