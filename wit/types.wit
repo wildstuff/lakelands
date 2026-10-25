@@ -900,6 +900,18 @@ interface types {
         first: list<record-key>,
     }
 
+    /// A change to records proposed whole, with its proposer's `only`,
+    /// whether restricted records are left out, and the plan its proposer
+    /// was shown; the store answers all three.
+    record records-write {
+        %type: type-name,
+        where: condition,
+        to: change-to,
+        only: list<field-value>,
+        skip-restricted: bool,
+        plan: plan,
+    }
+
     variant proposed-write {
         upsert(upsert-write),
         retire(retire-write),
@@ -909,9 +921,10 @@ interface types {
         migrate-value-type(migrate-value-type-write),
         compute(compute-write),
         compute-sweep(compute-sweep-write),
+        records(records-write),
     }
 
-    enum proposal-kind { upsert, retire, call, declare, migrate, migrate-value-type, compute }
+    enum proposal-kind { upsert, retire, call, declare, migrate, migrate-value-type, compute, records }
 
     enum proposal-state { pending, accepted, rejected }
 
@@ -1378,8 +1391,52 @@ interface types {
         value-types: list<value-type-report>,
         /// No section loses a value or breaks a constraint that refuses; a
         /// proposal's plan of declarations judges it on the records its
-        /// proposer is told of.
+        /// proposer is told of; a plan of records refuses no record.
         lossless: bool,
+        /// A change to records' section.
+        records: option<records-plan>,
+    }
+
+    /// What a change to records would do, as its caller is answered it.
+    record records-plan {
+        %type: type-name,
+        /// How many records the condition selects, and the first keys.
+        selected: u64,
+        sample-keys: list<record-key>,
+        /// Per field set, how many selected records it would change.
+        fields: list<field-changed>,
+        /// Every refusal a selected record would meet.
+        refused: list<records-refused>,
+    }
+
+    record field-changed {
+        field: field-name,
+        records: u64,
+    }
+
+    /// One refusal the records a change selects would meet: the first
+    /// one's, with how many records it refuses and their first keys.
+    record records-refused {
+        refusal: error,
+        records: u64,
+        sample-keys: list<record-key>,
+    }
+
+    /// What a change to records does to each record it selects.
+    variant change-to {
+        set(patch),
+        retire,
+    }
+
+    /// The records of one type a condition selects, and what is done to
+    /// each; `only` holds a proposer's pairs beside the condition, and
+    /// `skip-restricted` leaves restricted records out.
+    record records-change {
+        %type: type-name,
+        where: condition,
+        to: change-to,
+        only: list<field-value>,
+        skip-restricted: bool,
     }
 
     record plan-reply { position: position, data: plan }
@@ -1397,6 +1454,7 @@ interface types {
         recompute(recomputed),
         migrate(migration),
         migrate-value-type(value-type-migration),
+        records(records-change),
     }
 
     /// A value type's preflight: what its new declaration would refuse
@@ -1765,6 +1823,7 @@ interface types {
         max-graph-nodes: u32,
         max-offset: u32,
         max-set-changes: u32,
+        max-change-records: u32,
         max-rerank-top: u32,
         choose-order-index: bool,
         order-after-pages: u32,

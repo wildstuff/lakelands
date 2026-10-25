@@ -305,6 +305,11 @@ pub struct Limits {
     /// `too_large`, naming the set, and nothing is appended
     /// (`docs/seams.md`, "Declaring a set over a large type").
     pub max_set_changes: u32,
+    /// The most records one change to records may select; past it `plan`
+    /// and `enact` refuse it `too_large`, naming the ceiling, and never
+    /// cut it
+    /// (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`).
+    pub max_change_records: u32,
     /// The largest `top` a search's `rerank` may ask for: the window the
     /// second stage ranks, which a cursor carries
     /// (`docs/decisions/067-a-search-may-take-a-second-stage.md`).
@@ -363,6 +368,7 @@ impl Default for Limits {
             max_graph_nodes: 100_000,
             max_offset: 100_000,
             max_set_changes: 20_000,
+            max_change_records: 10_000,
             max_rerank_top: 100,
             choose_order_index: true,
             order_after_pages: 3,

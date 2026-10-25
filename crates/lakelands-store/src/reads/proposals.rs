@@ -58,6 +58,13 @@ impl<'a> Reader<'a> {
                         continue;
                     };
                     (p.write, p.more) = shown;
+                    // A change to records' plan is its proposer's own (081).
+                    if let (Some(ProposedWrite::Records { plan, .. }), true) =
+                        (&mut p.write, p.proposer == me)
+                        && let ProposedWrite::Records { plan: own, .. } = &logged
+                    {
+                        plan.clone_from(own);
+                    }
                 }
                 // A withdrawal names the type it withdrew as the lake held it
                 // when proposed, whatever stands under its name since.
@@ -152,9 +159,9 @@ impl<'a> Reader<'a> {
             crate::writes::tools_as_shown(self.sight.who(), o, seen, set).is_ok()
         };
         match &mut logged {
-            ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => {
-                named.push(ty.clone())
-            }
+            ProposedWrite::Upsert { ty, .. }
+            | ProposedWrite::Retire { ty, .. }
+            | ProposedWrite::Records { ty, .. } => named.push(ty.clone()),
             ProposedWrite::Migrate { migration: m, .. } => {
                 if !tools_shown(&[Declaration::Type(m.to.clone())]) {
                     return Ok(None);
@@ -447,8 +454,10 @@ impl<'a> Reader<'a> {
         // apart. The act judges every record all the same (062).
         let planless = |w: &ProposedWrite| {
             let mut w = w.clone();
-            if let ProposedWrite::Declare { plan, .. } = &mut w {
-                *plan = None;
+            match &mut w {
+                ProposedWrite::Declare { plan, .. } => *plan = None,
+                ProposedWrite::Records { plan, .. } => **plan = Default::default(),
+                _ => {}
             }
             w
         };
@@ -685,6 +694,35 @@ impl<'a> Reader<'a> {
                     return Ok(false);
                 }
                 self.value_type_shown(asked, &read, write, at);
+                Ok(true)
+            }
+            // A change to records to a reader who reads every field its
+            // condition and its pairs read, as `find` takes them from it; its
+            // values as a read of a record would show them. Its plan counts
+            // its proposer's records: whole to its proposer and to one who
+            // sees all, and else none; the accept plans it for its reviewer
+            // (081).
+            ProposedWrite::Records {
+                ty,
+                filter,
+                to,
+                only,
+                plan,
+                ..
+            } => {
+                let probed = match self.named_sets(ty, filter, &[Place::Where]) {
+                    Ok(e) => core_derive::reads(&e),
+                    Err(_) => return Ok(false),
+                };
+                if !probed.iter().chain(only.keys()).all(|f| read(ty, f)) {
+                    return Ok(false);
+                }
+                if let lakelands_api::write::ChangeTo::Set(patch) = to {
+                    patch.retain(|f, _| read(ty, f));
+                }
+                if !self.sight.sees_all() {
+                    **plan = Default::default();
+                }
                 Ok(true)
             }
             // Judged whole or not at all ([`Reader::computed_entry`]).

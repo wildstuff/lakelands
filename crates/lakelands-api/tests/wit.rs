@@ -45,9 +45,9 @@ use lakelands_api::seam::{FeedBatch, FeedFilter};
 use lakelands_api::write::{
     AgeReport, Breach, Carried, Carrier, CompactReport, Declaration, DeclarationKind,
     FieldConversion, FieldFill, FunctionDecl, InForce, Migration, MigrationReport, Misfit,
-    ObjectSetDecl, Proposal, ProposalFilter, ProposalState, ProposedWrite, PurgeReport, RecordRef,
-    ReferenceRewrite, Rekeyed, RelationRename, Restated, RuleRun, TypeRetired, ValueRenamed,
-    ValueTypeMigration, ValueTypeReport, ValueTypeUse, Withdrawal,
+    ObjectSetDecl, Proposal, ProposalFilter, ProposalKind, ProposalState, ProposedWrite,
+    PurgeReport, RecordRef, ReferenceRewrite, Rekeyed, RelationRename, Restated, RuleRun,
+    TypeRetired, ValueRenamed, ValueTypeMigration, ValueTypeReport, ValueTypeUse, Withdrawal,
 };
 use lakelands_api::{
     Access, After, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, IngestOpts,
@@ -496,7 +496,37 @@ fn plan() -> lakelands_api::write::Plan {
         types: vec![migration_report()],
         value_types: vec![lakelands_api::write::ValueTypeReport::default()],
         lossless: true,
+        records: Some(Box::new(records_plan())),
     }
+}
+
+fn records_plan() -> lakelands_api::write::RecordsPlan {
+    lakelands_api::write::RecordsPlan {
+        ty: "invoice".into(),
+        selected: 2,
+        sample_keys: vec!["k".into()],
+        fields: vec![field_changed()],
+        refused: vec![records_refused()],
+    }
+}
+
+fn field_changed() -> lakelands_api::write::FieldChanged {
+    lakelands_api::write::FieldChanged {
+        field: "f".into(),
+        records: 1,
+    }
+}
+
+fn records_refused() -> lakelands_api::write::RecordsRefused {
+    lakelands_api::write::RecordsRefused {
+        refusal: Box::new(Error::refused(None, Refusal::NotGranted)),
+        records: 1,
+        sample_keys: vec!["k".into()],
+    }
+}
+
+fn records_only() -> BTreeMap<lakelands_api::FieldName, Value> {
+    BTreeMap::from([("owner".into(), json!("a"))])
 }
 
 fn migration_report() -> MigrationReport {
@@ -1142,6 +1172,32 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             m
         }),
         ("plan", members(&plan())),
+        ("records_plan", members(&records_plan())),
+        ("field_changed", members(&field_changed())),
+        ("records_refused", members(&records_refused())),
+        ("records_change", {
+            let mut m = members(&lakelands_api::write::Change::Records {
+                ty: "invoice".into(),
+                filter: Box::new(cond()),
+                to: lakelands_api::write::ChangeTo::Retire,
+                only: records_only(),
+                skip_restricted: true,
+            });
+            m.remove("change");
+            m
+        }),
+        ("records_write", {
+            let mut m = members(&ProposedWrite::Records {
+                ty: "invoice".into(),
+                filter: cond(),
+                to: lakelands_api::write::ChangeTo::Retire,
+                only: records_only(),
+                skip_restricted: true,
+                plan: Box::new(plan()),
+            });
+            m.remove("write");
+            m
+        }),
         ("unlive", members(&unlive())),
         ("in_force", members(&in_force())),
         (
@@ -1169,7 +1225,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 members(&ProposalFilter {
                     state: Some(ProposalState::Pending),
                     ty: Some("invoice".into()),
-                    kind: Some(lakelands_api::write::ProposalKind::Declare),
+                    kind: Some(ProposalKind::Declare),
                     limit: Some(1),
                     order_by: vec![order()],
                     cursor: Some(Cursor("c".into())),
@@ -1567,6 +1623,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 max_graph_nodes: 6,
                 max_offset: 7,
                 max_set_changes: 8,
+                max_change_records: 17,
                 max_rerank_top: 9,
                 choose_order_index: true,
                 order_after_pages: 10,
@@ -1693,6 +1750,20 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
         "proposal_state",
         ProposalState,
         [Pending, Accepted, Rejected]
+    );
+    units!(
+        "proposal_kind",
+        ProposalKind,
+        [
+            Upsert,
+            Retire,
+            Call,
+            Declare,
+            Migrate,
+            MigrateValueType,
+            Compute,
+            Records
+        ]
     );
     units!(
         "principal_kind",
@@ -1909,7 +1980,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | ProposedWrite::Migrate { .. }
             | ProposedWrite::MigrateValueType { .. }
             | ProposedWrite::Compute { .. }
-            | ProposedWrite::ComputeSweep { .. } => {}
+            | ProposedWrite::ComputeSweep { .. }
+            | ProposedWrite::Records { .. } => {}
         }
     }
     let _ = writes;
@@ -1962,6 +2034,14 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     function: "g".into(),
                     count: 1,
                     first: vec!["k".into()],
+                },
+                ProposedWrite::Records {
+                    ty: "t".into(),
+                    filter: cond(),
+                    to: lakelands_api::write::ChangeTo::Set(Default::default()),
+                    only: BTreeMap::new(),
+                    skip_restricted: false,
+                    plan: Box::default(),
                 },
             ],
             Some("write"),

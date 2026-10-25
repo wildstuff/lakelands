@@ -154,6 +154,10 @@ const APART_FROM: u32 = 18;
 ///   form it adds (lakelands#1330): a log of format 18 holds none of them,
 ///   a verb's `preconditions` and `payload.<name>` in its `requires` (028)
 ///   among them.
+/// - **19 → 20:** none. Format 20 is 0.20.0's one step, taken before any
+///   form it adds (lakelands#1409): a log of format 19 holds none of them,
+///   a proposal of a change to the records a condition selects (081) among
+///   them.
 #[doc(hidden)]
 pub fn converted(v: u64, event: serde_json::Value) -> serde_json::Value {
     debug_assert!(reads_format(v), "format {v} is not one this release reads");
