@@ -76,6 +76,7 @@ use crate::log::{self, Draft};
 use crate::ontology::Ontology;
 
 mod across;
+mod change;
 mod declaration;
 mod migrate;
 mod plan;

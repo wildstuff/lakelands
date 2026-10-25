@@ -1,6 +1,6 @@
 # The log format
 
-**Format version 19.** Reviewed so that a verifier can be written from
+**Format version 20.** Reviewed so that a verifier can be written from
 this document alone (lakelands#14). A release reads and writes one
 format version, this one: every event of a lake carries it, from
 position 0, and a lake written in another is refused by name and never
@@ -281,7 +281,7 @@ store has lost the version it last sealed with: the write is refused the
 same way, so a wrong key store fails at the write, not at a later
 rebuild. A verifier without the
 keys checks every hash and id over the bytes as stored, and the form of
-each sealed member. `docs/log-format/vectors/19/` holds a sealed ingest
+each sealed member. `docs/log-format/vectors/20/` holds a sealed ingest
 and a sealed output under a key its README names.
 
 ## 2. Kinds
@@ -557,7 +557,7 @@ same fields itself
 | Kind | Payload | Fold |
 |---|---|---|
 | `verb_called` | `verb`, `key`, `payload` | A verb ran. Its writes follow as `record_upserted` events with `cause` set to this position and `procedure` naming the verb. A verb declared on its type (`scope: type`) is called with no record, and `key` is left out. |
-| `write_proposed` | `proposal`, `write`, `why`, `pinned` | A write was recorded as a proposal instead of being applied (`docs/decisions/013-verbs-run-by-declared-risk.md`). `write.write` is `upsert`, `retire` or `call`, with that write's arguments; or `declare`, a set of declarations and, from format 17, the `plan` they were proposed with (`docs/decisions/062-a-change-plans-before-it-acts.md`), or `migrate`, a migration with its preflight's report, or `migrate_value_type`, a value type's new declaration with its preflight's report (Appendix A) and the values it renames; or, from format 17, `compute`, one record's call of a function above `low` risk (its record, field, function and the call's digest on its record; the inputs are the record's, and a listing shows them to a reader who is answered them, since the log holds none a forgotten source could leave readable), or `compute_sweep`, the calls a declaration or `recompute` made due over a type, which the store proposes as the writer of the event that made them due, caused by it, and no caller proposes; a pending `compute` is closed by a `write_rejected` of the system, caused by the `output_recorded` of its call's digest, by its record's `record_retired`, or by the `migrated` that moved its record to another key, with nothing owed (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`). `pinned: true` where the proposer's grant admits only some records of the type the write reaches: its accept is refused once the record at the key has an event after this position or the type was declared or migrated since (`docs/decisions/051-a-grant-may-admit-only-some-records.md`); absent when false. |
+| `write_proposed` | `proposal`, `write`, `why`, `pinned` | A write was recorded as a proposal instead of being applied (`docs/decisions/013-verbs-run-by-declared-risk.md`). `write.write` is `upsert`, `retire` or `call`, with that write's arguments; or `declare`, a set of declarations and, from format 17, the `plan` they were proposed with (`docs/decisions/062-a-change-plans-before-it-acts.md`), or `migrate`, a migration with its preflight's report, or `migrate_value_type`, a value type's new declaration with its preflight's report (Appendix A) and the values it renames; or, from format 17, `compute`, one record's call of a function above `low` risk (its record, field, function and the call's digest on its record; the inputs are the record's, and a listing shows them to a reader who is answered them, since the log holds none a forgotten source could leave readable), or `compute_sweep`, the calls a declaration or `recompute` made due over a type, which the store proposes as the writer of the event that made them due, caused by it, and no caller proposes; or, from format 20, `records`, a change to the records a condition selects with the plan its proposer was shown (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`); a pending `compute` is closed by a `write_rejected` of the system, caused by the `output_recorded` of its call's digest, by its record's `record_retired`, or by the `migrated` that moved its record to another key, with nothing owed (`docs/decisions/064-an-outside-call-runs-by-its-declared-risk.md`). `pinned: true` where the proposer's grant admits only some records of the type the write reaches: its accept is refused once the record at the key has an event after this position or the type was declared or migrated since (`docs/decisions/051-a-grant-may-admit-only-some-records.md`); absent when false. |
 | `write_accepted` | `proposal` | The proposal was accepted. Its write follows in the same append, with `cause` set to this position and the proposer as `writer`: for `declare` the `declared` events, for `migrate` the `migrated` event, for `migrate_value_type` the `declared` of the value type, or, when it renames values, the `value_type_migrated` event and what follows it (the link types the store derives, and the types it declares again for their `initial`, keep `system:lakelands` as writer). |
 | `write_rejected` | `proposal`, `reason` | The proposal was rejected; nothing else is written, but for a `compute` whose call its record no longer makes, which the same append records as rejected under its digest, and for a `compute` the system closes (§2.5). |
 
@@ -985,6 +985,11 @@ the first release with real installations
   it adds (lakelands#1330), and a log of format 18 holds none of them:
   a verb's `preconditions`, and a `payload.<name>` in its `requires`
   (`docs/decisions/028-authoring-is-strict-and-whole.md`).
+  19 → 20: none. Format 20 is 0.20.0's one step, taken before any form
+  it adds (lakelands#1409), and a log of format 19 holds none of them: a
+  `write_proposed` whose write is `records`, a change to the records a
+  condition selects
+  (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`).
   No other step changes a fold, so the projection stays. A step that
   changes how an event folds says so here, and a writer's open then
   rebuilds the projection.
@@ -1075,7 +1080,7 @@ below; no other spelling is read.
 | a type's `retired_by` (default `authors`, which is never written) | `authors`, `verbs` (from format 17) |
 | a verb's `scope` (default `record`, which is never written) | `record`, `type` |
 | `declaration.declare` | `type`, `value_type`, `verb`, `trigger`, `object_set`, `function`, `setting` (from format 17), `withdraw` (from format 17) |
-| a proposal's `write.write` | `upsert`, `retire`, `call`, `compute`, `compute_sweep` |
+| a proposal's `write.write` | `upsert`, `retire`, `call`, `compute`, `compute_sweep`, `records` (from format 20) |
 
 A **declaration** is an object whose `declare` names what it declares,
 with that declaration's members beside it. Every member not marked
@@ -1154,6 +1159,17 @@ its report the members `conditions` (a list of strings) and
 `conditions_unshown` (`true`, or absent), and, in each of `fields`,
 `renamed`, a list of `{ "from", "to", "records" }`; each is left out
 when empty, so a migration that renames nothing reads as before.
+`records`, from format 20, carries `type`, `where`, the condition in
+the expression grammar, `to`, `{"set": <patch>}` or `"retire"`, `only`,
+left out when empty, the pairs the proposer's `only` holds on the type,
+which its accept selects within, `skip_restricted`, `true` where the
+proposer held no `restricted` grant, so its accept leaves out the
+records the restricted mark holds, absent when false, and `plan`, the
+plan its proposer was
+shown (`report_id`, `at`, `lossless`, and `records`: `type`,
+`selected`, `sample_keys`, and `fields`, a list of
+`{ "field", "records" }`, and `refused`, a list of
+`{ "refusal", "records", "sample_keys" }`, each left out when empty).
 `compute` carries `type`, `key`, `field`, the field its output fills,
 `function` and `input`, the call's digest on its record (§2.5). It carries no inputs:
 a value sealed under a source's key would stay readable there once the
@@ -1302,7 +1318,7 @@ the record's type, and no set through itself.
   `m` 60 s, `s` 1 s) in microseconds, which must come out whole: `1.5h`
   is `5400000000`, and `30d` is `2592000000000`.
 
-`docs/log-format/vectors/19/schema-hash.json` shows a view whose conditions
+`docs/log-format/vectors/20/schema-hash.json` shows a view whose conditions
 are written as text, its shape object with those conditions in typed
 form, and the resulting hash. A shape's `key` is the key the type's
 records carry, so a grouped view hashes alike whether its declaration

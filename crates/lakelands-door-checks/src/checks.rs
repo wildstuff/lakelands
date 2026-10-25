@@ -2262,6 +2262,10 @@ pub async fn a_type_made_of_another_is_shown_only_with_it(store: Arc<dyn LakeSto
             filter: None,
             depth: Default::default(),
             named: None,
+            from: None,
+            join: None,
+            optional: false,
+            absent: false,
         };
         let (c, who) = (c.clone(), who.clone());
         async move {
@@ -2330,6 +2334,10 @@ pub async fn a_type_made_of_another_is_shown_only_with_it(store: Arc<dyn LakeSto
             filter: None,
             depth: Default::default(),
             named: None,
+            from: None,
+            join: None,
+            optional: false,
+            absent: false,
         };
         Pattern::traverse(memo.clone(), key("a"), vec![step])
     };
@@ -6816,6 +6824,10 @@ pub async fn a_step_over_an_undeclared_relation_is_refused(store: Arc<dyn LakeSt
         filter: None,
         depth: Default::default(),
         named: None,
+        from: None,
+        join: None,
+        optional: false,
+        absent: false,
     };
     let walked = f
         .catalog
@@ -7399,6 +7411,10 @@ pub async fn a_step_naming_an_inverse_walks_the_relation_the_other_way(store: Ar
             filter: None,
             depth: Default::default(),
             named: None,
+            from: None,
+            join: None,
+            optional: false,
+            absent: false,
         };
         let p = Pattern::traverse(ty(from), key(k), vec![step]);
         async move {
@@ -8163,6 +8179,10 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
                     filter: None,
                     depth: Default::default(),
                     named: None,
+                    from: None,
+                    join: None,
+                    optional: false,
+                    absent: false,
                 }],
             ),
         )
@@ -8341,6 +8361,10 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
                     filter: None,
                     depth: Default::default(),
                     named: None,
+                    from: None,
+                    join: None,
+                    optional: false,
+                    absent: false,
                 }],
             ),
         )
@@ -11763,6 +11787,10 @@ pub async fn degree_and_components_answer_the_graph_in_one_order(store: Arc<dyn 
         filter: None,
         depth: Default::default(),
         named: None,
+        from: None,
+        join: None,
+        optional: false,
+        absent: false,
     };
     let rows = |p: Pattern| {
         let (c, own) = (c.clone(), own.clone());
@@ -13077,6 +13105,10 @@ pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
         filter: None,
         depth: Default::default(),
         named: None,
+        from: None,
+        join: None,
+        optional: false,
+        absent: false,
     };
     let walk = Pattern::traverse(ty("trip"), t1.clone(), vec![step]);
     let degree = Pattern {
@@ -14411,6 +14443,10 @@ pub async fn a_relation_carried_by_a_hidden_field_answers_nothing_of_it(store: A
         filter: None,
         depth: Default::default(),
         named: None,
+        from: None,
+        join: None,
+        optional: false,
+        absent: false,
     };
     let mut wrong = Vec::new();
     for access in ["none", "masked"] {

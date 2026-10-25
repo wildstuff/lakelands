@@ -5,8 +5,9 @@
 //! that range. The start is reported at depth 0 when `min` is 0, else only
 //! if a cycle brings the walk back to it. `neighbors` is the one-hop step;
 //! `traverse` chains steps, each walked from every record the previous one
-//! kept, `spanned` answers the graph a chain walks, and `reach` what each
-//! step reaches, each record once.
+//! kept, `tree_each` walks a tree of them, each step from the record a
+//! name before it bound (080), `spanned` answers the graph a chain walks,
+//! and `reach` what each step reaches, each record once.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::slice;
@@ -38,6 +39,39 @@ pub struct Traversal {
     pub bindings: Vec<Vec<Reached>>,
     /// Whether the cap on bindings cut the answer short.
     pub truncated: bool,
+}
+
+/// How a step of a tree stands to the steps before it
+/// (`docs/decisions/080-a-pattern-may-branch-and-join.md`). A slot is
+/// what a row binds: 0 the start, `j + 1` the record step `j` reached.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Shape {
+    /// The slot the step walks from, any before its own.
+    pub from: usize,
+    /// For a join, the slot whose record the step must reach.
+    pub join: Option<usize>,
+    /// The step and every step from it, or joining it, match whole or
+    /// are bound to null whole.
+    pub optional: bool,
+    /// The step holds only where it has no match.
+    pub absent: bool,
+}
+
+impl Shape {
+    /// The shapes of a chain of `n` steps: each from the one before.
+    pub fn chain(n: usize) -> Vec<Shape> {
+        (0..n)
+            .map(|from| Shape {
+                from,
+                ..Shape::default()
+            })
+            .collect()
+    }
+
+    /// Whether the step binds the record it reaches.
+    fn binds(&self) -> bool {
+        self.join.is_none() && !self.absent
+    }
 }
 
 /// Records at their depths, in `(depth, type, key)` order.
@@ -119,51 +153,244 @@ where
     S: EdgeSource + ?Sized,
     K: FnMut(usize, &Node) -> Result<bool>,
 {
-    let mut chain = Chain::new(source, steps, max_depth, max_bindings, keep, None)?;
+    let shapes = Shape::chain(steps.len());
+    let mut chain = Chain::new(
+        source,
+        (steps, &shapes),
+        max_depth,
+        max_bindings,
+        keep,
+        None,
+    )?;
     chain.prime(slice::from_ref(from))?;
     chain.extend(0, from, &mut Vec::new());
     Ok(chain.out)
 }
 
-/// Walk a chain of steps from each of `starts`, as [`traverse`] walks it
-/// from one, and hand each binding to `each(start, binding)`, in the
-/// starts' order. A [`PAGE`] of starts is walked together, each hop asked
-/// for the whole page at once, so a page costs a few questions of the
-/// source, not a few a start. `each` answers whether to go on; the rest of
-/// that page is walked and not handed out.
-pub fn traverse_each<S, K, E>(
+/// Walk a tree of steps from each of `starts`, each step from the slot
+/// its [`Shape`] names, and hand each match to `each(start, binding)`, in
+/// the starts' order: one entry a step, the record it binds, or none
+/// where it binds no name or is bound to null. A [`PAGE`] of starts is
+/// walked together, each hop asked for the whole page at once, so a page
+/// costs a few questions of the source, not a few a start, and each
+/// step's records are held once whatever the rows made of them.
+///
+/// `keep(i, node)` decides, as in [`traverse`], whether step `i` keeps a
+/// record it reached and walks on from it; `fits(i, start, prefix, r)`
+/// whether a kept one holds beside what the steps before it bound
+/// (`prefix`, one entry a step). A join holds where it reaches its
+/// slot's record, an absent step where nothing it keeps holds. An
+/// optional branch, the optional steps joined by `from` and `join`,
+/// matches whole, else binds null whole where it has no whole match.
+/// Matches come in the order of the steps, each step's records by
+/// `(depth, type, key)` and null after them. `each` answers whether to
+/// go on; the rest of that page is walked and not handed out.
+pub fn tree_each<S, K, F, E>(
     source: &S,
     starts: &[Node],
-    steps: &[Step],
+    (steps, shapes): (&[Step], &[Shape]),
     max_depth: u32,
-    keep: K,
+    (keep, mut fits): (K, F),
     mut each: E,
 ) -> Result<()>
 where
     S: EdgeSource + ?Sized,
     K: FnMut(usize, &Node) -> Result<bool>,
-    E: FnMut(&Node, &[Reached]) -> Result<bool>,
+    F: FnMut(usize, &Node, &[Option<Reached>], &Reached) -> Result<bool>,
+    E: FnMut(&Node, &[Option<Reached>]) -> Result<bool>,
 {
-    let mut chain = Chain::new(source, steps, max_depth, usize::MAX, keep, None)?;
+    let mut chain = Chain::new(source, (steps, shapes), max_depth, usize::MAX, keep, None)?;
+    let mut tree = Tree::new(shapes);
     for page in starts.chunks(PAGE) {
         chain.prime(page)?;
         for start in page {
-            chain.extend(0, start, &mut Vec::new());
-            for binding in std::mem::take(&mut chain.out.bindings) {
-                if !each(start, &binding)? {
-                    return Ok(());
-                }
+            let mut bound = vec![None; steps.len() + 1];
+            bound[0] = Some(Reached {
+                node: start.clone(),
+                depth: 0,
+            });
+            let mut on = |b: &[Option<Reached>]| each(start, b);
+            if !tree.grow(&chain.memo, 0, &mut bound, &mut fits, &mut on)? {
+                return Ok(());
             }
         }
     }
     Ok(())
 }
 
+/// The optional branches of a tree and which are bound to null.
+struct Tree<'s> {
+    shapes: &'s [Shape],
+    /// Each step's branch, where it is optional.
+    branch: Vec<Option<usize>>,
+    /// Each branch's steps, in their order.
+    steps: Vec<Vec<usize>>,
+    null: Vec<bool>,
+}
+
+/// What [`Tree`] hands a kept record to: `fits`, then `each`.
+type Fits<'f> = dyn FnMut(usize, &Node, &[Option<Reached>], &Reached) -> Result<bool> + 'f;
+type Each<'f> = dyn FnMut(&[Option<Reached>]) -> Result<bool> + 'f;
+
+impl<'s> Tree<'s> {
+    fn new(shapes: &'s [Shape]) -> Self {
+        // An optional step is one branch with every optional step whose
+        // slot it walks from or joins.
+        let mut root: Vec<usize> = (0..shapes.len()).collect();
+        fn find(root: &mut [usize], i: usize) -> usize {
+            let r = root[i];
+            if r == i { i } else { find(root, r) }
+        }
+        for (i, s) in shapes.iter().enumerate().filter(|(_, s)| s.optional) {
+            for slot in std::iter::once(s.from).chain(s.join) {
+                if slot > 0 && shapes[slot - 1].optional {
+                    let (a, b) = (find(&mut root, i), find(&mut root, slot - 1));
+                    root[a.max(b)] = a.min(b);
+                }
+            }
+        }
+        let (mut branch, mut steps, mut of) = (Vec::new(), Vec::new(), BTreeMap::new());
+        for (i, s) in shapes.iter().enumerate() {
+            branch.push(s.optional.then(|| {
+                let next = of.len();
+                let b = *of.entry(find(&mut root, i)).or_insert(next);
+                if b == steps.len() {
+                    steps.push(Vec::new());
+                }
+                steps[b].push(i);
+                b
+            }));
+        }
+        let null = vec![false; steps.len()];
+        Tree {
+            shapes,
+            branch,
+            steps,
+            null,
+        }
+    }
+
+    /// Every match of steps `i..` beside `bound` (slot 0 the start), to
+    /// `each`; false once it says to stop. A branch is tried matched at
+    /// its first step, then bound to null.
+    fn grow(
+        &mut self,
+        memo: &Memo,
+        i: usize,
+        bound: &mut Vec<Option<Reached>>,
+        fits: &mut Fits<'_>,
+        each: &mut Each<'_>,
+    ) -> Result<bool> {
+        if i == self.shapes.len() {
+            return each(&bound[1..]);
+        }
+        let Some(b) = self.branch[i].filter(|b| self.steps[*b][0] == i) else {
+            return self.step(memo, i, bound, fits, each);
+        };
+        if !self.step(memo, i, bound, fits, each)? {
+            return Ok(false);
+        }
+        self.null[b] = true;
+        let more = self.step(memo, i, bound, fits, each);
+        self.null[b] = false;
+        more
+    }
+
+    fn step(
+        &mut self,
+        memo: &Memo,
+        i: usize,
+        bound: &mut Vec<Option<Reached>>,
+        fits: &mut Fits<'_>,
+        each: &mut Each<'_>,
+    ) -> Result<bool> {
+        let null = self.branch[i].filter(|b| self.null[*b]);
+        let options = match null {
+            // At its last step all a null branch reads is bound: it is
+            // null only where it has no whole match.
+            Some(b) if *self.steps[b].last().expect("a step") == i => {
+                match self.matches(memo, b, 0, bound, fits)? {
+                    true => Vec::new(),
+                    false => vec![None],
+                }
+            }
+            Some(_) => vec![None],
+            None => self.options(memo, i, bound, fits)?,
+        };
+        for o in options {
+            bound[i + 1] = o;
+            if !self.grow(memo, i + 1, bound, fits, each)? {
+                return Ok(false);
+            }
+        }
+        bound[i + 1] = None;
+        Ok(true)
+    }
+
+    /// Whether branch `b`'s steps from its `k`-th have a whole match
+    /// beside `bound`, which is left as it was.
+    fn matches(
+        &self,
+        memo: &Memo,
+        b: usize,
+        k: usize,
+        bound: &mut Vec<Option<Reached>>,
+        fits: &mut Fits<'_>,
+    ) -> Result<bool> {
+        let Some(&i) = self.steps[b].get(k) else {
+            return Ok(true);
+        };
+        for o in self.options(memo, i, bound, fits)? {
+            let was = std::mem::replace(&mut bound[i + 1], o);
+            let whole = self.matches(memo, b, k + 1, bound, fits);
+            bound[i + 1] = was;
+            if whole? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// What step `i` may bind beside `bound`: each record it keeps that
+    /// fits, or for a join and an absent step, nothing where it holds.
+    fn options(
+        &self,
+        memo: &Memo,
+        i: usize,
+        bound: &[Option<Reached>],
+        fits: &mut Fits<'_>,
+    ) -> Result<Vec<Option<Reached>>> {
+        let s = self.shapes[i];
+        let Some(from) = &bound[s.from] else {
+            return Ok(Vec::new());
+        };
+        let start = &bound[0].as_ref().expect("the start is bound").node;
+        let joined = s.join.map(|j| bound[j].as_ref().map(|r| &r.node));
+        let mut held = Vec::new();
+        for r in memo.get(&(i, from.node.clone())).into_iter().flatten() {
+            if joined.is_some_and(|j| j != Some(&r.node)) {
+                continue;
+            }
+            if fits(i, start, &bound[1..=i], r)? {
+                held.push(Some(r.clone()));
+                if !s.binds() {
+                    break;
+                }
+            }
+        }
+        Ok(match (s.absent, s.join.is_some()) {
+            (true, _) => held.is_empty().then_some(None).into_iter().collect(),
+            (false, true) => held.into_iter().map(|_| None).collect(),
+            (false, false) => held,
+        })
+    }
+}
+
 /// The graph a chain of steps walks from each of `starts`: the starts,
 /// whether or not a match begins there, every record a match binds, the
 /// records each was walked through (below its step's `min`, or dropped by
 /// `keep`), and the links walked between them. Each record is at the
-/// fewest hops any match reaches it in. Walked as [`traverse_each`] walks
+/// fewest hops any match reaches it in. Walked as [`tree_each`] walks
 /// a chain.
 ///
 /// One page of it, as [`subgraph`](super::subgraph()) pages: the records at
@@ -192,7 +419,15 @@ where
     if starts.len() > max_nodes as usize {
         return Err(too_large(max_nodes));
     }
-    let mut chain = Chain::new(source, steps, max_depth, usize::MAX, keep, Some(span))?;
+    let shapes = Shape::chain(steps.len());
+    let mut chain = Chain::new(
+        source,
+        (steps, &shapes),
+        max_depth,
+        usize::MAX,
+        keep,
+        Some(span),
+    )?;
     chain.held = Some((starts.len(), max_nodes));
     for page in starts.chunks(PAGE) {
         chain.prime(page)?;
@@ -306,15 +541,18 @@ impl Span {
     }
 }
 
-/// The state of one [`traverse`] or [`spanned`].
+/// What step `i` kept from a record, filled by [`Chain::prime`] before
+/// a binding is made, so a record reached along several bindings is
+/// walked from once.
+type Memo = BTreeMap<(usize, Node), Vec<Reached>>;
+
+/// The state of one [`traverse`], [`tree_each`] or [`spanned`].
 struct Chain<'a, S: EdgeSource + ?Sized, K> {
     links: Links<'a, S>,
     steps: &'a [Step],
+    shapes: &'a [Shape],
     keep: K,
-    /// What step `i` kept from a record, filled by [`Self::prime`] before
-    /// a binding is made, so a record reached along several bindings is
-    /// walked from once.
-    memo: BTreeMap<(usize, Node), Vec<Reached>>,
+    memo: Memo,
     max_bindings: usize,
     out: Traversal,
     /// The start being walked from, and, for [`spanned`], what the
@@ -332,7 +570,7 @@ where
 {
     fn new(
         source: &'a S,
-        steps: &'a [Step],
+        (steps, shapes): (&'a [Step], &'a [Shape]),
         max_depth: u32,
         max_bindings: usize,
         keep: K,
@@ -344,6 +582,7 @@ where
         Ok(Chain {
             links: Links::new(source),
             steps,
+            shapes,
             keep,
             memo: BTreeMap::new(),
             max_bindings,
@@ -387,11 +626,14 @@ where
 
     /// Walk every step for `nodes` and what each step keeps of them, a
     /// step's records together a hop at a time, into the memo that
-    /// [`Self::extend`] reads, with each walk's routes for a span: so the
-    /// starts of a page ask the source together.
+    /// [`Self::extend`] and a [`Tree`] read, with each walk's routes for a
+    /// span: so the starts of a page ask the source together. A step is
+    /// walked from every record its shape's slot holds.
     fn prime(&mut self, nodes: &[Node]) -> Result<()> {
-        let mut at: BTreeSet<Node> = nodes.iter().cloned().collect();
+        let mut slots = vec![BTreeSet::new(); self.steps.len() + 1];
+        slots[0] = nodes.iter().cloned().collect();
         for (i, s) in self.steps.iter().enumerate() {
+            let at = &slots[self.shapes[i].from];
             let todo: Vec<Node> = (at.iter())
                 .filter(|n| !self.memo.contains_key(&(i, (*n).clone())))
                 .cloned()
@@ -417,8 +659,10 @@ where
                 }
                 self.memo.insert((i, node), kept);
             }
-            let next = at.iter().flat_map(|n| &self.memo[&(i, n.clone())]);
-            at = next.map(|r| r.node.clone()).collect();
+            if self.shapes[i].binds() {
+                let next = at.iter().flat_map(|n| &self.memo[&(i, n.clone())]);
+                slots[i + 1] = next.map(|r| r.node.clone()).collect();
+            }
         }
         Ok(())
     }

@@ -26,7 +26,7 @@ use crate::write::{Declaration, Migration, ProposedWrite};
 /// format is refused by name, with both numbers, and nothing of it is read
 /// (`docs/log-format.md` §6,
 /// `docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
-pub const LOG_FORMAT_VERSION: u32 = 19;
+pub const LOG_FORMAT_VERSION: u32 = 20;
 
 /// The oldest log format this release reads: 14, the format of the first
 /// release with real installations (054).

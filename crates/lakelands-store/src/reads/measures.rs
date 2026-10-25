@@ -90,6 +90,7 @@ impl Reader<'_> {
         if s.named.is_some() || p.steps.iter().any(|s| s.named.is_some()) {
             return Err(Error::invalid(Case::PatternAsNotRows));
         }
+        super::query::tree(p, false)?;
         check(p)?;
         // An inverse names every relation that bears it, each walked as
         // its own step: components take the steps' relations as one set.

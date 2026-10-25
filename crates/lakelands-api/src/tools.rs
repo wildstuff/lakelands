@@ -1020,6 +1020,19 @@ const BINDING: &str = "The name a row binds this record under, `<name>.<field>`;
 /// [`BINDING`] for a step, which may reach several types.
 const STEP_BINDING: &str = "The name a row binds this step's records under, `<name>.<field>`, with `<name>.key`, `<name>._type` and `<name>._depth`; its type's name when left out, or its relation's where it reaches several types. Name a step that may reach several types: left out, its name follows the types its reader is shown.";
 
+/// What a step's `from`, `join`, `optional` and `absent` say: a pattern
+/// of rows is a tree (`docs/decisions/080-a-pattern-may-branch-and-join.md`).
+const STEP_FROM: &str = "The name this step walks from: the start's, or one an earlier step binds; the one the step before it binds when left out. Two steps from one name branch, and a row is a match of every branch. Rows and an aggregate only.";
+
+/// [`STEP_FROM`] for a join.
+const STEP_JOIN: &str = "A name an earlier step binds: the step holds only where it reaches that name's record, closing a cycle. It binds no name and takes no `as`, `type` or `where`.";
+
+/// [`STEP_FROM`] for an optional step.
+const STEP_OPTIONAL: &str = "Keep the row where the step has no match: its name's `key`, `_type` and `_depth` are null. A step from or joining it says `optional` too, and they match whole or are null whole.";
+
+/// [`STEP_FROM`] for an absent step.
+const STEP_ABSENT: &str = "Keep the row only where the step has no match from its `from`; with `join`, only where no walk reaches the joined record. It binds no name and takes no `as`.";
+
 fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
     let names = |pick: fn(&TypeDescription) -> bool| -> Value {
         one_of(
@@ -1145,7 +1158,11 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                     "depth": {"type": "object", "properties": {
                         "min": {"type": "integer", "minimum": 0},
                         "max": {"type": "integer", "minimum": 0}}},
-                    "as": {"type": "string", "description": STEP_BINDING}},
+                    "as": {"type": "string", "description": STEP_BINDING},
+                    "from": {"type": "string", "description": STEP_FROM},
+                    "join": {"type": "string", "description": STEP_JOIN},
+                    "optional": {"type": "boolean", "description": STEP_OPTIONAL},
+                    "absent": {"type": "boolean", "description": STEP_ABSENT}},
                     "required": ["relation"]}}),
             ),
             (
@@ -1171,7 +1188,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
         time_axes(&mut p);
         out.push(ToolSpec {
             name: QUERY.into(),
-            description: "Walk declared relations from a start (a record, a filter or a search) and return rows or a graph. Covers neighbours, traversal, paths and subgraphs, and two whole-graph measures: degree centrality and connected components. A graph whose steps all start at depth 0 is one walk over their relations, each in its own step's direction and depth; any other is a chain, as rows walk it; a graph cut by `limit` pages with `next_cursor`. A path (`to`) has one start and answers a graph. A measure is computed whole for every page: read it in one page, with `limit` up to the lake's `max_graph_nodes`.".into(),
+            description: "Walk declared relations from a start (a record, a filter or a search) and return rows or a graph. Covers neighbours, traversal, paths and subgraphs, and two whole-graph measures: degree centrality and connected components. A graph whose steps all start at depth 0 is one walk over their relations, each in its own step's direction and depth; any other is a chain, as rows walk it; a graph cut by `limit` pages with `next_cursor`. Rows and an aggregate may branch and join: a step's `from` names an earlier name, `join` closes a cycle, `optional` binds null where nothing matches and `absent` keeps a row only where nothing does. A path (`to`) has one start and answers a graph. A measure is computed whole for every page: read it in one page, with `limit` up to the lake's `max_graph_nodes`.".into(),
             input_schema: obj(p, &["start"]),
             output_schema: reply_schema(json!({"type": "object"})),
             door: Door::Query,

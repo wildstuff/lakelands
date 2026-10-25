@@ -22,6 +22,7 @@ mod backings;
 mod batched;
 mod before_declared;
 mod bundles;
+mod change;
 mod chosen;
 mod compact;
 mod computed_at;
@@ -76,6 +77,7 @@ mod only;
 mod only_proposals;
 mod paging;
 mod paths;
+mod pattern_tree;
 mod plan;
 mod positions;
 mod proposal_names;
@@ -521,6 +523,12 @@ pub const ALL: &[Check] = &[
     plan::PLAN_SHOWN,
     plan::PLAN_ACCEPTED,
     plan::PLAN_TOLD,
+    change::CHANGE_PLANNED,
+    change::CHANGE_REFUSED,
+    change::CHANGE_READ,
+    change::CHANGE_PROPOSED,
+    change::CHANGE_REVIEWED,
+    change::CHANGE_LINKS,
     values::DECIMAL_NOT_A_NUMBER,
     values::GEO_VALUES,
     values::JSON_VALUES,
@@ -602,6 +610,13 @@ pub const ALL: &[Check] = &[
     graph_steps::PATH_STEPS,
     graph_steps::GRAPH_RIGHTS,
     graph_steps::REACH_STEPS,
+    pattern_tree::TREE_BRANCH,
+    pattern_tree::TREE_OPTIONAL,
+    pattern_tree::TREE_ABSENT,
+    pattern_tree::TREE_RIGHTS,
+    pattern_tree::TREE_CURSOR,
+    pattern_tree::TREE_BOUND,
+    pattern_tree::TREE_REFUSED,
     search::SEARCH_FOLLOWS_TEXT,
     search::WITHHELD_NEVER_HITS,
     search::VECTOR_LEAVES_THE_NEIGHBOURS,
@@ -830,6 +845,7 @@ pub const ALL: &[Check] = &[
     upgrade::FORMAT_16_UPGRADED,
     upgrade::FORMAT_17_UPGRADED,
     upgrade::FORMAT_18_UPGRADED,
+    upgrade::FORMAT_19_UPGRADED,
     upgrade::LAYOUT_REBUILT,
     ahead::BUILT_AHEAD,
     verb_written::VERB_ONLY,

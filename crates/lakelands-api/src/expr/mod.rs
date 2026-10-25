@@ -34,10 +34,12 @@
 //! **Paths.** A path's first segment is looked up among the fields of the
 //! record in scope first. If it is one, a further segment digs into that
 //! field's value — meaningful for a `json` or `geo` value, null for any
-//! other. If it is not, in a pattern step the first segment names the type
-//! of an earlier step and the second a field of it (`invoice.amount`). A
-//! declaration whose `json` field has the name of a type is refused, so
-//! the two readings never meet.
+//! other. If it is not, in a pattern step the first segment names a name
+//! bound before the step, the start's or a sibling branch's included, and
+//! the second a field of its record (`invoice.amount`), null where an
+//! optional step bound none. A field or relation of the record in scope
+//! that its reader may know of is read first, whatever a name says; one
+//! it may not know of is as one the type does not declare.
 //!
 //! **Literals and calls.** A duration is a number directly followed by
 //! `d` (days), `h` (hours), `m` (minutes) or `s` (seconds), possibly with

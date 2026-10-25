@@ -33,15 +33,15 @@ pub(crate) struct Against<'a> {
 pub(crate) struct Planned {
     /// Its plan, as its author is shown it.
     pub(crate) plan: Plan,
-    drafts: Vec<Draft>,
+    pub(super) drafts: Vec<Draft>,
     /// Whether nothing is appended: it is answered at the head.
-    nothing: bool,
+    pub(super) nothing: bool,
     /// How its outcome reads what it appended.
-    answer: Answer,
+    pub(super) answer: Answer,
 }
 
 /// How a change's outcome reads what it appended.
-enum Answer {
+pub(super) enum Answer {
     /// Each declaration sent, as it stands in force after the call: at
     /// the position of its first event (`declare`), or of its last
     /// (`apply`), from which all of it is in force.
@@ -50,6 +50,8 @@ enum Answer {
     Migrated(Vec<(FieldName, FieldName)>),
     /// What it appended, alone.
     Plain,
+    /// The position of its last event: a change to records (081).
+    Last,
 }
 
 /// A plan's id: named by what it says to its reader and where the lake
@@ -96,6 +98,7 @@ pub(crate) fn plan_of(
         types,
         value_types,
         lossless,
+        records: None,
     };
     plan.report_id = plan_id(&plan);
     plan
@@ -115,7 +118,10 @@ impl Call<'_> {
 
     /// `enact`: the change made against the plan its caller was shown.
     pub fn enact(&self, change: Changed, plan_id: &str) -> Result<Outcome> {
-        self.enacting()?;
+        // A change to records is its caller's own writes (081).
+        if !matches!(change, Changed::Records { .. }) {
+            self.enacting()?;
+        }
         let against = Against {
             plan: Some(plan_id),
             report: None,
@@ -187,7 +193,7 @@ impl Call<'_> {
                 let events = self.lake.append(&mut w, drafts)?;
                 match &answer {
                     Answer::Migrated(renamed) => self.answered(&events, renamed.clone()),
-                    Answer::Declared(_, true) => {
+                    Answer::Declared(_, true) | Answer::Last => {
                         applied(events.last().expect("drafts were sent").position, None)
                     }
                     _ => outcome_of(&events),
@@ -212,6 +218,21 @@ impl Call<'_> {
         against: Against<'_>,
     ) -> Result<Planned> {
         let sees = Sight::held(self.who, &w.ontology);
+        if let Changed::Records {
+            ty,
+            filter,
+            to,
+            only,
+            skip_restricted,
+        } = change
+        {
+            let now = match when {
+                When::Plan => w.last_known_at,
+                When::Act => self.lake.clock(w),
+            };
+            let records = (ty, *filter, to, only, skip_restricted);
+            return self.changing(w, records, (now, 0, None), against);
+        }
         granted(sees.authors())?;
         match change {
             Changed::Declare { mut declarations } => {
@@ -245,6 +266,7 @@ impl Call<'_> {
             Changed::MigrateValueType { migration } => {
                 self.migrating_value_type(w, *migration, when, against)
             }
+            Changed::Records { .. } => unreachable!("a change to records is planned above"),
         }
     }
 
@@ -401,7 +423,7 @@ impl Call<'_> {
 }
 
 /// Refused `plan_stale` where the change is made against another plan.
-fn stale(plan: &Plan, against: Against<'_>) -> Result<()> {
+pub(super) fn stale(plan: &Plan, against: Against<'_>) -> Result<()> {
     match against.plan {
         Some(id) if id != plan.report_id => Err(Error::invalid(Case::PlanStale)),
         _ => Ok(()),
@@ -418,6 +440,10 @@ pub(crate) fn shown_plan(
     sight: &Sight<'_>,
     view: &dyn ProjectionView,
 ) -> Result<()> {
+    // A change to records is its reader's own, made for it (081).
+    if plan.records.is_some() {
+        return Ok(());
+    }
     plan.types.retain(|t| sight.ty(&t.ty).is_ok());
     for t in &mut plan.types {
         let decl = sight.ty(&t.ty)?;

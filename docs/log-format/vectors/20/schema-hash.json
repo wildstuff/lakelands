@@ -1,0 +1,198 @@
+{
+  "declaration": {
+    "field_meta": true,
+    "fields": [
+      {
+        "authority": "authored",
+        "name": "customer",
+        "on_input_change": "keep",
+        "required": false,
+        "searchable": false,
+        "sensitive": false,
+        "type": {
+          "kind": "text"
+        }
+      },
+      {
+        "authority": "authored",
+        "name": "total",
+        "on_input_change": "keep",
+        "required": false,
+        "searchable": false,
+        "sensitive": false,
+        "type": {
+          "kind": "decimal"
+        }
+      },
+      {
+        "authority": "authored",
+        "name": "late",
+        "on_input_change": "keep",
+        "required": false,
+        "searchable": false,
+        "sensitive": false,
+        "type": {
+          "kind": "number"
+        }
+      }
+    ],
+    "key": [
+      "customer"
+    ],
+    "name": "open_by_customer",
+    "view": {
+      "group_by": [
+        "customer"
+      ],
+      "measures": [
+        {
+          "expr": "sum(amount)",
+          "name": "total"
+        },
+        {
+          "expr": "count() * -1.50",
+          "name": "late"
+        }
+      ],
+      "source": "invoice",
+      "where": "status != 'paid' and not (due is null) and due < now() - 30d"
+    }
+  },
+  "schema_hash": "e717489387bfda677db33130c1cea596a39f7e59ae31b1340240251a927c5929",
+  "shape": {
+    "fields": [
+      {
+        "name": "customer",
+        "required": false,
+        "type": {
+          "kind": "text"
+        }
+      },
+      {
+        "name": "late",
+        "required": false,
+        "type": {
+          "kind": "number"
+        }
+      },
+      {
+        "name": "total",
+        "required": false,
+        "type": {
+          "kind": "decimal"
+        }
+      }
+    ],
+    "key": [
+      "customer"
+    ],
+    "relations": [],
+    "view": {
+      "group_by": [
+        "customer"
+      ],
+      "measures": [
+        {
+          "expr": {
+            "args": [
+              {
+                "op": "path",
+                "path": [
+                  "amount"
+                ]
+              }
+            ],
+            "func": "sum",
+            "op": "call"
+          },
+          "name": "total"
+        },
+        {
+          "expr": {
+            "arith": "mul",
+            "lhs": {
+              "args": [],
+              "func": "count",
+              "op": "call"
+            },
+            "op": "arith",
+            "rhs": {
+              "arg": {
+                "op": "lit",
+                "value": {
+                  "type": "number",
+                  "value": "1.50"
+                }
+              },
+              "op": "neg"
+            }
+          },
+          "name": "late"
+        }
+      ],
+      "source": "invoice",
+      "where": {
+        "args": [
+          {
+            "cmp": "ne",
+            "lhs": {
+              "op": "path",
+              "path": [
+                "status"
+              ]
+            },
+            "op": "cmp",
+            "rhs": {
+              "op": "lit",
+              "value": {
+                "type": "text",
+                "value": "paid"
+              }
+            }
+          },
+          {
+            "arg": {
+              "arg": {
+                "op": "path",
+                "path": [
+                  "due"
+                ]
+              },
+              "op": "is_null"
+            },
+            "op": "not"
+          },
+          {
+            "cmp": "lt",
+            "lhs": {
+              "op": "path",
+              "path": [
+                "due"
+              ]
+            },
+            "op": "cmp",
+            "rhs": {
+              "arith": "sub",
+              "lhs": {
+                "args": [],
+                "func": "now",
+                "op": "call"
+              },
+              "op": "arith",
+              "rhs": {
+                "op": "lit",
+                "value": {
+                  "type": "duration",
+                  "value": 2592000000000
+                }
+              }
+            }
+          }
+        ],
+        "op": "and"
+      }
+    }
+  },
+  "shape_canonical": "{\"fields\":[{\"name\":\"customer\",\"required\":false,\"type\":{\"kind\":\"text\"}},{\"name\":\"late\",\"required\":false,\"type\":{\"kind\":\"number\"}},{\"name\":\"total\",\"required\":false,\"type\":{\"kind\":\"decimal\"}}],\"key\":[\"customer\"],\"relations\":[],\"view\":{\"group_by\":[\"customer\"],\"measures\":[{\"expr\":{\"args\":[{\"op\":\"path\",\"path\":[\"amount\"]}],\"func\":\"sum\",\"op\":\"call\"},\"name\":\"total\"},{\"expr\":{\"arith\":\"mul\",\"lhs\":{\"args\":[],\"func\":\"count\",\"op\":\"call\"},\"op\":\"arith\",\"rhs\":{\"arg\":{\"op\":\"lit\",\"value\":{\"type\":\"number\",\"value\":\"1.50\"}},\"op\":\"neg\"}},\"name\":\"late\"}],\"source\":\"invoice\",\"where\":{\"args\":[{\"cmp\":\"ne\",\"lhs\":{\"op\":\"path\",\"path\":[\"status\"]},\"op\":\"cmp\",\"rhs\":{\"op\":\"lit\",\"value\":{\"type\":\"text\",\"value\":\"paid\"}}},{\"arg\":{\"arg\":{\"op\":\"path\",\"path\":[\"due\"]},\"op\":\"is_null\"},\"op\":\"not\"},{\"cmp\":\"lt\",\"lhs\":{\"op\":\"path\",\"path\":[\"due\"]},\"op\":\"cmp\",\"rhs\":{\"arith\":\"sub\",\"lhs\":{\"args\":[],\"func\":\"now\",\"op\":\"call\"},\"op\":\"arith\",\"rhs\":{\"op\":\"lit\",\"value\":{\"type\":\"duration\",\"value\":2592000000000}}}}],\"op\":\"and\"}}}",
+  "key_left_out_schema_hash": "e717489387bfda677db33130c1cea596a39f7e59ae31b1340240251a927c5929"
+}
