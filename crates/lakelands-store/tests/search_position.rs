@@ -155,7 +155,10 @@ fn searches() -> [(SearchMode, Option<i64>); 3] {
 /// record by its own text and vector, never by the held one's, as of the
 /// position before and at the head, where the answer is of the position
 /// the rankings were read at and names the record by its key there. The
-/// plan asks the same, so the engine is asked once.
+/// plan asks the same, so the engine is asked once, but for a vector read
+/// as of the position before: it was the head when the engine was first
+/// asked, and judged by the engine there, and is judged by the store once
+/// the head moved past it, so the engine is asked again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_rekey_between_the_head_and_the_rankings_is_judged_where_they_were_read() {
     for as_of in [true, false] {
@@ -179,7 +182,8 @@ async fn a_rekey_between_the_head_and_the_rankings_is_judged_where_they_were_rea
             assert_eq!(hits, want, "as of: {as_of}, {mode:?}");
             assert_eq!(at, read_at, "as of: {as_of}, {mode:?}");
             assert!(head > p, "the migration landed in the pause");
-            assert_eq!(probe.ranked.load(Ordering::SeqCst), 1, "{mode:?}");
+            let asked = 1 + usize::from(as_of && score.is_some());
+            assert_eq!(probe.ranked.load(Ordering::SeqCst), asked, "{mode:?}");
         }
     }
 }

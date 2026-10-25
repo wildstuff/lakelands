@@ -615,12 +615,19 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   EXTENSION IF NOT EXISTS vector`, which needs a role allowed to create
   it; where it cannot, the lake opens as always, its searches read every
   vector and answer exactly, and the open says so once on standard
-  error. An indexed field costs, beside
-  its vectors, a unit vector and an index entry per vector: measured at
-  100 000 vectors of 1 536 dimensions, about 8.3 KiB for the unit vector
-  (kept out of line) and 8 KiB for the index, one page per vector. The
-  index is built in the transaction of the setting's write, which holds
-  the lake's writer until it is done: 7 minutes for that field at
+  error. Each indexed field of a record type keeps a graph of its live
+  heads that are not held (B) and, from the type's first hold, a
+  second of every live head (A); a link type's field keeps one
+  (`docs/decisions/078-under-an-index-a-search-pages-one-ranking-of-what-its-reader-may-see.md`).
+  A graph is a table of the record's key and its unit vector with an
+  HNSW index, made where `tablespaces` puts `vectors`. So an indexed
+  field costs, beside its vectors, a unit vector and an index entry per
+  graph a record is in: measured at 100 000 vectors of 1 536
+  dimensions, about 8.3 KiB for the unit vector (kept out of line) and
+  8 KiB for the index, one page per vector, in each graph. B, and A
+  where a head of the type is held, is built in the transaction of the
+  setting's write, which holds the lake's writer until it is done: 7
+  minutes for B of that field at
   PostgreSQL's default `maintenance_work_mem` of 64 MiB on a loaded
   12-core machine, since the graph stops fitting in memory after about
   9 000 vectors; a host that indexes a large field raises
@@ -634,36 +641,59 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   again and fails the same way. Reads answer as before; writes do not,
   until the host raises `/dev/shm` or `maintenance_work_mem`, or sets
   `max_parallel_maintenance_workers = 0`, and opens the writer again.
-  Under the index a page of a search is the index's answer at the depth
-  that page asks for, so the pages of one query may answer a record
-  twice or leave one out (043): a host that needs a ranked result whole
-  and in order reads it in one page, up to `max_limit`, or leaves the
-  field without the setting. A group of equally near vectors is no
-  exception: the members the index hands out at a page's depth come
-  once and in key order there, and the index may hand out a part of
-  the group and go on with farther vectors. A vector of zeros is never
-  answered for a field read through its index, whether the index or the
-  scan after it answers the search; a field without the setting scores
-  it 0, and so does every field on a server without pgvector, and a
-  field whose index is behind the head, which a writer's open builds.
-  Some searches read every vector of the
-  field after the index. One is a search the index hands fewer
-  candidates than it asked for: on a field smaller than what the search
-  pulls (a field under 65 vectors for a search of one ranking, a field
-  no larger than `max_limit` for one that fuses rankings, and a page
-  deep into a larger one); past 20 000 candidates or pgvector's memory limit for such a
-  scan (`hnsw.scan_mem_multiplier` times `work_mem`, which stays the
-  server's), which a search under a filter that keeps few records
-  reaches on a large field; and over a group of several hundred
-  identical vectors, of which the index reaches a part. The other is a
-  search whose pull of 4 096 candidates or more ends inside a group of
-  equally near vectors. **The engine sets `hnsw.max_scan_tuples`
-  itself,** to pgvector's default of 20 000, for each search and
-  whatever the server's value: where the index ends decides which
-  searches the scan answers, and an answer must not move with a
-  server's setting. It is set with `SET LOCAL`, for the search's own
-  transaction only; nothing of the role's or the server's is changed,
-  and a value a host set there has no effect on a lake's searches.
+  A is built at the type's first hold, and B again after the hold of a
+  record B held, by a thread of the writer on a connection of its own,
+  beside the graph it replaces, which it drops once every search that
+  began before the swap has ended, looking again every 200 ms: searches
+  that overlap without a pause delay the drop by the longest of them; a
+  writer's open drops a half-built one and starts it again. A build
+  that the server refuses is tried again after 1 s, then after twice
+  the wait before for each failure in a row, up to 64 s; the connection
+  is closed while it waits, and the next commit or the writer's close
+  ends the wait. Until it
+  is built, that graph's readers are ranked exactly: on a field of
+  100 000 × 32 with a quarter held, a hold took a median 13 ms, a
+  reader's first page right after it a median 77 ms (6 ms from the
+  graph), and B was built again in about 33 s. Holds that come faster
+  than a build keep them there.
+  A reader without `restricted` is streamed from B, which never held a
+  held record, and one with it from A; a reader holding `only` on the
+  type, or one whose grants judge a link by its ends, is ranked
+  exactly. What B leaves a reader without `restricted` is this: from
+  its answers, which all change when B is built again, it may tell that
+  a record it once saw was held, and roughly when, never which record
+  or anything of it.
+  Under the index the pages of one query are one sequence while the
+  graph of the reader's class does not change: no record twice, none
+  left out. A committed or open write its class sees, a build, a swap
+  and `VACUUM` change that graph, and a cursor followed across one may
+  answer a record twice or leave one out. The sequence is the index's
+  stream ranked by the one cosine, equal scores by key, and after it
+  the field's vectors the stream did not hand out, ranked the same way:
+  the score may rise once, where they begin, and a group of equally
+  near vectors may fall on both sides of it. A vector of zeros is never
+  answered for a field read through its index; a field without the
+  setting scores it 0, and so does every field on a server without
+  pgvector. A search whose filter keeps few records of a large field
+  is answered from the stream, at the index's recall of what it may
+  see, not exactly: on a field of 100 000 × 32, a filter keeping some
+  900 found 0.981 of the exact first 10 and 0.924 of the first 100. A
+  host that needs such answers exact leaves the field without the
+  setting. **The engine sets pgvector's search settings itself,** for
+  each search and whatever the server's values, since an answer must
+  not move with a server's setting: `hnsw.ef_search = 1000`,
+  `hnsw.iterative_scan = strict_order`, `hnsw.max_scan_tuples =
+  2147483647`, `hnsw.scan_mem_multiplier = 1000`, `work_mem = 4MB`,
+  `jit = off`, and `enable_seqscan` and `enable_sort` off. They are set
+  with `SET LOCAL`, for the search's own transaction only; nothing of
+  the role's or the server's is changed, and a value a host set there
+  has no effect on a lake's searches. With them a search's scan may
+  take up to 4 000 MiB of memory, and so may each search running at
+  once and each of its parallel workers; a field that reaches the bound
+  ends its stream there. The first writer's open of 0.19.0 rebuilds
+  each PostgreSQL lake beside its projection (its layout becomes 7) and
+  builds its graphs at the end: for a lake with a field of 100 000 × 32
+  under the index, the open took 89 s (67 s before 0.19.0).
   SQLite and in-memory lakes keep no such
   index and answer every search exactly; a SQLite lake that needs one
   moves to PostgreSQL by export and import (lakelands#215).
@@ -950,7 +980,7 @@ same directory is refused. The lake still verifies from `dir` alone
 Created at the first open. A PostgreSQL lake's `tablespaces` names, for
 each of `log` (the log, its segments and the lease), `projection` (the
 projection's tables), `indexes` (their indexes) and `vectors` (the
-vectors and their index), the tablespace its relations are made in; a
+vectors and the graphs of their index), the tablespace its relations are made in; a
 part named by none goes where the role's or the database's
 `default_tablespace` puts it, as before, and that setting is not
 changed. The tablespaces exist before the open, made by the operator,
@@ -1502,7 +1532,8 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   engine within 7 %.
 - **Connections on PostgreSQL (lakelands#1324).** A process holds two
   connections for a lake it writes, `lakelands <schema>` in
-  `pg_stat_activity`, two more while a rebuild of it runs, and none of
+  `pg_stat_activity`, a third while a graph of its vector index is
+  built or dropped, two more while a rebuild of it runs, and none of
   its own for a lake it only reads. The reads of its lakes run side by
   side on readers they share, `lakelands readers <pid>`: up to 16 for
   each server, database, credentials, TLS and tuning, however many lakes
@@ -1514,7 +1545,8 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   `engine.tuning.statement_timeout_secs` is set (`0`, the default, does
   not end it). At PostgreSQL's default `max_connections` of 100, three
   of them kept for superusers, a process can write 40 lakes on one
-  server, where it wrote 32 when each lake had a reader of its own.
+  server while none builds a graph, where it wrote 32 when each lake
+  had a reader of its own.
 - **An outage and a missing seam are cases, not sentences
   (lakelands#650).** `unavailable` carries a `Situation` and `unbound` a
   `Seam`: a code and its parameters (which lease and who holds it, which

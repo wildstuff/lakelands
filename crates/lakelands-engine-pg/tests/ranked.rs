@@ -164,6 +164,7 @@ fn a_call_holds_every_table_it_reads_from_its_first_statement() {
         "declarations",
         "declarations_head",
         "full_text",
+        "graphs",
         "meta",
         "records",
         "records_head",

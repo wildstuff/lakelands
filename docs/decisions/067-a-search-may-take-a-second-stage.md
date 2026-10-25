@@ -136,8 +136,11 @@ only what its reader reads and the paging stays one sequence.
 - It does not record the ranking, and a replay of the log never calls the
   reranker.
 - It does not mix two orders: nothing past `top` is answered.
-- It does not change a vector index's paging (lakelands#1254): the stage
-  takes whatever window the first stage gives, indexed or exact.
+- It does not change a vector index's paging: under an index the stage
+  takes the first `top` hits of its reader's one sequence, as it takes
+  the exact ranking's
+  (`docs/decisions/078-under-an-index-a-search-pages-one-ranking-of-what-its-reader-may-see.md`,
+  lakelands#1254).
 - It is not a fallback: a search without a reranker is refused, not
   answered by the first stage.
 

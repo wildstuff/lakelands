@@ -98,6 +98,9 @@ pub(super) struct First {
     pub axes: Vec<Axis>,
     pub offset: usize,
     pub read: String,
+    /// How many of the hits before `offset` were not read: those of a
+    /// list the engine judged.
+    pub skipped: usize,
 }
 
 impl Reader<'_> {

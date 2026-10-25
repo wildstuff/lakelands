@@ -7,28 +7,26 @@ fn a_unit_vector_has_length_one_and_zeros_have_none() {
 }
 
 #[test]
-fn the_search_asks_the_index_for_at_least_200_and_at_most_1000() {
-    assert!(search_settings(1).contains("ef_search = 200;"));
-    assert!(search_settings(300).contains("ef_search = 300;"));
-    assert!(search_settings(u32::MAX).contains("ef_search = 1000;"));
-    assert!(search_settings(1).contains("max_scan_tuples = 20000;"));
-}
-
-#[test]
-fn a_tie_at_the_boundary_is_pulled_deeper_and_past_the_ceiling_scanned() {
-    let ranked = |scores: &[f64]| -> Vec<(RecordKey, f64)> {
-        let keyed = |(i, s): (usize, &f64)| (format!("k{i}").as_str().into(), *s);
-        scores.iter().enumerate().map(keyed).collect()
+fn a_reader_reads_its_class_graph_and_none_stale_or_unbuilt() {
+    let graph = |class: &str, generation: Option<i64>, stale: Option<i64>| Graph {
+        field: "e".into(),
+        class: class.into(),
+        dims: 2,
+        generation,
+        stale,
+        next: None,
     };
-    // The third scores as the second: the boundary of two cuts a tie,
-    // in whatever order the index handed them out.
-    assert!(cuts_a_tie(&ranked(&[0.9, 0.5, 0.5]), 2));
-    assert!(cuts_a_tie(&ranked(&[0.5, 0.9, 0.5, 0.5]), 2));
-    // It scores below, no more came than `k`, or nothing is asked.
-    assert!(!cuts_a_tie(&ranked(&[0.4, 0.9, 0.5]), 2));
-    assert!(!cuts_a_tie(&ranked(&[0.5, 0.5]), 2));
-    assert!(!cuts_a_tie(&ranked(&[0.5]), 0));
-    assert!(!cuts_a_tie(&[], 1));
-    assert_eq!([deeper(11), deeper(3000)], [Some(22), Some(4096)]);
-    assert_eq!([deeper(4096), deeper(u32::MAX)], [None, None]);
+    let (a, b) = (graph("a", Some(1), None), graph("b", Some(2), None));
+    let name = |c: &str, g: i64| Some(bare("t", "e", c, g));
+    assert_eq!(pick(&[a.clone(), b.clone()], "t", true, 2), name("a", 1));
+    assert_eq!(pick(&[a.clone(), b.clone()], "t", false, 2), name("b", 2));
+    assert_eq!(pick(std::slice::from_ref(&b), "t", true, 2), name("b", 2));
+    assert_eq!(pick(&[a.clone(), b.clone()], "t", true, 3), None);
+    // A held record's reader does not fall back to B while A is built.
+    let building = graph("a", None, None);
+    assert_eq!(pick(&[building, b.clone()], "t", true, 2), None);
+    assert_eq!(
+        pick(&[a, graph("b", Some(2), Some(9))], "t", false, 2),
+        None
+    );
 }
