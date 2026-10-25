@@ -28,6 +28,17 @@ impl<'a> Reader<'a> {
             p.project,
             Projection::Rows { .. } | Projection::Aggregate(_)
         );
+        // A cheapest walk's `to` and order are judged before any step
+        // (018); its rows come by hop, so it refuses an order as a measure
+        // does.
+        let cheapest = matches!(p.project, Projection::Cheapest { .. });
+        if cheapest && p.to.is_none() {
+            return Err(Error::invalid(Case::CheapestNeedsTo));
+        }
+        if cheapest && !p.order_by.is_empty() {
+            let measure = projection_name(&p.project);
+            return Err(Error::invalid(Case::MeasureNoOrder { measure }));
+        }
         let given = std::iter::once(&p.start.named).chain(p.steps.iter().map(|s| &s.named));
         for name in given.flatten() {
             if !binds {
@@ -38,16 +49,8 @@ impl<'a> Reader<'a> {
             }
         }
         tree(p, binds)?;
-        let cheapest = matches!(p.project, Projection::Cheapest { .. });
-        if cheapest && p.to.is_none() {
-            return Err(Error::invalid(Case::CheapestNeedsTo));
-        }
         if measures::is_measure(&p.project) {
             measures::check(p)?;
-        } else if cheapest && !p.order_by.is_empty() {
-            // Its rows come by hop, so it refuses an order as a measure does.
-            let measure = projection_name(&p.project);
-            return Err(Error::invalid(Case::MeasureNoOrder { measure }));
         } else if !matches!(p.project, Projection::Rows { .. }) && !p.order_by.is_empty() {
             // A graph and a path come by depth, type and key, an
             // aggregate's groups by their key (025): an order is refused.
@@ -1577,19 +1580,21 @@ type Earlier<'a> = (&'a str, BTreeSet<TypeName>, Option<Place>);
 
 /// A cheapest walk's rows, one a record in hop order, each with what the
 /// walk has cost so far: a number where every weight is one, else a
-/// decimal as a decimal field reads (018). A number past an exact integer
-/// is refused `overflow`.
+/// decimal as a decimal field reads (018). A number past the exact
+/// integers, 2^53 - 1, is refused `overflow`, however large: a cost is
+/// never answered rounded.
 fn cheap_rows(walk: graph::Cheap, numbers: bool) -> Result<Vec<BTreeMap<String, Value>>> {
+    let exact = ((1u128 << 53) - 1) * 10u128.pow(graph::WEIGHT_PLACES);
     let mut rows = Vec::with_capacity(walk.nodes.len());
     for (hop, ((ty, key), units)) in walk.nodes.iter().zip(&walk.costs).enumerate() {
         let text = graph::cost_text(*units);
         let cost = match numbers {
             true => {
-                let n: serde_json::Number =
-                    text.parse().map_err(|_| Error::invalid(Case::Overflow))?;
-                if canonical::integer_too_large(&Value::Number(n.clone())).is_some() {
+                if units.unsigned_abs() > exact {
                     return Err(Error::invalid(Case::Overflow));
                 }
+                let n: serde_json::Number =
+                    text.parse().map_err(|_| Error::invalid(Case::Overflow))?;
                 Value::Number(n)
             }
             false => Value::String(text),

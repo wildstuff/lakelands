@@ -51,6 +51,8 @@ fn a_request_reads_every_member_it_takes_and_refuses_any_other() {
         ["pattern", {"start": {"type": "t"}, "project": {"as": "graph"}}],
         ["pattern", {"start": {"type": "t"}, "project": {"as": "degree"}}],
         ["pattern", {"start": {"type": "t"}, "project": {"as": "components"}}],
+        ["pattern", {"start": {"type": "t"}, "project": {"as": "page_rank"}}],
+        ["pattern", {"start": {"type": "t"}, "project": {"as": "cheapest", "weight": "w"}}],
         ["search", {"type": "t", "k": 5, "cursor": "c", "where": "n > 1", "with_meta": true, "as_of": 7,
             "mode": "lexical", "text": "a", "fields": ["t"]}],
         ["search", {"type": "t", "k": 5, "with_meta": false, "mode": "vector", "field": "v", "vector": [1.0],
@@ -113,7 +115,7 @@ fn a_request_reads_every_member_it_takes_and_refuses_any_other() {
             refused += 1;
         }
     }
-    assert_eq!(refused, 43, "the places a member was planted");
+    assert_eq!(refused, 49, "the places a member was planted");
     // A migration's proposal writes its report back, so it is planted alone.
     for write in ["migrate", "migrate_value_type"] {
         let v = json!({"write": write, "zzz": 1});

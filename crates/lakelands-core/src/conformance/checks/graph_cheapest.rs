@@ -29,7 +29,7 @@ check!(
 
 check!(
     CHEAPEST_PLACES = a_weight_reads_number_and_decimal_at_nine_places_and_cost_answers_its_kind,
-    "018 and 026: a weight is read at nine places, a tenth rounding half away from zero, and summed exactly, so 0.1 and 0.2 cost 0.3; the cost is a number where the weight is a number and a decimal, as a decimal field reads, where it is a decimal"
+    "018 and 026: a weight is read at nine places, a tenth rounding half away from zero, and summed exactly, so 0.1 and 0.2 cost 0.3; the cost is a number where the weight is a number and a decimal, as a decimal field reads, where it is a decimal; a number cost past 2^53 - 1, 10^21 and beyond included, is refused overflow, never answered rounded"
 );
 
 check!(
@@ -44,7 +44,7 @@ check!(
 
 check!(
     CHEAPEST_REFUSALS = cheapest_without_to_with_order_by_or_with_several_starts_is_refused,
-    "018: `cheapest` is refused `cheapest_needs_to` without `to`, as a measure is with `order_by`, `path_starts` from several starts, and with a step's `join`, `optional`, `absent` or a `from` that names another record than the start as a path is, naming the member"
+    "018: `cheapest` is refused `cheapest_needs_to` without `to`, then as a measure is with `order_by`, both before any step is judged, `path_starts` from several starts, and with a step's `join`, `optional`, `absent` or a `from` that names another record than the start as a path is, naming the member"
 );
 
 check!(
@@ -334,6 +334,9 @@ async fn a_weight_reads_number_and_decimal_at_nine_places_and_cost_answers_its_k
             "x4",
             json!({"km": 0.0000000005, "toll": "0.0000000004"}),
         ),
+        ("y1", "y2", json!({"km": 9_007_199_254_740_991u64})),
+        ("y2", "y3", json!({"km": 1})),
+        ("z1", "z2", json!({"km": 1e21})),
     ];
     lake(store.as_ref(), &roads).await?;
     let l = Lake::of(store.as_ref());
@@ -368,6 +371,22 @@ async fn a_weight_reads_number_and_decimal_at_nine_places_and_cost_answers_its_k
             if weight == "km" { "number" } else { "decimal" }
         );
     }
+    // A number cost is exact or refused: 2^53 - 1 is answered, one more
+    // and 10^21 are past the exact integers.
+    let p = cheap("y1", "y2", vec![road(Walk::Out, 2)], "km");
+    let got = walked(cat.as_ref(), own, p, "the cheapest y1 to y2").await?;
+    ensure!(
+        got == ["0 y1 - - 0", "1 y2 road out 9007199254740991"],
+        "a cost of 2^53 - 1 is answered exactly; it answered {got:?}"
+    );
+    for (from, to, what) in [("y1", "y3", "2^53"), ("z1", "z2", "10^21")] {
+        let p = cheap(from, to, vec![road(Walk::Out, 2)], "km");
+        refused_as!(
+            &format!("a number cost of {what}"),
+            cat.query(own, p).await,
+            Case::Overflow
+        )?;
+    }
     Ok(())
 }
 
@@ -375,6 +394,8 @@ async fn a_missing_weight_is_refused_naming_the_link_and_a_negative_one_too(stor
     let roads = [
         ("m1", "m2", json!({"note": "unweighed"})),
         ("m1", "m3", json!({"km": 1})),
+        ("o1", "o2", json!({"km": null})),
+        ("o1", "o3", json!({"km": 1})),
         ("n1", "n2", json!({"km": -1})),
         ("n2", "n3", json!({"km": 1})),
     ];
@@ -389,6 +410,13 @@ async fn a_missing_weight_is_refused_naming_the_link_and_a_negative_one_too(stor
         cat.query(own, p).await,
         Case::WeightMissing { relation, from, to }
             if relation.as_str() == "road" && from.as_str() == "m1" && to.as_str() == "m2"
+    )?;
+    let p = cheap("o1", "o3", out(), "km");
+    refused_as!(
+        "the cheapest o1 to o3, beside a road of null `km`",
+        cat.query(own, p).await,
+        Case::WeightMissing { relation, from, to }
+            if relation.as_str() == "road" && from.as_str() == "o1" && to.as_str() == "o2"
     )?;
     let p = cheap("n1", "n3", out(), "km");
     refused_as!(
@@ -487,6 +515,22 @@ async fn cheapest_without_to_with_order_by_or_with_several_starts_is_refused(sto
             "absent" => s.absent = true,
             _ => s.from = Some("other".into()),
         }
+        // `to` and the order are judged before any step.
+        let mut no_to = p.clone();
+        no_to.to = None;
+        no_to.order_by = vec![order("key", Default::default(), Default::default())];
+        refused_as!(
+            &format!("`cheapest` with `{member}` and `order_by`, without `to`"),
+            cat.query(own, no_to).await,
+            Case::CheapestNeedsTo
+        )?;
+        let mut ordered = p.clone();
+        ordered.order_by = vec![order("key", Default::default(), Default::default())];
+        refused_as!(
+            &format!("`cheapest` with `{member}` and `order_by`"),
+            cat.query(own, ordered).await,
+            Case::MeasureNoOrder { measure } if measure == "cheapest"
+        )?;
         let err = cat
             .query(own, p)
             .await

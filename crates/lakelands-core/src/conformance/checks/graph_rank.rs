@@ -23,7 +23,7 @@ check!(
 
 check!(
     RANK_NO_START = page_rank_with_no_start_type_grows_from_every_linked_record,
-    "018: `page_rank` with no start type ranks every record that holds a link it may see over the steps' relations, and no record linked to nothing, which a typed start counts"
+    "018: `page_rank` with no start type ranks every record that holds a link it may see over the steps' relations, and no record linked to nothing, which a typed start counts; a step naming an inverse walked one way ranks as the relation walked the other"
 );
 
 check!(
@@ -32,14 +32,15 @@ check!(
     given
 );
 
-/// Pages a..f, linked by `cites` records: a → b → c → a is a cycle, c
-/// cites d, which cites nothing, e cites itself and a, and f is cited by
-/// none and cites none.
+/// Pages a..f, linked by `cites` records, whose inverse is `cited_by`:
+/// a → b → c → a is a cycle, c cites d, which cites nothing, e cites
+/// itself and a, and f is cited by none and cites none.
 async fn lake(store: &dyn LakeStore) -> Held {
     let l = Lake::of(store);
     let mut page = type_decl("page", vec![field("name", StorageKind::Text)]);
     page.relations = vec![RelationDecl {
         cardinality: Cardinality::ManyToMany,
+        inverse: Some("cited_by".into()),
         ..RelationDecl::to("cites", "page")
     }];
     l.declare(page).await?;
@@ -296,6 +297,45 @@ async fn page_rank_with_no_start_type_grows_from_every_linked_record(store: Stor
     ensure!(
         typed.len() == 6 && typed[5] == "f=0.055960272313",
         "from every page, f is a start and is ranked; it answered {typed:?}"
+    );
+    // A step naming the inverse is `cites` walked from its owner's end, so
+    // `cited_by` walked one way ranks as `cites` walked the other.
+    let unstarted = |relation: &str, walk| {
+        let mut p = pattern(
+            "page",
+            None,
+            vec![step(relation, walk)],
+            Projection::PageRank,
+        );
+        p.start.ty = None;
+        p
+    };
+    for (walk, back) in [(Walk::In, Walk::Out), (Walk::Out, Walk::In)] {
+        let what = format!("unstarted PageRank over `cited_by` walked {walk:?}");
+        let inverse = ranks(cat.as_ref(), own, unstarted("cited_by", walk), &what).await?;
+        let what = format!("unstarted PageRank over `cites` walked {back:?}");
+        let cites = ranks(cat.as_ref(), own, unstarted("cites", back), &what).await?;
+        ensure!(
+            inverse == cites,
+            "`cited_by` walked {walk:?} ranks as `cites` walked {back:?}, {cites:?}; it \
+             answered {inverse:?}"
+        );
+        ensure!(
+            walk == Walk::Out || inverse == want,
+            "`cited_by` walked in ranks as `cites` walked out, {want:?}; it answered {inverse:?}"
+        );
+    }
+    let back = ranks(
+        cat.as_ref(),
+        own,
+        unstarted("cites", Walk::In),
+        "`cites` in",
+    )
+    .await?;
+    ensure!(
+        back != want,
+        "`cites` walked in ranks otherwise than walked out, so the pairs above tell the ways \
+         apart; it answered {back:?}"
     );
     Ok(())
 }
