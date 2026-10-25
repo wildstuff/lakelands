@@ -787,6 +787,10 @@ impl LakeEngine for PgLake {
         Ok(())
     }
 
+    fn lease_free(&self) -> Result<bool> {
+        self.reading(|db| lease::free(db, &self.target.schema))
+    }
+
     fn tip(&self) -> Result<Option<(Position, Digest)>> {
         self.reading(|db| log::tip(db, &self.names))
     }

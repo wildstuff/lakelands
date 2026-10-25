@@ -169,6 +169,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     log::READ_ONLY_OPEN,
     log::DROPPED_WRITER,
     log::READ_ONLY_HANDLE,
+    log::LEASE_FREE,
     log::UNLEASED_HANDLE,
     projection::VIEW_AT_A_POSITION,
     projection::PAST_THE_FOLD,

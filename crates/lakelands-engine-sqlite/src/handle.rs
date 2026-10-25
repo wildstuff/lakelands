@@ -574,6 +574,10 @@ impl LakeEngine for SqliteLake {
         Ok(())
     }
 
+    fn lease_free(&self) -> Result<bool> {
+        self.lease_file.free()
+    }
+
     fn tip(&self) -> Result<Option<(Position, Digest)>> {
         let mut log = lock(&self.log);
         log.refresh()?;

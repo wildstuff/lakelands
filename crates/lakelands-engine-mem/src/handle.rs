@@ -125,6 +125,10 @@ impl LakeEngine for MemoryLake {
         Ok(())
     }
 
+    fn lease_free(&self) -> Result<bool> {
+        Ok(lock(&self.shared).log.lease_free())
+    }
+
     fn tip(&self) -> Result<Option<(Position, Digest)>> {
         Ok(lock(&self.shared).log.tip())
     }

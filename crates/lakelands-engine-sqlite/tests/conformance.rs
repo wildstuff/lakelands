@@ -15,7 +15,8 @@ use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::checks::ALL;
 use lakelands_core::conformance::{
     Ahead, BuiltAhead, Continue, Continued, Fault, FreshLake, Harness, Import, ImportedLake,
-    LARGE_LAKE, Lower, Meter, Relimit, Reopen, Twin, below, continue_below, run_all, run_one,
+    LARGE_LAKE, Lower, Meter, Relimit, Reopen, Standby, Twin, below, continue_below, run_all,
+    run_one,
 };
 use lakelands_engine_sqlite::SqliteOpener;
 use peak_alloc::PeakAlloc;
@@ -234,6 +235,21 @@ impl Harness for Sqlite {
                     through: built.through,
                     events: built.events,
                 })
+            })
+        })
+    }
+
+    fn standbyer(&self) -> Standby {
+        let root = self.root.clone();
+        Arc::new(move |lake, host, every| {
+            let dir = root.join(lake.as_str());
+            Box::pin(async move {
+                let seams = Seams {
+                    engines: vec![Arc::new(SqliteOpener)],
+                    ..host
+                };
+                let location = Location::sqlite(lake.as_str(), dir);
+                lakelands_store::standby(location, seams, every).await
             })
         })
     }

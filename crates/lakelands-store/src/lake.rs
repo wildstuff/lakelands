@@ -60,6 +60,7 @@ mod append;
 mod fold;
 mod open;
 pub(crate) mod scrub;
+mod standby;
 mod verify;
 pub use fold::Built;
 use fold::{Beside, Migrated, Recomputed, Step, Swapped};

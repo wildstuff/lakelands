@@ -53,7 +53,7 @@ mod settings;
 pub mod ticker;
 use lakelands_server::say;
 
-pub use root::{CONFIG, Config, KeysConfig};
+pub use root::{CONFIG, Config, KeysConfig, StandbyConfig};
 pub use say::Failure;
 
 /// A lake being opened.
@@ -141,6 +141,54 @@ pub fn open_store(location: Location, mode: OpenMode, host: Seams) -> Opening {
         lakes.insert(key, store.clone());
         Ok(store)
     })
+}
+
+/// Open the lake at `location` as a standby beside its writer, trying the
+/// lease every `every` ([`lakelands_store::standby`]), and keep its store
+/// as [`open_store`] keeps one, which later opens in this process share. A
+/// lake never written yet has no writer to stand by: it is created and
+/// leased as [`open_store`] creates it.
+pub fn standby_store(location: Location, host: Seams, every: std::time::Duration) -> Opening {
+    Box::pin(async move {
+        let key = serde_json::to_string(&(&location.lake, &location.engine))
+            .expect("a location serialises");
+        if let Some(store) = opened().lock().await.get(&key) {
+            return Ok(store.clone());
+        }
+        let seams = Seams {
+            engines: engines(),
+            ..host.clone()
+        };
+        match lakelands_store::standby(location.clone(), seams, every).await {
+            Ok(store) => {
+                opened().lock().await.insert(key, store.clone());
+                Ok(store)
+            }
+            Err(e) if unmade(&e) => open_store(location, OpenMode::Create, host).await,
+            Err(e) => Err(e),
+        }
+    })
+}
+
+/// Open the lake at `location` for `serve`: as a standby where the root
+/// configures one, else for writing through `open`.
+async fn serving_open(
+    root: &root::Root,
+    location: Location,
+    seams: Seams,
+    open: &Opener<'_>,
+) -> Result<Arc<dyn LakeStore>> {
+    match &root.config.standby {
+        Some(standby) => standby_store(location, seams, standby.every()).await,
+        None => open(location, OpenMode::Create, seams).await,
+    }
+}
+
+/// Until every lake of `lakes` holds its lease, as a standby's comes to.
+async fn leased(lakes: &[Arc<dyn LakeStore>], every: std::time::Duration) {
+    while !lakes.iter().all(|l| l.is_writer()) {
+        tokio::time::sleep(every).await;
+    }
 }
 
 fn command() -> Command {
@@ -705,7 +753,11 @@ async fn dispatch(
             Some(door) => door.seams(&root, &location.lake),
             None => root.seams(),
         };
-        open(location, OpenMode::Create, seams).await?
+        if name == "serve" {
+            serving_open(&root, location, seams, open).await?
+        } else {
+            open(location, OpenMode::Create, seams).await?
+        }
     };
     let who = root
         .principal(store.lake(), text(sub, "as").as_deref())
@@ -1071,7 +1123,9 @@ fn stopped(e: std::io::Error) -> Failure {
 /// lake of the root over HTTP, each caller resolved from the root's
 /// principals. Standard output carries the protocol only. The command ends
 /// when its stdio client closes, HTTP door or not, and the process's
-/// deliverers and writer leases end with it.
+/// deliverers and writer leases end with it. Where the root configures a
+/// standby, every lake is opened beside its writer, and the stdio session
+/// and what writes on the lakes' behalf start once each lease is held.
 async fn serve(
     root: &root::Root,
     (store, door): (Arc<dyn LakeStore>, Option<Door>),
@@ -1079,10 +1133,14 @@ async fn serve(
     open: &Opener<'_>,
 ) -> std::result::Result<(), Failure> {
     let Some(mut door) = door else {
-        root.deliver(std::slice::from_ref(&store))?;
-        ticker::start(root.config.aging.as_ref(), std::slice::from_ref(&store));
-        orders::start(std::slice::from_ref(&store));
-        root.mirror(std::slice::from_ref(&store), open).await?;
+        let held = [store.clone()];
+        if let Some(standby) = &root.config.standby {
+            leased(&held, standby.every()).await;
+        }
+        root.deliver(&held)?;
+        ticker::start(root.config.aging.as_ref(), &held);
+        orders::start(&held);
+        root.mirror(&held, open).await?;
         return lakelands_server::serve_stdio(store, who)
             .await
             .map_err(stopped);
@@ -1095,16 +1153,30 @@ async fn serve(
             let seams = door.seams(root, &location.lake);
             lakes.insert(
                 location.lake.clone(),
-                open(location, OpenMode::Create, seams).await?,
+                serving_open(root, location, seams, open).await?,
             );
         }
     }
     let held: Vec<Arc<dyn LakeStore>> = lakes.values().cloned().collect();
+    // A standby's door serves reads at once and is not ready until every
+    // lake holds its lease; what writes on the lakes' behalf starts then.
+    if let Some(standby) = &root.config.standby {
+        door.serving(lakes.clone());
+        tokio::select! {
+            () = leased(&held, standby.every()) => {}
+            http = &mut door.task => return http
+                .unwrap_or_else(|e| Err(std::io::Error::other(e)))
+                .map_err(stopped),
+        }
+        eprintln!("lakelands: the standby holds every lake's lease");
+    }
     root.deliver(&held)?;
     ticker::start(root.config.aging.as_ref(), &held);
     orders::start(&held);
     root.mirror(&held, open).await?;
-    door.serving(lakes);
+    if root.config.standby.is_none() {
+        door.serving(lakes);
+    }
     // The command ends with its stdio client: the HTTP door beside it, the
     // deliverers and the lake's writer lease end with the process.
     tokio::select! {

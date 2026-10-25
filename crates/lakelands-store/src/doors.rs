@@ -65,6 +65,44 @@ pub(crate) async fn opened(location: Location, seams: Seams, mode: OpenMode) -> 
     Ok(lake)
 }
 
+/// Open a lake as a standby beside its writer
+/// (`docs/decisions/076-a-lake-keeps-one-writer-and-a-dataset-that-outgrows-it-becomes-several-lakes.md`):
+/// it serves reads as a handle opened read-only does and answers a write
+/// as one does, and every `every` it asks whether the lease is free and
+/// takes it if so, as a writer's open takes it. From then on it is the
+/// lake's writer. A try that fails changes nothing and is made again at
+/// the next; the tries end with the lake's last handle.
+pub async fn standby(
+    location: Location,
+    seams: Seams,
+    every: std::time::Duration,
+) -> Result<Arc<dyn LakeStore>> {
+    let lake = Arc::new(exec::run(move || Lake::standby(&location, seams)).await?);
+    let weak = Arc::downgrade(&lake);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(every);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            let Some(lake) = weak.upgrade() else {
+                return;
+            };
+            let owing = lake.clone();
+            let taken = exec::write(&lake, move |t| {
+                let taken = t.take_over()?;
+                if taken {
+                    crate::backed::make_waiting(&owing, t);
+                }
+                Ok(taken)
+            });
+            if matches!(taken.await, Ok(true)) {
+                return;
+            }
+        }
+    });
+    Ok(Arc::new(Store { lake }))
+}
+
 /// Build the projection this release lays out beside the lake at
 /// `location`, ahead of the writer's open that upgrades it
 /// ([`Lake::build_ahead`]).

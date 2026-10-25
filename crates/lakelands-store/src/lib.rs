@@ -43,7 +43,9 @@ mod sealing;
 pub mod writes;
 
 pub use backing::ExprBacking;
-pub use doors::{REACH_POLL, build_ahead, discard_ahead, import, open, room_ahead, written_in};
+pub use doors::{
+    REACH_POLL, build_ahead, discard_ahead, import, open, room_ahead, standby, written_in,
+};
 pub use import::Imported;
 #[doc(hidden)]
 pub use lakelands_core::export;

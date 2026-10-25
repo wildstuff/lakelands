@@ -251,6 +251,19 @@ pub trait Harness: Send + Sync {
         })
     }
 
+    /// How this harness opens a standby beside a lake it handed out: the
+    /// [`Standby`] a check of a writer's failover is given. A harness
+    /// without one answers `unbound`.
+    fn standbyer(&self) -> Standby {
+        Arc::new(|_, _, _| {
+            Box::pin(async {
+                let op = "standby".to_owned();
+                let seam = lakelands_api::error::Seam::Operation { op };
+                Err(lakelands_api::Error::unbound(seam))
+            })
+        })
+    }
+
     /// How this harness marks a lake's projection as the release before
     /// laid it out: the [`Lower`] a check of an upgrade is given. A
     /// harness without one marks nothing.
@@ -317,7 +330,16 @@ pub struct Given {
     pub ahead: Ahead,
     /// How the harness marks a lake's projection one layout back.
     pub lower: Lower,
+    /// How the harness opens a standby beside the check's lake.
+    pub standby: Standby,
 }
+
+/// Opens a standby beside the lake named, with `seams` and the harness's
+/// engine, as `lakelands_store::standby` does: it follows the lake's
+/// writer and tries the lease at every interval given (076).
+pub type Standby = Arc<
+    dyn Fn(lakelands_api::LakeId, Seams, std::time::Duration) -> FreshLake<'static> + Send + Sync,
+>;
 
 /// Builds the projection of the lake at a location of the harness's
 /// engine ahead, beside the writer that holds it, as `lakelands
@@ -738,6 +760,7 @@ async fn run_check(harness: &dyn Harness, check: &Check) -> Result<(), Failure> 
         location: harness.location(store.lake()),
         ahead: harness.aheader(),
         lower: harness.lowerer(),
+        standby: harness.standbyer(),
     };
     match caught((check.run)(store, given)).await {
         Ok(outcome) => outcome,
