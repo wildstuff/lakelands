@@ -659,11 +659,11 @@ used.
 - An object set may hold the groups of a view the lake keeps, decided
   at every write that moves one; before, every set of a view was refused
   (lakelands#1185).
-- Patterns that branch and join were proposed as
+- Patterns that branch and join were accepted as
   `docs/decisions/080-a-pattern-may-branch-and-join.md`
   (lakelands#1404): a tree of steps, a join that closes a cycle, an
   optional and an absent step, for rows and an aggregate.
 - A query language that writes only through the typed write doors was
-  proposed as
+  accepted as
   `docs/decisions/082-a-query-language-writes-only-through-the-typed-write-doors.md`
   (lakelands#1404), for 0.21.0.

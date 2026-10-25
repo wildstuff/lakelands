@@ -2,8 +2,8 @@
 
 ## What is decided
 
-**Proposed** on lakelands#1404 (2026-10-25), built in 0.21.0 on the
-parser of the read-only openCypher subset. It amends
+**Accepted** on lakelands#1404 (2026-10-25, by the operator), built in
+0.21.0 on the parser of the read-only openCypher subset. It amends
 `docs/decisions/018-one-pattern-query.md`, whose "never a write path
 through a query language" becomes "a query language writes only through
 the typed write doors", and comes in force with the issue that builds

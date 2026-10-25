@@ -2,10 +2,10 @@
 
 ## What is decided
 
-**Proposed** on lakelands#1404 (2026-10-25), for 0.20.0. It amends
-`docs/decisions/018-one-pattern-query.md` and comes in force with the
-issue that builds it; until then a pattern is a chain or a
-neighbourhood, as 018 says.
+**Accepted** on lakelands#1404 (2026-10-25, by the operator), for
+0.20.0. It amends `docs/decisions/018-one-pattern-query.md` and comes in
+force with the issue that builds it; until then a pattern is a chain or
+a neighbourhood, as 018 says.
 
 ### A pattern is a tree of steps, each walked from a name bound earlier
 

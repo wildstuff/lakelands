@@ -2,10 +2,10 @@
 
 ## What is decided
 
-**Proposed** on lakelands#1404 (2026-10-25), for 0.20.0. It extends
-`docs/decisions/062-a-change-plans-before-it-acts.md` from changes to
-the ontology to changes to records, and comes in force with the issue
-that builds it.
+**Accepted** on lakelands#1404 (2026-10-25, by the operator), for
+0.20.0. It extends `docs/decisions/062-a-change-plans-before-it-acts.md`
+from changes to the ontology to changes to records, and comes in force
+with the issue that builds it.
 
 ### A change names a type, a condition and what to set
 
