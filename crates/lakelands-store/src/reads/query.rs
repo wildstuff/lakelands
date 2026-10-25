@@ -326,20 +326,13 @@ impl<'a> Reader<'a> {
                     reads.extend(named);
                 }
             }
-            // A `where` that reads an optional name is past it too: it
-            // would drop the row the optional step kept. A join or an
-            // absent step binds no name to bind null, so it is optional, or
-            // reads one, only as a step of an optional branch.
-            let read = (names.iter().enumerate())
-                .find(|(k, n)| optional[*k] && reads.contains(n.as_str()));
-            if binds_none && past.is_none() && (step.optional || read.is_some()) {
+            // A join or an absent step binds no name to bind null, so it is
+            // optional only as a step of an optional branch. A `where` reads
+            // an optional name as absent where its branch has no match.
+            if binds_none && past.is_none() && step.optional {
                 let case = Case::StepOptionalNoName {
                     join: step.join.is_some(),
                 };
-                return Err(Error::invalid(Said::from(case).within(at[0].clone())));
-            }
-            if let Some((_, name)) = read.filter(|_| !step.optional) {
-                let case = Case::StepPastOptional { name: name.clone() };
                 return Err(Error::invalid(Said::from(case).within(at[0].clone())));
             }
             filters.push((step.filter.is_some()).then_some(filter));
