@@ -11,7 +11,10 @@ sends only its own fields cannot erase anyone else's.
 Together with per-field grants (006), this makes two writers on one
 record safe by construction: each principal writes only the fields it is
 granted, and a patch that carries a field its principal may not write is
-refused whole.
+refused whole. So is one that carries a field its principal's grant
+hides on the records a condition selects, where the record is selected
+before the write or after it, naming the field
+(`006 § A field may be hidden on only the records a condition selects`).
 
 ### A field that declares `clear` is cleared in the event that changes its input, transitively
 
@@ -72,3 +75,6 @@ write, deterministically, and a replay reproduces it.
   recomputed in the same event" was said of every derived field; 052
   added fields computed at every read, which the fold computes in no
   event and no record stores.
+- A patch that carries a field its writer's grant hides on a selected
+  record is refused whole (lakelands#1412), as a field hidden by
+  condition came to 006.

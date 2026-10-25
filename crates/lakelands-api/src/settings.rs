@@ -390,6 +390,11 @@ pub const SETTINGS: &[Setting] = &[
         says: "The most events a mirror reads from its source's feed at once, and the most records per page of a snapshot.",
         ..root("mirror.batch", "100")
     },
+    Setting {
+        range: "milliseconds",
+        says: "How often a `serve` that stands by asks whether each lake's lease is free, to take it once the writer is gone; absent, `serve` takes each lease at its open.",
+        ..root("standby.try_millis", "1000")
+    },
 ];
 
 /// What says only where or how to connect: kept beside the settings, at

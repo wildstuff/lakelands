@@ -60,6 +60,7 @@ mod append;
 mod fold;
 mod open;
 pub(crate) mod scrub;
+mod standby;
 mod verify;
 pub use fold::Built;
 use fold::{Beside, Migrated, Recomputed, Step, Swapped};
@@ -303,6 +304,11 @@ pub struct Lake {
     /// Why the writer's open rebuilt the projection: an older build laid
     /// it out (lakelands#1151).
     rebuilt_at_open: Option<String>,
+}
+
+/// The holder a lease this process takes names: the process.
+pub(crate) fn holder() -> String {
+    format!("lakelands process {}", std::process::id())
 }
 
 /// The milliseconds since `began`.
@@ -651,8 +657,7 @@ impl Lake {
         let lease = match w.lease.clone() {
             Some(lease) => lease,
             None => {
-                let holder = format!("lakelands process {}", std::process::id());
-                let lease = self.engine.take_lease(&holder)?;
+                let lease = self.engine.take_lease(&holder())?;
                 w.lease = Some(lease.clone());
                 lease
             }

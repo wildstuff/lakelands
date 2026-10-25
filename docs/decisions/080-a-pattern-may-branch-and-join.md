@@ -19,6 +19,14 @@ name no earlier step binds, a later step's included, is refused as
 invalid, naming the step and the name: steps are listed in an order a
 walk can follow, and a pattern never names a record before it is bound.
 
+A step's `where` reads every name bound by a step listed before it, a
+sibling branch's included, and the start's, as a chain's step reads the
+names before it: the list's order is the order names are bound in, so
+what a `where` may read is told by the list alone, and a condition over
+two branches is written on the later of them. A name an optional step
+binds null where its branch has no match (below), and a `where` reads
+it so.
+
 A row is one match of the whole tree: a record for every name. Where a
 name has several branches, a start's rows are every combination of its
 branches' matches, as a row of a chain is every combination of its
@@ -134,3 +142,10 @@ and costs the engine seam nothing.
 - Not an optional or absent start. The start is bound in every row.
 - Not a second planner. Steps are walked in the order they are listed;
   the store does not reorder them.
+
+## How it came to be
+
+- A step's `where` reads every name a step listed before it binds, a
+  sibling branch's included (lakelands#1412): the record left open
+  whether a condition could read across branches, and a query language
+  translated into the pattern writes such conditions.

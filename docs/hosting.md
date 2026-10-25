@@ -1063,6 +1063,36 @@ write to the writer over the writer's REST door, the link between hosts.
   the forwarding process serves, keep the key out of the location (the
   handle is given it by value), and bind the writers' doors to a
   private network the forwarding processes share.
+- **A standby.** `lakelands_store::standby(location, seams, every)`
+  opens the lake beside its writer: it follows the log as a read-only
+  handle does, answers a write as `read_only` with the lake leased
+  elsewhere (which a forwarding handle passes on to the next door), and
+  every `every` asks the engine whether the lease is free
+  (`LakeEngine::lease_free`). Once it is, the standby takes it as a
+  writer's open does, with a fence greater than every earlier one,
+  folds what it has not folded, and is the lake's writer from then on.
+  Only the lease's lock says the writer is gone: a writer that hangs
+  while it holds the lock keeps the lease, however long, and there is
+  no timeout. On SQLite the lock is the OS lock of a file in the lake's
+  directory, which goes with the writer's process, so the standby runs
+  where that directory is; on PostgreSQL it is an advisory lock of the
+  writer's session, which goes with the session. SQLite asks by taking
+  the file's lock for a moment and letting it go: a writer's open that
+  falls in that moment is refused as held, as one racing another taker
+  is, and opens at its next try. The old writer's next write is refused
+  by the engine as `lease_not_held` or `lease_stale` and appends
+  nothing. While the lease is held elsewhere a try changes nothing. A
+  try that fails once the lease is free ends the tries: the standby
+  gives the lease up again, what the try appended stays in the log, and
+  the future `standby` answers beside the store answers its error.
+  Where the root has a `standby` section (`try_millis`, 1 000 ms),
+  `lakelands serve` opens every lake that way: its door serves reads at
+  once and `/readyz` answers `not_ready` until it holds every lake's
+  lease, its stdio session is served from the start, and the command
+  ends when that client closes, standing by or not; deliveries, ticker,
+  orders and mirrors start once every lease is held. A takeover that
+  fails ends the command with its error. A lake never written yet has
+  no writer to stand by: the first `serve` makes it and holds its lease.
 
 `Location.writers` is a new member and `Location` has no `Default`: a
 host that builds a location as a literal adds `writers: vec![]`. A host

@@ -17,7 +17,7 @@ use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::checks::ALL;
 use lakelands_core::conformance::{
     Ahead, BuiltAhead, Continue, Continued, Fault, FreshLake, Harness, Import, ImportedLake,
-    LARGE_LAKE, Meter, Relimit, Reopen, Twin, below, continue_below, run_all, run_one,
+    LARGE_LAKE, Meter, Relimit, Reopen, Standby, Twin, below, continue_below, run_all, run_one,
 };
 use lakelands_engine_mem::MemoryOpener;
 use peak_alloc::PeakAlloc;
@@ -206,6 +206,22 @@ impl Harness for Memory {
 
     fn location(&self, lake: &lakelands_api::LakeId) -> Option<Location> {
         Some(Location::memory(lake.as_str()))
+    }
+
+    fn standbyer(&self) -> Standby {
+        let opener = self.opener.clone();
+        Arc::new(move |lake, host, every, wrap| {
+            let opener = opener.clone();
+            Box::pin(async move {
+                let seams = Seams {
+                    engines: vec![wrap(Arc::new(opener))],
+                    ..host
+                };
+                let location = Location::memory(lake.to_string());
+                let (store, standing) = lakelands_store::standby(location, seams, every).await?;
+                Ok((store as Arc<dyn LakeStore>, standing))
+            })
+        })
     }
 
     fn aheader(&self) -> Ahead {
