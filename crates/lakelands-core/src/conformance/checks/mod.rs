@@ -20,6 +20,7 @@ mod authored_reads;
 mod authors_view;
 mod backings;
 mod batched;
+mod before_declared;
 mod bundles;
 mod chosen;
 mod compact;
@@ -304,6 +305,7 @@ pub const ALL: &[Check] = &[
     computed_at::SAID_WHEN,
     computed_at::MOVED,
     read_clock::READ_CLOCK,
+    before_declared::BEFORE_DECLARED,
     authored_reads::AUTHOR_READS,
     renamed_grants::GRANT_FOLLOWS,
     authored_reads::HIDDEN_TYPE,
