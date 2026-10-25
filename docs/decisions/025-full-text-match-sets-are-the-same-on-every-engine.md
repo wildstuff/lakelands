@@ -67,7 +67,7 @@ breaks nothing a caller may hold.
 
 For each searched field `f`, `n_f` is the number of live heads of the
 reader's class whose `f` holds a token, `L_f` the tokens of `f` over
-them, repeats counted, and `avg_f = L_f / n_f`; `N` is the greatest
+them, repeats counted, and `avg_f = L_f / n_f`; `N` is the sum of the
 `n_f`. A query token `t` is in `df_t` live heads of the class, in any
 searched field. For a hit, `tf` counts `t` in its field `f` and `len_f`
 that field's tokens, and `w_f` is the field's weight (below):
@@ -83,11 +83,26 @@ score = Σ_t s_t
 The fields are summed in their declaration's order, a field `t` is not
 in adding nothing, and the tokens in their sorted order, from 0. A rarer
 token weighs more than a common one, and a match in a short field more
-than one in a long field at the same frequency. A token is saturated
-once over all its fields, not once a field: a word in both a title and
-a body scores as one word found twice, never as two words, so a hit
-that repeats one word in every field does not outrank one that holds
-every word of the query.
+than one in a long field at the same frequency.
+
+`N` is a sum, and not the greatest `n_f`, so that no token weighs less
+than nothing. A head that holds `t` in a searched field is counted in
+that field's `n_f`, so `df_t` is never above `N`, and
+`2N + 2 > 2·df_t + 1` holds: `idf_t` is above 0, and a hit that holds
+one more query token, its other matches the same, scores more for it.
+With the greatest `n_f`, a token found in the title of some heads and
+the body of others could be in more heads than `N`, its `idf_t` below 0,
+and a common word would lower every hit that holds it. The sum needs no
+count beyond the `n_f` that are kept; a count of the heads with any
+searched text would need one for each set of fields a search may name.
+
+A token is saturated once over all its fields, not once a field: its
+share `s_t` stays below `(K1 + 1)·idf_t` however many fields hold it
+and however often, where a share per field would grow with every field
+it is in. That bounds one word; it does not order words against each
+other. A hit that repeats one word in several short fields may outrank
+one that holds two words of the query once each, the more so where the
+repeated word is the rarer.
 
 Its bits are the same on every engine and every target. It is computed
 in `f64`, in one function with one expression tree, so no engine
@@ -119,7 +134,10 @@ keeps only what it cannot count from what a search already reads.
 - **`df` is counted, never kept.** Every engine hands the function
   every candidate that holds a query token, in any field, so the count
   of the candidates its reader's class admits that hold `t` in a
-  searched field is `df_t`, exactly.
+  searched field is `df_t`, exactly. For a reader with no class it is
+  counted over the candidates the store admits that reader, as it is
+  told them (below): a token a selected record holds only in a field
+  hidden there does not count.
 - **`n_f` and `L_f` are kept,** per type, field and hold: one count for
   the heads that are not held and one for the held, the two classes 078
   splits a reader into. A reader without `restricted` reads the first,
@@ -1069,4 +1087,5 @@ Of an index asked for:
   count of tokens at their heaviest field for every lake from 0.20.0,
   with no switch per type. BM25F had been refused because the function
   kept no statistics; that reason now decides what is kept: `df` counted
-  over the candidates, `n_f` and `L_f` kept per class.
+  over the candidates, `n_f` and `L_f` kept per class. `N` is the sum of
+  the `n_f`, so that no token weighs less than nothing.

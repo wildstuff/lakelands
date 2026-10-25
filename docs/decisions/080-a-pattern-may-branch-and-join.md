@@ -24,7 +24,8 @@ sibling branch's included, and the start's, as a chain's step reads the
 names before it: the list's order is the order names are bound in, so
 what a `where` may read is told by the list alone, and a condition over
 two branches is written on the later of them. A name an optional step
-binds reads as absent where its branch has no match.
+binds null where its branch has no match (below), and a `where` reads
+it so.
 
 A row is one match of the whole tree: a record for every name. Where a
 name has several branches, a start's rows are every combination of its
