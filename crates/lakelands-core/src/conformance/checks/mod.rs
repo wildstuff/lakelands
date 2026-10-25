@@ -306,6 +306,7 @@ pub const ALL: &[Check] = &[
     computed_at::SAID_WHEN,
     computed_at::MOVED,
     read_clock::READ_CLOCK,
+    read_clock::TODAY_RULES_OUT,
     before_declared::BEFORE_DECLARED,
     authored_reads::AUTHOR_READS,
     renamed_grants::GRANT_FOLLOWS,
