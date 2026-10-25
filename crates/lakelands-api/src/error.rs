@@ -21,8 +21,8 @@ mod case;
 mod outage;
 
 pub use case::{
-    Beyond, Case, Form, JsonFault, Named, Names, Naming, Operand, Place, Printed, RecordName,
-    Regexp, Revision, Said, Segment, Shape,
+    Beyond, Case, Construct, Form, JsonFault, Named, Names, Naming, Operand, Place, Printed,
+    RecordName, Regexp, Revision, Said, Segment, Shape,
 };
 pub(crate) use case::{Param, catalog, render};
 pub use outage::{

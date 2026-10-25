@@ -12,6 +12,7 @@ members = [
     "crates/lakelands-server",
     "crates/lakelands-backings",
     "crates/lakelands-client",
+    "crates/lakelands-cypher",
 ]
 
 [workspace.package]

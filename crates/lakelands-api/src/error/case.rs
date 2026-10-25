@@ -724,6 +724,95 @@ named! {
     }
 }
 
+named! {
+    /// An openCypher construct outside the subset Lakelands reads, spelt
+    /// as the statement spells it.
+    pub enum Construct {
+        /// A `CREATE` clause.
+        Create = "create" => "`CREATE` (a write goes through the typed write doors)",
+        /// A `MERGE` clause.
+        Merge = "merge" => "`MERGE` (a write goes through the typed write doors)",
+        /// A `SET` clause.
+        Set = "set" => "`SET` (a write goes through the typed write doors)",
+        /// A `DELETE` clause.
+        Delete = "delete" => "`DELETE` (a write goes through the typed write doors)",
+        /// A `DETACH DELETE` clause.
+        DetachDelete = "detach_delete" => "`DETACH DELETE` (a write goes through the typed write doors)",
+        /// A `REMOVE` clause.
+        Remove = "remove" => "`REMOVE` (a write goes through the typed write doors)",
+        /// A `FOREACH` clause.
+        Foreach = "foreach" => "`FOREACH` (a write goes through the typed write doors)",
+        /// A `LOAD CSV` clause.
+        LoadCsv = "load_csv" => "`LOAD CSV` (a write goes through the typed write doors)",
+        /// A procedure call or a `CALL` subquery.
+        Call = "call" => "`CALL` (a procedure or a subquery)",
+        /// A `WITH` clause.
+        With = "with" => "`WITH`",
+        /// A `UNION` of statements.
+        Union = "union" => "`UNION`",
+        /// An `UNWIND` clause.
+        Unwind = "unwind" => "`UNWIND`",
+        /// A `USE` clause.
+        Use = "use" => "`USE`",
+        /// `PROFILE` before a statement.
+        Profile = "profile" => "`PROFILE` (there is no plan to profile; `EXPLAIN` shows the pattern)",
+        /// A statement after the first.
+        SeveralStatements = "several_statements" => "a second statement",
+        /// `DISTINCT`.
+        Distinct = "distinct" => "`DISTINCT`",
+        /// A list comprehension.
+        ListComprehension = "list_comprehension" => "a list comprehension",
+        /// A pattern comprehension.
+        PatternComprehension = "pattern_comprehension" => "a pattern comprehension",
+        /// A map projection.
+        MapProjection = "map_projection" => "a map projection",
+        /// A `COUNT` subquery.
+        CountSubquery = "count_subquery" => "`COUNT` over a subquery",
+        /// An `EXISTS` other than a `NOT EXISTS` conjunct.
+        Exists = "exists" => "`EXISTS` (a `WHERE` reads only `NOT EXISTS` over a part of one relationship, as a whole conjunct)",
+        /// A `CASE` expression.
+        Case = "case" => "`CASE`",
+        /// `XOR`.
+        Xor = "xor" => "`XOR`",
+        /// The `%` operator.
+        Modulo = "modulo" => "`%`",
+        /// The `^` operator.
+        Power = "power" => "`^`",
+        /// `ENDS WITH`.
+        EndsWith = "ends_with" => "`ENDS WITH`",
+        /// A list outside `IN`.
+        ListLiteral = "list_literal" => "a list outside `IN`",
+        /// A map outside a node.
+        MapLiteral = "map_literal" => "a map outside a node",
+        /// A path bound to a name.
+        NamedPath = "named_path" => "a named path",
+        /// `shortestPath` or `allShortestPaths`.
+        ShortestPath = "shortest_path" => "a shortest path",
+        /// A variable on a relationship.
+        RelationshipVariable = "relationship_variable" => "a variable on a relationship (a link's fields are read through its link type)",
+        /// Properties on a relationship.
+        RelationshipProperties = "relationship_properties" => "properties on a relationship (a link's fields are read through its link type)",
+        /// A choice of relationship types.
+        RelationAlternation = "relation_alternation" => "a choice of relationship types (`:a|b`)",
+        /// A node of more than one label.
+        SeveralLabels = "several_labels" => "a node of several labels",
+        /// A variable length with no upper bound.
+        UnboundedLength = "unbounded_length" => "a length with no upper bound (`*`, `*2..`; none is made up)",
+        /// A duration in months or years.
+        CalendarDuration = "calendar_duration" => "a duration in months or years, which has no fixed length",
+        /// A `MATCH` part reading a name only an optional part binds.
+        MatchFromOptional = "match_from_optional" => "a `MATCH` reading a name only an `OPTIONAL MATCH` binds (it would drop the rows the optional part keeps; write the part as a `MATCH`)",
+        /// An `OPTIONAL MATCH` walking from a name another one binds.
+        OptionalFromOptional = "optional_from_optional" => "an `OPTIONAL MATCH` walking from a name only another `OPTIONAL MATCH` binds (the two would match or miss as one)",
+        /// An `OPTIONAL MATCH` hanging from more than one bound name.
+        OptionalParts = "optional_parts" => "an `OPTIONAL MATCH` walking from more than one name bound before it (an optional part is one branch from one name)",
+        /// An aggregate inside an expression.
+        AggregateInExpression = "aggregate_in_expression" => "an aggregate inside an expression (a measure is one function of one path)",
+        /// A `USING` hint.
+        Using = "using" => "`USING` (an index hint)",
+    }
+}
+
 catalog! {
     join = ", ";
     /// A record a case names.
@@ -1070,6 +1159,30 @@ catalog! {
         CallTakesField { name: String } => "{name}() takes one field name",
         /// A call that takes a quoted name given something else.
         CallTakesQuoted { name: String } => "{name}() takes a quoted name",
+        /// An aggregate or an expression returned with no name.
+        CypherAlias { item: String } => "an aggregate or an expression is named with `AS`: `{item} AS <name>`",
+        /// A `count` of what is no row.
+        CypherCount { item: String } => "`count` counts rows: `count(*)` or `count(<name>)` of a name no optional part binds, not `{item}`",
+        /// A function the expression grammar does not have.
+        CypherFunction { name: String, offset: usize } => "`{name}()` is no function of Lakelands' expression grammar (at character {offset})",
+        /// A sort key that is no path.
+        CypherOrderItem { item: String } => "`ORDER BY` names a path, as in `a.amount`, not `{item}`",
+        /// A construct outside the openCypher subset.
+        CypherOutside { construct: Construct, offset: usize } => "{construct} is outside the openCypher subset Lakelands reads (at character {offset})",
+        /// A parameter the statement reads that is not given.
+        CypherParamMissing { name: ParamName } => "the statement reads `${name}`, which is not given",
+        /// A parameter given that the statement does not read.
+        CypherParamUnused { name: ParamName } => "`{name}` is given and the statement does not read it",
+        /// A parameter whose value cannot stand where it is read.
+        CypherParamValue { name: ParamName } => "`${name}` cannot stand where it is read: an object, a list outside `IN`, a key that is not text, or a limit or skip that is no whole number",
+        /// A row item that is neither a path nor every bound name.
+        CypherRowItem { item: String } => "a row holds paths (`a.amount`) or every bound name (`RETURN *`); `{item}` is neither",
+        /// A `SKIP` other than 0.
+        CypherSkip { skip: u64 } => "`SKIP {skip}`: a pattern continues by the cursor its answer hands out (`next_cursor`), passed beside the statement",
+        /// A first node with no label.
+        CypherStartType { offset: usize } => "the first node names its type, as in `(a:invoice)` (at character {offset})",
+        /// A part that begins at a name nothing bound.
+        CypherUnbound { name: String, offset: usize } => "`{name}` is bound by nothing before it: a part begins at a name an earlier part bound (at character {offset})",
         /// A division by zero.
         DivisionByZero => "division by zero",
         /// An `in` with an empty list.
@@ -1168,6 +1281,8 @@ catalog! {
         SetUndeclared { set: String } => "in_set('{set}') names an object set that is not declared",
         /// A `setting` given what is no key.
         SettingTakesKey { #[serde(with = "closed")] value: Box<Operand> } => "setting() takes a key, not {value}",
+        /// An openCypher statement that does not parse.
+        StatementNotParsed { #[serde(with = "closed")] why: Box<Case> } => "the statement does not parse as the openCypher subset Lakelands reads (`MATCH … RETURN …`): {why}",
         /// A path into a reference's members.
         StepsIntoReference { expr: String, field: FieldName } => "`{expr}` steps into `{field}`, which is a reference: a condition reads the record's own fields. Compare the reference's key, or walk to the record it names in a pattern",
         /// A path into the members of what has none.
