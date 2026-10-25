@@ -862,9 +862,9 @@ mod tests {
     }
 
     /// The store over the memory and SQLite engines.
-    async fn lakes() -> Vec<(&'static str, Arc<dyn LakeStore>)> {
+    async fn lakes(test: &str) -> Vec<(&'static str, Arc<dyn LakeStore>)> {
         let dir =
-            std::env::temp_dir().join(format!("lakelands-migrate-door-{}", std::process::id()));
+            std::env::temp_dir().join(format!("lakelands-{test}-door-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let seams = || Seams {
             engines: vec![
@@ -897,7 +897,7 @@ mod tests {
     async fn migrate_takes_a_type_or_a_value_type_never_both_and_never_neither() {
         let vt = json!({"name": "status_code", "kind": "text", "one_of": ["open", "late"]});
         let ty = json!({"name": "memo", "fields": [{"name": "text", "type": {"kind": "text"}}]});
-        for (name, store) in lakes().await {
+        for (name, store) in lakes("migrate").await {
             let cat = store.catalog(WriteContext::default());
             let who = owner("doors");
             cat.declare(&who, serde_json::from_value(json!({"declare": "value_type", "name": "status_code", "kind": "text", "one_of": ["open", "late", "void"]})).unwrap())
@@ -948,7 +948,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_change_tool_answers_the_plan_first_and_enacts_only_against_it() {
         let ty = json!({"declare": "type", "name": "memo", "fields": [{"name": "text", "type": {"kind": "text"}}]});
-        for (name, store) in lakes().await {
+        for (name, store) in lakes("change").await {
             let cat = store.catalog(WriteContext::default());
             let who = owner("doors");
             cat.declare(&who, serde_json::from_value(ty.clone()).unwrap())
