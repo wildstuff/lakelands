@@ -2,9 +2,9 @@
 
 ## What is decided
 
-**Proposed** (2026-10-24), for 0.19.0, built from `develop` as one fix
-and measured on the build under "Why"; it stays proposed until it is
-accepted. Under an index a search answers one sequence, and nothing its
+**Accepted** on lakelands#1254, by the operator on 2026-10-25, for
+0.19.0, built from `develop` as one fix and measured on the build under
+"Why". Under an index a search answers one sequence, and nothing its
 reader may not see shapes what it is answered: not the candidates the
 engine and the store count, and not the index's graph the candidates
 come from. It has three parts, which ship as one fix:
@@ -57,7 +57,7 @@ A pull of `k` answers the first `k` of that sequence, so it is the first
 - **What the stream does not hand out comes after it.** A strict stream
   drops a vector it finds after a farther one was handed out, and the
   graph may not reach every vector
-  (`025 § Under an index a pull that comes back short is answered by the exact scan`).
+  (`025 § Under an index the rest of the field follows the stream`).
   Where a pull reaches the stream's end, the engine ranks the graph's
   other entries after it, exactly, by the vectors the lake holds,
   holding the keys the stream handed out so as to know them. A pull that
@@ -677,7 +677,10 @@ Nothing of the stream or the judgement goes: the stream is what a graph
 is read by, and the judgement is what an exact ranking and a `where`
 need.
 
-### What it changes in 025
+### What it changed in 025
+
+025 was rewritten in place at this record's acceptance. The rules it
+held, by their headings then, and what each became:
 
 - `A vector ranking is the cosine, best first, exact to the bit`: under
   an index, best first within the stream and within the rest.
@@ -719,8 +722,8 @@ need.
   each list is a prefix of one sequence, counted by the engine under the
   seam.
 
-When 025 is rewritten in place, this record's pointers to the headings
-it replaces are rewritten with it. In
+This record's pointers to the headings it replaced, and those in 029
+and 043, were rewritten with it. In
 `docs/decisions/067-a-search-may-take-a-second-stage.md`, "It does not
 change a vector index's paging" points here: under an index the second
 stage takes the first `top` hits of its reader's one sequence.
