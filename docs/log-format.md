@@ -80,20 +80,67 @@ in `prev`; the event at position 0 names 64 zeros. The chain makes an
 edit, a removal or a reordering anywhere in the log detectable: the first
 event after the change no longer matches.
 
-The log stores each event as its canonical bytes (with `hash`) followed
-by one line feed (`0x0A`): one event per line. A reader verifying the log
-recomputes every hash and every `prev` link, and checks that every line
-is exactly the canonical bytes of the event it parses to: a line that is
-valid JSON but not canonical (another member order, whitespace, a
-number written `1.0` or `1E21`) is a break like a wrong hash, because
-two implementations would hash it differently.
+**The stored form.** The log stores lines, each the canonical bytes of
+one JSON object followed by one line feed (`0x0A`). Up to format 19 a
+line is one event's canonical bytes, with `hash`. From format 20 the
+lines are the **stored form** of the events, from which each event is
+restored exactly
+(`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`):
 
-**Who canonicalises.** The store produces every event's canonical bytes
-and its hash, and hands the bytes to the engine with the event's
-position, id, `prev`, `hash` and `fence` beside them. The engine stores
-the bytes unchanged and returns them unchanged; the store parses and
-verifies what it reads back. Byte identity is therefore a property the
-conformance suite checks through the engine seam, on every engine.
+- **A frame.** An append (§4.1) of two or more events is stored as one
+  frame line, the canonical bytes of `{"events": n, "frame": F, "v":
+  20}`, followed by the lines of its n events. `F` holds exactly the
+  top-level members, other than `v`, `id`, `hash`, `position`, `prev`,
+  `body` and `sealed`, that all n events hold with equal values; and, as
+  an object under `body` and under `sealed`, the members one level into
+  each that all n hold with equal values. `F` leaves out a `body` or a
+  `sealed` that would be empty. An append of one event has no frame. A
+  line whose members are `events`, `frame` and `v` is a frame line; an
+  event has neither of the first two. `v` is framed nowhere: every line
+  holds it, a frame the `v` of its events, so a reader of any release
+  reads a line's format before anything else in it (§6). A frame and the
+  events it covers lie in one segment.
+- **An event's line** is the canonical bytes of the event, `hash`
+  included, less what stands elsewhere: a top-level member its frame
+  holds is left out; its `body` and its `sealed` lose the members their
+  namesakes in the frame hold, and are left out where none remain; and
+  `position` and `prev` are left out but on the segment's first event
+  line.
+- **Restoring.** A reader restores an event by adding its frame's
+  members to its line, those under `body` and `sealed` merged into the
+  line's one level deep. Where the line holds no `position` and `prev`,
+  its `position` is the position of the event before it plus one, and
+  its `prev` that event's `hash`. The restored event's canonical bytes
+  are the bytes its `hash` is over.
+- **One stored form.** The stored form is a function of an append's
+  events alone, so every writer stores the same appends as the same
+  bytes, and every engine computes the same segment digests (§4.2). A
+  reader cannot see where an append ended, so it checks each frame
+  against the events it covers. Each of these is a break at the first
+  event it touches: a frame or a line that is not canonical; a frame
+  whose `F` is not exactly what its n events share, whose `v` is not
+  theirs, or whose `n` is below 2 or beyond the event lines that follow
+  it before the next frame line or the segment's end; a line that holds
+  a member its frame holds, or a `position` or a `prev` where it is not
+  its segment's first event line. A line of a format before 20 is a full
+  event, taken as it stands; a segment may hold lines of both (§6).
+
+A reader verifying the log restores every event, recomputes every hash
+and every `prev` link, and checks that every line is exactly the bytes
+the stored form gives its events: a line that is valid JSON but not
+canonical (another member order, whitespace, a number written `1.0` or
+`1E21`) is a break like a wrong hash, because two implementations would
+hash it differently.
+
+**Who canonicalises.** The store produces every event's canonical bytes,
+its hash and its stored form, its line and the frame it shares, and
+hands them to the engine with the event's position, id, `prev`, `hash`
+and `fence` beside them. The engine stores the stored form unchanged and
+returns it unchanged; the store restores, parses and verifies what it
+reads back. Byte identity of the stored form is therefore a property the
+conformance suite checks through the engine seam, on every engine. An
+export and an import carry the lines as they stand, frames included, so
+a segment's digest is the same in both.
 
 **Numbers.** Every number anywhere in an event is a finite IEEE 754
 double, and every number written as an integer, in the envelope or in a
@@ -218,18 +265,30 @@ the log sealed under that source's key
 host's, in its key store, never in the lake; `sealed.key` names its
 version, which the key store answers by.
 
-- **The value.** The patch member holds a string: the standard base64,
-  with padding, of AES-256-GCM-SIV's output over the value's canonical
-  bytes (§1.2). Every other member stays plaintext, and so does the rest
-  of the envelope and the body.
-- **The nonce** is the first 12 bytes of SHA-256 over the source, the
-  type, the record key, `version - 1` in decimal digits and the field,
-  joined by `0x00`. The same value against the same state of a record
-  seals to the same bytes, and two records or two versions never share a
-  nonce. A reader makes the nonce again from where the value stands, so a
-  sealed value moved elsewhere does not open.
+- **The values, in one box** (from format 20,
+  `docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`).
+  A `record_ingested`'s sealed members are sealed together. The patch
+  leaves them out; `sealed.box` holds a string, the standard base64, with
+  padding, of AES-256-GCM-SIV's output over the canonical bytes (§1.2)
+  of the object of those members; and `sealed.fields` names them, as it
+  names every sealed member. Every other member stays plaintext, and so
+  does the rest of the envelope and the body. A reader without the key
+  reads each member `sealed.fields` names as sealed, and checks that the
+  patch holds none of them and that the box is padded base64 of at least
+  the 16 bytes of the tag. Up to format 19, each sealed member stands in
+  the patch as a string of its own: the same base64 of the same cipher
+  over that value's canonical bytes.
+- **The nonce** of a box is the first 12 bytes of SHA-256 over the
+  source, the type, the record key and `version - 1` in decimal digits,
+  joined by `0x00`; that of a member sealed alone, up to format 19, adds
+  `0x00` and the field. There is one box a source, record and version,
+  so the same values against the same state of a record seal to the
+  same bytes, and two records or two versions never share a nonce. A
+  reader makes the nonce again from where the values stand, so a sealed
+  value moved elsewhere does not open.
 - **The ingest id** is made from the patch as stored, ciphertext
-  included (§3): no digest of a plaintext value enters the log.
+  included, and from format 20 from its box (§3): no digest of a
+  plaintext value enters the log.
 - **A recorded output** computed from one source's erasable values is
   sealed under the same key: `sealed` names the key and the `source`,
   the `output` is a sealed value whose nonce is made from the source, the
@@ -256,12 +315,14 @@ version, which the key store answers by.
   `sealed.key`. Its members are sealed under one key composed of the two:
   HKDF-SHA-256 with an empty salt over the version's 32 bytes followed by
   each apart key's, in the order `apart` lists them, info
-  `lakelands:apart:v1`, 32 bytes out. The nonce is made as for any value.
-  A recorded output over values one source sealed is sealed and
-  digested under the oldest version they read composed the same way
-  with every apart key that sealed one of them, which its `sealed.apart`
-  lists in id order; the fold keeps, for each event a delivery sealed
-  apart, the keys it names, so a rebuild composes the same keys. With no
+  `lakelands:apart:v1`, 32 bytes out; a box is sealed under it as a
+  whole. The nonce is made as for any value. A recorded output over
+  values one source sealed is sealed and digested under the oldest
+  version they read composed the same way with every apart key that
+  sealed one of them, which its `sealed.apart` lists in id order. The
+  apart keys that sealed a value are read from the `sealed.apart` of the
+  event that wrote it, at the value's position, so a rebuild composes
+  the same keys. With no
   `apart` the composed key is the version itself, so every value of an
   earlier format opens as it was sealed. Destroying any one key of a
   composition, an apart key alone or a version with those before it,
@@ -726,6 +787,15 @@ So the separators are unambiguous.
   exactly-once state. Because `version_before` is in the preimage, a
   genuine return to earlier values (A, then B, then A again) meets a
   different state and is a new event, never mistaken for a redelivery.
+  From format 20, an ingest whose values are sealed in one box (§1.4)
+  is `SHA-256("lakelands:ingest:v2" ‖ 0x00 ‖ source ‖ 0x00 ‖ type ‖ 0x00
+  ‖ key ‖ 0x00 ‖ version_before ‖ 0x00 ‖ canonical(patch) ‖ 0x00 ‖
+  box)`, `box` the string `sealed.box` holds; canonical JSON writes a
+  `0x00` in a string as `\u0000`, so the separator is unambiguous here
+  too. Every other ingest keeps `v1`. The same values against the same
+  state seal to the same box, so a redelivery is still a duplicate, and
+  an ingest of format 19 delivered again after the upgrade changes
+  nothing and appends nothing by the rule below.
 - **An authored write with an idempotency key**: `SHA-256("lakelands:authored:v1"
   ‖ 0x00 ‖ writer ‖ 0x00 ‖ idempotency_key)`, where `writer` is the
   envelope's `<kind>:<id>` string. Type and key are left out on purpose:
@@ -805,16 +875,17 @@ by its first position in 20 decimal digits:
 so on. The last segment is **active** and takes appends; the others are
 **sealed** and never change. An engine may keep files of its own beside
 `log/`, such as an index or its lease; a verifier reads only `log/`. An engine that keeps events elsewhere (a
-table, an object store) keeps each event's canonical bytes unchanged and
-can export its segments as exactly these files. An export
+table, an object store) keeps each line of the stored form (§1.2)
+unchanged, frames included, and can export its segments as exactly
+these files. An export
 (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`)
 may write an `export.json` manifest beside `log/`; it is optional, not
 part of the format, and never trusted.
 
-A segment's **digest** is SHA-256 over its file's bytes: its events'
-lines in order, each ending in its line feed, and nothing else (no byte
-order mark, no blank line). The first segment starts with `lake_created`;
-every later one starts with a `checkpoint`.
+A segment's **digest** is SHA-256 over its file's bytes: its lines in
+order, frame lines included, each ending in its line feed, and nothing
+else (no byte order mark, no blank line). The first segment's first
+event is `lake_created`; every later one's is a `checkpoint`.
 
 Sealing the active segment ends it at its last event and starts a new one
 whose first event is a `checkpoint` (§2.6). The checkpoint repeats the
@@ -826,13 +897,18 @@ seal, and a reader cannot tell them apart.
 
 ### 4.3 Verifying
 
-A reader verifies a log by recomputing each event's hash and checking
-each `prev` against the event before it. From a checkpoint, a reader can
-verify every later segment without the earlier ones: the checkpoint's
-`hash` stands in for the chain before it. The checkpoint's segment list
-says which earlier segments must exist and what their bytes hash to; a
-reader that holds them checks each digest, and that the listed ranges
-start at 0 and follow each other with no gap or overlap.
+A reader verifies a log by restoring each event from the stored form
+(§1.2), recomputing its hash and checking its `prev` against the event
+before it. A frame that was changed is a break at the first event it
+covers, since each of its members is in the bytes of every event it
+restores. A segment's first event line holds its own `position` and
+`prev`, so a reader starts a segment from that line. From a
+checkpoint, a reader can verify every later segment without the earlier
+ones: the checkpoint's `hash` stands in for the chain before it. The
+checkpoint's segment list says which earlier segments must exist and
+what their bytes hash to; a reader that holds them checks each digest,
+and that the listed ranges start at 0 and follow each other with no gap
+or overlap.
 
 A missing or altered sealed segment is therefore always detected, at the
 first checkpoint that lists it, and reported as a break at that
@@ -924,6 +1000,13 @@ the first release with real installations
   The event keeps its `v`, its bytes and its hash: the log is never
   rewritten, and a hash is taken over the bytes as they were written
   (§1.2), which no step changes.
+- **The stored form is not converted.** Format 20 stores events framed,
+  with `position` and `prev` derived (§1.2), and seals a record's values
+  in one box (§1.4); it changes only the lines written in it. A line of
+  an earlier format is a full event, read as it stands, and a segment
+  may hold lines of both forms, the earlier ones first; nothing is
+  rewritten. A member sealed alone in an earlier format opens by its
+  event's `v`, under the nonce of that format.
 - **The steps so far.** 14 → 15: none of an event's members change.
   Format 15 lets a verb's path read across a reference or a relation's
   link (`docs/decisions/055-a-path-steps-through-a-reference.md`), and a
@@ -1024,10 +1107,10 @@ the first release with real installations
   of an export where it was written below them (`fence_below`, §4).
 
 **A lake in a format the release does not read is refused, older or
-newer, and never read in part.** A reader reads an event's `v` before
-any other member of it; a line with no `v` is in format 0. (A
-verification of an export checks first that the line is its canonical
-bytes, and `v` next.)
+newer, and never read in part.** A reader reads a line's `v` before
+any other member of it, a frame line's as an event's (§1.2); a line with
+no `v` is in format 0. (A verification of an export checks first that
+the lines are the stored form of their events, and `v` next.)
 
 - An open of a lake whose first event, its `lake_created` or its newest
   event is in a format the release does not read is refused before the

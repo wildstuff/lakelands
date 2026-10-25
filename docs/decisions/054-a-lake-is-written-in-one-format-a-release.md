@@ -89,7 +89,12 @@ number (lakelands#1164). 0.17.0 takes the fourth, to 18: it reads 14 to
 18 and writes 18, so a 0.16.0 binary refuses its lakes by their number
 (lakelands#1214). 0.18.0 takes the fifth, to 19: it reads 14 to 19 and
 writes 19, so a 0.17.0 binary refuses its lakes by their number
-(lakelands#1330).
+(lakelands#1330). 0.20.0 takes the sixth, to 20: it reads 14 to 20 and
+writes 20, so a 0.19.0 binary refuses its lakes by their number
+(lakelands#1409). Its one step also carries a new stored form of the
+log and a record's values sealed in one box
+(`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`),
+and a lake of 19 is read without a rewrite.
 
 **How a lake is upgraded** (`docs/log-format.md` §6):
 
@@ -99,6 +104,10 @@ writes 19, so a 0.17.0 binary refuses its lakes by their number
   release's, and the event keeps its `v`, its bytes and its hash. Every
   hash, checkpoint and export a host already holds stays true; a log
   that replaced the events with new ones would be a second truth (001).
+  A step that changes how events are stored, as 20 does, changes it only
+  for the lines written after it: a line of an earlier format is a full
+  event, read as it stands beside the new ones in one segment, and a
+  value sealed in an earlier format opens by its event's `v`.
 - **A writer's open upgrades.** It appends, after its `lease_taken`, one
   `lake_upgraded` from the older format to the release's, and the lake
   is written in the new one from there; a step that changes a fold also
@@ -220,3 +229,6 @@ them.
 - 0.18.0's step, to 19, is taken as 0.17.0's to 18 was: one step of its
   own before any form it adds, the vectors of 18 kept as v0.17.0 holds
   them (lakelands#1330).
+- 0.20.0's step, to 20, also changes how the log stores events, and a
+  lake of 19 keeps its lines as they stand; proposed with 083
+  (lakelands#1413).
