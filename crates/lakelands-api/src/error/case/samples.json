@@ -1000,6 +1000,9 @@
    "code": "after_with_cursor"
   },
   {
+   "code": "cheapest_needs_to"
+  },
+  {
    "code": "components_both_ways",
    "relation": "r"
   },
@@ -1301,6 +1304,28 @@
   },
   {
    "code": "weight_alone"
+  },
+  {
+   "code": "weight_missing",
+   "from": "k",
+   "relation": "r",
+   "to": "k"
+  },
+  {
+   "code": "weight_negative",
+   "from": "k",
+   "relation": "r",
+   "to": "k"
+  },
+  {
+   "code": "weight_not_number",
+   "field": "f",
+   "relation": "r"
+  },
+  {
+   "code": "weight_not_on_link",
+   "field": "f",
+   "relation": "r"
   },
   {
    "code": "weight_range",

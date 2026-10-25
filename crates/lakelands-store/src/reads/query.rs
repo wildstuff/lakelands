@@ -38,8 +38,16 @@ impl<'a> Reader<'a> {
             }
         }
         tree(p, binds)?;
+        let cheapest = matches!(p.project, Projection::Cheapest { .. });
+        if cheapest && p.to.is_none() {
+            return Err(Error::invalid(Case::CheapestNeedsTo));
+        }
         if measures::is_measure(&p.project) {
             measures::check(p)?;
+        } else if cheapest && !p.order_by.is_empty() {
+            // Its rows come by hop, so it refuses an order as a measure does.
+            let measure = projection_name(&p.project);
+            return Err(Error::invalid(Case::MeasureNoOrder { measure }));
         } else if !matches!(p.project, Projection::Rows { .. }) && !p.order_by.is_empty() {
             // A graph and a path come by depth, type and key, an
             // aggregate's groups by their key (025): an order is refused.
@@ -89,8 +97,8 @@ impl<'a> Reader<'a> {
         // so is a reach.
         let chain = reaches || p.steps.iter().any(|s| s.depth.min > 0);
         let lenient = match p.project {
-            Projection::Graph => !chain,
-            _ => p.project == Projection::Components,
+            Projection::Graph | Projection::Cheapest { .. } => !chain,
+            _ => matches!(p.project, Projection::Components | Projection::PageRank),
         };
         let last = p.steps.len().saturating_sub(1);
         // A step another walks from reaches one type (080): the next, where
@@ -351,6 +359,17 @@ impl<'a> Reader<'a> {
         for s in &p.steps {
             graph::check_depth(s.depth, max_depth)?;
         }
+        if p.to.is_some() && chain {
+            return Err(Error::invalid(Case::PatternToChain));
+        }
+        // A cheapest walk's weight, judged on each step's links in turn:
+        // its cost is a number only where every weight is one (018).
+        let mut numbers = true;
+        if let Projection::Cheapest { weight } = &p.project {
+            for (step, reach) in p.steps.iter().zip(&reach) {
+                numbers &= self.weight_kind(step, reach, weight)?;
+            }
+        }
         // A pattern judged before its start's reranker is asked reads
         // nothing: a judgement belongs above this return, a read below.
         if self.second.borrow().judging {
@@ -374,9 +393,6 @@ impl<'a> Reader<'a> {
         };
         if measure {
             return self.measure(p, limit, carried, &hidden);
-        }
-        if p.to.is_some() && chain {
-            return Err(Error::invalid(Case::PatternToChain));
         }
         // A cursor is checked before any arm answers: a path and an
         // aggregate hand out none, so every cursor is another read's there.
@@ -474,6 +490,27 @@ impl<'a> Reader<'a> {
             .collect();
         // A path, from its one start.
         if let Some((to_ty, to_key)) = &p.to {
+            if let Projection::Cheapest { weight } = &p.project {
+                let one = match from.as_slice() {
+                    [] => None,
+                    [one] => Some(one),
+                    more => {
+                        let count = more.len();
+                        return Err(Error::invalid(Case::PathStarts { count }));
+                    }
+                };
+                let to = (to_ty.clone(), to_key.clone());
+                let bound = (max_depth, self.lake.limits.max_graph_nodes);
+                let walk = match one {
+                    Some(one) => {
+                        graph::cheapest(&hidden, (one, &to), &p.steps, bound, weight, keep)?
+                    }
+                    None => None,
+                };
+                let rows = walk.map_or_else(|| Ok(Vec::new()), |w| cheap_rows(w, numbers))?;
+                let next_cursor = None;
+                return Ok(Ok(QueryResult::Rows { rows, next_cursor }));
+            }
             let (nodes, edges) = match from.as_slice() {
                 [] => (Vec::new(), Vec::new()),
                 [one] => {
@@ -1221,6 +1258,38 @@ impl<'a> Reader<'a> {
         Some(t.name.clone())
     }
 
+    /// Whether a cheapest walk's `weight` on the links of `step`'s relation
+    /// is a number, not a decimal: refused `weight_not_on_link` where they
+    /// hold no link record, or no such field the caller may know of,
+    /// `not_granted` where it may not read it, and `weight_not_number`
+    /// where it is of another kind (018).
+    fn weight_kind(&self, step: &Step, reach: &Reach, weight: &FieldName) -> Result<bool> {
+        let (relation, field) = (step.relation.clone(), weight.clone());
+        let not_on_link = || {
+            let (relation, field) = (relation.clone(), field.clone());
+            Error::invalid(Case::WeightNotOnLink { relation, field })
+        };
+        let mut number = true;
+        for (t, r) in self.named(None, &step.relation, reach.owner.as_ref()) {
+            if !r.carried_by_links() {
+                return Err(not_on_link());
+            }
+            let link = lakelands_core::links::link_type_name(&t.name, &r.name);
+            let decl = self.shape.ontology.ty(&link).map_err(|_| not_on_link())?;
+            let f = decl.field(weight).ok_or_else(not_on_link)?;
+            if self.sight.field_access(decl, f) == Access::None {
+                return Err(not_on_link());
+            }
+            self.sight.check_probe(decl, [weight])?;
+            match f.ty.kind {
+                StorageKind::Number => {}
+                StorageKind::Decimal => number = false,
+                _ => return Err(Error::invalid(Case::WeightNotNumber { relation, field })),
+            }
+        }
+        Ok(number)
+    }
+
     /// The relations a step walks by its name among those shown around
     /// `around`, or anywhere: its `owner`'s alone where it names an inverse.
     pub(super) fn named(
@@ -1512,6 +1581,44 @@ impl<'a> Reader<'a> {
 /// A name bound before a step, the types it binds, and where its step
 /// stands where those are several.
 type Earlier<'a> = (&'a str, BTreeSet<TypeName>, Option<Place>);
+
+/// A cheapest walk's rows, one a record in hop order, each with what the
+/// walk has cost so far: a number where every weight is one, else a
+/// decimal as a decimal field reads (018). A number past an exact integer
+/// is refused `overflow`.
+fn cheap_rows(walk: graph::Cheap, numbers: bool) -> Result<Vec<BTreeMap<String, Value>>> {
+    let mut rows = Vec::with_capacity(walk.nodes.len());
+    for (hop, ((ty, key), units)) in walk.nodes.iter().zip(&walk.costs).enumerate() {
+        let text = graph::cost_text(*units);
+        let cost = match numbers {
+            true => {
+                let n: serde_json::Number =
+                    text.parse().map_err(|_| Error::invalid(Case::Overflow))?;
+                if canonical::integer_too_large(&Value::Number(n.clone())).is_some() {
+                    return Err(Error::invalid(Case::Overflow));
+                }
+                Value::Number(n)
+            }
+            false => Value::String(text),
+        };
+        let reached = hop.checked_sub(1).map(|i| &walk.edges[i]);
+        let relation = reached.map_or(Value::Null, |e| Value::String(e.relation.to_string()));
+        // `out` where the link was walked from its declaring end.
+        let walked = reached.map_or(Value::Null, |e| {
+            let out = e.from == walk.nodes[hop - 1];
+            Value::from(if out { "out" } else { "in" })
+        });
+        rows.push(BTreeMap::from([
+            ("hop".to_owned(), Value::from(hop)),
+            ("type".to_owned(), Value::String(ty.to_string())),
+            ("key".to_owned(), Value::String(key.to_string())),
+            ("relation".to_owned(), relation),
+            ("walk".to_owned(), walked),
+            ("cost".to_owned(), cost),
+        ]));
+    }
+    Ok(rows)
+}
 
 /// Refuses, before a step is judged (080), what makes a pattern a tree
 /// where its projection answers by a walk's own shape (`binds` false), and

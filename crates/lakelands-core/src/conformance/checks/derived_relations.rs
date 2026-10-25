@@ -38,6 +38,11 @@ check!(
 );
 
 check!(
+    RANK_AS_LINKS = page_rank_over_a_derived_relation_equals_page_rank_over_the_same_links,
+    "026 and 044: `page_rank` over a derived relation answers, to the bit, what it answers over the same connections written as link records"
+);
+
+check!(
     DECLARED_NOT_MIGRATED = a_derived_relation_is_declared_not_migrated_and_never_moves_carrier,
     "007, 027, 035 and 044: changing a derived relation's match is taken by `declare` and leaves the schema hash byte-identical; a relation carried by link records or by `via` is not redeclared as derived, nor a derived one as carried, each refused naming the relation"
 );
@@ -416,6 +421,64 @@ async fn degree_and_components_over_a_derived_relation_equal_those_over_the_same
              links; derived {d:?}, links {l:?}"
         );
     }
+    Ok(())
+}
+
+async fn page_rank_over_a_derived_relation_equals_page_rank_over_the_same_links(
+    store: Store,
+) -> Held {
+    lake(store.as_ref()).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    // The same connections, written as link records between twin types
+    // that sort as `customer` and `invoice` do.
+    l.declare(type_decl("client", vec![field("no", StorageKind::Text)]))
+        .await?;
+    let mut sale = type_decl("sale", vec![field("note", StorageKind::Text)]);
+    sale.relations = vec![RelationDecl {
+        cardinality: Cardinality::ManyToOne,
+        ..RelationDecl::to("customer", "client")
+    }];
+    l.declare(sale).await?;
+    for c in ["10", "010", "20"] {
+        l.upsert("client", c, json!({"no": c})).await?;
+    }
+    for (s, c) in [("i1", "10"), ("i2", "10"), ("i3", "010"), ("i5", "20")] {
+        l.upsert("sale", s, json!({"note": s})).await?;
+        cat.link(
+            own,
+            &"sale".into(),
+            &s.into(),
+            &"customer".into(),
+            &c.into(),
+            patch(json!({})),
+            WriteOpts::default(),
+        )
+        .await
+        .must(&format!("linking {s} to {c}"))?;
+    }
+    l.upsert("sale", "i4", json!({"note": "i4"})).await?;
+    let ranked = |ty: &str| {
+        let steps = vec![step("customer", Walk::Out)];
+        pattern(ty, None, steps, Projection::PageRank)
+    };
+    let mut answers = Vec::new();
+    for (ty, what) in [("invoice", "the derived relation"), ("sale", "the links")] {
+        let reply = cat.query(own, ranked(ty)).await;
+        let data = reply.must(&format!("PageRank over {what}"))?.data;
+        let text = serde_json::to_string(&data).expect("an answer serialises");
+        answers.push(
+            text.replace("\"client\"", "\"customer\"")
+                .replace("\"sale\"", "\"invoice\""),
+        );
+    }
+    ensure!(
+        answers[0] == answers[1] && answers[0].contains("page_rank"),
+        "PageRank over the derived relation must answer what it answers over the same links, \
+         to the bit; derived {}, links {}",
+        answers[0],
+        answers[1]
+    );
     Ok(())
 }
 

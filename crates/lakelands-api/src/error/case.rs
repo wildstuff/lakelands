@@ -1216,6 +1216,8 @@ catalog! {
         AfterWithAggregate => "`after` pages records; an `aggregate` has no pages",
         /// An `after` beside a cursor.
         AfterWithCursor => "`after` and `cursor` both name where a page starts; give one",
+        /// A `cheapest` walk with no `to`.
+        CheapestNeedsTo => "`cheapest` answers the walk that costs least from the start to one record; name that record with `to`",
         /// A `components` step that does not walk both ways.
         ComponentsBothWays { relation: RelationName } => "`components` takes every link both ways; the step over `{relation}` must walk `both`",
         /// A cursor the lake did not hand out.
@@ -1383,6 +1385,14 @@ catalog! {
         ViewReadsItself { #[serde(rename = "type")] ty: TypeName, chain: Names } => "view `{ty}` reads itself through other views, reading {chain} in turn, so it has no records",
         /// A `weight` on a vector search of one field.
         WeightAlone => "`weight` weighs one vector field's ranking against another's, and the search names no other in `also`",
+        /// A link the cheapest walk weighs that has no weight.
+        WeightMissing { relation: RelationName, from: RecordKey, to: RecordKey } => "the `{relation}` link from `{from}` to `{to}` has no weight, and the cheapest walk neither skips a link nor prices it by default; declare an `initial` on the weight field for one",
+        /// A link the cheapest walk weighs whose weight is below 0.
+        WeightNegative { relation: RelationName, from: RecordKey, to: RecordKey } => "the `{relation}` link from `{from}` to `{to}` weighs less than 0, and over a cycle that costs less than 0 no walk is cheapest",
+        /// A weight field of a kind other than `number` or `decimal`.
+        WeightNotNumber { relation: RelationName, field: FieldName } => "`{field}` of the links of `{relation}` is neither a `number` nor a `decimal`, so it weighs nothing",
+        /// A weight field the links of a step's relation do not hold.
+        WeightNotOnLink { relation: RelationName, field: FieldName } => "the links of `{relation}` hold no field `{field}` to weigh by; a relation carried by `via` or `derived` holds no link record",
         /// A field's weight out of range.
         WeightRange { field: FieldName } => "the weight of `{field}` must be above 0 and at most 1000000",
 

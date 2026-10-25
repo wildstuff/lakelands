@@ -49,7 +49,9 @@ mod filters;
 mod forgotten;
 mod function_input;
 mod fusion;
+mod graph_cheapest;
 mod graph_measures;
+mod graph_rank;
 mod graph_steps;
 mod grid;
 mod hidden_readers;
@@ -317,6 +319,8 @@ pub const ALL: &[Check] = &[
     masking::VALID_AT_VIEW,
     masking::WRITE_ONLY,
     masking::VIA_HIDDEN,
+    masking::RANK_UNSEEN,
+    masking::WEIGHT_HIDDEN,
     authors_view::DECLARED_SINCE_NOT_TAKEN,
     authors_view::HIDDEN_LINK_TYPE_NOT_GRANTED,
     authors_view::HIDDEN_FIELD_KEPT,
@@ -578,6 +582,7 @@ pub const ALL: &[Check] = &[
     derived_relations::NULL_NEVER_MATCHES,
     derived_relations::PROBES_BOTH_SIDES,
     derived_relations::MEASURES_AS_LINKS,
+    derived_relations::RANK_AS_LINKS,
     derived_relations::DECLARED_NOT_MIGRATED,
     derived_relations::PAIR_OF_TWO_KINDS,
     conditional_edges::CONDITIONAL_WALK,
@@ -585,6 +590,14 @@ pub const ALL: &[Check] = &[
     conditional_edges::CONDITION_DECLARED,
     conditional_verbs::SKONTO,
     conditional_verbs::SKONTO_HELD,
+    graph_cheapest::CHEAPEST_TAKES_LEAST,
+    graph_cheapest::CHEAPEST_WITHIN_DEPTH,
+    graph_cheapest::CHEAPEST_TIES,
+    graph_cheapest::CHEAPEST_PLACES,
+    graph_cheapest::CHEAPEST_MISSING_NEGATIVE,
+    graph_cheapest::CHEAPEST_JUDGED,
+    graph_cheapest::CHEAPEST_REFUSALS,
+    graph_cheapest::CHEAPEST_TOO_LARGE,
     graph_measures::DEGREE_COUNTS,
     graph_measures::COMPONENTS_PARTITION,
     graph_measures::COMPONENTS_ANY_PAGE,
@@ -593,6 +606,10 @@ pub const ALL: &[Check] = &[
     graph_measures::GRAPH_TOO_LARGE,
     graph_measures::MEASURE_REFUSALS,
     graph_measures::MEASURE_IN_ONE_PAGE,
+    graph_rank::RANK_PINNED,
+    graph_rank::RANK_ANY_ORDER,
+    graph_rank::RANK_NO_START,
+    graph_rank::RANK_TOO_LARGE,
     graph_steps::ROW_DEPTH,
     graph_steps::GRAPH_PAGES,
     graph_steps::GRAPH_BOUND,
