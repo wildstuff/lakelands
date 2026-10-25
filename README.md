@@ -165,14 +165,14 @@ terrain Lakelands is built for, and where it is not the right tool.
 > **Status: `0.19.0`.** Lakelands `0.19.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (801 checks through the doors and 78 through the
-> engine seam), with 78 decision records and the event log at format
+> conformance suite (806 checks through the doors and 78 through the
+> engine seam), with 79 decision records and the event log at format
 > version 19, installable from the release. Its budgets: the store
 > facade and engine traits hold 89 of 110 methods, the core crates'
-> product code 83 362 of 85 000 lines and their specification 155 404 of
+> product code 84 511 of 85 000 lines and their specification 156 395 of
 > 157 000, and 6 of 20 `cfg(feature)` sites. A ceiling rises only by a
 > recorded rule (decision 047): the operator set the round's ceilings at
-> 85 000 and 157 000, and the ratchet bases stand at 83 500 and 155 500.
+> 85 000 and 157 000, and the ratchet bases stand at 85 000 and 156 500.
 > Beside what `0.18.0` held, `lakelands serve` runs on a multi-thread
 > runtime whose threads the server section sets (lakelands#1388), and
 > answers health and readiness (lakelands#1379). A lake is backed up and
@@ -188,12 +188,18 @@ terrain Lakelands is built for, and where it is not the right tool.
 > on every door, and are private to the core (lakelands#1365,
 > lakelands#1384, lakelands#1387, lakelands#1391); PostgreSQL carries the
 > log's tip into the append and the memory engine shares provenance
-> (lakelands#1380, lakelands#1381). Decisions 075 and 076, a read across
+> (lakelands#1380, lakelands#1381). Under a vector index a search pages
+> one ranking of what its reader may see, where on PostgreSQL a record
+> kept from the reader could shift the pages it was shown
+> (lakelands#1254, decision 078); the security advisory is published
+> with this release. Decisions 075 and 076, a read across
 > lakes and a lake with one writer that many processes write through,
 > are accepted and not yet built (lakelands#1383, lakelands#1389). A
 > writer's open upgrades a lake of format 14, 15, 16, 17 or 18 to 19 by
-> appending, and the lake of format 19 is kept beside those of the
-> releases before.
+> appending; the first writer's open of 0.19.0 also rebuilds each
+> PostgreSQL lake's projection (its layout is 7) beside the one it
+> replaces, the log untouched, and the lake of format 19 is kept beside
+> those of the releases before.
 
 ## Try it
 
