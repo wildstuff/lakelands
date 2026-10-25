@@ -11,6 +11,7 @@
 //! let go behind its back through the harness's fault wrap.
 
 use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
 
 use lakelands_api::LakeId;
 use lakelands_api::engine::{
@@ -20,12 +21,19 @@ use lakelands_api::engine::{
 use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::location::Location;
 
+use crate::conformance::Standing;
 use crate::conformance::fixture::{doors, get_at, owner};
 use crate::conformance::prelude::*;
 
 check!(
     STANDBY = a_standby_takes_the_lease_once_the_writer_is_gone,
-    "076 (lakelands#1395): a standby opened beside the lake's writer reads what the writer wrote, answers a write as read-only with the lake leased elsewhere, appending nothing, and is no writer while the writer holds the lease, however long; once the writer's lock is gone it is the writer within a bound, its `lease_taken` carries a fence greater than every earlier one, and it serves a write; the old writer's next write is refused by the engine as its lease not held or stale, appends nothing, and leaves it no writer",
+    "076 (lakelands#1395): a standby opened beside the lake's writer reads what the writer wrote, answers a write as read-only with the lake leased elsewhere, appending nothing, and is no writer while the writer holds the lease, however long; once the writer's lock is gone it is the writer within a bound, its tries come to their end without an error, its `lease_taken` carries a fence greater than every earlier one, and it serves a write; the old writer's next write is refused by the engine as its lease not held or stale, appends nothing, and leaves it no writer",
+    given
+);
+
+check!(
+    STANDBY_FAILED = a_standby_whose_takeover_fails_answers_why_and_tries_no_more,
+    "076 (lakelands#1395): a standby whose takeover fails once the writer's lock is gone, its first append under the lease refused below the store, answers that refusal for its tries, takes the lease no more, is no writer and gives the lease up, so a writer's open then holds it",
     given
 );
 
@@ -42,16 +50,54 @@ const WAIT: Duration = Duration::from_secs(30);
 /// The engine handle that took the writer's lease, and that lease.
 type Taken = Arc<Mutex<Option<(Arc<dyn LakeEngine>, Lease)>>>;
 
-async fn a_standby_takes_the_lease_once_the_writer_is_gone(store: Store, given: Given) -> Held {
-    let taken: Taken = Arc::default();
-    let wrap = taken.clone();
-    let wrap: crate::conformance::Wrap = Arc::new(move |inner| {
-        let taken = wrap.clone();
-        Arc::new(Letting { inner, taken }) as Arc<dyn EngineOpener>
-    });
-    let writer = (given.fault)(store, Seams::default(), wrap)
+/// The writer of a check, opened through [`Planted`], and the slot its
+/// lease is put in.
+async fn writer(store: Store, given: &Given) -> Result<(Store, Taken), Failure> {
+    let planted = Planted::new(false);
+    let taken = planted.taken.clone();
+    let writer = (given.fault)(store, Seams::default(), planted.wrap())
         .await
         .map_err(|e| Failure::new(format!("opening the lake again for writing: {e}")))?;
+    Ok((writer, taken))
+}
+
+/// Let the writer's lock go behind its back, and answer its lease.
+fn let_go(taken: &Taken) -> Result<Lease, Failure> {
+    let held = crate::lock(taken).take();
+    let (engine, lease) = held.ok_or_else(|| Failure::new("the writer took no lease"))?;
+    engine
+        .release_lease(&lease)
+        .map_err(|e| Failure::new(format!("letting the writer's lock go: {e}")))?;
+    Ok(lease)
+}
+
+/// What `standing` came to, once it came to something within [`WAIT`].
+async fn settled(standing: &mut Standing) -> Result<lakelands_api::Result<()>, Failure> {
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(r) = now(standing) {
+            return Ok(r);
+        }
+        if started.elapsed() > WAIT {
+            return Err(Failure::new(format!(
+                "the standby's tries came to nothing within {WAIT:?}"
+            )));
+        }
+        pause(TRY).await;
+    }
+}
+
+/// What `standing` has come to, if it has.
+fn now(standing: &mut Standing) -> Option<lakelands_api::Result<()>> {
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    match standing.as_mut().poll(&mut cx) {
+        std::task::Poll::Ready(r) => Some(r),
+        std::task::Poll::Pending => None,
+    }
+}
+
+async fn a_standby_takes_the_lease_once_the_writer_is_gone(store: Store, given: Given) -> Held {
+    let (writer, taken) = writer(store, &given).await?;
     let l = Lake::of(writer.as_ref());
     l.declare(type_decl("note", vec![field("text", StorageKind::Text)]))
         .await?;
@@ -59,9 +105,11 @@ async fn a_standby_takes_the_lease_once_the_writer_is_gone(store: Store, given: 
         .upsert("note", "n1", json!({"text": "one"}))
         .await?
         .position();
-    let standby = (given.standby)(writer.lake().clone(), Seams::default(), TRY)
-        .await
-        .map_err(|e| Failure::new(format!("opening a standby beside the writer: {e}")))?;
+    let as_is: crate::conformance::Wrap = Arc::new(|inner| inner);
+    let (standby, mut standing) =
+        (given.standby)(writer.lake().clone(), Seams::default(), TRY, as_is)
+            .await
+            .map_err(|e| Failure::new(format!("opening a standby beside the writer: {e}")))?;
 
     standby
         .reaches(wrote, WAIT)
@@ -98,19 +146,13 @@ async fn a_standby_takes_the_lease_once_the_writer_is_gone(store: Store, given: 
         writer.is_writer()
     );
 
-    let held = crate::lock(&taken).take();
-    let (engine, lease) = held.ok_or_else(|| Failure::new("the writer took no lease"))?;
-    engine
-        .release_lease(&lease)
-        .map_err(|e| Failure::new(format!("letting the writer's lock go: {e}")))?;
-    let started = std::time::Instant::now();
-    while !standby.is_writer() && started.elapsed() < WAIT {
-        pause(TRY).await;
-    }
+    let lease = let_go(&taken)?;
+    let came = settled(&mut standing).await?;
     ensure!(
-        standby.is_writer(),
-        "once the writer's lock is gone the standby must take the lease; after {WAIT:?} it is no \
-         writer"
+        came.is_ok() && standby.is_writer(),
+        "once the writer's lock is gone the standby must take the lease; its tries came to \
+         {came:?}, and it is a writer: {}",
+        standby.is_writer()
     );
     let fences: Vec<u64> = (log_events(standby.as_ref()).await?.into_iter())
         .filter_map(|e| match e.body {
@@ -152,11 +194,92 @@ async fn a_standby_takes_the_lease_once_the_writer_is_gone(store: Store, given: 
     Ok(())
 }
 
+async fn a_standby_whose_takeover_fails_answers_why_and_tries_no_more(
+    store: Store,
+    given: Given,
+) -> Held {
+    let (writer, taken) = writer(store, &given).await?;
+    let l = Lake::of(writer.as_ref());
+    l.declare(type_decl("note", vec![field("text", StorageKind::Text)]))
+        .await?;
+    let planted = Planted::new(true);
+    let takes = planted.takes.clone();
+    let (standby, mut standing) =
+        (given.standby)(writer.lake().clone(), Seams::default(), TRY, planted.wrap())
+            .await
+            .map_err(|e| Failure::new(format!("opening a standby beside the writer: {e}")))?;
+
+    let_go(&taken)?;
+    let came = settled(&mut standing).await?;
+    ensure!(
+        came.as_ref().is_err_and(|e| matches!(
+            e.situation(),
+            Some(Situation::Busy { lake }) if lake == PLANTED
+        )),
+        "a standby whose first append under the lease is refused must answer that refusal for \
+         its tries; they came to {came:?}"
+    );
+    pause(HELD).await;
+    let took = takes.load(Ordering::SeqCst);
+    ensure!(
+        took == 1 && !standby.is_writer(),
+        "a standby whose takeover failed must try no more and be no writer; after {HELD:?} it \
+         took the lease {took} times, and it is a writer: {}",
+        standby.is_writer()
+    );
+    let as_is: crate::conformance::Wrap = Arc::new(|inner| inner);
+    let next = (given.fault)(writer, Seams::default(), as_is).await;
+    ensure!(
+        next.as_ref().is_ok_and(|n| n.is_writer()),
+        "the standby whose takeover failed must give the lease up, so a writer's open then holds \
+         it; the open answered {:?}",
+        next.as_ref().err()
+    );
+    let next =
+        next.map_err(|e| Failure::new(format!("the writer after the failed takeover: {e}")))?;
+    next.close().await.must("closing the writer")?;
+    standby.close().await.must("closing the standby")?;
+    Ok(())
+}
+
+/// What the planted refusal names.
+const PLANTED: &str = "the planted fault";
+
 /// The harness's engine opener, whose handles put the lease they take
-/// where the check can let it go behind the writer's back.
+/// where the check can let it go behind the writer's back, count their
+/// takes, and, where it plants a fault, refuse every append of a handle
+/// opened for writing.
+#[derive(Clone)]
+struct Planted {
+    taken: Taken,
+    takes: Arc<AtomicUsize>,
+    fails: bool,
+}
+
+impl Planted {
+    fn new(fails: bool) -> Planted {
+        let (taken, takes) = (Arc::default(), Arc::default());
+        Planted {
+            taken,
+            takes,
+            fails,
+        }
+    }
+
+    /// The wrap that opens through this.
+    fn wrap(&self) -> crate::conformance::Wrap {
+        let planted = self.clone();
+        Arc::new(move |inner| {
+            let planted = planted.clone();
+            Arc::new(Letting { inner, planted }) as Arc<dyn EngineOpener>
+        })
+    }
+}
+
+/// The opener [`Planted::wrap`] makes.
 struct Letting {
     inner: Arc<dyn EngineOpener>,
-    taken: Taken,
+    planted: Planted,
 }
 
 impl EngineOpener for Letting {
@@ -175,8 +298,13 @@ impl EngineOpener for Letting {
         mode: OpenMode,
     ) -> lakelands_api::Result<Box<dyn LakeEngine>> {
         let inner = Arc::from(self.inner.open(location, mode)?);
-        let taken = self.taken.clone();
-        Ok(Box::new(Let { inner, taken }))
+        let planted = self.planted.clone();
+        let fails = planted.fails && mode != OpenMode::Read;
+        Ok(Box::new(Let {
+            inner,
+            planted,
+            fails,
+        }))
     }
     fn open_scratch(&self, location: &Location) -> lakelands_api::Result<Box<dyn LakeEngine>> {
         self.inner.open_scratch(location)
@@ -189,7 +317,8 @@ impl EngineOpener for Letting {
 /// A handle of [`Letting`].
 struct Let {
     inner: Arc<dyn LakeEngine>,
-    taken: Taken,
+    planted: Planted,
+    fails: bool,
 }
 
 impl LakeEngine for Let {
@@ -204,7 +333,8 @@ impl LakeEngine for Let {
     }
     fn take_lease(&self, holder: &str) -> lakelands_api::Result<Lease> {
         let lease = self.inner.take_lease(holder)?;
-        *crate::lock(&self.taken) = Some((self.inner.clone(), lease.clone()));
+        self.planted.takes.fetch_add(1, Ordering::SeqCst);
+        *crate::lock(&self.planted.taken) = Some((self.inner.clone(), lease.clone()));
         Ok(lease)
     }
     fn release_lease(&self, lease: &Lease) -> lakelands_api::Result<()> {
@@ -217,6 +347,10 @@ impl LakeEngine for Let {
         self.inner.tip()
     }
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> lakelands_api::Result<()> {
+        if self.fails {
+            let lake = PLANTED.to_owned();
+            return Err(Error::unavailable(Situation::Busy { lake }));
+        }
         self.inner.append(lease, events)
     }
     fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> lakelands_api::Result<()> {

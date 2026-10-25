@@ -217,14 +217,15 @@ impl Harness for Pg {
 
     fn standbyer(&self) -> Standby {
         let url = self.url.clone();
-        Arc::new(move |lake, host, every| {
+        Arc::new(move |lake, host, every, wrap| {
             let location = common::location(&url, lake.as_str(), lake.as_str());
             Box::pin(async move {
                 let seams = Seams {
-                    engines: vec![Arc::new(PgOpener)],
+                    engines: vec![wrap(Arc::new(PgOpener))],
                     ..host
                 };
-                lakelands_store::standby(location, seams, every).await
+                let (store, standing) = lakelands_store::standby(location, seams, every).await?;
+                Ok((store as Arc<dyn LakeStore>, standing))
             })
         })
     }

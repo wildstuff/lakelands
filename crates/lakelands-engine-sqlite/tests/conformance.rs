@@ -241,15 +241,16 @@ impl Harness for Sqlite {
 
     fn standbyer(&self) -> Standby {
         let root = self.root.clone();
-        Arc::new(move |lake, host, every| {
+        Arc::new(move |lake, host, every, wrap| {
             let dir = root.join(lake.as_str());
             Box::pin(async move {
                 let seams = Seams {
-                    engines: vec![Arc::new(SqliteOpener)],
+                    engines: vec![wrap(Arc::new(SqliteOpener))],
                     ..host
                 };
                 let location = Location::sqlite(lake.as_str(), dir);
-                lakelands_store::standby(location, seams, every).await
+                let (store, standing) = lakelands_store::standby(location, seams, every).await?;
+                Ok((store as Arc<dyn LakeStore>, standing))
             })
         })
     }

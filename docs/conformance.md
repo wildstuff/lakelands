@@ -1378,7 +1378,8 @@ belongs in the suite, not beside one engine:
 
 **standby**
 
-- `a_standby_takes_the_lease_once_the_writer_is_gone` — 076 (lakelands#1395): a standby opened beside the lake's writer reads what the writer wrote, answers a write as read-only with the lake leased elsewhere, appending nothing, and is no writer while the writer holds the lease, however long; once the writer's lock is gone it is the writer within a bound, its `lease_taken` carries a fence greater than every earlier one, and it serves a write; the old writer's next write is refused by the engine as its lease not held or stale, appends nothing, and leaves it no writer
+- `a_standby_takes_the_lease_once_the_writer_is_gone` — 076 (lakelands#1395): a standby opened beside the lake's writer reads what the writer wrote, answers a write as read-only with the lake leased elsewhere, appending nothing, and is no writer while the writer holds the lease, however long; once the writer's lock is gone it is the writer within a bound, its tries come to their end without an error, its `lease_taken` carries a fence greater than every earlier one, and it serves a write; the old writer's next write is refused by the engine as its lease not held or stale, appends nothing, and leaves it no writer
+- `a_standby_whose_takeover_fails_answers_why_and_tries_no_more` — 076 (lakelands#1395): a standby whose takeover fails once the writer's lock is gone, its first append under the lease refused below the store, answers that refusal for its tries, takes the lease no more, is no writer and gives the lease up, so a writer's open then holds it
 
 **grid**
 

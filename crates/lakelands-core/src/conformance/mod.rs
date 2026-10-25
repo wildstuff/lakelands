@@ -255,7 +255,7 @@ pub trait Harness: Send + Sync {
     /// [`Standby`] a check of a writer's failover is given. A harness
     /// without one answers `unbound`.
     fn standbyer(&self) -> Standby {
-        Arc::new(|_, _, _| {
+        Arc::new(|_, _, _, _| {
             Box::pin(async {
                 let op = "standby".to_owned();
                 let seam = lakelands_api::error::Seam::Operation { op };
@@ -334,12 +334,22 @@ pub struct Given {
     pub standby: Standby,
 }
 
-/// Opens a standby beside the lake named, with `seams` and the harness's
-/// engine, as `lakelands_store::standby` does: it follows the lake's
-/// writer and tries the lease at every interval given (076).
+/// Opens a standby beside the lake named, with `seams` and the engine
+/// [`Wrap`] makes of the harness's own, as `lakelands_store::standby`
+/// does: it follows the lake's writer and tries the lease at every
+/// interval given (076).
 pub type Standby = Arc<
-    dyn Fn(lakelands_api::LakeId, Seams, std::time::Duration) -> FreshLake<'static> + Send + Sync,
+    dyn Fn(lakelands_api::LakeId, Seams, std::time::Duration, Wrap) -> StandbyFuture + Send + Sync,
 >;
+
+/// The future a [`Standby`] answers: the standby's store, and what its
+/// tries come to.
+pub type StandbyFuture =
+    Pin<Box<dyn Future<Output = lakelands_api::Result<(Arc<dyn LakeStore>, Standing)>> + Send>>;
+
+/// What a standby's tries come to: `Ok` once it holds the lease, or the
+/// error of the try that failed, after which it tries no more.
+pub type Standing = Pin<Box<dyn Future<Output = lakelands_api::Result<()>> + Send>>;
 
 /// Builds the projection of the lake at a location of the harness's
 /// engine ahead, beside the writer that holds it, as `lakelands

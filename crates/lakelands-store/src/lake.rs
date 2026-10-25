@@ -306,6 +306,11 @@ pub struct Lake {
     rebuilt_at_open: Option<String>,
 }
 
+/// The holder a lease this process takes names: the process.
+pub(crate) fn holder() -> String {
+    format!("lakelands process {}", std::process::id())
+}
+
 /// The milliseconds since `began`.
 pub(crate) fn elapsed_ms(began: std::time::Instant) -> u64 {
     u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX)
@@ -652,8 +657,7 @@ impl Lake {
         let lease = match w.lease.clone() {
             Some(lease) => lease,
             None => {
-                let holder = format!("lakelands process {}", std::process::id());
-                let lease = self.engine.take_lease(&holder)?;
+                let lease = self.engine.take_lease(&holder())?;
                 w.lease = Some(lease.clone());
                 lease
             }

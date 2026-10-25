@@ -963,6 +963,7 @@ pub const ALL: &[Check] = &[
     sized::SEALED_BY_SIZE,
     taken_lease::TAKEN_LEASE,
     standby::STANDBY,
+    standby::STANDBY_FAILED,
     grid::GRID,
     metered::METERED,
     metered::METERED_LEASE,

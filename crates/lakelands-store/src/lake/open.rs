@@ -98,7 +98,7 @@ impl Lake {
         let lease = match mode {
             OpenMode::Read => None,
             OpenMode::Write | OpenMode::Create | OpenMode::Rebuild => {
-                Some(engine.take_lease(&format!("lakelands process {}", std::process::id()))?)
+                Some(engine.take_lease(&holder())?)
             }
         };
         let rebuilds = mode == OpenMode::Rebuild || rebuilt_at_open.is_some();

@@ -180,8 +180,7 @@ impl Turn<'_> {
         if !self.engine.lease_free()? {
             return Ok(false);
         }
-        let holder = format!("lakelands process {}", std::process::id());
-        let lease = match self.engine.take_lease(&holder) {
+        let lease = match self.engine.take_lease(&holder()) {
             Ok(lease) => lease,
             Err(e) if held(&e) => return Ok(false),
             Err(e) => return Err(e),

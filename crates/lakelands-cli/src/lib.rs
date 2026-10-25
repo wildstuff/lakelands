@@ -143,52 +143,79 @@ pub fn open_store(location: Location, mode: OpenMode, host: Seams) -> Opening {
     })
 }
 
+/// The future [`standby_store`] answers.
+type Standingby =
+    Pin<Box<dyn Future<Output = Result<(Arc<dyn LakeStore>, lakelands_store::Standing)>> + Send>>;
+
 /// Open the lake at `location` as a standby beside its writer, trying the
 /// lease every `every` ([`lakelands_store::standby`]), and keep its store
-/// as [`open_store`] keeps one, which later opens in this process share. A
-/// lake never written yet has no writer to stand by: it is created and
-/// leased as [`open_store`] creates it.
-pub fn standby_store(location: Location, host: Seams, every: std::time::Duration) -> Opening {
+/// as [`open_store`] keeps one, which later opens in this process share;
+/// with it, what its tries come to. A lake open in this process already,
+/// or never written yet, has no writer to stand by: the one is shared,
+/// the other created and leased as [`open_store`] creates it, and their
+/// tries have come to their end.
+fn standby_store(location: Location, host: Seams, every: std::time::Duration) -> Standingby {
     Box::pin(async move {
         let key = serde_json::to_string(&(&location.lake, &location.engine))
             .expect("a location serialises");
+        let ended = || -> lakelands_store::Standing { Box::pin(std::future::ready(Ok(()))) };
         if let Some(store) = opened().lock().await.get(&key) {
-            return Ok(store.clone());
+            return Ok((store.clone(), ended()));
         }
         let seams = Seams {
             engines: engines(),
             ..host.clone()
         };
         match lakelands_store::standby(location.clone(), seams, every).await {
-            Ok(store) => {
+            Ok((store, standing)) => {
                 opened().lock().await.insert(key, store.clone());
-                Ok(store)
+                Ok((store, standing))
             }
-            Err(e) if unmade(&e) => open_store(location, OpenMode::Create, host).await,
+            Err(e) if unmade(&e) => {
+                let store = open_store(location, OpenMode::Create, host).await?;
+                Ok((store, ended()))
+            }
             Err(e) => Err(e),
         }
     })
 }
 
-/// Open the lake at `location` for `serve`: as a standby where the root
-/// configures one, else for writing through `open`.
+/// Open the lake at `location` for `serve`, and put what its tries come
+/// to in `standing`: as a standby where the root configures one, else for
+/// writing through `open`.
 async fn serving_open(
     root: &root::Root,
     location: Location,
     seams: Seams,
     open: &Opener<'_>,
+    standing: &mut Vec<lakelands_store::Standing>,
 ) -> Result<Arc<dyn LakeStore>> {
-    match &root.config.standby {
-        Some(standby) => standby_store(location, seams, standby.every()).await,
-        None => open(location, OpenMode::Create, seams).await,
-    }
+    let Some(standby) = &root.config.standby else {
+        return open(location, OpenMode::Create, seams).await;
+    };
+    let (store, tries) = standby_store(location, seams, standby.every()).await?;
+    standing.push(tries);
+    Ok(store)
 }
 
-/// Until every lake of `lakes` holds its lease, as a standby's comes to.
-async fn leased(lakes: &[Arc<dyn LakeStore>], every: std::time::Duration) {
-    while !lakes.iter().all(|l| l.is_writer()) {
-        tokio::time::sleep(every).await;
-    }
+/// Until the tries of every standby of `standing` come to their end: the
+/// first error one answers, as soon as it answers it.
+async fn taken(mut standing: Vec<lakelands_store::Standing>) -> Result<()> {
+    std::future::poll_fn(|cx| {
+        let mut i = 0;
+        while i < standing.len() {
+            match standing[i].as_mut().poll(cx) {
+                std::task::Poll::Ready(Ok(())) => drop(standing.swap_remove(i)),
+                std::task::Poll::Ready(Err(e)) => return std::task::Poll::Ready(Err(e)),
+                std::task::Poll::Pending => i += 1,
+            }
+        }
+        match standing.is_empty() {
+            true => std::task::Poll::Ready(Ok(())),
+            false => std::task::Poll::Pending,
+        }
+    })
+    .await
 }
 
 fn command() -> Command {
@@ -736,6 +763,7 @@ async fn dispatch(
     } else {
         None
     };
+    let mut standing = Vec::new();
     let store = if name == "rebuild" {
         open(location, OpenMode::Rebuild, root.seams()).await?
     } else if name == "feed"
@@ -754,7 +782,7 @@ async fn dispatch(
             None => root.seams(),
         };
         if name == "serve" {
-            serving_open(&root, location, seams, open).await?
+            serving_open(&root, location, seams, open, &mut standing).await?
         } else {
             open(location, OpenMode::Create, seams).await?
         }
@@ -858,7 +886,7 @@ async fn dispatch(
                 settings::list(out, &lake, &listed, &root.config)
             }
         },
-        "serve" => serve(&root, (store, door), who, open).await,
+        "serve" => serve(&root, (store, door, standing), who, open).await,
         other => unreachable!("clap knows no command `{other}`"),
     }
 }
@@ -1124,28 +1152,38 @@ fn stopped(e: std::io::Error) -> Failure {
 /// principals. Standard output carries the protocol only. The command ends
 /// when its stdio client closes, HTTP door or not, and the process's
 /// deliverers and writer leases end with it. Where the root configures a
-/// standby, every lake is opened beside its writer, and the stdio session
-/// and what writes on the lakes' behalf start once each lease is held.
+/// standby, every lake is opened beside its writer: the stdio session is
+/// served while it stands by, what writes on the lakes' behalf starts once
+/// each lease is held, and a takeover that fails ends the command with its
+/// error.
 async fn serve(
     root: &root::Root,
-    (store, door): (Arc<dyn LakeStore>, Option<Door>),
+    (store, door, standing): (
+        Arc<dyn LakeStore>,
+        Option<Door>,
+        Vec<lakelands_store::Standing>,
+    ),
     who: lakelands_api::Principal,
     open: &Opener<'_>,
 ) -> std::result::Result<(), Failure> {
+    // A standby serves its stdio client while it stands by, as its door
+    // does, and ends when that client closes, before it takes a lease.
+    let stdio = lakelands_server::serve_stdio(store.clone(), who);
+    tokio::pin!(stdio);
     let Some(mut door) = door else {
-        let held = [store.clone()];
-        if let Some(standby) = &root.config.standby {
-            leased(&held, standby.every()).await;
+        let held = [store];
+        tokio::select! {
+            stdio = &mut stdio => return stdio.map_err(stopped),
+            taken = taken(standing) => taken.map_err(given_up)?,
         }
         root.deliver(&held)?;
         ticker::start(root.config.aging.as_ref(), &held);
         orders::start(&held);
         root.mirror(&held, open).await?;
-        return lakelands_server::serve_stdio(store, who)
-            .await
-            .map_err(stopped);
+        return stdio.await.map_err(stopped);
     };
     // The primary lake is open already; the others open now.
+    let mut standing = standing;
     let mut lakes = BTreeMap::from([(store.lake().clone(), store.clone())]);
     for name in root.lakes() {
         let location = root.location(Some(&name))?;
@@ -1153,20 +1191,21 @@ async fn serve(
             let seams = door.seams(root, &location.lake);
             lakes.insert(
                 location.lake.clone(),
-                serving_open(root, location, seams, open).await?,
+                serving_open(root, location, seams, open, &mut standing).await?,
             );
         }
     }
     let held: Vec<Arc<dyn LakeStore>> = lakes.values().cloned().collect();
     // A standby's door serves reads at once and is not ready until every
     // lake holds its lease; what writes on the lakes' behalf starts then.
-    if let Some(standby) = &root.config.standby {
+    if root.config.standby.is_some() {
         door.serving(lakes.clone());
         tokio::select! {
-            () = leased(&held, standby.every()) => {}
+            stdio = &mut stdio => return stdio.map_err(stopped),
             http = &mut door.task => return http
                 .unwrap_or_else(|e| Err(std::io::Error::other(e)))
                 .map_err(stopped),
+            taken = taken(standing) => taken.map_err(given_up)?,
         }
         eprintln!("lakelands: the standby holds every lake's lease");
     }
@@ -1180,9 +1219,16 @@ async fn serve(
     // The command ends with its stdio client: the HTTP door beside it, the
     // deliverers and the lake's writer lease end with the process.
     tokio::select! {
-        stdio = lakelands_server::serve_stdio(store, who) => stdio.map_err(stopped),
+        stdio = &mut stdio => stdio.map_err(stopped),
         http = &mut door.task => http
             .unwrap_or_else(|e| Err(std::io::Error::other(e)))
             .map_err(stopped),
     }
+}
+
+/// A standby's takeover failed: the command ends with its error, as a
+/// writer's open that fails ends it.
+fn given_up(e: Error) -> Failure {
+    eprintln!("lakelands: the standby's takeover failed and it stopped standing by");
+    e.into()
 }

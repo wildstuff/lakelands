@@ -210,15 +210,16 @@ impl Harness for Memory {
 
     fn standbyer(&self) -> Standby {
         let opener = self.opener.clone();
-        Arc::new(move |lake, host, every| {
+        Arc::new(move |lake, host, every, wrap| {
             let opener = opener.clone();
             Box::pin(async move {
                 let seams = Seams {
-                    engines: vec![Arc::new(opener)],
+                    engines: vec![wrap(Arc::new(opener))],
                     ..host
                 };
                 let location = Location::memory(lake.to_string());
-                lakelands_store::standby(location, seams, every).await
+                let (store, standing) = lakelands_store::standby(location, seams, every).await?;
+                Ok((store as Arc<dyn LakeStore>, standing))
             })
         })
     }
