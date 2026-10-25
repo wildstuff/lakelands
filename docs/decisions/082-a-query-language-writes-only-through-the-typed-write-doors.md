@@ -28,7 +28,7 @@ half landed would look as if it had not run.
 Values come as literals or bound parameters, never as text interpolated
 into the statement.
 
-### `MATCH … SET` and `MATCH … DELETE` are a change to selected records
+### `MATCH … SET` and `MATCH … DELETE` change selected records
 
 `MATCH … SET` sets the values it names on the records one name of the
 `MATCH` binds, and `MATCH … DELETE` retires them, or unlinks the links

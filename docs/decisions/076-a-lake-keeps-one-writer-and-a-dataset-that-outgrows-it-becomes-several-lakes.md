@@ -230,11 +230,12 @@ rule that reads across records (a live reference, a link's cardinality,
 a set of a kept view, a re-key) would need its writers to agree, and the
 change feed (`docs/decisions/004-the-change-feed-is-the-log.md`) would
 split into feeds with no order between them. Several lakes, split the
-way the host already thinks of its data, and a read across them
-(`docs/decisions/075-a-read-may-cross-lakes-and-each-lake-answers-its-part.md`)
-give what partitions would with every rule as it is. It comes back if a
-host names a dataset it cannot split into lakes whose rate one writer
-does not meet.
+way the host already thinks of its data, give what partitions would
+with every rule as it is: where a host needs one figure over them, it
+adds up each lake's own answer. No read across lakes is built
+(`docs/decisions/075-a-read-may-cross-lakes-and-each-lake-answers-its-part.md`
+is paused). It comes back if a host names a dataset it cannot split
+into lakes whose rate one writer does not meet.
 
 ### Two issues build it
 
@@ -293,3 +294,6 @@ harmless.
   lake and chose forwarding through the one writer, with standby and
   failover; direct writers, optimistic deciding and partitions are
   deferred (lakelands#1377).
+- Way D rests on several lakes whose answers the host adds up, where it
+  had rested on a read across lakes too; that read is paused
+  (lakelands#1404).

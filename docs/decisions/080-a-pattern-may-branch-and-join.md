@@ -7,10 +7,10 @@
 issue that builds it; until then a pattern is a chain or a
 neighbourhood, as 018 says.
 
-### A pattern is a tree of steps, each walked from a name bound before it
+### A pattern is a tree of steps, each walked from a name bound earlier
 
-A step may name, with `from`, the name it walks from: the start's, or one
-a step before it in the list binds. Two or more steps from one name
+A step may name, with `from`, the name it walks from: the start's, or
+one a step before it in the list binds. Two or more steps from one name
 branch: `(a)-[:x]->(b), (a)-[:y]->(c)` is the start `a` and two steps
 `from: a`. A step that names no `from` walks from the name the step
 before it binds, the start's for the first, so a pattern that names none
