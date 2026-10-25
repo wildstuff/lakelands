@@ -249,9 +249,9 @@ does not meet.
   (lakelands#118).
 - **Standby and failover** (lakelands#1395). The standby's follow and
   takeover in the store, its configuration and its place in
-  `lakelands serve`, takeover checks on SQLite and PostgreSQL, the old writer
-  refused, and 008's line. Roughly 400 to 700 product lines and 600 to
-  1 000 of specification: readiness, which reads the lease's state, took
+  `lakelands serve`, takeover checks on SQLite and PostgreSQL, the old
+  writer refused, and 008's line. Roughly 400 to 700 product lines and
+  600 to 1 000 of specification: readiness, which reads the lease's state, took
   197 and 366 (lakelands#1379).
 
 At develop `7ca9a668c` the core crates stand 16 product and 35
