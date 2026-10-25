@@ -1131,6 +1131,9 @@ fn run(shared: &Shared, target: &Target, names: &Names, v: &Pgvector) {
         };
         let mut round = || -> Result<bool> {
             if db.as_ref().is_none_or(Db::is_closed) {
+                // A closed connection's pid may be another backend's by
+                // now: no hold cancels it while this one connects.
+                lock(&shared.state).pid = None;
                 let mut opened = connect::connect(target)?;
                 opened.batch("SET max_parallel_maintenance_workers = 0")?;
                 let pid: i32 = opened.query_one("SELECT pg_backend_pid()", &[])?.get(0);

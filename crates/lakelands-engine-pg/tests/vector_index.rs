@@ -753,10 +753,12 @@ fn retiring_the_setting_drops_every_graph() {
 /// Searches that overlap without a pause, each locking `graphs` before
 /// its snapshot as a ranking does and reading the generation its row
 /// names, hold off neither the builder's drop of a generation swapped
-/// away nor a hold's build. Each search runs 0.3 s, and the second
-/// reader starts 0.15 s after the first, so `graphs` is never free; the
-/// second hold comes 8 s after the first, by when a builder that took a
-/// refused drop for a failure would be waiting out its back-off.
+/// away nor a hold's build. Each search sleeps 0.3 s between reading
+/// the row and reading the generation it names, so a drop that does not
+/// wait for it leaves it no table; the second reader starts 0.15 s after
+/// the first, so `graphs` is never free. The second hold comes 8 s after
+/// the first, by when a builder that took a refused drop for a failure
+/// would be waiting out its back-off.
 #[test]
 fn searches_that_never_pause_hold_off_no_drop_and_no_build() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -801,12 +803,15 @@ fn searches_that_never_pause_hold_off_no_drop_and_no_build() {
                             )?
                             .get(0);
                         c.batch_execute(&format!(
-                            "SELECT count(*) FROM {s}.{}; SELECT pg_sleep(0.3); COMMIT",
+                            "SELECT pg_sleep(0.3); SELECT count(*) FROM {s}.{}; COMMIT",
                             table("e", "b", g)
                         ))
                     })();
                     if let Err(e) = read {
-                        failed.lock().unwrap().push(e.to_string());
+                        let e = e
+                            .as_db_error()
+                            .map_or(e.to_string(), |d| d.message().into());
+                        failed.lock().unwrap().push(e);
                         let _ = c.batch_execute("ROLLBACK");
                     }
                 }

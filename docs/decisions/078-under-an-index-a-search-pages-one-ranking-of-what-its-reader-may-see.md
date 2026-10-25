@@ -756,8 +756,8 @@ decision under `docs/budgets.md`, as rounds before it have; the fix
 does not shrink to fit it.
 
 Measured on the build, from 83 349 and 155 332 on `develop` at its base
-(metrics and the lease-stale flag merged): product 84 495 (+1 146) and
-specification 156 318 (+986), inside the ceilings, below the
+(metrics and the lease-stale flag merged): product 84 498 (+1 149) and
+specification 156 323 (+991), inside the ceilings, below the
 reckoning's lower end; no row is added.
 
 ## Why
