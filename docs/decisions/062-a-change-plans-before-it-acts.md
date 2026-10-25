@@ -207,3 +207,10 @@ forty times that on PostgreSQL (lakelands#1141).
 - **Not `declared` in the plan.** The positions an act would declare at
   differ between a plan and an accept, which appends its acceptance
   first. The outcome's `declared` tells them as they landed.
+
+## How it came to be
+
+- A change to the records a condition selects, with the same two steps,
+  was proposed as
+  `docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`
+  (lakelands#1404).
