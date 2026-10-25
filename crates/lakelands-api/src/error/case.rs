@@ -1342,12 +1342,12 @@ catalog! {
         StepBindsNoName { member: String, join: bool } => "a[{?join} join|n absent step] binds no name of its own[{?join}, and the record it reaches is judged where its name was bound]; it takes no `{member}`",
         /// A `from` or `join` naming no name bound before the step.
         StepNameUnbound { member: String, name: String } => "`{member}` names `{name}`, which neither the start nor a step listed before this one binds; a step walks from and joins only a name bound before it",
-        /// A join or an absent step that says `optional`, or reads a name
-        /// an optional step binds, outside an optional branch.
-        StepOptionalNoName { join: bool } => "a[{?join} join|n absent step] binds no name to bind null where it has no match; it may say `optional`, or read a name an optional step binds, only where its `from` or `join` is a name an optional step binds, as a step of that branch",
-        /// A step from, joining, or reading in its `where` a name an
-        /// optional step binds that is not optional itself.
-        StepPastOptional { name: String } => "`{name}` is bound by an optional step, so a step that walks from it, joins it or reads it says `optional` too, and never drops the row the optional step kept",
+        /// A join or an absent step that says `optional` outside an
+        /// optional branch.
+        StepOptionalNoName { join: bool } => "a[{?join} join|n absent step] binds no name to bind null where it has no match; it may say `optional` only where its `from` or `join` is a name an optional step binds, as a step of that branch",
+        /// A step from or joining a name an optional step binds that is
+        /// not optional itself.
+        StepPastOptional { name: String } => "`{name}` is bound by an optional step, so a step that walks from it or joins it says `optional` too, and never drops the row the optional step kept",
         /// A step that reaches another type than it names.
         StepReaches { reached: TypeName, #[serde(rename = "type")] ty: TypeName, also: Option<Names> } => "it reaches `{reached}`[, {also}], not `{ty}`",
         /// A step reaching several types where the next step reads one, or
