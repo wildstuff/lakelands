@@ -215,15 +215,18 @@ be shredded alone (lakelands#1214).
   input is digested under that composed key. No digest of it can be made
   again, and it cannot be opened, once any one of those keys is gone. An
   output that reads no value sealed apart is sealed under the version
-  alone, as before. An output reads which apart keys sealed a value
-  from the `sealed.apart` of the value's own event in the log, so a
-  write's plan and a rebuild compose the same keys, and the projection
-  keeps no copy of them per event
-  (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`).
-  The fold's list of a source's versions marks each version a delivery
-  sealed apart sealed under, and an output looks up the apart keys only
-  at a value whose version is marked: a source that never sealed apart
-  costs no read.
+  alone, as before. The fold keeps which apart key sealed the value at
+  each position, under a name of its own, so a write's plan and a
+  rebuild compose the same keys. Its list of a source's versions marks
+  each version a delivery sealed apart sealed under, and an output looks
+  up the apart keys only at a value whose version is marked: a source
+  that never sealed apart costs no read. Proposed for 0.20.0
+  (lakelands#1413), in force with the issue that builds it: an output
+  reads which apart keys sealed a value from the `sealed.apart` of the
+  value's own event in the log, and the fold keeps no copy of them per
+  event
+  (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`);
+  the mark and the reads it spares stay.
 - **The act destroys every apart key whose values it all selects.** For
   a delivery, that is the keys of the ingests of that delivery before
   the act. For a time of the log's clock, it is the keys of the ingests
@@ -243,8 +246,8 @@ be shredded alone (lakelands#1214).
   store to destroy only an apart key it holds, so a lake imported beside
   such a store opens.
 - **A redelivery is its own.** An ingest's id is made from the patch as
-  stored and, from format 20, from the box that seals its values (§3 of
-  the log format), so a delivery sealed apart is never a
+  stored (§3 of the log format), and, as 083 proposes for 0.20.0, from
+  the box that seals its values, so a delivery sealed apart is never a
   duplicate of another delivery's event by its id. Taking back the first
   then leaves the second's values standing, where the second came under
   another delivery id; one id selects every delivery under it before
@@ -273,8 +276,9 @@ would still need a secret of its own, so it is the composition with one
 more step. **Rejected: sealing twice**, under the version and then under
 the apart key: the same lifetime at twice the work per value and per
 digest. **Rejected: the apart key in each field's provenance.** That is
-what a reader is shown (`with: meta`); the event's `sealed` keeps it
-from readers.
+what a reader is shown (`with: meta`); the fold's own list keeps it from
+readers, and under 083, proposed for 0.20.0, the event's own `sealed`
+does.
 
 ### The act may be read before it is made
 
@@ -467,6 +471,6 @@ whole log, which the preflight says; a scoped refold is lakelands#1120.
   delivery's key apart seals nothing outside it (lakelands#1166).
 - A set of deliveries taken back in one act, with one walk of the log
   and one rebuild (lakelands#1290).
-- An output reads the apart keys from the value's own event, where the
-  fold kept a copy of them for each event; proposed with 083
-  (lakelands#1413).
+- An output reading the apart keys from the value's own event, and the
+  fold no longer keeping a copy of them for each event, proposed with
+  083 (lakelands#1413).

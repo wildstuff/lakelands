@@ -3,57 +3,76 @@
 ## What is decided
 
 **Proposed** on lakelands#1413 (2026-10-25), for the operator to accept,
-built in 0.20.0 in format 20. It amends
+for 0.20.0, in format 20. It amends
 `docs/decisions/020-events-are-hash-chained-over-canonical-bytes.md`,
 whose log now stores the form an event's canonical bytes are restored
-from, `docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`,
-whose step to 20 reads a lake of 19 without a rewrite, and
+from and digests a segment over those bytes;
+`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md` and
+`docs/decisions/038-a-lake-in-postgresql.md`, whose engines keep that
+form; `docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`,
+whose step to 20 reads a lake of 19 without a rewrite;
 `docs/decisions/065-part-of-a-source-may-be-taken-back.md`, whose fold
-no longer keeps the keys a delivery was sealed apart with. Each
-amendment comes in force with the issue that builds it; until then the
-three stand as written. `docs/log-format.md` §1.2, §1.4, §3, §4 and §6
-specify it.
+no longer keeps the keys a delivery was sealed apart with; and
+`docs/decisions/077-a-backup-is-an-export-that-grows.md`, whose backup
+writes a form of its own and continues after its last whole frame. Each
+amended rule is marked proposed where it stands and comes in force with
+the issue that builds it; until then the rule beside it stands.
+`docs/log-format.md` §1.2, §1.4, §3, §4 and §6 specify it.
 
-### A segment's lines are the log's stored form, and each restores to exactly one canonical event
+### A segment's lines are a stored form, and each restores to exactly one canonical event
 
 The log stores a **stored form**, not each event's canonical bytes. A
 reader restores every event from it, and the event it restores is the
 one the store made: the same members, the same canonical bytes, the same
 `hash`, and the same `prev`. The hash and the chain are over that event
-as 020 says; nothing of them changes. A segment's digest is over its
-file's lines as they stand, so it covers the stored form, frames
-included.
+as 020 says; nothing of them changes.
 
-### An append of two or more events shares one frame, and `position` and `prev` stand only on a segment's first line
-
-- **A frame.** An append of two or more events is stored as one frame
-  line followed by its events' lines. The frame holds exactly the
-  members its events all share with equal values: the top-level ones but
-  `v`, `id`, `hash`, `position` and `prev`, and those one level into
+- **A frame** is a line holding members that the n events after it all
+  hold with equal values: top-level ones but `v`, `id`, `hash`,
+  `position`, `prev`, `body` and `sealed`, and ones one level into
   `body` and into `sealed`. Each event's line leaves out what its frame
-  holds. An append of one event has no frame.
+  holds.
+- **Derived members.** An event line may leave out its `position`, the
+  one before it plus one, and its `prev`, the hash of the event before
+  it; a segment's first event line holds both, so a segment verifies
+  from its own first line.
 - **`v` on every line.** Every line holds its format, a frame line too,
   so a release that does not read the format finds its number on the
   first line it reads and refuses the lake by it, as 054 says, and
   never takes a line without `v` for one of format 0.
-- **Derived members.** An event's `position` is the one before it plus
-  one, and its `prev` is the hash of the event before it. A line holds
-  them only where it is its segment's first event, so a segment
-  verifies from its own first line.
-- **One stored form.** The writer's rule is a function of the append's
-  events alone, so two engines given the same appends store the same
-  bytes and the same digests. Any other stored form is a break, as a
-  line that is not canonical is: a frame that does not hold exactly the
-  members its lines share, a line that holds a member its frame holds,
-  or `position` or `prev` where they are derived.
-- **The store frames.** The store canonicalises and frames; the engine
-  keeps the stored form unchanged and hands it back unchanged, and the
-  store restores and verifies it. The suite checks it through the seam,
-  on every engine.
+- **A break** is a line that is not canonical, a frame whose `v` is not
+  its events' or whose lines do not all follow it in its segment, a line
+  that holds a member its frame holds, a `position` or `prev` that is
+  not the derived one, or a segment's first event line without both. A
+  line of a format before 20 is a full event, taken as it stands.
 
-A reader cannot see where an append ended, so it checks each frame
-against the lines it covers. A line of a format before 20 is a full
-event, taken as it stands.
+### A segment's digest is over its restored events, so every copy writes a form of its own
+
+A segment's digest is SHA-256 over the canonical bytes of its events as
+restored, each followed by a line feed. Where every line is a full
+event, as up to format 19, that is the file's bytes, so no digest a
+checkpoint already lists moves. The digest is then the same whatever
+stored form holds the events, and a form is judged only by whether it
+restores them: a reader cannot see where an append ended, and need not.
+
+- **The store's writer** frames each append of two or more events, with
+  exactly the members they all share, and writes `position` and `prev`
+  only on a segment's first event line. An append of one event has no
+  frame.
+- **An export and a backup** read the log through the feed, which
+  answers events and tells no append's end, on any engine and through a
+  feed in front of the store. They frame each run of two or more, and at
+  most 1 000, consecutive events of one segment that share `known_at`,
+  and every event line they write holds its `position`, so a backup run
+  restores its last event from that line, its frame and the line before
+  it alone.
+- **An import** restores the events and appends them as any writer
+  does.
+- **The store frames, the engine keeps.** The store canonicalises and
+  frames; the engine keeps the stored form unchanged and hands it back
+  unchanged, and the store restores and verifies it. The suite checks
+  through the seam, on every engine, that the stored form comes back as
+  it went in and that a digest is over the restored bytes.
 
 ### A record event's sealed members are sealed in one box
 
@@ -94,9 +113,8 @@ The projection is compared after `VACUUM` in both rows; as written it
 held 1 212.0 B a record before. Of the log's 755.6 B, the derived
 `position` and `prev` take 89.9, the frame's top-level members 225.4,
 `sealed` framed 203.0, `body` framed 63.7, and the box 173.6; keeping
-`v` on every line gives 7 B of it back, which the table does not count.
-Of the
-projection's, the copies of the apart keys take 212.2; the rest, and
+`v` on every line costs 7 B of it, which the table does not count. Of
+the projection's, the copies of the apart keys take 212.2; the rest, and
 the index's 66.4, is the engines' own layout of the routes, of a
 record's provenance and of the index, which no format fixes.
 
@@ -104,11 +122,15 @@ record's provenance and of the index, which no format fixes.
   event, so a frame changes no hash and no id, and an edit of a frame
   breaks the hash of every event it restores. A verifier still needs
   only this format and its document.
-- **One form keeps the bytes reproducible.** Had the writer been free
-  to frame what it liked, two engines would store the same events in two
-  byte strings, and a digest a checkpoint names would hold for one of
-  them only. The frame of an append is decided by its events, so it is
-  not a choice.
+- **A digest over the restored events lets a copy be made from what the
+  feed answers.** A digest over the file's bytes would hold only for the
+  form the writer chose, so a copy would have to rebuild that form, and
+  the feed tells no append's end. Carrying the frames through the feed
+  would change the seam and every wire the feed crosses; reading the
+  engine's lines for a copy would give up a backup through a feed in
+  front of the store. Over the restored events, the digest is what it
+  was for every lake of 19, and any form that restores the events is the
+  log.
 - **A box costs one tag a record, not one a field.** Each sealed member
   carried its own 16-byte tag and its own padding. Erasure loses nothing
   by it: every sealed member of one event was already under one key, and
@@ -123,10 +145,14 @@ record's provenance and of the index, which no format fixes.
 - **Not a rewrite of any lake.** A lake of 19 keeps its lines, its
   bytes, its hashes and its digests; a segment may hold lines of both
   forms, and a value of 19 sealed per member opens by its event's `v`.
+- **Not one stored form.** Two forms of the same events restore the
+  same bytes, hashes and digests, and a reader takes either; the
+  writer's form is the store's rule for its own size, not a reader's
+  check.
 - **Not `sealed.fields` derived from the catalog.** A reader without the
   catalog could no longer tell ciphertext from text, and erasing a
   patch that carries some erasable fields but not others would need it.
-- **Not a frame shared across appends.** An append of one event gets
+- **Not a frame kept lake-wide.** The writer's append of one event gets
   only the derived `position` and `prev`. A frame kept lake-wide would
   be a rule of its own, and the host this was measured for appends 32
   records a call.
