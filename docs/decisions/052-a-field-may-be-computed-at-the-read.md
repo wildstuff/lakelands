@@ -40,7 +40,10 @@ is. A value that cannot be computed is none.
 A read has one clock, which `now()` and `today()` read wherever the read
 evaluates them: a `where`, a field computed at the read, a group key, a
 measure, a view's `where` and measures, a pattern's starts and rows,
-and a search's `where`. It is decided once, when the read opens:
+a search's `where`, and the `where` of a set decided at the read, which
+`in_set` expands there
+(`066 § A set may be decided at the read`). It is decided once, when
+the read opens:
 - a read `valid_at` an instant reads that instant, at the head and as of
   a position: a read of what was true at a business date counts its
   days to that date;
@@ -99,7 +102,9 @@ is computed at the read already) or of a link; no field computed at the
 write reads it; a trigger, a verb and an object set that read it are
 refused; a view that reads it is not kept; an order or a vector index
 does not name it; and a grant's `only` on it cannot be applied, as on
-any field an engine cannot filter by. A type declared again so that a
+any field an engine cannot filter by. A set decided at the read is no
+reader of stored records: its `where` is evaluated in the read, and may
+name it (066). A type declared again so that a
 field a trigger, a verb, an object set or another type's derived
 relation in force reads is computed at the read is refused, naming the
 field alone. Each is refused as invalid where it is declared, naming the
@@ -167,3 +172,5 @@ absent for it.
   pin of the head carries the instant it was set at; a listing of
   proposals judges under the position's clock or the host's, never
   `valid_at` (lakelands#571).
+- A set decided at the read reads the read's clock and may name a field
+  computed at the read (lakelands#1412).

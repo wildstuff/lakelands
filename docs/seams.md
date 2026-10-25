@@ -769,15 +769,51 @@ lower-cased and folded when it has none or the pipeline has no stemmer
 for it), applied the same way to the query and to the
 fields (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
 The set of hits, their order and their scores are the same on every
-engine: one function ranks (`lakelands_core::engines::lexical`). A hit
-scores each distinct query token it holds at the weight of the heaviest
-field holding it, summed in the tokens' order: `asked`'s `text_weights`
-give a field's weight under its name at the head, and a field they do
-not name weighs 1, so with none the score is the number of distinct
-query tokens the hit holds. Hits come best first, equal scores ordered
-by key ascending; at most `k`, cut by that score. A later
+engine: one function ranks (`lakelands_core::engines::lexical`). Today a
+hit scores each distinct query token it holds at the weight of the
+heaviest field holding it, summed in the tokens' order: `asked`'s
+`text_weights` give a field's weight under its name at the head, and a
+field they do not name weighs 1, so with none the score is the number
+of distinct query tokens the hit holds. Hits come best first, equal
+scores ordered by key ascending; at most `k`, cut by that score. A later
 release may score otherwise, on every engine at once, so a caller
 compares scores within one answer.
+
+From 0.20.0 (lakelands#1412), in force with the issue that builds it,
+the function is BM25F in its combined-field form, which replaces that
+score for every lake, with no switch per type: a token's frequency in
+each field, multiplied by the field's weight and scaled by the field's
+length against its average, summed over the fields and saturated once,
+times the token's rarity, in `f64` with `ln` from `libm`, the same bits
+on every engine (025 holds the formula and its constants). What it
+reads:
+
+- **`df`** is counted by the function over the candidates the engine
+  hands it, admitted to the reader's class, since every candidate that
+  holds a query token is handed. The engine keeps nothing for it.
+- **`n_f` and `L_f`**, the records of the class whose field `f` holds a
+  token and the tokens of `f` over them, are kept by the engine per
+  type, field and hold, one count for the heads that are not held and
+  one for the held: `asked.seen` without `restricted` reads the first,
+  with it the sum of both. SQLite and PostgreSQL keep the counts and
+  each record's tokens per field in their projection, written in the
+  fold's transaction beside the text rows and taken out where a record
+  is dropped, with a mark of the position they are folded through; a
+  writer that finds the mark absent or behind counts them again at
+  open, and a read that finds it behind counts at the search. The
+  memory engine counts them in the same pass and keeps none.
+- **A reader with no class.** Where `asked.seen` admits by `only`
+  pairs, by a link's ends or by what its reader is told of a record
+  (078), the store counts `n_f` and `L_f` over the heads it admits and
+  hands them in `asked.text_stats`; an engine handed them ranks by them
+  and not by its own.
+
+They are taken at the head, as the lists are: a `where`, a `valid_at`
+and the position read do not shape them.
+
+Where the text matched (`Hit.matches`) is no engine's to answer: the
+store computes it over the page's records after the cut, by the same
+pipeline (025).
 With fields named, a record's text is only that of the named fields that are
 searchable in the type's declaration at the head: a record matching only
 in another field is no hit, and a record matching in a named field is a
