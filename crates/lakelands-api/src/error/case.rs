@@ -1234,6 +1234,8 @@ catalog! {
         GroupKeyTwice { name: FieldName } => "two group keys are named `{name}`; each needs a name of its own",
         /// An instant of an `after` that is no text.
         InstantNotText => "an instant is given as text",
+        /// A join whose relation reaches no type the joined name binds.
+        JoinNeverHolds { name: String, bound: Names, reached: Names } => "`join` names `{name}`, which binds {bound}, and over its whole range the step reaches only {reached}: the join could never hold",
         /// A `latest` order where no record has a change of its own.
         LatestNoChange { #[serde(rename = "type")] ty: Option<TypeName> } => "`order_by` `latest` orders records by their latest change, and [`{ty}` is a view, whose records are computed and have none|a query's rows are projections of a walk, not records]",
         /// A `latest` order given a field.
@@ -1308,6 +1310,9 @@ catalog! {
         PatternToChain => "a pattern with `to` walks its steps as one walk from its start; every step's depth starts at 0",
         /// A pattern with `to` not projected as a graph.
         PatternToNotGraph => "a pattern with `to` answers the walk to it as a graph; ask `project` `graph`",
+        /// A member that makes a pattern a tree beside a projection that
+        /// answers by a walk's own shape.
+        PatternTreeMember { member: String, projection: String } => "`{member}` makes the pattern a tree, which rows and an aggregate answer; `{projection}` answers by its walk's own shape",
         /// A position of an `after` that is no whole number.
         PositionNotInteger => "a position is a non-negative integer",
         /// An order of proposals by what is not one of their members.
@@ -1331,6 +1336,18 @@ catalog! {
         SearchTextFieldsEmpty => "`text_fields` weighs no field; leave it out to weigh each as its type's setting does",
         /// A start with no type where a type is needed.
         StartNoType { asks: String } => "`{asks}` needs the start's `type`; only `components` may leave it out, and then names no `key`, `where`, `search` or `params`",
+        /// A step with no `from` after one that binds no name.
+        StepAfterNoName => "the step before binds no name, as a join and an absent step bind none; say with `from` which name this step walks from",
+        /// A member given to a join or an absent step, which bind no name.
+        StepBindsNoName { member: String, join: bool } => "a[{?join} join|n absent step] binds no name of its own[{?join}, and the record it reaches is judged where its name was bound]; it takes no `{member}`",
+        /// A `from` or `join` naming no name bound before the step.
+        StepNameUnbound { member: String, name: String } => "`{member}` names `{name}`, which neither the start nor a step listed before this one binds; a step walks from and joins only a name bound before it",
+        /// A join or an absent step that says `optional`, or reads a name
+        /// an optional step binds, outside an optional branch.
+        StepOptionalNoName { join: bool } => "a[{?join} join|n absent step] binds no name to bind null where it has no match; it may say `optional`, or read a name an optional step binds, only where its `from` or `join` is a name an optional step binds, as a step of that branch",
+        /// A step from, joining, or reading in its `where` a name an
+        /// optional step binds that is not optional itself.
+        StepPastOptional { name: String } => "`{name}` is bound by an optional step, so a step that walks from it, joins it or reads it says `optional` too, and never drops the row the optional step kept",
         /// A step that reaches another type than it names.
         StepReaches { reached: TypeName, #[serde(rename = "type")] ty: TypeName, also: Option<Names> } => "it reaches `{reached}`[, {also}], not `{ty}`",
         /// A step reaching several types where the next step reads one, or

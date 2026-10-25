@@ -267,7 +267,8 @@ type SortKey = (Vec<Value>, RecordKey);
 type Starts = [(SortKey, StoredRecord)];
 
 /// What a page of rows does with each binding of a start at its position.
-type EachBinding<'a> = dyn FnMut(&SortKey, &graph::Node, &[graph::Reached]) -> Result<bool> + 'a;
+type EachBinding<'a> =
+    dyn FnMut(&SortKey, &graph::Node, &[Option<graph::Reached>]) -> Result<bool> + 'a;
 
 /// One ranked list of a search: the candidates best first, with their
 /// scores.

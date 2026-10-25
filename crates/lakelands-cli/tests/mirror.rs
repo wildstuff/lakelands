@@ -1309,6 +1309,10 @@ async fn a_derived_relation_of_a_mirrored_type_is_the_targets_own_reading() {
             filter: None,
             depth: Default::default(),
             named: None,
+            from: None,
+            join: None,
+            optional: false,
+            absent: false,
         };
         let pattern = q::Pattern {
             start: q::Start {

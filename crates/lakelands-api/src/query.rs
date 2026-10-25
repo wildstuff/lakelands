@@ -105,6 +105,23 @@ pub struct Step {
     /// when left out.
     #[serde(default, rename = "as", skip_serializing_if = "Option::is_none")]
     pub named: Option<String>,
+    /// The name the step walks from: the start's, or one a step listed
+    /// before it binds; the previous step's name when left out
+    /// (`docs/decisions/080-a-pattern-may-branch-and-join.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// A name bound before it: the step holds only where it reaches that
+    /// name's record, and binds no name of its own (080).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<String>,
+    /// The step keeps its row where it has no match, its name bound to
+    /// null; it and the steps from it match whole or bind null whole (080).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
+    /// The step keeps its row only where it has no match, and binds no
+    /// name (080).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub absent: bool,
 }
 
 /// What a pattern returns.
@@ -254,6 +271,10 @@ impl Pattern {
             filter: None,
             depth: Depth::default(),
             named: None,
+            from: None,
+            join: None,
+            optional: false,
+            absent: false,
         };
         Pattern::from(ty, key, vec![step], Projection::default())
     }
@@ -285,6 +306,10 @@ impl Pattern {
                 filter: None,
                 depth: Depth { min: 0, max: depth },
                 named: None,
+                from: None,
+                join: None,
+                optional: false,
+                absent: false,
             })
             .collect();
         Pattern::from(ty, key, steps, Projection::Graph)

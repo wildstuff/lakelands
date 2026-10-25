@@ -768,6 +768,10 @@ pub fn step(relation: &str, walk: Walk) -> Step {
         filter: None,
         depth: Depth::default(),
         named: None,
+        from: None,
+        join: None,
+        optional: false,
+        absent: false,
     }
 }
 

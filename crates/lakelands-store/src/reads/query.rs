@@ -37,6 +37,7 @@ impl<'a> Reader<'a> {
                 return Err(Error::invalid(fault));
             }
         }
+        tree(p, binds)?;
         if measures::is_measure(&p.project) {
             measures::check(p)?;
         } else if !matches!(p.project, Projection::Rows { .. }) && !p.order_by.is_empty() {
@@ -92,18 +93,78 @@ impl<'a> Reader<'a> {
             _ => p.project == Projection::Components,
         };
         let last = p.steps.len().saturating_sub(1);
+        // A step another walks from reaches one type (080): the next, where
+        // it names no `from`, or a later one whose `from` names it.
+        let walked_from: Vec<bool> = (0..p.steps.len())
+            .map(|i| {
+                let s = &p.steps[i];
+                let next = p.steps.get(i + 1).is_some_and(|n| n.from.is_none());
+                // Its name: its `as`, else its type or its relation.
+                let ty = s.ty.as_ref().map(TypeName::as_str);
+                let own = match s.named.as_deref() {
+                    Some(n) => [Some(n), None],
+                    None => [ty, Some(s.relation.as_str())],
+                };
+                let named = |n: &Step| n.from.as_deref().is_some_and(|f| own.contains(&Some(f)));
+                next || p.steps[i + 1..].iter().any(named)
+            })
+            .collect();
+        // Each step's slots, and whether an optional step binds each slot.
+        let (mut shapes, mut optional) = (Vec::new(), vec![false]);
+        // Whether a step's `where` reads a name bound before it (080).
+        let mut across = Vec::new();
         for (i, step) in p.steps.iter_mut().enumerate() {
-            // A measure's steps are the relations around its records, each
-            // read from the start, not a chain.
-            let here = if measure {
-                start_decl.name.clone()
-            } else {
-                types.last().expect("the start is in").clone()
-            };
             // A place names the step's relation as its caller wrote it.
             let at = Place::Step {
                 step: i + 1,
                 relation: step.relation.clone(),
+            };
+            let binds_none = step.join.is_some() || step.absent;
+            // The slots a step walks from and joins: names bound before it,
+            // the start's at 0 (080). A measure's steps are the relations
+            // around its records, each read from the start, not a chain, as
+            // a neighbourhood's and a path's are; a chain's step walks from
+            // the one before it.
+            let slot = |member: &str, n: &String| {
+                let (member, name) = (member.to_owned(), n.clone());
+                let case = Case::StepNameUnbound { member, name };
+                let slot = names.iter().position(|b| !b.is_empty() && b == n);
+                slot.ok_or_else(|| Error::invalid(Said::from(case).within(at.clone())))
+            };
+            let (from, join) = match binds {
+                true => (
+                    (step.from.as_ref()).map_or(Ok(i), |n| slot("from", n))?,
+                    (step.join.as_ref()).map(|n| slot("join", n)).transpose()?,
+                ),
+                false => {
+                    let walks = if measure || !chain { 0 } else { i };
+                    if step.from.as_ref().is_some_and(|n| *n != names[walks]) {
+                        let (member, projection) = ("from".to_owned(), projection_name(&p.project));
+                        let case = Case::PatternTreeMember { member, projection };
+                        return Err(Error::invalid(Said::from(case).within(at)));
+                    }
+                    (walks, None)
+                }
+            };
+            let past = std::iter::once(from).chain(join).find(|k| optional[*k]);
+            if let Some(k) = past.filter(|_| !step.optional) {
+                let case = Case::StepPastOptional {
+                    name: names[k].clone(),
+                };
+                return Err(Error::invalid(Said::from(case).within(at)));
+            }
+            optional.push(step.optional);
+            let (absent, opt) = (step.absent, step.optional);
+            shapes.push(graph::Shape {
+                from,
+                join,
+                optional: opt,
+                absent,
+            });
+            let here = match (measure, binds) {
+                (true, _) => start_decl.name.clone(),
+                (false, true) => types[from].clone(),
+                (false, false) => types.last().expect("the start is in").clone(),
             };
             let owner = self.as_declared(&here, step);
             let owner = owner.as_ref();
@@ -138,12 +199,29 @@ impl<'a> Reader<'a> {
                 true => self.ranged(step, &here, reach[i].owner.as_ref()),
                 false => self.neighbours(step, None, reach[i].owner.as_ref()),
             };
+            // A join that can reach no type its name binds could never hold.
+            if let Some(j) = join {
+                let one = || BTreeSet::from([types[j].clone()]);
+                let bound = several[j].as_ref().map_or_else(one, |(_, all)| all.clone());
+                if bound.is_disjoint(&all) {
+                    let name = names[j].clone();
+                    let (bound, reached) = (bound.iter().collect(), all.iter().collect());
+                    let case = Case::JoinNeverHolds {
+                        name,
+                        bound,
+                        reached,
+                    };
+                    return Err(Error::invalid(Said::from(case).within(at)));
+                }
+            }
             // The step after another in a chain is judged from one type.
-            // Rows and an aggregate may bind a last step over several types
-            // (018, extended): its records hold their key, `_type`, `_depth`
-            // and the fields every type declares alike; a `where` or a path
-            // that reads another field is refused.
-            let open = binds && i == last && step.ty.is_none() && all.len() > 1;
+            // Rows and an aggregate may bind a step no other walks from over
+            // several types (018, extended): its records hold their key,
+            // `_type`, `_depth` and the fields every type declares alike; a
+            // `where` or a path that reads another field is refused. A join
+            // and an absent step bind none.
+            let leaf = binds_none || !walked_from[i];
+            let open = binds && leaf && step.ty.is_none() && all.len() > 1;
             let one = (binds && !open) || (chain && !measure && i < last);
             let reached = self.neighbour_target(&at, step, &all, one)?.or(reached);
             // At a valid time a walk keeps each record by its own type's
@@ -180,12 +258,13 @@ impl<'a> Reader<'a> {
                 _ => step.relation.to_string(),
             };
             let name = match (&step.named, open) {
+                _ if binds_none => String::new(),
                 (Some(name), _) => name.clone(),
                 (None, true) => written,
                 (None, false) => reached.to_string(),
             };
-            several.push(open.then(|| (at.clone(), all.clone())));
-            if binds && names.contains(&name) {
+            several.push((open && !binds_none).then(|| (at.clone(), all.clone())));
+            if binds && !binds_none && names.contains(&name) {
                 let said = Said::from(Case::PatternBindsTwice { name });
                 return Err(Error::invalid(said.within(at)));
             }
@@ -198,19 +277,73 @@ impl<'a> Reader<'a> {
             } else {
                 BTreeSet::from([reached.clone()])
             };
+            // Rows read each name bound before the step, the start's and a
+            // sibling branch's included, as `<name>.<field>` (080).
+            let earlier: Vec<Earlier> = (0..=i)
+                .filter(|k| binds && !names[*k].is_empty())
+                .map(|k| {
+                    let one = || (BTreeSet::from([types[k].clone()]), None);
+                    let wide = |(at, all): &(Place, _)| (BTreeSet::clone(all), Some(at.clone()));
+                    let (bound, at) = several[k].as_ref().map_or_else(one, wide);
+                    (names[k].as_str(), bound, at)
+                })
+                .collect();
             let parsed = step.filter.as_ref().and_then(|c| c.typed().ok());
-            for f in parsed.iter().flat_map(Expr::fields_read).filter(|_| wide) {
-                self.alike(&at, &over, f)?;
+            // A first segment reads an earlier name where no type the step
+            // reaches has a field or relation of it its reader may know of.
+            let name_of = |f: &FieldName| {
+                let reads =
+                    |t: &TypeName| (self.shape.ontology.ty(t)).is_ok_and(|d| self.reads_name(d, f));
+                (earlier.iter().find(|(n, ..)| *n == f.as_str())).filter(|_| over.iter().all(reads))
+            };
+            for f in parsed.iter().flat_map(Expr::fields_read) {
+                if wide && name_of(f).is_none() {
+                    self.alike(&at, &over, f)?;
+                }
+            }
+            // A name over several types reads a field all declare alike,
+            // judged where the name was bound.
+            let mut paths = Vec::new();
+            parsed
+                .iter()
+                .for_each(|e| lakelands_api::expr::paths(e, &mut paths));
+            for p in paths.iter().filter(|p| p.len() > 1) {
+                let Some((_, all, Some(bound))) = name_of(&p[0]) else {
+                    continue;
+                };
+                if !["key", DEPTH, TYPE].contains(&p[1].as_str()) {
+                    self.alike(bound, all, &p[1])?;
+                }
             }
             let at = [at, Place::Where];
-            let mut filter = BTreeMap::new();
+            let (mut filter, mut reads) = (BTreeMap::new(), BTreeSet::new());
             for t in over.iter().filter(|_| step.filter.is_some()) {
                 let decl = self.sight.ty(t)?;
-                let judged = self.record_filter(decl, step.filter.as_ref(), &at);
+                let judged = self.step_filter(decl, step.filter.as_ref(), &at, &earlier);
                 let judged = judged.map_err(|e| if wide { of_type(t, e) } else { e })?;
-                filter.extend(judged.map(|e| (t.clone(), e)));
+                if let Some((e, named)) = judged {
+                    filter.insert(t.clone(), e);
+                    reads.extend(named);
+                }
+            }
+            // A `where` that reads an optional name is past it too: it
+            // would drop the row the optional step kept. A join or an
+            // absent step binds no name to bind null, so it is optional, or
+            // reads one, only as a step of an optional branch.
+            let read = (names.iter().enumerate())
+                .find(|(k, n)| optional[*k] && reads.contains(n.as_str()));
+            if binds_none && past.is_none() && (step.optional || read.is_some()) {
+                let case = Case::StepOptionalNoName {
+                    join: step.join.is_some(),
+                };
+                return Err(Error::invalid(Said::from(case).within(at[0].clone())));
+            }
+            if let Some((_, name)) = read.filter(|_| !step.optional) {
+                let case = Case::StepPastOptional { name: name.clone() };
+                return Err(Error::invalid(Said::from(case).within(at[0].clone())));
             }
             filters.push((step.filter.is_some()).then_some(filter));
+            across.push(!reads.is_empty());
             types.push(reached);
         }
         // A depth no walk takes is refused for what the pattern says,
@@ -270,6 +403,10 @@ impl<'a> Reader<'a> {
             let Some(f) = f.get(&node.0) else {
                 return Ok(false);
             };
+            // One that reads another name holds beside a row's bindings.
+            if across[i] {
+                return Ok(true);
+            }
             let r = hidden.record(node)?;
             Ok(r.is_some_and(|r| self.holds(f, &r, true)))
         };
@@ -483,7 +620,7 @@ impl<'a> Reader<'a> {
         // `name.field`; a name they do not hold is refused (018, extended).
         // An order or a measure probes its field as `find`'s do (024), as
         // a named key's fields are.
-        let bound = |n: &str| names.iter().any(|b| b == n);
+        let bound = |n: &str| !n.is_empty() && names.iter().any(|b| b == n);
         // A path under a name over several types reads a field every one
         // declares alike, against each (`true`), else is refused. Its `key`,
         // `_type` and `_depth` are the lake's columns, never probed.
@@ -570,12 +707,66 @@ impl<'a> Reader<'a> {
             };
             p.order_by.iter().map(own).collect::<Option<Vec<Order>>>()
         });
-        let row = |start: &graph::Node, binding: &[graph::Reached]| -> Result<_> {
+        // A record a row binds, as a `where` of a step after it reads it.
+        let object = |node: &graph::Node, depth: u32, open: Option<&Shared>| -> Result<Value> {
+            let rec = hidden.record(node)?;
+            let bound = self.bound((node, depth, open.and_then(Option::as_ref)), rec)?;
+            Ok(Value::Object(bound.into_iter().collect()))
+        };
+        // Whether a record step `i` keeps holds its `where` beside what the
+        // steps before it bound: a name its type has no field or relation of
+        // its reader may know of is that name's record, null where an
+        // optional step bound none.
+        let beside = |i: usize,
+                      start: &graph::Node,
+                      prefix: &[Option<graph::Reached>],
+                      r: &graph::Reached|
+         -> Result<bool> {
+            let Some(f) = filters[i]
+                .as_ref()
+                .and_then(|f| f.get(&r.node.0))
+                .filter(|_| across[i])
+            else {
+                return Ok(true);
+            };
+            let Some(mut rec) = hidden.record(&r.node)? else {
+                return Ok(false);
+            };
+            let decl = self.shape.ontology.ty(&r.node.0)?;
+            for (k, name) in names[..=i].iter().enumerate() {
+                let name = FieldName::from(name.as_str());
+                if name.as_str().is_empty() || !self.reads_name(decl, &name) {
+                    continue;
+                }
+                let at = match k {
+                    0 => Some((start, 0)),
+                    k => prefix[k - 1].as_ref().map(|r| (&r.node, r.depth)),
+                };
+                let v = match at {
+                    Some((node, depth)) => object(node, depth, shared.get(k))?,
+                    None => Value::Null,
+                };
+                rec.fields.insert(name, v);
+            }
+            Ok(self.holds(f, &rec, true))
+        };
+        let row = |start: &graph::Node, binding: &[Option<graph::Reached>]| -> Result<_> {
             let mut row = BTreeMap::new();
             self.bind(&mut row, &names[0], (start, 0, None), hidden.record(start)?)?;
             for ((r, name), open) in binding.iter().zip(&names[1..]).zip(&shared[1..]) {
-                let at = (&r.node, r.depth, open.as_ref());
-                self.bind(&mut row, name, at, hidden.record(&r.node)?)?;
+                match r {
+                    _ if name.is_empty() => {}
+                    // An optional step's name with no match (080).
+                    None => {
+                        for f in ["key", DEPTH, TYPE] {
+                            row.insert(format!("{name}.{f}"), Value::Null);
+                        }
+                    }
+                    Some(r) => {
+                        let at = (&r.node, r.depth, open.as_ref());
+                        self.bind(&mut row, name, at, hidden.record(&r.node)?)?;
+                    }
+                }
             }
             if let Projection::Rows { fields } = &p.project
                 && !fields.is_empty()
@@ -594,10 +785,15 @@ impl<'a> Reader<'a> {
             hidden.remember(starts.iter().map(|(_, r)| r.clone()));
             let at: BTreeMap<&graph::Node, &SortKey> =
                 nodes.iter().zip(starts.iter().map(|(k, _)| k)).collect();
-            let walked =
-                graph::traverse_each(&hidden, &nodes, &p.steps, max_depth, keep, |start, b| {
-                    each(at[start], start, b)
-                });
+            let tree = (&p.steps[..], &shapes[..]);
+            let walked = graph::tree_each(
+                &hidden,
+                &nodes,
+                tree,
+                max_depth,
+                (keep, &beside),
+                |start, b| each(at[start], start, b),
+            );
             hidden.forget(&nodes);
             walked
         };
@@ -813,6 +1009,80 @@ impl<'a> Reader<'a> {
             }
         }
         Ok(())
+    }
+
+    /// A step's `where` over one record of `decl`, named `at`, after the
+    /// principal is found to read every field it reads (024), and the
+    /// names bound before the step it reads (080): a path whose first
+    /// segment is one of `earlier`, which `decl` has no field or relation
+    /// of its reader may know of, reads that name's record, each field
+    /// probed on every type the name binds and the lake's columns on none.
+    fn step_filter(
+        &self,
+        decl: &TypeDecl,
+        c: Option<&lakelands_api::expr::Condition>,
+        at: &[Place],
+        earlier: &[Earlier],
+    ) -> Result<Option<(Expr, BTreeSet<String>)>> {
+        let Some(c) = c else { return Ok(None) };
+        let e = self.named_sets(&decl.name, c, at)?;
+        let named = |p: &[FieldName]| {
+            let name = (p.len() > 1 && self.reads_name(decl, &p[0])).then_some(&p[0])?;
+            earlier.iter().find(|(n, ..)| *n == name.as_str())
+        };
+        let mut paths = Vec::new();
+        lakelands_api::expr::paths(&e, &mut paths);
+        let mut own = core_derive::reads(&e);
+        let mut across = BTreeSet::new();
+        for p in &paths {
+            let Some((_, all, _)) = named(p) else {
+                continue;
+            };
+            own.remove(&p[0]);
+            across.insert(p[0].to_string());
+            for t in all {
+                let of = self.sight.ty(t)?;
+                if !self.lakes(of, &p[1]) {
+                    let probed = self.sight.check_probe(of, [&p[1]]);
+                    probed.map_err(|e| if all.len() > 1 { of_type(t, e) } else { e })?;
+                }
+            }
+        }
+        self.sight.check_probe(decl, &own)?;
+        let far = |t: &TypeName| self.shape.ontology.ty(t).ok();
+        let field = |p: &[FieldName]| {
+            let Some((_, all, _)) = named(p) else {
+                let read = decl.stepped(p, &|_| None);
+                return read.last().map(|(_, f)| (f.ty.kind, read.len()));
+            };
+            let of = far(all.first()?)?;
+            if self.lakes(of, &p[1]) {
+                let number = p[1].as_str() == DEPTH;
+                return Some((
+                    if number {
+                        StorageKind::Number
+                    } else {
+                        StorageKind::Text
+                    },
+                    2,
+                ));
+            }
+            // The name's record holds its own fields, as the step's does.
+            let read = of.stepped(&p[1..], &|_| None);
+            read.last().map(|(_, f)| (f.ty.kind, read.len() + 1))
+        };
+        let kind = lakelands_api::expr::kind::of(&e, &field);
+        kind.map_err(|why| Error::invalid(crate::declare::at(at, why)))?;
+        Ok(Some((e, across)))
+    }
+
+    /// Whether a path whose first segment is `first` may read a name a row
+    /// binds over a record of `decl`: no field or relation of it its reader
+    /// may know of is so named, so one it may not know of never shows.
+    fn reads_name(&self, decl: &TypeDecl, first: &FieldName) -> bool {
+        let shown =
+            |r: &RelationDecl| r.name.as_str() == first.as_str() && self.sight.relation(decl, r);
+        !(decl.has_field(first) && self.knows(decl, first)) && !decl.relations.iter().any(shown)
     }
 
     /// Whether a row's `<name>.<field>` is one of the lake's own columns,
@@ -1134,7 +1404,7 @@ impl<'a> Reader<'a> {
     fn row_shape(&self, names: &[String], types: &[TypeName], open: &[Shared]) -> TypeDecl {
         let mut row = TypeDecl::default();
         for ((name, ty), open) in names.iter().zip(types).zip(open) {
-            let Ok(t) = self.shape.ontology.ty(ty) else {
+            let Some(t) = self.shape.ontology.ty(ty).ok().filter(|_| !name.is_empty()) else {
                 continue;
             };
             let at = |f: &str| FieldName::from(format!("{name}.{f}"));
@@ -1159,36 +1429,47 @@ impl<'a> Reader<'a> {
         row
     }
 
-    /// A record's values into a pattern's row under `<name>.<field>`.
-    /// `<name>.key` is the record's key, unless its type declares a field
-    /// `key` its reader may know of: then that field's value, null where
-    /// none. `<name>._depth` is the hops its step took, 0 for the start,
-    /// and `<name>._type` its type, whatever a lake written before the rule
-    /// holds in fields so named. A name over several types (`open`) binds
-    /// the key, type, depth and the fields its types share.
+    /// A record's values into a pattern's row under `<name>.<field>`, as
+    /// [`Self::bound`] holds them.
     fn bind(
         &self,
         row: &mut BTreeMap<String, Value>,
         name: &str,
-        (node, depth, open): (&graph::Node, u32, Option<&BTreeSet<FieldName>>),
+        at: (&graph::Node, u32, Option<&BTreeSet<FieldName>>),
         rec: Option<StoredRecord>,
     ) -> Result<()> {
-        let decl = self.shape.ontology.ty(&node.0)?;
-        if let Some(rec) = rec.and_then(|r| self.sight.visible(decl, &r, false)) {
-            let decl = self.shape.ontology.ty(&node.0)?;
-            let key = match open.is_some() || self.keyed(decl, &FieldName::from("key")) {
-                true => Value::String(node.1.to_string()),
-                false => Value::Null,
-            };
-            row.insert(format!("{name}.key"), key);
-            let held = |f: &FieldName| open.is_none_or(|s| s.contains(f));
-            for (f, v) in rec.fields.into_iter().filter(|(f, _)| held(f)) {
-                row.insert(format!("{name}.{f}"), v);
-            }
-            row.insert(format!("{name}.{DEPTH}"), Value::from(depth));
-            row.insert(format!("{name}.{TYPE}"), Value::from(node.0.as_str()));
-        }
+        let bound = self.bound(at, rec)?;
+        row.extend(bound.into_iter().map(|(f, v)| (format!("{name}.{f}"), v)));
         Ok(())
+    }
+
+    /// A record's values as a pattern's row holds them under its name, none
+    /// where it may not be seen. `key` is the record's key, unless its type
+    /// declares a field `key` its reader may know of: then that field's
+    /// value, null where none. `_depth` is the hops its step took, 0 for
+    /// the start, and `_type` its type, whatever a lake written before the
+    /// rule holds in fields so named. A name over several types (`open`)
+    /// holds the key, type, depth and the fields its types share.
+    fn bound(
+        &self,
+        (node, depth, open): (&graph::Node, u32, Option<&BTreeSet<FieldName>>),
+        rec: Option<StoredRecord>,
+    ) -> Result<Vec<(String, Value)>> {
+        let decl = self.shape.ontology.ty(&node.0)?;
+        let Some(rec) = rec.and_then(|r| self.sight.visible(decl, &r, false)) else {
+            return Ok(Vec::new());
+        };
+        let key = match open.is_some() || self.keyed(decl, &FieldName::from("key")) {
+            true => Value::String(node.1.to_string()),
+            false => Value::Null,
+        };
+        let held = |f: &FieldName| open.is_none_or(|s| s.contains(f));
+        let fields = rec.fields.into_iter().filter(|(f, _)| held(f));
+        let mut out = vec![("key".to_owned(), key)];
+        out.extend(fields.map(|(f, v)| (f.to_string(), v)));
+        out.push((DEPTH.to_owned(), Value::from(depth)));
+        out.push((TYPE.to_owned(), Value::from(node.0.as_str())));
+        Ok(out)
     }
 
     /// The records a graph reached as the principal may see them, each with
@@ -1226,4 +1507,55 @@ impl<'a> Reader<'a> {
             next_cursor,
         })
     }
+}
+
+/// A name bound before a step, the types it binds, and where its step
+/// stands where those are several.
+type Earlier<'a> = (&'a str, BTreeSet<TypeName>, Option<Place>);
+
+/// Refuses, before a step is judged (080), what makes a pattern a tree
+/// where its projection answers by a walk's own shape (`binds` false), and
+/// what a join and an absent step take though they bind no name: an `as`,
+/// and a join's `type` and `where`, which are judged where its name was
+/// bound. A step with no `from` after one of them has no name to walk
+/// from.
+pub(super) fn tree(p: &Pattern, binds: bool) -> Result<()> {
+    for (i, step) in p.steps.iter().enumerate() {
+        let at = Place::Step {
+            step: i + 1,
+            relation: step.relation.clone(),
+        };
+        let refused = |case: Case| Err(Error::invalid(Said::from(case).within(at.clone())));
+        let join = step.join.is_some();
+        if !binds {
+            let members = [
+                ("join", join),
+                ("optional", step.optional),
+                ("absent", step.absent),
+                ("from", p.start.ty.is_none() && step.from.is_some()),
+            ];
+            if let Some((member, _)) = members.iter().find(|(_, given)| *given) {
+                let (member, projection) = ((*member).to_owned(), projection_name(&p.project));
+                return refused(Case::PatternTreeMember { member, projection });
+            }
+            continue;
+        }
+        let takes = [
+            ("as", step.named.is_some()),
+            ("type", join && step.ty.is_some()),
+            ("where", join && step.filter.is_some()),
+        ];
+        let taken = takes
+            .iter()
+            .find(|(_, given)| *given && (join || step.absent));
+        if let Some((member, _)) = taken {
+            let member = (*member).to_owned();
+            return refused(Case::StepBindsNoName { member, join });
+        }
+        let before = i.checked_sub(1).map(|k| &p.steps[k]);
+        if step.from.is_none() && before.is_some_and(|b| b.join.is_some() || b.absent) {
+            return refused(Case::StepAfterNoName);
+        }
+    }
+    Ok(())
 }
