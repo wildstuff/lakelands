@@ -1,9 +1,11 @@
 use std::sync::{Arc, Mutex};
 
 use lakelands_api::engine::{LakeEngine, OpenMode, Rankings};
-use lakelands_api::id::{Position, RecordKey, TypeName};
+use lakelands_api::id::{Position, RecordKey, TypeName, Version};
+use lakelands_api::location::SqliteTuning;
+use lakelands_api::record::StoredRecord;
 use rusqlite::trace::{TraceEvent, TraceEventCodes};
-use rusqlite::{Error, ffi};
+use rusqlite::{Error, StatementStatus, ffi, params};
 
 use crate::handle::SqliteLake;
 
@@ -111,4 +113,73 @@ fn a_fold_committed_inside_one_ranked_call_is_in_none_of_its_lists() {
     );
     drop(lake);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The state of key `k<at>` that a put at `at` makes.
+fn state(at: u64) -> StoredRecord {
+    StoredRecord {
+        ty: TypeName::from("t"),
+        key: RecordKey::from(format!("k{at:03}")),
+        version: Version(1),
+        fields: serde_json::from_value(serde_json::json!({"n": at})).unwrap(),
+        meta: Default::default(),
+        position: Position(at),
+        made: Position(at),
+        retired: false,
+        restricted: false,
+    }
+}
+
+/// A statement the engine keeps prepared is compiled once: taken from the
+/// connection's cache again and run with other values, it keeps its
+/// plan. On SQLite 3.54 a kept statement with an equality on a column its
+/// index does not consume was compiled again at every run, once the cache
+/// had cleared its values, which made a rebuild, a full-text search and a
+/// filtered `nearest()` 14 to 30 % slower (lakelands#1378). Counted here
+/// in SQLite's own count of a statement's recompilations, for the two
+/// statements a fold and a read at a position run once for each record,
+/// each run as the engine runs it, on a connection the engine makes, for
+/// every key at its own position; the put's ending statement is rolled
+/// back.
+#[test]
+fn a_kept_statement_run_again_with_other_values_is_not_compiled_again() {
+    const RECORDS: u64 = 100;
+    let dir = std::env::temp_dir().join(format!("lakelands-kept-plan-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let tuning = SqliteTuning::default();
+    let dirs = (dir.clone(), dir.clone());
+    let lake = SqliteLake::open("kept".into(), dirs, tuning, OpenMode::Create).unwrap();
+    let p = lake.projection();
+    p.begin().unwrap();
+    for at in 1..=RECORDS {
+        p.put_record(&state(at)).unwrap();
+    }
+    p.commit(Position(RECORDS)).unwrap();
+    drop(lake);
+    let path = dir.join("projection.db");
+    let mut conn = crate::handle::connect(&path, &tuning, true).unwrap();
+    let tx = conn.transaction().unwrap();
+    for at in 1..=RECORDS {
+        for statement in crate::seek_statements() {
+            let mut s = tx.prepare_cached(&statement).unwrap();
+            let mut rows = s
+                .query(params!["t", format!("k{at:03}"), at as i64])
+                .unwrap();
+            while rows.next().unwrap().is_some() {}
+        }
+    }
+    let compiled: Vec<i32> = crate::seek_statements()
+        .iter()
+        .map(|s| tx.prepare_cached(s).unwrap())
+        .map(|s| s.get_status(StatementStatus::RePrepare))
+        .collect();
+    drop(tx);
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        compiled,
+        [0, 0],
+        "the recompilations of the read of one record at a position and of a put's ending \
+         statement, each run for {RECORDS} keys"
+    );
 }

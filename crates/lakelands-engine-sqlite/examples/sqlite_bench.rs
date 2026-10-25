@@ -5,19 +5,22 @@
 //! the median over the runs (lakelands#1378).
 //!
 //! The runs behind lakelands#1378 built the example once per SQLite, and
-//! ran the two binaries interleaved, five times each, one lake per run:
+//! ran the binaries interleaved, five times each, one lake per run:
 //!
 //! ```text
 //! cargo build --release -p lakelands-engine-sqlite --example sqlite_bench
-//! cp $CARGO_TARGET_DIR/release/examples/sqlite_bench bench-<before|after>
-//! for i in 1 2 3 4 5; do for v in before after; do
+//! cp $CARGO_TARGET_DIR/release/examples/sqlite_bench bench-<before|after|fixed>
+//! for i in 1 2 3 4 5; do for v in before after fixed; do
 //!   bench-$v <scratch dir> 100000 1 > out-$v-$i.txt
 //! done; done
 //! ```
 //!
 //! The first build was on `origin/develop` (rusqlite 0.40, SQLite 3.53.2),
-//! the second on this change (rusqlite 0.41, SQLite 3.54.0). It asserts
-//! nothing.
+//! the second on rusqlite 0.41 with SQLite 3.54.0, before the engine's
+//! connections chose their plans from a statement's text alone, and the
+//! third with this change: SQLite 3.54.1 and those connections. `cargo
+//! update -p libsqlite3-sys --precise <0.39.0|0.39.1>` picks either
+//! SQLite. It asserts nothing.
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
