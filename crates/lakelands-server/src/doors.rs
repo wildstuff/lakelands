@@ -9,6 +9,7 @@
 use std::fmt;
 
 use lakelands_api::error::{Case, Error, Naming, Place, Refusal, Said};
+use lakelands_api::expr::Condition;
 use lakelands_api::id::{ProposalId, RecordKey, RelationName, TypeName};
 use lakelands_api::ontology::{FieldDecl, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl};
 use lakelands_api::query::{Pattern, Search};
@@ -16,8 +17,8 @@ use lakelands_api::read::{Find, Get, ReadAt};
 use lakelands_api::record::Patch;
 use lakelands_api::tools::{Door, ToolSpec};
 use lakelands_api::write::{
-    Change, Declaration, FunctionDecl, Migration, ObjectSetDecl, ProposalFilter, ProposedWrite,
-    SettingDecl, ValueTypeMigration, Withdrawal, WriteOpts,
+    Change, ChangeTo, Declaration, FunctionDecl, Migration, ObjectSetDecl, ProposalFilter,
+    ProposedWrite, SettingDecl, ValueTypeMigration, Withdrawal, WriteOpts,
 };
 use lakelands_api::{Catalog, Principal, Timestamp};
 use serde::Deserialize;
@@ -555,6 +556,47 @@ pub(crate) async fn run(
             let w: Write = args(label, &a)?;
             to_json(&c.retire(who, ty, &w.key, w.opts).await?)
         }
+        Door::Change { ty } => {
+            #[derive(Deserialize)]
+            struct Raw {
+                #[serde(rename = "where")]
+                filter: Condition,
+                #[serde(default)]
+                set: Option<Patch>,
+                #[serde(default)]
+                retire: bool,
+                #[serde(flatten)]
+                planned: Planned,
+            }
+            #[derive(Deserialize)]
+            #[serde(try_from = "Raw")]
+            struct D(Condition, ChangeTo, Planned);
+            impl TryFrom<Raw> for D {
+                type Error = &'static str;
+                fn try_from(r: Raw) -> Result<D, &'static str> {
+                    let to = match (r.set, r.retire) {
+                        (Some(set), false) => ChangeTo::Set(set),
+                        (None, true) => ChangeTo::Retire,
+                        _ => return Err("send `set` or `retire`, one of the two"),
+                    };
+                    Ok(D(r.filter, to, r.planned))
+                }
+            }
+            let D(filter, to, planned) = args(label, &a)?;
+            let change = Change::Records {
+                ty: ty.clone(),
+                filter: Box::new(filter),
+                to,
+                only: Default::default(),
+                skip_restricted: false,
+            };
+            // A call with neither `plan` nor `plan_id` answers the plan (081).
+            planned
+                .change(change)
+                .unwrap_or_else(Planning::Plan)
+                .run(c, who)
+                .await?
+        }
         Door::Link { ty, relation } => {
             let l: Link = args(label, &a)?;
             to_json(
@@ -897,6 +939,59 @@ mod tests {
                 matches!(&renamed, Ok(v) if v["data"]["fits"] == json!(true)),
                 "on {name}, the value type's preflight with renames did not answer"
             );
+        }
+    }
+
+    /// `<type>_change` answers the plan when it is sent neither `plan` nor
+    /// `plan_id` and changes nothing, makes the change against the plan's
+    /// `report_id`, and takes `set` or `retire`, one of the two (081).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_change_tool_answers_the_plan_first_and_enacts_only_against_it() {
+        let ty = json!({"declare": "type", "name": "memo", "fields": [{"name": "text", "type": {"kind": "text"}}]});
+        for (name, store) in lakes().await {
+            let cat = store.catalog(WriteContext::default());
+            let who = owner("doors");
+            cat.declare(&who, serde_json::from_value(ty.clone()).unwrap())
+                .await
+                .unwrap();
+            for k in ["a", "b"] {
+                let patch = [("text".into(), json!("old"))].into();
+                let at = (&"memo".into(), &k.into());
+                let put = cat.upsert(&who, at.0, at.1, patch, Default::default());
+                put.await.unwrap();
+            }
+            let door = Door::Change { ty: "memo".into() };
+            let call = |a: Value| {
+                let (cat, who, door) = (cat.clone(), who.clone(), door.clone());
+                async move {
+                    let a = a.as_object().cloned().unwrap_or_default();
+                    run(cat.as_ref(), &who, &door, "the change door", (a, None)).await
+                }
+            };
+            let head = store.head().await.unwrap();
+            let args = json!({"where": "text = 'old'", "set": {"text": "new"}});
+            let plan = call(args.clone()).await.ok().unwrap();
+            assert_eq!(plan["data"]["records"]["selected"], json!(2), "on {name}");
+            assert!(plan["said"].is_array(), "on {name}: {plan}");
+            assert_eq!(
+                store.head().await.unwrap(),
+                head,
+                "on {name}, a plan appended"
+            );
+            let mut enact = args.clone();
+            enact["plan_id"] = plan["data"]["report_id"].clone();
+            let done = call(enact).await.ok().unwrap();
+            assert_eq!(done["outcome"], json!("applied"), "on {name}");
+            for bad in [
+                json!({"where": "true"}),
+                json!({"where": "true", "set": {"text": "x"}, "retire": true}),
+            ] {
+                let answer = call(bad.clone()).await;
+                assert!(
+                    matches!(&answer, Err(Fault::Arguments(_))),
+                    "on {name}, {bad} was not refused as unfit"
+                );
+            }
         }
     }
 }

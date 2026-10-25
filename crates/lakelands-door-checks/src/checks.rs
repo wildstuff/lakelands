@@ -43,9 +43,9 @@ use lakelands_api::record::{Origin, Patch, Record, SourceRecord, Value};
 use lakelands_api::seam::{FEED_EXAMINED, FeedFilter};
 use lakelands_api::tools::{Door, tools};
 use lakelands_api::write::{
-    Carrier, Declaration, FunctionDecl, Migration, MigrationReport, ObjectSetDecl, Outcome,
-    Proposal, ProposalFilter, ProposalState, ProposedWrite, Recompute, ValueTypeMigration,
-    ValueTypeReport, WriteOpts,
+    Carrier, Change, ChangeTo, Declaration, FunctionDecl, Migration, MigrationReport,
+    ObjectSetDecl, Outcome, Proposal, ProposalFilter, ProposalState, ProposedWrite, Recompute,
+    ValueTypeMigration, ValueTypeReport, WriteOpts,
 };
 use lakelands_api::{Catalog, LakeStore, WriteContext};
 use serde_json::json;
@@ -113,6 +113,8 @@ macro_rules! door_checks {
             a_valid_time_read_probes_the_valid_time_fields,
             a_write_only_field_is_written_and_never_shown,
             the_tools_follow_the_grants,
+            a_change_to_records_is_enacted_only_against_its_plan,
+            a_proposed_change_to_records_is_accepted_only_against_its_plan,
             a_verb_tool_says_what_its_risk_does,
             a_step_to_an_unbound_view_is_refused,
             a_view_reads_only_what_its_source_has,
@@ -632,7 +634,8 @@ fn key(k: &str) -> RecordKey {
     RecordKey::from(k)
 }
 
-fn get(k: &str) -> Get {
+/// A `get` of the key `k`, as of the head.
+pub fn get(k: &str) -> Get {
     Get {
         key: key(k),
         with_meta: false,
@@ -1600,6 +1603,35 @@ pub async fn the_tools_follow_the_grants(store: Arc<dyn LakeStore>) {
             "{hidden} is not the clerk's to write"
         );
     }
+    // A type it may write has a tool to change the records a condition
+    // selects, setting the fields it may write; retiring is offered only
+    // where it may retire (081).
+    let change = clerk
+        .iter()
+        .find(|t| {
+            t.door
+                == Door::Change {
+                    ty: invoice.clone(),
+                }
+        })
+        .expect("the clerk may write invoices");
+    let set = &change.input_schema["properties"]["set"]["properties"];
+    assert!(set.get("status").is_some() && set.get("amount").is_none());
+    assert!(change.input_schema["properties"].get("retire").is_none());
+    for named in ["plan_stale", "too_large"] {
+        assert!(change.description.contains(named), "{}", change.description);
+    }
+    let owner = doors(f.cast.owner.clone()).await;
+    let change = owner
+        .iter()
+        .find(|t| {
+            t.door
+                == Door::Change {
+                    ty: invoice.clone(),
+                }
+        })
+        .expect("the owner may write invoices");
+    assert!(change.input_schema["properties"].get("retire").is_some());
     assert!(clerk.iter().any(|t| t.door
         == Door::Call {
             verb: "approve".into()
@@ -1613,11 +1645,162 @@ pub async fn the_tools_follow_the_grants(store: Arc<dyn LakeStore>) {
         }));
     assert!(stranger.iter().all(|t| !matches!(
         &t.door,
-        Door::Upsert { .. } | Door::Retire { .. } | Door::Call { .. } | Door::DeclareType
+        Door::Upsert { .. }
+            | Door::Change { .. }
+            | Door::Retire { .. }
+            | Door::Call { .. }
+            | Door::DeclareType
     )));
 
     let reviewer = doors(f.cast.reviewer.clone()).await;
+    assert!(
+        reviewer
+            .iter()
+            .all(|t| !matches!(&t.door, Door::Change { .. }))
+    );
     assert!(reviewer.iter().any(|t| t.door == Door::Accept));
+}
+
+/// The invoices whose status is `open`, to be set `late` (081).
+fn lateness() -> Change {
+    Change::Records {
+        ty: ty(INVOICE),
+        filter: Box::new(Condition::from("status = 'open'")),
+        to: ChangeTo::Set(patch(&[("status", json!("late"))])),
+        only: BTreeMap::new(),
+        skip_restricted: false,
+    }
+}
+
+/// A change to the records a condition selects is planned, and enacted
+/// only against the plan its caller was shown: the plan tells how many
+/// records, the first keys and the records each field would change, and
+/// appends nothing; its id enacts exactly it, in one append; a selection
+/// that moved between the two is refused `plan_stale`, appending nothing;
+/// a caller who may not write is not granted (081).
+pub async fn a_change_to_records_is_enacted_only_against_its_plan(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let (c, clerk) = (&f.catalog, &f.cast.clerk);
+    for (k, status) in [("INV-1", "open"), ("INV-2", "open"), ("INV-3", "paid")] {
+        f.write(clerk, k, &[("status", json!(status))]).await;
+    }
+    let head = f.head().await;
+    let plan = c.plan(clerk, lateness()).await.expect("planning").data;
+    let records = plan.records.as_deref().expect("a plan of records");
+    assert_eq!((records.ty.as_str(), records.selected), (INVOICE, 2));
+    assert_eq!(records.sample_keys, [key("INV-1"), key("INV-2")]);
+    assert_eq!(
+        records
+            .fields
+            .iter()
+            .map(|c| (c.field.as_str(), c.records))
+            .collect::<Vec<_>>(),
+        [("status", 2)]
+    );
+    assert!(plan.lossless && records.refused.is_empty());
+    assert_eq!(f.head().await, head, "a plan appended");
+
+    let done = c.enact(clerk, lateness(), &plan.report_id).await;
+    let (position, _) = applied(&done.expect("enacting its plan"));
+    assert_eq!(position, f.head().await);
+    for k in ["INV-1", "INV-2"] {
+        assert_eq!(
+            field(&f.read(clerk, k).await, "status"),
+            Some(&json!("late"))
+        );
+    }
+    assert_eq!(
+        field(&f.read(clerk, "INV-3").await, "status"),
+        Some(&json!("paid"))
+    );
+
+    // A selected record changed since the plan: refused, nothing appended.
+    f.write(clerk, "INV-4", &[("status", json!("open"))]).await;
+    let plan = c.plan(clerk, lateness()).await.expect("planning").data;
+    f.write(clerk, "INV-4", &[("status", json!("paid"))]).await;
+    let head = f.head().await;
+    let stale = c.enact(clerk, lateness(), &plan.report_id).await;
+    assert_eq!(stale.unwrap_err(), invalid(None, Case::PlanStale));
+    assert_eq!(f.head().await, head, "a stale enact appended");
+
+    let stranger = &f.cast.stranger;
+    let e = c.plan(stranger, lateness()).await.unwrap_err();
+    assert!(matches!(e, Error::Refused { .. }), "{e:?}");
+    assert_eq!(f.head().await, head, "a refused plan appended");
+}
+
+/// A change to records proposed is one proposal of the whole change: a
+/// plain accept of it is refused `plan_stale`, and `accept_planned` with
+/// the id of the plan its reviewer is shown enacts it; once a selected
+/// record changed that id is refused `plan_stale` and the proposal stays
+/// pending (081, 062).
+pub async fn a_proposed_change_to_records_is_accepted_only_against_its_plan(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let (c, clerk, reviewer) = (&f.catalog, &f.cast.clerk, &f.cast.owner);
+    f.write(clerk, "INV-1", &[("status", json!("open"))]).await;
+    f.write(clerk, "INV-2", &[("status", json!("open"))]).await;
+    let Change::Records { ty, filter, to, .. } = lateness() else {
+        unreachable!("a change to records")
+    };
+    let write = ProposedWrite::Records {
+        ty,
+        filter: *filter,
+        to,
+        only: BTreeMap::new(),
+        skip_restricted: false,
+        plan: Box::default(),
+    };
+    let filed = c.propose(clerk, write, "mark them late".into()).await;
+    let Outcome::Proposed { proposal, .. } = filed.expect("proposing") else {
+        panic!("a change to records is proposed whole");
+    };
+    let head = f.head().await;
+    let plain = c.accept(reviewer, &proposal).await;
+    assert_eq!(plain.unwrap_err(), invalid(None, Case::PlanStale));
+    assert_eq!(f.head().await, head, "a plain accept appended");
+
+    let listed = c.proposals(reviewer, ProposalFilter::default()).await;
+    let write = listed
+        .expect("listing")
+        .data
+        .into_iter()
+        .find(|p| p.id == proposal);
+    let change = write.and_then(|p| p.write).and_then(|w| w.change());
+    let change = change.expect("the proposal holds its change");
+    let shown = c
+        .plan(reviewer, change.clone())
+        .await
+        .expect("planning")
+        .data;
+    f.write(clerk, "INV-2", &[("status", json!("paid"))]).await;
+    let head = f.head().await;
+    let stale = c
+        .accept_planned(reviewer, &proposal, &shown.report_id)
+        .await;
+    assert_eq!(stale.unwrap_err(), invalid(None, Case::PlanStale));
+    assert_eq!(f.head().await, head, "a stale accept appended");
+    let pending = ProposalFilter {
+        state: Some(ProposalState::Pending),
+        ..ProposalFilter::default()
+    };
+    let still = c.proposals(reviewer, pending).await.expect("listing").data;
+    assert!(still.iter().any(|p| p.id == proposal), "left pending");
+
+    let shown = c.plan(reviewer, change).await.expect("planning").data;
+    let done = c
+        .accept_planned(reviewer, &proposal, &shown.report_id)
+        .await;
+    done.expect("accepting against its plan");
+    assert_eq!(
+        field(&f.read(clerk, "INV-1").await, "status"),
+        Some(&json!("late"))
+    );
+    assert_eq!(
+        field(&f.read(clerk, "INV-2").await, "status"),
+        Some(&json!("paid"))
+    );
 }
 
 /// `register` on the type `partner`: an external verb with no record, whose

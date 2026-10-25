@@ -1199,3 +1199,25 @@ async fn an_ingests_sealed_apart_goes_over_the_wire() {
         .collect();
     assert_eq!(apart, [Some(0), Some(1)], "{events:?}");
 }
+
+/// A change to records goes over `schema/plan` and `schema/enact` as the
+/// body the server reads it from, member for member, and comes back as the
+/// change it was (081).
+#[test]
+fn a_change_to_records_is_carried_unchanged() {
+    use lakelands_api::write::{Change, ChangeTo};
+    let change = Change::Records {
+        ty: "invoice".into(),
+        filter: Box::new("status = 'open'".into()),
+        to: ChangeTo::Set(patch(&[("status", json!("late"))])),
+        only: BTreeMap::new(),
+        skip_restricted: false,
+    };
+    let body = json!(change);
+    assert_eq!(
+        body,
+        json!({"change": "records", "type": "invoice", "where": "status = 'open'",
+               "to": {"set": {"status": "late"}}})
+    );
+    assert_eq!(serde_json::from_value::<Change>(body).unwrap(), change);
+}
