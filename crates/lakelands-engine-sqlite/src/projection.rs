@@ -321,7 +321,7 @@ pub(crate) fn name_id(conn: &Connection, name: &str) -> Result<i64> {
 /// The positions from `from` through `through` of the feed index's rows
 /// whose `column` is `value`, in order and at most `limit`, each row
 /// checked against the filter's other lists (`lakelands_core::feed::Seek`).
-/// The names are looked up once; a list none of whose names a route can
+/// Each call looks its names up; a list none of whose names a route can
 /// hold matches nothing.
 pub(crate) fn routes(
     conn: &Connection,

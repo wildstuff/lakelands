@@ -1772,7 +1772,8 @@ impl Buffer {
             all.dedup();
             db.execute(
                 &format!(
-                    "INSERT INTO {held} (name) SELECT * FROM unnest($1::text[]) \
+                    "INSERT INTO {held} (name) SELECT n FROM unnest($1::text[]) n \
+                     WHERE NOT EXISTS (SELECT 1 FROM {held} WHERE name = n) \
                      ON CONFLICT DO NOTHING"
                 ),
                 &[&all],
