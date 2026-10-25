@@ -135,7 +135,7 @@ force at a position, so they keep no heads, which every put would write
 and no read would use. A record's key is compared bytewise
 (`COLLATE "C"`), so the primary keys hold the order keys are read in.
 
-### The layout is 6
+### The layout is 7
 
 These tables are not the ones layout 1 made, which would be read as if
 they held no heads, so the engine's layout number became 2, and a
@@ -149,7 +149,14 @@ once, in a row of `vectors` keyed by the state that wrote them, which
 the states naming it share; a read joins it (072, lakelands#1323). A
 projection a build between those two changes laid out, marked 6 with
 `vectors` a head index, is read as layout 5 by that table's shape and
-rebuilt; the check goes at the release that ships both.
+rebuilt; the check goes at the release that ships both. At 7, a field
+the lake asks an index for keeps its graphs: a row of `graphs` per
+field and class of reader names the generation, a table of its own of
+keys and unit vectors with one HNSW index, the one built beside it and
+the position it is stale from, and `graph_keys` names the keys a write
+touched while a graph is built; `vectors` keeps no unit vector and no
+partial index
+(`docs/decisions/078-under-an-index-a-search-pages-one-ranking-of-what-its-reader-may-see.md`).
 
 ### The rulebook decides
 
@@ -164,9 +171,9 @@ candidates:
 - links;
 - full-text tokens, one row per pipeline token of a record;
 - vectors, the rows of `vectors` in force, compared by brute-force
-  cosine, or, for a field the lake asks an index for, the candidates
-  pgvector's HNSW index over those rows returns, ranked by the same
-  cosine (043, 072).
+  cosine, or, for a field the lake asks an index for, the stream the
+  HNSW index of its reader's class's graph hands out, and the graph's
+  other entries after it, ranked by the same cosine (043, 072, 078).
 
 Selection, order, scoring and ranking are `lakelands_core::engines`'
 (031), so an answer is the same on every engine; only a field the lake
@@ -234,3 +241,6 @@ file answers on disk: it dies with its holder.
   `vectors` by the state that wrote them (lakelands#1323). Layouts 3 to 5 kept provenance once a
   record (lakelands#1018), routes by source (lakelands#1151) and the
   procedure a computed field names (lakelands#1191).
+- The layout is 7: a field the lake asks an index for keeps a graph per
+  class of reader in tables of its own, and `vectors` loses its unit
+  vector and its partial indexes (078, lakelands#1254).

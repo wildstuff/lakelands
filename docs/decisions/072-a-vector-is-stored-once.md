@@ -80,8 +80,12 @@ scores to the same bits.
 
 A ranking reads the rows whose `until` is empty, which are the head's:
 on SQLite through a partial index over `(ty, field, key)` where `until`
-is null, on PostgreSQL through the same, and the HNSW index of a field
-the lake asks an index for is partial on it too. A search at an earlier
+is null, and on PostgreSQL through the same. A field the lake asks an
+index for is read on PostgreSQL through its graphs instead, tables of
+their own that hold the unit vectors of the live heads each class of
+reader may see, each with its HNSW index
+(`docs/decisions/078-under-an-index-a-search-pages-one-ranking-of-what-its-reader-may-see.md`);
+the elements a ranking scores by are still the rows of `vectors`. A search at an earlier
 position goes on ranking by the head
 (`025 § A search at an earlier position ranks by the head`).
 
@@ -158,7 +162,9 @@ Three risks are taken with it:
   between the two laid out bears the raised mark with `vectors` still a
   head index: the open tells it apart by that table's shape, reads it as
   the layout before and rebuilds it; the check goes at the release that
-  ships both.
+  ships both. PostgreSQL's layout is raised again to 7 by 078, when the
+  unit vectors move from `vectors` to the graphs, and its first open
+  rebuilds each PostgreSQL lake once more; SQLite keeps its layout.
 
 ## What it is not
 
@@ -175,6 +181,9 @@ Three risks are taken with it:
   function of the engine's own to decode the elements, and the
   candidates it finds are not shown to be those `unit`, normalised by
   the one Rust code, finds. A ranking's scores are the cosine over
-  `data` either way; `unit` stays, filled for the rows in force of a
-  field the lake asks an index for (lakelands#1323).
+  `data` either way. `unit` stayed, filled for the rows in force of a
+  field the lake asks an index for (lakelands#1323), until layout 7
+  moved it to the graphs, each of which holds a key and its unit vector,
+  normalised by the same Rust code, for the live heads its class may
+  see (078); `vectors` keeps the elements alone.
 - It keeps no ranking of an earlier position.
