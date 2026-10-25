@@ -22,6 +22,7 @@ mod backings;
 mod batched;
 mod before_declared;
 mod bundles;
+mod change;
 mod chosen;
 mod compact;
 mod computed_at;
@@ -530,6 +531,12 @@ pub const ALL: &[Check] = &[
     plan::PLAN_SHOWN,
     plan::PLAN_ACCEPTED,
     plan::PLAN_TOLD,
+    change::CHANGE_PLANNED,
+    change::CHANGE_REFUSED,
+    change::CHANGE_READ,
+    change::CHANGE_PROPOSED,
+    change::CHANGE_REVIEWED,
+    change::CHANGE_LINKS,
     values::DECIMAL_NOT_A_NUMBER,
     values::GEO_VALUES,
     values::JSON_VALUES,
@@ -845,6 +852,7 @@ pub const ALL: &[Check] = &[
     upgrade::FORMAT_16_UPGRADED,
     upgrade::FORMAT_17_UPGRADED,
     upgrade::FORMAT_18_UPGRADED,
+    upgrade::FORMAT_19_UPGRADED,
     upgrade::LAYOUT_REBUILT,
     ahead::BUILT_AHEAD,
     verb_written::VERB_ONLY,

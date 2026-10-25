@@ -3226,7 +3226,7 @@ async fn verify_refuses_a_known_at_that_goes_back_naming_its_position() {
     use lakelands_api::event::{Digest, EventId};
 
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/19/negative/known-at-goes-back/log")
+        .join("../../docs/log-format/vectors/20/negative/known-at-goes-back/log")
         .join(format!("{:020}.jsonl", 0));
     let text = std::fs::read_to_string(&path).unwrap();
     let events: Vec<CanonicalEvent> = text

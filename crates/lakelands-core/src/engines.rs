@@ -1813,13 +1813,16 @@ pub fn declared_on(d: &Declaration, stands: &impl Fn(&str) -> Option<TypeName>) 
     out
 }
 
-/// The types a proposed write touches: a record write's type, the type a
+/// The types a proposed write touches: a record write's type, a change
+/// to records' type, the type a
 /// called verb acts on, every type a declaration names ([`declared_on`]),
 /// and a migration's type. `stands` answers the type a declaration in
 /// force stands on, by its [`declaration_key`].
 fn touched(write: &ProposedWrite, stands: &impl Fn(&str) -> Option<TypeName>) -> Vec<TypeName> {
     match write {
-        ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => vec![ty.clone()],
+        ProposedWrite::Upsert { ty, .. }
+        | ProposedWrite::Retire { ty, .. }
+        | ProposedWrite::Records { ty, .. } => vec![ty.clone()],
         ProposedWrite::Call { verb, .. } => stands(&format!("verb {verb}")).into_iter().collect(),
         ProposedWrite::Declare { declarations, .. } => (declarations.iter())
             .flat_map(|d| declared_on(d, stands))
