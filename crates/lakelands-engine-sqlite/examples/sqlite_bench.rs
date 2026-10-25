@@ -75,7 +75,7 @@ fn rec(i: usize) -> SourceRecord {
     .unwrap()
 }
 
-fn median(v: &mut Vec<f64>) -> f64 {
+fn median(v: &mut [f64]) -> f64 {
     v.sort_by(f64::total_cmp);
     v[v.len() / 2]
 }
