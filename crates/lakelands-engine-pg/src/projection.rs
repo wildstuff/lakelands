@@ -242,8 +242,11 @@ CREATE INDEX IF NOT EXISTS sort_index_desc
     ON {s}.sort_index (ty, field, sort_key DESC, key COLLATE \"C\");
 CREATE TABLE IF NOT EXISTS {s}.graphs (
     ty TEXT NOT NULL, field TEXT NOT NULL, class TEXT NOT NULL, dims INT NOT NULL,
-    gen BIGINT, next BIGINT, stale BIGINT, copied BIGINT,
+    gen BIGINT, next BIGINT, stale BIGINT,
     PRIMARY KEY (ty, field, class)
+){pt};
+CREATE TABLE IF NOT EXISTS {s}.graph_keys (
+    ty TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, PRIMARY KEY (ty, key)
 ){pt};
 {vs}CREATE TABLE IF NOT EXISTS {s}.vectors (
     ty TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, field TEXT NOT NULL,
@@ -287,7 +290,7 @@ pub(crate) const LAYOUT: u64 = 7;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
-pub(crate) const LAKE_TABLES: [&str; 20] = [
+pub(crate) const LAKE_TABLES: [&str; 21] = [
     "meta",
     "lease",
     "segments",
@@ -308,6 +311,7 @@ pub(crate) const LAKE_TABLES: [&str; 20] = [
     "declarations_head",
     "records_head",
     "graphs",
+    "graph_keys",
 ];
 
 /// The projection's tables, cleared by a rebuild; the log, its segments,

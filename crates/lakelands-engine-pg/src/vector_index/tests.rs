@@ -14,7 +14,7 @@ fn a_reader_reads_its_class_graph_and_none_stale_or_unbuilt() {
         dims: 2,
         generation,
         stale,
-        copied: generation,
+        next: None,
     };
     let (a, b) = (graph("a", Some(1), None), graph("b", Some(2), None));
     let name = |c: &str, g: i64| Some(bare("t", "e", c, g));

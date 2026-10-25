@@ -8,25 +8,31 @@
 //! first hold, graph A, those of every live head; a link type's field
 //! keeps A alone. A graph is a table (the key, the unit vector) with one
 //! HNSW index, ordered by L2 distance, which on unit vectors is cosine's
-//! order. A row of `graphs` names each graph's generation (its table),
-//! the one being built beside it, the position it was copied through and
-//! the position it is stale from. `vectors` keeps every position's
-//! elements and no unit vector.
+//! order. A key that had an entry since the table was copied keeps its
+//! row with no vector once the entry goes, so the table tells which
+//! records gave its index a shape. A row of `graphs` names each graph's
+//! generation (its table), the one being built beside it and the
+//! position it is stale from. `vectors` keeps every position's elements
+//! and no unit vector.
 //!
 //! **The fold follows the graphs at its commit.** The setting's write and
 //! a redeclaration build the type's graphs in the fold's transaction. Every
 //! other commit writes the entries of the records it touched into each
 //! built graph whose class sees them, from their states at its end. A hold
-//! of a record that may have had an entry in B since B's copy deletes it
-//! and marks B stale: its graph keeps the shape the entry gave it, so no
-//! search reads it again. The first hold of a type adds A's row.
+//! of a record whose key has a row in B deletes its entry and marks B
+//! stale: its graph keeps the shape the entry gave it, so no search reads
+//! it again. The first hold of a type adds A's row.
 //!
 //! **The writer builds beside.** A thread of the writer builds each graph
 //! whose row asks for one (not yet built, or stale) on a connection of its
 //! own: it names the next generation in the row, copies the graph's
 //! entries in one snapshot, indexes them, and swaps the row to it in one
-//! short transaction under the fold's lock, after applying what was folded
-//! since the snapshot. A mark set after the snapshot starts a new copy.
+//! short transaction under the fold's lock, after applying the keys every
+//! write since the claim touched (`graph_keys`). A key among them held
+//! with a row in the new table, or a mark set since the claim, which
+//! gives up the claim, starts a new copy. After a round that failed the
+//! builder closes its connection and waits, twice as long after each
+//! failure in a row, up to [`BACK_OFF_MOST`].
 //! Only the sweep drops a table a row read, once no reader holds
 //! `graphs`, so a search reads the generation its snapshot names whole; a
 //! swap or a release drops only a next generation no row read.
@@ -49,7 +55,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use lakelands_api::engine::Scan;
 use lakelands_api::error::Result;
@@ -86,8 +92,11 @@ const STREAM: &str = "SET LOCAL hnsw.ef_search = 1000; \
      SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off";
 /// The most rows a stream fetches at once.
 const FETCH_MOST: usize = 4096;
-/// The wait before a build that failed is tried again.
+/// The wait before a round that failed is tried again, doubled after
+/// each failure that follows it.
 const BACK_OFF: Duration = Duration::from_secs(1);
+/// The longest wait between failed rounds.
+const BACK_OFF_MOST: Duration = Duration::from_secs(64);
 /// Whether a record's state `r` is held, as `records.state` writes it.
 const HELD: &str = "coalesce((r.state::jsonb ->> 'restricted') = 'true', false)";
 /// Whether a record's state `r` is retired, likewise.
@@ -170,7 +179,7 @@ fn literal(s: &str) -> String {
 
 /// One graph's row: its field and class (`a` every live head, `b` those
 /// not held), its dimensions, the generation read, the position it is
-/// stale from and the one it was copied through.
+/// stale from and the generation being built.
 #[derive(Clone, Debug)]
 struct Graph {
     field: String,
@@ -178,7 +187,7 @@ struct Graph {
     dims: u32,
     generation: Option<i64>,
     stale: Option<i64>,
-    copied: Option<i64>,
+    next: Option<i64>,
 }
 
 impl Graph {
@@ -193,7 +202,7 @@ impl Graph {
 fn graphs(db: &mut Db, names: &Names, ty: &str, field: Option<&str>) -> Result<Vec<Graph>> {
     let rows = db.query(
         &format!(
-            "SELECT field, class, dims, gen, stale, copied FROM {} \
+            "SELECT field, class, dims, gen, stale, next FROM {} \
              WHERE ty = $1 AND ($2::text IS NULL OR field = $2) ORDER BY field, class",
             names.t("graphs")
         ),
@@ -207,7 +216,7 @@ fn graphs(db: &mut Db, names: &Names, ty: &str, field: Option<&str>) -> Result<V
             dims: r.get::<_, i32>(2) as u32,
             generation: r.get(3),
             stale: r.get(4),
-            copied: r.get(5),
+            next: r.get(5),
         })
         .collect())
 }
@@ -261,7 +270,7 @@ fn create(db: &mut Db, names: &Names, v: &Pgvector, table: &str, n: u32) -> Resu
     let key_space = (space.as_deref().map(Target::quote))
         .map_or_else(String::new, |t| format!(" USING INDEX TABLESPACE {t}"));
     db.batch(&format!(
-        "CREATE TABLE {} (key TEXT COLLATE \"C\" PRIMARY KEY{key_space}, unit {} NOT NULL){}",
+        "CREATE TABLE {} (key TEXT COLLATE \"C\" PRIMARY KEY{key_space}, unit {}){}",
         names.t(table),
         v.ty(n),
         Names::space(space),
@@ -280,9 +289,10 @@ fn index(db: &mut Db, names: &Names, v: &Pgvector, table: &str) -> Result<()> {
 }
 
 /// Write into `table` the entries of `ty.field` its class sees: of
-/// `keys` where given, each key's old entry deleted first, else of every
-/// live head, a page at a time. A held head is no entry of B, and a
-/// vector of zeros or of other dimensions no entry of any graph.
+/// `keys` where given, each key's row kept, with no vector where it is
+/// no entry now, else of every live head, a page at a time. A held head
+/// is no entry of B, and a vector of zeros or of other dimensions no
+/// entry of any graph.
 fn fill(
     db: &mut Db,
     names: &Names,
@@ -304,7 +314,7 @@ fn fill(
              WHERE v.ty = $1 AND v.field = $2 AND v.until IS NULL AND {which}"
         )
     };
-    let put = |db: &mut Db, rows: &[postgres::Row]| -> Result<()> {
+    let entries = |rows: &[postgres::Row]| {
         let (mut keys, mut units) = (Vec::new(), Vec::new());
         for row in rows {
             let (held, retired): (bool, bool) = (row.get(3), row.get(4));
@@ -317,29 +327,30 @@ fn fill(
                 units.push(unit);
             }
         }
-        if keys.is_empty() {
-            return Ok(());
-        }
-        db.execute(
-            &format!(
-                "INSERT INTO {} (key, unit) SELECT k, CAST(u AS {}) \
-                 FROM unnest($1::text[], $2::text[]) AS b(k, u)",
-                names.t(table),
-                v.ty(n)
-            ),
-            &[&keys, &units],
-        )
-        .map(drop)
+        (keys, units)
     };
+    let (t, unit) = (names.t(table), v.ty(n));
     match keys {
         Some(keys) => {
             for part in keys.chunks(FILL_PAGE) {
-                db.execute(
-                    &format!("DELETE FROM {} WHERE key = ANY($1)", names.t(table)),
-                    &[&part],
-                )?;
                 let rows = db.query(&select("v.key = ANY($3)"), &[&ty, &field, &part])?;
-                put(db, &rows)?;
+                let (keys, units) = entries(&rows);
+                db.execute(
+                    &format!(
+                        "UPDATE {t} SET unit = NULL WHERE key = ANY($1) AND NOT key = ANY($2) \
+                         AND unit IS NOT NULL"
+                    ),
+                    &[&part, &keys],
+                )?;
+                db.execute(
+                    &format!(
+                        "INSERT INTO {t} AS g (key, unit) SELECT k, CAST(u AS {unit}) \
+                         FROM unnest($1::text[], $2::text[]) AS b(k, u) ON CONFLICT (key) \
+                         DO UPDATE SET unit = EXCLUDED.unit \
+                         WHERE g.unit IS DISTINCT FROM EXCLUDED.unit"
+                    ),
+                    &[&keys, &units],
+                )?;
             }
         }
         None => {
@@ -347,7 +358,14 @@ fn fill(
             let mut after = String::new();
             loop {
                 let rows = db.query(&page, &[&ty, &field, &after, &(FILL_PAGE as i64)])?;
-                put(db, &rows)?;
+                let (keys, units) = entries(&rows);
+                db.execute(
+                    &format!(
+                        "INSERT INTO {t} (key, unit) SELECT k, CAST(u AS {unit}) \
+                         FROM unnest($1::text[], $2::text[]) AS b(k, u)"
+                    ),
+                    &[&keys, &units],
+                )?;
                 match rows.last() {
                     Some(last) if rows.len() == FILL_PAGE => after = last.get(0),
                     _ => break,
@@ -405,7 +423,7 @@ fn classes(db: &mut Db, names: &Names, ty: &TypeName) -> Result<&'static [&'stat
 }
 
 /// Make `ty`'s graphs again under its setting and declaration at the
-/// head, copied through `through`: its rows go, and a row is written for
+/// head: its rows go, and a row is written for
 /// each class of each field it asks for, its generation built now where
 /// `build`, else left to the builder. Old tables are the sweep's.
 /// Without pgvector only the rows go. The fold does this when it commits
@@ -415,7 +433,6 @@ pub(crate) fn rebuild(
     names: &Names,
     v: Option<&Pgvector>,
     ty: &TypeName,
-    through: Position,
     build: bool,
 ) -> Result<()> {
     let rows = names.t("graphs");
@@ -446,13 +463,11 @@ pub(crate) fn rebuild(
                 }
                 false => None,
             };
-            let copied = built.map(|_| through.0 as i64);
             db.execute(
                 &format!(
-                    "INSERT INTO {rows} (ty, field, class, dims, gen, copied) \
-                     VALUES ($1, $2, $3, $4, $5, $6)"
+                    "INSERT INTO {rows} (ty, field, class, dims, gen) VALUES ($1, $2, $3, $4, $5)"
                 ),
-                &[&at.0, &at.1, &at.2, &(n as i32), &built, &copied],
+                &[&at.0, &at.1, &at.2, &(n as i32), &built],
             )?;
         }
     }
@@ -468,21 +483,20 @@ pub(crate) struct Touched {
     pub(crate) erased: BTreeSet<TypeName>,
 }
 
-/// At the fold's commit through `through`, from `before`: write the
-/// entries of the keys it touched into every built graph, from their
-/// states at its end; for a held key, add A's row where the type has
-/// none, and mark B stale where the key may have had an entry in it
-/// since its copy (`suspect`: whatever its states, after a fold that
-/// failed may have put one; so does a state of it since the copy that
-/// names a vector, as a remove leaves no row saying until when one was
-/// in force). An erased record marks its type's graphs stale. The types
-/// in `skip` were built anew in the transaction. The answer says whether
-/// it left a graph for the builder.
+/// At the fold's commit through `through`: write the entries of the keys
+/// it touched into every built graph, from their states at its end, and
+/// name them in `graph_keys` for a build of their type under way; for a
+/// held key, add A's row where the type has none, and mark B stale where
+/// the key has a row in it, an entry or one gone (`suspect`: whatever its
+/// rows, after a fold that failed may have put one into the index). An
+/// erased record marks its type's graphs stale. A mark gives up the build
+/// under way. The types in `skip` were built anew in the transaction.
+/// The answer says whether it left a graph for the builder.
 pub(crate) fn follow(
     db: &mut Db,
     names: &Names,
     v: Option<&Pgvector>,
-    (through, before): (Position, Option<Position>),
+    through: Position,
     touched: &Touched,
     skip: &BTreeSet<TypeName>,
     suspect: bool,
@@ -491,7 +505,7 @@ pub(crate) fn follow(
     let (rows, at) = (names.t("graphs"), through.0 as i64);
     let mut left = false;
     let stale = format!(
-        "UPDATE {rows} SET stale = greatest(coalesce(stale, $2), $2) \
+        "UPDATE {rows} SET stale = greatest(coalesce(stale, $2), $2), next = NULL \
          WHERE ty = $1 AND ($3::text IS NULL OR (field = $3 AND class = 'b')) RETURNING 1"
     );
     for ty in touched.erased.iter().filter(|t| !skip.contains(*t)) {
@@ -499,22 +513,6 @@ pub(crate) fn follow(
             .query(&stale, &[&ty.as_str(), &at, &None::<String>])?
             .is_empty();
     }
-    let had = format!(
-        "SELECT EXISTS (SELECT 1 FROM unnest($3::text[]) AS b(key) \
-         WHERE (EXISTS (SELECT 1 FROM {vectors} v WHERE v.ty = $1 AND v.field = $2 \
-           AND v.key = b.key AND (v.until IS NULL OR v.until > $4)) \
-         OR EXISTS (SELECT 1 FROM {records} r WHERE r.ty = $1 AND r.key = b.key \
-           AND jsonb_typeof(r.state::jsonb -> 'fields' -> $2) = 'array' AND r.since <= $6 \
-           AND r.since >= coalesce((SELECT max(x.since) FROM {records} x \
-             WHERE x.ty = $1 AND x.key = b.key AND x.since <= $4), -1))) \
-         AND ($5 OR EXISTS (SELECT 1 FROM {records} r WHERE r.ty = $1 AND r.key = b.key \
-           AND r.since <= $6 AND NOT {HELD} AND NOT {RETIRED} \
-           AND r.since >= coalesce((SELECT max(x.since) FROM {records} x \
-             WHERE x.ty = $1 AND x.key = b.key AND x.since <= $4), -1))))",
-        vectors = names.t("vectors"),
-        records = names.t("records"),
-    );
-    let before = before.map_or(-1, |p| p.0 as i64);
     for (ty, keys) in &touched.keys {
         if skip.contains(ty) {
             continue;
@@ -524,6 +522,15 @@ pub(crate) fn follow(
             continue;
         }
         let keys: Vec<String> = keys.iter().cloned().collect();
+        if graphs.iter().any(|g| g.next.is_some()) {
+            db.execute(
+                &format!(
+                    "INSERT INTO {} (ty, key) SELECT $1, unnest($2::text[]) ON CONFLICT DO NOTHING",
+                    names.t("graph_keys")
+                ),
+                &[&ty.as_str(), &keys],
+            )?;
+        }
         if !touched.erased.contains(ty) {
             for g in &graphs {
                 if let Some(table) = g.readable(ty.as_str()) {
@@ -535,16 +542,7 @@ pub(crate) fn follow(
         if is_link_type(ty) {
             continue;
         }
-        let held: Vec<String> = db.column(
-            &format!(
-                "SELECT h.key FROM unnest($2::text[]) AS b(key) JOIN {} h \
-                 ON h.ty = $1 AND h.key = b.key JOIN {} r ON r.ty = h.ty AND r.key = h.key \
-                 AND r.since = h.since WHERE {HELD}",
-                names.t("records_head"),
-                names.t("records")
-            ),
-            &[&ty.as_str(), &keys],
-        )?;
+        let held = held_of(db, names, ty.as_str(), &keys)?;
         if held.is_empty() {
             continue;
         }
@@ -561,10 +559,20 @@ pub(crate) fn follow(
             }
         }
         for g in graphs.iter().filter(|g| g.class == "b") {
-            let copied = g.copied.unwrap_or(-1);
-            let args: [&(dyn ToSql + Sync); 6] =
-                [&ty.as_str(), &g.field, &held, &copied, &suspect, &before];
-            if db.query_one(&had, &args)?.get::<_, bool>(0) {
+            let Some(table) = g.readable(ty.as_str()) else {
+                continue;
+            };
+            let had = suspect
+                || db
+                    .query_one(
+                        &format!(
+                            "SELECT EXISTS (SELECT 1 FROM {} WHERE key = ANY($1))",
+                            names.t(&table)
+                        ),
+                        &[&held],
+                    )?
+                    .get::<_, bool>(0);
+            if had {
                 left |= !db
                     .query(&stale, &[&ty.as_str(), &at, &Some(&g.field)])?
                     .is_empty();
@@ -572,6 +580,20 @@ pub(crate) fn follow(
         }
     }
     Ok(left)
+}
+
+/// The keys of `keys` whose head record of `ty` is held.
+fn held_of(db: &mut Db, names: &Names, ty: &str, keys: &[String]) -> Result<Vec<String>> {
+    db.column(
+        &format!(
+            "SELECT h.key FROM unnest($2::text[]) AS b(key) JOIN {} h \
+             ON h.ty = $1 AND h.key = b.key JOIN {} r ON r.ty = h.ty AND r.key = h.key \
+             AND r.since = h.since WHERE {HELD}",
+            names.t("records_head"),
+            names.t("records")
+        ),
+        &[&ty, &keys],
+    )
 }
 
 /// At a writer's open, in one transaction under the fold's lock: give up
@@ -589,13 +611,13 @@ pub(crate) fn opened(
     let rows = names.t("graphs");
     db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
         lock_fold(db, names)?;
-        db.execute(
-            &format!("UPDATE {rows} SET next = NULL WHERE next IS NOT NULL"),
-            &[],
-        )?;
-        let Some(folded) = projection::folded(db, names)? else {
+        db.batch(&format!(
+            "UPDATE {rows} SET next = NULL WHERE next IS NOT NULL; DELETE FROM {}",
+            names.t("graph_keys")
+        ))?;
+        if projection::folded(db, names)?.is_none() {
             return Ok(());
-        };
+        }
         let asked: Vec<String> = db.column(
             &format!(
                 "SELECT substr(key, $1) FROM {} WHERE ty = $2 AND left(key, $1 - 1) = $3 \
@@ -626,7 +648,7 @@ pub(crate) fn opened(
             let want: BTreeSet<(String, u32)> =
                 want.into_iter().map(|(f, n)| (f.to_string(), n)).collect();
             if have != want {
-                rebuild(db, names, Some(v), &ty, folded, false)?;
+                rebuild(db, names, Some(v), &ty, false)?;
             }
         }
         if let Err(why) = v {
@@ -772,7 +794,9 @@ fn build_all(db: &mut Db, names: &Names, v: &Pgvector, hold: &dyn Fn() -> bool) 
 
 /// Build one graph's next generation beside the one read: claim it,
 /// copy its entries in one snapshot, index them, and swap it in under
-/// the fold's lock after applying what was folded since the snapshot.
+/// the fold's lock after applying the keys written since the claim. A
+/// held key among them with a row in the copy, or a claim a mark gave up
+/// meanwhile, refuses the copy.
 fn build_one(
     db: &mut Db,
     names: &Names,
@@ -802,40 +826,57 @@ fn build_one(
             &format!("UPDATE {rows} SET next = $4 WHERE ty = $1 AND field = $2 AND class = $3"),
             &[&ty, &field, &class, &g],
         )?;
+        db.execute(
+            &format!("DELETE FROM {} WHERE ty = $1", names.t("graph_keys")),
+            &[&ty],
+        )?;
         Ok(Some(g))
     })?;
     let Some(g) = claimed else {
         return Ok(Built::Done);
     };
     let table = bare(ty, field, class, g);
-    let copy = |db: &mut Db| -> Result<Option<i64>> {
-        let p = db.transaction("BEGIN ISOLATION LEVEL REPEATABLE READ", |db| {
-            let p = projection::folded(db, names)?.map_or(-1, |p| p.0 as i64);
+    let copy = |db: &mut Db| -> Result<Option<()>> {
+        db.transaction("BEGIN ISOLATION LEVEL REPEATABLE READ", |db| {
             create(db, names, v, &table, n)?;
-            fill(db, names, v, at, (&table, n), None)?;
-            Ok(p)
+            fill(db, names, v, at, (&table, n), None)
         })?;
         if hold() {
             return Ok(None);
         }
         index(db, names, v, &table)?;
-        Ok(Some(p))
+        Ok(Some(()))
     };
-    let swap = |db: &mut Db, p: i64| {
+    let swap = |db: &mut Db, ()| {
         db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
             lock_fold(db, names)?;
             let r = db.query_opt(&row, &[&ty, &field, &class])?;
-            let (stale, next): (Option<i64>, Option<i64>) = match &r {
-                Some(r) => (r.get(1), r.get(2)),
-                None => (None, None),
-            };
+            let next: Option<i64> = r.as_ref().and_then(|r| r.get(2));
             let drop_table = format!("DROP TABLE IF EXISTS {}", names.t(&table));
             if next != Some(g) {
                 db.batch(&drop_table)?;
                 return Ok(Built::Done);
             }
             let ours = "WHERE ty = $1 AND field = $2 AND class = $3";
-            if stale.is_some_and(|s| s > p) {
+            let keys: Vec<String> = db.column(
+                &format!("SELECT key FROM {} WHERE ty = $1", names.t("graph_keys")),
+                &[&ty],
+            )?;
+            fill(db, names, v, at, (&table, n), Some(&keys))?;
+            let held = match class == "b" {
+                true => held_of(db, names, ty, &keys)?,
+                false => Vec::new(),
+            };
+            let tainted: bool = db
+                .query_one(
+                    &format!(
+                        "SELECT EXISTS (SELECT 1 FROM {} WHERE key = ANY($1))",
+                        names.t(&table)
+                    ),
+                    &[&held],
+                )?
+                .get(0);
+            if tainted {
                 db.execute(
                     &format!("UPDATE {rows} SET next = NULL {ours}"),
                     &[&ty, &field, &class],
@@ -843,17 +884,6 @@ fn build_one(
                 db.batch(&drop_table)?;
                 return Ok(Built::Again);
             }
-            let keys: Vec<String> = db.column(
-                &format!(
-                    "SELECT key FROM {} WHERE ty = $1 AND since > $3 UNION \
-                 SELECT key FROM {} WHERE ty = $1 AND field = $2 \
-                 AND (since > $3 OR until > $3 OR since = -1)",
-                    names.t("records"),
-                    names.t("vectors")
-                ),
-                &[&ty, &field, &p],
-            )?;
-            fill(db, names, v, at, (&table, n), Some(&keys))?;
             if class == "a" && !is_link_type(&TypeName::from(ty)) && !held_any(db, names, ty)? {
                 db.execute(
                     &format!("DELETE FROM {rows} {ours}"),
@@ -863,15 +893,13 @@ fn build_one(
                 return Ok(Built::Done);
             }
             db.execute(
-                &format!(
-                    "UPDATE {rows} SET gen = $4, next = NULL, copied = $5, stale = NULL {ours}"
-                ),
-                &[&ty, &field, &class, &g, &p],
+                &format!("UPDATE {rows} SET gen = $4, next = NULL, stale = NULL {ours}"),
+                &[&ty, &field, &class, &g],
             )?;
             Ok(Built::Done)
         })
     };
-    match copy(db).and_then(|p| p.map(|p| swap(db, p)).transpose()) {
+    match copy(db).and_then(|c| c.map(|c| swap(db, c)).transpose()) {
         Ok(Some(built)) => Ok(built),
         given_up => {
             release(db, names, at, g, &table)?;
@@ -1011,10 +1039,12 @@ impl Builder {
 }
 
 /// The builder's loop: on each wake, build what the rows ask for, then
-/// sweep, and close its connection once that is done; after a failure,
-/// or a round the writer held off, again later.
+/// sweep, and close its connection once that is done; after a round the
+/// writer held off, again once it lets go; after a failure, with the
+/// connection closed, again after [`BACK_OFF`], doubled for each failure
+/// in a row up to [`BACK_OFF_MOST`].
 fn run(shared: &Shared, target: &Target, names: &Names, v: &Pgvector) {
-    let mut db: Option<Db> = None;
+    let (mut db, mut back_off) = (None::<Db>, BACK_OFF);
     loop {
         {
             let mut s = lock(&shared.state);
@@ -1050,22 +1080,31 @@ fn run(shared: &Shared, target: &Target, names: &Names, v: &Pgvector) {
         };
         let failed = round().is_err();
         drop(work);
-        if failed {
-            if let Some(db) = db.as_mut() {
+        if hold() {
+            if let Some(db) = db.as_mut().filter(|_| failed) {
                 let _ = db.batch("ROLLBACK");
             }
-            let s = lock(&shared.state);
-            let (mut s, _) = shared
-                .turn
-                .wait_timeout(s, BACK_OFF)
-                .unwrap_or_else(|e| e.into_inner());
-            s.wake = true;
-        } else if hold() {
             lock(&shared.state).wake = true;
-        } else {
-            lock(&shared.state).pid = None;
-            db = None;
+            continue;
         }
+        lock(&shared.state).pid = None;
+        db = None;
+        if !failed {
+            back_off = BACK_OFF;
+            continue;
+        }
+        let until = Instant::now() + back_off;
+        let mut s = lock(&shared.state);
+        while !s.stop && Instant::now() < until {
+            let left = until.saturating_duration_since(Instant::now());
+            s = shared
+                .turn
+                .wait_timeout(s, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        s.wake = true;
+        back_off = (back_off * 2).min(BACK_OFF_MOST);
     }
 }
 
@@ -1249,7 +1288,7 @@ fn stream(
     );
     let from = format!(
         "FROM {} g JOIN {} v ON v.ty = {} AND v.field = {} AND v.key = g.key \
-         AND v.until IS NULL",
+         AND v.until IS NULL AND g.unit IS NOT NULL",
         names.t(table),
         names.t("vectors"),
         literal(ty.as_str()),

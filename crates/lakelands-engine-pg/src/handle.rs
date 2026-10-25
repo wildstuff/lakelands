@@ -188,7 +188,10 @@ impl PgLake {
                 let tip = log::tip(&mut db, &names)?.map(|(p, _)| p);
                 let builder = match &pgvector {
                     Some(v) => {
-                        let waiting = vector_index::waiting(&mut db, &names)?;
+                        // A rebuild's projection may be another layout's,
+                        // without graphs; its scratch is swapped in built.
+                        let waiting =
+                            mode != OpenMode::Rebuild && vector_index::waiting(&mut db, &names)?;
                         Some(Builder::start(
                             target.clone(),
                             names.clone(),
@@ -478,8 +481,16 @@ impl PgLake {
             let Some(folded) = projection::folded(db, &self.names)? else {
                 return Ok(false);
             };
-            let (v, at) = (self.pgvector.as_ref(), (folded, Some(folded)));
-            vector_index::follow(db, &self.names, v, at, &touched, &BTreeSet::new(), false)
+            let v = self.pgvector.as_ref();
+            vector_index::follow(
+                db,
+                &self.names,
+                v,
+                folded,
+                &touched,
+                &BTreeSet::new(),
+                false,
+            )
         })?;
         if left {
             self.wake();
@@ -1022,12 +1033,17 @@ impl ProjectionStore for PgLake {
                 }
                 let again: BTreeSet<TypeName> = asked.into_keys().chain(declared).collect();
                 for ty in &again {
-                    vector_index::rebuild(&mut db, &self.names, v, ty, through, build)?;
+                    vector_index::rebuild(&mut db, &self.names, v, ty, build)?;
                 }
-                let at = (through, folded);
-                left =
-                    vector_index::follow(&mut db, &self.names, v, at, &touched, &again, suspect)?
-                        || (v.is_some() && !again.is_empty());
+                left = vector_index::follow(
+                    &mut db,
+                    &self.names,
+                    v,
+                    through,
+                    &touched,
+                    &again,
+                    suspect,
+                )? || (v.is_some() && !again.is_empty());
                 projection::set_folded(&mut db, &self.names, through)?;
                 Ok(put + rebuilt)
             });

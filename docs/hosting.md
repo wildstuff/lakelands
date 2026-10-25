@@ -644,7 +644,11 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   A is built at the type's first hold, and B again after the hold of a
   record B held, by a thread of the writer on a connection of its own,
   beside the graph it replaces, which it drops once no search reads it;
-  a writer's open drops a half-built one and starts it again. Until it
+  a writer's open drops a half-built one and starts it again. A build
+  that fails, the server refusing it or a reader holding the table it
+  would drop, is tried again after 1 s, then after twice the wait
+  before for each failure in a row, up to 64 s; the connection is
+  closed while it waits, and the writer's close ends the wait. Until it
   is built, that graph's readers are ranked exactly: on a field of
   100 000 × 32 with a quarter held, a hold took a median 19 ms, a
   reader's first page right after it a median 65 ms (7 ms from the

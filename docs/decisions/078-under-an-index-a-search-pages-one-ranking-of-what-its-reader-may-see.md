@@ -171,32 +171,38 @@ principals there are.
   of a vector B's class may read at no position (006). A deleted entry
   stays in the graph until `VACUUM`, and `VACUUM` mends the graph's
   links around it, so the graph keeps the shape the entry gave it. So
-  the fold, at the hold of a record that had a vector in the field,
-  under any key it bore, at a position after B's generation was copied
-  and before the hold's transaction, retired since or not, deletes the
-  record's entry from B if it has one and marks B stale from the hold,
-  in that transaction. A hold of any other record finds no entry of it
-  in B's generation and leaves B as it is. No search reads a stale B, at
-  whatever position it reads: its readers are ranked exactly, judged by
-  the engine, until a B that never held the record replaces it.
+  a key that had an entry in a generation of B since its copy keeps its
+  row in the generation's table, without a vector, once the entry goes.
+  The fold, at the hold of a record whose key has a row in B's
+  generation, an entry or one gone, deletes the entry if there is one
+  and marks B stale from the hold, in that transaction. A hold of any
+  other record finds no row of it in B's generation and leaves B as it
+  is. No search reads a stale B, at whatever position it reads: its
+  readers are ranked exactly, judged by the engine, until a B that never
+  held the record replaces it.
 - **The writer builds that B beside the old one,** on a connection of
   its own that it holds only while a graph waits, as a table of a new
-  generation, which it names in the graph's row before it begins. It
-  copies the live heads not held in one snapshot and builds the index.
-  Then, in one short transaction that holds the lock the fold takes, it
-  applies what was folded after the snapshot, checks that B was not
-  marked stale again after it, points the graph's row at the new
-  generation and clears the mark; a mark set since starts a new copy
-  instead. A search reads the graph's row and the generation it names in
-  the one transaction that ranks it, under one snapshot, so one that
+  generation, which it names in the graph's row before it begins. From
+  then on each fold names the keys it touched in a table of its own. The
+  writer copies the live heads not held in one snapshot and builds the
+  index. Then, in one short transaction that holds the lock the fold
+  takes, it writes the entries of every key named since into the new
+  generation, a key gone keeping its row; if one of those keys is held
+  and has a row there, or B was marked stale meanwhile, which gives up
+  the build, it drops the new generation and starts a new copy.
+  Otherwise it points the graph's row at the new generation and clears
+  the mark. A search reads the graph's row and the generation it names
+  in the one transaction that ranks it, under one snapshot, so one that
   began before the swap reads the old generation whole, and the writer
   drops the old one once no transaction that began before the swap is
   running. At its open the writer drops every table of a graph but the
   one its row reads, once no transaction that began before the open is
   running, and starts again wherever the mark says B is stale. Where
   holds come faster than a build, B stays stale and its readers keep the
-  exact ranking. A is built in the same way, with no mark to check, once
-  its row is written.
+  exact ranking. A is built in the same way, once its row is written; a
+  held key in A is no taint. A build that fails is tried again after a
+  wait that doubles with each failure in a row, from one second up to 64,
+  the writer's connection for it closed meanwhile.
 - **Lifting a hold puts the entry into B.** From then on its class sees
   the record, at every position.
 - **What a graph keeps of a deleted entry is its own class's.** An entry
@@ -225,9 +231,10 @@ index over the unit vector (`m` 16, `ef_construction` 64, as today) and
 no predicate. Its name is drawn from a digest of the type, the field and
 the class and the generation, since a PostgreSQL name stops at 63
 bytes. A row per graph names its type, field and class, the generation
-read and the one being built, the position B is stale from, and the
-position it was built through; it takes the place of the mark
-`vindex.<type>.<field>`.
+read and the one being built, and the position B is stale from; it
+takes the place of the mark `vindex.<type>.<field>`. A row of a
+generation's table without a unit vector is a key that had an entry
+since the copy: the stream reads past it.
 `vectors` keeps every position's elements and no longer a unit vector,
 and the partial index per field goes. Where a host places a lake's parts
 in tablespaces (lakelands#1372), the graphs go where its vectors go.
@@ -523,8 +530,12 @@ on every engine:
 - The recall floor stays, at the head of the sequence.
 
 PostgreSQL's own tests hold the rest: a B built again never held the
-held record's row, a half-built B is dropped at the writer's open, and a
-hold folded during a copy starts a new one.
+held record's row, nor a vector removed during its copy; a hold of a
+record whose vector was removed since B's copy builds B again; a
+half-built B is dropped at the writer's open; a hold folded during a
+copy starts a new one; and a projection layout 6 kept under an index is
+rebuilt at the writer's open, its owner's and reader's pages as they
+were.
 
 ### A search under an index is not windowed
 
@@ -739,9 +750,10 @@ passes the reserve, the reserve grows once, measured, by the operator's
 decision under `docs/budgets.md`, as rounds before it have; the fix
 does not shrink to fit it.
 
-Measured on the build, from 83 094 and 154 907 on `develop` at its base:
-product 84 098 (+1 004) and specification 155 399 (+492), inside the
-ceilings, below the reckoning's lower end; no row is added.
+Measured on the build, from 83 349 and 155 332 on `develop` at its base
+(metrics and the lease-stale flag merged): product 84 412 (+1 063) and
+specification 156 174 (+842), inside the ceilings, below the
+reckoning's lower end; no row is added.
 
 ## Why
 
