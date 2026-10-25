@@ -750,3 +750,17 @@ fn a_key_of_one_text_field_is_read_by_key_and_no_other_key_is() {
     assert_eq!(lookup(types[3], "r = 'x'"), None);
     assert_eq!(key_lookup(None, &Scan::default()), None, "no declaration");
 }
+
+#[test]
+fn every_kind_has_the_code_the_projections_store() {
+    let codes: Vec<_> = KIND_CODES.iter().map(|(k, c)| (*k, *c)).collect();
+    let listed: Vec<_> = lakelands_api::event::KINDS
+        .iter()
+        .copied()
+        .zip(1..)
+        .collect();
+    assert_eq!(codes, listed, "the codes follow the format's order, from 1");
+    assert_eq!(kind_code("checkpoint"), Some(22));
+    assert_eq!(kind_code("lake_created"), Some(1));
+    assert_eq!(kind_code("a_newer_kind"), None);
+}

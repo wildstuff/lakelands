@@ -39,8 +39,8 @@ use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{FeedFilter, SETTING_TYPE, SORT_INDEX_SETTING};
 use lakelands_api::write::Declaration;
 use lakelands_core::engines::{self, sorted_mark};
-use rusqlite::types::FromSql;
-use rusqlite::{Connection, OptionalExtension, Params, ToSql, params};
+use rusqlite::types::{FromSql, Value};
+use rusqlite::{Connection, OptionalExtension, Params, ToSql, params, params_from_iter};
 
 use crate::sql;
 
@@ -91,7 +91,10 @@ CREATE TABLE IF NOT EXISTS applied (
     at INTEGER NOT NULL
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS routes (
-    at INTEGER NOT NULL, kind TEXT NOT NULL, ty TEXT, key TEXT, source TEXT
+    at INTEGER NOT NULL, kind INTEGER NOT NULL, ty INTEGER, key TEXT, source INTEGER
+);
+CREATE TABLE IF NOT EXISTS names (
+    id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE
 );
 CREATE INDEX IF NOT EXISTS routes_kind ON routes (kind, at);
 CREATE INDEX IF NOT EXISTS routes_ty ON routes (ty, at);
@@ -134,7 +137,7 @@ CREATE INDEX IF NOT EXISTS vectors_head ON vectors (ty, field, key) WHERE until 
 ";
 
 /// Every table the projection holds, cleared by a rebuild.
-pub(crate) const TABLES: [&str; 15] = [
+pub(crate) const TABLES: [&str; 16] = [
     "meta",
     "declarations",
     "records",
@@ -143,6 +146,7 @@ pub(crate) const TABLES: [&str; 15] = [
     "outputs",
     "applied",
     "routes",
+    "names",
     "text_index",
     "lookup_fields",
     "edges",
@@ -292,9 +296,33 @@ pub(crate) fn column<T: FromSql, R, C: FromIterator<R>>(
     rows.map(|r| f(r.map_err(sql)?)).collect()
 }
 
+/// What a route's `column` holds for the name `value`: the kind's code,
+/// the id `names` gives a type or a source, the key itself. None where
+/// no route can hold it: a kind the format does not list, or a name no
+/// event has brought.
+fn stored(conn: &Connection, column: &str, value: &str) -> Result<Option<Value>> {
+    Ok(match column {
+        "kind" => engines::kind_code(value).map(Value::Integer),
+        "key" => Some(Value::Text(value.to_owned())),
+        _ => one::<i64>(conn, "SELECT id FROM names WHERE name = ?1", [value])?.map(Value::Integer),
+    })
+}
+
+/// The id `names` gives `name`, made if it has none.
+pub(crate) fn name_id(conn: &Connection, name: &str) -> Result<i64> {
+    let insert = "INSERT INTO names (name) VALUES (?1) ON CONFLICT (name) DO NOTHING";
+    conn.prepare_cached(insert)
+        .and_then(|mut s| s.execute([name]))
+        .map_err(sql)?;
+    let id = one(conn, "SELECT id FROM names WHERE name = ?1", [name])?;
+    Ok(id.expect("a name just inserted is held"))
+}
+
 /// The positions from `from` through `through` of the feed index's rows
 /// whose `column` is `value`, in order and at most `limit`, each row
 /// checked against the filter's other lists (`lakelands_core::feed::Seek`).
+/// The names are looked up once; a list none of whose names a route can
+/// hold matches nothing.
 pub(crate) fn routes(
     conn: &Connection,
     filter: &FeedFilter,
@@ -307,24 +335,29 @@ pub(crate) fn routes(
         ("ty", filter.types.iter().map(TypeName::as_str).collect()),
         ("key", filter.keys.iter().map(RecordKey::as_str).collect()),
     ];
-    let mut args: Vec<&dyn ToSql> = Vec::new();
+    let mut args: Vec<Value> = Vec::new();
     let mut tests = Vec::new();
-    for (column, values) in by.iter().map(|(c, v)| (*c, std::slice::from_ref(v))).chain(
-        (lists.iter())
-            .filter(|(c, v)| !v.is_empty() && by.is_none_or(|(b, _)| b != *c))
-            .map(|(c, v)| (*c, v.as_slice())),
+    for (column, values) in by.iter().map(|(c, v)| (*c, vec![*v])).chain(
+        (lists.into_iter()).filter(|(c, v)| !v.is_empty() && by.is_none_or(|(b, _)| b != *c)),
     ) {
-        let marks = vec!["?"; values.len()].join(", ");
+        let mut held = Vec::new();
+        for v in values {
+            held.extend(stored(conn, column, v)?);
+        }
+        if held.is_empty() {
+            return Ok(Vec::new());
+        }
+        let marks = vec!["?"; held.len()].join(", ");
         tests.push(format!("AND {column} IN ({marks})"));
-        args.extend(values.iter().map(|v| v as &dyn ToSql));
+        args.extend(held);
     }
     let (from, through, limit) = (from.0 as i64, through.0 as i64, i64::from(limit.max(1)));
-    args.extend([&from as &dyn ToSql, &through, &limit]);
+    args.extend([from, through, limit].map(Value::Integer));
     let statement = format!(
         "SELECT DISTINCT at FROM routes WHERE 1 {} AND at BETWEEN ? AND ? ORDER BY at LIMIT ?",
         tests.join(" ")
     );
-    column(conn, &statement, args.as_slice(), |at: i64| {
+    column(conn, &statement, params_from_iter(args), |at: i64| {
         Ok(Position(at as u64))
     })
 }
@@ -333,7 +366,7 @@ pub(crate) fn routes(
 /// raised whenever a table changes so that a projection made before
 /// would answer wrongly, not fail: one made with another layout is never
 /// read, and is rebuilt from the log.
-pub(crate) const LAYOUT: u64 = 5;
+pub(crate) const LAYOUT: u64 = 6;
 
 /// The layout `conn`'s projection was made with: none where it holds no
 /// `meta`, or was made before projections were marked.
