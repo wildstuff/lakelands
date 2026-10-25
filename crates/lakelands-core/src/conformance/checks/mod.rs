@@ -69,6 +69,7 @@ mod links;
 mod logged_ids;
 mod made_of;
 mod masking;
+mod metered;
 mod migrate;
 mod only;
 mod only_proposals;
@@ -126,6 +127,7 @@ mod sized;
 mod sorted_whole;
 mod stored_vectors;
 mod streaming;
+mod taken_lease;
 mod trigger_firing;
 mod triggers;
 mod upgrade;
@@ -954,5 +956,8 @@ pub const ALL: &[Check] = &[
     sealed::ANSWER_EXACT,
     export::INTEGER_DAMAGE,
     sized::SEALED_BY_SIZE,
+    taken_lease::TAKEN_LEASE,
     grid::GRID,
+    metered::METERED,
+    metered::METERED_LEASE,
 ];

@@ -9,7 +9,7 @@ contract is right and this page is wrong.
 
 ## What a host implements
 
-Lakelands has nine seams. A host implements the ones it needs and
+Lakelands has ten seams. A host implements the ones it needs and
 passes them in `Seams`; every one but the engine has a default, and for
 the engine a host passes Lakelands' own openers. A host that passes
 those and nothing else has a working store. Two seams point the other
@@ -691,6 +691,13 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   SQLite and in-memory lakes keep no such
   index and answer every search exactly; a SQLite lake that needs one
   moves to PostgreSQL by export and import (lakelands#215).
+- **`Meter`.** A host that reports through its own metrics system binds
+  a `Meter` in `Seams::meter`: the lake tells it its writes, appends,
+  seals, queue, tip, fold, lease and the times of its appends, folds,
+  commits and reads, labelled with the lake and its engine, and keeps no
+  number of its own. A meter that panics loses that number and nothing
+  else. `lakelands serve` binds its own where `server.metrics` is set
+  (below; `docs/seams.md`, `Meter`).
 
 **Moving a lake to another engine.** An installation runs one engine,
 and a lake is not bound to the one it was created on: `lakelands export`
@@ -1466,14 +1473,40 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   process is up) and `GET /readyz` (`200` when every lake it serves is
   open, holding its writer lease as its handle knows it, and answering
   its head; `503` with `not_ready` when a lake's handle does not hold its
-  lease (one lost to another writer shows once the handle has noticed it,
-  at its next write) or does not answer its head, `503` with
+  lease (one lost to another writer shows, on every engine, once the
+  engine has refused the handle an append or a rebuild's swap for it, and
+  until a write takes the lease again) or does not answer its head, `503` with
   `starting` until every lake is open). The door is bound before the lakes
   open, so an open that rebuilds the projection after an upgrade is
   `starting`, not down. Neither takes a key or says a lake's name, a count
   or a position (`docs/rest.md`, Health and readiness). A host that embeds
   `lakelands-server` tells the door when its lakes are open with
   `HttpServer::health().serving(lakes)`; until then it is `starting`.
+- **Metrics of `lakelands serve` (lakelands#1371).** With
+  `"server": {"metrics": {"bind": "127.0.0.1:9464"}}` in the root's
+  `lakelands.json`, `serve` binds a meter to every lake it opens and
+  answers `GET /metrics` at that address in the Prometheus text format,
+  on a listener of its own beside the door; it prints the address to
+  standard error. Every line is labelled with the lake and its engine:
+  writes, appends, events and seals counted; the queue's depth, the tip,
+  the position folded through, a rebuild under way, the active
+  segment's bytes and the writer's lease as levels; the times of an
+  append, a fold, a commit and a read, and the writes of a batch, as
+  histograms. A scrape tells which lakes the server holds, how large
+  they are and how fast they are written and read, and nothing of what
+  they hold: no type, record, principal or value is ever a label. It
+  asks no key and has no TLS, so bind it to loopback or to a private
+  interface only the collector reaches, never to the address the door
+  answers callers on. Each connection carries one scrape and is closed
+  after ten seconds at most. Without the setting nothing is measured and
+  nothing more is listened for. Measured on one machine, a write on the
+  memory engine took 22.6 µs with the meter against 22.3 µs without at
+  one caller and 12.6 µs either way at sixteen; on SQLite the difference
+  is inside the noise of a commit
+  (`crates/lakelands-cli/examples/meter_bench.rs`,
+  `docs/decisions/079-a-lake-is-measured-through-a-meter-the-host-binds.md`).
+  A host that embeds the store binds its own `Meter` in `Seams::meter`
+  instead (`docs/seams.md`).
 - **The threads of `lakelands serve` (lakelands#1373).** `serve` runs
   on a multi-threaded runtime: as many threads as the `server` section's
   `workers` names, or the machine's cores, at most 8; every other

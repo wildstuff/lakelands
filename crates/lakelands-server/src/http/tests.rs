@@ -24,6 +24,7 @@ async fn door() -> (SocketAddr, super::Health) {
         feed_poll_millis: 250,
         feed_floor_millis: 10,
         workers: None,
+        metrics: None,
     };
     let server = serve_http(config, Arc::new(StaticResolver::new(vec![])), open)
         .await
@@ -172,22 +173,24 @@ async fn declare(store: &dyn LakeStore) -> lakelands_api::Result<()> {
         .map(|_| ())
 }
 
-/// The limit: a lease another writer took is refused a write as stale
-/// (`LeaseStale`, on the memory and SQLite engines), and the handle keeps
-/// its flag, so `/readyz` still says ready. Only a lease the engine says
-/// is not held (`LeaseNotHeld`: a lost PostgreSQL session) clears it, as
-/// `lakelands-engine-pg`'s `dropped.rs` pins; carrying the stale case too
-/// is a change to the store's handle (`Lake::lose`), not to the door.
+/// A lease another writer took is refused a write as stale (`LeaseStale`,
+/// on the memory and SQLite engines), and the handle is no writer from
+/// then on, so `/readyz` says not ready, as after a lost PostgreSQL
+/// session (`LeaseNotHeld`, which `lakelands-engine-pg`'s `dropped.rs`
+/// pins). The conformance suite holds the handle to it on every engine.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_lease_another_writer_took_is_refused_but_the_handle_keeps_its_flag() {
+async fn a_lease_another_writer_took_is_refused_and_the_lake_is_not_ready() {
     let (addr, health) = door().await;
     let opener = lakelands_engine_mem::MemoryOpener::new();
     let store = lake("a", OpenMode::Create, &opener).await;
     health.serving(vec![store.clone()]);
     let _engine = lease_taken(&opener, "a");
     assert!(declare(store.as_ref()).await.is_err());
-    assert!(store.is_writer());
-    assert_eq!(ask(addr, "GET", "/readyz").await.0, 200);
+    assert!(!store.is_writer());
+    assert_eq!(
+        ask(addr, "GET", "/readyz").await,
+        (503, r#"{"status":"not_ready"}"#.into())
+    );
 }
 
 /// A server runs on as many threads as `workers` names, and, where it

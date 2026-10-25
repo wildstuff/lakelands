@@ -17,7 +17,7 @@ use lakelands_api::ontology::FieldDecl;
 use lakelands_api::principal::WriteContext;
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search, SearchMode};
 use lakelands_api::seam::{
-    ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter, Seams, VerbInvocation,
+    ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter, Seams, Spread, VerbInvocation,
 };
 use lakelands_api::write::{
     AgeReport, Change, CompactReport, Declaration, ForgetReport, ForgetSetReport, IngestOpts,
@@ -175,6 +175,7 @@ fn reading<T>(
     // its shape and in its grants, or in neither. A search at the head is
     // read at the position its rankings were read at.
     let head = ranks.flatten();
+    let began = lake.timer();
     let view = lake.engine.view(at.as_of.or(head))?;
     let shape = lake.shape(view.as_ref())?;
     let then = view.position().unwrap_or(Position::GENESIS);
@@ -198,6 +199,7 @@ fn reading<T>(
     let mut r = Reader::open(lake, &sight, (at, clock), view, shape.clone())?;
     (r.head, r.held_now) = (at_head, held_now);
     let data = f(&r)?;
+    lake.since(Spread::Read, began);
     Ok(Reply {
         position: r.position,
         data,
