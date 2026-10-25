@@ -90,6 +90,54 @@ What a REST path segment a client sends names.
 | `proposal` | — | the proposal | A proposal. |
 | `source` | — | the source | A source. |
 
+## `Construct`
+
+An openCypher construct outside the subset Lakelands reads, spelt as the statement spells it.
+
+| code | parameters | sentence | about |
+|---|---|---|---|
+| `create` | — | `CREATE` (a write goes through the typed write doors) | A `CREATE` clause. |
+| `merge` | — | `MERGE` (a write goes through the typed write doors) | A `MERGE` clause. |
+| `set` | — | `SET` (a write goes through the typed write doors) | A `SET` clause. |
+| `delete` | — | `DELETE` (a write goes through the typed write doors) | A `DELETE` clause. |
+| `detach_delete` | — | `DETACH DELETE` (a write goes through the typed write doors) | A `DETACH DELETE` clause. |
+| `remove` | — | `REMOVE` (a write goes through the typed write doors) | A `REMOVE` clause. |
+| `foreach` | — | `FOREACH` (a write goes through the typed write doors) | A `FOREACH` clause. |
+| `load_csv` | — | `LOAD CSV` (a write goes through the typed write doors) | A `LOAD CSV` clause. |
+| `call` | — | `CALL` (a procedure or a subquery) | A procedure call or a `CALL` subquery. |
+| `with` | — | `WITH` | A `WITH` clause. |
+| `union` | — | `UNION` | A `UNION` of statements. |
+| `unwind` | — | `UNWIND` | An `UNWIND` clause. |
+| `use` | — | `USE` | A `USE` clause. |
+| `profile` | — | `PROFILE` (there is no plan to profile; `EXPLAIN` shows the pattern) | `PROFILE` before a statement. |
+| `several_statements` | — | a second statement | A statement after the first. |
+| `distinct` | — | `DISTINCT` | `DISTINCT`. |
+| `list_comprehension` | — | a list comprehension | A list comprehension. |
+| `pattern_comprehension` | — | a pattern comprehension | A pattern comprehension. |
+| `map_projection` | — | a map projection | A map projection. |
+| `count_subquery` | — | `COUNT` over a subquery | A `COUNT` subquery. |
+| `exists` | — | `EXISTS` (a `WHERE` reads only `NOT EXISTS` over a part of one relationship, as a whole conjunct) | An `EXISTS` other than a `NOT EXISTS` conjunct. |
+| `case` | — | `CASE` | A `CASE` expression. |
+| `xor` | — | `XOR` | `XOR`. |
+| `modulo` | — | `%` | The `%` operator. |
+| `power` | — | `^` | The `^` operator. |
+| `ends_with` | — | `ENDS WITH` | `ENDS WITH`. |
+| `list_literal` | — | a list outside `IN` | A list outside `IN`. |
+| `map_literal` | — | a map outside a node | A map outside a node. |
+| `named_path` | — | a named path | A path bound to a name. |
+| `shortest_path` | — | a shortest path | `shortestPath` or `allShortestPaths`. |
+| `relationship_variable` | — | a variable on a relationship (a link's fields are read through its link type) | A variable on a relationship. |
+| `relationship_properties` | — | properties on a relationship (a link's fields are read through its link type) | Properties on a relationship. |
+| `relation_alternation` | — | a choice of relationship types (`:a\|b`) | A choice of relationship types. |
+| `several_labels` | — | a node of several labels | A node of more than one label. |
+| `unbounded_length` | — | a length with no upper bound (`*`, `*2..`; none is made up) | A variable length with no upper bound. |
+| `calendar_duration` | — | a duration in months or years, which has no fixed length | A duration in months or years. |
+| `match_from_optional` | — | a `MATCH` reading a name only an `OPTIONAL MATCH` binds (it would drop the rows the optional part keeps; write the part as a `MATCH`) | A `MATCH` part reading a name only an optional part binds. |
+| `optional_from_optional` | — | an `OPTIONAL MATCH` walking from a name only another `OPTIONAL MATCH` binds (the two would match or miss as one) | An `OPTIONAL MATCH` walking from a name another one binds. |
+| `optional_parts` | — | an `OPTIONAL MATCH` walking from more than one name bound before it (an optional part is one branch from one name) | An `OPTIONAL MATCH` hanging from more than one bound name. |
+| `aggregate_in_expression` | — | an aggregate inside an expression (a measure is one function of one path) | An aggregate inside an expression. |
+| `using` | — | `USING` (an index hint) | A `USING` hint. |
+
 ## `Act`
 
 What a write left undone where its lease did not hold.
@@ -401,6 +449,19 @@ What a refusal is about.
 | `call_arity` | `name` (String), `given` (usize) | {name}() does not take {given} argument(s) | A call with a number of arguments its function does not take. |
 | `call_takes_field` | `name` (String) | {name}() takes one field name | A call that takes a field name given something else. |
 | `call_takes_quoted` | `name` (String) | {name}() takes a quoted name | A call that takes a quoted name given something else. |
+| `cypher_alias` | `item` (String) | an aggregate or an expression is named with `AS`: `{item} AS <name>` | An aggregate or an expression returned with no name. |
+| `cypher_count` | `item` (String) | `count` counts rows: `count(*)` or `count(<name>)` of a name no optional part binds, not `{item}` | A `count` of what is no row. |
+| `cypher_function` | `name` (String), `offset` (usize) | `{name}()` is no function of Lakelands' expression grammar (at character {offset}) | A function the expression grammar does not have. |
+| `cypher_order_item` | `item` (String) | `ORDER BY` names a path, as in `a.amount`, not `{item}` | A sort key that is no path. |
+| `cypher_outside` | `construct` (Construct), `offset` (usize) | {construct} is outside the openCypher subset Lakelands reads (at character {offset}) | A construct outside the openCypher subset. |
+| `cypher_param_missing` | `name` (ParamName) | the statement reads `${name}`, which is not given | A parameter the statement reads that is not given. |
+| `cypher_param_unused` | `name` (ParamName) | `{name}` is given and the statement does not read it | A parameter given that the statement does not read. |
+| `cypher_param_value` | `name` (ParamName) | `${name}` cannot stand where it is read: an object, a list outside `IN`, a key that is not text, or a limit or skip that is no whole number | A parameter whose value cannot stand where it is read. |
+| `cypher_row_item` | `item` (String) | a row holds paths (`a.amount`) or every bound name (`RETURN *`); `{item}` is neither | A row item that is neither a path nor every bound name. |
+| `cypher_skip` | `skip` (u64) | `SKIP {skip}`: a pattern continues by the cursor its answer hands out (`next_cursor`), passed beside the statement | A `SKIP` other than 0. |
+| `cypher_start_type` | `offset` (usize) | the first node names its type, as in `(a:invoice)` (at character {offset}) | A first node with no label. |
+| `cypher_unbound` | `name` (String), `offset` (usize) | `{name}` is bound by nothing before it: a part begins at a name an earlier part bound (at character {offset}) | A part that begins at a name nothing bound. |
+| `cypher_whole` | `clause` (String), `offset` (usize) | `{clause}` takes a whole number, written or a parameter (at character {offset}) | A `SKIP` or `LIMIT` given what is no whole number. |
 | `division_by_zero` | — | division by zero | A division by zero. |
 | `in_empty` | — | an `in` lists one value at least | An `in` with an empty list. |
 | `exists_here` | — | exists() has meaning in a verb's `requires` and set values, over a relation a path may begin at | An `exists` outside a verb's `requires` and set values. |
@@ -450,6 +511,7 @@ What a refusal is about.
 | `set_of_other_type` | `set` (String), `of` (TypeName), `type` (TypeName) | in_set('{set}') names a set of `{of}`, not of `{type}` | A set of another type named in a filter. |
 | `set_undeclared` | `set` (String) | in_set('{set}') names an object set that is not declared | A set named in a filter that is not declared. |
 | `setting_takes_key` | `value` (Operand) | setting() takes a key, not {value} | A `setting` given what is no key. |
+| `statement_not_parsed` | `why` (Case) | the statement does not parse as the openCypher subset Lakelands reads (`MATCH … RETURN …`): {why} | An openCypher statement that does not parse. |
 | `steps_into_reference` | `expr` (String), `field` (FieldName) | `{expr}` steps into `{field}`, which is a reference: a condition reads the record's own fields. Compare the reference's key, or walk to the record it names in a pattern | A path into a reference's members. |
 | `steps_into_scalar` | `expr` (String), `field` (FieldName) | `{expr}` steps into `{field}`, which is no `json` field, and has no members | A path into the members of what has none. |
 | `sum_not_number` | `value` (Operand) | sum() met {value}, which is not a number | A sum of what is no number. |
