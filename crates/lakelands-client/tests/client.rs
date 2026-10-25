@@ -1200,24 +1200,108 @@ async fn an_ingests_sealed_apart_goes_over_the_wire() {
     assert_eq!(apart, [Some(0), Some(1)], "{events:?}");
 }
 
-/// A change to records goes over `schema/plan` and `schema/enact` as the
-/// body the server reads it from, member for member, and comes back as the
-/// change it was (081).
-#[test]
-fn a_change_to_records_is_carried_unchanged() {
-    use lakelands_api::write::{Change, ChangeTo};
+/// A change to records goes over `schema/plan`, `schema/enact`, `proposals`
+/// and `proposals/{id}/accept_planned` as the server reads it: the plan the
+/// client returns is the plan the served store makes, the change enacted
+/// against its id is made, a stale id is refused `plan_stale`, and a
+/// proposal of the change comes back whole (081).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_change_to_records_is_planned_enacted_and_accepted_over_the_wire() {
+    use lakelands_api::expr::Condition;
+    use lakelands_api::write::{Change, ChangeTo, Outcome, ProposalFilter, ProposedWrite};
+    let store = common::memory_lake("finance", Limits::default()).await;
+    let (addr, keys) = common::serve(store.clone()).await;
+    let remote: Arc<dyn LakeStore> = Arc::new(common::remote(addr, store.lake(), keys));
+    let f = setup(store.clone()).await;
+    let (clerk, reviewer) = (&f.cast.clerk, &f.cast.owner);
+    let (near, far) = (remote.catalog(WriteContext::default()), &f.catalog);
+    let write = |k: &'static str, status: &'static str| {
+        let (far, who) = (far.clone(), clerk.clone());
+        async move {
+            let at = (&TypeName::from("invoice"), &RecordKey::from(k));
+            let put = far.upsert(
+                &who,
+                at.0,
+                at.1,
+                patch(&[("status", json!(status))]),
+                Default::default(),
+            );
+            put.await.unwrap();
+        }
+    };
+    for k in ["INV-1", "INV-2"] {
+        write(k, "open").await;
+    }
     let change = Change::Records {
         ty: "invoice".into(),
-        filter: Box::new("status = 'open'".into()),
+        filter: Box::new(Condition::from("status = 'open'")),
         to: ChangeTo::Set(patch(&[("status", json!("late"))])),
         only: BTreeMap::new(),
         skip_restricted: false,
     };
-    let body = json!(change);
-    assert_eq!(
-        body,
-        json!({"change": "records", "type": "invoice", "where": "status = 'open'",
-               "to": {"set": {"status": "late"}}})
-    );
-    assert_eq!(serde_json::from_value::<Change>(body).unwrap(), change);
+
+    let planned = near.plan(clerk, change.clone()).await.unwrap().data;
+    let served = far.plan(clerk, change.clone()).await.unwrap().data;
+    assert_eq!(planned, served);
+    let records = planned.records.as_deref().expect("a plan of records");
+    assert_eq!(records.selected, 2);
+
+    // A proposal of the change comes back whole, and lists as kind records.
+    let proposed = ProposedWrite::Records {
+        ty: "invoice".into(),
+        filter: Condition::from("status = 'open'"),
+        to: ChangeTo::Set(patch(&[("status", json!("late"))])),
+        only: BTreeMap::new(),
+        skip_restricted: false,
+        plan: Box::default(),
+    };
+    let Outcome::Proposed { proposal, .. } = near
+        .propose(clerk, proposed, "mark them late".into())
+        .await
+        .unwrap()
+    else {
+        panic!("a change to records is proposed whole");
+    };
+    let listed = near.proposals(reviewer, ProposalFilter::default()).await;
+    let held = listed.unwrap().data.into_iter().find(|p| p.id == proposal);
+    // The store answers `skip_restricted` for the proposer, as it holds it.
+    let mut held = held.and_then(|p| p.write).and_then(|w| w.change());
+    if let Some(Change::Records {
+        skip_restricted, ..
+    }) = &mut held
+    {
+        *skip_restricted = false;
+    }
+    assert_eq!(held, Some(change.clone()));
+
+    // A selected record changed after the plan: stale, appended nothing.
+    write("INV-2", "paid").await;
+    let head = store.head().await.unwrap();
+    let stale = near
+        .accept_planned(reviewer, &proposal, &planned.report_id)
+        .await;
+    assert!(matches!(stale, Err(Error::Refused { .. })), "{stale:?}");
+    assert_eq!(store.head().await.unwrap(), head);
+
+    let planned = near.plan(clerk, change.clone()).await.unwrap().data;
+    near.accept_planned(reviewer, &proposal, &planned.report_id)
+        .await
+        .unwrap();
+    let again = near.plan(clerk, change.clone()).await.unwrap().data;
+    assert_eq!(again.records.as_deref().map(|r| r.selected), Some(0));
+
+    // And enacted directly against a plan's id.
+    write("INV-3", "open").await;
+    let planned = near.plan(clerk, change.clone()).await.unwrap().data;
+    near.enact(clerk, change.clone(), &planned.report_id)
+        .await
+        .unwrap();
+    let after = far
+        .get(clerk, &"invoice".into(), get("INV-3"))
+        .await
+        .unwrap()
+        .data;
+    assert_eq!(after.fields["status"], json!("late"));
+    let stale = near.enact(clerk, change, &planned.report_id).await;
+    assert!(matches!(stale, Err(Error::Refused { .. })), "{stale:?}");
 }

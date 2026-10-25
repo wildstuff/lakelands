@@ -994,4 +994,120 @@ mod tests {
             }
         }
     }
+
+    /// A change to records proposed through `propose` is listed as kind
+    /// `records`, refused by a plain `accept` and by `accept` with a stale
+    /// `plan_id` (`plan_stale`, nothing appended), and made by `accept`
+    /// with the id of the plan the reviewer was shown (081, 062).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_proposed_change_to_records_is_accepted_only_with_its_plan_id() {
+        let ty = json!({"declare": "type", "name": "memo", "fields": [{"name": "text", "type": {"kind": "text"}}]});
+        for (name, store) in lakes("third").await {
+            let cat = store.catalog(WriteContext::default());
+            let who = owner("doors");
+            cat.declare(&who, serde_json::from_value(ty.clone()).unwrap())
+                .await
+                .unwrap();
+            let put = |k: &'static str, text: &'static str| {
+                let (cat, who) = (cat.clone(), who.clone());
+                async move {
+                    let patch = [("text".into(), json!(text))].into();
+                    let at = (&"memo".into(), &k.into());
+                    let put = cat.upsert(&who, at.0, at.1, patch, Default::default());
+                    put.await.unwrap();
+                }
+            };
+            put("a", "old").await;
+            put("b", "old").await;
+            let call = |door: Door, a: Value| {
+                let (cat, who) = (cat.clone(), who.clone());
+                async move {
+                    let a = a.as_object().cloned().unwrap_or_default();
+                    run(cat.as_ref(), &who, &door, "the door", (a, None)).await
+                }
+            };
+            let to = json!({"set": {"text": "new"}});
+            let filed = call(
+                Door::Propose,
+                json!({"write": {"write": "records", "type": "memo", "where": "text = 'old'", "to": to},
+                       "why": "renew them"}),
+            )
+            .await
+            .ok()
+            .unwrap();
+            let proposal = filed["proposal"].clone();
+            assert!(proposal.is_string(), "on {name}: {filed}");
+
+            let listed = call(Door::Proposals, json!({"kind": "records"})).await.ok();
+            let listed = listed.unwrap();
+            let held = listed["data"].as_array().unwrap();
+            assert!(
+                held.iter().any(|p| p["id"] == proposal
+                    && p["write"]["write"] == json!("records")
+                    && p["said"].as_array().is_some_and(|s| !s.is_empty())),
+                "on {name}: {listed}"
+            );
+
+            let head = store.head().await.unwrap();
+            let refused = call(Door::Accept, json!({"proposal": proposal})).await;
+            assert!(
+                matches!(&refused, Err(Fault::Contract(_))),
+                "on {name}, a plain accept was not refused"
+            );
+            let shown = cat
+                .plan(
+                    &who,
+                    lakelands_api::write::Change::Records {
+                        ty: "memo".into(),
+                        filter: Box::new("text = 'old'".into()),
+                        to: serde_json::from_value(to.clone()).unwrap(),
+                        only: Default::default(),
+                        skip_restricted: false,
+                    },
+                )
+                .await
+                .unwrap()
+                .data;
+            put("b", "other").await;
+            let head = head.max(store.head().await.unwrap());
+            let stale = call(
+                Door::Accept,
+                json!({"proposal": proposal, "plan_id": shown.report_id}),
+            )
+            .await;
+            let Err(Fault::Contract(stale)) = stale else {
+                panic!("on {name}, a stale plan_id was accepted");
+            };
+            assert!(stale.to_string().contains("plan"), "on {name}: {stale}");
+            assert_eq!(
+                store.head().await.unwrap(),
+                head,
+                "on {name}, a refusal appended"
+            );
+
+            put("b", "old").await;
+            let fresh = cat
+                .plan(
+                    &who,
+                    lakelands_api::write::Change::Records {
+                        ty: "memo".into(),
+                        filter: Box::new("text = 'old'".into()),
+                        to: serde_json::from_value(to.clone()).unwrap(),
+                        only: Default::default(),
+                        skip_restricted: false,
+                    },
+                )
+                .await
+                .unwrap()
+                .data;
+            let done = call(
+                Door::Accept,
+                json!({"proposal": proposal, "plan_id": fresh.report_id}),
+            )
+            .await
+            .ok()
+            .unwrap();
+            assert_eq!(done["outcome"], json!("applied"), "on {name}: {done}");
+        }
+    }
 }

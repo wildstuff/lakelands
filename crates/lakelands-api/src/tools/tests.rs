@@ -620,3 +620,26 @@ fn a_change_tool_follows_what_its_principal_may_write() {
     let t = tools_ok(&lake(vec![reader], vec![], OWNER));
     assert!(t.iter().all(|t| t.name != "invoice_change"));
 }
+
+#[test]
+fn a_change_tool_on_a_link_type_sets_its_own_fields_or_unlinks_and_names_no_end() {
+    let (invoice, mut link_type) = linked_invoice();
+    link_type.may = ALL;
+    let t = tools_ok(&lake_of(vec![invoice, link_type]));
+    let change = t
+        .iter()
+        .find(|t| t.name == "sys_link_invoice_approved_by_change")
+        .expect("the change tool of the link type");
+    let set = &change.input_schema["properties"]["set"]["properties"];
+    assert!(set["since"].is_object(), "{set}");
+    assert!(set.get("score").is_none(), "a read-only field: {set}");
+    assert!(
+        set.get("from").is_none() && set.get("to").is_none(),
+        "{set}"
+    );
+    assert!(
+        change.description.contains("unlink"),
+        "{}",
+        change.description
+    );
+}

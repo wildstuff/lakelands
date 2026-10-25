@@ -34,6 +34,7 @@ use serde_json::{Map, Value, json};
 use crate::describe::{FieldDescription, LakeDescription, TypeDescription, VerbDescription};
 use crate::error::{catalog, closed};
 use crate::id::{RelationName, TypeName, VerbName};
+use crate::key::LINK_PREFIX;
 use crate::ontology::{FieldType, StorageKind};
 
 /// The door a tool leads to.
@@ -869,6 +870,13 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
         });
     }
     if ty.may.find && (ty.may.upsert || ty.may.retire) {
+        // A link type's ends name the link: a change sets its own fields or
+        // unlinks, and never names an end.
+        let link = ty.name.as_str().starts_with(LINK_PREFIX);
+        let mut set_fields = writable_fields(ty, lake);
+        if link {
+            set_fields.retain(|name, _| name != "from" && name != "to");
+        }
         let mut p = props([(
             "where",
             json!({"type": "string",
@@ -877,7 +885,7 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
         if ty.may.upsert {
             p.insert(
                 "set".into(),
-                json!({"type": "object", "properties": writable_fields(ty, lake),
+                json!({"type": "object", "properties": set_fields,
                        "additionalProperties": false,
                        "description": "The values to set, the same on every record selected. Send this or `retire`."}),
             );
@@ -885,7 +893,11 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
         if ty.may.retire {
             p.insert(
                 "retire".into(),
-                json!({"const": true, "description": "Retire every record selected. Send this or `set`."}),
+                json!({"const": true, "description": if link {
+                    "Unlink every link selected. Send this or `set`."
+                } else {
+                    "Retire every record selected. Send this or `set`."
+                }}),
             );
         }
         let (mut input, _) = planned(obj(p, &["where"]));
@@ -896,10 +908,13 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
             name: format!("{base}_change"),
             description: format!(
                 "{} every {} record a condition selects. It is planned first and enacted only against that plan: `plan: true`, or a call with neither `plan` nor `plan_id`, answers how many records it selects, the first keys, the records each field would change and each refusal a record would meet, and changes nothing; call it again with that plan's `report_id` as `plan_id` to make exactly that change in one append, refused `plan_stale` if a selected record changed or the selection moved, and `too_large` past the lake's `max_change_records`, never cut. A refusal of one record refuses the whole change.",
-                match (ty.may.upsert, ty.may.retire) {
-                    (true, true) => "Set values on, or retire,",
-                    (true, false) => "Set values on",
-                    _ => "Retire",
+                match (ty.may.upsert, ty.may.retire, link) {
+                    (true, true, false) => "Set values on, or retire,",
+                    (true, true, true) => "Set the link's own fields on, or unlink (`retire`),",
+                    (true, false, false) => "Set values on",
+                    (true, false, true) => "Set the link's own fields on",
+                    (false, _, false) => "Retire",
+                    (false, _, true) => "Unlink (`retire`)",
                 },
                 label(ty)
             ),

@@ -597,6 +597,33 @@ fn change_prints_the_plan_and_makes_the_change_only_against_it() {
         let bad = sh.run(&[&args[..], &["--set", "status=late"]].concat());
         assert_eq!((bad.code, bad.out.as_str()), (1, ""), "{}", bad.err);
         assert!(bad.err.contains("status=late"), "{}", bad.err);
+
+        // `--retire` is planned, changes nothing until enacted against its
+        // plan, and then retires what the condition selected.
+        put("INV-5", "scrap");
+        let scrap = [
+            "change",
+            "invoice",
+            "--where",
+            "status = 'scrap'",
+            "--retire",
+        ];
+        let head = block_on(store.head()).unwrap();
+        let planned = sh.run(&scrap);
+        assert_eq!((planned.code, planned.err.as_str()), (0, ""));
+        let plan: serde_json::Value = serde_json::from_str(&planned.out).unwrap();
+        assert_eq!(plan["records"]["selected"], 1, "{}", planned.out);
+        assert_eq!(block_on(store.head()).unwrap(), head, "a plan appended");
+        let id = plan["report_id"].as_str().unwrap();
+        let done = sh.run(&[&scrap[..], &["--plan", id]].concat());
+        assert_eq!((done.code, done.err.as_str()), (0, ""));
+        let outcome: serde_json::Value = serde_json::from_str(&done.out).unwrap();
+        assert_eq!(outcome["outcome"], "applied", "{}", done.out);
+        let again = sh.run(&scrap);
+        let again: serde_json::Value = serde_json::from_str(&again.out).unwrap();
+        assert_eq!(again["records"]["selected"], 0, "{again}");
+        let both = sh.run(&[&scrap[..], &["--set", "status=\"x\""]].concat());
+        assert_eq!((both.code, both.out.as_str()), (2, ""), "{}", both.err);
     }
 }
 
