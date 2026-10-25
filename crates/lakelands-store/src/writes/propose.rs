@@ -235,6 +235,39 @@ impl Call<'_> {
                 self.renames_shown(&w.ontology, &m, &found)?;
                 **report = fits(found, false)?;
             }
+            // A change to records is planned as its proposer's `plan` plans
+            // it, over its proposer's own records: its pairs, and restricted
+            // records left out where it does not hold `restricted`, are held
+            // beside the condition, so the accept selects no record the
+            // proposer could not. One its proposer's plan refuses is not
+            // filed (081).
+            ProposedWrite::Records {
+                ty,
+                filter,
+                to,
+                only,
+                skip_restricted,
+                plan,
+            } => {
+                d.at.sight.ty(ty)?;
+                let admit = d.at.sight.admit(ty);
+                let pairs = admit.pairs().ok_or_else(Error::not_granted)?;
+                *only = pairs.iter().cloned().collect();
+                *skip_restricted = !self.sees_restricted();
+                let records = (
+                    ty.clone(),
+                    filter.clone(),
+                    to.clone(),
+                    only.clone(),
+                    *skip_restricted,
+                );
+                let planned = self.changing(&w, records, (now, 1, None), Against::default())?;
+                let section = planned.plan.records.as_deref();
+                if let Some(r) = section.and_then(|r| r.refused.first()) {
+                    return Err((*r.refusal).clone());
+                }
+                **plan = planned.plan;
+            }
             // A call of a function above `low` is the store's to propose,
             // when a write makes it due (064).
             ProposedWrite::Compute { .. } | ProposedWrite::ComputeSweep { .. } => granted(false)?,
@@ -251,6 +284,7 @@ impl Call<'_> {
                 let report = self.shown_value_type(&w.ontology, (**report).clone());
                 Some(plan::plan_of(&w, (Vec::new(), vec![report])))
             }
+            ProposedWrite::Records { plan, .. } => Some((**plan).clone()),
             _ => None,
         };
         if let Some(p) = &mut shown {
@@ -341,6 +375,15 @@ impl Call<'_> {
                 Ok(v) => &v.on,
                 Err(_) => return granted(false),
             },
+            // A change to records its reviewer would select only part of
+            // is not its to accept: its `only` on the type is the
+            // proposal's pairs or within them (081).
+            ProposedWrite::Records { ty, only, .. } => {
+                let admit = sees.admit(ty);
+                let within =
+                    |p: &[(FieldName, Value)]| p.iter().all(|(f, v)| only.get(f) == Some(v));
+                return granted(admit.pairs().is_some_and(within));
+            }
             _ => return granted(false),
         };
         if o.ty(ty).is_ok_and(|t| !sees.only_holder(t)) {
@@ -464,13 +507,30 @@ impl Call<'_> {
             return Err(lakelands_core::damaged(Part::Projection, None, flaw));
         };
         granted(!write.is_schema() || self.who.grants.schema)?;
+        // A change to records whose proposer held `restricted` is accepted
+        // only by a holder of it: one without would leave out what its
+        // proposer selected (081).
+        if let ProposedWrite::Records {
+            skip_restricted: false,
+            ..
+        } = write
+        {
+            granted(self.sees_restricted())?;
+        }
+        // A change to records is accepted against the plan its reviewer is
+        // shown, as its reviewer's own `enact` makes it (081).
+        if let (ProposedWrite::Records { .. }, None) = (write, plan_id) {
+            return Err(Error::invalid(Case::PlanStale));
+        }
         // And `restricted`, as its act's own door needs (062).
         if write.is_schema() {
             self.restricted_to_act()?;
         }
         // Accepted against a plan: the plan of its change made now, as the
-        // reviewer is shown it, by `plan`'s own path, is that one (062).
-        if let Some(id) = plan_id {
+        // reviewer is shown it, by `plan`'s own path, is that one (062); a
+        // change to records is compared where it is made, below.
+        let records = matches!(write, ProposedWrite::Records { .. });
+        if let Some(id) = plan_id.filter(|_| !records) {
             let Some(change) = write.change() else {
                 let proposal = proposal.clone();
                 return Err(Error::invalid(Case::ProposalPlansNothing { proposal }));
@@ -554,6 +614,7 @@ impl Call<'_> {
         // The sections of the plan that applies, for a change of the
         // ontology, as the reviewer is shown them (062).
         let mut sections = (Vec::new(), Vec::new());
+        let mut records_plan = None;
         // The proposer's events are written as the proposer and caused by
         // the acceptance before their record is computed.
         let mut d = self.decide(&w, view.as_ref(), now, 1);
@@ -732,6 +793,41 @@ impl Call<'_> {
                 let own = self.value_type_drafts(&w, m, plan, now, drafts.len())?;
                 drafts.extend(own.into_iter().map(&as_accepted));
             }
+            // Selected and judged as its reviewer's `enact` would, within
+            // its proposer's pairs and restricted records left out where
+            // they were, written as its proposer and caused by the
+            // acceptance; refused `plan_stale` where the plan made now is
+            // not the one the reviewer was shown, and the proposal stays
+            // pending (081).
+            ProposedWrite::Records {
+                ty,
+                filter,
+                to,
+                only,
+                skip_restricted,
+                ..
+            } => {
+                let records = (
+                    ty.clone(),
+                    filter.clone(),
+                    to.clone(),
+                    only.clone(),
+                    *skip_restricted,
+                );
+                let envelope = Envelope {
+                    writer: Some(p.proposer.clone()),
+                    cause: Some(accepted_at),
+                    ..Envelope::of(Origin::Authored)
+                };
+                let against = Against {
+                    plan: plan_id,
+                    report: None,
+                };
+                let at = (now, drafts.len(), Some(envelope));
+                let planned = self.changing(&w, records, at, against)?;
+                drafts.extend(planned.drafts);
+                records_plan = Some(planned.plan);
+            }
             ProposedWrite::Compute { .. } | ProposedWrite::ComputeSweep { .. } => {
                 unreachable!("a proposed call is accepted above")
             }
@@ -749,6 +845,9 @@ impl Call<'_> {
         }
         if let (true, Outcome::Applied { plan, .. }) = (write.is_schema(), &mut outcome) {
             *plan = Some(Box::new(plan::plan_of(&w, sections)));
+        }
+        if let (Some(p), Outcome::Applied { plan, .. }) = (records_plan, &mut outcome) {
+            *plan = Some(Box::new(p));
         }
         Ok((outcome, external))
     }

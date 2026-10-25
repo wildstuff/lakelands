@@ -283,11 +283,38 @@ pub enum ProposedWrite {
         /// The first records it called for, in key order.
         first: Vec<RecordKey>,
     },
+    /// A change to the records a condition selects, whole, as `enact`
+    /// makes it: its accept enacts it against the plan its reviewer is
+    /// shown, or is refused `plan_stale`
+    /// (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`).
+    Records {
+        /// The type.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// The condition, in the expression grammar.
+        #[serde(rename = "where")]
+        filter: Condition,
+        /// What it does to each record selected.
+        to: ChangeTo,
+        /// The proposer's `only` on the type, held beside the condition.
+        /// The store answers it; whatever a proposer sends is replaced.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        only: std::collections::BTreeMap<FieldName, serde_json::Value>,
+        /// Whether restricted records are left out: so where its proposer
+        /// does not hold `restricted`. The store answers it; whatever a
+        /// proposer sends is replaced.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        skip_restricted: bool,
+        /// Its plan as its proposer was shown it. The store answers it;
+        /// whatever a proposer sends is replaced.
+        #[serde(default)]
+        plan: Box<Plan>,
+    },
 }
 
 impl ProposedWrite {
-    /// The change to the ontology it proposes, as `plan` plans it; `None`
-    /// for a write of records.
+    /// The change it proposes, as `plan` plans it: to the ontology, or to
+    /// the records a condition selects; `None` for a write of one record.
     pub fn change(&self) -> Option<Change> {
         match self {
             ProposedWrite::Declare { declarations, .. } => Some(Change::Declare {
@@ -301,6 +328,20 @@ impl ProposedWrite {
                     to: (**to).clone(),
                     renames: renames.clone(),
                 }),
+            }),
+            ProposedWrite::Records {
+                ty,
+                filter,
+                to,
+                only,
+                skip_restricted,
+                ..
+            } => Some(Change::Records {
+                ty: ty.clone(),
+                filter: Box::new(filter.clone()),
+                to: to.clone(),
+                only: only.clone(),
+                skip_restricted: *skip_restricted,
             }),
             _ => None,
         }
@@ -318,6 +359,7 @@ impl ProposedWrite {
             ProposedWrite::Compute { .. } | ProposedWrite::ComputeSweep { .. } => {
                 ProposalKind::Compute
             }
+            ProposedWrite::Records { .. } => ProposalKind::Records,
         }
     }
 
@@ -351,6 +393,8 @@ pub enum ProposalKind {
     MigrateValueType,
     /// A function's outside calls.
     Compute,
+    /// A change to the records a condition selects.
+    Records,
 }
 
 /// Where a proposal stands.
@@ -1484,7 +1528,9 @@ pub struct Unlive {
 /// A change to the ontology, as `plan` plans it and `enact` makes it
 /// (`docs/decisions/062-a-change-plans-before-it-acts.md`): what the doors
 /// `apply`, `add_field`, `recompute`, `migrate_apply` and
-/// `migrate_value_type_apply` each make.
+/// `migrate_value_type_apply` each make; or a change to the records a
+/// condition selects
+/// (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, tag = "change", rename_all = "snake_case")]
 pub enum Change {
@@ -1516,6 +1562,41 @@ pub enum Change {
         /// The migration.
         migration: Box<ValueTypeMigration>,
     },
+    /// The same values set on, or a retirement of, every record of one
+    /// type that a condition selects, as its caller's `find` with that
+    /// condition answers them.
+    Records {
+        /// The type. On a link type, its links' own fields are set, or
+        /// the links unlinked; no end is named.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// The condition, in the expression grammar.
+        #[serde(rename = "where")]
+        filter: Box<Condition>,
+        /// What it does to each record selected.
+        to: ChangeTo,
+        /// Text values a selected record's fields must hold, beside the
+        /// condition: a proposal's carries its proposer's `only`, so its
+        /// accept selects no record the proposer could not.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        only: std::collections::BTreeMap<FieldName, serde_json::Value>,
+        /// Whether restricted records are left out, beside the condition:
+        /// a proposal's is set where its proposer does not hold
+        /// `restricted`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        skip_restricted: bool,
+    },
+}
+
+/// What a change to records does to each record it selects.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub enum ChangeTo {
+    /// These values set, the same on every record: values, never an
+    /// expression over the record.
+    Set(Patch),
+    /// Each record retired.
+    Retire,
 }
 
 /// What a change would do, before it does it: told to its author, and
@@ -1542,8 +1623,57 @@ pub struct Plan {
     /// True when no section loses a value or breaks a constraint that
     /// refuses: the change can be made as planned. A proposal's plan of
     /// declarations only tells, and is judged on the records its proposer
-    /// is told of; its accept still refuses on every record.
+    /// is told of; its accept still refuses on every record. A plan of
+    /// records holds it while no record is refused.
     pub lossless: bool,
+    /// A change to records' section: what it selects, changes and is
+    /// refused. Its plan's id is made over it and over every selected
+    /// key with the version read, never over the head.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub records: Option<Box<RecordsPlan>>,
+}
+
+/// What a change to records would do, as its caller is answered it: every
+/// count and key is an answer to its read
+/// (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordsPlan {
+    /// The type.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// How many records the condition selects.
+    pub selected: u64,
+    /// Up to five of their keys, the smallest.
+    pub sample_keys: Vec<RecordKey>,
+    /// Per field set, how many selected records it would change. A field
+    /// its caller may write and not read is told as written on every one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<FieldChanged>,
+    /// Every refusal a selected record would meet, as that record's own
+    /// `upsert` or `retire` is refused; one is enough that the change
+    /// cannot be enacted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refused: Vec<RecordsRefused>,
+}
+
+/// How many selected records a change to records changes one field of.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldChanged {
+    /// The field.
+    pub field: FieldName,
+    /// How many records it would change.
+    pub records: u64,
+}
+
+/// One refusal the records a change selects would meet.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordsRefused {
+    /// The refusal, as the first of them is refused it.
+    pub refusal: Box<crate::Error>,
+    /// How many records it refuses.
+    pub records: u64,
+    /// Up to five of their keys, the smallest.
+    pub sample_keys: Vec<RecordKey>,
 }
 
 /// How the values of one field convert to its new type.

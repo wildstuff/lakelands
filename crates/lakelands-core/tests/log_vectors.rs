@@ -194,7 +194,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 606, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 613, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -396,7 +396,7 @@ fn a_view_hashes_its_conditions_in_typed_form() {
 /// lines are held to this list, so a line that is gone from the file, a
 /// line added to it and a line that shows another's thing are each
 /// refused, as `verify.py` refuses them by its own list.
-const SHOWN: [&str; 73] = [
+const SHOWN: [&str; 74] = [
     "rekeyed",
     "upstream",
     "date_bucket",
@@ -470,10 +470,11 @@ const SHOWN: [&str; 73] = [
     "verb_granted",
     "removed_deliveries",
     "verb_preconditions",
+    "proposed_records",
 ];
 
 /// The last position of the vectors' lake.
-const LAST: u64 = 80;
+const LAST: u64 = 81;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
@@ -546,6 +547,11 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
                 "plan": lakelands_api::write::Plan { report_id: String::new(), ..(**p).clone() },
                 "head": p.at.0,
             }))),
+        "proposed_records" => matches!(proposed, Some(ProposedWrite::Records { ty, to, plan, .. })
+            if ty.as_str() == "ticket"
+                && to == &lakelands_api::write::ChangeTo::Set(
+                    [("title".into(), serde_json::json!("closed"))].into_iter().collect())
+                && plan.records.as_ref().is_some_and(|r| r.selected == 2 && r.fields.len() == 1)),
         // Annotations are not shape.
         "annotations" => ty.is_some_and(|t| {
             let mut bare = t.clone();
@@ -1052,8 +1058,8 @@ fn lines_of(n: u32) -> Vec<Value> {
 /// The steps from each older format to this release's change no event:
 /// 14 → 15 lets a verb's path read across a reference or a relation's
 /// link (055), which a log of format 14 never declares, and 15 → 16,
-/// 16 → 17, 17 → 18 and 18 → 19 add forms a log of the format before
-/// never holds.
+/// 16 → 17, 17 → 18, 18 → 19 and 19 → 20 add forms a log of the format
+/// before never holds.
 /// So every line of each older format's vectors, of every kind they hold,
 /// is read as it was written, `v` included, and decodes into this
 /// release's structs; the kinds each holds are named, so a kind the

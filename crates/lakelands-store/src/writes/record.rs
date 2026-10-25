@@ -168,16 +168,48 @@ impl Decide<'_> {
         expected: Option<Version>,
     ) -> Result<Plan> {
         let decl = self.ontology.ty(ty)?;
-        not_a_view(decl)?;
-        granted(self.at.sight.may_retire(decl))?;
-        if !self.door.admits_retirement(decl.retired_by) {
-            return Err(self.retired_by_verbs(decl));
-        }
+        self.retires(decl)?;
         untold_setting(&self.at.sight, decl, key)?;
         let before = self.reached(decl, key, expected)?;
         let own = self.draft(retirement(ty, key, before.version));
         let (drafts, after) = (self.retiring(&before, own)?, None);
         Ok(Plan { drafts, after })
+    }
+
+    /// Whether the judged principal may retire a record of `decl`, then
+    /// whether this door retires it, before a record is read.
+    fn retires(&self, decl: &TypeDecl) -> Result<()> {
+        not_a_view(decl)?;
+        granted(self.at.sight.may_retire(decl))?;
+        match self.door.admits_retirement(decl.retired_by) {
+            true => Ok(()),
+            false => Err(self.retired_by_verbs(decl)),
+        }
+    }
+
+    /// What [`Self::plan`] refuses of `op` before a record is read, in its
+    /// order: what the op names, a link door's own questions, then a
+    /// retirement's grant and door, or a write's values; its checked
+    /// values, which every record a change selects is written (081).
+    pub(crate) fn unread(&self, op: Op<'_>) -> Result<Patch> {
+        self.sight(op)?;
+        let link = self.shape(op)?.map(|(lt, _)| lt);
+        let (ty, patch) = match op {
+            Op::Upsert(ty, _, patch) => (ty, Some(patch)),
+            Op::Retire(ty, _) => (ty, None),
+            Op::Link(_, fields) => (
+                link.as_ref().expect("a link door has its type"),
+                Some(fields),
+            ),
+            Op::Unlink(_) => (link.as_ref().expect("a link door has its type"), None),
+            Op::Call(..) => unreachable!("a change names no verb"),
+        };
+        let decl = self.ontology.ty(ty)?;
+        match patch {
+            None => self.retires(decl).map(|()| Patch::new()),
+            Some(p) if p.is_empty() => Err(Error::invalid(Case::PatchEmpty)),
+            Some(p) => self.values(decl, p),
+        }
     }
 
     /// What `op` names, as the judged principal is shown it (006 and 024,
@@ -277,6 +309,12 @@ impl Decide<'_> {
     /// its values, each in its written form.
     pub(crate) fn checked(&self, decl: &TypeDecl, key: &RecordKey, patch: &Patch) -> Result<Patch> {
         check_key(key)?;
+        self.values(decl, patch)
+    }
+
+    /// The door and the grant of every field `patch` carries, then its
+    /// values, each in its written form.
+    fn values(&self, decl: &TypeDecl, patch: &Patch) -> Result<Patch> {
         let door = (self.door, self.envelope.source.as_ref());
         let checked = self.at.sight.check_write(decl, door, patch);
         checked.map_err(|e| self.verbs_only(decl, e))?;
