@@ -224,7 +224,9 @@ async fn a_dropped_writer_is_refused_while_another_holds_the_lease_and_writes_af
     let theirs = second.catalog(WriteContext::default());
     put(theirs.as_ref(), &who, "theirs").await.unwrap();
     declare(theirs.as_ref(), &who, "memo").await;
-    let at = tip(store.as_ref()).await;
+    // The log as the lease's holder reads it: once refused, the first
+    // handle reads it too, as far as the second has folded.
+    let at = tip(second.as_ref()).await;
     // The first write finds the session gone; the second is refused by
     // the lease's situation, as is every one after it.
     let first = put(cat.as_ref(), &who, "mine").await;
@@ -256,7 +258,8 @@ async fn a_dropped_writer_is_refused_while_another_holds_the_lease_and_writes_af
     // the second holds it.
     let preflight = store.purge_preflight(&"crm".into(), None).await;
     assert!(preflight.is_ok(), "the purge's preflight: {preflight:?}");
-    assert_eq!(tip(store.as_ref()).await, at, "nothing appended");
+    assert_eq!(tip(second.as_ref()).await, at, "nothing appended");
+    assert_eq!(tip(store.as_ref()).await, at, "the refused handle follows");
     assert_eq!(
         keys(theirs.as_ref(), &who).await.unwrap(),
         ["a", "theirs"],
