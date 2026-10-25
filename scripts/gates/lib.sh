@@ -71,6 +71,15 @@ base_number() {
     fi
 }
 
+# As base_number, but 0 when there is a base and FILE or NAME is not on
+# it: a budget the pull request opens stood at 0 before it.
+base_number_or_zero() {
+    local n
+    n="$(base_number "$@")"
+    [ -z "$n" ] && [ -n "$(gate_base)" ] && n=0
+    printf '%s\n' "$n"
+}
+
 # A budget's number goes down by itself and is raised only by a recorded
 # decision (docs/decisions/047-a-ceiling-is-raised-by-a-recorded-rule.md):
 # red when WHAT rose from PREV to NOW, unless this pull request adds a
