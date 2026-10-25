@@ -120,6 +120,14 @@ The most memberships one declaration of an object set may change over the record
 - **Takes:** a count.
 - **Default:** `20000`.
 
+### `limits.max_change_records`
+
+The most records one change to records may select; past it `plan` and `enact` refuse it, naming this setting, and never cut it.
+
+- **Takes:** a count.
+- **Default:** `10000`.
+- **Cost:** a change is enacted in one append that holds the writer alone: at 10 000 records the enact took 0.5–0.7 s on the memory engine, 0.7–0.8 s on SQLite and 4.3–4.8 s on PostgreSQL, its plan about a third of that.
+
 ### `limits.max_rerank_top`
 
 The largest `top` a search's `rerank` may ask for; a larger one is refused, naming this setting. A lake whose location sets 0 is not opened.

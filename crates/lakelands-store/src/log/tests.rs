@@ -35,10 +35,11 @@ fn the_hash_covers_the_event_without_its_top_level_hash() {
 #[test]
 fn a_changed_byte_is_caught() {
     let (_, mut stored) = created();
-    let text = String::from_utf8(stored.bytes.clone())
-        .unwrap()
-        .replace("\"format\":1", "\"format\":2");
-    stored.bytes = text.into_bytes();
+    let was = format!("\"format\":{LOG_FORMAT_VERSION}");
+    let text = String::from_utf8(stored.bytes.clone()).unwrap();
+    assert!(text.contains(&was));
+    let older = format!("\"format\":{}", LOG_FORMAT_VERSION - 1);
+    stored.bytes = text.replace(&was, &older).into_bytes();
     assert!(open(&stored).is_err());
 }
 

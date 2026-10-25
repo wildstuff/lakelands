@@ -43,6 +43,12 @@ check!(
 );
 
 check!(
+    FORMAT_19_UPGRADED = a_lake_of_format_19_is_upgraded_and_read,
+    "054 and log-format §6 (lakelands#1409): the vectors of format 19, as v0.18.0 shipped them, imported on this engine, keep every event as it was written, `v` 19 included, and are followed by a writer's `lease_taken` and one `lake_upgraded` from 19 to the format this release writes, and every later event in that format; the lake then opens read-only, verifies whole, `describe` shows its two types and `find` answers its records; and a writer's open appends its own `lease_taken` and no second `lake_upgraded`",
+    given
+);
+
+check!(
     FORMAT_15_UPGRADED = a_lake_of_format_15_is_upgraded_and_read,
     "054 and log-format §6 (lakelands#1096): the vectors of format 15, as v0.14.0 shipped them, imported on this engine, keep every event as it was written, `v` 15 included, and are followed by a writer's `lease_taken` and one `lake_upgraded` from 15 to the format this release writes, and every later event in that format; the lake then opens read-only, verifies whole, `describe` shows its two types and `find` answers its records; and a writer's open appends its own `lease_taken` and no second `lake_upgraded`",
     given
@@ -73,6 +79,10 @@ async fn a_lake_of_format_17_is_upgraded_and_read(store: Store, given: Given) ->
 
 async fn a_lake_of_format_18_is_upgraded_and_read(store: Store, given: Given) -> Held {
     vectors_upgraded(store, given, 18).await
+}
+
+async fn a_lake_of_format_19_is_upgraded_and_read(store: Store, given: Given) -> Held {
+    vectors_upgraded(store, given, 19).await
 }
 
 /// The vectors of the older format `old`, imported, upgraded and read.
@@ -176,7 +186,7 @@ check!(
 
 check!(
     LAKE_19_READ = the_lake_of_format_19_is_read_as_it_answered,
-    "054 (lakelands#962): the lake v0.18.0 made through its doors (`docs/log-format/lakes/19/`), in format 19, imported on this engine, is read as that release answered it, as `answers.json` keeps the answers: every live record of each type it names with its fields, an item a source the field admits wrote, a person of a delivery sealed apart and a meter a verb wrote through its call's payload among them; the members of its object set; the walk over its relation; and its sealed values read whole with the file keyring's file it ships, the apart delivery's through its composed key, each with its provenance, while the values a delivery, several deliveries, a delivery sealed apart and a cut by the time a source saw them took are gone with the records only they wrote (065); imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies; and it answers so again rebuilt, and built ahead beside its writer and swapped in by the writer's open of the layout before, which goes on from the build (071, lakelands#1322); on an engine that keeps no scratch the build ahead is refused as unbound",
+    "054 (lakelands#962): the lake v0.18.0 made through its doors (`docs/log-format/lakes/19/`), in format 19, imported on this engine, is upgraded after its events by a writer's open and read as that release answered it, as `answers.json` keeps the answers: every live record of each type it names with its fields, an item a source the field admits wrote, a person of a delivery sealed apart and a meter a verb wrote through its call's payload among them; the members of its object set; the walk over its relation; and its sealed values read whole with the file keyring's file it ships, the apart delivery's through its composed key, each with its provenance, while the values a delivery, several deliveries, a delivery sealed apart and a cut by the time a source saw them took are gone with the records only they wrote (065); imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies; and it answers so again rebuilt, and built ahead beside its writer and swapped in by the writer's open of the layout before, which goes on from the build (071, lakelands#1322); on an engine that keeps no scratch the build ahead is refused as unbound",
     given
 );
 
