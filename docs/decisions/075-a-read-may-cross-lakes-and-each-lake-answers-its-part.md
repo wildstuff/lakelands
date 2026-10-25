@@ -2,11 +2,20 @@
 
 ## What is decided
 
-**Accepted** on lakelands#1376 (2026-10-24, by the operator). Nothing
-of it is built in 0.19.0: it comes in force with the issue that builds
-it, and until then
+**Paused** on lakelands#1400 (2026-10-25, by the operator). Nothing of
+it is built, and no issue builds it while it is paused:
 `docs/decisions/042-water-crosses-only-as-a-mirror.md` stands as
 written and nothing reads across lakes.
+
+No host case was found for one grouped read over several lakes. A
+consolidation is a sum of each lake's own answer, which the host puts
+together. A host that lets one tenant read another's data does so
+through the other lake's own principal and its grants
+(`docs/decisions/006-grants-not-roles.md`,
+`docs/decisions/051-a-grant-may-admit-only-some-records.md`), or keeps
+what it must hold of the other lake as a mirror (042). The rules below
+are what a read across lakes would keep, should a host case bring it
+back; they bind nothing until a record takes it up again.
 
 ### A read across lakes is one read over several lakes, outside every one of them
 
@@ -292,6 +301,11 @@ report: it is either over every lake named, or it is not answered.
 - **Not a grant across lakes**, and no principal of several lakes.
 - **Not a change feed across lakes.** The feed stays one lake's log
   (`docs/decisions/004-the-change-feed-is-the-log.md`).
-- **Nothing of it in 0.19.0.** The record is the round's; the read, its
-  doors and its rows are built in a later round, by an issue of their
-  own.
+- **Nothing of it is built.** It is paused (above); a read across lakes
+  is built only after a record takes it up again.
+
+## How it came to be
+
+- Accepted on lakelands#1376 (2026-10-24), to be built in a later round.
+- Paused on lakelands#1400 (2026-10-25): no host case for one grouped
+  read over several lakes was found, so nothing builds it by accident.
