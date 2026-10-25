@@ -130,6 +130,7 @@ mod settings;
 mod shown_hash;
 mod sized;
 mod sorted_whole;
+mod standby;
 mod stored_vectors;
 mod streaming;
 mod taken_lease;
@@ -309,6 +310,7 @@ pub const ALL: &[Check] = &[
     computed_at::SAID_WHEN,
     computed_at::MOVED,
     read_clock::READ_CLOCK,
+    read_clock::TODAY_RULES_OUT,
     before_declared::BEFORE_DECLARED,
     authored_reads::AUTHOR_READS,
     renamed_grants::GRANT_FOLLOWS,
@@ -988,6 +990,8 @@ pub const ALL: &[Check] = &[
     export::INTEGER_DAMAGE,
     sized::SEALED_BY_SIZE,
     taken_lease::TAKEN_LEASE,
+    standby::STANDBY,
+    standby::STANDBY_FAILED,
     grid::GRID,
     metered::METERED,
     metered::METERED_LEASE,

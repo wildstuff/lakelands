@@ -110,6 +110,11 @@ engine_check!(
 );
 
 engine_check!(
+    LEASE_FREE = reopening a_read_only_handle_tells_whether_the_lease_is_free,
+    "076 (lakelands#1395): `lease_free`, asked of a handle opened read-only, answers true while no handle holds the lease and false while one does, without taking it: the holder goes on appending, and once it gives the lease up, or its handle is dropped, the answer is true again"
+);
+
+engine_check!(
     UNLEASED_HANDLE = reopening a_handle_that_never_took_the_lease_cannot_append_import_or_seal,
     "008: only the handle that took the lease extends the chain; another opened for writing, handed a copy of that lease, is refused an append, an import and a seal, and the writer goes on"
 );
@@ -208,6 +213,54 @@ fn a_read_only_handle_refuses_the_lease_and_appends(
         log == first,
         "the log holds {} events after the reader's refused append; it must hold the writer's 2",
         log.len()
+    );
+    Ok(())
+}
+
+fn a_read_only_handle_tells_whether_the_lease_is_free(
+    engine: &dyn LakeEngine,
+    harness: &dyn EngineHarness,
+) -> Held {
+    let reader = harness
+        .reopen(engine.lake(), OpenMode::Read)
+        .map_err(|e| Failure::new(format!("opening a read-only handle: {e}")))?;
+    let free = |when: &str| reader.lease_free().must(&format!("asking {when}"));
+    ensure!(
+        free("before any writer took the lease")?,
+        "no handle took the lease, yet a read-only handle says it is held"
+    );
+    let lease = engine.take_lease("the writer").must("taking the lease")?;
+    ensure!(
+        !free("while the writer holds the lease")?,
+        "the writer holds the lease, yet a read-only handle says it is free"
+    );
+    let events = chain(0, 2, &Digest::zero(), &lease);
+    engine
+        .append(&lease, &events)
+        .must("appending under the lease after it was asked about")?;
+    ensure!(
+        !free("again while the writer holds the lease")?,
+        "the writer still holds the lease, yet asked again a read-only handle says it is free"
+    );
+    engine.release_lease(&lease).must("giving the lease up")?;
+    ensure!(
+        free("once the writer gave the lease up")?,
+        "the writer gave the lease up, yet a read-only handle says it is held"
+    );
+    let writer = harness
+        .reopen(engine.lake(), OpenMode::Write)
+        .map_err(|e| Failure::new(format!("opening a second handle for writing: {e}")))?;
+    writer
+        .take_lease("the next writer")
+        .must("taking the lease on the second handle")?;
+    ensure!(
+        !free("while the second handle holds the lease")?,
+        "a second handle holds the lease, yet a read-only handle says it is free"
+    );
+    drop(writer);
+    ensure!(
+        free("once the second handle was dropped")?,
+        "the handle that held the lease was dropped, yet a read-only handle says it is held"
     );
     Ok(())
 }

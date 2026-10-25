@@ -44,6 +44,46 @@ the starts are the records of every type shown that declares a step's
 relation, read a page at a time, and one with no link it may see is never
 counted (018). Components hold every record they reach, up to the lake's
 `max_graph_nodes`, and are refused `too_large` past it, never cut.
+PageRank and communities hold the same graph, `page_rank` walking each
+step's relation in its own direction, and are bounded alike.
+
+**A measure adds integers, never floats** (lakelands#1412, proposed for
+0.20.0, in force with the issue that builds each measure). The store
+hands a measure a set of records and a set of links, each sorted and
+without repeats, so a different order from an engine gives it the same
+input; what could still differ is arithmetic, since a sum of floats
+taken in another order may differ in its last bit (031). So every sum a
+measure takes is of integers, which is the same in any order, and its
+records are indexed by type and key, the store's one order (025).
+
+- **PageRank** holds the whole mass as `10^12` units in `u64`. Each
+  record starts with an equal share, the units left over going one each
+  to the first records by index. In a round each record with links out
+  sends, along each of them, `floor(85 · mass / (100 · links out))`:
+  damping is 85/100, fixed, with one floor a record and none a link.
+  What no link carried, the part damping keeps back, the mass of records
+  with no link out and every unit a floor dropped, is spread evenly
+  over every record, the remainder again by index. So the mass is
+  exactly `10^12` after every round and no sum can overflow. There are
+  at most 100 rounds, and the first whose scores equal the round
+  before's, unit for unit, ends them early: every round after it would
+  give the same scores, so the answer is the one 100 rounds give, and a
+  graph whose floors never settle runs all 100, still the same on every
+  engine. A score is answered as its units divided by `10^12`, one
+  correctly rounded division of two exact numbers, so its bits are the
+  same on every target, and two different scores never answer one
+  value.
+- **Communities** move records between groups by the gain in
+  modularity, compared as an integer product so that no division is
+  taken, and only where the gain is strictly more than staying; a tie
+  goes to the group whose least member by type and key is least.
+  Records are visited by type and key, sweep after sweep until none
+  moves, then the groups are folded into records, linked by the number
+  of links between them, and moved again, until a level moves none.
+  Every move raises a bounded integer, so the method ends without a cap
+  on rounds. A group this leaves internally disconnected is then split
+  into its connected parts, as components are found, so every community
+  is connected. It is built only if its issue is.
 
 **A measure's page.** A read keeps nothing between calls, and a page in
 the middle of a measure cannot be made from less than the measure: a
@@ -110,6 +150,34 @@ or with `only` is answered does not move: the starts are the records a
 page answers it, and a far record is kept by the walk as before, so a
 page boundary, `more` and a cursor tell nothing of a held start or end.
 
+### The cheapest walk holds the neighbourhood it may pass through
+
+`cheapest` (018) is proposed for 0.20.0 (lakelands#1412) and comes in
+force with the issue that builds it. The walk that costs least within
+the steps' hops is not the one that costs least without a bound on
+hops, which is what a search that settles the nearest record first
+finds: a cheaper walk of more hops than the steps allow would settle a
+record that the walk within them cannot use. So the store holds the
+neighbourhood within the steps' hops, read level by level a page at a
+time as a path reads it, and then relaxes it in memory one hop at a
+time: after hop `k` each record holds the least walk of exactly `k`
+hops that reaches it, compared by cost, then the record it came from by
+type and key, then the link by relation and ends. The answer is the
+least by cost, then hops, of those that reach `to`, unwound hop by hop.
+Holding the neighbourhood is required, not a shortcut, since the
+cheapest walk may pass any record within reach; past `max_graph_nodes`
+it is refused `too_large`, never cut. Every choice is the least of a
+set under one total order, so the order an engine returns links in
+cannot move it.
+
+A weight is a decimal at 9 places, held as an integer in `i128`: an
+integer enters exactly, a float by its shortest decimal form, a decimal
+as written, each rounded half away from zero to 9 places as a money
+value is. Costs are summed with checked addition, and a sum past
+`i128` is refused `overflow`; no float is added anywhere. Which links
+the walk weighs follows from the graph alone, so a link refused for a
+missing or negative weight is the same on every engine.
+
 ## Why
 
 A walk implemented by each engine is a walk that can differ between
@@ -159,3 +227,7 @@ answers identical.
 - With no start type, components grow from the records of every type
   that declares a step's relation (lakelands#992).
 - A reach walks a step at a time (lakelands#991).
+- PageRank and communities joined the measures, in integers so that no
+  sum depends on the order links come in, and the cheapest walk joined
+  the walks as a relaxation by hops over the neighbourhood it holds
+  (lakelands#1412).

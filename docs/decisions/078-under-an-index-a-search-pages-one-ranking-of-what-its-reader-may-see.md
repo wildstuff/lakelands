@@ -98,7 +98,8 @@ splits the field's graph:
 | `only` (051) | none: the exact ranking of what it admits | Its pairs are values each principal carries into its call, so its classes are as many as the principals, and no lake could keep a graph for each. The engine ranks the records that hold the pairs exactly, found as `find` finds them: by the exact text index where the field is looked up (057), else by a scan of the type. |
 | a link's ends | none for a reader they judge: the exact ranking | Which links a reader may see follows from the holds of their ends and its `only` on the ends' types, which change with no write of the link. |
 | the type's grant | no | A type is read whole or refused before the search, and each type keeps graphs of its own. |
-| field grants, the vector field's among them | no | A field is shown on every record of a type its reader reads, or on none. A vector field not shown answers as one the type does not declare (025). |
+| field grants, the vector field's among them | no | A field grant holds on every record of a type its reader reads: the field is shown on all of them or on none. A vector field not shown answers as one the type does not declare (025). |
+| a field hidden on the records a condition selects (006) | none for a reader it narrows: the exact ranking of what it is told | Which records hide the field follows from a field's values and a set the principal carries, as `only`'s pairs do, so its classes are as many as the principals. A vector built from the field is no candidate on a selected record. Proposed for 0.20.0 (lakelands#1412). |
 | `valid_at` and `where` | no | They are the reader's own selection, among records it may see: a record its `where` leaves out it reads by another `where`. A `where` over a field it may not read is refused (024). |
 | the position read | no | The hold that stands at the head governs every position (006), and a search at an earlier position ranks by the head (025), so the head's graph of a reader's class holds nothing it may not see at any position. A record written since is one it sees at the head. |
 
@@ -134,6 +135,11 @@ the ends' types, nor on the ends' types of an end that is a link (006,
 judges the ends, as today. A graph of links for a reader without
 `restricted` would hold the links whose ends are not held, and it would
 change at every hold of an end.
+
+The text statistics a lexical ranking reads are kept by the same two
+classes, per type, field and hold, and a reader with no class is counted
+for by the store over the heads it admits
+(`025 § A lexical hit's set, order and score are the same on every engine`).
 
 So the count is at most two graphs for each indexed vector field of a
 record type and one for each of a link type: it follows from the
@@ -912,3 +918,12 @@ today and 138.98 in the build. What the graphs cost, in the same runs:
   continued page at the head and again at the cursor's position would
   leave out a record the reader may see at that position and not at the
   head. So an earlier position is the store's, told only the class.
+
+## How it came to be
+
+- A field grant that holds only on the records a condition selects was
+  proposed (lakelands#1412): the premise that a field is shown on every
+  record of a type its reader reads, or on none, now holds of a
+  type-wide grant, and a reader such a grant narrows has no class. The
+  text statistics of a lexical ranking are kept by class, as the graphs
+  are.

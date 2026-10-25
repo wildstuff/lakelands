@@ -17,7 +17,7 @@ use lakelands_core::conformance::Check;
 use lakelands_core::conformance::checks::ALL;
 use lakelands_core::conformance::{
     Ahead, BuiltAhead, Continue, Continued, Fault, FreshLake, Harness, Import, ImportedLake, Lower,
-    Meter, Relimit, Reopen, Twin, below, continue_below, run_checks, run_one,
+    Meter, Relimit, Reopen, Standby, Twin, below, continue_below, run_checks, run_one,
 };
 use lakelands_engine_pg::PgOpener;
 use peak_alloc::PeakAlloc;
@@ -213,6 +213,21 @@ impl Harness for Pg {
 
     fn location(&self, lake: &lakelands_api::LakeId) -> Option<Location> {
         Some(common::location(&self.url, lake.as_str(), lake.as_str()))
+    }
+
+    fn standbyer(&self) -> Standby {
+        let url = self.url.clone();
+        Arc::new(move |lake, host, every, wrap| {
+            let location = common::location(&url, lake.as_str(), lake.as_str());
+            Box::pin(async move {
+                let seams = Seams {
+                    engines: vec![wrap(Arc::new(PgOpener))],
+                    ..host
+                };
+                let (store, standing) = lakelands_store::standby(location, seams, every).await?;
+                Ok((store as Arc<dyn LakeStore>, standing))
+            })
+        })
     }
 
     fn aheader(&self) -> Ahead {

@@ -34,6 +34,12 @@ overdue" is as of the record's last write. A read that computes it asks
 as of the read: under the instant `valid_at` names, else as of a
 position under that event's `known_at`, else the wall clock (052).
 
+`in_set('<set>')` binds the set's `where` where it is read. In a read
+that is the read's clock, so a set decided at the read, which keeps no
+membership, may call `now()` and `today()`; a kept set, whose members
+the fold decides, may not
+(`066 § A set may be decided at the read`).
+
 ### A duration divides by a duration, and multiplies and divides by a number
 
 The difference of two instants is a duration. Could nothing be done with
@@ -141,3 +147,5 @@ that pushes filters down into its own query language, complete.
 - `exists(<relation>)`, in a verb's `requires` and set values only:
   whether a path that begins at the relation reaches its one record
   (lakelands#960).
+- `in_set` binds a set's `where` where it is read, and a set decided at
+  the read may read the clock (lakelands#1412).

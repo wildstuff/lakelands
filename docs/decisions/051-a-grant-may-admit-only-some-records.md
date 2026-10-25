@@ -24,3 +24,4 @@ is not reused.
 | a link with a held end is not there, and an accept is judged by what its write reaches (lakelands#781) | `006 § A record held at the head is not there to one without the grant, at any position and at every write door` |
 | what is still told under `restricted` as under `only`: a cardinality refusal and an accept's refusal (lakelands#781) | `006 § Some things are still told, on purpose` |
 | one answer of what a grant admits, and one of whether a record is answered, a link with its ends (lakelands#798, lakelands#871, lakelands#879) | `006 § A grant may admit only the records that hold its pairs` |
+| a field may be hidden on only the records a condition selects, compared as `only` compares a pair, and narrows its reader to no class as `only` does (lakelands#1412) | `006 § A field may be hidden on only the records a condition selects` |
