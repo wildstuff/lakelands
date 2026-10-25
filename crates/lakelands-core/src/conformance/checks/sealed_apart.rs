@@ -28,7 +28,7 @@ check!(
 
 check!(
     APART_READ = an_output_reads_the_keys_apart_of_the_events_that_wrote_its_values,
-    "065, amended (lakelands#1423): `pair` computes `both` from `nick` and `city` by the suite's backing, answering the nick; `crm` writes `c2` with the nick Countess and the city Rome, its output sealed under `crm`'s version alone, then the delivery `nicks`, sealed apart, writes `c1`'s nick and then, in the same call, its city, which is not erasable, and an ordinary delivery writes its city again; only the two nicks' ingests are sealed, so each output over the nick takes `nicks`'s key from the event that wrote the nick: each is sealed under `crm`'s version and that key, the one over Rome not `c2`'s, and `both` reads Countess; a writer opened again and a rebuild read the same and make no call again; taking `nicks` back destroys that key alone, and `c1` holds no `both` and no nick while its city reads Oslo, at the head, after a reopen and after a rebuild, no call made again",
+    "065 (lakelands#1423): `pair` computes `both` from `nick` and `city` by the suite's backing, answering the nick; `crm` writes `c2` with the nick Countess and the city Rome, its output sealed under `crm`'s version alone, then the delivery `nicks`, sealed apart, writes `c1`'s nick and then, in the same call, its city, which is not erasable, and an ordinary delivery writes its city again; only the two nicks' ingests are sealed, so each output over the nick takes `nicks`'s key from the event that wrote the nick: each is sealed under `crm`'s version and that key, the one over Rome not `c2`'s, so a set over `both` being Countess takes `c1` in only after `c1`'s own output is recorded, and `both` reads Countess; a writer opened again and a rebuild read the same and make no call again; taking `nicks` back destroys that key alone, and `c1` holds no `both` and no nick while its city reads Oslo, at the head, after a reopen and after a rebuild, no call made again",
     reopens
 );
 
@@ -487,12 +487,40 @@ async fn an_output_reads_the_keys_apart_of_the_events_that_wrote_its_values(
         "c2",
         json!({"id": "c2", "nick": "Countess", "city": "Rome"}),
     );
+    let set = crate::conformance::fixture::object_set_on("countess", "person", "both = 'Countess'");
+    l.declare_as(set, "declaring the set `countess`").await?;
     l.ingest("crm", vec![c2]).await.must("ingesting c2")?;
+    let before = store.head().await.must("reading the head")?;
     let nicks = vec![
         c1(json!({"id": "c1", "nick": "Countess"})),
         c1(json!({"id": "c1", "city": "Rome"})),
     ];
     apart(&l, "nicks", nicks).await?;
+    // The plan of the city's ingest reads the nick under the key the event
+    // before it names: it does not take the output recorded for `c2`'s
+    // equal inputs, so `c1` joins only once its own is.
+    let (mut output, mut joined) = (None, None);
+    for e in events_after(store.as_ref(), before).await? {
+        match &e.body {
+            EventBody::OutputRecorded { seam, .. } if seam.ends_with(":pair") => {
+                output = output.or(Some(e.position));
+            }
+            EventBody::ObjectSetChanged {
+                set,
+                key,
+                joined: true,
+                ..
+            } if set == "countess" && key == "c1" => {
+                joined = joined.or(Some(e.position));
+            }
+            _ => {}
+        }
+    }
+    ensure!(
+        output.is_some() && joined > output,
+        "`c1` joins `countess` after its own output is recorded; the output is at {output:?}, \
+         the join at {joined:?}"
+    );
     l.ingest("crm", vec![c1(json!({"id": "c1", "city": "Oslo"}))])
         .await
         .must("ingesting c1's city")?;

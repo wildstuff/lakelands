@@ -327,6 +327,7 @@ async fn person_lake(
             lakelands_engine_mem::MemoryOpener::new(),
         )],
         keys: Some(keys),
+        backings: lakelands_core::conformance::backing::backings(),
         ..Seams::default()
     };
     let lake = crate::lake::Lake::open(&Location::memory(name), seams, OpenMode::Create);
@@ -464,15 +465,20 @@ fn a_key_apart_staged_for_an_ingest_not_in_the_log_is_answered_as_staged() {
     assert!(keys.apart_named(&known, &crm, other).unwrap().is_empty());
 }
 
-/// A key store that makes keys apart too.
+/// A key store that makes keys apart too, each its own bytes, and
+/// destroys them.
 #[derive(Default)]
-struct Apiece(Two, std::sync::Mutex<u32>);
+struct Apiece(Two, std::sync::Mutex<(u32, Vec<KeyId>)>);
 impl KeyStore for Apiece {
     fn create(&self, lake: &LakeId, source: &SourceId) -> Result<KeyId> {
         self.0.create(lake, source)
     }
     fn key(&self, lake: &LakeId, source: &SourceId, id: &KeyId) -> Result<Option<DataKey>> {
-        self.0.key(lake, source, id)
+        if !id.as_str().starts_with('a') {
+            return self.0.key(lake, source, id);
+        }
+        let destroyed = self.1.lock().unwrap().1.contains(id);
+        Ok((!destroyed).then(|| DataKey(Sha256::digest(id.as_str()).into())))
     }
     fn destroy(&self, lake: &LakeId, source: &SourceId) -> Result<()> {
         self.0.destroy(lake, source)
@@ -482,61 +488,109 @@ impl KeyStore for Apiece {
     }
     fn create_apart(&self, _: &LakeId, _: &SourceId) -> Result<KeyId> {
         let mut made = self.1.lock().unwrap();
-        *made += 1;
-        Ok(KeyId::from(format!("a{made}")))
+        made.0 += 1;
+        Ok(KeyId::from(format!("a{}", made.0)))
+    }
+    fn destroy_apart(&self, _: &LakeId, _: &SourceId, id: &KeyId) -> Result<()> {
+        self.1.lock().unwrap().1.push(id.clone());
+        Ok(())
     }
 }
 
-/// An ingest sealed apart keeps no `sys:apart` output: its key apart is
-/// read from its event in the log. A row a projection built by 0.19 left
-/// under that name is not read (065).
+/// An ingest sealed apart keeps no `sys:apart` output: an output a later
+/// event computes over its value reads its key apart from its event in
+/// the log. Over a row a projection built by 0.19 left under that name,
+/// naming another key, the output of `p1`'s city written after its name
+/// is sealed under the version and the delivery's key, reads the name,
+/// and dies when the delivery is taken back, which destroys its key
+/// alone (065).
 #[tokio::test]
-async fn an_ingest_sealed_apart_keeps_no_output_and_a_leftover_row_is_not_read() {
-    use lakelands_api::write::IngestOpts;
+async fn an_output_over_an_ingest_sealed_apart_does_not_read_a_leftover_row() {
+    use lakelands_api::write::{IngestOpts, Selection};
+    use lakelands_core::conformance::backing;
     let (lake, cat, owner) = person_lake("apart", std::sync::Arc::new(Apiece::default())).await;
-    let record = lakelands_api::SourceRecord {
-        source: None,
-        upstream: None,
-        ty: "person".into(),
-        key: "p1".into(),
-        fields: serde_json::from_value(json!({"id": "p1", "name": "Ada"})).unwrap(),
-        seen_at: None,
+    let text = json!({"kind": "text"});
+    let pair = json!({"declare": "function", "name": "pair", "backing": backing::KIND,
+        "inputs": [{"name": "name", "type": text}, {"name": "city", "type": text}],
+        "config": {"token": "leftover", "echo": "name"}});
+    let person = json!({"declare": "type", "name": "person", "key": ["id"], "fields": [
+        {"name": "id", "type": text, "authority": "source"},
+        {"name": "name", "type": text, "authority": "source", "erasable": true},
+        {"name": "city", "type": text, "authority": "source"},
+        {"name": "loud", "type": text, "authority": "derived", "function": "pair",
+         "depends_on": ["name", "city"]}]});
+    for d in [pair, person] {
+        let declared = cat.declare(&owner, serde_json::from_value(d).unwrap());
+        declared.await.unwrap();
+    }
+    let crm = SourceId::from("crm");
+    let ingest = async |id: &str, fields: Value, opts: IngestOpts| {
+        let record = lakelands_api::SourceRecord {
+            source: None,
+            upstream: None,
+            ty: "person".into(),
+            key: id.into(),
+            fields: serde_json::from_value(fields).unwrap(),
+            seen_at: None,
+        };
+        let fed = lakelands_api::ingest_all_with(cat.as_ref(), &owner, &crm, opts, vec![record]);
+        fed.await.unwrap();
     };
-    let (crm, opts) = (
-        SourceId::from("crm"),
-        IngestOpts {
-            delivery: Some("late".into()),
-            sealed_apart: true,
-        },
-    );
-    let fed = lakelands_api::ingest_all_with(cat.as_ref(), &owner, &crm, opts, vec![record]);
-    fed.await.unwrap();
-    let at = lake.head();
+    // `p0`, sealed under the version alone, so the act destroys no version.
+    let p0 = json!({"id": "p0", "name": "Bo"});
+    ingest("p0", p0, IngestOpts::default()).await;
+    let at = lakelands_api::Position(lake.head().0 + 1);
+    let late = IngestOpts {
+        delivery: Some("late".into()),
+        sealed_apart: true,
+    };
+    ingest("p1", json!({"id": "p1", "name": "Ada"}), late).await;
     let row = crate::backed::digest(&json!([crm, at]));
     let held = || {
-        lake.engine
-            .view(None)
-            .unwrap()
-            .output("sys:apart", &row)
-            .unwrap()
+        let view = lake.engine.view(None).unwrap();
+        view.output("sys:apart", &row).unwrap()
     };
     assert!(held().is_none(), "no output names the key apart");
     let a1 = vec![KeyId::from("a1")];
-    assert_eq!(
-        lake.keys.apart_named(&Apart::default(), &crm, at).unwrap(),
-        a1
-    );
-    let p = lake.engine.projection();
+    let named = lake.keys.apart_named(&Apart::default(), &crm, at).unwrap();
+    assert_eq!(named, a1, "the ingest of `p1` is at {at:?}");
+    // The row 0.19 kept for the ingest, naming a key it did not seal with.
+    let (p, head) = (lake.engine.projection(), lake.head());
     (p.begin()
-        .and_then(|()| p.put_output("sys:apart", &row, &json!(["a9"]), at)))
-    .and_then(|()| p.commit(at))
+        .and_then(|()| p.put_output("sys:apart", &row, &json!(["a9"]), head)))
+    .and_then(|()| p.commit(head))
     .unwrap();
     assert!(held().is_some());
+    let city = lakelands_api::Position(lake.head().0 + 1);
+    ingest(
+        "p1",
+        json!({"id": "p1", "city": "Oslo"}),
+        IngestOpts::default(),
+    )
+    .await;
+    let through = u32::try_from(lake.head().0 + 1 - city.0).unwrap();
+    let read = lake.engine.read(city, through).unwrap();
+    let events = read.iter().map(crate::log::open);
+    let outputs: Vec<_> = (events.map(Result::unwrap))
+        .filter(|e| matches!(e.body, EventBody::OutputRecorded { .. }))
+        .map(|e| e.sealed.map(|s| (s.key, s.apart)))
+        .collect();
+    let k1 = KeyId::from("k1");
     assert_eq!(
-        lake.keys.apart_named(&Apart::default(), &crm, at).unwrap(),
-        a1
+        outputs,
+        [Some((k1, a1.clone()))],
+        "the output over Ada and Oslo"
     );
-    let view = lake.engine.view(None).unwrap();
-    let p1 = view.get(&"person".into(), &"p1".into()).unwrap().unwrap();
-    assert_eq!(p1.fields["name"], json!("Ada"));
+    let loud = || {
+        let view = lake.engine.view(None).unwrap();
+        let p1 = view.get(&"person".into(), &"p1".into()).unwrap().unwrap();
+        p1.fields.get("loud").cloned()
+    };
+    assert_eq!(loud(), Some(json!("Ada")));
+    let doors = crate::doors::Store { lake: lake.clone() };
+    let late = Selection::Delivery("late".into());
+    let done = lakelands_api::LakeStore::remove_values(&doors, &crm, &late, true, None);
+    let done = done.await.unwrap();
+    assert_eq!((done.keys.is_empty(), done.apart), (true, a1));
+    assert_eq!(loud(), None, "the output dies with the key apart");
 }
