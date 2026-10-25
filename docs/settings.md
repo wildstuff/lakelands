@@ -428,6 +428,13 @@ The most events a mirror reads from its source's feed at once, and the most reco
 - **Takes:** a count.
 - **Default:** `100`.
 
+### `standby.try_millis`
+
+How often a `serve` that stands by asks whether each lake's lease is free, to take it once the writer is gone; absent, `serve` takes each lease at its open.
+
+- **Takes:** milliseconds.
+- **Default:** `1000`.
+
 ## Bindings
 
 What says only where or how to connect, or which keys to use, is a binding and no setting: it steers no behaviour of the lake, and a lake moved or restored names it anew. Each is kept beside the settings of its layer. The rest of `lakelands.json` is neither: `lakelands` is the file's format number, and `owner` and `principals` say who the root's callers are and what each may do.

@@ -2592,7 +2592,7 @@ fn members_of<'de, T: serde::Deserialize<'de>>() -> &'static [&'static str] {
 fn the_root_s_settings_are_the_list_s() {
     use lakelands_api::settings::{BINDINGS, Layer, SETTINGS};
     use std::collections::BTreeSet;
-    let sections: [(&str, &[&str]); 11] = [
+    let sections: [(&str, &[&str]); 12] = [
         ("", members_of::<lakelands_cli::Config>()),
         ("server", members_of::<lakelands_server::HttpConfig>()),
         (
@@ -2616,6 +2616,7 @@ fn the_root_s_settings_are_the_list_s() {
             members_of::<lakelands_cli::mirror::MirrorConfig>(),
         ),
         ("keys", members_of::<lakelands_cli::KeysConfig>()),
+        ("standby", members_of::<lakelands_cli::StandbyConfig>()),
     ];
     let neither = ["lakelands", "owner", "principals"];
     let path = |s: &str, m: &str| match s {
@@ -2654,6 +2655,7 @@ fn the_root_s_settings_are_the_list_s() {
         "backings": {"http": {"hosts": [], "ca_file": "ca.pem"}, "exec": {"commands": {}}},
         "mirror": {"connections": []},
         "keys": {"keyring": "keys"},
+        "standby": {},
     }))
     .unwrap();
     let held = serde_json::to_value(&config).unwrap();
@@ -2863,6 +2865,7 @@ backings.exec.timeout_secs              root      not configured: lakelands.json
 backings.exec.max_output_bytes          root      not configured: lakelands.json has no `backings.exec`
 mirror.poll_millis                      root      not configured: lakelands.json has no `mirror`
 mirror.batch                            root      not configured: lakelands.json has no `mirror`
+standby.try_millis                      root      not configured: lakelands.json has no `standby`
 ";
 
 /// A bundle declares a host's setting and gives its first value in one

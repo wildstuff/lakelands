@@ -205,6 +205,7 @@ pub fn list(
         ("embed.", serde_json::to_value(&root.embed)),
         ("backings.", serde_json::to_value(&root.backings)),
         ("mirror.", serde_json::to_value(&root.mirror)),
+        ("standby.", serde_json::to_value(&root.standby)),
     ];
     let elsewhere = SETTINGS.iter().filter(|s| s.layer != Layer::Lake);
     for s in elsewhere {

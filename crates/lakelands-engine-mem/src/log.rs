@@ -75,6 +75,11 @@ impl Log {
         }
     }
 
+    /// Whether no one holds the lease.
+    pub(crate) fn lease_free(&self) -> bool {
+        self.lease.is_none()
+    }
+
     /// Refuses a lease that is not the current one.
     fn check_lease(&self, lease: &Lease) -> Result<()> {
         match &self.lease {
