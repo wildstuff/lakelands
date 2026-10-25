@@ -58,11 +58,11 @@ jobs:
           df -h /
       - uses: actions/checkout@v4
       # rust-toolchain.toml pins 1.99.1 and would override this install, so
-      # every cargo call here names +1.88.
-      - uses: dtolnay/rust-toolchain@1.88
-      - run: rustc +1.88 --version --verbose
+      # every cargo call here names +1.89.
+      - uses: dtolnay/rust-toolchain@1.89
+      - run: rustc +1.89 --version --verbose
       - uses: Swatinem/rust-cache@v2
-      - run: cargo +1.88 build --workspace --all-targets --locked
+      - run: cargo +1.89 build --workspace --all-targets --locked
 
   nextest:
     runs-on: ubuntu-latest
