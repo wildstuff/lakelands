@@ -26,6 +26,7 @@ use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
 use lakelands_core::engines;
 use lakelands_core::engines::pool::{self, Pool, Taken};
+use rusqlite::config::DbConfig;
 use rusqlite::{Connection, OpenFlags, params};
 
 use crate::lease::{Held, LeaseFile};
@@ -84,7 +85,11 @@ const BUSY: Duration = Duration::from_secs(10);
 /// Open a connection to the projection with the tuning for its role. A
 /// reader's connection is read-only: it never creates the file, never
 /// changes its journal and never writes a page.
-fn connect(path: &std::path::Path, tuning: &SqliteTuning, writer: bool) -> Result<Connection> {
+pub(crate) fn connect(
+    path: &std::path::Path,
+    tuning: &SqliteTuning,
+    writer: bool,
+) -> Result<Connection> {
     let flags = if writer {
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
     } else {
@@ -98,6 +103,14 @@ fn connect(path: &std::path::Path, tuning: &SqliteTuning, writer: bool) -> Resul
         tuning.reader_cache_kb
     };
     conn.busy_timeout(BUSY).map_err(sql)?;
+    // A statement's plan is chosen from its text and the schema alone,
+    // never from the values bound to it. The engine keeps no statistics
+    // and binds no pattern, so no plan of its own changes; but a planner
+    // free to look at the values marks a kept statement for compiling
+    // again, and SQLite 3.54 does so whenever the cache clears its values,
+    // at each run (lakelands#1378).
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_QPSG, true)
+        .map_err(sql)?;
     conn.execute_batch(&format!(
         "PRAGMA cache_size = -{cache};
          PRAGMA mmap_size = {};",
