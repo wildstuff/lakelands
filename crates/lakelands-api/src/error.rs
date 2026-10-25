@@ -412,10 +412,12 @@ pub enum Refusal {
     /// then names `offset`), a pattern's rows read whole for an order over
     /// a record a step reaches or for an aggregate would be more than it
     /// allows (`order_by`, `project`), or a set's declaration or a migration would
-    /// change more memberships than it allows (the refusal names the set);
-    /// nothing partial is answered or appended.
+    /// change more memberships than it allows (the refusal names the set),
+    /// or a change to records would select more records than it allows
+    /// (`where`); nothing partial is answered or appended.
     TooLarge {
-        /// The lake's `max_graph_nodes`, `max_offset` or `max_set_changes`.
+        /// The lake's `max_graph_nodes`, `max_offset`, `max_set_changes` or
+        /// `max_change_records`.
         max: u32,
     },
     /// A migration would lose information; the report says where.
@@ -626,6 +628,12 @@ impl fmt::Display for Error {
                         write!(
                             f,
                             ": an aggregate over rows reads them whole, and there may be {max}, no more; narrow the start, or start from a step's type and walk back"
+                        )
+                    }
+                    Refusal::TooLarge { max } if field.as_ref().is_some_and(|f| f == "where") => {
+                        write!(
+                            f,
+                            ": the condition selects more than {max} records, the lake's `limits.max_change_records`; a change is never cut, so narrow the condition"
                         )
                     }
                     Refusal::TooLarge { max } if field.is_some() => {

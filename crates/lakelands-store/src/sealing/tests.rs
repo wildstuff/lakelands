@@ -11,10 +11,10 @@ use lakelands_api::{LakeId, Result, SourceId, Timestamp};
 
 use super::{Keys, List, digest, open, rotates, seal, turns};
 
-/// The lines of `vectors/19/further.json` that show `shows`.
+/// The lines of `vectors/20/further.json` that show `shows`.
 fn line(shows: &str) -> Event {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/log-format/vectors/19/further.json");
+        .join("../../docs/log-format/vectors/20/further.json");
     let further: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     let entries = further["events"].as_array().unwrap();
     let entry = entries.iter().find(|e| e["shows"] == shows).unwrap();
