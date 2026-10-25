@@ -50,11 +50,20 @@ a workload ever asks for it.
 
 One function ranks a lexical search on every engine
 (`lakelands_core::engines::lexical`): BM25F in its combined-field form,
-best first, ties by key. It is proposed for 0.20.0 (lakelands#1412),
-replacing today's score, and comes in force with the issue that builds
-it; until then a hit scores each distinct query token its text holds,
-at the weight of the heaviest searched field holding it, summed in the
+best first, ties by key. It replaces today's score for every lake from
+0.20.0 (lakelands#1412), as the operator decided on lakelands#1400
+(2026-10-25), and comes in force with the issue that builds it; until
+then a hit scores each distinct query token its text holds, at the
+weight of the heaviest searched field holding it, summed in the
 tokens' order.
+
+There is no switch, per type or per lake: a type that weighs no field
+is ranked by it too, so every lake's lexical order and scores move at
+the upgrade, and the release notes of 0.20.0 say so. A switch would
+keep two functions held to the same bits on every engine, and a
+setting that changes every ranking of a type; a score is compared
+within one answer and never across releases (below), so the move
+breaks nothing a caller may hold.
 
 For each searched field `f`, `n_f` is the number of live heads of the
 reader's class whose `f` holds a token, `L_f` the tokens of `f` over
@@ -1055,8 +1064,9 @@ Of an index asked for:
   candidates.
 - Proposed (lakelands#1412): a hit says where its text matched, in
   characters of the fields its reader is shown, computed by the store
-  after the page is cut; the lexical score is BM25F in its
-  combined-field form, which replaces the count of tokens at their
-  heaviest field. BM25F had been refused because the function kept no
-  statistics; that reason now decides what is kept: `df` counted over
-  the candidates, `n_f` and `L_f` kept per class.
+  after the page is cut. Decided by the operator on lakelands#1400: the
+  lexical score is BM25F in its combined-field form, which replaces the
+  count of tokens at their heaviest field for every lake from 0.20.0,
+  with no switch per type. BM25F had been refused because the function
+  kept no statistics; that reason now decides what is kept: `df` counted
+  over the candidates, `n_f` and `L_f` kept per class.

@@ -779,13 +779,14 @@ scores ordered by key ascending; at most `k`, cut by that score. A later
 release may score otherwise, on every engine at once, so a caller
 compares scores within one answer.
 
-Proposed for 0.20.0 (lakelands#1412), in force with the issue that
-builds it, the function is BM25F in its combined-field form, which
-replaces that score: a token's frequency in each field, multiplied by
-the field's weight and scaled by the field's length against its
-average, summed over the fields and saturated once, times the token's
-rarity, in `f64` with `ln` from `libm`, the same bits on every engine
-(025 holds the formula and its constants). What it reads:
+From 0.20.0 (lakelands#1412), in force with the issue that builds it,
+the function is BM25F in its combined-field form, which replaces that
+score for every lake, with no switch per type: a token's frequency in
+each field, multiplied by the field's weight and scaled by the field's
+length against its average, summed over the fields and saturated once,
+times the token's rarity, in `f64` with `ln` from `libm`, the same bits
+on every engine (025 holds the formula and its constants). What it
+reads:
 
 - **`df`** is counted by the function over the candidates the engine
   hands it, admitted to the reader's class, since every candidate that
