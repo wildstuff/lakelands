@@ -984,6 +984,56 @@ variants breaks a host that builds either variant as a literal without
 through `Location::sqlite` and `Location::postgres`, or reads a location
 file, changes nothing.
 
+## Serving a lake from more than one process
+
+A lake has one writer: the process that holds its lease. Another process
+can still serve it, with a forwarding handle
+(`lakelands_client::ForwardingLake`,
+`docs/decisions/076-a-lake-keeps-one-writer-and-a-dataset-that-outgrows-it-becomes-several-lakes.md`):
+it opens the lake's engine read-only and reads it there, and sends every
+write to the writer over the writer's REST door, the link between hosts.
+
+- **The writers.** The location names them in `writers`, the writer
+  first and then its standbys, each a `url` and an optional `ca_file`.
+  A write starts at the door that last answered and goes round them
+  once: a door that holds no lease, or that was not reached before
+  anything was sent, passes it on. When none takes it, the write is
+  `unavailable` as `not_forwarded`, and nothing was written.
+- **A lost writer.** A write that was sent and then not answered is
+  `unavailable` as `forward_lost`, and is never sent again, so it
+  lands once at most. Whether it landed is learnt by retrying it with
+  its idempotency key, which answers the first outcome if it did.
+- **Read-your-writes.** A read through the handle waits, at most
+  `read_wait_millis` (2 000 ms), until the handle's engine has folded
+  the highest position a writer has answered this handle. It looks
+  every `REACH_POLL` (10 ms) and gives up at the bound, never later:
+  past it the read is `unavailable` as `not_folded_yet`, naming the
+  position and how far the engine had got, and never an answer from
+  before the handle's own write. `LakeStore::reaches(at, within)` is the
+  same wait, for a host that tracks positions itself; on the writer it
+  answers as soon as the head is there.
+- **The host's key.** The writer's server lists the processes that may
+  forward to it in `server.hosts`, each an `id`, its `keys`, the
+  `lakes` it may forward to, and the `principals` it may act for. A
+  host's key carries no grants of its own: each call names the
+  principal it is made as in `Lakelands-Principal`, by id, and is judged
+  under that principal's grants; `Lakelands-Context` carries the
+  call's write context (`docs/rest.md`). So a host key can act as any
+  principal the writer knows for its lakes, within that principal's
+  grants, unless `principals` narrows it. Set `principals` to the ones
+  the forwarding process serves, keep the key out of the location (the
+  handle is given it by value), and bind the writers' doors to a
+  private network the forwarding processes share.
+
+`Location.writers` is a new member and `Location` has no `Default`: a
+host that builds a location as a literal adds `writers: vec![]`. A host
+that builds `HttpConfig` as a literal adds `hosts: Vec::new()`. A host
+that matches `Credential` without a wildcard adds an arm for
+`Credential::Forwarded { host, principal }`: a call a listed host
+forwards as the principal of that id, which `StaticResolver` resolves to
+its entry of that id and a resolver that serves no forwarded calls
+refuses.
+
 ## How a host switches onto Lakelands
 
 A host that already has a store of its own moves in four steps.

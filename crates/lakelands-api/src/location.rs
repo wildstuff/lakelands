@@ -26,6 +26,37 @@ pub struct Location {
     /// Limits that bound the work one call may cause.
     #[serde(default)]
     pub limits: Limits,
+    /// The doors of the processes that may hold the lake's writer lease,
+    /// the writer first and then its standbys: where a handle that does
+    /// not hold the lease forwards a write. None, and nothing forwards
+    /// (`docs/decisions/076-a-lake-keeps-one-writer-and-a-dataset-that-outgrows-it-becomes-several-lakes.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writers: Vec<WriterDoor>,
+}
+
+/// The REST door of a process that may hold a lake's writer lease. It
+/// says where to connect, never with what key: a host's key is given to
+/// the forwarding handle by value.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct WriterDoor {
+    /// The server's base URL, `http` or `https`, without user-info.
+    pub url: String,
+    /// The certificate authorities an `https` door is verified against;
+    /// the first system bundle at a well-known path when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_file: Option<PathBuf>,
+}
+
+impl WriterDoor {
+    /// The door at `url`, verified against the system's bundle.
+    pub fn new(url: impl Into<String>) -> WriterDoor {
+        WriterDoor {
+            url: url.into(),
+            ca_file: None,
+        }
+    }
 }
 
 impl Location {
@@ -63,6 +94,7 @@ impl Location {
             engine: EngineConfig::Memory,
             key: None,
             limits: Limits::default(),
+            writers: Vec::new(),
         }
     }
 }

@@ -13,7 +13,7 @@ use lakelands_api::{LakeId, LakeStore, Location, Principal};
 use lakelands_client::{ApiKey, RemoteConfig, RemoteLake};
 use lakelands_door_checks::checks::Cast;
 use lakelands_server::resolver::{Entry, StaticResolver};
-use lakelands_server::{HttpConfig, serve_http};
+use lakelands_server::{HostEntry, HttpConfig, serve_http};
 
 /// A fresh, empty in-memory store.
 pub async fn memory_lake(lake: &str, limits: Limits) -> Arc<dyn LakeStore> {
@@ -57,6 +57,21 @@ pub async fn serve_pausing(
     store: Arc<dyn LakeStore>,
     feed_poll_millis: u64,
 ) -> (SocketAddr, BTreeMap<String, ApiKey>) {
+    let (addr, keys, _) = serve_hosting(store, feed_poll_millis, Vec::new()).await;
+    (addr, keys)
+}
+
+/// [`serve_pausing`], letting `hosts` forward to it; answer the server's
+/// task too, which a test may end.
+pub async fn serve_hosting(
+    store: Arc<dyn LakeStore>,
+    feed_poll_millis: u64,
+    hosts: Vec<HostEntry>,
+) -> (
+    SocketAddr,
+    BTreeMap<String, ApiKey>,
+    tokio::task::JoinHandle<()>,
+) {
     let cast = cast(store.lake());
     let entries = cast
         .iter()
@@ -84,15 +99,16 @@ pub async fn serve_pausing(
         feed_floor_millis: 25,
         workers: None,
         metrics: None,
+        hosts,
     };
     let server = serve_http(config, Arc::new(StaticResolver::new(entries)), open)
         .await
         .expect("the door serves");
     let addr = server.local_addr().unwrap();
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let _ = server.run().await;
     });
-    (addr, keys)
+    (addr, keys, task)
 }
 
 /// The configuration of a client for a lake at `addr`.

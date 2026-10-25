@@ -416,6 +416,22 @@ pub trait LakeStore: Send + Sync {
     /// that failed has not been done again.
     async fn head(&self) -> Result<Position>;
 
+    /// The head once it is at `at` or past it, waiting at most `within`
+    /// for it: what a read that must not answer from before a write at
+    /// `at` waits on. Past the bound it is `unavailable`, naming `at` and
+    /// the head reached
+    /// (`docs/decisions/076-a-lake-keeps-one-writer-and-a-dataset-that-outgrows-it-becomes-several-lakes.md`).
+    /// A handle that cannot wait, this default, answers at once.
+    async fn reaches(&self, at: Position, within: std::time::Duration) -> Result<Position> {
+        let _ = within;
+        let folded = self.head().await?;
+        if folded >= at {
+            return Ok(folded);
+        }
+        let situation = crate::error::Situation::NotFoldedYet { at, folded };
+        Err(crate::Error::unavailable(situation))
+    }
+
     /// The doors, for callers of this host. Writes through them carry
     /// `context` in the log; a door never lets a caller set it
     /// (`WriteContext` is the host's, never a caller's).

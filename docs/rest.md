@@ -84,6 +84,17 @@ this page says only how a request reaches it.
   `If-None-Match: *` creates a record and refuses an existing key with
   the same 412, whose `expected` is 0.
 
+- **The link between hosts.** A key listed under `server.hosts` is a
+  host's, not a principal's: its request names the principal it is made
+  as in `Lakelands-Principal`, by id, and may carry the write context in
+  `Lakelands-Context`, as JSON. A missing principal, or a context that is
+  not one, is `refused` as `invalid` (400); a principal the host may not
+  act for, or one the lake does not know, is `not_granted` (403). A
+  principal's key that sends either header is `refused` as `invalid`
+  (400): no caller sets a write context or acts as another. A process
+  that does not hold the lake's lease answers a host's request
+  `unavailable` as `read_only`, so the host tries the next writer
+  (`docs/hosting.md`).
 - **Browsers.** A request whose `Origin` is not on the configuration's
   `allowed_origins` is refused before anything else is read.
 - **The lake.** The lake's id is one path segment; one that decodes to

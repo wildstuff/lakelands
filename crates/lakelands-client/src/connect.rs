@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use hyper::Uri;
 use hyper::rt::{Read, ReadBufCursor, Write};
@@ -70,6 +71,9 @@ pub(crate) fn tls(ca_file: Option<&Path>) -> Result<Arc<rustls::ClientConfig>, S
 pub(crate) struct Connector {
     /// The TLS configuration, for an `https` server.
     tls: Option<Arc<rustls::ClientConfig>>,
+    /// How long connecting may take, TLS included: a forwarding handle's
+    /// bound, so a door it could not reach is told from one it reached.
+    connect: Option<Duration>,
     /// A connection a test holds the other end of, taken in place of the
     /// first one dialed.
     #[cfg(test)]
@@ -77,9 +81,13 @@ pub(crate) struct Connector {
 }
 
 impl Connector {
-    pub(crate) fn new(tls: Option<Arc<rustls::ClientConfig>>) -> Connector {
+    pub(crate) fn new(
+        tls: Option<Arc<rustls::ClientConfig>>,
+        connect: Option<Duration>,
+    ) -> Connector {
         Connector {
             tls,
+            connect,
             #[cfg(test)]
             over: Arc::default(),
         }
@@ -91,6 +99,7 @@ impl Connector {
     pub(crate) fn over(conn: tokio::io::DuplexStream) -> Connector {
         Connector {
             tls: None,
+            connect: None,
             over: Arc::new(std::sync::Mutex::new(Some(conn))),
         }
     }
@@ -116,6 +125,7 @@ impl tower_service::Service<Uri> for Connector {
 
     fn call(&mut self, uri: Uri) -> Self::Future {
         let tls = self.tls.clone();
+        let bound = self.connect;
         #[cfg(test)]
         let over = self.over.lock().unwrap_or_else(|e| e.into_inner()).take();
         Box::pin(async move {
@@ -123,28 +133,42 @@ impl tower_service::Service<Uri> for Connector {
             if let Some(conn) = over {
                 return Ok(Conn::Duplex(TokioIo::new(conn)));
             }
-            let secure = uri.scheme_str() == Some("https");
-            let host = uri
-                .host()
-                .ok_or_else(|| io::Error::other("the URL names no host"))?
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .to_owned();
-            let port = uri.port_u16().unwrap_or(if secure { 443 } else { 80 });
-            let tcp = TcpStream::connect((host.as_str(), port)).await?;
-            let _ = tcp.set_nodelay(true);
-            if !secure {
-                return Ok(Conn::Plain(TokioIo::new(tcp)));
+            let Some(bound) = bound else {
+                return dial(uri, tls).await;
+            };
+            match tokio::time::timeout(bound, dial(uri, tls)).await {
+                Ok(conn) => conn,
+                Err(_) => Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("connecting took more than {} ms", bound.as_millis()),
+                )),
             }
-            let config = tls.ok_or_else(|| io::Error::other("TLS is not set up"))?;
-            let name = ServerName::try_from(host)
-                .map_err(|e| io::Error::other(format!("not a name TLS can verify: {e}")))?;
-            let stream = tokio_rustls::TlsConnector::from(config)
-                .connect(name, tcp)
-                .await?;
-            Ok(Conn::Tls(Box::new(TokioIo::new(stream))))
         })
     }
+}
+
+/// Connect to the server `uri` names, over TLS for `https`.
+async fn dial(uri: Uri, tls: Option<Arc<rustls::ClientConfig>>) -> io::Result<Conn> {
+    let secure = uri.scheme_str() == Some("https");
+    let host = uri
+        .host()
+        .ok_or_else(|| io::Error::other("the URL names no host"))?
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_owned();
+    let port = uri.port_u16().unwrap_or(if secure { 443 } else { 80 });
+    let tcp = TcpStream::connect((host.as_str(), port)).await?;
+    let _ = tcp.set_nodelay(true);
+    if !secure {
+        return Ok(Conn::Plain(TokioIo::new(tcp)));
+    }
+    let config = tls.ok_or_else(|| io::Error::other("TLS is not set up"))?;
+    let name = ServerName::try_from(host)
+        .map_err(|e| io::Error::other(format!("not a name TLS can verify: {e}")))?;
+    let stream = tokio_rustls::TlsConnector::from(config)
+        .connect(name, tcp)
+        .await?;
+    Ok(Conn::Tls(Box::new(TokioIo::new(stream))))
 }
 
 impl Connection for Conn {

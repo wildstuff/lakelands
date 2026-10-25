@@ -564,6 +564,7 @@ fn prepare(plan: &Plan, root: &Path) -> Result<Option<String>, String> {
                 },
                 key: None,
                 limits: Limits::default(),
+                writers: Vec::new(),
             };
             let lakes = root.join("lakes");
             std::fs::create_dir_all(&lakes).map_err(|e| e.to_string())?;
@@ -588,6 +589,7 @@ fn prepare(plan: &Plan, root: &Path) -> Result<Option<String>, String> {
         feed_floor_millis: 25,
         workers: None,
         metrics: None,
+        hosts: Vec::new(),
     })
     .unwrap();
     std::fs::write(&file, serde_json::to_vec_pretty(&config).unwrap())

@@ -990,6 +990,21 @@ catalog! {
             #[serde(with = "closed::list")]
             problems: Vec<NameProblem>,
         } => "the lake's names cannot all become tools[: {problems}]",
+        /// No writer door named for the lake took a forwarded call; nothing was written.
+        NotForwarded {
+            lake: String,
+            doors: u32,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            last: Option<Box<Error>>,
+        } => "none of the {doors} writer door(s) named for lake `{lake}` took the call: each holds no lease or was not reached before the call was sent, so nothing was written[ (the last: {last})]",
+        /// A forwarded call was sent, and the writer was lost before it answered.
+        ForwardLost {
+            lake: String,
+            #[serde(with = "closed")]
+            exchange: Exchange,
+        } => "the call was sent to the writer of lake `{lake}`, which then {exchange}; whether it landed is not known, and it is not sent again: retry it under its idempotency key, which answers the first call's outcome if it landed, or read the lake to learn it",
+        /// The handle has not read the lake through a position its own write answered.
+        NotFoldedYet { at: Position, folded: Position } => "this handle has read the lake through position {folded} and not yet through position {at}, which a write through it answered; it answers no read from before its own write, so read again shortly",
         /// An exchange with a remote end failed.
         Remote {
             #[serde(with = "closed")]

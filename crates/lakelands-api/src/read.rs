@@ -14,6 +14,14 @@ use crate::time::Timestamp;
 /// The header every HTTP transport puts the reply's position in.
 pub const POSITION_HEADER: &str = "Lakelands-Position";
 
+/// The header a host sends, over the link between hosts, the id of the
+/// principal a forwarded call is made as (076).
+pub const PRINCIPAL_HEADER: &str = "Lakelands-Principal";
+
+/// The header a host sends, over the link between hosts, the write
+/// context of a forwarded call in, as JSON (021, extended by 076).
+pub const CONTEXT_HEADER: &str = "Lakelands-Context";
+
 /// Every answer the store gives: the data and the position it reflects
 /// (`docs/decisions/009-every-response-carries-its-position.md`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

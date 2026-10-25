@@ -738,6 +738,9 @@ What a refusal is about.
 | `body_too_large` | — | the body is too large or was cut off | A body over the size a door reads. |
 | `filter_key_empty` | — | a feed filter names an empty key | A change filter naming an empty key. |
 | `find_where_text` | — | over REST, `find` takes `where` in its text form only; give the condition as text | A typed condition sent where REST takes text. |
+| `host_header_from_caller` | `header` (String) | `{header}` is sent only over the link between hosts, with a host's key; a principal's key carries no write context and acts as no other principal | A header of the link between hosts sent with a principal's key. |
+| `no_forwarded_principal` | — | a host's key acts for the principal `Lakelands-Principal` names by its id, and the call names none | A host's key with no principal named. |
+| `forwarded_context_form` | — | `Lakelands-Context` is not a write context: give its `origin`, `depth` and `cause` as JSON | A forwarded write context that is not one. |
 | `idempotency_key_header` | — | the idempotency key holds a character a header cannot carry, such as a line break | An idempotency key a header cannot carry. |
 | `if_match_both` | — | `If-Match` and `If-None-Match` cannot both be given | Both compare-and-set headers. |
 | `if_match_no_version` | `value` (String) | `If-Match: {value}` names no version | An `If-Match` that names no version. |
@@ -1039,6 +1042,9 @@ Why the lake cannot answer now. Retrying may help; the sentence says what the op
 | `pooler` | — | the connection does not keep its session; a transaction-mode connection pooler seems to sit in front of the server. The writer lease is a session lock, which such a pooler loses or hands to another client, so the lake was not opened for writing. Connect directly or through a session-mode pooler. | A transaction-mode connection pooler seems to sit in front of the server. |
 | `tls` | `problem` (Tls), `detail` (Detail, optional) | TLS cannot be set up: {problem}[: {detail}] | TLS cannot be set up for the lake's connection, with the library's words if it gave any. |
 | `tool_names` | `problems` (list of NameProblem) | the lake's names cannot all become tools[: {problems}] | The lake's names cannot all become tools. |
+| `not_forwarded` | `lake` (String), `doors` (u32), `last` (Error, optional) | none of the {doors} writer door(s) named for lake `{lake}` took the call: each holds no lease or was not reached before the call was sent, so nothing was written[ (the last: {last})] | No writer door named for the lake took a forwarded call; nothing was written. |
+| `forward_lost` | `lake` (String), `exchange` (Exchange) | the call was sent to the writer of lake `{lake}`, which then {exchange}; whether it landed is not known, and it is not sent again: retry it under its idempotency key, which answers the first call's outcome if it landed, or read the lake to learn it | A forwarded call was sent, and the writer was lost before it answered. |
+| `not_folded_yet` | `at` (Position), `folded` (Position) | this handle has read the lake through position {folded} and not yet through position {at}, which a write through it answered; it answers no read from before its own write, so read again shortly | The handle has not read the lake through a position its own write answered. |
 | `remote` | `remote` (Remote), `exchange` (Exchange) | calling {remote}: {exchange} | An exchange with a remote end failed. |
 
 ## `NameSource`

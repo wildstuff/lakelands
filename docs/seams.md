@@ -1387,8 +1387,10 @@ consumer waits for them: it answers the head once the log is past
 `after` or once `within` has passed, never past the head a `poll`
 reads, so a consumer caught up at `next` waits on `next - 1` and polls
 again (lakelands#1061). The store's feed wakes at the append its handle
-publishes. A read-only handle's head moves only when it opens again, so
-its wait ends at `within`, as its poll answers nothing new. The trait's
+publishes. A read-only handle follows the writer's fold: its poll reads
+up to where the writer has folded, and its wait looks there every
+`REACH_POLL` (10 ms) until it is past `after` or `within` has passed
+(lakelands#1394). The trait's
 own `wait` answers at once, so a feed written elsewhere keeps working. A filter that names
 something is answered from the projection's index of the log up to the
 view's position (`ProjectionView::matching`): only the events it names

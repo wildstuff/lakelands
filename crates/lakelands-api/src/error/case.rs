@@ -1836,6 +1836,12 @@ catalog! {
         FilterKeyEmpty => "a feed filter names an empty key",
         /// A typed condition sent where REST takes text.
         FindWhereText => "over REST, `find` takes `where` in its text form only; give the condition as text",
+        /// A header of the link between hosts sent with a principal's key.
+        HostHeaderFromCaller { header: String } => "`{header}` is sent only over the link between hosts, with a host's key; a principal's key carries no write context and acts as no other principal",
+        /// A host's key with no principal named.
+        NoForwardedPrincipal => "a host's key acts for the principal `Lakelands-Principal` names by its id, and the call names none",
+        /// A forwarded write context that is not one.
+        ForwardedContextForm => "`Lakelands-Context` is not a write context: give its `origin`, `depth` and `cause` as JSON",
         /// An idempotency key a header cannot carry.
         IdempotencyKeyHeader => "the idempotency key holds a character a header cannot carry, such as a line break",
         /// Both compare-and-set headers.

@@ -1303,6 +1303,11 @@ belongs in the suite, not beside one engine:
 
 - `a_chain_of_reactions_past_the_lakes_ceiling_is_refused_too_deep_and_appends_nothing` — 021: a host writes each reaction one deeper than its cause; the store takes every write up to the lake's max_reactive_depth and refuses the next as too_deep naming the ceiling, an upsert and a retire alike and whatever origin the context names, appending nothing, while the log keeps the chain before it with each write's depth
 
+**read your writes**
+
+- `a_reach_answers_once_the_head_is_there_and_is_unavailable_at_its_bound` — 076 (lakelands#1394): `reaches(at, within)` on the writer answers the head at once when it is at `at` or past it, answers once another caller's write puts it there within the bound, and with nothing written is `unavailable` as `not_folded_yet` naming `at` and the head, once the bound has passed and within a second of it
+- `a_retry_after_the_writer_went_away_answers_the_first_outcome` — 016 and 076 (lakelands#1394): a write made with an idempotency key, whose writer is closed and whose lake is opened again by another, is retried with that key: the retry answers the first write's outcome, appends nothing, and the record reads as the first write left it
+
 **trigger firing**
 
 - `a_trigger_past_its_depth_drops_instead_of_firing` — 021, extended (lakelands#1216): a write whose depth is at or above a trigger's `max_depth`, or the lake's `max_reactive_depth`, appends `trigger_dropped` naming the trigger, the record, the write's depth, the bound that applied, the lower of the two, and whose it is, in place of `trigger_fired`; below both the trigger fires, and a reaction one deeper naming that firing is written, while one naming a drop is refused `too_deep` naming the trigger, appending nothing; the feed tells `trigger_dropped` to a consumer that asks for it

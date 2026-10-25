@@ -86,6 +86,7 @@ mod reached;
 mod reactions;
 mod reactive_depth;
 mod read_clock;
+mod read_your_writes;
 mod readers_view;
 mod reads_kept;
 mod rebuild;
@@ -912,6 +913,8 @@ pub const ALL: &[Check] = &[
     value_types::CONDITION_NEVER_HOLDS,
     streaming::STREAMS,
     reactive_depth::TOO_DEEP,
+    read_your_writes::REACHES,
+    read_your_writes::LOST_ANSWER,
     trigger_firing::TRIGGER_DROPPED,
     trigger_firing::TRIGGER_STRICT,
     trigger_firing::TRIGGER_CHANGE,

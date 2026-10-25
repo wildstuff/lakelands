@@ -27,13 +27,20 @@
 //! - **The feed** is the log itself, unmasked, so it is read as the
 //!   configured `feed_key` principal, one that reads everything
 //!   (`docs/decisions/037-the-feed-over-a-network-door.md`).
+//! - **A forwarding handle** ([`ForwardingLake`]) is the other way to
+//!   hold a lake another process writes: it reads the lake's engine
+//!   itself and forwards its writes to the writer as a host, configured by
+//!   [`ForwardConfig`].
 
 #![forbid(unsafe_code)]
 
 mod connect;
 mod doors;
 mod feed;
+mod forward;
 mod wire;
+
+pub use forward::{ForwardConfig, ForwardingLake};
 
 use std::collections::BTreeMap;
 use std::fmt;
