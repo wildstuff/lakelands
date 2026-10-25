@@ -1,12 +1,14 @@
 # Budgets
 
-Four numbers keep the core small enough to read. Each is held by a gate
-in `scripts/gates/`:
+Six numbers keep the core, and the openCypher subset beside it, small
+enough to read. Each is held by a gate in `scripts/gates/`:
 
 | Budget | Gate | Holds |
 |---|---|---|
 | product | `core-size` | the core crates' product code, in lines |
 | specification | `core-size` | the core crates' conformance suite, unit tests and integration tests, in lines |
+| cypher product | `core-size` | the openCypher subset's (`lakelands-cypher`) product code, in lines |
+| cypher specification | `core-size` | the openCypher subset's unit tests and integration tests, in lines |
 | seam width | `seam-width` | the methods of the store facade and the engine traits |
 | cfg(feature) sites | `cfg-budget` | the `cfg(feature)` sites of the workspace |
 
@@ -167,3 +169,5 @@ base under its own count, is red until it merges develop.
 | 2026-10-25 | specification | 157 000 → 156 500 (ratchet base) | Release 0.19.0 | The ratchet at the release: the count on the release head is 156 395, rounded up to the next 500. The ceiling stays at 157 000, so the round's reserve is the room between the count and it. |
 | 2026-10-25 | product | 85 000 → 91 000 | lakelands#1400 | The operator's decision (2026-10-25, recorded on lakelands#1400: https://github.com/wildstuff/lakelands/issues/1400#issuecomment-6398126743), by rule 4: a reserve for the whole round of 0.20.0. develop `06ab6d80` stands at 84 511. The reserve is for the forwarding handle (lakelands#1394, built: about +180 on today's develop), standby and failover (lakelands#1395, estimated +400 to +700 in decision record 076), patterns that branch and join, the graph measures, a change over the records a condition selects, lexical ranking by term rarity, and the host items of the round; the openCypher subset lives in a crate of its own, outside this budget. The designs not yet cut are estimated from shipped pull requests at about +5 000 together. Each pull request cuts first and names its measured delta. The ratchet base rises with the ceiling and falls at the release. No row inside the reserve until it is spent. |
 | 2026-10-25 | specification | 157 000 → 167 000 | lakelands#1400 | The operator's decision (2026-10-25, recorded on lakelands#1400: https://github.com/wildstuff/lakelands/issues/1400#issuecomment-6398126743), by rule 4: the same reserve for the round's checks. develop `06ab6d80` stands at 156 395, its ratchet base at 156 500 since the release. The forwarding handle brings about +230 on today's develop; standby is estimated at +600 to +1 000 in decision record 076; the rows of the branching patterns, the measures, the planned change over many records and its refusals on every engine, and the host items are estimated at about +9 000 together. The ratchet base rises with the ceiling and falls at the release. No row inside the reserve until it is spent. |
+| 2026-10-25 | cypher product | 0 → 2 500 | lakelands#1419 | The operator's decision on lakelands#1400 (2026-10-25): the openCypher subset lives in a crate of its own, outside the core crates' product budget, with a budget of its own so it is no unbudgeted place to grow; sized by the rule from the lines lakelands#1419 measures: 2 453, rounded up to the next 500. |
+| 2026-10-25 | cypher specification | 0 → 1 500 | lakelands#1419 | The operator's decision on lakelands#1400 (2026-10-25): the openCypher subset lives in a crate of its own, outside the core crates' product budget, with a budget of its own so it is no unbudgeted place to grow; sized by the rule from the lines lakelands#1419 measures: 1 262, rounded up to the next 500. |

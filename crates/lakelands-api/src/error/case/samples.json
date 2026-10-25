@@ -646,6 +646,62 @@
    "name": "s"
   },
   {
+   "code": "cypher_alias",
+   "item": "s"
+  },
+  {
+   "code": "cypher_count",
+   "item": "s"
+  },
+  {
+   "code": "cypher_function",
+   "name": "s",
+   "offset": 1
+  },
+  {
+   "code": "cypher_order_item",
+   "item": "s"
+  },
+  {
+   "code": "cypher_outside",
+   "construct": "create",
+   "offset": 1
+  },
+  {
+   "code": "cypher_param_missing",
+   "name": "p"
+  },
+  {
+   "code": "cypher_param_unused",
+   "name": "p"
+  },
+  {
+   "code": "cypher_param_value",
+   "name": "p"
+  },
+  {
+   "code": "cypher_row_item",
+   "item": "s"
+  },
+  {
+   "code": "cypher_skip",
+   "skip": 1
+  },
+  {
+   "code": "cypher_start_type",
+   "offset": 1
+  },
+  {
+   "code": "cypher_unbound",
+   "name": "s",
+   "offset": 1
+  },
+  {
+   "clause": "s",
+   "code": "cypher_whole",
+   "offset": 1
+  },
+  {
    "code": "division_by_zero"
   },
   {
@@ -884,6 +940,14 @@
    "code": "setting_takes_key",
    "value": {
     "kind": "null"
+   }
+  },
+  {
+   "code": "statement_not_parsed",
+   "why": {
+    "code": "unknown_field",
+    "field": "f",
+    "type": "t"
    }
   },
   {
