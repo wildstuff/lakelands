@@ -28,7 +28,7 @@ check!(
 
 check!(
     APART_READ = an_output_reads_the_keys_apart_of_the_events_that_wrote_its_values,
-    "065, amended (lakelands#1423): `pair` computes `both` from `nick` and `city` by the suite's backing, answering the nick; `crm` writes `c2`'s nick, then the delivery `nicks`, sealed apart, writes `c1`'s nick and then, in the same call, its city, which is not erasable, and an ordinary delivery writes its city again; only the two nicks' ingests are sealed, `c2`'s under `crm`'s version alone, so each output over the nick takes `nicks`'s key from the event that wrote the nick: each is sealed under `crm`'s version and that key, and `both` reads Countess; a writer opened again and a rebuild read the same and make no call again; taking `nicks` back destroys that key alone, and `c1` holds no `both` and no nick while its city reads Oslo, at the head, after a reopen and after a rebuild, no call made again",
+    "065, amended (lakelands#1423): `pair` computes `both` from `nick` and `city` by the suite's backing, answering the nick; `crm` writes `c2` with the nick Countess and the city Rome, its output sealed under `crm`'s version alone, then the delivery `nicks`, sealed apart, writes `c1`'s nick and then, in the same call, its city, which is not erasable, and an ordinary delivery writes its city again; only the two nicks' ingests are sealed, so each output over the nick takes `nicks`'s key from the event that wrote the nick: each is sealed under `crm`'s version and that key, the one over Rome not `c2`'s, and `both` reads Countess; a writer opened again and a rebuild read the same and make no call again; taking `nicks` back destroys that key alone, and `c1` holds no `both` and no nick while its city reads Oslo, at the head, after a reopen and after a rebuild, no call made again",
     reopens
 );
 
@@ -482,10 +482,12 @@ async fn an_output_reads_the_keys_apart_of_the_events_that_wrote_its_values(
     let crm: SourceId = "crm".into();
     let c1 = |fields: Value| source_record("person", "c1", fields);
     let mark = store.head().await.must("reading the head")?;
-    let c2 = source_record("person", "c2", json!({"id": "c2", "nick": "Duke"}));
-    l.ingest("crm", vec![c2])
-        .await
-        .must("ingesting c2's nick")?;
+    let c2 = source_record(
+        "person",
+        "c2",
+        json!({"id": "c2", "nick": "Countess", "city": "Rome"}),
+    );
+    l.ingest("crm", vec![c2]).await.must("ingesting c2")?;
     let nicks = vec![
         c1(json!({"id": "c1", "nick": "Countess"})),
         c1(json!({"id": "c1", "city": "Rome"})),
@@ -515,7 +517,7 @@ async fn an_output_reads_the_keys_apart_of_the_events_that_wrote_its_values(
         ingests
             == [
                 &("ingest c2".into(), nick(&[])),
-                &("ingest c1".into(), nick(&[a.clone()]))
+                &("ingest c1".into(), nick(std::slice::from_ref(a)))
             ]
             && over.count() == 2,
         "the nicks' ingests alone are sealed, and the outputs over Rome and over Oslo are \
