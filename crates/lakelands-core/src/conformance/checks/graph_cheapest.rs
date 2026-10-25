@@ -285,11 +285,11 @@ async fn equal_costs_take_fewest_hops_then_the_least_predecessor_whatever_order_
     store: Store,
     given: Given,
 ) -> Held {
+    lake(store.as_ref(), &ties()).await?;
     let twin = (given.twin)(store.lake().clone(), Default::default()).await;
     let twin = twin.map_err(|e| Failure::new(format!("the harness opened no twin: {e}")))?;
     let mut reversed = ties();
     reversed.reverse();
-    lake(store.as_ref(), &ties()).await?;
     lake(twin.as_ref(), &reversed).await?;
     let mut answers = Vec::new();
     for (lake, written) in [(&store, "in order"), (&twin, "in reverse")] {

@@ -231,9 +231,9 @@ async fn page_rank_is_the_same_whatever_order_its_links_were_written_in(
     store: Store,
     given: Given,
 ) -> Held {
+    ring(store.as_ref(), false).await?;
     let twin = (given.twin)(store.lake().clone(), Default::default()).await;
     let twin = twin.map_err(|e| Failure::new(format!("the harness opened no twin: {e}")))?;
-    ring(store.as_ref(), false).await?;
     ring(twin.as_ref(), true).await?;
     let all = || {
         let steps = ["to_next", "to_jump", "cites"].map(|r| step(r, Walk::Out));
