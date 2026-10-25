@@ -439,6 +439,7 @@ What says only where or how to connect, or which keys to use, is a binding and n
 - **`engine.tls`** (the location): PostgreSQL: how the connection is secured.
 - **`engine.tablespaces`** (the location): PostgreSQL: the tablespaces the lake's `log`, `projection`, `indexes` and `vectors` are made in, each the database's default where it is absent.
 - **`key`** (the location): A handle naming the key the lake is encrypted with, which the host resolves.
+- **`writers`** (the location): The REST doors of the processes that may hold the lake's writer lease, the writer first and then its standbys, each a `url` and an optional `ca_file`: where a handle that does not hold the lease forwards a write, the only places it sends one.
 - **`keys.keyring`** (`lakelands.json`): The directory of the key store that seals a source's values of erasable fields.
 - **`deliver.endpoints`** (`lakelands.json`): The endpoints `serve` delivers fired triggers and object-set changes to, the only places a deliverer sends anything.
 - **`deliver.ca_file`** (`lakelands.json`): The certificate authorities a deliverer trusts over `https`.
@@ -449,6 +450,7 @@ What says only where or how to connect, or which keys to use, is a binding and n
 - **`backings.http.ca_file`** (`lakelands.json`): The certificate authorities the `http` backing trusts over `https`.
 - **`backings.exec.commands`** (`lakelands.json`): The commands a function may name, each a program and its arguments, the only ones the `exec` backing runs.
 - **`mirror.connections`** (`lakelands.json`): Each mirror's source lake, target lake, principal, the types that cross, and where a type with no position begins (`start`: a snapshot of its records, or the feed from now).
+- **`server.hosts`** (`lakelands.json`): The other hosts that may forward a call to this server's doors, each an `id`, its `keys`, the `lakes` it may forward to (every lake when empty) and the `principals` it may act for (every one the lake knows when absent).
 - **`lakes_dir`** (`lakelands.json`): Where `lake new` makes a SQLite lake's directory; `lakes` in the root when absent.
 - **`exports_dir`** (`lakelands.json`): Where `export` writes when it is given no `--to`; `exports` in the root when absent.
 - **`backups_dir`** (`lakelands.json`): Where the root's backups are to be kept, nothing yet; `backups` in the root when absent.

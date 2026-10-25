@@ -1005,6 +1005,10 @@ fn cursor_at(mut at: ReadAt, cursor: Option<&lakelands_api::Cursor>) -> Result<C
     Ok((at, a.now))
 }
 
+/// How often a handle that holds no lease reads where the writer has
+/// folded while [`LakeStore::reaches`] waits: 10 ms.
+pub const REACH_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
 #[async_trait]
 impl LakeStore for Store {
     fn lake(&self) -> &LakeId {
@@ -1021,6 +1025,14 @@ impl LakeStore for Store {
 
     async fn head(&self) -> Result<Position> {
         Ok(self.lake.head())
+    }
+
+    /// The writer waits on its own head; a handle that holds no lease
+    /// reads where the writer has folded every [`REACH_POLL`]. Either
+    /// answers by `within`, never later: a read of the mark still going
+    /// then is left.
+    async fn reaches(&self, at: Position, within: std::time::Duration) -> Result<Position> {
+        reach(&self.lake, at, within).await
     }
 
     fn catalog(&self, context: WriteContext) -> Arc<dyn Catalog> {
@@ -1229,6 +1241,38 @@ impl LakeStore for Store {
     }
 }
 
+/// The head once it is at `at`: a writer's at once or when it moves, a
+/// handle without the lease's when the writer's fold reaches it, looked
+/// at every [`REACH_POLL`]. Past `within`, and never later, it is
+/// `NotFoldedYet`.
+async fn reach(lake: &Arc<Lake>, at: Position, within: std::time::Duration) -> Result<Position> {
+    let until = tokio::time::Instant::now() + within;
+    loop {
+        let folded = if lake.is_writer() {
+            lake.head()
+        } else {
+            let follow = lake.clone();
+            let read = exec::run(move || follow.follow_head());
+            match tokio::time::timeout_at(until, read).await {
+                Ok(read) => read?,
+                Err(_) => lake.head(),
+            }
+        };
+        if folded >= at {
+            return Ok(folded);
+        }
+        let now = tokio::time::Instant::now();
+        if now >= until {
+            return Err(Error::unavailable(Situation::NotFoldedYet { at, folded }));
+        }
+        if lake.is_writer() {
+            lake.wait_past(folded, until - now).await;
+        } else {
+            tokio::time::sleep_until((now + REACH_POLL).min(until)).await;
+        }
+    }
+}
+
 /// The change feed: the log, filtered by kind and type, read from a
 /// position (`docs/decisions/004-the-change-feed-is-the-log.md`), each
 /// batch naming the reactions in it an act overruled (065).
@@ -1266,7 +1310,15 @@ impl ChangeFeed for Feed {
     }
 
     async fn wait(&self, after: Position, within: std::time::Duration) -> Result<Position> {
-        Ok(self.lake.wait_past(after, within).await)
+        if self.lake.is_writer() {
+            return Ok(self.lake.wait_past(after, within).await);
+        }
+        match reach(&self.lake, Position(after.0 + 1), within).await {
+            Err(e) if matches!(e.situation(), Some(Situation::NotFoldedYet { .. })) => {
+                Ok(self.lake.head())
+            }
+            reached => reached,
+        }
     }
 }
 
@@ -1278,7 +1330,11 @@ fn polled(
     filter: &FeedFilter,
     limit: u32,
 ) -> Result<(Vec<lakelands_api::event::Event>, Position, Position)> {
-    let head = lake.head();
+    // A handle without the lease reads as far as the writer has folded.
+    let head = match lake.is_writer() {
+        true => lake.head(),
+        false => lake.follow_head()?,
+    };
     let want = limit.max(1) as usize;
     let (mut read, mut events, mut next) = (0, Vec::new(), from);
     // Up to the view's position the projection's index names the

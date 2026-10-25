@@ -40,5 +40,6 @@ pub use http::{
     Health, HttpConfig, HttpServer, LakeOpener, Readiness, WORKERS_MOST, runtime, serve_http,
 };
 pub use metrics::{Metrics, MetricsConfig, MetricsServer, serve_metrics};
+pub use resolver::HostEntry;
 pub use session::Session;
 pub use stdio::{serve_io, serve_stdio};

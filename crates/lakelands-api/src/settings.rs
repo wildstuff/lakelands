@@ -442,6 +442,11 @@ pub const BINDINGS: &[Binding] = &[
         says: "A handle naming the key the lake is encrypted with, which the host resolves.",
     },
     Binding {
+        key: "writers",
+        layer: Layer::Location,
+        says: "The REST doors of the processes that may hold the lake's writer lease, the writer first and then its standbys, each a `url` and an optional `ca_file`: where a handle that does not hold the lease forwards a write, the only places it sends one.",
+    },
+    Binding {
         key: "keys.keyring",
         layer: Layer::Root,
         says: "The directory of the key store that seals a source's values of erasable fields.",
@@ -490,6 +495,11 @@ pub const BINDINGS: &[Binding] = &[
         key: "mirror.connections",
         layer: Layer::Root,
         says: "Each mirror's source lake, target lake, principal, the types that cross, and where a type with no position begins (`start`: a snapshot of its records, or the feed from now).",
+    },
+    Binding {
+        key: "server.hosts",
+        layer: Layer::Root,
+        says: "The other hosts that may forward a call to this server's doors, each an `id`, its `keys`, the `lakes` it may forward to (every lake when empty) and the `principals` it may act for (every one the lake knows when absent).",
     },
     Binding {
         key: "lakes_dir",

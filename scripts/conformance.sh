@@ -75,6 +75,10 @@ for engine in ${engines[@]+"${engines[@]}"}; do
     if needs_server "$engine"; then
         echo "conformance: $engine runs the CLI's mirror and verify checks"
         cargo nextest run --locked -p lakelands-cli --test mirror --test verify
+        # The door checks through a forwarding handle beside a writer on
+        # this engine (lakelands#1394).
+        echo "conformance: $engine runs the door checks through a forwarding handle"
+        cargo nextest run --locked -p lakelands-client --test forwarding
         # Last, once every test above has ended: none left its schema
         # behind (lakelands#1011). This holds only where this run owns the
         # database, as CI's job and a worktree's own container running one

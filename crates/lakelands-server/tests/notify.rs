@@ -659,6 +659,7 @@ async fn serve(store: Arc<dyn LakeStore>) -> (SocketAddr, tokio::task::JoinHandl
         feed_floor_millis: 25,
         workers: None,
         metrics: None,
+        hosts: Vec::new(),
     };
     let server = serve_http(config, common::resolver(), open).await.unwrap();
     let addr = server.local_addr().unwrap();

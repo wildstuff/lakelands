@@ -38,6 +38,9 @@ interface store {
         limits: func() -> limits;
         /// The lake's last position.
         head: func() -> result<position, error>;
+        /// The head once it is at `at` or past it, waiting at most
+        /// `within-millis` for it; past the bound, unavailable.
+        reaches: func(at: position, within-millis: u64) -> result<position, error>;
         /// The doors of this lake, writing under `context`.
         catalog: func(context: write-context) -> catalog;
         /// The change feed: the log filtered by kind

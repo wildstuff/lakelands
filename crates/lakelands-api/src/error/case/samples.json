@@ -2195,6 +2195,16 @@
    "code": "find_where_text"
   },
   {
+   "code": "host_header_from_caller",
+   "header": "s"
+  },
+  {
+   "code": "no_forwarded_principal"
+  },
+  {
+   "code": "forwarded_context_form"
+  },
+  {
    "code": "idempotency_key_header"
   },
   {

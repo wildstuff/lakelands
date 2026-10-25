@@ -214,6 +214,7 @@ fn the_location_s_bindings_are_the_list_s() {
         *projection_dir = Some("p".into());
     }
     pg.key = Some(KeyHandle("k".into()));
+    pg.writers = vec![crate::location::WriterDoor::new("https://w")];
     let mut members = std::collections::BTreeSet::new();
     for l in [sqlite, pg] {
         let v = serde_json::to_value(l).expect("it serialises");

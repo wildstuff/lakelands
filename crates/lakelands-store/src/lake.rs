@@ -1173,6 +1173,18 @@ impl Lake {
         self.heads.send_replace(at);
     }
 
+    /// The head of a handle that holds no lease, moved on to where the
+    /// writer has folded since: it folds nothing itself, so only the
+    /// projection's mark tells it. The head never moves back.
+    pub(crate) fn follow_head(&self) -> Result<Position> {
+        if let Some(p) = self.engine.projection().folded_through()?
+            && self.head.fetch_max(p.0, Ordering::AcqRel) < p.0
+        {
+            self.heads.send_replace(p.0);
+        }
+        Ok(self.head())
+    }
+
     /// The head once it is past `after`, or when `within` has passed: what
     /// a feed's poll reads up to, so a wait wakes when a poll would answer
     /// more, and never before.

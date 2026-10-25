@@ -53,9 +53,9 @@ use hyper_util::rt::TokioIo;
 use lakelands_api::error::{Case, Result};
 use lakelands_api::id::LakeId;
 use lakelands_api::id::Position;
-use lakelands_api::read::POSITION_HEADER;
+use lakelands_api::read::{CONTEXT_HEADER, POSITION_HEADER, PRINCIPAL_HEADER};
 use lakelands_api::seam::{Credential, PrincipalResolver};
-use lakelands_api::{LakeStore, Principal};
+use lakelands_api::{LakeStore, Principal, WriteContext};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -63,7 +63,7 @@ use tokio::sync::{Notify, mpsc};
 
 use crate::watch::{QUEUE, Queued};
 
-use crate::resolver::same_key;
+use crate::resolver::{Entry, HostEntry, same_key};
 use crate::rest::Answer;
 use crate::session::{PROTOCOL_VERSIONS, Session, code, error};
 
@@ -117,6 +117,48 @@ pub struct HttpConfig {
     /// is listened for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics: Option<crate::metrics::MetricsConfig>,
+    /// The other hosts that may forward calls to the REST doors over the
+    /// link between hosts, each with keys of its own ([`HostEntry`]).
+    /// None, and no call is forwarded here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<HostEntry>,
+}
+
+impl HttpConfig {
+    /// Whether the hosts' keys can stand for them: none is empty, none
+    /// stands for two hosts, and none is also a key of one of
+    /// `principals`, which would make a principal's key a host's. Names
+    /// the host, never the key.
+    pub fn check(&self, principals: &[Entry]) -> Result<(), String> {
+        for (i, host) in self.hosts.iter().enumerate() {
+            let id = &host.id;
+            if host.keys.is_empty() || host.keys.iter().any(String::is_empty) {
+                return Err(format!(
+                    "server.hosts: host `{id}` has no key, or an empty one"
+                ));
+            }
+            for key in &host.keys {
+                let other =
+                    (self.hosts[..i].iter()).find(|h| h.keys.iter().any(|k| same_key(k, key)));
+                if let Some(h) = other {
+                    return Err(format!(
+                        "server.hosts: a key of host `{id}` is also host `{}`'s",
+                        h.id
+                    ));
+                }
+                let principal = principals
+                    .iter()
+                    .find(|p| p.api_keys.iter().any(|k| same_key(k, key)));
+                if let Some(p) = principal {
+                    return Err(format!(
+                        "server.hosts: a key of host `{id}` is also an api key of principal `{}`",
+                        p.name
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The most threads [`runtime`] starts when the configuration names no
@@ -256,6 +298,7 @@ pub(crate) struct State {
     pub(crate) origins: Vec<String>,
     pub(crate) resolver: Arc<dyn PrincipalResolver>,
     pub(crate) open: Arc<LakeOpener>,
+    pub(crate) hosts: Vec<HostEntry>,
     sessions: Mutex<HashMap<String, Arc<Slot>>>,
 }
 
@@ -271,6 +314,7 @@ pub async fn serve_http(
     resolver: Arc<dyn PrincipalResolver>,
     open: Arc<LakeOpener>,
 ) -> io::Result<HttpServer> {
+    (config.check(&[])).map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
     let listener = TcpListener::bind(config.bind).await?;
     Ok(HttpServer {
         listener,
@@ -282,6 +326,7 @@ pub async fn serve_http(
             origins: config.allowed_origins,
             resolver,
             open,
+            hosts: config.hosts,
             sessions: Mutex::new(HashMap::new()),
         }),
     })
@@ -433,6 +478,59 @@ pub(crate) async fn resolve(
                 ),
             )
         })
+}
+
+/// The principal a host forwards a call for, by the id it names, and the
+/// write context it carries: only for a lake and a principal the host
+/// may forward for, and only one the resolver knows for the lake.
+pub(crate) async fn forwarded(
+    state: &State,
+    host: &HostEntry,
+    lake: &LakeId,
+    h: &HeaderMap,
+) -> std::result::Result<(Principal, WriteContext), Turned> {
+    let bad = |case| Turned::new(StatusCode::BAD_REQUEST, Turn::Invalid(case));
+    let principal = header(h, PRINCIPAL_HEADER).ok_or_else(|| bad(Case::NoForwardedPrincipal))?;
+    let context = match header(h, CONTEXT_HEADER) {
+        Some(c) => serde_json::from_str(c).map_err(|_| bad(Case::ForwardedContextForm))?,
+        None => WriteContext::default(),
+    };
+    let refused = || {
+        Turned::new(
+            StatusCode::FORBIDDEN,
+            Turn::NotGranted(
+                "the host may not forward a call to this lake as this principal",
+                "forward only for a principal the server's configuration lets the host act for",
+            ),
+        )
+    };
+    if !host.may(lake, principal) {
+        return Err(refused());
+    }
+    let credential = Credential::Forwarded {
+        host: host.id.clone(),
+        principal: principal.to_owned(),
+    };
+    let who = (state.resolver.resolve(lake, &credential).await).map_err(|_| refused())?;
+    Ok((who, context))
+}
+
+/// A header of the link between hosts, sent with a principal's key: it
+/// is refused, so no caller sets a write context or acts as another
+/// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`).
+pub(crate) fn no_link_headers(h: &HeaderMap) -> std::result::Result<(), Turned> {
+    match [PRINCIPAL_HEADER, CONTEXT_HEADER]
+        .into_iter()
+        .find(|n| h.contains_key(*n))
+    {
+        Some(header) => Err(Turned::new(
+            StatusCode::BAD_REQUEST,
+            Turn::Invalid(Case::HostHeaderFromCaller {
+                header: header.into(),
+            }),
+        )),
+        None => Ok(()),
+    }
 }
 
 /// A JSON body, read whole: its media type, when named, is JSON, and it

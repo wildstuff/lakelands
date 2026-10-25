@@ -414,6 +414,15 @@ impl Root {
                 "correct the file; `lakelands init` writes a valid one to start from",
             )
         })?;
+        if let Some(server) = &config.server {
+            server.check(&config.principals).map_err(|why| {
+                Failure::new(
+                    format!("{}: {why}", show(&file)),
+                    "fix the server section of the configuration: give each host keys of its \
+                     own",
+                )
+            })?;
+        }
         if let Some(backings) = &config.backings {
             backings.check().map_err(|why| {
                 Failure::new(

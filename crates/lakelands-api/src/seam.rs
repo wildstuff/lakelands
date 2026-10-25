@@ -36,6 +36,18 @@ pub enum Credential {
     Bearer(String),
     /// The operating-system user running a local door (the CLI).
     LocalUser(String),
+    /// A principal named by its id, for whom another host forwards a
+    /// call over the link between hosts. The server has checked the
+    /// host's own key and that the host may speak for the principal; the
+    /// resolver resolves the id as one of its own principals, and the
+    /// principal's grants judge the call
+    /// (`docs/decisions/076-a-lake-keeps-one-writer-and-a-dataset-that-outgrows-it-becomes-several-lakes.md`).
+    Forwarded {
+        /// The forwarding host, as the server's configuration names it.
+        host: String,
+        /// The principal's id.
+        principal: String,
+    },
 }
 
 /// Turns a host's identities, roles and policies into one [`Principal`]

@@ -41,7 +41,7 @@ use http_body_util::combinators::BoxBody;
 use hyper::body::{Body, Frame, Incoming};
 use hyper::header::{CONTENT_TYPE, HeaderValue};
 use hyper::{HeaderMap, Method, Request, Response, StatusCode};
-use lakelands_api::error::{Case, Error, Form, Names, Refusal, Said};
+use lakelands_api::error::{Case, Error, Form, Names, Refusal, Said, Situation};
 use lakelands_api::id::{LakeId, Position, SourceId};
 use lakelands_api::read::POSITION_HEADER;
 use lakelands_api::record::SourceRecord;
@@ -52,7 +52,11 @@ use serde_json::{Map, Value, json};
 use tokio::sync::mpsc;
 
 use crate::doors::{self, Fault, to_json, unknown_argument};
-use crate::http::{State, Turn, Turned, admit, header, json_response, read_json, resolve};
+use crate::http::{
+    State, Turn, Turned, admit, forwarded, header, json_response, no_link_headers, read_json,
+    resolve,
+};
+use crate::resolver::host_of;
 use crate::say::Failure;
 
 /// A reply: its body whole, or streamed.
@@ -688,11 +692,35 @@ async fn serve(state: &State, req: Request<Incoming>, rest: &str) -> Result<Answ
         Some(id) if !id.is_empty() && !id.contains('/') => LakeId::from(id.as_str()),
         _ => return Err(no_route()),
     };
-    let who = resolve(state, &lake, key).await.map_err(turned)?;
+    // A host's key makes the call one forwarded over the link between
+    // hosts, as the principal it names; a principal's key may not name
+    // another or set a write context.
+    let host = host_of(&state.hosts, &key);
+    let (who, cx) = match host {
+        Some(h) => forwarded(state, h, &lake, req.headers()).await,
+        None => match no_link_headers(req.headers()) {
+            Ok(()) => resolve(state, &lake, key)
+                .await
+                .map(|w| (w, WriteContext::default())),
+            Err(t) => Err(t),
+        },
+    }
+    .map_err(turned)?;
     let store = (state.open)(&lake).map_err(contract)?;
+    // A forwarded call goes to the writer and nowhere further: a host
+    // that is not it says so before the body is read, and the forwarder
+    // tries its next door, so no call is forwarded twice.
+    if host.is_some() && !store.is_writer() {
+        let lake = Some(lake.to_string());
+        let read_only = Situation::ReadOnly {
+            lake,
+            leased_elsewhere: true,
+        };
+        return Err(contract(Error::unavailable(read_only)));
+    }
     let answer = match route(req.method(), rest) {
-        Ok(Target::Door(r)) => door(&store, &who, r, req).await,
-        Ok(Target::Ingest(source)) => ingest(&store, &who, source, req).await,
+        Ok(Target::Door(r)) => door(&store, &who, cx, r, req).await,
+        Ok(Target::Ingest(source)) => ingest(&store, &who, cx, source, req).await,
         Ok(Target::Feed) => feed(state, &store, &who, req).await,
         Err(a) => Err(a),
     };
@@ -778,6 +806,7 @@ fn once_headers(h: &HeaderMap, door: &Door, a: &mut Map<String, Value>) -> Resul
 async fn door(
     store: &Arc<dyn LakeStore>,
     who: &Principal,
+    cx: WriteContext,
     r: Route,
     req: Request<Incoming>,
 ) -> Result<Answer, Stop> {
@@ -790,7 +819,7 @@ async fn door(
             write_headers(req.headers(), r.writes == Writes::CasOrNew, &mut a)?
         }
     }
-    let catalog = store.catalog(WriteContext::default());
+    let catalog = store.catalog(cx);
     match r.body {
         BodyAs::Nothing => {
             if json_body(req).await?.is_some() {
@@ -1043,6 +1072,7 @@ impl Drop for Lines {
 async fn ingest(
     store: &Arc<dyn LakeStore>,
     who: &Principal,
+    cx: WriteContext,
     source: SourceId,
     req: Request<Incoming>,
 ) -> Result<Answer, Stop> {
@@ -1080,7 +1110,7 @@ async fn ingest(
         stopped: false,
         fault: fault.clone(),
     };
-    let catalog: Arc<dyn Catalog> = store.catalog(WriteContext::default());
+    let catalog: Arc<dyn Catalog> = store.catalog(cx);
     let mut commits = catalog
         .ingest_with(who, &source, opts, Box::pin(lines))
         .await

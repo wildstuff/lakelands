@@ -89,6 +89,7 @@ fn prepare(bin: &Path, root: &Path, pg: Option<(&str, bool)>, workers: Option<us
                 },
                 key: None,
                 limits: Limits::default(),
+                writers: Vec::new(),
             };
             std::fs::create_dir_all(root.join("lakes")).unwrap();
             std::fs::write(

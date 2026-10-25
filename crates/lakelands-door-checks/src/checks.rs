@@ -77,6 +77,13 @@ use crate::stream;
 /// which holds for a lake's own feed. Over a network door the server's
 /// stream reads on to a match or to the head, a bounded poll at a time
 /// (`docs/seams.md` §`ChangeFeed`), so it is ignored there, saying why.
+///
+/// Given `forward` instead, the macro expands for a forwarding handle,
+/// which reads and follows the feed of its own engine and sends every
+/// write to the writer's door: a `#[host_ops]` check is ignored, since
+/// the handle answers host operations as one without the lease does, and
+/// an `#[own_principals]` check too, since the writer's resolver judges
+/// the call; an `#[in_process_feed]` check runs.
 #[macro_export]
 macro_rules! door_checks {
     ($new:expr, $block_on:path) => {
@@ -84,6 +91,9 @@ macro_rules! door_checks {
     };
     ($new:expr, $block_on:path, remote) => {
         $crate::door_checks!(@all remote, $new, $block_on);
+    };
+    ($new:expr, $block_on:path, forward) => {
+        $crate::door_checks!(@all forward, $new, $block_on);
     };
     (@all $at:ident, $new:expr, $block_on:path) => {
         $crate::door_checks!(@each $at, $new, $block_on;
@@ -273,6 +283,20 @@ macro_rules! door_checks {
     (@one remote, $new:expr, $block_on:path, [own_principals] $name:ident) => {
         #[test]
         #[ignore = "makes principals of its own, which a network door's resolver does not know"]
+        fn $name() {
+            $block_on($crate::checks::$name(($new)()));
+        }
+    };
+    (@one forward, $new:expr, $block_on:path, [host_ops] $name:ident) => {
+        #[test]
+        #[ignore = "calls a host operation, which a forwarding handle answers without the lease"]
+        fn $name() {
+            $block_on($crate::checks::$name(($new)()));
+        }
+    };
+    (@one forward, $new:expr, $block_on:path, [own_principals] $name:ident) => {
+        #[test]
+        #[ignore = "makes principals of its own, which the writer's resolver does not know"]
         fn $name() {
             $block_on($crate::checks::$name(($new)()));
         }
