@@ -1012,10 +1012,19 @@ write to the writer over the writer's REST door, the link between hosts.
   before the handle's own write. `LakeStore::reaches(at, within)` is the
   same wait, for a host that tracks positions itself; on the writer it
   answers as soon as the head is there.
+- **Host operations.** Those that need the lease (`rebuild`,
+  `checkpoint`, `age`, `purge_source`, `restrict`, `unrestrict`, the
+  forgettings, `remove_values`, `compact`) are `unavailable` as
+  `read_only` through the handle: they are run on the writer. Their
+  preflights, and the other reads of a host, are answered by the
+  handle's engine once it has folded the handle's own writes.
 - **The host's key.** The writer's server lists the processes that may
   forward to it in `server.hosts`, each an `id`, its `keys`, the
   `lakes` it may forward to, and the `principals` it may act for. A
-  host's key carries no grants of its own: each call names the
+  host's keys are its own: a root whose host has no key or an empty
+  one, shares a key with another host, or has a key that is also a
+  principal's `api_keys` entry does not open. A host's key carries no
+  grants of its own: each call names the
   principal it is made as in `Lakelands-Principal`, by id, and is judged
   under that principal's grants; `Lakelands-Context` carries the
   call's write context (`docs/rest.md`). So a host key can act as any

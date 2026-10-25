@@ -1390,7 +1390,11 @@ again (lakelands#1061). The store's feed wakes at the append its handle
 publishes. A read-only handle follows the writer's fold: its poll reads
 up to where the writer has folded, and its wait looks there every
 `REACH_POLL` (10 ms) until it is past `after` or `within` has passed
-(lakelands#1394). The trait's
+(lakelands#1394). Each waiting consumer reads the fold on its own, so
+a read-only handle with many feed streams open costs its engine about a
+hundred small queries a second for each of them while the lake is
+quiet; a host serving many subscribers serves them from the writer, or
+fans one feed out to them. The trait's
 own `wait` answers at once, so a feed written elsewhere keeps working. A filter that names
 something is answered from the projection's index of the log up to the
 view's position (`ProjectionView::matching`): only the events it names

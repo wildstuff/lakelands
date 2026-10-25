@@ -1306,6 +1306,7 @@ belongs in the suite, not beside one engine:
 **read your writes**
 
 - `a_reach_answers_once_the_head_is_there_and_is_unavailable_at_its_bound` — 076 (lakelands#1394): `reaches(at, within)` on the writer answers the head at once when it is at `at` or past it, answers once another caller's write puts it there within the bound, and with nothing written is `unavailable` as `not_folded_yet` naming `at` and the head, once the bound has passed and within a second of it
+- `a_reach_without_the_lease_follows_the_writers_fold` — 076 (lakelands#1394): `reaches(at, within)` on a handle opened read-only beside the lake's writer answers once the writer's later write is folded there, and with nothing written is `unavailable` as `not_folded_yet` naming `at` and what it has folded, once the bound has passed and within a second of it
 - `a_retry_after_the_writer_went_away_answers_the_first_outcome` — 016 and 076 (lakelands#1394): a write made with an idempotency key, whose writer is closed and whose lake is opened again by another, is retried with that key: the retry answers the first write's outcome, appends nothing, and the record reads as the first write left it
 
 **trigger firing**

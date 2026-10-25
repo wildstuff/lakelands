@@ -5,7 +5,9 @@
 //! A forwarding handle's wire sends its host's key instead, and names the
 //! principal in a header (`crate::forward`). It tells a call that was not
 //! sent, which may go to the next door, from one that was: a failure
-//! after the request left is `ForwardLost`, never sent again.
+//! after the request left is `ForwardLost`, never sent again. Which it
+//! was is recorded here, in [`SENT`], as the request is made, never read
+//! from an answer, so a writer's own refusal is the call's answer.
 
 use std::collections::BTreeMap;
 use std::error::Error as _;
@@ -56,6 +58,43 @@ pub(crate) struct Wire {
     host: Option<ApiKey>,
     /// The highest position an answer has named.
     seen: AtomicU64,
+}
+
+tokio::task_local! {
+    /// What became of the requests of the forwarded call this task
+    /// makes: whether any left, and whether one was not sent.
+    pub(crate) static SENT: std::cell::Cell<Sent>;
+}
+
+/// What became of a forwarded call's requests.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Sent {
+    /// A request left: the door may have acted on it.
+    pub(crate) left: bool,
+    /// A request was not sent: the door was not reached, or the request
+    /// could not be made.
+    pub(crate) unsent: bool,
+}
+
+impl Sent {
+    /// Whether the call was sent nothing at all.
+    pub(crate) fn nothing(self) -> bool {
+        self.unsent && !self.left
+    }
+}
+
+/// Record, for the forwarded call this task makes, what became of a
+/// request; outside one, nothing.
+fn record(left: bool) {
+    let _ = SENT.try_with(|s| {
+        let mut sent = s.get();
+        if left {
+            sent.left = true;
+        } else {
+            sent.unsent = true;
+        }
+        s.set(sent);
+    });
 }
 
 /// One request: the route under the lake, already encoded, and what it
@@ -319,6 +358,7 @@ impl Wire {
     pub(crate) fn unavailable(&self, exchange: Exchange) -> Error {
         let lake = self.lake.to_string();
         if self.forwards() {
+            record(true);
             return Error::unavailable(Situation::ForwardLost { lake, exchange });
         }
         self.not_sent(exchange)
@@ -326,6 +366,7 @@ impl Wire {
 
     /// A failure before the request left: the call was not made.
     pub(crate) fn not_sent(&self, exchange: Exchange) -> Error {
+        record(false);
         let lake = self.lake.to_string();
         let remote = Remote::Door { lake };
         Error::unavailable(Situation::Remote { remote, exchange })
@@ -360,6 +401,7 @@ impl Wire {
             .map_err(|_| self.not_sent(Exchange::NotSent))?;
         match tokio::time::timeout(self.timeout, self.client.request(req)).await {
             Ok(Ok(r)) => {
+                record(true);
                 if let Some(p) = position_of(&r) {
                     self.saw(p);
                 }

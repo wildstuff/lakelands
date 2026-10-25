@@ -19,9 +19,14 @@
 //!   once it has folded the highest position a writer has answered this
 //!   handle, waiting at most `read_wait_millis`; past it the read is
 //!   `NotFoldedYet`, never one from before the handle's own write.
-//! - **Host operations** and the feed are the local handle's, which
-//!   answers them as a handle without the lease does.
+//! - **Host operations** that need the lease (`rebuild`, `restrict`,
+//!   `unrestrict`, `checkpoint`, `age`, `purge_source`, the forgettings,
+//!   `remove_values`, `compact`) are `ReadOnly`, the lease another's,
+//!   whatever they would have done: they are run where the writer is.
+//!   The others, the preflights among them, and the feed are the local
+//!   handle's, once it has folded the handle's own writes.
 
+use std::cell::Cell;
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -50,7 +55,7 @@ use lakelands_api::write::{
 use lakelands_api::{Catalog, LakeStore, Verification, WriteContext};
 
 use crate::doors::RemoteCatalog;
-use crate::wire::Wire;
+use crate::wire::{SENT, Sent, Wire};
 use crate::{ApiKey, ConfigError, DEFAULT_MAX_ANSWER_BYTES, RemoteConfig, SILENCE};
 
 /// How a forwarding handle reaches the writer doors its location names.
@@ -114,8 +119,14 @@ impl Doors {
         let mut last = None;
         for i in 0..n {
             let at = (from + i) % n;
-            match f(at).await {
-                Err(e) if passes(&e) => last = Some(Box::new(e)),
+            let (answer, sent) = SENT
+                .scope(Cell::new(Sent::default()), async {
+                    let answer = f(at).await;
+                    (answer, SENT.with(Cell::get))
+                })
+                .await;
+            match answer {
+                Err(e) if sent.nothing() || holds_no_lease(&e) => last = Some(Box::new(e)),
                 answer => {
                     self.last.store(at, Ordering::SeqCst);
                     return answer;
@@ -130,16 +141,16 @@ impl Doors {
     }
 }
 
-/// Whether a door's answer passes the call to the next: it holds no
-/// lease, or it was sent nothing.
-fn passes(e: &Error) -> bool {
+/// Whether a door answered that it holds no lease, so did nothing: the
+/// call passes to the next. Whether a door was sent nothing is the
+/// wire's to say ([`Sent`]), never an answer's.
+fn holds_no_lease(e: &Error) -> bool {
     matches!(
         e.situation(),
         Some(
             Situation::ReadOnly { .. }
                 | Situation::LeaseStale { .. }
                 | Situation::LeaseNotHeld { .. }
-                | Situation::Remote { .. }
         )
     )
 }
@@ -162,6 +173,22 @@ impl fmt::Debug for ForwardingLake {
 }
 
 impl ForwardingLake {
+    /// Wait, as a read does, until the handle's engine has folded what a
+    /// writer has answered it: what the local handle answers is then of
+    /// a lake that holds the handle's own writes.
+    /// What a host operation that needs the lease answers: the handle
+    /// never holds it, and another process does.
+    fn read_only(&self) -> Error {
+        Error::unavailable(Situation::ReadOnly {
+            lake: Some(self.doors.lake.to_string()),
+            leased_elsewhere: true,
+        })
+    }
+
+    async fn caught_up(&self) -> Result<()> {
+        (self.local.reaches(self.doors.floor(), self.wait).await).map(|_| ())
+    }
+
     /// A forwarding handle over `local`, a handle without the lease
     /// opened from `location`, to the writer doors `location` names.
     /// Nothing is sent yet; the doors, the key and the bounds are checked
@@ -516,19 +543,22 @@ impl LakeStore for ForwardingLake {
         from: Option<Position>,
         through: Option<Position>,
     ) -> Result<Verification> {
+        self.caught_up().await?;
         self.local.verify(from, through).await
     }
 
     async fn position_at(&self, known_at: Timestamp) -> Result<Option<Position>> {
+        self.caught_up().await?;
         self.local.position_at(known_at).await
     }
 
     async fn vector_coverage(&self, ty: &TypeName) -> Result<Vec<VectorCoverage>> {
+        self.caught_up().await?;
         self.local.vector_coverage(ty).await
     }
 
     async fn rebuild(&self) -> Result<Position> {
-        self.local.rebuild().await
+        Err(self.read_only())
     }
 
     fn reclaim_owed(&self) -> Option<String> {
@@ -539,29 +569,29 @@ impl LakeStore for ForwardingLake {
         self.local.rebuilt_at_open()
     }
 
-    async fn restrict(&self, ty: &TypeName, key: &RecordKey, reason: String) -> Result<Position> {
-        self.local.restrict(ty, key, reason).await
+    async fn restrict(&self, _: &TypeName, _: &RecordKey, _: String) -> Result<Position> {
+        Err(self.read_only())
     }
 
-    async fn unrestrict(&self, ty: &TypeName, key: &RecordKey) -> Result<Position> {
-        self.local.unrestrict(ty, key).await
+    async fn unrestrict(&self, _: &TypeName, _: &RecordKey) -> Result<Position> {
+        Err(self.read_only())
     }
 
     async fn checkpoint(&self) -> Result<Position> {
-        self.local.checkpoint().await
+        Err(self.read_only())
     }
 
-    async fn age(&self, today: Timestamp) -> Result<AgeReport> {
-        self.local.age(today).await
+    async fn age(&self, _: Timestamp) -> Result<AgeReport> {
+        Err(self.read_only())
     }
 
     async fn purge_source(
         &self,
-        source: &SourceId,
-        ty: Option<&TypeName>,
-        report_id: Option<&str>,
+        _: &SourceId,
+        _: Option<&TypeName>,
+        _: Option<&str>,
     ) -> Result<PurgeReport> {
-        self.local.purge_source(source, ty, report_id).await
+        Err(self.read_only())
     }
 
     async fn purge_preflight(
@@ -569,6 +599,7 @@ impl LakeStore for ForwardingLake {
         source: &SourceId,
         ty: Option<&TypeName>,
     ) -> Result<PurgeReport> {
+        self.caught_up().await?;
         self.local.purge_preflight(source, ty).await
     }
 
@@ -581,45 +612,38 @@ impl LakeStore for ForwardingLake {
         patch: Patch,
         expected: Option<Version>,
     ) -> Result<()> {
+        self.caught_up().await?;
         (self.local)
             .upsert_preflight(who, context, ty, key, patch, expected)
             .await
     }
 
-    async fn forget_source(
-        &self,
-        source: &SourceId,
-        report_id: Option<&str>,
-    ) -> Result<ForgetReport> {
-        self.local.forget_source(source, report_id).await
+    async fn forget_source(&self, _: &SourceId, _: Option<&str>) -> Result<ForgetReport> {
+        Err(self.read_only())
     }
 
     async fn forget_preflight(&self, source: &SourceId) -> Result<ForgetReport> {
+        self.caught_up().await?;
         self.local.forget_preflight(source).await
     }
 
-    async fn forget_sources(
-        &self,
-        sources: &[SourceId],
-        report_id: Option<&str>,
-    ) -> Result<ForgetSetReport> {
-        self.local.forget_sources(sources, report_id).await
+    async fn forget_sources(&self, _: &[SourceId], _: Option<&str>) -> Result<ForgetSetReport> {
+        Err(self.read_only())
     }
 
     async fn forget_sources_preflight(&self, sources: &[SourceId]) -> Result<ForgetSetReport> {
+        self.caught_up().await?;
         self.local.forget_sources_preflight(sources).await
     }
 
     async fn remove_values(
         &self,
-        source: &SourceId,
-        selection: &Selection,
-        require_shredded: bool,
-        report_id: Option<&str>,
+        _: &SourceId,
+        _: &Selection,
+        _: bool,
+        _: Option<&str>,
     ) -> Result<RemoveReport> {
-        (self.local)
-            .remove_values(source, selection, require_shredded, report_id)
-            .await
+        Err(self.read_only())
     }
 
     async fn remove_values_preflight(
@@ -627,11 +651,12 @@ impl LakeStore for ForwardingLake {
         source: &SourceId,
         selection: &Selection,
     ) -> Result<RemoveReport> {
+        self.caught_up().await?;
         self.local.remove_values_preflight(source, selection).await
     }
 
     async fn compact(&self) -> Result<CompactReport> {
-        self.local.compact().await
+        Err(self.read_only())
     }
 
     fn bind_embed(&self, backend: Arc<dyn EmbedBackend>) -> Result<()> {

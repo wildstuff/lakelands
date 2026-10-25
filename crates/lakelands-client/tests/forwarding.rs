@@ -24,16 +24,18 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use lakelands_api::engine::OpenMode;
-use lakelands_api::error::{Error, Situation};
-use lakelands_api::id::{Position, RecordKey, TypeName};
+use lakelands_api::error::{Error, Exchange, Remote, Situation};
+use lakelands_api::id::{Position, RecordKey, SourceId, TypeName};
 use lakelands_api::location::{EngineConfig, PgTls, PgTlsMode, PgTuning, WriterDoor};
 use lakelands_api::principal::WriteOrigin;
 use lakelands_api::read::Get;
 use lakelands_api::seam::{FeedFilter, Seams};
+use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Outcome, WriteOpts};
-use lakelands_api::{LakeStore, Location, WriteContext};
+use lakelands_api::{LakeStore, Location, SourceRecord, WriteContext};
 use lakelands_client::{ForwardConfig, ForwardingLake};
 use lakelands_door_checks::checks::{patch, setup};
+use lakelands_door_checks::stream;
 use lakelands_server::HostEntry;
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -509,6 +511,161 @@ async fn a_writer_lost_after_the_call_is_sent_is_not_sent_again() {
     );
     server.abort();
     let _ = local.close().await;
+    held.release().await;
+}
+
+/// A door that answers every call with `refusal`, as a writer whose own
+/// remote end failed, naming position `at`, and counts the calls.
+async fn refusing(refusal: &Error, at: u64) -> (String, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let body = serde_json::to_string(refusal).unwrap();
+    let answer = format!(
+        "HTTP/1.1 503 Service Unavailable\r\ncontent-type: application/json\r\n\
+         lakelands-position: {at}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let taken = Arc::new(AtomicUsize::new(0));
+    let count = taken.clone();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = listener.accept().await {
+            count.fetch_add(1, Ordering::SeqCst);
+            let mut buf = [0u8; 1 << 16];
+            let _ = s.read(&mut buf).await;
+            let _ = s.write_all(answer.as_bytes()).await;
+        }
+    });
+    (format!("http://{addr}/"), taken)
+}
+
+/// A writer that answers with its own refusal of a remote end, as when
+/// its verb's executor fails, answers the call: the refusal is the
+/// caller's as it came, and the call goes to no other door. A read after
+/// it waits for the position that answer named, and no longer.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_writers_own_remote_refusal_is_the_calls_answer() {
+    let location = sqlite_at();
+    let (handle, held) = forwarding(location.clone()).await;
+    let f = setup(handle).await;
+    let refusal = Error::unavailable(Situation::Remote {
+        remote: Remote::Executor {
+            name: "mailer".into(),
+        },
+        exchange: Exchange::TimedOut { secs: 5 },
+    });
+    let ahead = held.writer.head().await.unwrap().0 + 1_000;
+    let (door, asked) = refusing(&refusal, ahead).await;
+    let (next, taken) = counting().await;
+    let local = open(location.clone(), OpenMode::Read).await;
+    let at = Location {
+        writers: [door, next].into_iter().map(WriterDoor::new).collect(),
+        ..location.clone()
+    };
+    let mut config = ForwardConfig::new(HOST_KEY);
+    config.read_wait_millis = 200;
+    let refused = ForwardingLake::new(local.clone(), &at, config).unwrap();
+    let cat = refused.catalog(WriteContext::default());
+    let (invoice, k) = (TypeName::from("invoice"), RecordKey::from("INV-1"));
+    let e = cat
+        .upsert(
+            &f.cast.clerk,
+            &invoice,
+            &k,
+            patch(&[("status", json!("open"))]),
+            opts(None),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e, refusal, "the writer's refusal, as it came");
+    assert_eq!(asked.load(Ordering::SeqCst), 1, "the writer was asked once");
+    assert_eq!(taken.load(Ordering::SeqCst), 0, "and no other door at all");
+
+    let started = tokio::time::Instant::now();
+    let read = cat.get(&f.cast.clerk, &invoice, get("INV-1")).await;
+    let took = started.elapsed();
+    assert!(
+        matches!(
+            read.as_ref().err().and_then(Error::situation),
+            Some(Situation::NotFoldedYet { at, .. }) if at.0 == ahead
+        ),
+        "a read waits for the position the writer named: {read:?}"
+    );
+    let bound = Duration::from_millis(200);
+    assert!(
+        took >= bound && took < bound + Duration::from_millis(500),
+        "and gives up at its bound: {took:?}"
+    );
+    let _ = local.close().await;
+    held.release().await;
+}
+
+/// The six host operations that need the lease are `ReadOnly` through
+/// the handle, whatever they would have done, the purge's record to
+/// retire among them, and nothing is appended.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_host_operations_that_need_the_lease_are_read_only() {
+    let location = sqlite_at();
+    let (handle, held) = forwarding(location).await;
+    let f = setup(handle.clone()).await;
+    let (invoice, k) = (TypeName::from("invoice"), RecordKey::from("INV-1"));
+    (handle.catalog(WriteContext::default()))
+        .upsert(
+            &f.cast.clerk,
+            &invoice,
+            &k,
+            patch(&[("status", json!("open"))]),
+            opts(None),
+        )
+        .await
+        .unwrap();
+    // A record the purge would retire.
+    let banked = SourceRecord {
+        source: None,
+        upstream: None,
+        ty: invoice.clone(),
+        key: RecordKey::from("INV-2"),
+        fields: patch(&[("amount", json!("120.50"))]),
+        seen_at: None,
+    };
+    let mut acks = (f.catalog)
+        .ingest(&f.cast.importer, &"bank".into(), stream::of(vec![banked]))
+        .await
+        .unwrap();
+    for ack in stream::collect(&mut acks).await {
+        ack.unwrap();
+    }
+    let head = held.writer.head().await.unwrap();
+    let today = Timestamp::from_date(2026, 3, 1).unwrap();
+    let answers = [
+        ("rebuild", handle.rebuild().await.map(|_| ())),
+        ("checkpoint", handle.checkpoint().await.map(|_| ())),
+        (
+            "purge_source",
+            (handle
+                .purge_source(&SourceId::from("bank"), None, None)
+                .await)
+                .map(|_| ()),
+        ),
+        (
+            "restrict",
+            (handle.restrict(&invoice, &k, "held".into()).await).map(|_| ()),
+        ),
+        (
+            "unrestrict",
+            handle.unrestrict(&invoice, &k).await.map(|_| ()),
+        ),
+        ("age", handle.age(today).await.map(|_| ())),
+    ];
+    for (op, answer) in answers {
+        assert!(
+            matches!(
+                answer.as_ref().err().and_then(Error::situation),
+                Some(Situation::ReadOnly { .. })
+            ),
+            "`{op}` through the handle: {answer:?}"
+        );
+    }
+    assert_eq!(held.writer.head().await.unwrap(), head, "nothing appended");
     held.release().await;
 }
 

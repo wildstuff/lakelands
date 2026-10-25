@@ -12,10 +12,17 @@
 
 use crate::conformance::fixture::{doors, get_at, owner};
 use crate::conformance::prelude::*;
+use lakelands_api::engine::OpenMode;
 
 check!(
     REACHES = a_reach_answers_once_the_head_is_there_and_is_unavailable_at_its_bound,
     "076 (lakelands#1394): `reaches(at, within)` on the writer answers the head at once when it is at `at` or past it, answers once another caller's write puts it there within the bound, and with nothing written is `unavailable` as `not_folded_yet` naming `at` and the head, once the bound has passed and within a second of it"
+);
+
+check!(
+    REACHES_UNLEASED = a_reach_without_the_lease_follows_the_writers_fold,
+    "076 (lakelands#1394): `reaches(at, within)` on a handle opened read-only beside the lake's writer answers once the writer's later write is folded there, and with nothing written is `unavailable` as `not_folded_yet` naming `at` and what it has folded, once the bound has passed and within a second of it",
+    given
 );
 
 check!(
@@ -86,6 +93,69 @@ async fn a_reach_answers_once_the_head_is_there_and_is_unavailable_at_its_bound(
          {SLACK:?} of it; it answered after {waited:?}"
     );
     head_unmoved(store.as_ref(), head, "the quiet reach").await
+}
+
+async fn a_reach_without_the_lease_follows_the_writers_fold(store: Store, given: Given) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl("note", vec![field("text", StorageKind::Text)]))
+        .await?;
+    l.upsert("note", "n1", json!({"text": "one"})).await?;
+    let lake = store.lake().clone();
+    let open = |store, mode| {
+        let none: crate::conformance::Lines = Box::new(|_, _| (Vec::new(), 0));
+        (given.continued)(store, lake.clone(), none, mode, Seams::default())
+    };
+    let reader = (open(Some(store), OpenMode::Read).await)
+        .and_then(|c| c.opened)
+        .map_err(|e| Failure::new(format!("opening the lake read-only: {e}")))?;
+    let writer = (open(None, OpenMode::Write).await)
+        .and_then(|c| c.opened)
+        .map_err(|e| Failure::new(format!("opening the lake's writer beside it: {e}")))?;
+    let w = Lake::of(writer.as_ref());
+    let at = writer
+        .head()
+        .await
+        .must("reading the writer's head")?
+        .next();
+    let reach: Caller<'_, Result<Position, String>> =
+        Box::pin(async { reader.reaches(at, WAIT).await.map_err(|e| e.to_string()) });
+    let write: Caller<'_, Result<Position, String>> = Box::pin(async {
+        pause(Duration::from_millis(20)).await;
+        let o = w.upsert("note", "n2", json!({"text": "two"})).await;
+        o.map(|o| o.position()).map_err(|f| f.to_string())
+    });
+    let [reached, wrote] = <[_; 2]>::try_from(join_all(vec![reach, write]).await)
+        .map_err(|_| Failure::new("two callers answer twice"))?;
+    let wrote = wrote.map_err(Failure::new)?;
+    ensure!(
+        reached.as_ref().is_ok_and(|p| *p >= wrote && wrote >= at),
+        "a reach of {at} on a handle without the lease, while the writer wrote at {wrote}, \
+         must answer once that write is folded; it answered {reached:?}"
+    );
+
+    let head = writer.head().await.must("reading the writer's head")?;
+    let at = head.next();
+    let started = std::time::Instant::now();
+    let quiet = reader.reaches(at, BOUND).await;
+    let waited = started.elapsed();
+    ensure!(
+        matches!(
+            quiet.as_ref().map_err(Error::situation),
+            Err(Some(Situation::NotFoldedYet { at: a, folded })) if *a == at && *folded >= wrote
+        ),
+        "a reach of {at} on a handle without the lease, with nothing written, must be \
+         unavailable as not_folded_yet naming {at} and what it has folded; it answered \
+         {quiet:?}"
+    );
+    ensure!(
+        waited >= BOUND && waited < BOUND + SLACK,
+        "a quiet reach bound at {BOUND:?} on a handle without the lease must answer once the \
+         bound has passed and within {SLACK:?} of it; it answered after {waited:?}"
+    );
+    head_unmoved(writer.as_ref(), head, "the quiet reach").await?;
+    reader.close().await.must("closing the read-only handle")?;
+    writer.close().await.must("closing the writer")?;
+    Ok(())
 }
 
 async fn a_retry_after_the_writer_went_away_answers_the_first_outcome(

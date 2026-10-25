@@ -1575,6 +1575,60 @@ fn the_root_configuration_carries_the_ticker_and_refuses_an_offset_that_is_none(
     );
 }
 
+/// A host's keys are its own: an empty key, a key two hosts share and a
+/// key that is also a principal's are refused when the root is opened,
+/// naming the host and never the key.
+#[test]
+fn the_server_section_refuses_a_host_key_that_is_not_its_own() {
+    let sh = Shell::on("host-keys", Backend::Store);
+    sh.lake();
+    let writer = r#"[{"name": "writer", "kind": "agent", "id": "writer",
+        "grants": {"default": "write"}, "api_keys": ["k-writer"]}]"#;
+    let hosts = [
+        (
+            r#"[{"id": "edge", "keys": [""]}]"#,
+            "host `edge` has no key, or an empty one",
+        ),
+        (
+            r#"[{"id": "edge", "keys": []}]"#,
+            "host `edge` has no key, or an empty one",
+        ),
+        (
+            r#"[{"id": "edge", "keys": ["k-h"]}, {"id": "near", "keys": ["k-n", "k-h"]}]"#,
+            "a key of host `near` is also host `edge`'s",
+        ),
+        (
+            r#"[{"id": "edge", "keys": ["k-writer"]}]"#,
+            "a key of host `edge` is also an api key of principal `writer`",
+        ),
+    ];
+    for (hosts, why) in hosts {
+        let config = format!(
+            r#"{{"lakelands": 1, "owner": "owner", "principals": {writer},
+                "server": {{"bind": "127.0.0.1:0", "hosts": {hosts}}}}}"#
+        );
+        fs::write(sh.root.join("lakelands.json"), config).unwrap();
+        let s = sh.run(&["feed"]);
+        assert_eq!(s.code, 1, "{hosts}: {}", s.out);
+        assert!(
+            s.err
+                .starts_with("error: <root>/lakelands.json: server.hosts: ")
+                && s.err.contains(why)
+                && !s.err.contains("k-")
+                && s.err.contains("\n  what to do: fix the server section"),
+            "{hosts}: {}",
+            s.err
+        );
+    }
+    let config = format!(
+        r#"{{"lakelands": 1, "owner": "owner", "principals": {writer},
+            "server": {{"bind": "127.0.0.1:0", "hosts": [{{"id": "edge", "keys": ["k-h"]}}]}}}}"#
+    );
+    fs::write(sh.root.join("lakelands.json"), config).unwrap();
+    let s = sh.run(&["feed"]);
+    assert_eq!(s.code, 0, "keys of its own: {}", s.err);
+}
+
 /// A root that allows an `exec` command computes a field with it: the
 /// lake declares a function naming the command, a record is ingested,
 /// and the store calls the command and records its answer.

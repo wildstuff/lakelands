@@ -63,7 +63,7 @@ use tokio::sync::{Notify, mpsc};
 
 use crate::watch::{QUEUE, Queued};
 
-use crate::resolver::{HostEntry, same_key};
+use crate::resolver::{Entry, HostEntry, same_key};
 use crate::rest::Answer;
 use crate::session::{PROTOCOL_VERSIONS, Session, code, error};
 
@@ -122,6 +122,43 @@ pub struct HttpConfig {
     /// None, and no call is forwarded here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosts: Vec<HostEntry>,
+}
+
+impl HttpConfig {
+    /// Whether the hosts' keys can stand for them: none is empty, none
+    /// stands for two hosts, and none is also a key of one of
+    /// `principals`, which would make a principal's key a host's. Names
+    /// the host, never the key.
+    pub fn check(&self, principals: &[Entry]) -> Result<(), String> {
+        for (i, host) in self.hosts.iter().enumerate() {
+            let id = &host.id;
+            if host.keys.is_empty() || host.keys.iter().any(String::is_empty) {
+                return Err(format!(
+                    "server.hosts: host `{id}` has no key, or an empty one"
+                ));
+            }
+            for key in &host.keys {
+                let other =
+                    (self.hosts[..i].iter()).find(|h| h.keys.iter().any(|k| same_key(k, key)));
+                if let Some(h) = other {
+                    return Err(format!(
+                        "server.hosts: a key of host `{id}` is also host `{}`'s",
+                        h.id
+                    ));
+                }
+                let principal = principals
+                    .iter()
+                    .find(|p| p.api_keys.iter().any(|k| same_key(k, key)));
+                if let Some(p) = principal {
+                    return Err(format!(
+                        "server.hosts: a key of host `{id}` is also an api key of principal `{}`",
+                        p.name
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The most threads [`runtime`] starts when the configuration names no
@@ -277,6 +314,7 @@ pub async fn serve_http(
     resolver: Arc<dyn PrincipalResolver>,
     open: Arc<LakeOpener>,
 ) -> io::Result<HttpServer> {
+    (config.check(&[])).map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
     let listener = TcpListener::bind(config.bind).await?;
     Ok(HttpServer {
         listener,

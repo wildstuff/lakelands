@@ -914,6 +914,7 @@ pub const ALL: &[Check] = &[
     streaming::STREAMS,
     reactive_depth::TOO_DEEP,
     read_your_writes::REACHES,
+    read_your_writes::REACHES_UNLEASED,
     read_your_writes::LOST_ANSWER,
     trigger_firing::TRIGGER_DROPPED,
     trigger_firing::TRIGGER_STRICT,
