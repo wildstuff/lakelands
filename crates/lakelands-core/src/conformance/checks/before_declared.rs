@@ -48,11 +48,13 @@ async fn walked(
             .data
         {
             QueryResult::Graph { nodes, edges, .. } => {
-                let nodes: Vec<_> = nodes.iter().map(|n| n.key.to_string()).collect();
-                let edges: Vec<_> = edges
+                let mut nodes: Vec<_> = nodes.iter().map(|n| n.key.to_string()).collect();
+                nodes.sort();
+                let mut edges: Vec<_> = edges
                     .iter()
                     .map(|e| format!("{}>{}", e.from.1, e.to.1))
                     .collect();
+                edges.sort();
                 said.push(format!("nodes {nodes:?} edges {edges:?}"));
             }
             QueryResult::Rows { rows, .. } => said.push(format!("{} rows", rows.len())),
@@ -76,22 +78,26 @@ async fn a_read_at_a_valid_time_before_the_declaration_is_read_as_any_instant_is
     // Gigs valid from September and November, linked to `p1`.
     l.declare_json(
         json!({"declare": "type", "name": "gig", "valid_from": "start",
-        "fields": [dt("start"), tx("g")],
+        "fields": [dt("start"), tx("g"), tx("kind")],
         "relations": [{"name": "hosted_by", "target": "partner", "cardinality": "many_to_one",
             "inverse": "hosts", "fields": [dt("since")]}]}),
     )
     .await?;
-    let view = |name: &str, source: &str, key: &str| {
+    // Views over one group each: `n` counts the records of the source
+    // that hold at the instant.
+    let view = |name: &str, source: &str, key: &str, kind: &str| {
         json!({"declare": "type", "name": name, "key": [key],
-            "fields": [tx(key), {"name": "n", "type": {"kind": "number"}}],
+            "fields": [{"name": key, "type": {"kind": kind}}, {"name": "n", "type": {"kind": "number"}}],
             "view": {"source": source, "group_by": [key],
                      "measures": [{"name": "n", "expr": "count()"}]}})
     };
-    l.declare_json(view("gigs", "gig", "g")).await?;
-    l.declare_json(view("partners", "partner", "name")).await?;
+    l.declare_json(view("gigs", "gig", "kind", "text")).await?;
+    l.declare_json(view("invoiced", "invoice", "amount", "decimal"))
+        .await?;
     for (key, start) in [("g1", "2026-09-01"), ("g2", "2026-11-01")] {
         let at = format!("{start}T00:00:00Z");
-        l.upsert("gig", key, json!({"start": at, "g": key})).await?;
+        l.upsert("gig", key, json!({"start": at, "g": key, "kind": "show"}))
+            .await?;
         let (ty, rel) = ("gig".into(), "hosted_by".into());
         let (from, to) = (key.into(), "p1".into());
         let fields = patch(json!({"since": at}));
@@ -133,8 +139,8 @@ async fn a_read_at_a_valid_time_before_the_declaration_is_read_as_any_instant_is
             ("partner", Some("p1"), "hosts"),
             [
                 "nodes [\"p1\"] edges [], 0 rows",
-                "nodes [\"p1\", \"g1\"] edges [\"g1>p1\"], 1 rows",
-                "nodes [\"p1\", \"g1\", \"g2\"] edges [\"g1>p1\", \"g2>p1\"], 2 rows",
+                "nodes [\"g1\", \"p1\"] edges [\"g1>p1\"], 1 rows",
+                "nodes [\"g1\", \"g2\", \"p1\"] edges [\"g1>p1\", \"g2>p1\"], 2 rows",
             ],
         ),
     ];
@@ -153,14 +159,27 @@ async fn a_read_at_a_valid_time_before_the_declaration_is_read_as_any_instant_is
     }
     // A view counts what holds at the instant of its source.
     for (view, want) in [
-        ("partners", ["p1 p2", "p1 p2", "p1 p2"]),
-        ("gigs", ["", "g1", "g1 g2"]),
+        ("invoiced", ["10=2", "10=2", "10=2"]),
+        ("gigs", ["", "show=1", "show=2"]),
     ] {
         for (at, want) in [past, october, head].into_iter().zip(want) {
-            let got = found(&l, view, at).await?.join(" ");
+            let rows = l
+                .all_found(
+                    view,
+                    Find {
+                        at,
+                        ..Find::default()
+                    },
+                )
+                .await?;
+            let got: Vec<_> = rows
+                .iter()
+                .map(|r| format!("{}={}", r.key, r.fields["n"]))
+                .collect();
+            let got = got.join(" ");
             ensure!(
                 got == want,
-                "the view `{view}` read at {:?} answers {want:?}; it answered {got:?}",
+                "the view `{view}` read at {:?} counts {want:?}; it answered {got:?}",
                 at.valid_at
             );
         }
