@@ -127,6 +127,7 @@ mod settings;
 mod shown_hash;
 mod sized;
 mod sorted_whole;
+mod standby;
 mod stored_vectors;
 mod streaming;
 mod taken_lease;
@@ -964,6 +965,8 @@ pub const ALL: &[Check] = &[
     export::INTEGER_DAMAGE,
     sized::SEALED_BY_SIZE,
     taken_lease::TAKEN_LEASE,
+    standby::STANDBY,
+    standby::STANDBY_FAILED,
     grid::GRID,
     metered::METERED,
     metered::METERED_LEASE,

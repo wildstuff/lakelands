@@ -1134,7 +1134,8 @@ enum Told {
 /// The head of record writes queued together, decided under one turn;
 /// the jobs left behind it are answered. The head runs alone, as
 /// [`Call::record`] decides it, where the writer must first catch up,
-/// regain its lease or append a held answer, and where it does not batch
+/// regain its lease or append a held answer, where it holds no lease (a
+/// handle opened read-only, a standby), and where it does not batch
 /// ([`Write::batches`]). Otherwise it and the jobs behind it that batch
 /// are decided one by one, each against the drafts of those before it,
 /// and appended together, up to `commit_window_events`; none is answered
@@ -1146,7 +1147,7 @@ pub(crate) fn write_many(turn: &Turn<'_>, jobs: Vec<Job>, replies: &mut Vec<Repl
         return Vec::new();
     };
     let w = turn.writer();
-    let ready = !w.lost && !w.behind && w.answers.is_empty();
+    let ready = w.lease.is_some() && !w.lost && !w.behind && w.answers.is_empty();
     let batches = |j: &Job| j.write.batches(&w.ontology, &j.context);
     if !(ready && batches(&head)) {
         drop(w);

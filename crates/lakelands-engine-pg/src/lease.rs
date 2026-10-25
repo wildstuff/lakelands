@@ -82,6 +82,25 @@ pub(crate) fn take(
     taken
 }
 
+/// Whether no session holds the lease's lock, read from `pg_locks`
+/// without taking it.
+pub(crate) fn free(db: &mut Db, schema: &str) -> Result<bool> {
+    // An advisory lock on a 64-bit key shows its upper half as `classid`,
+    // its lower as `objid`, and 1 as `objsubid`.
+    let held: bool = db
+        .query_one(
+            &format!(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' \
+                 AND granted AND objsubid = 1 AND database = (SELECT oid FROM pg_database \
+                 WHERE datname = current_database()) \
+                 AND ((classid::bigint << 32) | objid::bigint) = {KEY})"
+            ),
+            &[&schema],
+        )?
+        .get(0);
+    Ok(!held)
+}
+
 fn release_lock(db: &mut Db, schema: &str) -> Result<()> {
     db.query_one(&format!("SELECT pg_advisory_unlock({KEY})"), &[&schema])?;
     Ok(())

@@ -119,6 +119,15 @@ pub trait LakeEngine: Send + Sync {
     /// handle that is dropped releases the lease it took and still holds.
     fn release_lease(&self, lease: &Lease) -> Result<()>;
 
+    /// Whether no process holds the lease now, asked of any handle,
+    /// read-only too: it takes nothing and changes nothing, and is stale
+    /// as soon as it answers, so a caller that finds it free still takes
+    /// the lease to know. A standby asks it before it opens the lake for
+    /// writing. An engine that cannot tell answers `true`.
+    fn lease_free(&self) -> Result<bool> {
+        Ok(true)
+    }
+
     /// The last event's position and hash; `None` for an empty lake.
     fn tip(&self) -> Result<Option<(Position, Digest)>>;
 

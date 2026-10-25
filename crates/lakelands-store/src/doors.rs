@@ -65,6 +65,53 @@ pub(crate) async fn opened(location: Location, seams: Seams, mode: OpenMode) -> 
     Ok(lake)
 }
 
+/// What a standby's tries come to ([`standby`]): `Ok` once it holds the
+/// lease, or once its lake's last handle went; the error of the try that
+/// failed, after which it tries no more.
+pub type Standing = std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>;
+
+/// Open a lake as a standby beside its writer
+/// (`docs/decisions/076-a-lake-keeps-one-writer-and-a-dataset-that-outgrows-it-becomes-several-lakes.md`):
+/// it serves reads as a handle opened read-only does and answers a write
+/// as one does, and every `every` asks whether the lease is free and
+/// takes it if so, as a writer's open takes it. From then on it is the
+/// lake's writer. A try that fails ends the tries, and the [`Standing`]
+/// answers its error, as a writer's open that fails answers it: what the
+/// open appended under the lease before it failed stays, and the lease
+/// is given up again. While the lease is held elsewhere a try changes
+/// nothing.
+pub async fn standby(
+    location: Location,
+    seams: Seams,
+    every: std::time::Duration,
+) -> Result<(Arc<dyn LakeStore>, Standing)> {
+    let lake = Arc::new(exec::run(move || Lake::standby(&location, seams)).await?);
+    let weak = Arc::downgrade(&lake);
+    let tries = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(every);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            let Some(lake) = weak.upgrade() else {
+                return Ok(());
+            };
+            let owing = lake.clone();
+            let taken = exec::write(&lake, move |t| {
+                let taken = t.take_over()?;
+                if taken {
+                    crate::backed::make_waiting(&owing, t);
+                }
+                Ok(taken)
+            });
+            if taken.await? {
+                return Ok(());
+            }
+        }
+    });
+    let standing = Box::pin(async move { tries.await.map_err(|e| exec::stopped(&e))? });
+    Ok((Arc::new(Store { lake }), standing))
+}
+
 /// Build the projection this release lays out beside the lake at
 /// `location`, ahead of the writer's open that upgrades it
 /// ([`Lake::build_ahead`]).

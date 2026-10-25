@@ -827,6 +827,9 @@ impl lakelands_api::engine::LakeEngine for Reclaims {
     fn release_lease(&self, lease: &Lease) -> lakelands_api::Result<()> {
         self.inner.release_lease(lease)
     }
+    fn lease_free(&self) -> lakelands_api::Result<bool> {
+        self.inner.lease_free()
+    }
     fn tip(&self) -> lakelands_api::Result<Option<(Position, Digest)>> {
         self.inner.tip()
     }

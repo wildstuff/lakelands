@@ -65,6 +65,12 @@ pub struct Config {
     /// is mirrored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mirror: Option<crate::mirror::MirrorConfig>,
+    /// The standby: `serve` opens each lake beside its writer, follows
+    /// its log and takes the lease once the writer is gone. Absent,
+    /// `serve` takes each lease at its open and is refused where another
+    /// process holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standby: Option<StandbyConfig>,
     /// The key store that seals a source's values of erasable fields:
     /// `lakelands-backings`' file keyring, one file per lake in a directory
     /// outside every lake's. Absent, no key store is bound, and a value
@@ -84,6 +90,29 @@ pub struct Config {
     /// absent. Nothing writes there yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backups_dir: Option<PathBuf>,
+}
+
+/// The `standby` section of a root's `lakelands.json`
+/// (`docs/decisions/076-a-lake-keeps-one-writer-and-a-dataset-that-outgrows-it-becomes-several-lakes.md`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StandbyConfig {
+    /// How often a standby asks whether its lake's lease is free, in
+    /// milliseconds. Only the lease's lock says the writer is gone: no
+    /// wait takes the lease from a writer that holds it.
+    #[serde(default = "default_try")]
+    pub try_millis: u64,
+}
+
+fn default_try() -> u64 {
+    1000
+}
+
+impl StandbyConfig {
+    /// How often a standby tries the lease.
+    pub fn every(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.try_millis.max(1))
+    }
 }
 
 /// Where the root's key store keeps its keys.
@@ -131,6 +160,7 @@ pub fn init(dir: &Path, owner: &str) -> Result<(), Failure> {
         deliver: None,
         aging: None,
         mirror: None,
+        standby: None,
         keys: None,
         lakes_dir: None,
         exports_dir: None,

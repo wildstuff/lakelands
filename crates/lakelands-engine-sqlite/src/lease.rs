@@ -119,6 +119,27 @@ impl LeaseFile {
         Ok((r.fence, r.holder))
     }
 
+    /// Whether no handle holds the lease: a shared lock on the file, taken
+    /// without waiting and given back at once, is refused while the lease
+    /// is held. A take that falls in that moment is refused as held, as
+    /// one racing another taker is; a lake whose file is not there yet has
+    /// never been leased.
+    pub(crate) fn free(&self) -> Result<bool> {
+        let file = match File::open(&self.path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+            Err(e) => return Err(io_error(Doing::Open, Part::LeaseFile, e)),
+        };
+        match FileExt::try_lock_shared(&file) {
+            Ok(()) => {
+                FileExt::unlock(&file).map_err(|e| io_error(Doing::Unlock, Part::LeaseFile, e))?;
+                Ok(true)
+            }
+            Err(TryLockError::WouldBlock) => Ok(false),
+            Err(TryLockError::Error(e)) => Err(io_error(Doing::Lock, Part::LeaseFile, e)),
+        }
+    }
+
     /// Take the lease for `holder`, or say who holds it.
     pub(crate) fn take(&self, holder: &str) -> Result<Held> {
         let mut file = self.open()?;
