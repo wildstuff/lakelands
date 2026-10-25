@@ -79,7 +79,8 @@ fn a_fold_committed_inside_one_ranked_call_is_in_none_of_its_lists() {
     // On the one idle reader, which the call takes.
     lake.reader()
         .unwrap()
-        .trace_v2(TraceEventCodes::SQLITE_TRACE_PROFILE, Some(after_folded));
+        .trace_v2(TraceEventCodes::SQLITE_TRACE_PROFILE, Some(after_folded))
+        .unwrap();
     let asked = Rankings {
         vectors: vec![("e".into(), vec![1.0, 0.0])],
         ..Rankings::default()
