@@ -238,20 +238,21 @@ does not meet.
 
 ### Two issues build it
 
-- **Forwarded writes** (lakelands#1394). The forwarding handle: the writer named in the
-  location, the link between hosts that carries the write context, the
-  answers above, read-your-writes, and the door checks run through a
-  forwarding handle on SQLite and PostgreSQL. Most of its product is
-  outside the core crates, in the client and the server; its checks and
-  the read-your-writes wait are in them. Roughly 1 000 to 1 500
-  product lines and 1 200 to 1 800 lines of specification: the REST
-  client it builds on took 2 155 and 1 088 (lakelands#118).
-- **Standby and failover** (lakelands#1395). The standby's follow and takeover in the
-  store, its configuration and its place in `lakelands serve`, takeover
-  checks on SQLite and PostgreSQL, the old writer refused, and 008's
-  line. Roughly 400 to 700 product lines and 600 to 1 000 of
-  specification: readiness, which reads the lease's state, took 197 and
-  366 (lakelands#1379).
+- **Forwarded writes** (lakelands#1394). The forwarding handle: the
+  writer named in the location, the link between hosts that carries the
+  write context, the answers above, read-your-writes, and the door
+  checks run through a forwarding handle on SQLite and PostgreSQL. Most
+  of its product is outside the core crates, in the client and the
+  server; its checks and the read-your-writes wait are in them. Roughly
+  1 000 to 1 500 product lines and 1 200 to 1 800 lines of
+  specification: the REST client it builds on took 2 155 and 1 088
+  (lakelands#118).
+- **Standby and failover** (lakelands#1395). The standby's follow and
+  takeover in the store, its configuration and its place in
+  `lakelands serve`, takeover checks on SQLite and PostgreSQL, the old writer
+  refused, and 008's line. Roughly 400 to 700 product lines and 600 to
+  1 000 of specification: readiness, which reads the lease's state, took
+  197 and 366 (lakelands#1379).
 
 At develop `7ca9a668c` the core crates stand 16 product and 35
 specification lines under their ceilings, so each issue cuts first and
