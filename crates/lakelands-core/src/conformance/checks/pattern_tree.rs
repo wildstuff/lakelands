@@ -17,7 +17,7 @@ check!(
 
 check!(
     TREE_OPTIONAL = an_optional_branch_matches_whole_or_binds_null_whole,
-    "080: an optional step keeps its row where it has no match, its name's `key`, `_type` and `_depth` null and no field of it; a step from an optional name is optional too and its branch matches whole or binds null whole, a join in it to a name outside it a condition of the branch; a null sorts as an absent value does, a group key over it is null and a measure reads it as absent"
+    "080: an optional step keeps its row where it has no match, its name's `key`, `_type` and `_depth` null and no field of it; a step from an optional name is optional too and its branch matches whole or binds null whole, a join in it to a name outside it a condition of the branch; a `where` of a later step, an absent one's included, reads an optional name as absent where its branch has no match; a null comes after a name's records in the rows' order and sorts as an absent value does, a group key over it is null and a measure reads it as absent"
 );
 
 check!(
@@ -43,7 +43,7 @@ check!(
 
 check!(
     TREE_REFUSED = a_tree_is_refused_for_what_it_says_before_a_record_is_read,
-    "080: a `from` or a `join` naming no name an earlier step binds is refused naming the step and the name; a join that can reach no type its name binds is refused naming the types; a step that walks from, joins or reads in its `where` an optional name and is not optional is refused naming the name; `as` on a join or an absent step, and `type` or `where` on a join, are refused as binding no name, and either outside an optional branch saying `optional` or reading an optional name is refused as binding no name to bind null; a step naming no `from` after a join or an absent step is refused; and `join`, `optional`, `absent` and a `from` naming another name than a walk's own are refused by a graph, a path, a measure and `reach`, naming the member"
+    "080: a `from` or a `join` naming no name an earlier step binds is refused naming the step and the name; a join that can reach no type its name binds is refused naming the types; a step that walks from or joins an optional name and is not optional is refused naming the name; `as` on a join or an absent step, and `type` or `where` on a join, are refused as binding no name, and either saying `optional` outside an optional branch is refused as binding no name to bind null; a step naming no `from` after a join or an absent step is refused; and `join`, `optional`, `absent` and a `from` naming another name than a walk's own are refused by a graph, a path, a measure and `reach`, naming the member"
 );
 
 /// People `alice`..`dan`, `bob` and `carol` reporting to `alice` over
@@ -320,6 +320,56 @@ async fn an_optional_branch_matches_whole_or_binds_null_whole(store: Store) -> H
         ],
         "a join in an optional branch to a name outside it is a condition of the branch: b1's \
          contact reports to its enterer, b3's does not and binds null; it answered {got:?}"
+    );
+    // A later step's `where` reads a null name as absent: b1's contact is
+    // carol and b4's enterer dan; b2's has no contact and bob entered it.
+    let read_past = |s: Step| {
+        let filter = Some("c.name = 'carol' or name = 'dan'".into());
+        bills(vec![contact(), Step { filter, ..s }])
+    };
+    let (kept, unkept) = (
+        rows(
+            cat,
+            own,
+            read_past(from("bill", "entered_by", Some("e"))),
+            &["bill.key", "c.key", "e.key"],
+        )
+        .await,
+        rows(
+            cat,
+            own,
+            read_past(absent(from("bill", "entered_by", None))),
+            &["bill.key", "c.key"],
+        )
+        .await,
+    );
+    ensure!(
+        kept == ["b1 carol alice", "b4 null dan"] && unkept == ["b2 null", "b3 dan"],
+        "a step whose `where` reads the optional contact as absent where there is none keeps b1, \
+         whose contact is carol, and b4, entered by dan, and an absent step so the other two; \
+         they answered {kept:?} and {unkept:?}"
+    );
+    // Within b1, the contact carol, whose boss alice approved it, comes
+    // before the null the branch binds where bob approved it.
+    let boss = Step {
+        filter: Some("name = a.name".into()),
+        ..optional(from("c", "reports_to", Some("cb")))
+    };
+    let tree = bills(vec![
+        contact(),
+        from("bill", "approved_by", Some("a")),
+        boss,
+    ]);
+    let got = rows(cat, own, tree, &["bill.key", "c.key", "a.key", "cb.key"]).await;
+    ensure!(
+        got == [
+            "b1 carol alice alice",
+            "b1 null bob null",
+            "b2 null alice null",
+            "b4 null dan null"
+        ],
+        "a null comes after a name's records: b1's branch is carol for alice's approval and null \
+         for bob's, in that order; it answered {got:?}"
     );
     // A null sorts as an absent value: as the bills by their `cname`.
     let by = |field: &str, dir| {
@@ -714,18 +764,6 @@ async fn a_tree_is_refused_for_what_it_says_before_a_record_is_read(store: Store
                 .within(step_at(2, "approved_by")),
         ),
         (
-            "a step reading an optional name in its `where` that is not optional",
-            bills(vec![
-                optional(st("has_contact", Some("c"))),
-                Step {
-                    filter: Some("name = c.name".into()),
-                    ..from("bill", "entered_by", Some("e"))
-                },
-            ]),
-            Said::from(Case::StepPastOptional { name: "c".into() })
-                .within(step_at(2, "entered_by")),
-        ),
-        (
             "an optional join outside an optional branch",
             bills(vec![e(), optional(join("bill", "approved_by", "e"))]),
             Said::from(Case::StepOptionalNoName { join: true }).within(step_at(2, "approved_by")),
@@ -734,17 +772,6 @@ async fn a_tree_is_refused_for_what_it_says_before_a_record_is_read(store: Store
             "an optional absent step",
             bills(vec![optional(absent(st("has_contact", None)))]),
             Said::from(Case::StepOptionalNoName { join: false }).within(step_at(1, "has_contact")),
-        ),
-        (
-            "an absent step outside an optional branch reading its name",
-            bills(vec![
-                optional(st("has_contact", Some("c"))),
-                Step {
-                    filter: Some("name = c.name".into()),
-                    ..absent(from("bill", "entered_by", None))
-                },
-            ]),
-            Said::from(Case::StepOptionalNoName { join: false }).within(step_at(2, "entered_by")),
         ),
         (
             "a join that binds a name",
