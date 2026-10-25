@@ -82,9 +82,11 @@ feed and the export are compared byte for byte, on every engine.
   reader of the lake out while it rewrote.
 - **Not a promise for a pgvector index.** A vector field the lake asks an
   index for answers the index's set, and PostgreSQL's `VACUUM` repairs
-  pgvector's graph after deletes, so a compact, and autovacuum, may move
-  that set. Its recall against the reference holds through it. This is
-  the one exception, and it covers pgvector-indexed fields only
+  the HNSW index of a graph after deletes, so a compact, and autovacuum,
+  may move that set. The swap of a graph built again moves it too
+  (`docs/decisions/078-under-an-index-a-search-pages-one-ranking-of-what-its-reader-may-see.md`).
+  Its recall against the reference holds through both. This is the one
+  exception, and it covers pgvector-indexed fields only
   (`docs/decisions/043-an-index-asked-for-answers-its-set.md`).
 - **Not a door.** It is the host's act, beside `rebuild`, `checkpoint`,
   `age` and `purge_source`, with no MCP tool and no REST route. A
@@ -106,3 +108,6 @@ feed and the export are compared byte for byte, on every engine.
 - "Not sealing" and "Not scheduled" name the seal by size, the one
   storage act a lake takes by itself; a compact still does neither
   (lakelands#1309).
+- "Not a promise for a pgvector index" names the swap of a graph built
+  again beside `VACUUM`, and a compact vacuums the graphs' tables with
+  the projection's (078, lakelands#1254).

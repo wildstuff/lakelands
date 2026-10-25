@@ -1937,7 +1937,9 @@ record that does not exist.
   holder's records alone; its count of the retired counts the holder's
   retired records alone, another's being a key that is free to it
   (lakelands#1024). A search ranks the type and keeps the admitted
-  candidates, pulling deeper until its page is full; the fused search's
+  candidates, pulling deeper until its page is full; under a vector
+  index it is ranked exactly over the records that hold its pairs,
+  never streamed from a graph that holds others; the fused search's
   path that reads no record is not taken. A walk reaches only admitted
   records. A proposal on a record the holder is not admitted is not
   there to it (below). One that would leave a record outside the
@@ -2174,7 +2176,11 @@ engine's full-text and vector candidates include restricted records, and
 the store applies the principal's grants to the hits
 (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`),
 so one without the grant is never answered it as a hit, and it moves no
-other hit's rank or score. A restricted link is walked only by a
+other hit's rank or score. Under a vector index the candidates are its
+reader's class's: one without the grant is streamed from a graph that
+holds no record held at the head, so a held record is no candidate of
+it, and shapes neither its pages nor the depth they are read at
+(`docs/decisions/078-under-an-index-a-search-pages-one-ranking-of-what-its-reader-may-see.md`). A restricted link is walked only by a
 principal holding the grant
 (`docs/decisions/035-a-link-is-a-record.md`). In a view the fold keeps,
 a restricted record is a member for a reader with the grant and for no
@@ -2845,3 +2851,7 @@ Of `only`:
   preview are judged as it is told, as a proposal's are (062).
 - A verb names its conditions as `preconditions`, and a refusal of one
   names it (lakelands#1330).
+- Under a vector index an engine's candidates are its reader's class's:
+  a held record is no candidate of one without `restricted`, and a
+  holder of `only` is ranked exactly over its pairs (078,
+  lakelands#1254).

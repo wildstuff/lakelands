@@ -283,7 +283,7 @@ const HOLDERS: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM text_index \
 /// The statement of [`Read::record`]: the latest state of the key at or
 /// before the position, and whether it still holds there. No other state
 /// of the key is read (lakelands#596).
-const RECORD_AT: &str = "SELECT ty, key, since, state FROM (SELECT ty, key, since, state, until \
+pub(crate) const RECORD_AT: &str = "SELECT ty, key, since, state FROM (SELECT ty, key, since, state, until \
      FROM records WHERE ty = ?1 \
      AND key = ?2 AND since <= ?3 ORDER BY since DESC LIMIT 1) WHERE until IS NULL OR until > ?3";
 

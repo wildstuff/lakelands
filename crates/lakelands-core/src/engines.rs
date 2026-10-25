@@ -1614,6 +1614,60 @@ pub fn rank(hits: &mut Vec<(RecordKey, f64)>, k: u32) {
     hits.truncate(k as usize);
 }
 
+/// The best `k` of a field's vectors whose head record the reader's
+/// selection `seen` admits, in [`rank`]'s order, `decl` the type in force.
+/// `top(m)` answers the field's best `m` ([`TopK`]); the candidates are
+/// judged best first, and the depth grows fourfold from `k` until `k`
+/// pass or the field ends, so what a search holds is the depth it reaches
+/// and a selection that admits most candidates reads few records more
+/// than it keeps. `read` answers the head records of a batch's keys, in
+/// any order. Where `seen` is `None`, or admits every live record, no
+/// record is read.
+pub fn rank_seen(
+    k: u32,
+    seen: Option<(&Scan, Option<&TypeDecl>)>,
+    mut top: impl FnMut(u32) -> Result<Vec<(RecordKey, f64)>>,
+    mut read: impl FnMut(Vec<RecordKey>) -> Result<Vec<StoredRecord>>,
+) -> Result<Vec<(RecordKey, f64)>> {
+    let Some((seen, decl)) = seen.filter(|(s, _)| !admits_every_live(s)) else {
+        return top(k);
+    };
+    let (mut out, mut judged, mut depth) = (Vec::new(), 0, k.max(16));
+    loop {
+        let best = top(depth)?;
+        let fresh = &best[judged.min(best.len())..];
+        let admitted: BTreeSet<RecordKey> =
+            read(fresh.iter().map(|(key, _)| key.clone()).collect())?
+                .into_iter()
+                .filter(|r| admits(decl, r, seen))
+                .map(|r| r.key)
+                .collect();
+        out.extend(
+            fresh
+                .iter()
+                .filter(|(key, _)| admitted.contains(key))
+                .cloned(),
+        );
+        judged = best.len();
+        if out.len() >= k as usize || best.len() < depth as usize {
+            break;
+        }
+        depth = depth.saturating_mul(4);
+    }
+    out.truncate(k as usize);
+    Ok(out)
+}
+
+/// Whether `seen` admits every live record: an engine need not read a
+/// candidate's state to judge it.
+pub fn admits_every_live(seen: &Scan) -> bool {
+    seen.restricted
+        && seen.filter.is_none()
+        && seen.valid_at.is_none()
+        && seen.equal.is_empty()
+        && seen.equal_any.is_empty()
+}
+
 /// The best `k` of a stream of scored keys, holding at most `k` of them
 /// at any time: what `rank` answers over the whole stream, without
 /// keeping it. `rank`'s order is total, so its first `k` are one set in

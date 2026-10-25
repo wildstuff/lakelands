@@ -28,13 +28,40 @@ use crate::conformance::prelude::*;
 
 check!(
     VECTOR_INDEX_RECALL = an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_floor,
-    "043, 025 and 029: a search over a vector field the `vector_index.<type>` setting names says `ranked_by: index`, ranks the index's candidates by the one cosine with ties by key, answers the same bytes when asked again, and finds on average at least the engine's floor of the brute-force reference's hits for k = 1, 10 and 100, with and without a filter, at the head and at an earlier position, after records were retired, vectors cleared and rewritten and records added; an engine without such an index answers the reference, a recall of 1; a vector search fused over several fields says `index` when any of them is named; it prints, and does not judge, how many hits of the queries' first twelve pages of ten are a record answered before, and how many records of one page of 120 they leave out, since under an index a page is the index's answer at the depth that page asks for",
+    "043, 025 and 029: a search over a vector field the `vector_index.<type>` setting names says `ranked_by: index`, ranks the index's candidates by the one cosine with ties by key, answers the same bytes when asked again, and finds on average at least the engine's floor of the brute-force reference's hits for k = 1, 10 and 100, with and without a filter, at the head and at an earlier position, after records were retired, vectors cleared and rewritten and records added; an engine without such an index answers the reference, a recall of 1; a vector search fused over several fields says `index` when any of them is named",
     given
 );
 
 check!(
     INDEXED_TIE = under_an_index_a_tie_it_hands_out_is_paged_once_and_by_key,
-    "043 and 029 (lakelands#827): under an index the members of a tie that the index hands out at a page's depth are pulled before the keys cut it, and come once and in key order; and an index that hands out fewer candidates than it was asked for has not shown the field's end: over two hundred records whose vectors are alike and a hundred others, with the index asked for, following the cursor at k = 10 says `ranked_by: index` on every page and answers every record once, the two hundred first and in key order; and over seven hundred alike, of which PostgreSQL's index hands out a part, following it at k = 100 does so too"
+    "078, 043 and 029 (lakelands#827): under an index the members of a tie that the stream hands out are read before the keys cut it, and come once and in key order; and what the stream does not hand out follows it, ranked the same way: over two hundred records whose vectors are alike and a hundred others, with the index asked for, following the cursor at k = 10 says `ranked_by: index` on every page and answers every record once, the two hundred first and in key order; and over seven hundred alike, of which PostgreSQL's graph may hand out a part, following it at k = 100 answers the keys one page of 800 answers, every record once, best first with equal scores by key but at most once, where the rest begins"
+);
+
+check!(
+    ONE_RANKING_PAGED = under_an_index_a_search_pages_one_ranking_per_class,
+    "078: over four thousand vectors with the index asked for and a hundred records held, a vector search followed by its cursor at k = 10 for twelve pages answers, for the owner, who holds `restricted`, and for a reader without it, for each of ten queries, with no filter, a filter hiding a quarter and one keeping about nine hundred, the keys and score bits one page of 120 answers, every page saying `ranked_by: index`, no key twice, the scores never rising; the reader's pages hold no held record and the owner's are the reader's with the held records it may see among them",
+    given
+);
+
+check!(
+    UNSEEN_WRITE_MOVES_NO_PAGE = a_write_the_reader_may_not_see_moves_none_of_its_pages,
+    "078: with the index asked for over twelve hundred vectors and some held, a reader without `restricted`, with a filter hiding a quarter and without, followed by the cursor for twelve pages of ten, is answered the same keys and score bits before and after writes it may not see: one held record's vector rewritten at the query, and another's rewritten there and the record retired"
+);
+
+check!(
+    HOLD_KEEPS_THE_SEQUENCE = a_hold_keeps_the_readers_sequence_across_its_swap,
+    "078: with the index asked for over twelve hundred vectors, a reader without `restricted` follows a search's cursor for three pages of ten; a record of its fifth page is held; the pages it then follows, and the whole sequence read again until a second has passed, before and after the engine answers from a graph built without the record, are the sequence of before the hold without that record, to the bit; the owner's sequence keeps it throughout"
+);
+
+check!(
+    ONLY_IS_RANKED_EXACTLY = a_reader_holding_only_is_ranked_exactly_over_its_pairs,
+    "078: with the index asked for over twelve hundred vectors and the text they are paired by looked up, a reader holding `only` on that text, followed by its cursor for twelve pages of ten, is answered the first 120 of the exact ranking of the records holding the text: the keys and score bits of the one cosine, equal scores by key"
+);
+
+check!(
+    UPGRADE_KEEPS_THE_RANKING = an_upgrade_rebuilds_the_graphs_beside_with_answers_unchanged,
+    "078 and 071: a lake whose index is asked for, with a record held, its projection marked one layout back by the harness where it can, opened again by a writer, answers the owner's and a reader's twelve pages of ten of a search, with and without a filter, as before, every page saying `ranked_by: index`",
+    given
 );
 
 const TY: &str = "point";
@@ -131,28 +158,44 @@ fn bits(h: &lakelands_api::query::Hits) -> Vec<(String, u64)> {
     h.hits.iter().map(hit).collect()
 }
 
-/// A vector search of `point.v` for `q`, followed by its cursor at `k`
-/// for at most `pages` pages: the keys answered, in the pages' order, and
-/// whether every page said it ranked by the index.
-async fn paged(l: &Lake, q: &[f32], k: u32, pages: u32) -> Result<(Vec<String>, bool), Failure> {
+/// One page's hits: keys and score bits.
+type Paged = Vec<(String, u64)>;
+
+/// A vector search of `point.v` for `q` by `who`, filtered by `filter`,
+/// followed by its cursor at `k` for at most `pages` pages: the hits
+/// answered, in the pages' order, and whether every page said it ranked
+/// by the index.
+async fn paged(
+    l: &Lake,
+    who: &Principal,
+    (q, filter): (&[f32], Option<&str>),
+    k: u32,
+    pages: u32,
+) -> Result<(Paged, bool), Failure> {
     let (mut seen, mut cursor, mut indexed) = (Vec::new(), None, true);
     for _ in 0..pages {
         let asked = Search {
             ty: TypeName::from(TY),
             k,
             cursor,
+            filter: filter.map(Into::into),
             ..doc_search(SearchMode::vector("v", q.to_vec()))
         };
-        let page = l.cat.search(&l.own, asked).await;
+        let page = l.cat.search(who, asked).await;
         let page = page.must("a page under the index")?.data;
         indexed &= page.ranked_by == "index";
-        seen.extend(page.hits.iter().map(|h| h.record.key.0.clone()));
+        seen.extend(bits(&page));
         cursor = page.next_cursor;
         if cursor.is_none() {
             break;
         }
     }
     Ok((seen, indexed))
+}
+
+/// The keys of hits.
+fn keys(hits: &Paged) -> Vec<String> {
+    hits.iter().map(|(k, _)| k.clone()).collect()
 }
 
 async fn deliver(store: &dyn LakeStore, own: &Principal, records: Vec<SourceRecord>) -> Held {
@@ -376,21 +419,6 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
         got.ranked_by,
         got.hits.len()
     );
-    // Pages of one query are not promised to be parts of one sequence
-    // (043): a measure, printed and not judged.
-    let (mut twice, mut never) = (0, 0);
-    for qi in 0..QUERIES {
-        let (seen, _) = paged(&l, &query(qi), 10, 12).await?;
-        let (whole, _) = paged(&l, &query(qi), 120, 1).await?;
-        let once: std::collections::HashSet<&String> = seen.iter().collect();
-        twice += seen.len() - once.len();
-        never += whole.iter().filter(|key| !once.contains(key)).count();
-    }
-    eprintln!(
-        "vector index on `{}`: twelve pages of ten of each of {QUERIES} queries answered \
-         {twice} hits a second time and left out {never} records of one page of 120",
-        given.harness
-    );
     ensure!(
         short.is_empty(),
         "an indexed field on `{}` must find on average at least its floor of the reference's \
@@ -424,25 +452,342 @@ async fn under_an_index_a_tie_it_hands_out_is_paged_once_and_by_key(store: Store
     let first = records(alike(0..200).chain(apart.clone()).collect());
     deliver(store.as_ref(), &l.own, first).await?;
     l.set("vector_index.point", json!(["v"])).await?;
-    let (seen, indexed) = paged(&l, &[1.0, 0.0], 10, 30).await?;
+    let (seen, indexed) = paged(&l, &l.own, (&[1.0, 0.0], None), 10, 30).await?;
+    let seen = keys(&seen);
     ensure!(
         indexed && seen.iter().cloned().eq(want(200)),
         "pages of ten over two hundred vectors alike and a hundred apart say they ranked by \
          the index ({indexed}) and answer every record once, the two hundred first and in key \
          order; they answered {seen:?}"
     );
-    // Seven hundred alike, of which PostgreSQL's index, built over them,
-    // hands out a part: its short answer is not the field's end.
+    // Seven hundred alike, of which PostgreSQL's graph, built over them,
+    // may hand out a part: the rest follows the stream, so the order
+    // starts again once at most.
     deliver(store.as_ref(), &l.own, records(alike(200..700).collect())).await?;
     l.set("vector_index.point", json!([])).await?;
     l.set("vector_index.point", json!(["v"])).await?;
-    let (seen, indexed) = paged(&l, &[1.0, 0.0], 100, 8).await?;
+    let q: &[f32] = &[1.0, 0.0];
+    let (seen, indexed) = paged(&l, &l.own, (q, None), 100, 8).await?;
+    let (whole, _) = paged(&l, &l.own, (q, None), 800, 1).await?;
+    let restarts = (seen.windows(2))
+        .filter(|w| {
+            let (a, b) = (f64::from_bits(w[0].1), f64::from_bits(w[1].1));
+            b > a || (b == a && w[1].0 < w[0].0)
+        })
+        .count();
+    let once: BTreeSet<String> = keys(&seen).into_iter().collect();
     ensure!(
-        indexed && seen.iter().cloned().eq(want(700)),
+        indexed
+            && seen == whole
+            && once.len() == seen.len()
+            && once.into_iter().eq(want(700).collect::<BTreeSet<_>>())
+            && restarts <= 1,
         "pages of a hundred over seven hundred vectors alike and a hundred apart say they \
-         ranked by the index ({indexed}) and answer every record once, the seven hundred \
-         first and in key order; they answered {} hits: {seen:?}",
-        seen.len()
+         ranked by the index ({indexed}), answer one page of 800, every record once, best \
+         first with equal scores by key but at most once ({restarts}); they answered {} hits: \
+         {:?}, the page {:?}",
+        seen.len(),
+        keys(&seen),
+        keys(&whole)
+    );
+    Ok(())
+}
+
+/// A point's `bucket`: one in forty.
+fn bucket(i: u64) -> u64 {
+    i % 40
+}
+
+/// Whether the `i`th point is held.
+fn held(i: u64) -> bool {
+    i % 40 == 7
+}
+
+/// `point` with its source fields, the setting asking for `v`'s index,
+/// and `n` points of the corpus, `bucket` beside `group`, those [`held`]
+/// held.
+async fn lake(store: &dyn LakeStore, n: u64) -> Result<Lake, Failure> {
+    let l = Lake::of(store);
+    let source = |f: FieldDecl| FieldDecl {
+        authority: Authority::Source,
+        ..f
+    };
+    let fields = vec![
+        source(vector("v", DIMENSIONS as u32)),
+        source(field("group", StorageKind::Number)),
+        source(field("bucket", StorageKind::Number)),
+    ];
+    l.declare(type_decl(TY, fields)).await?;
+    let record = |i: u64| {
+        let p = corpus_point(i);
+        let v = p.vector.as_deref();
+        fixture::source_record(
+            TY,
+            &p.key,
+            json!({"v": v, "group": p.group, "bucket": bucket(i)}),
+        )
+    };
+    deliver(store, &l.own, (0..n).map(record).collect()).await?;
+    l.set("vector_index.point", json!(["v"])).await?;
+    for i in (0..n).filter(|i| held(*i)) {
+        fixture::restrict(store, TY, corpus_point(i).key, "held").await?;
+    }
+    Ok(l)
+}
+
+/// Twelve pages of ten and one page of 120 of the same search agree, say
+/// `index`, hold no key twice and never rise; the pages' hits.
+async fn one_sequence(
+    l: &Lake,
+    who: &Principal,
+    (q, filter): (&[f32], Option<&str>),
+    what: &str,
+) -> Result<Paged, Failure> {
+    let (pages, indexed) = paged(l, who, (q, filter), 10, 12).await?;
+    let (whole, whole_indexed) = paged(l, who, (q, filter), 120, 1).await?;
+    let once: BTreeSet<&String> = pages.iter().map(|(k, _)| k).collect();
+    let falling = pages
+        .windows(2)
+        .all(|w| f64::from_bits(w[0].1) >= f64::from_bits(w[1].1));
+    ensure!(
+        indexed && whole_indexed && pages == whole && once.len() == pages.len() && falling,
+        "{what}: twelve pages of ten say `index` ({indexed}, {whole_indexed}) and answer one \
+         page of 120, each key once, the scores never rising; the pages answered {:?}, the \
+         page {:?}",
+        keys(&pages),
+        keys(&whole)
+    );
+    Ok(pages)
+}
+
+const FILTERS: [Option<&str>; 3] = [None, Some("group != 0"), Some("bucket < 9")];
+
+async fn under_an_index_a_search_pages_one_ranking_per_class(store: Store, given: Given) -> Held {
+    let l = lake(store.as_ref(), POINTS).await?;
+    let reader = fixture::reads_all(store.as_ref(), "reader");
+    let held_keys: BTreeSet<String> = (0..POINTS)
+        .filter(|i| held(*i))
+        .map(|i| corpus_point(i).key)
+        .collect();
+    for qi in 0..10 {
+        let q = query(qi);
+        for filter in FILTERS {
+            let what = format!("query {qi}, filter {filter:?}");
+            let read =
+                one_sequence(&l, &reader, (&q, filter), &format!("the reader, {what}")).await?;
+            let owned =
+                one_sequence(&l, &l.own, (&q, filter), &format!("the owner, {what}")).await?;
+            let unheld: Paged = owned
+                .iter()
+                .filter(|(k, _)| !held_keys.contains(k))
+                .cloned()
+                .collect();
+            ensure!(
+                !read.iter().any(|(k, _)| held_keys.contains(k)) && read.starts_with(&unheld),
+                "{what}: the reader's pages hold no held record, and the owner's are the \
+                 reader's with held records among them; the reader's {:?}, the owner's {:?}",
+                keys(&read),
+                keys(&owned)
+            );
+        }
+    }
+    eprintln!("one ranking per class on `{}`: held", given.harness);
+    Ok(())
+}
+
+/// Twelve hundred points: the corpus of the rows that write after it.
+const SMALL: u64 = 1_200;
+
+async fn a_write_the_reader_may_not_see_moves_none_of_its_pages(store: Store) -> Held {
+    let l = lake(store.as_ref(), SMALL).await?;
+    let q = query(0);
+    let reader = fixture::reads_all(store.as_ref(), "reader");
+    let filters = [Some("group != 0"), None];
+    let mut before = Vec::new();
+    for filter in filters {
+        before.push(paged(&l, &reader, (&q, filter), 10, 12).await?.0);
+    }
+    let at = |i: u64| {
+        let p = corpus_point(i);
+        fixture::source_record(TY, &p.key, json!({"v": q, "group": p.group, "bucket": 0}))
+    };
+    let (kept, gone) = (7, 47);
+    ensure!(held(kept) && held(gone), "the records written are held");
+    deliver(store.as_ref(), &l.own, vec![at(kept), at(gone)]).await?;
+    l.retire(TY, &corpus_point(gone).key).await?;
+    for (filter, a) in filters.into_iter().zip(&before) {
+        let b = paged(&l, &reader, (&q, filter), 10, 12).await?.0;
+        ensure!(
+            *a == b,
+            "filter {filter:?}: writes the reader may not see move none of its pages; before \
+             them it was answered {:?}, after {:?}",
+            keys(a),
+            keys(&b)
+        );
+    }
+    Ok(())
+}
+
+/// Whether two sequences agree as far as both reach.
+fn same(a: &Paged, b: &Paged) -> bool {
+    let n = a.len().min(b.len());
+    a[..n] == b[..n]
+}
+
+async fn a_hold_keeps_the_readers_sequence_across_its_swap(store: Store) -> Held {
+    let l = lake(store.as_ref(), SMALL).await?;
+    let reader = fixture::reads_all(store.as_ref(), "reader");
+    let q = query(2);
+    let before = paged(&l, &reader, (&q, None), 120, 1).await?.0;
+    let owned = paged(&l, &l.own, (&q, None), 120, 1).await?.0;
+    let Some((x, _)) = before.get(45).cloned() else {
+        return Err(Failure::new("the reader's sequence holds 46 hits"));
+    };
+    let without: Paged = before.iter().filter(|(k, _)| *k != x).cloned().collect();
+    // Three pages, the hold, and the cursor followed on.
+    let mut cursor = None;
+    let mut seen = Vec::new();
+    for page in 0..12 {
+        if page == 3 {
+            fixture::restrict(store.as_ref(), TY, x.as_str(), "held").await?;
+        }
+        let asked = Search {
+            ty: TypeName::from(TY),
+            k: 10,
+            cursor,
+            ..doc_search(SearchMode::vector("v", q.clone()))
+        };
+        let got = l.cat.search(&reader, asked).await.must("a page")?.data;
+        seen.extend(bits(&got));
+        cursor = got.next_cursor;
+    }
+    ensure!(
+        same(&seen, &without),
+        "the pages followed across the hold are the sequence of before without `{x}`: they \
+         answered {:?}",
+        keys(&seen)
+    );
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_secs(1) {
+        let read = paged(&l, &reader, (&q, None), 10, 12).await?.0;
+        let own = paged(&l, &l.own, (&q, None), 120, 1).await?.0;
+        ensure!(
+            same(&read, &without) && own == owned,
+            "read again after the hold, the reader's sequence is that of before without `{x}`, \
+             the owner's as it was: the reader's {:?}, the owner's {:?}",
+            keys(&read),
+            keys(&own)
+        );
+    }
+    Ok(())
+}
+
+async fn a_reader_holding_only_is_ranked_exactly_over_its_pairs(store: Store) -> Held {
+    use lakelands_api::principal::TypeGrants;
+    const SIDED: &str = "sided";
+    let l = Lake::of(store.as_ref());
+    let source = |f: FieldDecl| FieldDecl {
+        authority: Authority::Source,
+        ..f
+    };
+    let fields = vec![
+        source(vector("v", DIMENSIONS as u32)),
+        source(field("side", StorageKind::Text)),
+    ];
+    l.declare(type_decl(SIDED, fields)).await?;
+    let side = |i: u64| ["a", "b", "c"][(i % 3) as usize];
+    let records = (0..SMALL)
+        .map(|i| {
+            let v = corpus_vector(i);
+            fixture::source_record(SIDED, &format!("s{i:05}"), json!({"v": v, "side": side(i)}))
+        })
+        .collect();
+    crate::conformance::fixture::ingest(doors(store.as_ref()).as_ref(), &l.own, SOURCE, records)
+        .await
+        .must("ingesting sided points")?;
+    l.set("lookup_index.sided", json!(["side"])).await?;
+    l.set("vector_index.sided", json!(["v"])).await?;
+    let grants = Grants {
+        default: Access::Read,
+        types: [(
+            TypeName::from(SIDED),
+            TypeGrants {
+                only: [("side".into(), json!("a"))].into(),
+                ..Default::default()
+            },
+        )]
+        .into(),
+        ..Grants::default()
+    };
+    let reader = fixture::principal(store.as_ref(), PrincipalKind::Agent, "a-side", grants);
+    for qi in 0..4 {
+        let q = query(qi);
+        let mut all: Vec<(lakelands_api::RecordKey, f64)> = (0..SMALL)
+            .filter(|i| side(*i) == "a")
+            .map(|i| {
+                let key = format!("s{i:05}");
+                (
+                    key.as_str().into(),
+                    lakelands_api::query::cosine(&q, &corpus_vector(i)),
+                )
+            })
+            .collect();
+        crate::engines::rank(&mut all, 120);
+        let want: Paged = all.into_iter().map(|(k, s)| (k.0, s.to_bits())).collect();
+        let (mut got, mut cursor) = (Vec::new(), None);
+        for _ in 0..12 {
+            let asked = Search {
+                ty: TypeName::from(SIDED),
+                k: 10,
+                cursor,
+                ..doc_search(SearchMode::vector("v", q.clone()))
+            };
+            let page = l.cat.search(&reader, asked).await.must("a page")?.data;
+            got.extend(bits(&page));
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        ensure!(
+            got == want,
+            "query {qi}: the reader holding `only` is answered the exact ranking of its pairs; \
+             it was answered {:?}, the exact ranking is {:?}",
+            keys(&got),
+            keys(&want)
+        );
+    }
+    Ok(())
+}
+
+async fn an_upgrade_rebuilds_the_graphs_beside_with_answers_unchanged(
+    store: Store,
+    given: Given,
+) -> Held {
+    let l = lake(store.as_ref(), SMALL).await?;
+    let read = |l: Lake, store: Store| async move {
+        let reader = fixture::reads_all(store.as_ref(), "reader");
+        let mut all = Vec::new();
+        for filter in [None, Some("group != 0")] {
+            for who in [&l.own, &reader] {
+                let (hits, indexed) = paged(&l, who, (&query(4), filter), 10, 12).await?;
+                ensure!(indexed, "every page says `ranked_by: index`");
+                all.push(hits);
+            }
+        }
+        Ok::<_, Failure>(all)
+    };
+    let before = read(l, store.clone()).await?;
+    if let Some(location) = given.location.as_ref() {
+        (given.lower)(location);
+    }
+    let store = (given.reopen)(store, Seams::default()).await;
+    let store = store.map_err(|e| Failure::new(format!("the upgrade's open: {e}")))?;
+    let after = read(Lake::of(store.as_ref()), store.clone()).await?;
+    ensure!(
+        before == after,
+        "opened again after its projection was marked one layout back, the lake answers the \
+         owner's and the reader's pages as before"
     );
     Ok(())
 }
