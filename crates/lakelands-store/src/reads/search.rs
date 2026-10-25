@@ -167,11 +167,11 @@ impl<'a> Reader<'a> {
             offset,
             read,
             skipped,
-            marks,
+            marking,
         } = first;
         let more = hits.len() + skipped > offset + k;
         let mut page: Vec<Hit> = (hits.into_iter()).skip(offset - skipped).take(k).collect();
-        if let Some(marks) = marks {
+        if let Some(marks) = marking.and_then(|m| m.marks(s, self.named_type(&s.ty).ok()?)) {
             marks.mark(&mut page);
         }
         let next_cursor = more.then(|| {
@@ -206,7 +206,7 @@ impl<'a> Reader<'a> {
         mut carried: Option<Pulled>,
     ) -> Result<Judged<First>> {
         let (decl, text_fields, filter, ranks) = self.searched(s)?;
-        let marks = self.marks(s, &decl, text_fields, &ranks);
+        let marking = self.marking(s, &decl, text_fields, &ranks);
         let vectors = s.mode.vectors();
         let vector_fields: Vec<&FieldName> = vectors.iter().map(|v| v.0).collect();
         // A search that names no fields reads the searchable fields the
@@ -399,31 +399,28 @@ impl<'a> Reader<'a> {
             offset,
             read: search_read,
             skipped,
-            marks,
+            marking,
         }))
     }
 
-    /// What `s` marks its page's hits by, if it asks for `matches` (025):
-    /// its text's tokens under the language that ranked, in the fields its
-    /// first stage searched, by their names at the read's position. A
-    /// second stage's text moves no mark. A read not given the head, a
-    /// second stage's, marks the fields it is shown here.
-    pub(super) fn marks(
+    /// What `s`'s first stage searched, which its hits are marked by
+    /// (025), where it asks for `matches` or has a second stage that may
+    /// carry it: the fields its text was ranked in by the head, by their
+    /// names at the read's position, and the language that ranked. A read
+    /// not given the head ranked nothing and marks nothing.
+    pub(super) fn marking(
         &self,
         s: &Search,
         decl: &TypeDecl,
         named: Option<&[FieldName]>,
         ranks: &Ranks,
-    ) -> Option<Marks> {
-        let (true, SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. }) =
-            (s.matches, &s.mode)
-        else {
+    ) -> Option<Marking> {
+        let asked = s.matches || s.rerank.is_some();
+        if !asked || matches!(s.mode, SearchMode::Vector { .. }) {
             return None;
-        };
-        let ranked = |n: &&FieldName| match &ranks.decl {
-            Some(_) => ranks.fields.get(*n).is_some_and(|f| f.searchable),
-            None => true,
-        };
+        }
+        let head = ranks.decl.as_ref()?;
+        let ranked = |n: &&FieldName| ranks.fields.get(*n).is_some_and(|f| f.searchable);
         let fields = match named {
             Some(n) => n.iter().filter(ranked).cloned().collect(),
             None => self
@@ -433,13 +430,8 @@ impl<'a> Reader<'a> {
                 .cloned()
                 .collect(),
         };
-        let tag = (ranks.decl.as_ref().unwrap_or(decl).language.clone()).unwrap_or_default();
-        Some(Marks {
-            decl: decl.clone(),
-            fields,
-            query: core_engines::tokens(text, &tag),
-            tag,
-        })
+        let tag = head.language.clone().unwrap_or_default();
+        Some(Marking { fields, tag })
     }
 
     /// The part of this read's selection an engine judges beside its
@@ -731,6 +723,33 @@ impl<'a> Reader<'a> {
             self.sight.check_probe(target, to.iter())?;
         }
         Ok(())
+    }
+}
+
+/// What a search's first stage searched, which its hits are marked by:
+/// a second stage carries it in its order, so each of its pages marks
+/// what a page of the first stage alone would (025).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Marking {
+    fields: Vec<FieldName>,
+    tag: String,
+}
+
+impl Marking {
+    /// What `s` marks its hits of `decl` by, if it asks for `matches`.
+    /// A second stage's text moves no mark.
+    pub(super) fn marks(&self, s: &Search, decl: &TypeDecl) -> Option<Marks> {
+        let (true, SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. }) =
+            (s.matches, &s.mode)
+        else {
+            return None;
+        };
+        Some(Marks {
+            decl: decl.clone(),
+            fields: self.fields.clone(),
+            query: core_engines::tokens(text, &self.tag),
+            tag: self.tag.clone(),
+        })
     }
 }
 

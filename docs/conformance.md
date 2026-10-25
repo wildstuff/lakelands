@@ -285,6 +285,7 @@ belongs in the suite, not beside one engine:
 - `a_hybrid_hit_reports_its_text_matches_whichever_axis_brought_it` — 025, extended (lakelands#995): a hybrid search asked for `matches` names on each hit the matches of its text, as a lexical search names them, whichever axis brought it; a hit the vector alone brought, whose text holds no query token, names none; the axes are as without them
 - `a_field_with_more_matches_than_the_cap_answers_the_cap_and_the_count` — 025, extended (lakelands#995): a field whose text matched more tokens than `MATCH_SPANS`, 32, answers the first 32 spans in text order and the count of every match
 - `matches_are_of_the_answered_record_at_the_read_position` — 025, extended (lakelands#995): a search as of an earlier position ranks by the head and marks the record it answers, as it stood at that position: where the matching word moved since, the spans are where it stood then, and where the text then held no query token, the hit answers no `matches`; a reranked search as of that position marks the same
+- `matches_before_the_head_are_of_the_fields_and_language_that_ranked` — 025, extended (lakelands#995): a search as of an earlier position marks the fields the head ranked, under the head's language, never those of the position: a field searchable then and not at the head is not named, and a language dropped since stems no mark; a reranked search as of that position marks what the search alone marks
 
 **views**
 

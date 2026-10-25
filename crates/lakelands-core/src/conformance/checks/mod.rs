@@ -239,6 +239,7 @@ pub const ALL: &[Check] = &[
     matches::MATCHES_HYBRID,
     matches::MATCHES_CAPPED,
     matches::MATCHES_READ_THEN,
+    matches::MATCHES_DECLARED_SINCE,
     views::GROUPS_AND_SUMS,
     view_stack::VIEW_STACK,
     views::FAILING_MEASURE_REFUSES,

@@ -48,6 +48,11 @@ check!(
     "025, extended (lakelands#995): a search as of an earlier position ranks by the head and marks the record it answers, as it stood at that position: where the matching word moved since, the spans are where it stood then, and where the text then held no query token, the hit answers no `matches`; a reranked search as of that position marks the same"
 );
 
+check!(
+    MATCHES_DECLARED_SINCE = matches_before_the_head_are_of_the_fields_and_language_that_ranked,
+    "025, extended (lakelands#995): a search as of an earlier position marks the fields the head ranked, under the head's language, never those of the position: a field searchable then and not at the head is not named, and a language dropped since stems no mark; a reranked search as of that position marks what the search alone marks"
+);
+
 /// `doc`: `title` and `body` searchable, in English, `tag` not, and `v` a
 /// vector; `body` left out where `bodied` is not.
 fn doc(bodied: bool) -> TypeDecl {
@@ -445,6 +450,38 @@ async fn matches_are_of_the_answered_record_at_the_read_position(store: Store) -
     ensure!(
         wrong.is_empty(),
         "matches must be of the answered record at the read position: {wrong:?}"
+    );
+    Ok(())
+}
+
+async fn matches_before_the_head_are_of_the_fields_and_language_that_ranked(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(doc(true)).await?;
+    (store.bind_rerank(backing::reranker())).must("binding the reranker")?;
+    let both = json!({"title": "invoice running", "body": "invoice running"});
+    l.upsert("doc", "d1", both).await?;
+    let then = store.head().await.must("reading the head")?;
+    let mut since = doc(true);
+    since.language = None;
+    since.fields[1].searchable = false;
+    l.declare(since).await?;
+    let told = want(vec![("d1", spans(&[("title", &[(0, 7)], 1)]))]);
+    let mut wrong = Vec::new();
+    let mut earlier = asked("invoice run");
+    earlier["as_of"] = json!(then);
+    for rerank in [None, Some(json!({"top": 2}))] {
+        let mut s = earlier.clone();
+        if let Some(r) = rerank {
+            s["rerank"] = r;
+        }
+        let got = marked(&search(&l, &l.own, s.clone()).await?);
+        if got != told {
+            wrong.push(format!("{s}: {got:?}"));
+        }
+    }
+    ensure!(
+        wrong.is_empty(),
+        "as of {then:?}, matches must be of `title` alone, unstemmed, as the head ranks: {wrong:?}"
     );
     Ok(())
 }
