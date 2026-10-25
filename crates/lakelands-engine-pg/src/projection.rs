@@ -67,7 +67,7 @@ use postgres::Row;
 use postgres::types::ToSql;
 
 use crate::connect::{Db, Target};
-use crate::vector_index::{self, Pgvector};
+use crate::vector_index::{self, Touched};
 
 /// The lake's tables, each named with its schema.
 #[derive(Clone, Debug)]
@@ -240,6 +240,11 @@ CREATE TABLE IF NOT EXISTS {s}.sort_index (
 CREATE INDEX IF NOT EXISTS sort_index_asc ON {s}.sort_index (ty, field, sort_key, key COLLATE \"C\");
 CREATE INDEX IF NOT EXISTS sort_index_desc
     ON {s}.sort_index (ty, field, sort_key DESC, key COLLATE \"C\");
+CREATE TABLE IF NOT EXISTS {s}.graphs (
+    ty TEXT NOT NULL, field TEXT NOT NULL, class TEXT NOT NULL, dims INT NOT NULL,
+    gen BIGINT, next BIGINT, stale BIGINT, copied BIGINT,
+    PRIMARY KEY (ty, field, class)
+){pt};
 {vs}CREATE TABLE IF NOT EXISTS {s}.vectors (
     ty TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, field TEXT NOT NULL,
     since BIGINT NOT NULL, until BIGINT, single BOOLEAN NOT NULL, data BYTEA NOT NULL,
@@ -278,11 +283,11 @@ fn heads_sql(s: &str, pt: &str) -> String {
 /// table changes so that a projection made before would answer wrongly,
 /// not fail: one made with another layout is never read, and is rebuilt
 /// from the log.
-pub(crate) const LAYOUT: u64 = 6;
+pub(crate) const LAYOUT: u64 = 7;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
-pub(crate) const LAKE_TABLES: [&str; 19] = [
+pub(crate) const LAKE_TABLES: [&str; 20] = [
     "meta",
     "lease",
     "segments",
@@ -302,6 +307,7 @@ pub(crate) const LAKE_TABLES: [&str; 19] = [
     "vectors",
     "declarations_head",
     "records_head",
+    "graphs",
 ];
 
 /// The projection's tables, cleared by a rebuild; the log, its segments,
@@ -885,18 +891,17 @@ pub(crate) fn folded(db: &mut Db, names: &Names) -> Result<Option<Position>> {
         .map(|v| Position(v as u64)))
 }
 
-/// Record the position folded through, and that every order index and
-/// vector index the lake keeps (a `sorted.<type>` or `vindex.<type>.<field>`
-/// mark each) is kept through it too, in one statement. So are the chosen
-/// fields among them if they were kept through the position it folds
-/// from (the statement reads `folded` as it was); a writer that keeps
-/// none folded past them otherwise, and they stay behind until a writer's
-/// open drops them.
+/// Record the position folded through, and that every order index the
+/// lake keeps (a `sorted.<type>` mark each) is kept through it too, in
+/// one statement. So are the chosen fields among them if they were kept
+/// through the position it folds from (the statement reads `folded` as
+/// it was); a writer that keeps none folded past them otherwise, and
+/// they stay behind until a writer's open drops them.
 pub(crate) fn set_folded(db: &mut Db, names: &Names, through: Position) -> Result<()> {
     db.execute(
         &format!(
             "WITH s AS (UPDATE {m} SET n = $1 \
-             WHERE k LIKE 'sorted.%' OR k LIKE 'vindex.%' \
+             WHERE k LIKE 'sorted.%' \
              OR (k = $2 AND n IS NOT DISTINCT FROM (SELECT n FROM {m} WHERE k = 'folded'))) \
              INSERT INTO {m} (k, n) VALUES ('folded', $1) ON CONFLICT (k) DO UPDATE SET n = $1",
             m = names.t("meta")
@@ -908,12 +913,14 @@ pub(crate) fn set_folded(db: &mut Db, names: &Names, through: Position) -> Resul
 /// The records an order index's rebuild reads at a time.
 const REBUILD_PAGE: i64 = 1024;
 
-/// `ANALYZE` over the tables a view plans from: `records`, its heads and
-/// the head indexes. One statement, run outside any transaction.
+/// `ANALYZE` over the tables a view plans from: `records`, its heads, the
+/// head indexes and the vectors, which the graphs' writes read by key.
+/// One statement, run outside any transaction.
 pub(crate) fn analyze(db: &mut Db, names: &Names) -> Result<()> {
     let tables: Vec<String> = [
         "records",
         "records_head",
+        "vectors",
         "text_index",
         "edges",
         "full_text",
@@ -1613,18 +1620,31 @@ impl Buffer {
     /// one, under their types' declarations at the head as `types` reads
     /// them after every declaration the transaction put, and the applied
     /// ids. That leaves what putting them one by one leaves. The types
-    /// whose `vector_index.<type>` setting it wrote go into `asked`. It
-    /// answers the order index rows the settings it wrote rebuilt.
+    /// whose `vector_index.<type>` setting it wrote go into `asked`, and
+    /// the records it wrote or erased into `touched`, for the graphs
+    /// (`crate::vector_index`). It answers the order index rows the
+    /// settings it wrote rebuilt.
     pub(crate) fn write(
         self,
         db: &mut Db,
         names: &Names,
         types: &mut HeadTypes,
         asked: &mut BTreeMap<TypeName, Position>,
-        v: Option<&Pgvector>,
+        touched: &mut Touched,
     ) -> Result<u64> {
         self.drop_rows(db, names)?;
-        let mut apart = self.put_vectors(db, names, types, v)?;
+        for (ty, _) in &self.dropped {
+            touched.erased.insert(TypeName::from(ty.as_str()));
+        }
+        for (ident, _) in self.records.keys() {
+            let keys = touched.keys.entry(TypeName::from(ident[0].as_str()));
+            keys.or_default().insert(ident[1].clone());
+        }
+        for (ty, key, _) in self.indexed.keys() {
+            let keys = touched.keys.entry(TypeName::from(ty.as_str()));
+            keys.or_default().insert(key.clone());
+        }
+        let mut apart = self.put_vectors(db, names, types)?;
         let records: BTreeMap<(Vec<String>, i64), String> = (self.records.iter())
             .map(|(k, r)| {
                 let apart = apart.remove(k).unwrap_or_default();
@@ -1771,7 +1791,6 @@ struct VectorRows {
     until: Vec<Option<i64>>,
     single: Vec<bool>,
     data: Vec<Vec<u8>>,
-    unit: Vec<Option<String>>,
 }
 
 impl VectorRows {
@@ -1790,15 +1809,12 @@ impl Buffer {
     /// ([`engines::put_vectors`]), over the rows in force each record holds
     /// and whether a later state of it is kept, and answer the fields each
     /// state keeps apart, of those its type's declaration in `types` keeps.
-    /// A unit vector is filled for a row in force of a field whose index
-    /// is marked (`crate::vector_index`); a row that ends holds none. A
-    /// vector the index put alone for a field a state names goes.
+    /// A vector the index put alone for a field a state names goes.
     fn put_vectors(
         &self,
         db: &mut Db,
         names: &Names,
         types: &mut HeadTypes,
-        v: Option<&Pgvector>,
     ) -> Result<StatesApart> {
         let mut apart = BTreeMap::new();
         let mut held: BTreeMap<(String, String), Held> = BTreeMap::new();
@@ -1845,14 +1861,6 @@ impl Buffer {
                 .head = Some(row.get(2));
         }
         let (mut written, mut ended, mut gone) = <[VectorRows; 3]>::default().into();
-        // A unit vector is filled only where its field's index is marked.
-        let marks: BTreeSet<String> = match v {
-            Some(_) => db.column(
-                &format!("SELECT k FROM {} WHERE k LIKE 'vindex.%'", names.t("meta")),
-                &[],
-            )?,
-            None => BTreeSet::new(),
-        };
         let mut vectors: BTreeMap<&TypeName, BTreeSet<FieldName>> = BTreeMap::new();
         for ((ident, at), r) in &self.records {
             if !vectors.contains_key(&r.ty) {
@@ -1866,11 +1874,7 @@ impl Buffer {
             h.rows = put.held;
             let until = put.ends.then_some(*at);
             for (f, e) in put.written {
-                let marked = marks.contains(&vector_index::mark(&r.ty, f.as_str()));
-                let unit =
-                    (marked && until.is_none()).then(|| vector_index::unit_text(&e.ranked()));
                 written.push(ident, &f, *at, until);
-                written.unit.push(unit.flatten());
                 written.single.push(e.single);
                 written.data.push(e.data);
             }
@@ -1901,36 +1905,23 @@ impl Buffer {
         let t = names.t("vectors");
         let ident = "unnest($1::text[], $2::text[], $3::text[], $4::int8[]";
         if !written.since.is_empty() {
-            let (unit, set, units) = match v {
-                Some(v) => (
-                    ", unit",
-                    ", unit = EXCLUDED.unit",
-                    format!(", CAST(u AS {})", v.ty(None)),
-                ),
-                None => ("", "", String::new()),
-            };
             let w = &written;
             let [tys, keys, fields] = &w.ident;
             db.execute(
                 &format!(
-                    "INSERT INTO {t} (ty, key, field, since, until, single, data{unit}) \
-                     SELECT ty, key, field, since, until, single, data{units} FROM \
-                     {ident}, $5::int8[], $6::bool[], $7::bytea[], $8::text[]) \
-                     AS b(ty, key, field, since, until, single, data, u) \
+                    "INSERT INTO {t} (ty, key, field, since, until, single, data) \
+                     SELECT * FROM {ident}, $5::int8[], $6::bool[], $7::bytea[]) \
                      ON CONFLICT (ty, key, field, since) DO UPDATE SET until = EXCLUDED.until, \
-                     single = EXCLUDED.single, data = EXCLUDED.data{set}"
+                     single = EXCLUDED.single, data = EXCLUDED.data"
                 ),
-                &[
-                    tys, keys, fields, &w.since, &w.until, &w.single, &w.data, &w.unit,
-                ],
+                &[tys, keys, fields, &w.since, &w.until, &w.single, &w.data],
             )?;
         }
         if !ended.since.is_empty() {
-            let unit = if v.is_some() { ", unit = NULL" } else { "" };
             let [tys, keys, fields] = &ended.ident;
             db.execute(
                 &format!(
-                    "UPDATE {t} t SET until = b.until{unit} FROM \
+                    "UPDATE {t} t SET until = b.until FROM \
                      {ident}, $5::int8[]) AS b(ty, key, field, since, until) \
                      WHERE t.ty = b.ty AND t.key = b.key AND t.field = b.field \
                      AND t.since = b.since"
@@ -1951,8 +1942,8 @@ impl Buffer {
         }
         for (at, vector) in later {
             match vector {
-                Some(vector) => vector_index::put(db, names, v, at, vector)?,
-                None => vector_index::remove(db, names, v, at)?,
+                Some(vector) => vector_index::put(db, names, at, vector)?,
+                None => vector_index::remove(db, names, at)?,
             }
         }
         Ok(apart)

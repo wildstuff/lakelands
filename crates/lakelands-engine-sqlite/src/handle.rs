@@ -632,10 +632,33 @@ impl LakeEngine for SqliteLake {
                 let (fields, weights) = (fields.as_deref(), &asked.text_weights);
                 lists.push(crate::view::lexical(&conn, ty, text, fields, weights, k)?);
             }
+            let decl = match &asked.seen {
+                Some(_) if !asked.vectors.is_empty() => projection::type_at(&conn, ty, position)?,
+                _ => None,
+            };
+            let seen = asked.seen.as_ref().map(|s| (s, decl.as_ref()));
+            let at = position.map_or(0, |p| p.0 as i64);
             for (field, query) in &asked.vectors {
-                lists.push(nearest(&conn, ty, field, query, k)?);
+                let read = |keys: Vec<RecordKey>| {
+                    let head = |key: RecordKey| {
+                        let at = params![ty.as_str(), key.as_str(), at];
+                        projection::records(&conn, crate::view::RECORD_AT, at)
+                    };
+                    Ok(keys
+                        .into_iter()
+                        .map(head)
+                        .collect::<Result<Vec<_>>>()?
+                        .concat())
+                };
+                let top = |m| nearest(&conn, ty, field, query, m);
+                lists.push(engines::rank_seen(k, seen, top, read)?);
             }
-            Ok(Ranked { position, lists })
+            let judged = asked.seen.is_some();
+            Ok(Ranked {
+                position,
+                lists,
+                judged,
+            })
         });
         let _ = conn.execute_batch("COMMIT");
         ranked

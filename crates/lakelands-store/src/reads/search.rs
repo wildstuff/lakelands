@@ -166,9 +166,10 @@ impl<'a> Reader<'a> {
             axes,
             offset,
             read,
+            skipped,
         } = first;
-        let more = hits.len() > offset + k;
-        let page: Vec<Hit> = hits.into_iter().skip(offset).take(k).collect();
+        let more = hits.len() + skipped > offset + k;
+        let page: Vec<Hit> = (hits.into_iter()).skip(offset - skipped).take(k).collect();
         let next_cursor = more.then(|| {
             encode(&CursorState {
                 at: self.position,
@@ -307,24 +308,42 @@ impl<'a> Reader<'a> {
             lists.push((weight.or_else(set).unwrap_or(1.0), at_head.is_some()));
             axes.push(axis(Some(field)));
         }
+        // Under an index the engine streams a reader from the graph of its
+        // class and ranks exactly one whose records are no class, so it is
+        // told the class (078). Where it can judge the whole of this read's
+        // selection it is told that, and its vector lists then hold only
+        // what this read may see: a page reads its own records alone.
+        let pushed = (!asked.vectors.is_empty())
+            .then(|| self.pushed(&decl, filter.as_ref()))
+            .flatten();
+        let full = pushed.is_some();
+        if full || indexed {
+            let restricted = self.sight.sees_restricted();
+            asked.seen = Some(pushed.unwrap_or(Scan {
+                restricted,
+                ..Scan::default()
+            }));
+            asked.exact = indexed && !self.whole(&decl);
+        }
         // Candidates are pulled in growing batches until the page and one
         // more are visible or the engine has no more, so a filter, `valid_at`
         // or the grants never shorten a page silently. A list read scans its
         // index whatever it is asked for, so a fused search's first pull asks
         // for the whole window. A page is judged from one pull.
         let fuses = lists.len() > 1;
-        let first = if fuses {
-            self.lake.limits.max_limit as usize
-        } else {
-            64
+        let first = match (fuses, full) {
+            (true, _) => self.lake.limits.max_limit as usize,
+            (false, true) => want,
+            (false, false) => want.saturating_mul(4).max(64),
         };
-        let mut pull = u32::try_from(want.saturating_mul(4).max(first)).unwrap_or(u32::MAX);
+        let mut pull = u32::try_from(first).unwrap_or(u32::MAX);
         pull = pull.max(carried.as_ref().map_or(0, |p| p.k));
-        let (hits, counts) = loop {
-            let mut read = match self.pull(&ranks.ty, &asked, pull, &mut carried)? {
-                Ok(read) => read.into_iter(),
+        let (hits, counts, skipped) = loop {
+            let (read, judged) = match self.pull(&ranks.ty, &asked, pull, &mut carried)? {
+                Ok(read) => read,
                 Err(moved) => return Ok(Err(moved)),
             };
+            let (mut read, judged) = (read.into_iter(), full && judged);
             let mut pulled: Vec<(f64, Ranking)> = (lists.iter())
                 .map(|(w, ranked)| {
                     (
@@ -335,13 +354,30 @@ impl<'a> Reader<'a> {
                 .collect();
             let filter = filter.as_ref();
             let done = if fuses {
-                self.fused(&decl, &ranks.ty, filter, pulled, pull, want, s.with_meta)?
+                // The engine judges its vector lists, which follow the
+                // text's.
+                let from = if judged {
+                    lists.len() - vectors.iter().filter(|_| !by_text).count()
+                } else {
+                    lists.len()
+                };
+                let lists = (pulled, from);
+                let fused = self.fused(&decl, &ranks.ty, filter, lists, pull, want, s.with_meta)?;
+                fused.map(|(hits, counts)| (hits, counts, 0))
             } else {
-                let ranked = pulled.pop().map_or_else(Vec::new, |l| l.1);
+                let mut ranked = pulled.pop().map_or_else(Vec::new, |l| l.1);
                 let exhausted = ranked.len() < pull as usize;
-                let ranked = self.keyed_then(&ranks.ty, ranked);
+                // A judged list holds only what this read sees: the hits
+                // before the page are not read.
+                let skip = if judged && top.is_none() {
+                    offset.min(ranked.len())
+                } else {
+                    0
+                };
+                let ranked = self.keyed_then(&ranks.ty, ranked.split_off(skip));
                 let hits = self.visible_hits(&decl, filter, ranked, s.with_meta)?;
-                (hits.len() >= want || exhausted || pull == u32::MAX).then(|| (hits, Vec::new()))
+                (hits.len() + skip >= want || exhausted || pull == u32::MAX)
+                    .then(|| (hits, Vec::new(), skip))
             };
             if let Some(done) = done {
                 break done;
@@ -357,23 +393,50 @@ impl<'a> Reader<'a> {
             axes,
             offset,
             read: search_read,
+            skipped,
         }))
+    }
+
+    /// The part of this read's selection an engine judges beside its
+    /// index, at the head; none where any of it is the store's: a link
+    /// judged by its ends, a filter the store evaluates, or a read before
+    /// the head.
+    fn pushed(&self, decl: &TypeDecl, filter: Option<&Expr>) -> Option<Scan> {
+        let head = (self.head.as_ref()).is_some_and(|h| h.view.position() == self.view.position());
+        if !(self.at_head || head) || self.sight.judges_ends(decl) || self.sight.narrows(&decl.name)
+        {
+            return None;
+        }
+        let equal = self.sight.admit(&decl.name).pairs()?.to_vec();
+        let bounded = self.with_bound(decl, filter);
+        if bounded.as_ref().is_some_and(|e| self.store_only(decl, e)) {
+            return None;
+        }
+        Some(Scan {
+            filter: bounded,
+            equal,
+            valid_at: self.valid_at_for(decl),
+            retired: self.retired.get(),
+            restricted: self.sight.sees_restricted(),
+            ..Scan::default()
+        })
     }
 
     /// The lists of one pull to the depth `k`, as the engine ranks `asked`
     /// under the head's name `ty`, all from one state: `carried`'s, where
     /// the door made this read for them and it asks the same. They are
     /// handed back unjudged where they were read at another position than
-    /// this read's head: a write landed since it was taken.
+    /// this read's head: a write landed since it was taken. Beside them,
+    /// whether the engine judged its vector lists by `asked.seen`.
     fn pull(
         &self,
         ty: &TypeName,
         asked: &Rankings,
         k: u32,
         carried: &mut Option<Pulled>,
-    ) -> Result<Judged<Vec<Ranking>>> {
-        if *asked == Rankings::default() {
-            return Ok(Ok(Vec::new()));
+    ) -> Result<Judged<(Vec<Ranking>, bool)>> {
+        if asked.text.is_none() && asked.vectors.is_empty() {
+            return Ok(Ok((Vec::new(), false)));
         }
         let head = (self.head.as_ref()).map_or(self.view.position(), |h| h.view.position());
         let same = |p: &Pulled| (&p.ty, &p.asked, p.k, p.position()) == (ty, asked, k, head);
@@ -390,7 +453,7 @@ impl<'a> Reader<'a> {
             },
         };
         Ok(match pulled.position() == head {
-            true => Ok(pulled.ranked.lists),
+            true => Ok((pulled.ranked.lists, pulled.ranked.judged)),
             false => Err(pulled),
         })
     }
@@ -399,7 +462,8 @@ impl<'a> Reader<'a> {
     /// ([`fuse`]), each ranked among the hits this read may see and to the
     /// lake's `max_limit` of them, so a record the read may not see moves
     /// no score and every page reads one ranking (046). `lists`
-    /// are one pull to the depth `pull`; none is answered until the first
+    /// are one pull to the depth `pull`, with the first of them the engine
+    /// judged by the whole selection; none is answered until the first
     /// `want` fused hits and their scores can no longer change, and each
     /// list is whole or holds its window, so that its count, answered
     /// beside the hits, is the same on every page: the search pulls again.
@@ -409,7 +473,7 @@ impl<'a> Reader<'a> {
         decl: &TypeDecl,
         named: &TypeName,
         filter: Option<&Expr>,
-        lists: Vec<(f64, Ranking)>,
+        (lists, judged): (Vec<(f64, Ranking)>, usize),
         pull: u32,
         want: usize,
         with_meta: bool,
@@ -422,7 +486,8 @@ impl<'a> Reader<'a> {
         // seam's `LEXICAL_HITS`), and the fold takes a retired record's
         // vectors out of the index, which is kept at the head (the suite's
         // `VECTOR_LEAVES_THE_NEIGHBOURS`). `SAME_LIST_UNREAD` holds this
-        // path to the one that reads.
+        // path to the one that reads. Lists the engine judged by the
+        // read's whole selection hold only what it sees, too.
         let open = self.at_head
             && self.whole(decl)
             && self.sight.sees_restricted()
@@ -432,9 +497,9 @@ impl<'a> Reader<'a> {
             // Each list's visible candidates to the window, and what an unranked
             // record could still gain from it: nothing once whole or full.
             let (mut keyed, mut gain, mut counted) = (Vec::new(), Vec::new(), true);
-            for (weight, candidates) in lists {
+            for (i, (weight, candidates)) in lists.into_iter().enumerate() {
                 let whole = candidates.len() < pull as usize;
-                let mut seen: Vec<(RecordKey, f64)> = if open {
+                let mut seen: Vec<(RecordKey, f64)> = if open || i >= judged {
                     candidates
                 } else {
                     let candidates = self.keyed_then(named, candidates);

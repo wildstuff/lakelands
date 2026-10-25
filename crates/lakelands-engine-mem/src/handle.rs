@@ -19,7 +19,7 @@ use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
 
-use crate::projection::Put;
+use crate::projection::{Held, Put};
 use crate::vectors::Indexed;
 use crate::view::MemView;
 use crate::{Lake, NAME, REBUILD_RATE, lock};
@@ -183,11 +183,26 @@ impl LakeEngine for MemoryLake {
                 lakelands_core::engines::lexical(decl, head, text, fields.as_deref(), weights, k)
             }));
         }
+        let decl = p.type_at(ty, p.folded);
+        let seen = asked.seen.as_ref().map(|s| (s, decl));
         for (field, query) in &asked.vectors {
-            lists.push(lake.vectors.nearest(ty, field, query, k)?);
+            let top = |m| lake.vectors.nearest(ty, field, query, m);
+            let read = |keys: Vec<RecordKey>| {
+                let head = |key| p.records.get(&(ty.clone(), key))?.at(p.folded);
+                Ok(keys
+                    .into_iter()
+                    .filter_map(head)
+                    .map(Held::record)
+                    .collect())
+            };
+            lists.push(lakelands_core::engines::rank_seen(k, seen, top, read)?);
         }
-        let position = p.folded;
-        Ok(Ranked { position, lists })
+        let (position, judged) = (p.folded, asked.seen.is_some());
+        Ok(Ranked {
+            position,
+            lists,
+            judged,
+        })
     }
 
     fn vectors(&self) -> Option<&dyn VectorIndex> {

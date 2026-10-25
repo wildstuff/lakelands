@@ -1,13 +1,16 @@
-//! The vector index a lake's `vector_index.<type>` setting asks for, kept
-//! by pgvector (`docs/decisions/043-an-index-asked-for-answers-its-set.md`):
-//! the setting's write builds it and marks it, a search reads it only while
-//! the mark describes the head, a writer's open rebuilds a stale one, and
-//! the setting retired drops it. On a server without pgvector nothing is
-//! marked, and every search answers the exact ranking.
+//! The graphs a lake's `vector_index.<type>` setting asks for, kept by
+//! pgvector (`docs/decisions/078-under-an-index-a-search-pages-one-ranking-of-what-its-reader-may-see.md`):
+//! the setting's commit builds B, the first hold builds A beside it and
+//! a new generation of B that never held the record, a build a hold
+//! overtakes starts again, a writer's open drops what a build left half
+//! done, and the setting retired drops every graph. On a server without
+//! pgvector no graph is kept, and every search answers the exact ranking.
 
 mod common;
 
-use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
+use std::time::{Duration, Instant};
+
+use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode, Rankings, Scan};
 use lakelands_api::id::{Position, RecordKey, TypeName, Version};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::Declaration;
@@ -26,6 +29,17 @@ fn exec(url: &str, statements: String) -> Vec<postgres::Row> {
     std::thread::spawn(move || {
         let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
         client.query(&statements, &[]).unwrap()
+    })
+    .join()
+    .unwrap()
+}
+
+/// Run several statements from a connection of the test's own.
+fn batch(url: &str, statements: String) {
+    let url = url.to_owned();
+    std::thread::spawn(move || {
+        let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        client.batch_execute(&statements).unwrap();
     })
     .join()
     .unwrap()
@@ -132,52 +146,133 @@ fn exact(query: &[f32], k: u32) -> Vec<(RecordKey, f64)> {
     all
 }
 
-/// The record whose unit vector [`decoy`] points at the query: only a
-/// search through the index can answer it among the nearest.
-const DECOY: &str = "k0500";
-
-/// Point `DECOY`'s unit vector at `query`, leaving its vector as it was:
-/// the index then offers it as the nearest, while the one cosine scores
-/// its real vector, which the exact ranking does not put near the top.
-fn decoy(url: &str, schema: &str, query: &[f32]) {
-    let n = query
-        .iter()
-        .map(|x| f64::from(*x).powi(2))
-        .sum::<f64>()
-        .sqrt();
-    let unit: Vec<String> = query
-        .iter()
-        .map(|x| ((f64::from(*x) / n) as f32).to_string())
+/// The exact ranking of the lake's vectors for `query` but those of
+/// `held`, at most `k`.
+fn exact_but(query: &[f32], k: u32, held: &[u64]) -> Vec<(RecordKey, f64)> {
+    let mut all: Vec<(RecordKey, f64)> = (0..RECORDS)
+        .filter(|i| !held.contains(i))
+        .map(|i| {
+            (
+                record(i).key,
+                lakelands_api::query::cosine(query, &vector(i)),
+            )
+        })
         .collect();
+    engines::rank(&mut all, k);
+    all
+}
+
+/// The nearest `k` of `e` for a reader that holds `restricted`.
+fn read(engine: &dyn LakeEngine, query: &[f32], k: u32, restricted: bool) -> Vec<(RecordKey, f64)> {
+    let asked = Rankings {
+        vectors: vec![("e".into(), query.to_vec())],
+        seen: Some(Scan {
+            restricted,
+            ..Scan::default()
+        }),
+        ..Rankings::default()
+    };
+    engine
+        .ranked(&TypeName::from("t"), &asked, k)
+        .unwrap()
+        .lists
+        .swap_remove(0)
+}
+
+/// Hold the `i`th record at `at`.
+fn hold(engine: &dyn LakeEngine, i: u64, at: u64) {
+    let p = engine.projection();
+    p.begin().unwrap();
+    p.put_record(&StoredRecord {
+        restricted: true,
+        version: Version(2),
+        position: Position(at),
+        ..record(i)
+    })
+    .unwrap();
+    p.commit(Position(at)).unwrap();
+}
+
+/// The table of generation `g` of `t`'s graph of `field` and `class`.
+fn table(field: &str, class: &str, g: i64) -> String {
+    use sha2::{Digest as _, Sha256};
+    let digest = Sha256::digest(format!("t\0{field}\0{class}\0{g}").as_bytes());
+    format!("vgraph_{}", lakelands_core::canonical::hex(&digest[..8]))
+}
+
+/// The graph rows, `(field, class, generation, stale, next)` in order.
+type Row = (String, String, Option<i64>, Option<i64>, Option<i64>);
+
+fn rows(url: &str, schema: &str) -> Vec<Row> {
     exec(
         url,
         format!(
-            "UPDATE \"{schema}\".vectors SET unit = '[{}]' WHERE key = '{DECOY}' AND field = 'e'",
-            unit.join(",")
+            "SELECT field, class, gen, stale, next FROM \"{schema}\".graphs ORDER BY field, class"
         ),
-    );
+    )
+    .iter()
+    .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4)))
+    .collect()
 }
 
-/// Whether an answer came through the index: it holds the decoy.
-fn through_index(answer: &[(RecordKey, f64)]) -> bool {
-    answer.iter().any(|(k, _)| k.as_str() == DECOY)
-}
-
-/// The mark of `e`'s index and how many indexes the lake keeps.
-fn marks(url: &str, schema: &str) -> (Option<i64>, i64) {
-    let row = exec(
+/// The graph tables of the schema, in order.
+fn tables(url: &str, schema: &str) -> Vec<String> {
+    exec(
         url,
         format!(
-            "SELECT (SELECT n FROM \"{schema}\".meta WHERE k = 'vindex.t.e'), \
-             (SELECT count(*) FROM pg_indexes WHERE schemaname = '{schema}' \
-              AND indexname LIKE 'vindex_%')"
+            "SELECT relname::text FROM pg_class WHERE relnamespace = '\"{schema}\"'::regnamespace \
+             AND relkind = 'r' AND relname LIKE 'vgraph%' ORDER BY 1"
         ),
-    );
-    (row[0].get(0), row[0].get(1))
+    )
+    .iter()
+    .map(|r| r.get(0))
+    .collect()
+}
+
+/// The rows once the builder is done: every graph read, none stale or
+/// building, and no table but those the rows read; `(field, class,
+/// generation)`.
+fn built(url: &str, schema: &str) -> Vec<(String, String, i64)> {
+    let asked = Instant::now();
+    loop {
+        let rows = rows(url, schema);
+        let done: Vec<(String, String, i64)> = rows
+            .iter()
+            .filter(|r| r.3.is_none() && r.4.is_none())
+            .filter_map(|r| Some((r.0.clone(), r.1.clone(), r.2?)))
+            .collect();
+        let mut read: Vec<String> = done.iter().map(|(f, c, g)| table(f, c, *g)).collect();
+        read.sort();
+        if done.len() == rows.len() && tables(url, schema) == read {
+            return done;
+        }
+        assert!(
+            asked.elapsed() < Duration::from_secs(60),
+            "the builder is done within a minute: {rows:?}, {:?}",
+            tables(url, schema)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The keys `t`'s graph of `field` and `class` holds, by its row.
+fn graph_keys(url: &str, schema: &str, field: &str, class: &str) -> Vec<String> {
+    let g = built(url, schema)
+        .into_iter()
+        .find(|(f, c, _)| f == field && c == class)
+        .map(|(f, c, g)| table(&f, &c, g))
+        .expect("the graph is built");
+    exec(
+        url,
+        format!("SELECT key FROM \"{schema}\".{g} ORDER BY key"),
+    )
+    .iter()
+    .map(|r| r.get(0))
+    .collect()
 }
 
 #[test]
-fn an_indexed_field_reads_its_index_and_every_other_field_scans() {
+fn an_indexed_field_reads_its_graph_and_every_other_field_ranks_exactly() {
     let Some(url) = common::url_or_skip("the pg vector-index test") else {
         return;
     };
@@ -188,13 +283,12 @@ fn an_indexed_field_reads_its_index_and_every_other_field_scans() {
         .unwrap();
     fill(engine.as_ref());
     let index = engine.vectors().unwrap();
-    let query = vector(7);
-    let t = TypeName::from("t");
+    let (query, t) = (vector(7), TypeName::from("t"));
     if !with_pgvector {
         assert_eq!(
-            marks(&url, &schema),
-            (None, 0),
-            "without pgvector no field is marked and no index is built"
+            (rows(&url, &schema), tables(&url, &schema)),
+            (Vec::new(), Vec::new()),
+            "without pgvector no graph is kept"
         );
         for f in ["e", "f"] {
             assert_eq!(
@@ -207,48 +301,38 @@ fn an_indexed_field_reads_its_index_and_every_other_field_scans() {
         common::drop_schema(&url, &schema);
         return;
     }
+    let graphs = built(&url, &schema);
     assert_eq!(
-        marks(&url, &schema),
-        (Some(1), 1),
-        "the setting's write builds `e`'s index and marks it kept through its position"
+        graphs
+            .iter()
+            .map(|(f, c, _)| (f.as_str(), c.as_str()))
+            .collect::<Vec<_>>(),
+        [("e", "b")],
+        "the setting's commit builds `e`'s B, and no A while nothing is held"
     );
-    assert!(
-        !exact(&query, 10).iter().any(|(k, _)| k.as_str() == DECOY),
-        "the decoy is no exact neighbour"
-    );
-    let got = nearest(engine.as_ref(), &t, "e", &query, 10).unwrap();
-    assert_eq!(got.len(), 10, "the index answers k candidates");
-    let mut ranked = got.clone();
-    engines::rank(&mut ranked, 10);
-    assert_eq!(
-        got, ranked,
-        "the candidates are ranked by the one cosine, ties by key"
-    );
-    for (key, score) in &got {
-        let i: u64 = key.as_str()[1..].parse().unwrap();
+    for k in [1, 10, 100] {
         assert_eq!(
-            score.to_bits(),
-            lakelands_api::query::cosine(&query, &vector(i)).to_bits(),
-            "`{key}` scores the one cosine"
+            nearest(engine.as_ref(), &t, "e", &query, k).unwrap(),
+            exact(&query, k),
+            "the stream from `e`'s graph answers the exact ranking, {k} deep"
         );
     }
-    let exact10 = exact(&query, 10);
-    let found = got.iter().filter(|h| exact10.contains(h)).count();
-    assert!(
-        found >= 9,
-        "the index finds at least 9 of the exact 10 on a small field: {found}"
+    let read = table("e", "b", graphs[0].2);
+    exec(
+        &url,
+        format!("DELETE FROM \"{schema}\".{read} WHERE key = 'k0007'"),
     );
-    decoy(&url, &schema, &query);
+    let got = nearest(engine.as_ref(), &t, "e", &query, 10).unwrap();
     assert!(
-        through_index(&nearest(engine.as_ref(), &t, "e", &query, 10).unwrap()),
-        "a search of `e` reads its index"
+        !got.iter().any(|(k, _)| k.as_str() == "k0007") && got.len() == 10,
+        "a search of `e` reads its graph: an entry taken from it is not found"
     );
     assert_eq!(
         nearest(engine.as_ref(), &t, "f", &query, 10).unwrap(),
-        exact10,
+        exact(&query, 10),
         "`f`, which the setting does not name, answers the exact ranking"
     );
-    // A write after the build reaches the index in the fold that puts it.
+    // A write after the build reaches the graph in the fold that puts it.
     let p = engine.projection();
     p.begin().unwrap();
     let near = RecordKey::from("near");
@@ -260,28 +344,110 @@ fn an_indexed_field_reads_its_index_and_every_other_field_scans() {
     })
     .unwrap();
     p.commit(Position(2)).unwrap();
+    let got = nearest(engine.as_ref(), &t, "e", &query, 1).unwrap();
     assert_eq!(
-        marks(&url, &schema).0,
-        Some(2),
-        "the fold keeps the mark at its position"
-    );
-    // Three unit vectors now point at the query: `k0007`'s, `near`'s and
-    // the decoy's; the index offers all three, and the one cosine ranks the
-    // two true ones first, their tie by key.
-    let got = nearest(engine.as_ref(), &t, "e", &query, 3).unwrap();
-    let keys: Vec<&str> = got.iter().map(|(k, _)| k.as_str()).collect();
-    assert_eq!(
-        keys,
-        ["k0007", "near", DECOY],
-        "a vector put after the build is found through the index, and the candidates rank by \
-         the one cosine, ties by key"
+        got.first().map(|(k, _)| k.as_str()),
+        Some("near"),
+        "a vector put after the build is streamed from the graph"
     );
     drop(engine);
     common::drop_schema(&url, &schema);
 }
 
+/// A hold makes B stale: its readers are ranked exactly until a new
+/// generation, copied from the head, is swapped in. That generation is
+/// a new table that never held the record; A, built at the type's first
+/// hold, holds it, and the old table is gone.
 #[test]
-fn a_stale_index_is_not_read_and_a_writers_open_rebuilds_it() {
+fn a_hold_swaps_in_a_b_that_never_held_the_record() {
+    let Some(url) = common::url_or_skip("the pg vector-index test") else {
+        return;
+    };
+    if !pgvector(&url) {
+        return;
+    }
+    let schema = common::fresh_schema();
+    let engine = PgOpener
+        .open(&common::location(&url, "vindex", &schema), OpenMode::Create)
+        .unwrap();
+    fill(engine.as_ref());
+    let before = built(&url, &schema);
+    let query = vector(7);
+    hold(engine.as_ref(), 7, 2);
+    let after = built(&url, &schema);
+    let b = after.iter().find(|(_, c, _)| c == "b").unwrap();
+    assert!(
+        after.iter().any(|(_, c, _)| c == "a") && b.2 > before[0].2,
+        "the first hold builds A, and B again: {after:?}"
+    );
+    assert!(
+        !tables(&url, &schema).contains(&table("e", "b", before[0].2)),
+        "the generation of B that held the record is dropped"
+    );
+    let missing = |class: &str| {
+        !graph_keys(&url, &schema, "e", class)
+            .iter()
+            .any(|k| k == "k0007")
+    };
+    assert!(
+        missing("b") && !missing("a"),
+        "B's new generation never held the held record; A holds it"
+    );
+    assert_eq!(
+        read(engine.as_ref(), &query, 10, false),
+        exact_but(&query, 10, &[7]),
+        "a reader without `restricted` reads B, and finds the held record nowhere"
+    );
+    assert_eq!(
+        read(engine.as_ref(), &query, 10, true),
+        exact(&query, 10),
+        "a reader holding `restricted` reads A, and finds it"
+    );
+    drop(engine);
+    common::drop_schema(&url, &schema);
+}
+
+/// A vector cleared since B's copy leaves no row in force, yet B's graph
+/// took its shape from it: the record's hold builds B again all the same.
+#[test]
+fn a_hold_of_a_record_whose_vector_went_builds_b_again() {
+    let Some(url) = common::url_or_skip("the pg vector-index test") else {
+        return;
+    };
+    if !pgvector(&url) {
+        return;
+    }
+    let schema = common::fresh_schema();
+    let engine = PgOpener
+        .open(&common::location(&url, "vindex", &schema), OpenMode::Create)
+        .unwrap();
+    fill(engine.as_ref());
+    let p = engine.projection();
+    p.begin().unwrap();
+    let r = record(7);
+    engine
+        .vectors()
+        .unwrap()
+        .remove(&r.ty, &r.key, "e")
+        .unwrap();
+    p.commit(Position(2)).unwrap();
+    let before = built(&url, &schema);
+    hold(engine.as_ref(), 7, 3);
+    let after = built(&url, &schema);
+    let b = |rows: &[(String, String, i64)]| rows.iter().find(|(_, c, _)| c == "b").unwrap().2;
+    assert!(
+        b(&after) > b(&before),
+        "B is built again: {before:?}, {after:?}"
+    );
+    drop(engine);
+    common::drop_schema(&url, &schema);
+}
+
+/// What a writer that went away mid-build leaves, a claimed generation
+/// and its half-built table, and any table no row names, the next
+/// writer's open drops; the generation read stays.
+#[test]
+fn a_half_built_graph_is_dropped_at_a_writers_open() {
     let Some(url) = common::url_or_skip("the pg vector-index test") else {
         return;
     };
@@ -291,46 +457,136 @@ fn a_stale_index_is_not_read_and_a_writers_open_rebuilds_it() {
     let schema = common::fresh_schema();
     let location = common::location(&url, "vindex", &schema);
     fill(PgOpener.open(&location, OpenMode::Create).unwrap().as_ref());
-    // What a writer without the index leaves: vectors without their unit
-    // vector, and the mark behind the fold.
-    exec(
+    let graphs = built(&url, &schema);
+    let (half, stray) = (table("e", "b", 99), "vgraph_0000000000000000");
+    batch(
         &url,
-        format!("UPDATE \"{schema}\".vectors SET unit = NULL WHERE key < 'k0300'"),
-    );
-    exec(
-        &url,
-        format!("UPDATE \"{schema}\".meta SET n = 0 WHERE k = 'vindex.t.e'"),
-    );
-    let query = vector(7);
-    let t = TypeName::from("t");
-    decoy(&url, &schema, &query);
-    let reader = PgOpener.open(&location, OpenMode::Read).unwrap();
-    assert_eq!(
-        nearest(reader.as_ref(), &t, "e", &query, 10).unwrap(),
-        exact(&query, 10),
-        "a stale index is not read: the search scans, exactly"
+        format!(
+            "UPDATE \"{schema}\".graphs SET next = 99; \
+             CREATE TABLE \"{schema}\".{half} (key text); \
+             CREATE TABLE \"{schema}\".{stray} (key text)"
+        ),
     );
     let writer = PgOpener.open(&location, OpenMode::Write).unwrap();
-    let row = exec(
-        &url,
-        format!("SELECT count(*) FROM \"{schema}\".vectors WHERE field = 'e' AND unit IS NULL"),
-    );
     assert_eq!(
-        (marks(&url, &schema).0, row[0].get::<_, i64>(0)),
-        (Some(1), 0),
-        "a writer's open fills every unit vector again and marks the index kept through the fold"
+        (rows(&url, &schema), tables(&url, &schema)),
+        (
+            vec![("e".into(), "b".into(), Some(graphs[0].2), None, None)],
+            vec![table("e", "b", graphs[0].2)]
+        ),
+        "the writer's open gives up the claim and drops both tables; B's generation stays"
     );
-    decoy(&url, &schema, &query);
-    assert!(
-        through_index(&nearest(reader.as_ref(), &t, "e", &query, 10).unwrap()),
-        "once rebuilt, the index is read again"
+    let query = vector(7);
+    assert_eq!(
+        nearest(writer.as_ref(), &TypeName::from("t"), "e", &query, 10).unwrap(),
+        exact(&query, 10),
+        "and is read"
     );
-    drop((reader, writer));
+    drop(writer);
     common::drop_schema(&url, &schema);
 }
 
+/// A hold folded while B's next generation is copied may have reached
+/// the copy: the swap refuses that generation and the build starts
+/// again, from a copy after the hold. The test stalls the copy at its
+/// table's creation, with an event trigger, which takes a superuser.
 #[test]
-fn retiring_the_setting_drops_the_index_and_its_mark() {
+fn a_hold_during_the_copy_starts_the_build_again() {
+    let Some(url) = common::url_or_skip("the pg vector-index test") else {
+        return;
+    };
+    let superuser = exec(
+        &url,
+        "SELECT rolsuper FROM pg_roles WHERE rolname = current_user".into(),
+    );
+    if !pgvector(&url) || !superuser[0].get::<_, bool>(0) {
+        return;
+    }
+    let schema = common::fresh_schema();
+    let engine = PgOpener
+        .open(&common::location(&url, "vindex", &schema), OpenMode::Create)
+        .unwrap();
+    fill(engine.as_ref());
+    built(&url, &schema);
+    let s = format!("\"{schema}\"");
+    let key = format!("hashtext('{schema}')");
+    batch(
+        &url,
+        format!(
+            "CREATE SEQUENCE {s}.stalled; \
+             CREATE FUNCTION {s}.stall() RETURNS event_trigger LANGUAGE plpgsql AS $f$ BEGIN \
+             IF EXISTS (SELECT 1 FROM pg_event_trigger_ddl_commands() c \
+                 WHERE c.schema_name = '{schema}' AND c.object_identity LIKE '%vgraph%') \
+               AND EXISTS (SELECT 1 FROM {s}.graphs WHERE class = 'b' AND next IS NOT NULL) THEN \
+               PERFORM nextval('{s}.stalled'); PERFORM pg_advisory_xact_lock_shared({key}); \
+             END IF; END $f$; \
+             CREATE EVENT TRIGGER \"stall_{schema}\" ON ddl_command_end \
+             WHEN TAG IN ('CREATE TABLE') EXECUTE FUNCTION {s}.stall()"
+        ),
+    );
+    let (locked, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+    let holder = {
+        let (url, key, locked) = (url.clone(), key.clone(), locked.0);
+        let release = release.1;
+        std::thread::spawn(move || {
+            let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+            client
+                .batch_execute(&format!("SELECT pg_advisory_lock({key})"))
+                .unwrap();
+            locked.send(()).unwrap();
+            release.recv().unwrap();
+        })
+    };
+    locked.1.recv().unwrap();
+    let stalled = || -> i64 {
+        exec(
+            &url,
+            format!("SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM {s}.stalled"),
+        )[0]
+        .get(0)
+    };
+    hold(engine.as_ref(), 7, 2);
+    let asked = Instant::now();
+    while stalled() == 0 {
+        assert!(asked.elapsed() < Duration::from_secs(60), "B's copy starts");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let first = rows(&url, &schema)
+        .into_iter()
+        .find(|r| r.1 == "b")
+        .and_then(|r| r.4)
+        .unwrap();
+    hold(engine.as_ref(), 8, 3);
+    release.0.send(()).unwrap();
+    holder.join().unwrap();
+    let graphs = built(&url, &schema);
+    exec(&url, format!("DROP EVENT TRIGGER \"stall_{schema}\""));
+    let b = graphs.iter().find(|(_, c, _)| c == "b").unwrap().2;
+    assert!(
+        stalled() == 2 && b > first,
+        "the swap refuses the copy the hold overtook and the build starts again: \
+         {} copies, generation {b} after {first}",
+        stalled()
+    );
+    assert!(
+        !graph_keys(&url, &schema, "e", "b")
+            .iter()
+            .any(|k| k == "k0007" || k == "k0008"),
+        "the generation swapped in never held either record"
+    );
+    let query = vector(8);
+    assert_eq!(
+        read(engine.as_ref(), &query, 10, false),
+        exact_but(&query, 10, &[7, 8]),
+        "B's reader finds neither"
+    );
+    drop(engine);
+    common::drop_schema(&url, &schema);
+}
+
+/// Retiring the setting drops every row, and the builder every table.
+#[test]
+fn retiring_the_setting_drops_every_graph() {
     let Some(url) = common::url_or_skip("the pg vector-index test") else {
         return;
     };
@@ -346,14 +602,10 @@ fn retiring_the_setting_drops_the_index_and_its_mark() {
     p.begin().unwrap();
     p.put_record(&setting(json!(["e", "f"]), 2)).unwrap();
     p.commit(Position(2)).unwrap();
-    let two = exec(
-        &url,
-        format!("SELECT count(*) FROM \"{schema}\".meta WHERE k LIKE 'vindex.%' AND n = 2"),
-    );
     assert_eq!(
-        (two[0].get::<_, i64>(0), marks(&url, &schema).1),
-        (2, 2),
-        "the setting naming `e` and `f` builds and marks both"
+        built(&url, &schema).len(),
+        2,
+        "the setting naming `e` and `f` builds B of both"
     );
     p.begin().unwrap();
     p.put_record(&StoredRecord {
@@ -362,14 +614,10 @@ fn retiring_the_setting_drops_the_index_and_its_mark() {
     })
     .unwrap();
     p.commit(Position(3)).unwrap();
-    let units = exec(
-        &url,
-        format!("SELECT count(*) FROM \"{schema}\".vectors WHERE unit IS NOT NULL"),
-    );
     assert_eq!(
-        (marks(&url, &schema), units[0].get::<_, i64>(0)),
-        ((None, 0), 0),
-        "the setting retired drops every index, mark and unit vector"
+        built(&url, &schema),
+        Vec::new(),
+        "the setting retired drops every row and table"
     );
     let query = vector(7);
     assert_eq!(
@@ -381,120 +629,12 @@ fn retiring_the_setting_drops_the_index_and_its_mark() {
     common::drop_schema(&url, &schema);
 }
 
-/// How many locks any session holds on `vectors` that keep another
-/// session's read or write out: an index built or dropped inside an open
-/// transaction holds one until its commit.
-fn held(url: &str, schema: &str) -> i64 {
-    let row = exec(
-        url,
-        format!(
-            "SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation \
-             JOIN pg_namespace n ON n.oid = c.relnamespace \
-             WHERE n.nspname = '{schema}' AND c.relname = 'vectors' \
-             AND l.mode NOT IN ('AccessShareLock', 'RowShareLock', 'RowExclusiveLock')"
-        ),
-    );
-    row[0].get(0)
-}
-
-/// A transaction's puts are written a page at a time, so a setting may be
-/// written long before its commit. Its page builds nothing: the commit
-/// builds the index, once, after the last page. Until then no build's or
-/// drop's lock is held on `vectors`, and a search from the reader goes on
-/// reading the index the last commit left; after it every vector, put
-/// before the setting or after, holds its unit vector.
+/// A pull deeper than pgvector's default `hnsw.max_scan_tuples` of
+/// 20 000 is streamed whole: a search lifts the bound. That takes a
+/// field larger than any row of the suite holds on every engine, so it
+/// is held here, on vectors alone.
 #[test]
-fn a_setting_written_a_page_before_its_commit_builds_the_index_at_the_commit() {
-    let Some(url) = common::url_or_skip("the pg vector-index test") else {
-        return;
-    };
-    if !pgvector(&url) {
-        return;
-    }
-    let schema = common::fresh_schema();
-    let engine = PgOpener
-        .open(&common::location(&url, "vindex", &schema), OpenMode::Create)
-        .unwrap();
-    let (p, index) = (engine.projection(), engine.vectors().unwrap());
-    let put = |i: u64| {
-        let r = record(i);
-        p.put_record(&r).unwrap();
-        index.put(&r.ty, &r.key, "e", &vector(i)).unwrap();
-    };
-    // More than a page of other puts: a setting put before them is written
-    // with its page here.
-    let others = |at: u64| {
-        for i in 0..1_100 {
-            let other = StoredRecord {
-                ty: TypeName::from("u"),
-                position: Position(at),
-                ..record(i)
-            };
-            p.put_record(&other).unwrap();
-        }
-    };
-    p.begin().unwrap();
-    p.put_declaration(&declaration(), 1, None, Position(0))
-        .unwrap();
-    (0..RECORDS / 2).for_each(put);
-    p.put_record(&setting(json!(["e"]), 1)).unwrap();
-    others(1);
-    (RECORDS / 2..RECORDS).for_each(put);
-    assert_eq!(
-        held(&url, &schema),
-        0,
-        "the setting's page is written and the transaction open: no index is built yet, so \
-         nothing holds `vectors` against another session"
-    );
-    p.commit(Position(1)).unwrap();
-    let unfilled = exec(
-        &url,
-        format!("SELECT count(*) FROM \"{schema}\".vectors WHERE field = 'e' AND unit IS NULL"),
-    );
-    assert_eq!(
-        (marks(&url, &schema), unfilled[0].get::<_, i64>(0)),
-        ((Some(1), 1), 0),
-        "the commit builds and marks `e`'s index, and every vector, put before the setting \
-         or after, holds its unit vector"
-    );
-    let (query, t) = (vector(7), TypeName::from("t"));
-    decoy(&url, &schema, &query);
-    assert!(
-        through_index(&nearest(engine.as_ref(), &t, "e", &query, 10).unwrap()),
-        "a search of `e` reads the index the commit built"
-    );
-    // The setting written again, over an index that is there: its page drops
-    // nothing, and a search goes on reading the index until the commit.
-    p.begin().unwrap();
-    p.put_record(&setting(json!(["e", "f"]), 2)).unwrap();
-    others(2);
-    assert_eq!(
-        (held(&url, &schema), marks(&url, &schema)),
-        (0, (Some(1), 1)),
-        "the setting's page is written and the transaction open: `e`'s index is not dropped \
-         and `f`'s not built before the commit"
-    );
-    assert!(
-        through_index(&nearest(engine.as_ref(), &t, "e", &query, 10).unwrap()),
-        "while the transaction is open a search of `e` reads the index the last commit left"
-    );
-    p.commit(Position(2)).unwrap();
-    assert_eq!(
-        marks(&url, &schema),
-        (Some(2), 2),
-        "the commit builds the indexes the setting asks for, `e`'s again and `f`'s"
-    );
-    drop(engine);
-    common::drop_schema(&url, &schema);
-}
-
-/// A pull the index hands back short is answered by the scan (043). Past
-/// `hnsw.max_scan_tuples`, which a search sets to 20 000, an iterative
-/// scan ends although the field holds more. That takes a field larger
-/// than any row of the suite holds on every engine, so it is held here,
-/// on vectors alone.
-#[test]
-fn a_pull_past_what_the_index_hands_out_is_answered_by_the_scan() {
+fn a_pull_past_the_default_scan_bound_is_streamed_whole() {
     const FIELD: u32 = 25_000;
     let Some(url) = common::url_or_skip("the pg vector-index test") else {
         return;
@@ -527,7 +667,7 @@ fn a_pull_past_what_the_index_hands_out_is_answered_by_the_scan() {
     }
     p.put_record(&setting(json!(["e"]), 1)).unwrap();
     p.commit(Position(1)).unwrap();
-    assert_eq!(marks(&url, &schema), (Some(1), 1), "`e` is indexed");
+    assert_eq!(built(&url, &schema).len(), 1, "`e` is indexed");
     let (query, k) = (at(0), FIELD - 1_000);
     let got = nearest(engine.as_ref(), &t, "e", &query, k).unwrap();
     let mut want: Vec<(RecordKey, f64)> = (0..FIELD)
@@ -536,8 +676,7 @@ fn a_pull_past_what_the_index_hands_out_is_answered_by_the_scan() {
     engines::rank(&mut want, k);
     assert!(
         got == want,
-        "the nearest {k} of {FIELD} vectors are the exact ranking's where the index hands out \
-         fewer; {} came",
+        "the nearest {k} of {FIELD} vectors are the exact ranking's; {} came",
         got.len()
     );
     drop(engine);
@@ -545,7 +684,7 @@ fn a_pull_past_what_the_index_hands_out_is_answered_by_the_scan() {
 }
 
 /// The scan that answers for an indexed field leaves out a vector of
-/// zeros, as the index does (043): else a hit would show that the field
+/// zeros, as the graph does: else a hit would show that the field
 /// is smaller than the pull, to a reader shown only part of it. Twin
 /// fields hold the same forty vectors and one of zeros; the second holds
 /// three hundred more, farther away, so its index fills the pull and the
@@ -600,7 +739,7 @@ fn the_scan_that_answers_for_an_index_holds_no_vector_of_zeros() {
         }
         p.put_record(&setting(json!(["e"]), 1)).unwrap();
         p.commit(Position(1)).unwrap();
-        assert_eq!(marks(&url, &schema), (Some(1), 1), "`e` is indexed");
+        assert_eq!(built(&url, &schema).len(), 1, "`e` is indexed");
         let shared = |field: &str| -> Vec<(RecordKey, f64)> {
             let got = nearest(engine.as_ref(), &t, field, &query, k).unwrap();
             got.into_iter()

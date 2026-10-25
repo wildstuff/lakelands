@@ -20,15 +20,15 @@
 //! of milliseconds instead of one or two. So the writer counts the records
 //! it puts, and the order index rows a `sort_index.<type>` setting's write
 //! rebuilds, a type's at once; once [`ANALYZE_AFTER`] have gone in since
-//! its last analysis, it runs `ANALYZE` over `records` and the head
-//! indexes after the commit has answered, outside the fold's transaction.
-//! A rebuild is a refold after `clear`, which starts the count again, so
-//! it is analysed as a fresh load is: after its first `ANALYZE_AFTER`
-//! records, and a lake smaller than that is left to PostgreSQL's own.
-//! Analysis changes no answer, only a plan; a failed one leaves the commit
-//! as it is.
+//! its last analysis, it runs `ANALYZE` over `records`, the head indexes
+//! and the vectors after the commit has answered, outside the fold's
+//! transaction. A rebuild is a refold after `clear`, which starts the
+//! count again, so it is analysed as a fresh load is: after its first
+//! `ANALYZE_AFTER` records, and a lake smaller than that is left to
+//! PostgreSQL's own. Analysis changes no answer, only a plan; a failed
+//! one leaves the commit as it is.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -39,7 +39,6 @@ use lakelands_api::engine::{
 use lakelands_api::error::{Act, Case, Error, Part, Result, Situation};
 use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
-use lakelands_api::query::cosine;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
 use lakelands_core::engines;
@@ -48,7 +47,7 @@ use lakelands_core::engines::pool::{Pool, Taken};
 use crate::connect::{self, Db, Target};
 use crate::projection::{self, Buffer, HeadTypes, Names, PROJECTION_TABLES, RETIRED_TABLES};
 use crate::scratch;
-use crate::vector_index::{self, Pgvector};
+use crate::vector_index::{self, Builder, Pgvector, Touched};
 use crate::view::PgView;
 use crate::{NAME, REBUILD_RATE, lease, lock, log};
 
@@ -64,8 +63,12 @@ struct Transaction {
     /// declaration: the commit indexes their older records under it.
     redeclared: BTreeMap<TypeName, Position>,
     /// The types whose `vector_index.<type>` setting a page wrote, each with
-    /// the setting's position: the commit builds their indexes, once.
+    /// the setting's position, and the types declared in it: the commit
+    /// builds their graphs again, once.
     asked: BTreeMap<TypeName, Position>,
+    declared: BTreeSet<TypeName>,
+    /// The records its pages wrote, erased or indexed, for the graphs.
+    touched: Touched,
     /// The declarations and the `lookup_index.<type>` settings it put: the
     /// commit decides the exact-text index's fields again for what they move.
     relook: engines::Relook,
@@ -106,6 +109,12 @@ pub struct PgLake {
     /// pgvector, when the server has it: the vector index a lake asks for
     /// lives there (`crate::vector_index`).
     pgvector: Option<Pgvector>,
+    /// The writer's builder of the graphs (`crate::vector_index`).
+    builder: Option<Builder>,
+    /// The position through which a fold may have put an entry in a graph
+    /// and not committed: until a commit reaches it, a hold marks B stale
+    /// whatever the record's states (`vector_index::follow`).
+    suspect: Mutex<Option<Position>>,
     /// On a handle onto the scratch, its schema, unquoted (`scratch.rs`);
     /// the lease connection holds the builder's lock.
     scratch: Option<String>,
@@ -145,15 +154,9 @@ impl PgLake {
                 projection::catch_up_sorted(&mut projection, &names)?;
                 scratch::sweep(&mut projection, &target, &names, &lake)?;
                 let found = vector_index::find(&mut projection, true);
-                if let Ok(v) = &found {
-                    vector_index::prepare(&mut projection, &names, v)?;
-                }
-                vector_index::catch_up(
-                    &mut projection,
-                    &names,
-                    found.as_ref().map_err(String::as_str),
-                    lake.as_str(),
-                )?;
+                let why = found.as_ref().map_err(String::as_str);
+                vector_index::opened(&mut projection, &names, why, lake.as_str())?;
+                vector_index::sweep(&mut projection, &names, true)?;
                 let writing = Writing {
                     lease: Mutex::new(lease),
                     projection: Mutex::new(projection),
@@ -179,6 +182,26 @@ impl PgLake {
         read_on(&readers, &turns, &target, |db| {
             check_name(db, &names, &target.schema, &lake)
         })?;
+        let (builder, suspect) = match &writing {
+            Some(w) => {
+                let mut db = lock(&w.projection);
+                let tip = log::tip(&mut db, &names)?.map(|(p, _)| p);
+                let builder = match &pgvector {
+                    Some(v) => {
+                        let waiting = vector_index::waiting(&mut db, &names)?;
+                        Some(Builder::start(
+                            target.clone(),
+                            names.clone(),
+                            v.clone(),
+                            waiting,
+                        ))
+                    }
+                    None => None,
+                };
+                (builder, tip)
+            }
+            None => (None, None),
+        };
         Ok(PgLake {
             lake,
             target,
@@ -190,6 +213,8 @@ impl PgLake {
             transaction: Mutex::new(None),
             heads: Mutex::new(None),
             pgvector,
+            builder,
+            suspect: Mutex::new(suspect),
             scratch: None,
         })
     }
@@ -243,15 +268,9 @@ impl PgLake {
         })?;
         projection::catch_up_sorted(&mut projection, &names)?;
         let found = vector_index::find(&mut projection, true);
-        if let Ok(v) = &found {
-            vector_index::prepare(&mut projection, &names, v)?;
-        }
-        vector_index::catch_up(
-            &mut projection,
-            &names,
-            found.as_ref().map_err(String::as_str),
-            lake.as_str(),
-        )?;
+        let why = found.as_ref().map_err(String::as_str);
+        vector_index::opened(&mut projection, &names, why, lake.as_str())?;
+        let tip = log::tip(&mut projection, &names)?.map(|(p, _)| p);
         Ok(PgLake {
             lake,
             target,
@@ -268,6 +287,8 @@ impl PgLake {
             transaction: Mutex::new(None),
             heads: Mutex::new(None),
             pgvector: found.ok(),
+            builder: None,
+            suspect: Mutex::new(tip),
             scratch: Some(bare),
         })
     }
@@ -298,6 +319,7 @@ impl PgLake {
         *lock(&self.transaction) = None;
         let mut db = self.projecting(writing)?;
         let _ = db.batch("ROLLBACK");
+        let _held = self.builder.as_ref().map(|b| b.hold(&mut db));
         let bare = self.target.scratch_schema();
         let names = Names::beside(Target::quote(&bare), &self.names);
         let lake = self.lake.to_string();
@@ -412,8 +434,8 @@ impl PgLake {
             return Ok(());
         }
         let (page, mut db) = (std::mem::take(&mut t.buffer), self.projecting(writing)?);
-        let v = self.pgvector.as_ref();
-        t.put += page.write(&mut db, &self.names, &mut t.types, &mut t.asked, v)?;
+        let (types, asked, touched) = (&mut t.types, &mut t.asked, &mut t.touched);
+        t.put += page.write(&mut db, &self.names, types, asked, touched)?;
         Ok(())
     }
 
@@ -429,16 +451,55 @@ impl PgLake {
     ) -> Result<()> {
         let writing = self.writing()?;
         let at = (ty.as_str(), key.as_str(), field);
-        if let Some(t) = lock(&self.transaction).as_mut()
-            && t.buffer.index(at, vector)
-        {
+        let put = |db: &mut Db| match vector {
+            Some(vector) => vector_index::put(db, &self.names, at, vector),
+            None => vector_index::remove(db, &self.names, at),
+        };
+        let mut transaction = lock(&self.transaction);
+        if let Some(t) = transaction.as_mut() {
+            if !t.buffer.index(at, vector) {
+                put(&mut *self.projecting(writing)?)?;
+                let keys = t.touched.keys.entry(ty.clone()).or_default();
+                keys.insert(key.to_string());
+            }
             return Ok(());
         }
-        let (mut db, v) = (self.projecting(writing)?, self.pgvector.as_ref());
-        match vector {
-            Some(vector) => vector_index::put(&mut db, &self.names, v, at, vector),
-            None => vector_index::remove(&mut db, &self.names, v, at),
+        // Outside the fold's transaction the graphs follow at once.
+        let mut db = self.projecting(writing)?;
+        let mut touched = Touched::default();
+        touched
+            .keys
+            .entry(ty.clone())
+            .or_default()
+            .insert(key.to_string());
+        let left = db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
+            vector_index::lock_fold(db, &self.names)?;
+            put(db)?;
+            let Some(folded) = projection::folded(db, &self.names)? else {
+                return Ok(false);
+            };
+            let (v, at) = (self.pgvector.as_ref(), (folded, Some(folded)));
+            vector_index::follow(db, &self.names, v, at, &touched, &BTreeSet::new(), false)
+        })?;
+        if left {
+            self.wake();
         }
+        Ok(())
+    }
+
+    /// Ask the builder to look at the graphs' rows, once a write left it a
+    /// graph to build or a table to drop.
+    fn wake(&self) {
+        if let Some(b) = &self.builder {
+            b.wake();
+        }
+    }
+
+    /// A fold through `latest` was given up, having perhaps put entries
+    /// in a graph (`suspect`).
+    fn given_up(&self, latest: Option<Position>) {
+        let mut suspect = lock(&self.suspect);
+        *suspect = (*suspect).max(latest);
     }
 }
 
@@ -549,6 +610,7 @@ fn shape(db: &mut Db, schema: &str, beside: bool) -> Result<Shape> {
     let foreign: Vec<&String> = tables
         .iter()
         .filter(|t| !beside && !projection::LAKE_TABLES.contains(&t.as_str()))
+        .filter(|t| !t.starts_with("vgraph_"))
         .filter(|t| !RETIRED_TABLES.contains(&t.as_str()))
         .collect();
     if !tables.iter().any(|t| t == "meta") || !foreign.is_empty() {
@@ -624,6 +686,11 @@ impl Drop for PgLake {
     /// A handle that is dropped gives up the lease it holds, as a session
     /// that ends does.
     fn drop(&mut self) {
+        if let (Some(builder), Some(writing)) = (&self.builder, &self.writing) {
+            let mut db = lock(&writing.projection);
+            let _ = db.batch("ROLLBACK");
+            builder.stop(&mut db);
+        }
         let held = lock(&self.held).clone();
         if let Some(lease) = held {
             let _ = self.release_lease(&lease);
@@ -778,6 +845,11 @@ impl LakeEngine for PgLake {
         *lock(&self.transaction) = None;
         let mut db = self.projecting(writing)?;
         let _ = db.batch("ROLLBACK");
+        // A scratch is marked with its graphs built.
+        if let Some(v) = &self.pgvector {
+            let built = vector_index::build_scratch(&mut db, &self.names, v);
+            self.lost(&db, None, built, None)?;
+        }
         let meta = self.names.t("meta");
         let marked = db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
             let folded = db.query_opt(&format!("SELECT n FROM {meta} WHERE k = 'folded'"), &[])?;
@@ -815,8 +887,10 @@ impl LakeEngine for PgLake {
 impl PgLake {
     /// [`LakeEngine::ranked`] on the reader `db`.
     fn ranked_on(&self, db: &mut Db, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked> {
+        let vectors = !asked.vectors.is_empty();
         let read = |t: &&&str| match **t {
-            "vectors" => !asked.vectors.is_empty(),
+            "vectors" | "graphs" => vectors,
+            "records" | "records_head" if vectors && asked.seen.is_some() => true,
             "declarations" | "declarations_head" | "records" | "records_head" | "full_text" => {
                 asked.text.is_some()
             }
@@ -847,10 +921,24 @@ impl PgLake {
                     db, names, ty, text, fields, weights, k,
                 )?);
             }
+            let decl = match &asked.seen {
+                Some(_) if vectors => projection::head_type(db, &self.names, ty)?.decl,
+                _ => None,
+            };
+            let seen = asked.seen.as_ref().map(|s| (s, decl.as_ref()));
+            let (names, v) = (&self.names, self.pgvector.as_ref());
             for (field, query) in &asked.vectors {
-                lists.push(self.nearest(db, ty, field, query, k)?);
+                let at = (ty, field.as_str());
+                let exact = asked.exact;
+                lists.push(vector_index::nearest(
+                    db, names, v, at, query, k, seen, exact,
+                )?);
             }
-            Ok(Ranked { position, lists })
+            Ok(Ranked {
+                position,
+                lists,
+                judged: asked.seen.is_some(),
+            })
         });
         db.end(ranked)
     }
@@ -866,7 +954,8 @@ impl ProjectionStore for PgLake {
         let writing = self.writing()?;
         let mut transaction = lock(&self.transaction);
         let mut db = self.projecting(writing)?;
-        if transaction.take().is_some() {
+        if let Some(t) = transaction.take() {
+            self.given_up(t.latest);
             db.batch("ROLLBACK")?;
         }
         let begun =
@@ -888,8 +977,11 @@ impl ProjectionStore for PgLake {
         let folded = projection::folded(&mut db, &self.names).or_else(|e| db.end(Err(e)));
         let folded = self.lost(&db, None, folded, None)?;
         if let Some(refused) = engines::commit_refusal(folded, t.latest, through) {
+            self.given_up(t.latest);
             return db.end(Err(refused));
         }
+        let latest = t.latest.max(Some(through));
+        let suspect = lock(&self.suspect).is_some_and(|s| folded.is_none_or(|f| f < s));
         let held = |(at, _): &(Position, _)| Some(*at) == folded;
         let mut heads = lock(&self.heads)
             .take()
@@ -900,20 +992,18 @@ impl ProjectionStore for PgLake {
             buffer,
             redeclared,
             mut asked,
+            declared,
+            mut touched,
             put,
             relook,
             ..
         } = t;
-        // The last page, then the records a declaration left to index and
-        // the vector indexes a setting asked for.
+        // The last page, then the records a declaration left to index, the
+        // graphs a setting or a declaration asks for, and the graphs'
+        // entries of what it touched.
+        let mut left = false;
         let written = buffer
-            .write(
-                &mut db,
-                &self.names,
-                &mut types,
-                &mut asked,
-                self.pgvector.as_ref(),
-            )
+            .write(&mut db, &self.names, &mut types, &mut asked, &mut touched)
             .and_then(|rebuilt| {
                 if relook.any() {
                     let read = || projection::head_declarations(&mut db, &self.names);
@@ -925,15 +1015,36 @@ impl ProjectionStore for PgLake {
                     projection::index_older(&mut db, &self.names, &mut types, ty, *at)
                 };
                 redeclared.iter().try_for_each(older)?;
-                let v = self.pgvector.as_ref();
-                asked.iter().try_for_each(|(ty, at)| {
-                    vector_index::rebuild(&mut db, &self.names, v, ty, *at)
-                })?;
+                let (v, build) = (self.pgvector.as_ref(), self.scratch.is_none());
+                if v.is_some() {
+                    // A build's swap waits for this commit, or this for it.
+                    vector_index::lock_fold(&mut db, &self.names)?;
+                }
+                let again: BTreeSet<TypeName> = asked.into_keys().chain(declared).collect();
+                for ty in &again {
+                    vector_index::rebuild(&mut db, &self.names, v, ty, through, build)?;
+                }
+                let at = (through, folded);
+                left =
+                    vector_index::follow(&mut db, &self.names, v, at, &touched, &again, suspect)?
+                        || (v.is_some() && !again.is_empty());
                 projection::set_folded(&mut db, &self.names, through)?;
                 Ok(put + rebuilt)
             });
         let ended = db.end(written);
+        if ended.is_err() {
+            self.given_up(latest);
+        }
         let put = self.lost(&db, None, ended, None)?;
+        {
+            let mut suspect = lock(&self.suspect);
+            if suspect.is_some_and(|s| s <= through) {
+                *suspect = None;
+            }
+        }
+        if left {
+            self.wake();
+        }
         *lock(&self.heads) = heads.map(|heads| (through, heads));
         // Once enough records went in since the last analysis, or order
         // index rows a setting rebuilt, the planner learns of them, after
@@ -946,7 +1057,9 @@ impl ProjectionStore for PgLake {
     }
 
     fn rollback(&self) {
-        *lock(&self.transaction) = None;
+        if let Some(t) = lock(&self.transaction).take() {
+            self.given_up(t.latest);
+        }
         if let Some(writing) = self.writing.as_ref() {
             let _ = lock(&writing.projection).batch("ROLLBACK");
         }
@@ -979,9 +1092,9 @@ impl ProjectionStore for PgLake {
             t.redeclared.insert(ty, at);
         }
         // A redeclaration may change a field's dimensions or drop it: the
-        // type's vector indexes are built again under it.
+        // type's graphs are built again under it at the commit.
         if let Declaration::Type(ty) = declaration {
-            vector_index::redeclared(&mut db, &self.names, self.pgvector.as_ref(), &ty.name, at)?;
+            t.declared.insert(ty.name.clone());
         }
         Ok(())
     }
@@ -1043,17 +1156,15 @@ impl ProjectionStore for PgLake {
         writing.unanalysed.store(0, Ordering::Relaxed);
         let mut db = self.projecting(writing)?;
         let _ = db.batch("ROLLBACK");
+        let _held = self.builder.as_ref().map(|b| b.hold(&mut db));
         let dropped: String = PROJECTION_TABLES
             .iter()
             .chain(RETIRED_TABLES)
             .map(|t| format!("DROP TABLE IF EXISTS {} CASCADE;", self.names.t(t)))
             .collect();
-        let vectors = match &self.pgvector {
-            Some(v) => vector_index::prepare_sql(&self.names, v),
-            None => String::new(),
-        };
+        let graphs = vector_index::tables_sql(&self.names, None);
         db.batch(&format!(
-            "BEGIN; {dropped} {schema} {vectors}; \
+            "BEGIN; {dropped} {graphs} {schema} \
              DELETE FROM {m} WHERE k = 'folded' OR k LIKE 'vindex.%' OR k LIKE 'chosen.%' \
              OR k = '{chosen}'; \
              INSERT INTO {m} (k, n) VALUES ('layout', {layout}) \
@@ -1086,7 +1197,8 @@ impl ProjectionStore for PgLake {
         // abandons it: `VACUUM` cannot run inside one.
         let _ = db.batch("ROLLBACK");
         let before = size(&mut db, &self.target.schema, &tables)?;
-        let listed: Vec<String> = tables.iter().map(|t| self.names.t(t)).collect();
+        let mut listed: Vec<String> = tables.iter().map(|t| self.names.t(t)).collect();
+        listed.extend(vector_index::readable(&mut db, &self.names)?);
         db.batch(&format!(
             "VACUUM (ANALYZE, PARALLEL 0) {}",
             listed.join(", ")
@@ -1129,99 +1241,6 @@ fn size(db: &mut Db, schema: &str, tables: &[&str]) -> Result<u64> {
         &[&schema, &tables],
     )?;
     Ok(row.get::<_, i64>(0) as u64)
-}
-
-impl PgLake {
-    /// The `k` vectors of one field nearest to `query`, read through `db`
-    /// in its open transaction and ranked by the one cosine every engine
-    /// uses (`lakelands_api::query::cosine`). The exact scan streams every
-    /// vector of the field from the server a row at a time and keeps only
-    /// the best `k` (`lakelands_core::engines::TopK`), so its cost grows
-    /// linearly with them and what it holds does not: the ceiling
-    /// `docs/seams.md` states, and its answers are those of every other
-    /// engine to the last bit, but for the vectors of zeros it leaves out
-    /// where it answers for an index. A field read through its index holds
-    /// the candidates of one pull, `k` and one more or a tie's deeper pull.
-    fn nearest(
-        &self,
-        db: &mut Db,
-        ty: &TypeName,
-        field: &str,
-        query: &[f32],
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>> {
-        let mut indexed = false;
-        // A field the lake asks an index for, whose index describes the
-        // head, answers the index's candidates, ranked by the one cosine
-        // (`crate::vector_index`); every other search scans. The index
-        // orders equal distances its own way, so a tie the `k`th
-        // candidate stands in is pulled before it is cut by key: one
-        // candidate more shows whether the boundary cuts one, and a cut
-        // one is pulled deeper, to the scan past the ceiling. An index
-        // that hands out fewer than it was asked for has not thereby
-        // shown the field's end, so the scan answers then too. The
-        // index's settings end with its statement: the transaction
-        // reads other lists.
-        if let (Some(v), Some(unit)) = (&self.pgvector, vector_index::unit_text(query))
-            && let Some(n) = vector_index::usable(db, &self.names, ty, field)?
-            && n as usize == query.len()
-        {
-            indexed = true;
-            let sql = vector_index::candidates_sql(&self.names, v, ty, field, n);
-            let first = k.saturating_add(1);
-            let mut pull = Some(first);
-            while let Some(depth) = pull {
-                let mut came = Vec::new();
-                db.batch(&vector_index::search_settings(depth))?;
-                db.query_each(&sql, &[&unit, &i64::from(depth)], |row| {
-                    let v = engines::Elements::new(row.get(1), row.get(2)).ranked();
-                    came.push((RecordKey::from(row.get::<_, String>(0)), cosine(query, &v)));
-                    Ok(())
-                })?;
-                db.batch("SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on")?;
-                if came.len() < depth as usize {
-                    break;
-                }
-                if !vector_index::cuts_a_tie(&came, k) {
-                    // Where no tie was cut the candidate more only showed
-                    // it, and the answer is the index's `k`.
-                    if depth == first {
-                        came.truncate(k as usize);
-                    }
-                    engines::rank(&mut came, k);
-                    return Ok(came);
-                }
-                pull = vector_index::deeper(depth);
-            }
-        }
-        // The exact scan checks every vector's dimensions; the index holds
-        // only vectors of the query's.
-        let mut top = lakelands_core::engines::TopK::new(k);
-        db.query_each(
-            &format!(
-                "SELECT key, single, data FROM {} WHERE ty = $1 AND field = $2 AND until IS NULL \
-                 ORDER BY key",
-                self.names.t("vectors")
-            ),
-            &[&ty.as_str(), &field],
-            |row| {
-                let key: String = row.get(0);
-                let v = engines::Elements::new(row.get(1), row.get(2)).ranked();
-                if v.len() != query.len() {
-                    return Err(engines::dimensions(query.len(), v.len(), ty, field));
-                }
-                // The index never hands out a vector of zeros, so the scan
-                // that answers for it leaves one out too: a hit must not
-                // show which of the two answered, and so how far the field
-                // goes (043).
-                if !indexed || vector_index::length(&v).is_some() {
-                    top.push(&RecordKey::from(key), cosine(query, &v));
-                }
-                Ok(())
-            },
-        )?;
-        Ok(top.into_ranked())
-    }
 }
 
 /// The vector index's write side and its size: the rows the records'
