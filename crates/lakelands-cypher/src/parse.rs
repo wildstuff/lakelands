@@ -553,6 +553,9 @@ impl<'p> Parser<'p> {
             loop {
                 let from = self.at();
                 let w = self.condition()?;
+                if let Some(a) = w.absent.first() {
+                    return Err(outside(Construct::Exists, a.at));
+                }
                 let text = self.text_from(from);
                 let desc = self.kw("DESC") || self.kw("DESCENDING");
                 if !desc && !self.kw("ASC") {
@@ -594,6 +597,9 @@ impl<'p> Parser<'p> {
         let from = self.at();
         let outer = std::mem::take(&mut self.aggregates);
         let w = self.condition()?;
+        if let Some(a) = w.absent.first() {
+            return Err(outside(Construct::Exists, a.at));
+        }
         let text = self.text_from(from);
         let aggregates = std::mem::replace(&mut self.aggregates, outer);
         let alias = if self.kw("AS") {
@@ -611,15 +617,23 @@ impl<'p> Parser<'p> {
     }
 
     /// The whole number `SKIP` or `LIMIT` takes, written or a parameter.
+    /// Digits past `u64` stand at its maximum, past any limit the store
+    /// takes.
     fn count(&mut self, clause: &str) -> Result<u64> {
         let n = match self.tok().clone() {
-            Tok::Num(n) => n.parse::<u64>().unwrap_or(u64::MAX),
+            Tok::Num(n) if n.bytes().all(|b| b.is_ascii_digit()) => {
+                n.parse::<u64>().unwrap_or(u64::MAX)
+            }
             Tok::Param(p) => {
                 let name = ParamName::from(p);
                 let value = self.param(&name)?;
                 value.as_u64().ok_or(Case::CypherParamValue { name })?
             }
-            _ => return Err(self.expected(clause)),
+            Tok::End => return Err(Case::ParseEndsEarly { offset: self.at() }),
+            _ => {
+                let (clause, offset) = (clause.to_owned(), self.at());
+                return Err(Case::CypherWhole { clause, offset });
+            }
         };
         self.bump();
         Ok(n)

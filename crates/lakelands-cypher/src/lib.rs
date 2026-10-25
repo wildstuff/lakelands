@@ -3,12 +3,13 @@
 //! one read the store has.
 //!
 //! [`translate`] parses a statement of `MATCH`, `OPTIONAL MATCH`,
-//! `WHERE` and `RETURN` and produces the pattern a host runs through
-//! the store's `query` like any other; nothing here reads the store,
-//! and the store knows nothing of Cypher. Every construct outside the
-//! subset is refused at its offset with the construct named, never
-//! approximated, and the same statement and parameters always give the
-//! same pattern.
+//! `WHERE` and `RETURN` and produces the pattern a host runs like any
+//! other: a host that holds the store in-process calls [`translate`]
+//! and then [`Catalog::query`] with the pattern, and a door does the
+//! same behind its route. Nothing here reads the store, and the store
+//! knows nothing of Cypher. Every construct outside the subset is
+//! refused at its offset with the construct named, never approximated,
+//! and the same statement and parameters always give the same pattern.
 //!
 //! What differs from openCypher:
 //!
@@ -26,6 +27,8 @@
 //!   refused where there is none.
 //! - The time axes and the cursor stand beside the statement, on the
 //!   pattern, not in it.
+//!
+//! [`Catalog::query`]: lakelands_api::catalog::Catalog::query
 
 use lakelands_api::Params;
 use lakelands_api::error::{Case, Error, Result};
@@ -74,7 +77,8 @@ pub fn translate(statement: &str, params: &Params) -> Result<Translated> {
         | Case::CypherRowItem { .. }
         | Case::CypherSkip { .. }
         | Case::CypherStartType { .. }
-        | Case::CypherUnbound { .. } => Error::invalid(case),
+        | Case::CypherUnbound { .. }
+        | Case::CypherWhole { .. } => Error::invalid(case),
         why => Error::invalid(Case::StatementNotParsed { why: Box::new(why) }),
     };
     let toks = lex::lex(&chars).map_err(refuse)?;

@@ -697,6 +697,11 @@
    "offset": 1
   },
   {
+   "clause": "s",
+   "code": "cypher_whole",
+   "offset": 1
+  },
+  {
    "code": "division_by_zero"
   },
   {

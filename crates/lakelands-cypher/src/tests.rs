@@ -190,3 +190,13 @@ fn the_reserved_words_are_sorted_upper_case_and_distinct() {
             .all(|w| w.chars().all(|c| c.is_ascii_uppercase()))
     );
 }
+
+#[test]
+fn every_operator_word_is_reserved_in_any_case() {
+    let words = [
+        "and", "Or", "XOR", "xor", "not", "IN", "is", "starts", "ends", "contains",
+    ];
+    for w in words {
+        assert!(super::parse::reserved(w), "{w}");
+    }
+}

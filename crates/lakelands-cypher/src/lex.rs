@@ -12,7 +12,7 @@ use lakelands_api::error::Case;
 /// Every reserved word of openCypher, the subset's and every other
 /// clause's, so that a name that is one is backticked from the first
 /// release, and the tokens do not change when the subset grows.
-pub(crate) const RESERVED: [&str; 60] = [
+pub(crate) const RESERVED: [&str; 61] = [
     "ADD",
     "ALL",
     "AND",
@@ -73,6 +73,7 @@ pub(crate) const RESERVED: [&str; 60] = [
     "WHEN",
     "WHERE",
     "WITH",
+    "XOR",
 ];
 
 /// What a token is.

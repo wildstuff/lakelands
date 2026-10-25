@@ -236,6 +236,17 @@ fn a_construct_is_refused_wherever_it_stands() {
             "aggregate_in_expression",
             "sum",
         ),
+        // A relationship's absence outside `WHERE`, at its `NOT`.
+        (
+            "MATCH (b:bill) RETURN NOT (b)-[:approved_by]->(:person) AS flag, count(*) AS n",
+            "exists",
+            "NOT",
+        ),
+        (
+            "MATCH (b:bill) RETURN b.key ORDER BY NOT (b)-[:approved_by]->(:person)",
+            "exists",
+            "NOT",
+        ),
     ];
     for (statement, construct, marker) in cases {
         let reason = refused(statement, json!({}));
@@ -294,6 +305,12 @@ fn a_statement_that_does_not_parse_says_what_and_where() {
             json!({"code": "parse_expected", "token": "."}),
             "b IS",
         ),
+        // A reserved word as a name, though the subset reads no `XOR`.
+        (
+            "MATCH (xor:bill) RETURN xor.key",
+            json!({"code": "parse_keyword", "keyword": "XOR"}),
+            "xor:",
+        ),
     ];
     for (statement, expected, marker) in cases {
         let reason = refused(statement, json!({}));
@@ -311,6 +328,21 @@ fn a_statement_that_does_not_parse_says_what_and_where() {
         };
         assert_eq!(why["offset"], at, "{statement}: {why}");
     }
+}
+
+#[test]
+fn an_offset_counts_characters_not_bytes() {
+    let statement = "MATCH (b:bill) WHERE b.note = 'ü€' AND b.amount ! 1 RETURN b";
+    let reason = refused(statement, json!({}));
+    let why = &reason["why"];
+    assert_eq!(why["code"], "parse_unexpected", "{why}");
+    assert_eq!(why["offset"], 48, "{why}");
+    let statement = "MATCH (b:bill) WHERE b.note = 'ü€' RETURN b.note SKIP 1";
+    let reason = refused(statement, json!({}));
+    assert_eq!(reason["code"], "cypher_skip", "{reason}");
+    let statement = "MATCH (ä:bill) RETURN ä.key LIMIT 1.5";
+    let reason = refused(statement, json!({}));
+    assert_eq!(reason["offset"], 34, "{reason}");
 }
 
 #[test]
@@ -379,6 +411,18 @@ fn a_statement_says_what_it_reads_in_the_subsets_terms() {
         (
             "MATCH (b:bill) RETURN apoc.x(b.name) AS n",
             json!({"code": "cypher_function", "name": "apoc.x", "offset": 22}),
+        ),
+        (
+            "MATCH (b:bill) RETURN b.key SKIP 1.5",
+            json!({"code": "cypher_whole", "clause": "SKIP", "offset": 33}),
+        ),
+        (
+            "MATCH (b:bill) RETURN b.key LIMIT 1.5",
+            json!({"code": "cypher_whole", "clause": "LIMIT", "offset": 34}),
+        ),
+        (
+            "MATCH (b:bill) RETURN b.key LIMIT -1",
+            json!({"code": "cypher_whole", "clause": "LIMIT", "offset": 34}),
         ),
     ];
     for (statement, expected) in cases {

@@ -1183,6 +1183,8 @@ catalog! {
         CypherStartType { offset: usize } => "the first node names its type, as in `(a:invoice)` (at character {offset})",
         /// A part that begins at a name nothing bound.
         CypherUnbound { name: String, offset: usize } => "`{name}` is bound by nothing before it: a part begins at a name an earlier part bound (at character {offset})",
+        /// A `SKIP` or `LIMIT` given what is no whole number.
+        CypherWhole { clause: String, offset: usize } => "`{clause}` takes a whole number, written or a parameter (at character {offset})",
         /// A division by zero.
         DivisionByZero => "division by zero",
         /// An `in` with an empty list.

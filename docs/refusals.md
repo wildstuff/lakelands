@@ -461,6 +461,7 @@ What a refusal is about.
 | `cypher_skip` | `skip` (u64) | `SKIP {skip}`: a pattern continues by the cursor its answer hands out (`next_cursor`), passed beside the statement | A `SKIP` other than 0. |
 | `cypher_start_type` | `offset` (usize) | the first node names its type, as in `(a:invoice)` (at character {offset}) | A first node with no label. |
 | `cypher_unbound` | `name` (String), `offset` (usize) | `{name}` is bound by nothing before it: a part begins at a name an earlier part bound (at character {offset}) | A part that begins at a name nothing bound. |
+| `cypher_whole` | `clause` (String), `offset` (usize) | `{clause}` takes a whole number, written or a parameter (at character {offset}) | A `SKIP` or `LIMIT` given what is no whole number. |
 | `division_by_zero` | — | division by zero | A division by zero. |
 | `in_empty` | — | an `in` lists one value at least | An `in` with an empty list. |
 | `exists_here` | — | exists() has meaning in a verb's `requires` and set values, over a relation a path may begin at | An `exists` outside a verb's `requires` and set values. |
