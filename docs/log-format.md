@@ -260,8 +260,8 @@ version, which the key store answers by.
   A recorded output over values one source sealed is sealed and
   digested under the oldest version they read composed the same way
   with every apart key that sealed one of them, which its `sealed.apart`
-  lists in id order; the fold keeps, for each event a delivery sealed
-  apart, the keys it names, so a rebuild composes the same keys. With no
+  lists in id order; those keys are read from the event that wrote each
+  value, so a rebuild composes the same keys. With no
   `apart` the composed key is the version itself, so every value of an
   earlier format opens as it was sealed. Destroying any one key of a
   composition, an apart key alone or a version with those before it,

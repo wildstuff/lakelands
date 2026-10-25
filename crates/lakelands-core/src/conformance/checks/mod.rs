@@ -649,6 +649,7 @@ pub const ALL: &[Check] = &[
     removed::REMOVE_CRASH_SHREDDED,
     sealed_apart::APART_SHREDDED,
     sealed_apart::APART_OUTPUT,
+    sealed_apart::APART_READ,
     sealed_apart::APART_CUT,
     sealed_apart::APART_SET,
     sealed_apart::APART_DELIVERIES,

@@ -657,15 +657,15 @@ impl Lake {
             }
         }
         // The versions of each source's key the log sealed with, each with
-        // the position of its first use ([`crate::sealing::USED`]), and the
-        // apart keys of each event a delivery sealed apart
-        // ([`crate::sealing::APART`]).
+        // the position of its first use ([`crate::sealing::USED`]). The
+        // apart keys of each event a delivery sealed apart are its own, in
+        // the log ([`crate::sealing::Apart`]).
         if let (EventBody::RecordIngested { .. }, Some(sealed), Some(source)) =
             (&e.body, &kept_seal, &e.source)
         {
             let used = (source, sealed, e.position, e.known_at);
             let read = (&staged.outputs, view, &*self.keys);
-            for (at, list) in crate::sealing::kept(read, used)? {
+            if let Some((at, list)) = crate::sealing::kept(read, used)? {
                 projection.put_output(&at.0, &at.1, &list, e.position)?;
                 staged
                     .outputs
@@ -895,6 +895,7 @@ impl Lake {
                     waiting: false,
                     plans: &w.plans,
                     keys: Some(&self.keys),
+                    apart: Some(&staged.apart),
                 };
                 let after =
                     record::apply(&w.ontology, before.as_ref(), e, &w.settings, &mut outputs)?;
@@ -1030,6 +1031,7 @@ impl Lake {
                         waiting: false,
                         plans: &w.plans,
                         keys: Some(&self.keys),
+                        apart: Some(&staged.apart),
                     };
                     let next = record::fill(
                         &w.ontology,
@@ -1740,6 +1742,7 @@ impl Recomputed {
             waiting: false,
             plans: &self.plans,
             keys: self.keys.as_deref(),
+            apart: None,
         };
         record::rederive(&self.entries, r, &self.event, &self.settings, &mut outputs)
     }

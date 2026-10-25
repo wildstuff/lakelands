@@ -520,20 +520,17 @@ impl Decide<'_> {
         let event = provisional(self.call.lake, self.next, d);
         // Its own keys sealed apart are read from its event, so only a
         // version's first use is staged (065).
-        let mut kept = self.kept(d)?;
-        kept.retain(|(at, _)| at.0 == crate::sealing::USED);
-        let staged = match kept.is_empty() {
-            false => {
+        let staged = match self.kept(d)? {
+            Some((at, list)) => {
                 let mut staged = self.pending.sealed.clone();
-                for (at, list) in kept {
-                    staged.entry(at).or_default().push((self.next, list));
-                }
+                staged.entry(at).or_default().push((self.next, list));
                 std::borrow::Cow::Owned(staged)
             }
-            true => std::borrow::Cow::Borrowed(&self.pending.sealed),
+            None => std::borrow::Cow::Borrowed(&self.pending.sealed),
         };
         let outputs = &mut Outputs {
             staged: Some(&staged),
+            apart: Some(&self.pending.apart),
             ..Outputs::planning(self.at.view, self.plans, &self.call.lake.keys)
         };
         let after = record::apply(self.ontology, before, &event, self.at.settings, outputs)?;
@@ -632,11 +629,11 @@ impl Decide<'_> {
 
     /// What the fold keeps once `d`, landing next, seals: the list of the
     /// version it uses first, if it is the first use of that version of
-    /// its source's key, and its keys sealed apart ([`crate::sealing::kept`]).
-    fn kept(&self, d: &Draft) -> Result<Vec<((String, Digest), Value)>> {
+    /// its source's key ([`crate::sealing::kept`]).
+    fn kept(&self, d: &Draft) -> Result<Option<((String, Digest), Value)>> {
         let ingested = matches!(d.body, EventBody::RecordIngested { .. });
         let (Some(sealed), Some(source), true) = (&d.sealed, d.source.as_ref(), ingested) else {
-            return Ok(Vec::new());
+            return Ok(None);
         };
         let used = (source, sealed, self.next, self.at.now);
         let read = (&self.pending.sealed, self.at.view, &*self.call.lake.keys);
@@ -646,12 +643,21 @@ impl Decide<'_> {
     /// A planned record write with what it sets off: its own event, which
     /// lands next, then the triggers and object-set changes it causes.
     pub(crate) fn planned(&mut self, plan: RecordPlan) -> Result<Plan> {
-        for (at, list) in self.kept(&plan.draft)? {
+        if let Some((at, list)) = self.kept(&plan.draft)? {
             self.pending
                 .sealed
                 .entry(at)
                 .or_default()
                 .push((self.next, list));
+        }
+        // Its keys sealed apart are in no log yet: what the append computes
+        // after it reads them here (065).
+        let ingested = matches!(plan.draft.body, EventBody::RecordIngested { .. });
+        if let (Some(sealed), Some(source), true) =
+            (&plan.draft.sealed, &plan.draft.source, ingested)
+            && !sealed.apart.is_empty()
+        {
+            self.pending.apart.stage(source, self.next, &sealed.apart);
         }
         let change = match plan.draft.body {
             EventBody::RecordIngested { .. } => ChangeKind::Ingested,

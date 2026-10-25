@@ -538,17 +538,11 @@ pub(crate) fn plan(
             .filter(|s| s.source.as_ref() == Some(&set[i]));
         match &e.body {
             EventBody::RecordUpserted { ty, key, .. }
+            | EventBody::RecordIngested { ty, key, .. }
             | EventBody::RecordRetired { ty, key, .. }
             | EventBody::RecordRestricted { ty, key, .. }
             | EventBody::RecordUnrestricted { ty, key, .. } => {
                 keys.insert((ty.clone(), key.clone()));
-            }
-            EventBody::RecordIngested { ty, key, .. } => {
-                keys.insert((ty.clone(), key.clone()));
-                if e.sealed.as_ref().is_some_and(|s| !s.apart.is_empty()) {
-                    let at = crate::sealing::apart_at(&set[i], e.position);
-                    plan.outputs.insert((crate::sealing::APART.to_owned(), at));
-                }
             }
             EventBody::OutputRecorded {
                 seam, input, field, ..

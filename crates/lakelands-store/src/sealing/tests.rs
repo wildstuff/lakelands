@@ -9,7 +9,7 @@ use lakelands_api::id::KeyId;
 use lakelands_api::seam::KeyStore;
 use lakelands_api::{LakeId, Result, SourceId, Timestamp};
 
-use super::{Keys, List, digest, open, rotates, seal, turns};
+use super::{Apart, Keys, List, digest, open, rotates, seal, turns};
 
 /// The lines of `vectors/19/further.json` that show `shows`.
 fn line(shows: &str) -> Event {
@@ -153,7 +153,7 @@ impl KeyStore for Two {
 fn a_version_the_log_moved_past_is_chosen_again() {
     let store = std::sync::Arc::new(Two::default());
     let (lake, crm) = (LakeId::from("l"), SourceId::from("crm"));
-    let keys = Keys::new(lake.clone(), Some(store.clone()));
+    let keys = Keys::new(lake.clone(), Some(store.clone()), None);
     let (first, _) = keys.sealing(&crm, None, false).unwrap();
     let second = store.create(&lake, &crm).unwrap();
     let (kept, _) = keys.sealing(&crm, Some(&first), false).unwrap();
@@ -226,7 +226,7 @@ fn a_key_period_turns_at_each_boundary() {
 fn a_writer_turned_seals_its_window_under_one_new_version() {
     let store = std::sync::Arc::new(Two::default());
     let (lake, crm) = (LakeId::from("l"), SourceId::from("crm"));
-    let keys = Keys::new(lake.clone(), Some(store.clone()));
+    let keys = Keys::new(lake.clone(), Some(store.clone()), None);
     let (first, _) = keys.sealing(&crm, None, false).unwrap();
     let used = Some(&first);
     let (turned, _) = keys.sealing(&crm, used, true).unwrap();
@@ -246,7 +246,7 @@ fn a_version_made_and_not_used_is_the_turned_period_s() {
     let (lake, crm) = (LakeId::from("l"), SourceId::from("crm"));
     let k1 = store.create(&lake, &crm).unwrap();
     let k2 = store.create(&lake, &crm).unwrap();
-    let keys = Keys::new(lake.clone(), Some(store.clone()));
+    let keys = Keys::new(lake.clone(), Some(store.clone()), None);
     let (turned, _) = keys.sealing(&crm, Some(&k1), true).unwrap();
     assert_eq!(turned, k2, "the version made and not used");
     assert_eq!(store.ids(&lake, &crm).unwrap().len(), 2, "no new version");
@@ -309,42 +309,53 @@ fn a_key_store_without_versions_refuses_to_destroy_one() {
     );
 }
 
+/// A memory lake on `keys` with a `person` type whose `name` is sealed,
+/// its catalog and its owner.
+async fn person_lake(
+    name: &str,
+    keys: std::sync::Arc<dyn KeyStore>,
+) -> (
+    std::sync::Arc<crate::lake::Lake>,
+    std::sync::Arc<dyn lakelands_api::Catalog>,
+    lakelands_api::Principal,
+) {
+    use lakelands_api::engine::OpenMode;
+    use lakelands_api::seam::Seams;
+    use lakelands_api::{Grants, LakeStore, Location, Principal, PrincipalKind, WriteContext};
+    let seams = Seams {
+        engines: vec![std::sync::Arc::new(
+            lakelands_engine_mem::MemoryOpener::new(),
+        )],
+        keys: Some(keys),
+        ..Seams::default()
+    };
+    let lake = crate::lake::Lake::open(&Location::memory(name), seams, OpenMode::Create);
+    let lake = std::sync::Arc::new(lake.expect("the lake opens"));
+    let doors = crate::doors::Store { lake: lake.clone() };
+    let cat = doors.catalog(WriteContext::default());
+    let owner = Principal {
+        kind: PrincipalKind::Human,
+        id: "owner".into(),
+        lake: name.into(),
+        grants: Grants::owner(),
+    };
+    let person = serde_json::from_value(json!({
+        "declare": "type", "name": "person", "key": ["id"], "fields": [
+            {"name": "id", "type": {"kind": "text"}, "authority": "source"},
+            {"name": "name", "type": {"kind": "text"}, "authority": "source", "erasable": true}]
+    }));
+    cat.declare(&owner, person.unwrap()).await.unwrap();
+    (lake, cat, owner)
+}
+
 /// An ingest turns by its source's key period from the newest version's
 /// first use as the list keeps it: one first used on an earlier day, as
 /// an imported line from that day leaves it, has the source's next value
 /// under `day` sealed under a new version, which the list then names.
 #[tokio::test]
 async fn an_ingest_past_its_newest_version_s_day_seals_under_a_new_one() {
-    use crate::doors::Store;
-    use crate::lake::Lake;
-    use lakelands_api::engine::OpenMode;
-    use lakelands_api::seam::Seams;
-    use lakelands_api::write::Declaration;
-    use lakelands_api::{Grants, LakeStore, Location, Principal, PrincipalKind, WriteContext};
     let store = std::sync::Arc::new(Two::default());
-    let seams = Seams {
-        engines: vec![std::sync::Arc::new(
-            lakelands_engine_mem::MemoryOpener::new(),
-        )],
-        keys: Some(store.clone()),
-        ..Seams::default()
-    };
-    let lake = Lake::open(&Location::memory("turn"), seams, OpenMode::Create);
-    let lake = std::sync::Arc::new(lake.expect("the lake opens"));
-    let cat = Store { lake: lake.clone() }.catalog(WriteContext::default());
-    let owner = Principal {
-        kind: PrincipalKind::Human,
-        id: "owner".into(),
-        lake: "turn".into(),
-        grants: Grants::owner(),
-    };
-    let person: Declaration = serde_json::from_value(json!({
-        "declare": "type", "name": "person", "key": ["id"], "fields": [
-            {"name": "id", "type": {"kind": "text"}, "authority": "source"},
-            {"name": "name", "type": {"kind": "text"}, "authority": "source", "erasable": true}]
-    }))
-    .unwrap();
-    cat.declare(&owner, person).await.unwrap();
+    let (lake, cat, owner) = person_lake("turn", store.clone()).await;
     let period = serde_json::from_value(json!({"key": "key_period.crm", "value": "day"}));
     let (ty, key) = ("sys.setting".into(), "key_period.crm".into());
     (cat.upsert(&owner, &ty, &key, period.unwrap(), Default::default())
@@ -420,7 +431,7 @@ impl KeyStore for Bare {
 #[test]
 fn a_source_with_no_version_left_is_destroyed_all_the_same() {
     let store = std::sync::Arc::new(Bare::default());
-    let keys = Keys::new(LakeId::from("l"), Some(store.clone()));
+    let keys = Keys::new(LakeId::from("l"), Some(store.clone()), None);
     keys.destroy(&SourceId::from("crm")).unwrap();
     assert_eq!(store.0.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
@@ -433,4 +444,99 @@ fn the_list_marks_the_versions_a_delivery_sealed_apart_sealed_under() {
     assert_eq!(list.apart, [KeyId::from("k2")]);
     assert_eq!(list.firsts.len(), 3);
     assert!(List::of(json!([["k1", 3, 7]])).apart.is_empty());
+}
+
+/// A key apart a write's plan staged for its own ingest is answered as
+/// staged, for its source alone, with no log to read (065).
+#[test]
+fn a_key_apart_staged_for_an_ingest_not_in_the_log_is_answered_as_staged() {
+    let keys = Keys::new(LakeId::from("l"), None, None);
+    let (crm, at) = (SourceId::from("crm"), lakelands_api::Position(7));
+    let known = Apart::default();
+    known.stage(&crm, at, &[KeyId::from("a1")]);
+    assert_eq!(
+        keys.apart_named(&known, &crm, at).unwrap(),
+        [KeyId::from("a1")]
+    );
+    let erp = SourceId::from("erp");
+    assert!(keys.apart_named(&known, &erp, at).unwrap().is_empty());
+    let other = lakelands_api::Position(8);
+    assert!(keys.apart_named(&known, &crm, other).unwrap().is_empty());
+}
+
+/// A key store that makes keys apart too.
+#[derive(Default)]
+struct Apiece(Two, std::sync::Mutex<u32>);
+impl KeyStore for Apiece {
+    fn create(&self, lake: &LakeId, source: &SourceId) -> Result<KeyId> {
+        self.0.create(lake, source)
+    }
+    fn key(&self, lake: &LakeId, source: &SourceId, id: &KeyId) -> Result<Option<DataKey>> {
+        self.0.key(lake, source, id)
+    }
+    fn destroy(&self, lake: &LakeId, source: &SourceId) -> Result<()> {
+        self.0.destroy(lake, source)
+    }
+    fn ids(&self, lake: &LakeId, source: &SourceId) -> Result<Vec<KeyId>> {
+        self.0.ids(lake, source)
+    }
+    fn create_apart(&self, _: &LakeId, _: &SourceId) -> Result<KeyId> {
+        let mut made = self.1.lock().unwrap();
+        *made += 1;
+        Ok(KeyId::from(format!("a{made}")))
+    }
+}
+
+/// An ingest sealed apart keeps no `sys:apart` output: its key apart is
+/// read from its event in the log. A row a projection built by 0.19 left
+/// under that name is not read (065).
+#[tokio::test]
+async fn an_ingest_sealed_apart_keeps_no_output_and_a_leftover_row_is_not_read() {
+    use lakelands_api::write::IngestOpts;
+    let (lake, cat, owner) = person_lake("apart", std::sync::Arc::new(Apiece::default())).await;
+    let record = lakelands_api::SourceRecord {
+        source: None,
+        upstream: None,
+        ty: "person".into(),
+        key: "p1".into(),
+        fields: serde_json::from_value(json!({"id": "p1", "name": "Ada"})).unwrap(),
+        seen_at: None,
+    };
+    let (crm, opts) = (
+        SourceId::from("crm"),
+        IngestOpts {
+            delivery: Some("late".into()),
+            sealed_apart: true,
+        },
+    );
+    let fed = lakelands_api::ingest_all_with(cat.as_ref(), &owner, &crm, opts, vec![record]);
+    fed.await.unwrap();
+    let at = lake.head();
+    let row = crate::backed::digest(&json!([crm, at]));
+    let held = || {
+        lake.engine
+            .view(None)
+            .unwrap()
+            .output("sys:apart", &row)
+            .unwrap()
+    };
+    assert!(held().is_none(), "no output names the key apart");
+    let a1 = vec![KeyId::from("a1")];
+    assert_eq!(
+        lake.keys.apart_named(&Apart::default(), &crm, at).unwrap(),
+        a1
+    );
+    let p = lake.engine.projection();
+    (p.begin()
+        .and_then(|()| p.put_output("sys:apart", &row, &json!(["a9"]), at)))
+    .and_then(|()| p.commit(at))
+    .unwrap();
+    assert!(held().is_some());
+    assert_eq!(
+        lake.keys.apart_named(&Apart::default(), &crm, at).unwrap(),
+        a1
+    );
+    let view = lake.engine.view(None).unwrap();
+    let p1 = view.get(&"person".into(), &"p1".into()).unwrap().unwrap();
+    assert_eq!(p1.fields["name"], json!("Ada"));
 }

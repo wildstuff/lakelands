@@ -19,7 +19,7 @@ use aes_gcm_siv::{Aes256GcmSiv, Nonce};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use hmac::{Hmac, Mac};
-use lakelands_api::engine::ProjectionView;
+use lakelands_api::engine::{LakeEngine, ProjectionView};
 use lakelands_api::error::{Seam, Situation};
 use lakelands_api::event::{Digest, Event, EventBody, Sealed};
 use lakelands_api::id::KeyId;
@@ -36,6 +36,9 @@ use zeroize::Zeroizing;
 pub struct Keys {
     lake: LakeId,
     store: Option<Arc<dyn KeyStore>>,
+    /// The lake's log, which names the keys a delivery sealed apart sealed
+    /// each value under ([`Self::apart_named`]).
+    log: Option<Arc<dyn LakeEngine>>,
     held: Mutex<Held>,
 }
 
@@ -69,7 +72,8 @@ pub struct List {
     /// When the newest version was first used, where the list says.
     pub newest: Option<lakelands_api::Timestamp>,
     /// The versions a delivery sealed apart sealed under, which the list
-    /// marks: only a value of one of these has apart keys kept ([`APART`]).
+    /// marks: only a value of one of these is read for its apart keys
+    /// ([`Keys::apart_named`]).
     pub apart: Vec<KeyId>,
 }
 
@@ -94,10 +98,49 @@ impl List {
 }
 
 impl Keys {
-    /// The keys of `lake`, from `store`.
-    pub fn new(lake: LakeId, store: Option<Arc<dyn KeyStore>>) -> Keys {
+    /// The keys of `lake`, from `store`, whose log `log` holds.
+    pub fn new(
+        lake: LakeId,
+        store: Option<Arc<dyn KeyStore>>,
+        log: Option<Arc<dyn LakeEngine>>,
+    ) -> Keys {
         let held = Mutex::new(Held::default());
-        Keys { lake, store, held }
+        Keys {
+            lake,
+            store,
+            log,
+            held,
+        }
+    }
+
+    /// The keys apart that `source`'s ingest at `at` names in `sealed`
+    /// (065): as `known` holds them, else read from the log, one read a
+    /// position, and kept in `known`. None where the event there is not
+    /// an ingest of `source`'s, or the keys were given no log.
+    pub fn apart_named(
+        &self,
+        known: &Apart,
+        source: &SourceId,
+        at: Position,
+    ) -> Result<Vec<KeyId>> {
+        let cached = lock(&known.0).get(&at).cloned();
+        let named = match cached {
+            Some(named) => named,
+            None => {
+                let Some(log) = &self.log else {
+                    return Ok(Vec::new());
+                };
+                let read = log.read(at, 1)?;
+                let stored = read.first().filter(|s| s.position == at);
+                let e = stored.map(crate::log::open).transpose()?;
+                let ingest = e.filter(|e| matches!(e.body, EventBody::RecordIngested { .. }));
+                let named = ingest.and_then(|e| Some((e.source?, e.sealed?.apart)));
+                lock(&known.0).insert(at, named.clone());
+                named
+            }
+        };
+        let of = named.filter(|(s, _)| s == source);
+        Ok(of.map(|(_, apart)| apart).unwrap_or_default())
     }
 
     fn store(&self) -> Result<&dyn KeyStore> {
@@ -469,23 +512,32 @@ pub fn used_by(source: &SourceId) -> Digest {
     crate::backed::digest(&Value::from(source.as_str()))
 }
 
-/// The store's own seam under which the fold keeps, for each event a
-/// delivery sealed apart, the keys outside its source's versions it names
-/// in `sealed` (065): a value's version is the one its position says
-/// ([`USED`]), and its apart keys are the ones kept at its position, so a
-/// recorded output composes the same keys at the write and at a rebuild.
-pub const APART: &str = "sys:apart";
+/// The keys outside its source's versions that each ingest a delivery
+/// sealed apart names in `sealed`, by position (065): a value's version
+/// is the one its position says ([`USED`]), and its apart keys are the
+/// ones its own event names, so a recorded output composes the same keys
+/// at the write and at a rebuild. Each is read from the log once
+/// ([`Keys::apart_named`]) and kept while a fold or a write's plan lasts; a
+/// plan stages its own events' here, as they are not in the log yet.
+#[derive(Default)]
+pub struct Apart(Mutex<BTreeMap<Position, Named>>);
 
-/// The input [`APART`] keeps the apart keys of `source`'s event at `at`
-/// under.
-pub fn apart_at(source: &SourceId, at: Position) -> Digest {
-    crate::backed::digest(&serde_json::json!([source, at]))
+/// The source and keys apart of the ingest at a position, `None` where
+/// the event there is no ingest.
+type Named = Option<(SourceId, Vec<KeyId>)>;
+
+impl Apart {
+    /// Stage the keys apart `source`'s ingest at `at` names, before it is
+    /// in the log.
+    pub fn stage(&self, source: &SourceId, at: Position, apart: &[KeyId]) {
+        lock(&self.0).insert(at, Some((source.clone(), apart.to_vec())));
+    }
 }
 
-/// The apart keys [`APART`] keeps as `value`.
-pub fn apart_of(value: &Value) -> Vec<KeyId> {
-    let ids = value.as_array().into_iter().flatten();
-    ids.filter_map(|v| Some(KeyId::from(v.as_str()?))).collect()
+impl Clone for Apart {
+    fn clone(&self) -> Apart {
+        Apart(Mutex::new(lock(&self.0).clone()))
+    }
 }
 
 /// Whether a source whose newest version was first used at `first`
@@ -538,24 +590,17 @@ pub fn firsts(list: Option<&Value>) -> Vec<(KeyId, Position)> {
 }
 
 /// What the fold keeps once `sealed` seals a value of `source` at `at`,
-/// written at `known`, each with the place it is kept under: the list
-/// [`USED`] where its version is first used there, or first seals a
-/// delivery sealed apart ([`first_use`]), and its apart keys under
-/// [`APART`] where it names any. The fold and a
-/// write's plan both keep them so, and read the same keys.
+/// written at `known`, with the place it is kept under: the list [`USED`]
+/// where its version is first used there, or first seals a delivery
+/// sealed apart ([`first_use`]). Its apart keys stay in the log alone
+/// ([`Apart`]). The fold and a write's plan both keep it so, and read the
+/// same keys.
 pub fn kept(
     read: (&crate::backed::Recorded, &dyn ProjectionView, &Keys),
     (source, sealed, at, known): (&SourceId, &Sealed, Position, lakelands_api::Timestamp),
-) -> Result<Vec<((String, Digest), Value)>> {
+) -> Result<Option<((String, Digest), Value)>> {
     let apart = !sealed.apart.is_empty();
-    let mut kept: Vec<_> = first_use(read, (source, &sealed.key, at, known), apart)?
-        .into_iter()
-        .collect();
-    if apart {
-        let place = (APART.to_owned(), apart_at(source, at));
-        kept.push((place, serde_json::json!(sealed.apart)));
-    }
-    Ok(kept)
+    first_use(read, (source, &sealed.key, at, known), apart)
 }
 
 /// The list [`USED`] keeps for `source` once `key` seals a value at `at`,
@@ -563,8 +608,8 @@ pub fn kept(
 /// with the place it is kept under: none where the list, as `staged`
 /// holds it or else `view` ([`Keys::listed`]), names `key` already, and
 /// marks it where `apart`. A mark is a fourth member, `true`, of the
-/// version's entry, so a recorded output reads [`APART`] only at a
-/// value whose version it marks.
+/// version's entry, so a recorded output reads a value's apart keys only
+/// at a value whose version it marks ([`Keys::apart_named`]).
 fn first_use(
     (staged, view, keys): (&crate::backed::Recorded, &dyn ProjectionView, &Keys),
     (source, key, at, known): (&SourceId, &KeyId, Position, lakelands_api::Timestamp),
