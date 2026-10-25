@@ -238,7 +238,7 @@ does not meet.
 
 ### Two issues build it
 
-- **Forwarded writes.** The forwarding handle: the writer named in the
+- **Forwarded writes** (lakelands#1394). The forwarding handle: the writer named in the
   location, the link between hosts that carries the write context, the
   answers above, read-your-writes, and the door checks run through a
   forwarding handle on SQLite and PostgreSQL. Most of its product is
@@ -246,7 +246,7 @@ does not meet.
   the read-your-writes wait are in them. Roughly 1 000 to 1 500
   product lines and 1 200 to 1 800 lines of specification: the REST
   client it builds on took 2 155 and 1 088 (lakelands#118).
-- **Standby and failover.** The standby's follow and takeover in the
+- **Standby and failover** (lakelands#1395). The standby's follow and takeover in the
   store, its configuration and its place in `lakelands serve`, takeover
   checks on SQLite and PostgreSQL, the old writer refused, and 008's
   line. Roughly 400 to 700 product lines and 600 to 1 000 of
