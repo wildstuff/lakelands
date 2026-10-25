@@ -2146,6 +2146,77 @@ of the three doors was a copy with a part missing. An answer that fails
 closed cannot be skipped: a site that asks nothing has no pairs to
 filter by, and so no record to hand out.
 
+### A field may be hidden on only the records a condition selects
+
+A principal's grant on a type may hold `hide_where`: hidings, each a
+field `G` of the type, a set of text values, and the fields `F` it
+lowers, each to `none` or to `masked`. A record is selected where its
+`G` holds one of the values, compared as `only` compares a pair. On a
+selected record each `F` has the lower of its type-wide access and the
+hiding's; on every other record the type-wide access stands. A hiding
+only lowers an access, never raises one. The operator accepted its
+shape on lakelands#1400 (2026-10-25) with the five consequences below;
+it is proposed for 0.20.0 (lakelands#1412) and comes in force with the
+issue that builds it.
+
+- **The condition is read only where its holder may read it.** `G` is a
+  field of kind `text` or `reference`, which the holder reads at least
+  `read`, not computed at the read, and lowered by no hiding of the
+  grant. `F` is no key field, no valid-time field, no field the grant's
+  `only` names, and not `G`. A grant that breaks this is not applied
+  and not guessed at, as a grant whose `only` cannot be applied is not:
+  the doors that name the type refuse it as invalid, naming the type
+  and never the field, and a walk or a view that reaches the type reads
+  every `F` as hidden on every record, so it fails closed. A condition
+  on a field its holder may not read would, applied, tell it which
+  records hold which values of that field.
+- **A hiding follows its fields' renames,** `G` and every `F`, as every
+  grant does (above).
+- **One rule: every read is evaluated over the record as its reader is
+  told it.** On a selected record `F` and everything built from it, a
+  derived or computed field and a vector embedded from it (above), are
+  absent or masked, as declared, and every door reads that record so.
+
+| what reads | on a selected record |
+|---|---|
+| `get`, `find`, `count`, an aggregate | `F` is not answered. A `where`, an order, a group or a measure over `F` reads it as null. The store evaluates them over the records as told: a filter that reads `F` is not handed to the engine, one that does not still is. |
+| a lexical search | `F` brings no match and no rank, and the text statistics a ranking reads are counted over the text as told (025). |
+| a vector or hybrid search | a vector built from `F` brings no candidate. The reader has no class of its own and is ranked exactly over what it is told, as a holder of `only` is (078); a hybrid search fuses what each axis tells. |
+| a probe | probing `F` is allowed, since the holder reads it on other records; it reads null on a selected one, so it tells nothing of it. |
+| a view | a view that reads `F` is computed for this reader from the records as told, never read kept; a set over such a view is this reader's only where nothing it reads is held from it (066). |
+| a derived relation, a walk | an edge derived from `F` does not exist on a selected record (044). |
+| a proposal | listed as told; a reviewer not told a proposal whole is refused its accept, as above. |
+| a subscription | the names of the fields a change moved are told per record, not per type. |
+| the change feed | refused: a principal with a hiding does not read everything. |
+| an export, a backup | unchanged: they take no principal and are the host's. |
+| a write | `F` on a record selected before or after the write is not writable: the write is refused whole, not granted, naming `F` (012), also to a writer that may write `F` on every other record. |
+| a read as of a position | a record is selected by its `G` at that position; a search ranks by the head and is judged there (025). |
+| `describe` | `F` keeps its type-wide access, and its description tells the holder where it is lowered, `G` and the values, as `may.only` tells a holder its pairs; the schema hash follows what is described. |
+
+What it costs and what it tells, accepted with it:
+
+1. A reader a hiding narrows reads the type, wherever a read touches
+   `F`, by a scan in the store: no engine pushdown and no vector index.
+2. Its holder learns which records hide `F`: it reads `G`, and
+   `describe` tells it the values.
+3. The change feed is refused to it.
+4. `F` is not writable on a selected record, whatever the type-wide
+   grant gives.
+5. The condition is equality to a fixed set of values, and nothing
+   richer.
+
+**Why.** A host keeps the text of documents of many kinds in one type,
+one record a chunk, each naming the record its document was filed
+under. A kind that hides its text from a reader has to hide it on its
+chunks too, and with a field's access per type the host hid it on every
+chunk, which took every other document's text out of that reader's
+search. A hiding keeps the field where the condition selects and leaves
+the rest of the type as the grant gives it. The rule that a read is
+evaluated over the record as told is the one a narrowed sight already
+keeps for a reader told a record its own way; it makes one judgement of
+what the record holds, so no door can answer from a value another door
+hid.
+
 ### A record held at the head is not there to one without the grant, at any position and at every write door
 
 A retention hold withholds a record without erasing it. The host places
@@ -2443,6 +2514,16 @@ Of `only`:
 - It does not change `restricted`: a record must pass both rules.
 - A reference value naming another's key is shown as a key; the record
   behind it is not found, as for a restricted record.
+
+Of a field hidden on the records a condition selects:
+
+- It is not a condition over several fields: one field `G` selects.
+- It is not a predicate: equality to one of a set of values, as `only`
+  compares a pair, and nothing else.
+- It is not a path: `G` is a field of the type's own record, never one
+  read across a reference or a relation.
+- It is not a raise: a selected record's field is never read further
+  than the type-wide grant gives.
 
 ## How it came to be
 
@@ -2855,3 +2936,8 @@ Of `only`:
   a held record is no candidate of one without `restricted`, and a
   holder of `only` is ranked exactly over its pairs (078,
   lakelands#1254).
+- A field may be hidden on only the records a condition selects
+  (lakelands#1412), in the shape the operator accepted on
+  lakelands#1400: a grant had given a field one access on every record
+  of its type, so a host hid on every record a field it had to hide on
+  some.

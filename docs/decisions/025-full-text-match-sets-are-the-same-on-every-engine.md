@@ -49,14 +49,44 @@ a workload ever asks for it.
 ### A lexical hit's set, order and score are the same on every engine
 
 One function ranks a lexical search on every engine
-(`lakelands_core::engines::lexical`): a hit scores each distinct query
-token its text holds, at the weight of the heaviest searched field
-holding it, summed in the tokens' order; best first, ties by key. A
-field the type's setting does not weigh weighs 1 (below), so a type
-that weighs none scores the count of the tokens held, as it always has.
-So the set, the order and the score are the same on every engine. A
-weight is above 0, so it never changes which records are hits, only
-their order and scores. The suite holds it: a
+(`lakelands_core::engines::lexical`): BM25F in its combined-field form,
+best first, ties by key. It is proposed for 0.20.0 (lakelands#1412),
+replacing today's score, and comes in force with the issue that builds
+it; until then a hit scores each distinct query token its text holds,
+at the weight of the heaviest searched field holding it, summed in the
+tokens' order.
+
+For each searched field `f`, `n_f` is the number of live heads of the
+reader's class whose `f` holds a token, `L_f` the tokens of `f` over
+them, repeats counted, and `avg_f = L_f / n_f`; `N` is the greatest
+`n_f`. A query token `t` is in `df_t` live heads of the class, in any
+searched field. For a hit, `tf` counts `t` in its field `f` and `len_f`
+that field's tokens, and `w_f` is the field's weight (below):
+
+```
+K1 = 1.2, B = 0.75
+idf_t = ln((2N + 2) / (2·df_t + 1))
+x_t   = Σ_f w_f · tf_{t,f} / (1 − B + B · len_f / avg_f)
+s_t   = idf_t · x_t · (K1 + 1) / (x_t + K1)
+score = Σ_t s_t
+```
+
+The fields are summed in their declaration's order, a field `t` is not
+in adding nothing, and the tokens in their sorted order, from 0. A rarer
+token weighs more than a common one, and a match in a short field more
+than one in a long field at the same frequency. A token is saturated
+once over all its fields, not once a field: a word in both a title and
+a body scores as one word found twice, never as two words, so a hit
+that repeats one word in every field does not outrank one that holds
+every word of the query.
+
+Its bits are the same on every engine and every target. It is computed
+in `f64`, in one function with one expression tree, so no engine
+reorders a sum (031); every count is below `2^53`, so it enters `f64`
+exactly; and `ln` is the `libm` crate's, written in Rust, not the
+platform's, whose last bit may differ between targets. A weight is
+above 0, so it never changes which records are hits, only their order
+and scores. The suite holds it: a
 search limited to named fields answers the same keys and scores through
 the doors and at the engine seam
 (`a_search_limited_to_named_fields_matches_and_ranks_in_those_only`,
@@ -72,19 +102,95 @@ may score otherwise, on every engine at once and with the suite's rows
 changed with it. A caller compares scores within one answer, and not
 across releases.
 
-A token counts once, at its heaviest field, and not once a field it is
-in. Summed over the fields, a word in both a title and a body would
-score 2 where it scores 1 today, and every lake that weighs nothing
-would rank otherwise. BM25F, a sum over fields scaled by their lengths
-and the corpus's frequencies, was not taken: the one function holds no
-statistics of the lake, and keeping them would put a second structure,
-changed at every write, into every engine's projection. The engines'
-own rankers, `bm25()` in SQLite and `ts_rank` with its four `setweight`
-classes in PostgreSQL, score differently from each other and from the
-memory engine, and four classes cannot hold the weights a host writes.
-Neither engine's index knows which field a token came from; the
-function reads each candidate's fields from the record, so a weight
-changes no projection.
+**What is counted and what is kept.** A ranking by rarity and length
+reads statistics of the lake, and keeping statistics puts a structure
+changed at every write into every engine's projection; so the function
+keeps only what it cannot count from what a search already reads.
+
+- **`df` is counted, never kept.** Every engine hands the function
+  every candidate that holds a query token, in any field, so the count
+  of the candidates its reader's class admits that hold `t` in a
+  searched field is `df_t`, exactly.
+- **`n_f` and `L_f` are kept,** per type, field and hold: one count for
+  the heads that are not held and one for the held, the two classes 078
+  splits a reader into. A reader without `restricted` reads the first,
+  one with it both. SQLite and PostgreSQL keep them in their projection,
+  with each record's tokens per field so that a write takes out exactly
+  what it put in, written in the fold's transaction as the text rows
+  are; every path that re-indexes a record (a migration, a re-key, a
+  forgotten source, a rebuild) goes through the same two writes. The
+  memory engine keeps nothing and counts them in the same pass; it is
+  the reference.
+- **A reader with no class is counted for.** A reader whose `only`
+  admits some records of the type, or whom a link's ends judge, or who
+  is told a record its own way, or who has a field hidden on the
+  records a condition selects (006), is ranked over what it is
+  admitted (078). The store counts `n_f` and `L_f` over the heads it
+  admits that reader, as it is told them, and hands them to the
+  function, so that no record and no text the reader may not see moves
+  its score; a hidden field brings a selected record no match. A held
+  record is a candidate of a reader without `restricted` that the
+  store drops (below); its frequency and its length reach none of that
+  reader's scores.
+- **Statistics are of the head.** A `where`, a `valid_at` and the
+  position read do not shape them, as they do not shape the ranking
+  (below), and a field the reader is not shown is not searched, so its
+  counts move nothing.
+- **A lake written before is counted once.** The counts carry the
+  position they are folded through. A writer that opens a projection
+  whose mark is absent or behind counts them again from the head, and a
+  reader that finds the mark behind counts at the search instead of
+  trusting them. The log does not change and the layout does not move.
+
+The engines' own rankers, `bm25()` in SQLite and `ts_rank` with its
+four `setweight` classes in PostgreSQL, score differently from each
+other and from the memory engine, and four classes cannot hold the
+weights a host writes. Neither engine's index knows which field a token
+came from; the function reads each candidate's fields from the record,
+so a weight changes no projection.
+
+### A hit says where its text matched, and only in fields its reader is shown
+
+A search that asks for `matches` is answered, on each hit, the searched
+fields its text matched, by name, and in each the spans of the tokens
+that matched, in text order, with the count of every matched token in
+the field. It is proposed for 0.20.0 (lakelands#1412) and comes in
+force with the issue that builds it. A host that wanted to show why a
+hit is a hit ran one more search a hit, field by field.
+
+- **A span is counted in characters,** Unicode scalar values of the
+  field's text, its end exclusive, the unit refusals already count
+  offsets in. A field answers at most 32 spans, a constant of the core,
+  and its count says how many it held, so a caller knows the spans were
+  cut. The span does not say which query word it matched; that is a
+  member a later release may add.
+- **It is computed by the store over the answered record,** after the
+  page is cut, for the page's hits only, by the one token pipeline that
+  ranks: a token of the text is a span where the pipeline makes of it a
+  term the query holds, so a stem and a folded letter match as they
+  rank. The language is the one the ranking used, and the fields are
+  the first stage's searched fields; a second stage's text moves no
+  span. No engine computes it: each would need a positional index to
+  hand back what the store computes over at most a page of records it
+  already holds.
+- **It reads the record answered, at the position read.** A search
+  ranks by the head (below), so a record whose text changed since that
+  position is ranked by text it is not answered with, and may answer no
+  matches.
+- **Only fields its reader is shown.** A field is named only where it
+  is searched, which its reader is shown, and present in the record as
+  its reader is told it: a field hidden, masked or not shown at the
+  position read, or hidden on the record by a condition, is never
+  named, so `matches` is bounded by the record and says nothing a `get`
+  of it would not.
+- **It says nothing of the axes.** A hybrid hit reports the text it
+  matched whichever axis brought it, so a hit a vector brought may
+  still name matches; what each axis brought stays the axes' (below).
+- **A search with no text cannot ask for it.** `matches` on a search
+  with no text is refused by its shape, before any right is judged,
+  as a model named with no vector is. A pattern that starts from a
+  search answers rows, not hits, and has no `matches`. Without the
+  member a hit answers as it always has.
 
 ### A vector ranking is the cosine, best first, exact to the bit
 
@@ -268,15 +374,16 @@ in its title no higher than one mentioning it in a note.
   (`docs/decisions/063-every-setting-is-in-one-list.md`).
 - **`text_fields` weighs every ranking of text,** a lexical search's
   and a hybrid search's lexical half alike, and its fallback to the
-  text: it weighs a match by the field it is in, inside the ranking,
-  and not a ranking against another, so it is read where nothing is
-  fused too. A hybrid search's lexical half is ranked by it before the
-  fusion, which reads that half's ranks. The axes do not name it: it
-  is the type's or the search's, not an axis's. A field is weighed
-  only where the search reads it, under its name at the head: a field
-  it does not name, or whose reader is not shown it, brings no weight,
-  and no weight is scaled by another's, so a field its reader is not
-  shown moves no score of the fields it is (lakelands#1230).
+  text: it weighs a match by the field it is in, inside the ranking, a
+  token's frequency in the field multiplied by it once BM25F is in force
+  (above), and not a ranking against another, so it is read where
+  nothing is fused too. A hybrid search's lexical half is ranked by it
+  before the fusion, which reads that half's ranks. The axes do not name
+  it: it is the type's or the search's, not an axis's. A field is
+  weighed only where the search reads it, under its name at the head: a
+  field it does not name, or whose reader is not shown it, brings no
+  weight, and no weight is scaled by another's, so a field its reader is
+  not shown moves no score of the fields it is (lakelands#1230).
 - **A search's own `text_fields` is judged as the setting's is,** at
   the search. Each field it names, in name order, is probed as a field
   a search names (024), so one the type does not declare and one the
@@ -731,7 +838,9 @@ the answer and the same on every engine:
   by their ends (`docs/decisions/026-the-store-walks-the-graph.md`).
 - **Graph measures** order degrees highest first, ties by type and key;
   components largest first, ties by their least type and key, numbered
-  from 0 in that order, and a component's records by type and key.
+  from 0 in that order, and a component's records by type and key;
+  PageRank highest first, ties by type and key, and communities as
+  components (018).
 - **Ranked search** answers best first and breaks equal scores by key
   (below).
 - **Groups** come in the order of their key's canonical bytes; a
@@ -944,3 +1053,10 @@ Of an index asked for:
   reader in place of one partial index per field and its mark, at a
   fixed `ef_search`; under the seam the engine judges its vector
   candidates.
+- Proposed (lakelands#1412): a hit says where its text matched, in
+  characters of the fields its reader is shown, computed by the store
+  after the page is cut; the lexical score is BM25F in its
+  combined-field form, which replaces the count of tokens at their
+  heaviest field. BM25F had been refused because the function kept no
+  statistics; that reason now decides what is kept: `df` counted over
+  the candidates, `n_f` and `L_f` kept per class.
