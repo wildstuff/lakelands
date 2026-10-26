@@ -106,16 +106,21 @@ format 19, in bytes a record:
 | | log | projection | index | total |
 |---|---:|---:|---:|---:|
 | before (format 19) | 1 429.2 | 1 172.7 | 195.4 | 2 797.3 |
-| after | 673.6 | 773.3 | 129.0 | 1 575.9 |
+| after | 673.6 | 773.3 | 131.2 | 1 578.1 |
 
 The projection is compared after `VACUUM` in both rows; as written it
-held 1 212.0 B a record before. Of the log's 755.6 B, the derived
-`position` and `prev` take 89.9, the frame's top-level members 225.4,
-`sealed` framed 203.0, `body` framed 63.7, and the box 173.6; keeping
-`v` on every line costs 7 B of it, which the table does not count. Of
-the projection's, the copies of the apart keys take 212.2; the rest, and
-the index's 66.4, is the engines' own layout of the routes, of a
-record's provenance and of the index, which no format fixes.
+held 1 212.0 B a record before. The index is as 0.20.0 writes it, each
+line one 0.19.0 parses (lakelands#1473): `,""` on every event line after
+a segment's first, less the frame's own line, is 2.2 B a record more
+than first measured, taken before and after that change on 10 000
+records of one source, 32 an append (lakelands#1477). Of the log's
+755.6 B, the derived `position` and `prev` take 89.9, the frame's
+top-level members 225.4, `sealed` framed 203.0, `body` framed 63.7, and
+the box 173.6; keeping `v` on every line costs 7 B of it, which the
+table does not count. Of the projection's, the copies of the apart keys
+take 212.2; the rest, and the index's 64.2, is the engines' own layout
+of the routes, of a record's provenance and of the index, which no
+format fixes.
 
 - **The truth stays the same truth.** The hash is over the restored
   event, so a frame changes no hash and no id, and an edit of a frame

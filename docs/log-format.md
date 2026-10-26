@@ -124,8 +124,14 @@ restored exactly
   full event, which is a stored form too). The store frames each
   append (§4.1) of two or more events, with exactly the members all its
   events share, and writes `position` and `prev` only on a segment's
-  first event line; an append of one event has no frame. A copy of the
-  log writes a form of its own (§4.2). A reader judges no form against
+  first event line; an append of one event has no frame. An append that
+  holds a `lake_created` or a `lake_upgraded`, the one that begins the
+  lake's format, is stored whole: no frame, each line its event's
+  canonical bytes (lakelands#1477). 0.19.0 checks a SQLite lake's last
+  append against its hashes as lines of its own form: whole, that
+  append passes while it is the lake's only one of 20, and 0.19.0 names
+  the format (§6) instead of taking the append for a crash's tail. A
+  copy of the log writes a form of its own (§4.2). A reader judges no form against
   the appends: it cannot see where an append ended, and two forms of the
   same events restore the same bytes, hash and digest alike, so either
   is the log.

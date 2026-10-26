@@ -19,10 +19,19 @@ check!(
     given
 );
 
-async fn an_append_of_events_that_share_members_is_framed_and_one_event_is_not(
+check!(
+    CREATION_WHOLE = the_append_that_creates_a_lake_is_stored_whole,
+    "log-format §1.2: the append that creates a lake, its `lake_created` and what follows it in one append, is stored whole, with no frame and each event's line its canonical bytes, `position` and `prev` included, so a reader of the format before reads it as lines of its own and names the format the lake is in",
+    given
+);
+
+/// `store`'s lake opened again through the harness's engine opener, the
+/// opener, and the lake's location: the log is read below the store
+/// through them.
+async fn below(
     store: Store,
-    given: Given,
-) -> Held {
+    given: &Given,
+) -> Result<(Store, Arc<dyn EngineOpener>, lakelands_api::Location), Failure> {
     let kept: Arc<Mutex<Option<Arc<dyn EngineOpener>>>> = Arc::default();
     let keep = kept.clone();
     let wrap: crate::conformance::Wrap = Arc::new(move |inner: Arc<dyn EngineOpener>| {
@@ -37,6 +46,49 @@ async fn an_append_of_events_that_share_members_is_framed_and_one_event_is_not(
             "the harness opens the lake through its engine opener and names its location",
         ));
     };
+    Ok((store, opener, location))
+}
+
+async fn the_append_that_creates_a_lake_is_stored_whole(store: Store, given: Given) -> Held {
+    // The harness's lake is just created: its head is its creation's last
+    // event.
+    let made = store.head().await.must("reading the head")?;
+    let (_store, opener, location) = below(store, &given).await?;
+    let engine = opener.open(&location, OpenMode::Read);
+    let engine = engine.map_err(|e| Failure::new(format!("opening the lake to read: {e}")))?;
+    let stored = engine.read(Position(0), made.0 as u32 + 1);
+    let stored = stored.must("reading the log below the store")?;
+    ensure!(
+        made.0 >= 1 && stored.len() as u64 == made.0 + 1,
+        "the lake's creation appends two or more events, and the log below the store holds \
+         {} events of 0 through {made}",
+        stored.len()
+    );
+    for e in &stored {
+        let restored = crate::log::restore(e);
+        let whole = restored.as_ref().is_ok_and(|(r, whole)| {
+            *whole
+                && crate::canonical::to_vec(r) == e.bytes
+                && crate::engines::hash_of(r.clone()) == e.hash.0
+        });
+        ensure!(
+            e.frame.is_none() && whole,
+            "the creation's event at {} is stored with no frame as its canonical bytes, of its \
+             hash {}; it is stored as {:?} with the frame {:?}",
+            e.position,
+            e.hash.0,
+            String::from_utf8_lossy(&e.bytes),
+            e.frame.as_deref()
+        );
+    }
+    Ok(())
+}
+
+async fn an_append_of_events_that_share_members_is_framed_and_one_event_is_not(
+    store: Store,
+    given: Given,
+) -> Held {
+    let (store, opener, location) = below(store, &given).await?;
     let l = Lake::of(store.as_ref());
     l.declare(type_decl(
         "reading",

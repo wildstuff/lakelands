@@ -92,11 +92,13 @@ writes 19, so a 0.17.0 binary refuses its lakes by their number
 (lakelands#1330). 0.20.0 takes the sixth, to 20: it reads 14 to 20 and
 writes 20, so a 0.19.0 binary refuses its lakes by their number
 (lakelands#1409). Its SQLite index keeps the two line shapes 0.19.0
-reads, so that binary reaches the ends and judges them (lakelands#1468);
-where the only append of 20 is still the last, as right after an
-upgrade, it takes that append for a crash's tail, finds 19 and refuses
-the projection's layout instead, and its rebuild cuts that append
-alone, as nothing was written after it. Its one step carries also a new
+reads, so that binary reaches the ends and judges them (lakelands#1468).
+The append that begins a lake's format, its creation or its upgrade, is
+stored whole, each line its event's canonical bytes, so a binary of the
+format before reads that append as lines of its own while it is still
+the last, and names the format the lake is in; framed, it would take
+that append for a crash's tail and judge the lake by the format before
+(lakelands#1477, `docs/log-format.md` §1.2). Its one step carries also a new
 stored form of the log and a record's values sealed in one box,
 accepted as 083
 (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`,
@@ -239,3 +241,8 @@ them.
 - 0.20.0's step, to 20, changing also how the log stores events, a
   lake of 19 keeping its lines as they stand, accepted with 083
   (lakelands#1413).
+- The append that creates a lake or upgrades it is stored whole, so
+  0.19.0 names 20 from that append on; before, it read a lake whose
+  only append of 20 was the last as a lake of 19 with a crash's tail,
+  refused its projection's layout and advised a rebuild that cut that
+  append (lakelands#1477).

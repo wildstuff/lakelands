@@ -1235,6 +1235,7 @@ belongs in the suite, not beside one engine:
 **stored form**
 
 - `an_append_of_events_that_share_members_is_framed_and_one_event_is_not` — log-format §1.2: the writer stores an append of two or more events of one format that share members as one frame, its first position the append's first, covering every event of the append, and each event's line; an append of one event is stored as its line alone, with no frame; each restores to an event of its hash
+- `the_append_that_creates_a_lake_is_stored_whole` — log-format §1.2: the append that creates a lake, its `lake_created` and what follows it in one append, is stored whole, with no frame and each event's line its canonical bytes, `position` and `prev` included, so a reader of the format before reads it as lines of its own and names the format the lake is in
 
 **compact**
 

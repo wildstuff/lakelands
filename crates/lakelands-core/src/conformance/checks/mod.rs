@@ -831,6 +831,7 @@ pub const ALL: &[Check] = &[
     export::FRAMED_COPY,
     export::FRAMED_DAMAGE,
     stored_form::APPEND_FRAMED,
+    stored_form::CREATION_WHOLE,
     export::GROWS,
     export::NOT_EMPTY,
     export::DAMAGE,
