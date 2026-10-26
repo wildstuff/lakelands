@@ -1174,9 +1174,10 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             (
                 "project",
                 json!({"type": "object", "properties": {
-                "as": {"enum": ["rows", "graph", "aggregate", "degree", "components", "reach"],
-                       "description": "`degree` answers rows of `type`, `key` and `degree` (links over the steps' relations), highest first; `components` answers rows of `component`, `size`, `type` and `key`, largest component first; with no start `type` it grows from every linked record, in every type. Both take steps without `depth`, `where` or `type`; `components` walks each step `both`. `reach` answers rows of `step`, `depth`, `type` and `key`: what each step reaches from what the step before it kept, dead ends included, each record at the first step that reaches it."},
-                "fields": {"type": "array", "items": {"type": "string"}}}}),
+                "as": {"enum": ["rows", "graph", "aggregate", "degree", "components", "reach", "page_rank", "cheapest"],
+                       "description": "`degree` answers rows of `type`, `key` and `degree` (links over the steps' relations), highest first; `components` answers rows of `component`, `size`, `type` and `key`, largest component first; with no start `type` it grows from every linked record, in every type. Both take steps without `depth`, `where` or `type`; `components` walks each step `both`. `reach` answers rows of `step`, `depth`, `type` and `key`: what each step reaches from what the step before it kept, dead ends included, each record at the first step that reaches it. `page_rank` answers rows of `type`, `key` and `page_rank` over the graph the start reaches, each step in its own direction, highest first, the same on every engine; like `components` it takes steps without `depth`, `where` or `type`, and may leave the start `type` out. `cheapest` needs `to` and one start: rows of `hop`, `type`, `key`, `relation`, `walk` and `cost` along the walk that costs least, a link costing its `weight` field, then the fewest hops."},
+                "fields": {"type": "array", "items": {"type": "string"}},
+                "weight": {"type": "string", "description": "For `cheapest`: the number or decimal field of every step's link type that a link costs."}}}),
             ),
             (
                 "order_by",
@@ -1188,7 +1189,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
         time_axes(&mut p);
         out.push(ToolSpec {
             name: QUERY.into(),
-            description: "Walk declared relations from a start (a record, a filter or a search) and return rows or a graph. Covers neighbours, traversal, paths and subgraphs, and two whole-graph measures: degree centrality and connected components. A graph whose steps all start at depth 0 is one walk over their relations, each in its own step's direction and depth; any other is a chain, as rows walk it; a graph cut by `limit` pages with `next_cursor`. Rows and an aggregate may branch and join: a step's `from` names an earlier name, `join` closes a cycle, `optional` binds null where nothing matches and `absent` keeps a row only where nothing does. A path (`to`) has one start and answers a graph. A measure is computed whole for every page: read it in one page, with `limit` up to the lake's `max_graph_nodes`.".into(),
+            description: "Walk declared relations from a start (a record, a filter or a search) and return rows or a graph. Covers neighbours, traversal, paths and subgraphs, whole-graph measures (degree centrality, connected components and PageRank) and the cheapest walk. A graph whose steps all start at depth 0 is one walk over their relations, each in its own step's direction and depth; any other is a chain, as rows walk it; a graph cut by `limit` pages with `next_cursor`. Rows and an aggregate may branch and join: a step's `from` names an earlier name, `join` closes a cycle, `optional` binds null where nothing matches and `absent` keeps a row only where nothing does. A path (`to`) has one start and answers a graph, or with `cheapest` rows. A measure is computed whole for every page: read it in one page, with `limit` up to the lake's `max_graph_nodes`.".into(),
             input_schema: obj(p, &["start"]),
             output_schema: reply_schema(json!({"type": "object"})),
             door: Door::Query,

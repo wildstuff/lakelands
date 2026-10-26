@@ -2104,7 +2104,9 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Projection::Aggregate(_)
             | Projection::Degree
             | Projection::Components
-            | Projection::Reach => {}
+            | Projection::Reach
+            | Projection::PageRank
+            | Projection::Cheapest { .. } => {}
         }
     }
     let _ = projections;
@@ -2118,6 +2120,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 Projection::Degree,
                 Projection::Components,
                 Projection::Reach,
+                Projection::PageRank,
+                Projection::Cheapest { weight: "w".into() },
             ],
             Some("as"),
         ),

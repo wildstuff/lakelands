@@ -168,6 +168,25 @@ pub enum Projection {
     /// key)`; a page that would walk past the lake's `max_graph_nodes` is
     /// refused `too_large` (`docs/decisions/018-one-pattern-query.md`).
     Reach,
+    /// PageRank: one row per record of the graph the start records reach
+    /// over the steps' relations, each in its step's direction, `type`,
+    /// `key` and `page_rank`. Damping 85/100, at most 100 rounds in
+    /// integers of 10^-12, the same on every engine. Ordered by
+    /// `page_rank`, highest first, then by `(type, key)`. With no start
+    /// type, every record that holds a link it may see over the steps'
+    /// relations is a start. Past the lake's `max_graph_nodes` refused
+    /// `too_large`, never cut (`docs/decisions/026-the-store-walks-the-graph.md`).
+    PageRank,
+    /// The cheapest walk from the one start to `to`: one row per record
+    /// along it, `hop`, `type`, `key`, `relation`, `walk` and `cost`.
+    /// Each link costs its `weight`, a number or decimal field of its link
+    /// type, at 9 places. Least cost, then fewest hops, then each hop's
+    /// least predecessor by `(type, key)` over its least link
+    /// (`docs/decisions/018-one-pattern-query.md`).
+    Cheapest {
+        /// The field of every step's link type that a link costs.
+        weight: FieldName,
+    },
 }
 
 impl<'de> Deserialize<'de> for Projection {
@@ -187,6 +206,10 @@ impl<'de> Deserialize<'de> for Projection {
             Degree {},
             Components {},
             Reach {},
+            PageRank {},
+            Cheapest {
+                weight: FieldName,
+            },
         }
         Ok(match Wire::deserialize(d)? {
             Wire::Rows { fields } => Projection::Rows { fields },
@@ -195,6 +218,8 @@ impl<'de> Deserialize<'de> for Projection {
             Wire::Degree {} => Projection::Degree,
             Wire::Components {} => Projection::Components,
             Wire::Reach {} => Projection::Reach,
+            Wire::PageRank {} => Projection::PageRank,
+            Wire::Cheapest { weight } => Projection::Cheapest { weight },
         })
     }
 }

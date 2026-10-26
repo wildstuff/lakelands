@@ -52,7 +52,7 @@ check!(
 
 check!(
     MEASURE_REFUSALS = a_measure_refuses_depth_where_to_order_by_and_one_way_components,
-    "018: a measure refuses a step `depth`, `where` or `type`, `to`, `order_by`, and a `components` step that does not walk `both`, each as invalid, rather than answer less than it seems to; `order_by` in its own words, naming the measure, `degree` and `components` alike (lakelands#924)"
+    "018: a measure refuses a step `depth`, `where` or `type`, `to`, `order_by`, no step at all, and a `components` step that does not walk `both`, each as invalid in its own words naming the measure, rather than answer less than it seems to, `degree`, `components` and `page_rank` alike (lakelands#924); a step's `join`, `optional`, `absent`, and a `from` that names another record than the start, are refused naming the member and the measure, which reads the steps' relations around its records and binds no name"
 );
 
 /// Partners p1..p3; invoices i0..i5 (i0 linked to nothing); `billed_to` by the reference field
@@ -886,47 +886,85 @@ async fn a_measure_refuses_depth_where_to_order_by_and_one_way_components(store:
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
-    let degree = || one("invoice", "billed_to", Walk::Out, Projection::Degree);
-    let mut cases: Vec<(&str, Pattern)> = Vec::new();
-    let mut p = degree();
-    p.steps[0].depth = Depth { min: 1, max: 2 };
-    cases.push(("a step depth", p));
-    let mut p = degree();
-    p.steps[0].filter = Some("name = 'p1'".into());
-    cases.push(("a step where", p));
-    let mut p = degree();
-    p.steps[0].ty = Some("partner".into());
-    cases.push(("a step `type`", p));
-    let mut p = degree();
-    p.to = Some(("partner".into(), "p1".into()));
-    cases.push(("`to`", p));
-    let mut p = degree();
-    p.order_by = vec![order("degree", Default::default(), Default::default())];
-    cases.push(("`order_by`", p.clone()));
-    p.project = Projection::Components;
-    p.steps = both();
-    cases.push(("components with `order_by`", p));
+    let named = |p: &Projection| match p {
+        Projection::Degree => "degree",
+        Projection::Components => "components",
+        _ => "page_rank",
+    };
+    let mut cases: Vec<(String, Pattern, Case)> = Vec::new();
+    for project in [Projection::Degree, Projection::PageRank] {
+        let m = named(&project);
+        let base = || one("invoice", "billed_to", Walk::Out, project.clone());
+        let measure = || m.to_owned();
+        let mut p = base();
+        p.steps[0].depth = Depth { min: 1, max: 2 };
+        let words = Case::MeasureNoDepth { measure: measure() };
+        cases.push((format!("{m} with a step depth"), p, words));
+        let mut p = base();
+        p.steps[0].filter = Some("name = 'p1'".into());
+        let words = Case::MeasureNoWhere { measure: measure() };
+        cases.push((format!("{m} with a step where"), p, words));
+        let mut p = base();
+        p.steps[0].ty = Some("partner".into());
+        let words = Case::MeasureNoType { measure: measure() };
+        cases.push((format!("{m} with a step `type`"), p, words));
+        let mut p = base();
+        p.to = Some(("partner".into(), "p1".into()));
+        let words = Case::MeasureNoTo { measure: measure() };
+        cases.push((format!("{m} with `to`"), p, words));
+        let mut p = base();
+        p.order_by = vec![order(m, Default::default(), Default::default())];
+        let words = Case::MeasureNoOrder { measure: measure() };
+        cases.push((format!("{m} with `order_by`"), p, words));
+        let mut p = base();
+        p.steps.clear();
+        let words = Case::MeasureNoSteps { measure: measure() };
+        cases.push((format!("{m} with no step"), p, words));
+    }
+    let mut p = measure("invoice", both(), Projection::Components);
+    p.order_by = vec![order("components", Default::default(), Default::default())];
+    let words = Case::MeasureNoOrder {
+        measure: "components".into(),
+    };
+    cases.push(("components with `order_by`".into(), p, words));
     let one_way = one("invoice", "billed_to", Walk::Out, Projection::Components);
-    cases.push(("components walking one way", one_way));
-    cases.push((
-        "a measure with no step",
-        measure("invoice", Vec::new(), Projection::Degree),
-    ));
-    for (what, p) in cases {
-        let ordered = (!p.order_by.is_empty()).then_some(match p.project {
-            Projection::Degree => "degree",
-            _ => "components",
-        });
+    let words = Case::ComponentsBothWays {
+        relation: "billed_to".into(),
+    };
+    cases.push(("components walking one way".into(), one_way, words));
+    // A pattern's tree members: a measure reads the steps' relations
+    // around its records, and binds no name another step could join.
+    for project in [
+        Projection::Degree,
+        Projection::Components,
+        Projection::PageRank,
+    ] {
+        for member in ["join", "optional", "absent", "from"] {
+            let mut p = measure("invoice", both(), project.clone());
+            let s = &mut p.steps[1];
+            match member {
+                "join" => s.join = Some("other".into()),
+                "optional" => s.optional = true,
+                "absent" => s.absent = true,
+                _ => s.from = Some("other".into()),
+            }
+            let words = Case::PatternTreeMember {
+                member: member.into(),
+                projection: named(&project).into(),
+            };
+            cases.push((
+                format!("{} with a step's `{member}`", named(&project)),
+                p,
+                words,
+            ));
+        }
+    }
+    for (what, p, words) in cases {
         let err = cat.query(own, p);
-        let err = err.await.must_fail(&format!("a measure with {what}"))?;
+        let err = err.await.must_fail(&what)?;
         ensure!(
-            matches!(reason(&err), Some(Refusal::Invalid(..))),
-            "a measure with {what} must be refused as invalid; it failed with {err:?}"
-        );
-        let words = ordered.map(|m| Case::MeasureNoOrder { measure: m.into() });
-        ensure!(
-            words.is_none() || invalid_case(&err) == words.as_ref(),
-            "a measure with {what} must be refused as `{words:?}`; it failed with {err:?}"
+            invalid_case(&err) == Some(&words),
+            "{what} must be refused as invalid, `{words:?}`; it failed with {err:?}"
         );
     }
     Ok(())

@@ -1062,6 +1062,10 @@ interface types {
         components,
         /// What each step reaches, each record at the first step.
         reach,
+        /// PageRank of the graph the start records reach, in integers.
+        page-rank,
+        /// The walk to `to` that costs least, a link costing this field.
+        cheapest(field-name),
     }
 
     record pattern {
