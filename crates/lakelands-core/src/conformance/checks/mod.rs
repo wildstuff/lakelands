@@ -518,6 +518,8 @@ pub const ALL: &[Check] = &[
     sets_at_read::SET_AT_READ_STEPS,
     sets_at_read::SET_AT_READ_NAMED,
     sets_at_read::SET_AT_READ_AGAIN,
+    sets_at_read::SET_AT_READ_MERGED,
+    sets_at_read::SET_AT_READ_RIGHTS,
     kept_sets::KEPT_SET,
     kept_sets::KEPT_SET_REFUSED,
     kept_sets::KEPT_SET_REMADE,
