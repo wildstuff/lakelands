@@ -118,6 +118,10 @@ fn refused_at(construct: &Construct) -> (&'static str, &'static str) {
             "MATCH (b:bill) USING INDEX b:bill(amount) RETURN b",
             "USING",
         ),
+        Construct::OrderByAggregate => (
+            "MATCH (b:bill) RETURN b.payee, count(*) AS n ORDER BY b.payee",
+            "ORDER",
+        ),
         Construct::Unknown(name) => panic!("`{name}` is no construct this build knows"),
     }
 }
@@ -166,6 +170,7 @@ fn every_construct_outside_the_subset_is_refused_at_its_offset() {
         Construct::OptionalParts,
         Construct::AggregateInExpression,
         Construct::Using,
+        Construct::OrderByAggregate,
     ];
     for construct in &all {
         let (statement, marker) = refused_at(construct);

@@ -810,6 +810,8 @@ named! {
         AggregateInExpression = "aggregate_in_expression" => "an aggregate inside an expression (a measure is one function of one path)",
         /// A `USING` hint.
         Using = "using" => "`USING` (an index hint)",
+        /// `ORDER BY` beside an aggregate.
+        OrderByAggregate = "order_by_aggregate" => "`ORDER BY` beside an aggregate (its groups come in one fixed order, by the fields returned beside it: leave `ORDER BY` out)",
     }
 }
 

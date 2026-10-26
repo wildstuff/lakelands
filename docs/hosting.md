@@ -1148,6 +1148,11 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
 
 - **One tool surface.** The catalog is the only tool surface. A host
   adds no second query door beside it and no hand-written tool names.
+  Its read tools are `describe`, each type's `find` and `get`, `query`,
+  `search` and `proposals`, and `cypher`: a statement of the openCypher
+  subset, read as the `query` pattern it translates into, under the same
+  rights, refusals and cursor; it is listed wherever `query` is, and
+  refuses a write statement naming its clause.
 - **Invariants live in the store.** Field rights, per-field provenance
   and the `sys.` guard are enforced on every write by the store, so a
   host-side check is never a substitute and never needed. See

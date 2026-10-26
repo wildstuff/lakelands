@@ -550,7 +550,14 @@ impl<'p> Parser<'p> {
             }
         }
         let mut order = Vec::new();
+        let ordered = self.at();
         if self.kw("ORDER") {
+            // An aggregate's groups come in one order, by the fields
+            // beside it: an order of the statement's own is refused here,
+            // in its words, before the pattern would refuse its own.
+            if items.iter().any(|i| !i.aggregates.is_empty()) {
+                return Err(outside(Construct::OrderByAggregate, ordered));
+            }
             self.expect_kw("BY")?;
             loop {
                 let from = self.at();

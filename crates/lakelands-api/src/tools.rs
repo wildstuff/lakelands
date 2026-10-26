@@ -107,8 +107,8 @@ pub enum Door {
     /// `query`.
     Query,
     /// `cypher`: a statement of the openCypher subset, translated into one
-    /// pattern and run as `query` runs it. Served over REST only; the
-    /// generator makes no tool of it.
+    /// pattern and run as `query` runs it; a read tool, listed where
+    /// `query` is.
     Cypher,
     /// `search`.
     Search,
@@ -164,6 +164,7 @@ const PIN: &str = "pin";
 const SUBSCRIBE: &str = "subscribe";
 const UNSUBSCRIBE: &str = "unsubscribe";
 const QUERY: &str = "query";
+const CYPHER: &str = "cypher";
 const SEARCH: &str = "search";
 
 /// The second stage a search or a pattern's start asks for.
@@ -198,12 +199,13 @@ pub const CHANGE_KINDS: [&str; 7] = [
 
 /// The names of the generic tools, which no type or verb may produce.
 /// The generator emits these constants and no other generic name.
-pub const GENERIC_TOOLS: [&str; 14] = [
+pub const GENERIC_TOOLS: [&str; 15] = [
     DESCRIBE,
     PIN,
     SUBSCRIBE,
     UNSUBSCRIBE,
     QUERY,
+    CYPHER,
     SEARCH,
     PROPOSE,
     PROPOSALS,
@@ -1276,6 +1278,34 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             input_schema: obj(p, &["start"]),
             output_schema: reply_schema(json!({"type": "object"})),
             door: Door::Query,
+        });
+
+        // The subset read beside `query`, never in its place: what it
+        // cannot spell, `query` can.
+        let mut p = props([
+            (
+                "statement",
+                json!({"type": "string", "minLength": 1,
+                       "description": "One statement of the openCypher subset, as in `MATCH (c:customer {name: $name})<-[:placed_by]-(o:order) RETURN o.id, o.total ORDER BY o.total DESC LIMIT 20`."}),
+            ),
+            (
+                "params",
+                json!({"type": "object",
+                       "description": "The value of every `$name` the statement reads, by name; a value given and not read is refused."}),
+            ),
+            (
+                "cursor",
+                json!({"type": "string",
+                       "description": "The `next_cursor` of the page before, given with the same statement and parameters, to read the next page."}),
+            ),
+        ]);
+        time_axes(&mut p);
+        out.push(ToolSpec {
+            name: CYPHER.into(),
+            description: "Read the lake with one statement of the openCypher subset: `MATCH`, `OPTIONAL MATCH`, `WHERE` and `RETURN`, with `ORDER BY` and `LIMIT`. It is translated into one pattern of `query` and read as `query` reads it, under the same rights; it never writes. The first node names its type, as in `(o:order)`, and a node may carry a map of field values, as in `(c:customer {name: $name})`. A relationship names a declared relation and is walked in its direction, `(o:order)-[:placed_by]->(c:customer)`, or against it, `(c)<-[:placed_by]-(o)`; `-[:r*1..3]->` walks it 1 to 3 hops, its upper bound written. A further part, after a comma or in a further `MATCH`, begins at a name bound before it. `WHERE` takes the lake's expression grammar with Cypher's operators (`=`, `<>`, `<`, `AND`, `OR`, `NOT`, `IN [...]`, `STARTS WITH`, `CONTAINS`, `IS NULL`), and `NOT (p)<-[:r]-(:t)` keeps a row only where no such link is. `RETURN` names fields of bound names (`o.total`), or `*` for every bound name. An aggregate (`count(*)`, `count(x)`, `sum(x.f)`, `min(x.f)`, `max(x.f)`, `avg(x.f)`, each named with `AS`) answers one group per value of the fields returned beside it, the groups in one fixed order by those fields, so `ORDER BY` beside an aggregate is refused: leave it out. Without one, `ORDER BY` names fields of bound names (`o.total DESC`), never an alias or an expression. `LIMIT` takes a whole number and caps the rows of a page; `SKIP` past 0 is refused: to read the next page, pass the answer's `next_cursor` as `cursor` with the same statement and parameters. An aggregate answers every group in one page with no cursor, ignoring `LIMIT`: for the largest few, read every group and pick them. Give values as `$name` with `params`. Refused, naming the construct at its character offset: `WITH`, `DISTINCT`, `UNWIND`, `UNION`, a named path, a function the grammar lacks, and every write (`CREATE`, `MERGE`, `SET`, `DELETE`), which goes through the typed write tools. The subset cannot spell a shortest or cheapest walk, a path to a record, degree, components, reach or PageRank: `query` reads those. A statement that begins with `EXPLAIN` answers the `query` pattern it translates to and reads nothing.".into(),
+            input_schema: obj(p, &["statement"]),
+            output_schema: reply_schema(json!({"type": "object"})),
+            door: Door::Cypher,
         });
 
         let mut p = props([
