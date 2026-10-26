@@ -700,6 +700,11 @@ catalog! {
         RemovedBefore { v: u32 } => "an event of format {v} is a `values_removed`, which format 17 added",
         /// An event of a format before 18 carries `apart`.
         ApartBefore { v: u32 } => "an event of format {v} carries `apart`, which format 18 added",
+        /// An event other than a `record_ingested` of format 20 on carries `sealed.box`.
+        BoxedOn { kind: String, v: u32 } => "a `{kind}` event of format {v} carries `sealed.box`, which only a `record_ingested` of format 20 on carries",
+        /// A box that names no member, holds a member the patch holds
+        /// too, or is not padded base64 of at least the tag's 16 bytes.
+        BoxForm => "a `sealed.box` names no member in `sealed.fields`, or one the patch holds too, or is not padded base64 of at least 16 bytes",
         /// A `values_removed` of a format before 18 selects by `seen_before`
         /// or by a set of deliveries.
         SelectsLater { v: u32, by: String } => "a `values_removed` of format {v} selects by `{by}`, which format 18 added",

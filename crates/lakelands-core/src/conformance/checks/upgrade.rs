@@ -190,6 +190,60 @@ check!(
     given
 );
 
+check!(
+    BOXES_BESIDE_19 = a_lake_of_format_19_takes_boxes_beside_the_members_it_sealed_alone,
+    "083: the lake of format 19 (`docs/log-format/lakes/19/`), imported with its file keyring's file and upgraded by a writer's open, takes a source's ingests after its own events: each seals its erasable value in a `sealed.box` of format 20, while the lake's events of 19 seal each member alone in the patch; the lake verifies, a value of either form reads whole, and so it does rebuilt",
+    given
+);
+
+async fn a_lake_of_format_19_takes_boxes_beside_the_members_it_sealed_alone(
+    store: Store,
+    given: Given,
+) -> Held {
+    store.head().await.must("reading the head")?;
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/lakes/19");
+    let lake = lakelands_api::LakeId::from("kept19");
+    let keys = super::erasable::Keys::from_file(&dir.join("keys/kept19.keys.json"), &lake)?;
+    let seams = super::erasable::with(&std::sync::Arc::new(keys));
+    let imported = (given.import)(dir, lake, None, seams.clone()).await;
+    let imported = imported.map_err(|e| Failure::new(format!("importing the lake: {e}")))?;
+    let store = (imported.writer)(imported.store, seams).await;
+    let store = store.map_err(|e| Failure::new(format!("opening it for writing: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    let cy = crate::conformance::fixture::source_record("person", "p1", json!({"name": "Cy"}));
+    let dee = json!({"id": "p7", "name": "Dee", "city": "Bonn"});
+    let dee = crate::conformance::fixture::source_record("person", "p7", dee);
+    l.ingest("crm", vec![cy])
+        .await
+        .must("ingesting Cy into p1")?;
+    l.ingest("crm", vec![dee]).await.must("ingesting p7")?;
+    let log = log_events(store.as_ref()).await?;
+    let form = |e: &Event| e.sealed.as_ref().map(|s| (e.v, s.boxed.is_some()));
+    let forms: Vec<_> = log.iter().filter_map(form).collect();
+    let (old, new) = forms.split_at(forms.iter().take_while(|f| f.0 == 19).count());
+    ensure!(
+        !old.is_empty()
+            && old.iter().all(|f| !f.1)
+            && new.len() == 2
+            && new.iter().all(|f| *f == (LOG_FORMAT_VERSION, true)),
+        "the lake's sealed events of 19 hold no box, and the two ingests after them each one box of {LOG_FORMAT_VERSION}: {forms:?}"
+    );
+    for at in ["as written", "rebuilt"] {
+        if at == "rebuilt" {
+            store.rebuild().await.must("rebuilding the lake")?;
+        }
+        store.verify(None, None).await.must("verifying the lake")?;
+        for (key, want) in [("p1", "Cy"), ("p7", "Dee"), ("p5", "Eve")] {
+            let v = super::erasable::read(&l, key, "name").await?;
+            ensure!(
+                v == json!(want),
+                "{at}, `{key}` reads `name` {want}; it reads {v}"
+            );
+        }
+    }
+    Ok(())
+}
+
 async fn a_lake_the_release_before_made_is_read_as_it_answered(store: Store, given: Given) -> Held {
     kept_lake_answers(store, given, 14).await
 }

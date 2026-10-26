@@ -252,8 +252,8 @@ fn judge(
                 return Err(Error::invalid(Case::SourceForgotten { source }));
             }
             // Its values of an erasable field enter the log sealed under its
-            // key, and its id is the sealed patch's: no digest of a plaintext
-            // value enters the log (058).
+            // key, in one box, and its id is the patch's and the box's as
+            // stored: no digest of a plaintext value enters the log (058, 083).
             let mut fields: Vec<_> = (decl.fields.iter())
                 .filter(|f| f.erasable && patch.get(&f.name).is_some_and(|v| !v.is_null()))
                 .map(|f| f.name.clone())
@@ -281,6 +281,7 @@ fn judge(
                 source: None,
                 fields,
                 apart: apart.iter().cloned().collect(),
+                boxed: None,
             });
             let id = match (&sealed, &sealing) {
                 (Some(s), Some((_, k, _))) => {
@@ -291,11 +292,13 @@ fn judge(
                         patch: patch.clone(),
                         made: false,
                     };
-                    crate::sealing::seal(&mut body, s, source, k);
+                    let mut boxed = s.clone();
+                    crate::sealing::seal(&mut body, &mut boxed, source, k);
                     let EventBody::RecordIngested { patch: stored, .. } = &body else {
                         unreachable!("the body sealed is a record_ingested")
                     };
-                    log::ingest_id(source, &r.ty, &r.key, version_before, stored)
+                    let boxed = boxed.boxed.unwrap_or_default();
+                    log::boxed_ingest_id(source, &r.ty, &r.key, version_before, stored, &boxed)
                 }
                 _ => log::ingest_id(source, &r.ty, &r.key, version_before, &patch),
             };

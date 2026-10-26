@@ -280,6 +280,78 @@ fn apart_belongs_to_format_18_on() {
 }
 
 #[test]
+fn a_box_belongs_to_a_record_ingested_of_format_20_on() {
+    let line = |v: u32, body: serde_json::Value| -> Event {
+        serde_json::from_value(json!({
+            "v": v, "lake": "l", "position": 1, "id": "0".repeat(32),
+            "prev": "0".repeat(64), "known_at": "2026-01-01T00:00:00.000000Z",
+            "writer": "source:crm", "origin": "source", "source": "crm",
+            "context": {"origin": "direct", "depth": 0}, "fence": 1,
+            "sealed": {"key": "1", "fields": ["email"], "box": BOX},
+            "body": body, "hash": "0".repeat(64)
+        }))
+        .unwrap()
+    };
+    let ingested = json!({"kind": "record_ingested", "type": "contact", "key": "c1",
+                          "version": 1, "patch": {"id": "c1"}});
+    let output = json!({"kind": "output_recorded", "seam": "embed:m", "input": "0".repeat(64),
+                        "field": ["t", "k", "v"], "output": "AAAA"});
+    assert_eq!(misplaced(&line(20, ingested.clone())), None);
+    let boxed_on = |kind: &str, v| lakelands_api::error::Flaw::BoxedOn {
+        kind: kind.into(),
+        v,
+    };
+    assert_eq!(
+        misplaced(&line(19, ingested)),
+        Some(boxed_on("record_ingested", 19))
+    );
+    assert_eq!(
+        misplaced(&line(20, output)),
+        Some(boxed_on("output_recorded", 20))
+    );
+    let form = |sealed: serde_json::Value, patch: serde_json::Value| {
+        let body = json!({"kind": "record_ingested", "type": "contact", "key": "c1",
+                          "version": 1, "patch": patch});
+        let mut e = serde_json::to_value(line(20, body)).unwrap();
+        e["sealed"] = sealed;
+        misplaced(&serde_json::from_value(e).unwrap())
+    };
+    let (id, both) = (json!({"id": "c1"}), json!({"id": "c1", "email": "a@b"}));
+    for (sealed, patch) in [
+        (json!({"key": "1", "box": BOX}), &id),
+        (json!({"key": "1", "fields": ["email"], "box": BOX}), &both),
+        (json!({"key": "1", "fields": ["email"], "box": "AAAA"}), &id),
+        (
+            json!({"key": "1", "fields": ["email"], "box": &BOX[1..]}),
+            &id,
+        ),
+        (
+            json!({"key": "1", "fields": ["email"], "box": BOX.replace('A', "-")}),
+            &id,
+        ),
+        (
+            json!({"key": "1", "fields": ["email"], "box": format!("{}=A=", &BOX[..21])}),
+            &id,
+        ),
+    ] {
+        let why = form(sealed.clone(), patch.clone());
+        assert_eq!(
+            why,
+            Some(lakelands_api::error::Flaw::BoxForm),
+            "{sealed} over {patch}"
+        );
+    }
+    let tail = format!("{}==", &BOX[..22]);
+    assert_eq!(
+        form(json!({"key": "1", "fields": ["email"], "box": tail}), id),
+        None
+    );
+}
+
+/// A box of the tag's 16 bytes and one more, as padded base64.
+const BOX: &str = "AAAAAAAAAAAAAAAAAAAAAAA=";
+
+#[test]
 fn seen_before_and_deliveries_belong_to_format_18_on() {
     let line = |v: u32, selection: serde_json::Value| -> Event {
         serde_json::from_value(json!({

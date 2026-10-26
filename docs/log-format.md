@@ -51,7 +51,7 @@ every kind, and `body`, which holds the kind and its payload.
 | `fence` | integer | always | The fencing token of the writer lease the event was appended under (§4); `0` for the event at position 0, which is written before any lease exists in the lake. |
 | `idempotency_key` | string | when given | The caller's idempotency key of an authored write. |
 | `delivery` | string | from format 17, on every `record_ingested` this release writes | The delivery the record came in: the id the caller gave its `ingest`, or the store's own, `d` and the position of the first event the call appended. A caller's id is not empty, holds no `0x00` and is not of the store's form. Only on `record_ingested`, and not before format 17; a reader refuses it elsewhere, naming the kind and the format. It is not part of the ingest id (§3). |
-| `sealed` | object | from format 16, when a source's key seals a value | `{ "key", "fields" }`, or `{ "key", "source" }`: the version of the source's key, and the members of the patch it seals, or, with `source`, the recorded output it seals (§1.4). From format 18 it may hold `apart`, the source's keys outside its versions that seal the members too, in id order (§1.4); a reader refuses `apart` in a format before 18. Only on `record_ingested` and `output_recorded`; a reader refuses it on any other kind, naming the kind. On a `record_ingested` it names no source but the envelope's own `source`, the source whose key seals it; a reader refuses one naming another, naming that source. |
+| `sealed` | object | from format 16, when a source's key seals a value | `{ "key", "fields" }`, or `{ "key", "source" }`: the version of the source's key, and the members of the patch it seals, or, with `source`, the recorded output it seals (§1.4). From format 18 it may hold `apart`, the source's keys outside its versions that seal the members too, in id order (§1.4); a reader refuses `apart` in a format before 18. From format 20, on a `record_ingested`, it holds `box`, the members `fields` names sealed together, which the patch leaves out (§1.4); a reader refuses `box` on any other kind and in a format before 20, naming the kind and the format, and a `box` whose `fields` is empty, whose patch holds a member `fields` names, or that is not padded base64 of at least 16 bytes. Only on `record_ingested` and `output_recorded`; a reader refuses it on any other kind, naming the kind. On a `record_ingested` it names no source but the envelope's own `source`, the source whose key seals it; a reader refuses one naming another, naming that source. |
 | `body` | object | always | The kind and its payload (§2). |
 | `hash` | string | always | SHA-256 of the event's canonical bytes without `hash`, as 64 lower-case hex digits (§1.2). |
 
@@ -269,20 +269,23 @@ host's, in its key store, never in the lake; `sealed.key` names its
 version, which the key store answers by.
 
 - **The values, in one box** (from format 20,
-  `docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`;
-  proposed with it, lakelands#1413, and in force with the issue that
-  builds it, until which format 20 seals each member alone as 19 does).
-  A `record_ingested`'s sealed members are sealed together. The patch
+  `docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`,
+  in force from lakelands#1452). The members a source's key seals in a
+  `record_ingested` are sealed together. The patch
   leaves them out; `sealed.box` holds a string, the standard base64, with
   padding, of AES-256-GCM-SIV's output over the canonical bytes (§1.2)
   of the object of those members; and `sealed.fields` names them, as it
   names every sealed member. Every other member stays plaintext, and so
   does the rest of the envelope and the body. A reader without the key
-  reads each member `sealed.fields` names as sealed, and checks that the
-  patch holds none of them and that the box is padded base64 of at least
-  the 16 bytes of the tag. Up to format 19, each sealed member stands in
+  reads each member `sealed.fields` names as sealed, and checks that
+  `sealed.fields` names at least one, that the patch holds none of them
+  and that the box is padded base64 of at least the 16 bytes of the tag;
+  it refuses a box that is not so. Up to format 19, each sealed member stands in
   the patch as a string of its own: the same base64 of the same cipher
-  over that value's canonical bytes.
+  over that value's canonical bytes. A reader opens the box where
+  `sealed.box` stands, and each member alone where it does not: an
+  ingest of format 20 written before the box was in force, as one of
+  the vectors of 20 is, holds its members so.
 - **The nonce** of a box is the first 12 bytes of SHA-256 over the
   source, the type, the record key and `version - 1` in decimal digits,
   joined by `0x00`; that of a member sealed alone, up to format 19, adds
@@ -291,6 +294,11 @@ version, which the key store answers by.
   same bytes, and two records or two versions never share a nonce. A
   reader makes the nonce again from where the values stand, so a sealed
   value moved elsewhere does not open.
+- **The key** of a box is the one each member was sealed with before:
+  the version `sealed.key` names, composed with any key the delivery
+  was sealed apart with (below). Every member of one event was already
+  under one key, and erasing destroys keys, so the members
+  `sealed.fields` names are erased together, as before.
 - **The ingest id** is made from the patch as stored, ciphertext
   included, and from format 20 from its box (§3): no digest of a
   plaintext value enters the log.
@@ -347,9 +355,10 @@ store has lost the version it last sealed with: the write is refused the
 same way, so a wrong key store fails at the write, not at a later
 rebuild. A verifier without the
 keys checks every hash and id over the bytes as stored, and the form of
-each sealed member. `docs/log-format/vectors/20/` holds a sealed ingest,
-each member sealed alone as up to the box 083 proposes, and a sealed
-output under a key its README names.
+each sealed member, or of its box. `docs/log-format/vectors/20/` holds
+a sealed ingest written before the box, each member sealed alone, an
+ingest whose member is sealed in a box (`boxed.json`), and a sealed
+output, under a key its README names.
 
 ## 2. Kinds
 
@@ -793,7 +802,7 @@ So the separators are unambiguous.
   exactly-once state. Because `version_before` is in the preimage, a
   genuine return to earlier values (A, then B, then A again) meets a
   different state and is a new event, never mistaken for a redelivery.
-  From format 20, as 083 proposes, an ingest whose values are sealed in
+  From format 20, an ingest whose values are sealed in
   one box (§1.4) is `SHA-256("lakelands:ingest:v2" ‖ 0x00 ‖ source ‖
   0x00 ‖ type ‖ 0x00 ‖ key ‖ 0x00 ‖ version_before ‖ 0x00 ‖
   canonical(patch) ‖ 0x00 ‖ box)`, `box` the string `sealed.box` holds;
@@ -1098,8 +1107,7 @@ the first release with real installations
   `write_proposed` whose write is `records`, a change to the records a
   condition selects
   (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`);
-  and, proposed with 083 (lakelands#1413) and in force with the issues
-  that build them, a frame and an event line without its `position` or
+  and, with 083 (lakelands#1413, lakelands#1433, lakelands#1452), a frame and an event line without its `position` or
   `prev` (§1.2), a digest over a segment that holds them (§4.2), a
   `sealed.box`, and an ingest id under `lakelands:ingest:v2` (§1.4, §3).
   No other step changes a fold, so the projection stays. A step that

@@ -197,6 +197,16 @@ The files:
   frame holding `position`, a frame of format 20 over a line of 19, a
   `position` and a `prev` that are not the ones the event before gives,
   and a segment's first event line holding neither.
+- `boxed.json`: the event after the framed append, a `record_ingested`
+  of `hr` at position 85 whose sealed member `email` is sealed in one
+  box (`docs/log-format.md` §1.4): its patch holds `id` alone, and
+  `sealed` holds `box`, the base64 of the cipher over the object of the
+  members `fields` names, under the vectors' key `1` and the nonce of
+  `hr`, `contact`, `c6` and version 0. Each verifier holds its `after`
+  to the framed append's last event, its line canonical and in the
+  release's format, its hash, its patch holding none of the members
+  `fields` names, the box padded base64 past the tag, and its ingest id
+  under `lakelands:ingest:v2` with the box.
 - `schema-hash.json`: a view type whose conditions are written as text,
   the shape object it hashes (conditions in typed form, Appendix B), the
   shape's canonical bytes, and the schema hash; and the hash of the same

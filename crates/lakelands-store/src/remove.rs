@@ -316,7 +316,12 @@ fn found(
         events += 1;
         selected.insert(e.position);
         let then = history.ty(ty, e.position);
-        for (written, _) in patch.iter().filter(|(_, v)| !v.is_null()) {
+        // A box's members are not in the patch: `sealed` names them (083).
+        let boxed = sealed
+            .filter(|s| s.boxed.is_some())
+            .map_or(&[][..], |s| &s.fields);
+        let plain = patch.iter().filter(|(_, v)| !v.is_null()).map(|(f, _)| f);
+        for written in plain.chain(boxed) {
             let under = sealed
                 .filter(|s| s.fields.contains(written))
                 .map(|s| (s.key.clone(), s.apart.clone()));

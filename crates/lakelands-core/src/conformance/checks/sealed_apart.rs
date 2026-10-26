@@ -157,7 +157,14 @@ async fn seals(store: &dyn LakeStore, after: Position) -> Result<Vec<(String, Se
             EventBody::OutputRecorded { seam, .. } => format!("output {seam}"),
             _ => return None,
         };
-        Some((what, e.sealed?))
+        // The box aside: what is compared here is the keys a seal names.
+        Some((
+            what,
+            Sealed {
+                boxed: None,
+                ..e.sealed?
+            },
+        ))
     };
     Ok(events.into_iter().filter_map(sealed).collect())
 }
@@ -169,6 +176,7 @@ fn under(key: &KeyId, apart: &[KeyId], source: bool) -> Sealed {
         source: source.then(|| "crm".into()),
         fields: if source { vec![] } else { vec!["name".into()] },
         apart: apart.to_vec(),
+        boxed: None,
     }
 }
 

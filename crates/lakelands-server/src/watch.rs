@@ -548,14 +548,17 @@ impl<'a> View<'a> {
             EventBody::RecordUpserted { made: true, .. }
                 | EventBody::RecordIngested { made: true, .. }
         );
+        // A box holds the members it seals out of the patch (format 20).
+        let boxed = (e.sealed.iter())
+            .filter(|s| s.boxed.is_some())
+            .flat_map(|s| s.fields.iter().map(|f| f.to_string()));
         let (ty, key, mut fields, read_at) = match &e.body {
             EventBody::RecordUpserted { ty, key, patch, .. }
-            | EventBody::RecordIngested { ty, key, patch, .. } => (
-                ty,
-                key,
-                Some(patch.keys().map(|k| k.to_string()).collect::<Vec<_>>()),
-                at,
-            ),
+            | EventBody::RecordIngested { ty, key, patch, .. } => {
+                let mut named: Vec<_> = patch.keys().map(|k| k.to_string()).chain(boxed).collect();
+                named.sort();
+                (ty, key, Some(named), at)
+            }
             EventBody::RecordRetired { ty, key, .. } => {
                 (ty, key, None, Position(at.0.saturating_sub(1)))
             }

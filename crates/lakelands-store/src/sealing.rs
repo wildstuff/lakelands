@@ -2,14 +2,20 @@
 //! in the log and opened by the fold
 //! (`docs/decisions/058-a-source-may-be-forgotten.md`).
 //!
-//! Each value is AES-256-GCM-SIV over its canonical bytes, written as the
-//! base64 of the cipher's output. The nonce is made from where the value
-//! stands: the source, the type, the record key, the version before the
-//! event and the field; or, for a recorded output, the seam and the input.
-//! So the same value against the same state seals to the same bytes, and
-//! a redelivery keeps its ingest id, while two records or two versions
-//! never share one. The fold makes the nonce again from the event, so a
-//! sealed value moved to another place does not open.
+//! What is sealed is AES-256-GCM-SIV over canonical bytes, written as the
+//! base64 of the cipher's output. A record event's members are sealed
+//! together, the object of them in one box the patch leaves out, from
+//! format 20 (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`):
+//! one tag a record, not one a field, and erasing loses nothing by it, as
+//! the members were under one key already. Up to format 19 each member
+//! was sealed alone, and still opens so. The nonce is made from where the
+//! values stand: the source, the type, the record key and the version
+//! before the event, and, for a member alone, the field; or, for a
+//! recorded output, the seam and the input. So the same values against
+//! the same state seal to the same bytes, and a redelivery keeps its
+//! ingest id, while two records or two versions never share one. The fold
+//! makes the nonce again from the event, so a sealed value moved to
+//! another place does not open.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -24,7 +30,7 @@ use lakelands_api::error::{Seam, Situation};
 use lakelands_api::event::{Digest, Event, EventBody, Sealed};
 use lakelands_api::id::KeyId;
 use lakelands_api::seam::{DataKey, KeyStore};
-use lakelands_api::{Error, LakeId, Position, Result, SourceId, Value};
+use lakelands_api::{Error, FieldName, LakeId, Position, Result, SourceId, Value};
 use lakelands_core::canonical;
 use lakelands_core::lock;
 use sha2::{Digest as _, Sha256};
@@ -481,10 +487,9 @@ pub fn erase(event: &mut Event) -> Vec<lakelands_api::FieldName> {
     };
     match &mut event.body {
         EventBody::RecordIngested { patch, .. } => {
+            // A box's members are not in the patch: each is erased there.
             for f in &sealed.fields {
-                if let Some(v) = patch.get_mut(f) {
-                    *v = Value::Null;
-                }
+                patch.insert(f.clone(), Value::Null);
             }
             sealed.fields
         }
@@ -655,63 +660,68 @@ fn nonce(parts: &[&[u8]]) -> [u8; 12] {
         }
         h.update(p);
     }
-    let mut n = [0; 12];
-    n.copy_from_slice(&h.finalize()[..12]);
-    n
+    let digest = h.finalize();
+    std::array::from_fn(|i| digest[i])
 }
 
-/// The places of what `sealed` names in `body`, each with its nonce: the
-/// patch members, or the recorded output.
-fn places(body: &EventBody, sealed: &Sealed, source: &SourceId) -> Vec<(Option<String>, [u8; 12])> {
+/// The nonce of what a source's key seals in `body`, by its place: a
+/// record's box, from its source, type, key and version before, or, up to
+/// format 19, its member `field` alone; or a recorded output, from its
+/// source, seam and input. No other event holds a sealed value.
+fn place(source: &SourceId, body: &EventBody, field: Option<&str>) -> Option<[u8; 12]> {
     let source = source.as_str().as_bytes();
     match body {
         EventBody::RecordIngested {
             ty, key, version, ..
         } => {
             let before = version.0.saturating_sub(1).to_string();
-            let at = |f: &str| {
-                let parts = [source, ty.as_str().as_bytes(), key.as_str().as_bytes()];
-                nonce(&[&parts[..], &[before.as_bytes(), f.as_bytes()]].concat())
-            };
-            sealed
-                .fields
-                .iter()
-                .map(|f| (Some(f.to_string()), at(f.as_str())))
-                .collect()
+            let parts = [source, ty.as_str().as_bytes(), key.as_str().as_bytes()];
+            let parts = [&parts[..], &[before.as_bytes()]].concat();
+            Some(match field {
+                Some(f) => nonce(&[&parts[..], &[f.as_bytes()]].concat()),
+                None => nonce(&parts),
+            })
         }
         EventBody::OutputRecorded { seam, input, .. } => {
-            let parts: [&[u8]; 3] = [source, seam.as_bytes(), input.0.as_bytes()];
-            vec![(None, nonce(&parts))]
+            Some(nonce(&[source, seam.as_bytes(), input.0.as_bytes()]))
         }
-        _ => Vec::new(),
-    }
-}
-
-/// The member a place names in `body`.
-fn member<'a>(body: &'a mut EventBody, field: Option<&str>) -> Option<&'a mut Value> {
-    match (body, field) {
-        (EventBody::RecordIngested { patch, .. }, Some(f)) => patch.get_mut(f),
-        (EventBody::OutputRecorded { output, .. }, None) => output.as_mut(),
         _ => None,
     }
 }
 
-/// Seal in place what `sealed` names of `body`, a source's plaintext.
-pub fn seal(body: &mut EventBody, sealed: &Sealed, source: &SourceId, key: &DataKey) {
+/// Seal in place what `sealed` names of `body`, a source's plaintext: a
+/// record's members, taken out of its patch, together in `sealed`'s box,
+/// the canonical bytes of their object (083); or a recorded output.
+pub fn seal(body: &mut EventBody, sealed: &mut Sealed, source: &SourceId, key: &DataKey) {
     let cipher = Aes256GcmSiv::new((&key.0).into());
-    for (field, n) in places(body, sealed, source) {
-        if let Some(v) = member(body, field.as_deref()) {
-            let plain = canonical::to_vec(v);
-            let sealed = cipher
-                .encrypt(Nonce::from_slice(&n), plain.as_slice())
-                .expect("AES-256-GCM-SIV seals any value");
-            *v = Value::String(STANDARD.encode(sealed));
+    let close = |v: &Value, n: [u8; 12]| {
+        let plain = canonical::to_vec(v);
+        let sealed = cipher
+            .encrypt(Nonce::from_slice(&n), plain.as_slice())
+            .expect("AES-256-GCM-SIV seals any value");
+        STANDARD.encode(sealed)
+    };
+    let Some(n) = place(source, body, None) else {
+        return;
+    };
+    match body {
+        EventBody::RecordIngested { patch, .. } => {
+            let fields = sealed.fields.iter();
+            let taken = fields.filter_map(|f| Some((f.to_string(), patch.remove(f)?)));
+            sealed.boxed = Some(close(&Value::Object(taken.collect()), n));
         }
+        EventBody::OutputRecorded {
+            output: Some(v), ..
+        } => *v = Value::String(close(v, n)),
+        _ => {}
     }
 }
 
-/// Open in place what `event`'s `sealed` names under `key`. A value that
-/// does not open under it is answered as such, at the event's position.
+/// Open in place what `event`'s `sealed` names under `key`: a record's box
+/// back into its patch, each member sealed alone up to format 19, or a
+/// recorded output. A value that does not open under it, or a box that
+/// does not hold exactly the members `sealed` names, none of them in the
+/// patch, is answered as such, at the event's position.
 pub fn open(event: &mut Event, key: &DataKey) -> Result<()> {
     let Some(sealed) = event.sealed.clone() else {
         return Ok(());
@@ -721,19 +731,45 @@ pub fn open(event: &mut Event, key: &DataKey) -> Result<()> {
     };
     let cipher = Aes256GcmSiv::new((&key.0).into());
     let position = event.position;
-    for (field, n) in places(&event.body, &sealed, &source) {
-        let Some(v) = member(&mut event.body, field.as_deref()) else {
-            continue;
-        };
-        let plain = v
-            .as_str()
-            .and_then(|s| STANDARD.decode(s).ok())
-            .and_then(|b| cipher.decrypt(Nonce::from_slice(&n), b.as_slice()).ok())
-            .and_then(|b| serde_json::from_slice(&b).ok());
-        match plain {
-            Some(p) => *v = p,
-            None => return Err(Error::unavailable(Situation::Unsealable { position })),
+    let unsealable = || Error::unavailable(Situation::Unsealable { position });
+    let opened = |v: &Value, n: [u8; 12]| -> Option<Value> {
+        let b = STANDARD.decode(v.as_str()?).ok()?;
+        let plain = cipher.decrypt(Nonce::from_slice(&n), b.as_slice()).ok()?;
+        serde_json::from_slice(&plain).ok()
+    };
+    let at = |f: Option<&str>| place(&source, &event.body, f);
+    let each: Option<Vec<_>> = (sealed.fields.iter())
+        .map(|f| at(Some(f.as_str())))
+        .collect();
+    let (Some(whole), Some(each)) = (at(None), each) else {
+        return Ok(());
+    };
+    match (&mut event.body, &sealed.boxed) {
+        (EventBody::RecordIngested { patch, .. }, Some(boxed)) => {
+            let members = opened(&Value::String(boxed.clone()), whole);
+            let Some(Value::Object(members)) = members else {
+                return Err(unsealable());
+            };
+            let named = |f: &FieldName| members.contains_key(f.as_str()) && !patch.contains_key(f);
+            if members.len() != sealed.fields.len() || !sealed.fields.iter().all(named) {
+                return Err(unsealable());
+            }
+            patch.extend(members.into_iter().map(|(f, v)| (f.as_str().into(), v)));
         }
+        (EventBody::RecordIngested { patch, .. }, None) => {
+            for (f, n) in sealed.fields.iter().zip(each) {
+                if let Some(v) = patch.get_mut(f) {
+                    *v = opened(v, n).ok_or_else(unsealable)?;
+                }
+            }
+        }
+        (
+            EventBody::OutputRecorded {
+                output: Some(v), ..
+            },
+            _,
+        ) => *v = opened(v, whole).ok_or_else(unsealable)?,
+        _ => {}
     }
     Ok(())
 }
