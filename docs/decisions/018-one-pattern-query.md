@@ -108,43 +108,45 @@ refuse them for that.
 
 `cheapest` is the walk to `to` that costs least, where a link costs its
 `weight`: a field of the link type that carries its step's relation
-(035), an inverse's being its owner's. It is proposed for 0.20.0
-(lakelands#1412) and comes in force with the issue that builds it. It
-is a path in every other respect: one start, steps from depth 0, a
-relation used at a hop only within its step's depth, every hop within
-`max_depth`, and records kept by each step's `type` and `where`. Least
-cost wins, then fewest hops, then at each hop the least record it came
-from by type and key over the least link (026), so a cheaper walk of
-more hops than the steps allow is not taken, and the walk chosen never
-passes a record twice. Its rows are the records along the walk in hop
-order: `hop` (0 for the start), `type`, `key`, the `relation` and
-`walk` of the link that reached it (null at hop 0), and `cost`, the sum
-so far. `cost` is a number where every step's weight field is of kind
-`number`, and a decimal read as a decimal field reads otherwise. Where
-no walk is, it answers no rows; a walk from a record to itself is that
-record alone, at cost 0. It answers in one page with no cursor, as a
-path does.
+(035), an inverse's being its owner's. It is accepted for 0.20.0
+(lakelands#1412). It is a path in every other respect: one start, steps
+from depth 0, a relation used at a hop only within its step's depth,
+every hop within `max_depth`, and records kept by each step's `type` and
+`where`. Least cost wins, then fewest hops, then at each hop the least
+record it came from by type and key over the least link (026), so a
+cheaper walk of more hops than the steps allow is not taken, and the
+walk chosen never passes a record twice. Its rows are the records along
+the walk in hop order: `hop` (0 for the start), `type`, `key`, the
+`relation` and `walk` of the link that reached it (null at hop 0), and
+`cost`, the sum so far. `cost` is a number where every step's weight
+field is of kind `number`, and a decimal read as a decimal field reads
+otherwise. Where no walk is, it answers no rows; a walk from a record to
+itself is that record alone, at cost 0. It answers in one page with no
+cursor, as a path does.
 
 Its refusals come in this order, every one before a record is read but
-the last: `cheapest` without `to` is refused `cheapest_needs_to`;
-`order_by` as a measure refuses it; several starts `path_starts`; each
-step as a path's is judged; then each step's weight field, in the
-steps' order. A relation carried by `via` or `derived` holds no link
-record, so its weight is refused `weight_not_on_link`, naming the
-relation and the field, and so is a field its link type does not
-declare or hides from the caller (006). A field the caller is shown and
-may not read is refused `not_granted`, as a probe is (024), and a field
-whose kind is neither `number` nor `decimal`, through any value type
-built on them, `weight_not_number`. Once records are read, a link the
-walk weighs whose weight is null or absent is refused `weight_missing`
-and a negative one `weight_negative`, each naming the relation and the
-link's ends; past `max_graph_nodes` the walk is refused `too_large` and
-a cost past its number type `overflow` (026). A missing weight is not
-skipped and not read as 0 or 1: a walk that dropped or re-priced a link
-would look cheaper or dearer than it is, and a host that wants a weight
-by default declares it on the field (050). A negative weight is refused
-because over a cycle of negative cost no walk is cheapest; a weight of
-0 is a weight.
+`path_starts` for a filter start and the last: `cheapest` without `to`
+is refused `cheapest_needs_to`; `order_by` as a measure refuses it; each
+step as a path's is judged; then each step's weight field, in the steps'
+order; then several starts `path_starts`, where `path` judges them.
+Several starts are known only once a filter start's records are read, so
+this one comes after the steps and the weight fields, not before them. A
+relation carried by `via` or `derived` holds no link record, so its
+weight is refused `weight_not_on_link`, naming the relation and the
+field, and so is a field its link type does not declare or hides from
+the caller (006). A field the caller is shown and may not read is
+refused `not_granted`, as a probe is (024), and a field whose kind is
+neither `number` nor `decimal`, through any value type built on them,
+`weight_not_number`. Once records are read, a link the walk weighs whose
+weight is null or absent is refused `weight_missing` and a negative one
+`weight_negative`, each naming the relation and the link's ends; past
+`max_graph_nodes` the walk is refused `too_large` and a cost past its
+number type `overflow` (026). A missing weight is not skipped and not
+read as 0 or 1: a walk that dropped or re-priced a link would look
+cheaper or dearer than it is, and a host that wants a weight by default
+declares it on the field (050). A negative weight is refused because
+over a cycle of negative cost no walk is cheapest; a weight of 0 is a
+weight.
 
 ### An `order_by` orders rows and nothing else
 
@@ -361,9 +363,9 @@ they are refused `too_large`, naming the ceiling, for the reason a step
 too deep is refused: a partition or a ranking of part of the graph
 would look like the whole of it.
 
-`page_rank` and `communities` are proposed for 0.20.0 (lakelands#1412)
-and come in force with the issue that builds each; `communities` only if
-its issue is built, and it is the first the round cuts.
+`page_rank` and `communities` are accepted for 0.20.0 (lakelands#1412);
+`communities` only if its issue is built, and it is the first the round
+cuts.
 
 `page_rank` ranks the graph its starts reach over the steps' relations,
 each walked in its own step's direction (`both` walks a link each way),
@@ -734,7 +736,10 @@ used.
   accepted as
   `docs/decisions/082-a-query-language-writes-only-through-the-typed-write-doors.md`
   (lakelands#1404), for 0.21.0.
-- PageRank and communities were proposed as measures and the cheapest
+- PageRank and communities were accepted as measures and the cheapest
   walk as a path answered as rows (lakelands#1412); `page_rank` may
   leave its start's type out, as `components` may, and the rule that a
   pattern with `to` answers no rows gained `cheapest` as its exception.
+- A cheapest walk judges `path_starts` after its steps and its weight
+  fields, where `path` judges it, not before them: several starts are
+  known only once a filter start's records are read (lakelands#1422).
