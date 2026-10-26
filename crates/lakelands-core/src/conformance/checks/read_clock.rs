@@ -447,6 +447,7 @@ async fn page_clocks(
                     cursor,
                     filter: None,
                     with_meta: false,
+                    matches: false,
                     at: ReadAt::default(),
                     rerank: None,
                 };

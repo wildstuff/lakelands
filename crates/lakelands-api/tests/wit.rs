@@ -37,8 +37,8 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::principal::{Renamed, TypeGrants};
 use lakelands_api::query::{
-    Axis, Depth, Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Start,
-    Step, VectorTerm, Walk,
+    Axis, Depth, Edge, Hit, Hits, Matched, Pattern, Projection, QueryResult, Search, SearchMode,
+    Span, Start, Step, VectorTerm, Walk,
 };
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy};
 use lakelands_api::seam::{FeedBatch, FeedFilter};
@@ -900,6 +900,14 @@ fn rerank() -> lakelands_api::query::Rerank {
     }
 }
 
+/// Where a hit's text matched one field, every member given.
+fn matched() -> Matched {
+    Matched {
+        spans: vec![Span { start: 0, end: 1 }],
+        count: 1,
+    }
+}
+
 /// The serde members of a value, as a set of names.
 fn members<T: Serialize>(value: &T) -> BTreeSet<String> {
     match serde_json::to_value(value).expect("serialises") {
@@ -1326,6 +1334,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     filter: Some(cond()),
                     rerank: Some(rerank()),
                     with_meta: true,
+                    matches: true,
                     at: read_at(),
                 }),
                 &[
@@ -1345,8 +1354,15 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             members(&Hit {
                 record: record(),
                 score: 1.0,
+                matches: [("f".into(), matched())].into(),
             }),
         ),
+        // The map's key is the record's `field`.
+        (
+            "field_match",
+            adjusted(members(&matched()), &[], &["field"]),
+        ),
+        ("span", members(&Span { start: 0, end: 1 })),
         (
             "hits",
             members(&Hits {
@@ -2104,7 +2120,9 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Projection::Aggregate(_)
             | Projection::Degree
             | Projection::Components
-            | Projection::Reach => {}
+            | Projection::Reach
+            | Projection::PageRank
+            | Projection::Cheapest { .. } => {}
         }
     }
     let _ = projections;
@@ -2118,6 +2136,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 Projection::Degree,
                 Projection::Components,
                 Projection::Reach,
+                Projection::PageRank,
+                Projection::Cheapest { weight: "w".into() },
             ],
             Some("as"),
         ),

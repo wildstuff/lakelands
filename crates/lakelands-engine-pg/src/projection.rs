@@ -207,7 +207,10 @@ CREATE TABLE IF NOT EXISTS {s}.outputs (
     id TEXT PRIMARY KEY, at BIGINT NOT NULL
 ){pt};
 CREATE TABLE IF NOT EXISTS {s}.routes (
-    at BIGINT NOT NULL, kind TEXT NOT NULL, ty TEXT, key TEXT, source TEXT
+    at BIGINT NOT NULL, kind INTEGER NOT NULL, ty INTEGER, key TEXT, source INTEGER
+){pt};
+CREATE TABLE IF NOT EXISTS {s}.names (
+    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name TEXT NOT NULL UNIQUE
 ){pt};
 CREATE INDEX IF NOT EXISTS routes_kind ON {s}.routes (kind, at);
 CREATE INDEX IF NOT EXISTS routes_ty ON {s}.routes (ty, at);
@@ -286,11 +289,11 @@ fn heads_sql(s: &str, pt: &str) -> String {
 /// table changes so that a projection made before would answer wrongly,
 /// not fail: one made with another layout is never read, and is rebuilt
 /// from the log.
-pub(crate) const LAYOUT: u64 = 7;
+pub(crate) const LAYOUT: u64 = 8;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
-pub(crate) const LAKE_TABLES: [&str; 21] = [
+pub(crate) const LAKE_TABLES: [&str; 22] = [
     "meta",
     "lease",
     "segments",
@@ -302,6 +305,7 @@ pub(crate) const LAKE_TABLES: [&str; 21] = [
     "outputs",
     "applied",
     "routes",
+    "names",
     "text_index",
     "lookup_fields",
     "edges",
@@ -864,21 +868,25 @@ pub(crate) fn relook(
 /// The statement of a feed filter's positions in `routes` from `$2`
 /// through `$3`, at most `$4`: those of each value of `$1` in the column
 /// `by` the filter is sought by (`lakelands_core::feed::Seek`), or every
-/// row's without one, each row checked against the kinds `$5`, types `$6`
-/// and keys `$7` that are not empty.
+/// row's without one, each row checked against the kind codes `$5`, type
+/// ids `$6` and keys `$7` that are not empty. A value of `$1` is a key
+/// for `key`, else a code or an id.
 pub(crate) fn routes_sql(names: &Names, by: Option<&str>) -> String {
     let routes = names.t("routes");
-    let checked = "at BETWEEN $2 AND $3 AND (cardinality($5::text[]) = 0 OR kind = ANY($5)) \
-         AND (cardinality($6::text[]) = 0 OR ty = ANY($6)) \
+    let checked = "at BETWEEN $2 AND $3 AND (cardinality($5::int4[]) = 0 OR kind = ANY($5)) \
+         AND (cardinality($6::int4[]) = 0 OR ty = ANY($6)) \
          AND (cardinality($7::text[]) = 0 OR key = ANY($7))";
     match by {
-        Some(column) => format!(
-            "SELECT DISTINCT r.at FROM unnest($1::text[]) v(value) CROSS JOIN LATERAL (\
-             SELECT DISTINCT at FROM {routes} WHERE {column} = v.value AND {checked} \
-             ORDER BY at LIMIT $4) r ORDER BY r.at LIMIT $4"
-        ),
+        Some(column) => {
+            let held = if column == "key" { "text" } else { "int4" };
+            format!(
+                "SELECT DISTINCT r.at FROM unnest($1::{held}[]) v(value) CROSS JOIN LATERAL (\
+                 SELECT DISTINCT at FROM {routes} WHERE {column} = v.value AND {checked} \
+                 ORDER BY at LIMIT $4) r ORDER BY r.at LIMIT $4"
+            )
+        }
         None => format!(
-            "SELECT DISTINCT at FROM {routes} WHERE cardinality($1::text[]) = 0 AND {checked} \
+            "SELECT DISTINCT at FROM {routes} WHERE cardinality($1::int4[]) = 0 AND {checked} \
              ORDER BY at LIMIT $4"
         ),
     }
@@ -1467,14 +1475,9 @@ pub(crate) struct Buffer {
     indexed: BTreeMap<(String, String, String), Option<Vec<f32>>>,
 }
 
-/// A row of the feed index: position, kind, type, key and source.
-type Route = (
-    i64,
-    &'static str,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
+/// A row of the feed index: position, kind, type, key and source, the
+/// types and the source still by name.
+type Route = (i64, i32, Option<String>, Option<String>, Option<String>);
 
 impl Buffer {
     /// The puts it holds, of every kind.
@@ -1566,7 +1569,8 @@ impl Buffer {
         for a in &applied.about {
             let (ty, key) = (a.ty.as_ref().map(|t| t.to_string()), a.key.as_ref());
             let (key, source) = (key.map(|k| k.to_string()), applied.source.clone());
-            (self.routes).push((at, applied.kind, ty, key, source.map(|s| s.to_string())));
+            let kind = engines::kind_code(applied.kind).expect("a kind the format lists");
+            (self.routes).push((at, kind as i32, ty, key, source.map(|s| s.to_string())));
         }
     }
 
@@ -1762,10 +1766,25 @@ impl Buffer {
                 keys.push(key.as_deref());
                 sources.push(source.as_deref());
             }
+            let held = names.t("names");
+            let mut all: Vec<&str> = tys.iter().chain(&sources).flatten().copied().collect();
+            all.sort_unstable();
+            all.dedup();
             db.execute(
                 &format!(
-                    "INSERT INTO {} (at, kind, ty, key, source) SELECT * FROM \
-                     unnest($1::int8[], $2::text[], $3::text[], $4::text[], $5::text[])",
+                    "INSERT INTO {held} (name) SELECT n FROM unnest($1::text[]) n \
+                     WHERE NOT EXISTS (SELECT 1 FROM {held} WHERE name = n) \
+                     ON CONFLICT DO NOTHING"
+                ),
+                &[&all],
+            )?;
+            db.execute(
+                &format!(
+                    "INSERT INTO {} (at, kind, ty, key, source) \
+                     SELECT u.at, u.kind, t.id, u.key, s.id FROM \
+                     unnest($1::int8[], $2::int4[], $3::text[], $4::text[], $5::text[]) \
+                     AS u(at, kind, ty, key, source) \
+                     LEFT JOIN {held} t ON t.name = u.ty LEFT JOIN {held} s ON s.name = u.source",
                     names.t("routes")
                 ),
                 &[&at, &kinds, &tys, &keys, &sources],

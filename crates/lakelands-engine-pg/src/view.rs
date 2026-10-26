@@ -61,6 +61,17 @@ type Asked<'a> = (
     &'a Option<(FieldName, String)>,
 );
 
+/// The ids `names` gives those of `wanted` it holds, looked up in one
+/// statement; a name no event has brought has none.
+fn name_ids<'a>(r: &mut Read<'_>, wanted: impl IntoIterator<Item = &'a str>) -> Result<Vec<i32>> {
+    let wanted: Vec<&str> = wanted.into_iter().collect();
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let query = format!("SELECT id FROM {} WHERE name = ANY($1)", r.names.t("names"));
+    r.db.column(&query, &[&wanted])
+}
+
 /// The records in force at the position `$2`, `r`, each beside its head
 /// `h`, from the table `records` and its heads: read in key order, they
 /// are a walk of the heads' primary key, each head's state sought by a
@@ -1251,11 +1262,18 @@ impl ProjectionView for PgView<'_> {
             let Some(last) = feed::last_decided(from, to.min(Position(r.at as u64)), folded) else {
                 return Ok(feed::undecided());
             };
-            let strs = |v: Vec<&str>| v.into_iter().map(str::to_owned).collect::<Vec<String>>();
-            let kinds = strs(filter.kinds.iter().map(String::as_str).collect());
-            let types = strs(filter.types.iter().map(TypeName::as_str).collect());
-            let keys = strs(filter.keys.iter().map(RecordKey::as_str).collect());
-            let (by, values) = match feed::seek(filter) {
+            let kinds: Vec<i32> = (filter.kinds.iter())
+                .filter_map(|k| engines::kind_code(k).map(|c| c as i32))
+                .collect();
+            let types = name_ids(r, filter.types.iter().map(TypeName::as_str))?;
+            let keys: Vec<String> = filter.keys.iter().map(|k| k.as_str().to_owned()).collect();
+            // A list none of whose names a route can hold matches nothing.
+            if (kinds.is_empty() && !filter.kinds.is_empty())
+                || (types.is_empty() && !filter.types.is_empty())
+            {
+                return Ok(feed::merged([vec![]], limit, last));
+            }
+            let (by, values): (_, &(dyn ToSql + Sync)) = match feed::seek(filter) {
                 Some(Seek::Keys(_)) => (Some("key"), &keys),
                 Some(Seek::Types(_)) => (Some("ty"), &types),
                 Some(Seek::Kinds(_)) => (Some("kind"), &kinds),
@@ -1285,11 +1303,16 @@ impl ProjectionView for PgView<'_> {
             let Some(last) = feed::last_decided(from, to, folded) else {
                 return Ok(feed::undecided());
             };
-            let (values, none) = (vec![source.to_string()], Vec::<String>::new());
+            let values = name_ids(r, [source.as_str()])?;
+            if values.is_empty() {
+                return Ok(feed::merged([vec![]], limit, last));
+            }
+            let (none, no_keys) = (Vec::<i32>::new(), Vec::<String>::new());
             let (from, last_at, n) = (from.0 as i64, last.0 as i64, i64::from(limit.max(1)));
             let query = projection::routes_sql(r.names, Some("source"));
-            let rows =
-                (r.db).query(&query, &[&values, &from, &last_at, &n, &none, &none, &none])?;
+            let args: [&(dyn ToSql + Sync); 7] =
+                [&values, &from, &last_at, &n, &none, &none, &no_keys];
+            let rows = (r.db).query(&query, &args)?;
             let positions = rows.iter().map(|row| Position(row.get::<_, i64>(0) as u64));
             Ok(feed::merged([positions.collect()], limit, last))
         })

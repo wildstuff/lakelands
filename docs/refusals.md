@@ -534,6 +534,7 @@ What a refusal is about.
 | `after_unfit` | `index` (usize), `field` (FieldName), `why` (Case) | `after.values` member {index} does not fit `{field}`: {why} | An `after` value its order's field does not take. |
 | `after_with_aggregate` | — | `after` pages records; an `aggregate` has no pages | An `after` beside an aggregate. |
 | `after_with_cursor` | — | `after` and `cursor` both name where a page starts; give one | An `after` beside a cursor. |
+| `cheapest_needs_to` | — | `cheapest` answers the walk that costs least from the start to one record; name that record with `to` | A `cheapest` walk with no `to`. |
 | `components_both_ways` | `relation` (RelationName) | `components` takes every link both ways; the step over `{relation}` must walk `both` | A `components` step that does not walk both ways. |
 | `cursor_foreign` | — | the cursor is not one this lake handed out | A cursor the lake did not hand out. |
 | `cursor_other_door` | `was` (String), `was_ty` (TypeName, optional), `door` (String), `type` (TypeName, optional) | the cursor was handed out for `{was}`[ on `{was_ty}`], not `{door}`[ on `{type}`]; continue it there | A cursor handed out for another door or type. |
@@ -547,6 +548,7 @@ What a refusal is about.
 | `latest_no_change` | `type` (TypeName, optional) | `order_by` `latest` orders records by their latest change, and [`{type}` is a view, whose records are computed and have none\|a query's rows are projections of a walk, not records] | A `latest` order where no record has a change of its own. |
 | `latest_takes_no_field` | `field` (FieldName) | `latest` orders by the position of each record's latest change and takes no field, and `{field}` was given | A `latest` order given a field. |
 | `limit_range` | `max` (u32) | a limit is between 1 and {max} | A limit out of range. |
+| `matches_without_text` | — | `matches` says where a search's text matched each hit, and a vector search brings no text; a lexical or hybrid search is told it | A search that asks for `matches` and brings no text. |
 | `measure_no_depth` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `depth`: it reads each record's links, not hops | A measure's step with a depth. |
 | `measure_no_order` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no `order_by`: its rows come in the measure's own order | A measure with an order. |
 | `measure_no_steps` | `measure` (String) | `{measure}` walks the relations its steps name; name at least one | A measure with no step. |
@@ -602,6 +604,10 @@ What a refusal is about.
 | `view_not_searched` | `type` (TypeName) | `{type}` is a view, and a view is not searched: its records are computed on read and no index holds them | A search of a view. |
 | `view_reads_itself` | `type` (TypeName), `chain` (Names) | view `{type}` reads itself through other views, reading {chain} in turn, so it has no records | A view that reads itself through views the reader did not check. |
 | `weight_alone` | — | `weight` weighs one vector field's ranking against another's, and the search names no other in `also` | A `weight` on a vector search of one field. |
+| `weight_missing` | `relation` (RelationName), `from` (RecordKey), `to` (RecordKey) | the `{relation}` link from `{from}` to `{to}` has no weight, and the cheapest walk neither skips a link nor prices it by default; declare an `initial` on the weight field for one | A link the cheapest walk weighs that has no weight. |
+| `weight_negative` | `relation` (RelationName), `from` (RecordKey), `to` (RecordKey) | the `{relation}` link from `{from}` to `{to}` weighs less than 0, and over a cycle that costs less than 0 no walk is cheapest | A link the cheapest walk weighs whose weight is below 0. |
+| `weight_not_number` | `relation` (RelationName), `field` (FieldName) | `{field}` of the links of `{relation}` is neither a `number` nor a `decimal`, so it weighs nothing | A weight field of a kind other than `number` or `decimal`. |
+| `weight_not_on_link` | `relation` (RelationName), `field` (FieldName) | the links of `{relation}` hold no field `{field}` to weigh by; a relation carried by `via` or `derived` holds no link record | A weight field the links of a step's relation do not hold. |
 | `weight_range` | `field` (FieldName) | the weight of `{field}` must be above 0 and at most 1000000 | A field's weight out of range. |
 | `call_declined` | `verb` (VerbName), `reason` (Detail, optional) | the host declined the call of `{verb}`[ ({reason})]: it did not run, and a retry under the same idempotency key answers the same | A call a verb's executor declined by the host's policy. |
 | `cause_past_head` | `cause` (Position), `head` (Position, optional) | the cause {cause} is past the lake's head [{head}\|(none)] | A host's cause past the head. |

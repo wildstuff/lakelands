@@ -242,6 +242,7 @@ async fn answers(
             cursor: None,
             filter: None,
             with_meta: true,
+            matches: false,
             at,
             rerank: None,
         };
@@ -256,6 +257,7 @@ async fn answers(
             cursor: None,
             filter: None,
             with_meta: true,
+            matches: false,
             at,
             rerank: None,
         };

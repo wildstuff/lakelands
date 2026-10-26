@@ -1419,6 +1419,7 @@ impl Size<'_> {
                     cursor: None,
                     filter: None,
                     with_meta: false,
+                    matches: false,
                     at: ReadAt::default(),
                     rerank: None,
                 },

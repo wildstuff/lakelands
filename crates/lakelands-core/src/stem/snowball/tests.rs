@@ -49,10 +49,7 @@ fn an_identifier_stems_the_same_on_both_sides() {
 
 #[test]
 fn tokenizing_is_the_pipeline_without_the_stemmer() {
-    assert_ne!(
-        tokenize_lowercase("Rechnungen"),
-        stem_text("Rechnungen", "de")
-    );
+    assert_ne!(stem_text("Rechnungen", ""), stem_text("Rechnungen", "de"));
 }
 
 #[test]
@@ -61,4 +58,63 @@ fn folding_strips_accents_after_stemming() {
     assert_eq!(fold_diacritics("über café"), "uber cafe");
     let stem_then_fold = |s: &str| fold_diacritics(&stem_text(s, "de"));
     assert_eq!(stem_then_fold("Grüßen"), stem_then_fold("Grüße"));
+}
+
+/// The pipeline as it stood before the walker: split, lower-cased,
+/// stemmed and joined, then the whole folded.
+fn before_the_walker(text: &str, tag: &str) -> String {
+    let stemmer = algorithm(tag).map(Stemmer::create);
+    let tokens = text.split(|c: char| !c.is_alphanumeric());
+    let terms: Vec<String> = (tokens.filter(|t| !t.is_empty()))
+        .map(|t| t.to_lowercase())
+        .map(|t| {
+            stemmer
+                .as_ref()
+                .map_or(t.clone(), |s| s.stem(&t).into_owned())
+        })
+        .collect();
+    fold_diacritics(&terms.join(" "))
+}
+
+#[test]
+fn the_pipeline_over_the_walker_answers_what_it_answered_before() {
+    let fixtures = [
+        "Café",
+        "cafe",
+        "Grüße",
+        "Grüßen",
+        "Rechnungen",
+        "Rechnung!",
+        "Die offenen Rechnungen!",
+        "Kunden Kunde",
+        "  EK-2026-0102  ",
+        "über café Straße",
+        "running runs ran",
+        "İstanbul ΣΟΦΊΑ",
+        "cafe\u{301} naïve",
+        "?!",
+        "",
+    ];
+    for tag in ["de", "de-CH", "en", "fr", "zh", ""] {
+        for text in fixtures {
+            assert_eq!(
+                stem_text(text, tag),
+                before_the_walker(text, tag),
+                "{text:?} {tag}"
+            );
+        }
+    }
+}
+
+#[test]
+fn each_token_answers_its_span_and_the_term_the_pipeline_makes() {
+    let tokens: Vec<_> = stem_tokens("Running cafés, run!", "en").collect();
+    let spans: Vec<_> = tokens.iter().map(|(s, e, _)| (*s, *e)).collect();
+    assert_eq!(spans, [(0, 7), (8, 13), (15, 18)]);
+    assert_eq!(tokens[0].2, tokens[2].2, "running stems as run");
+    assert_eq!(
+        tokens[1].2,
+        stem_text("cafe", "en"),
+        "the fold is the term's"
+    );
 }

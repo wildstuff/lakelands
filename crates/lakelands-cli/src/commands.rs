@@ -346,6 +346,60 @@ pub async fn recompute(
     )
 }
 
+/// `change`: the records of `ty` that `filter` selects, set to `set` or
+/// retired. Without a plan's id it prints the plan as one JSON document,
+/// its `report_id` the id to send back; with one it makes the change only
+/// against that plan and prints the outcome (`Catalog::plan` and
+/// `enact`, 081).
+pub async fn change(
+    out: Out<'_>,
+    catalog: &dyn Catalog,
+    who: &Principal,
+    (ty, filter): (&str, &str),
+    (set, plan_id): (Option<Vec<String>>, Option<&str>),
+) -> Result<(), Failure> {
+    use lakelands_api::write::{Change, ChangeTo};
+    let to = match set {
+        Some(pairs) => {
+            let mut patch = lakelands_api::record::Patch::new();
+            for pair in pairs {
+                let bad = |what: &str| {
+                    Failure::new(
+                        format!("--set `{pair}`: {what}"),
+                        "give each as FIELD=JSON, such as status='\"done\"'",
+                    )
+                };
+                let (field, raw) = pair.split_once('=').ok_or_else(|| bad("no `=`"))?;
+                let value = serde_json::from_str(raw).map_err(|e| bad(&e.to_string()))?;
+                patch.insert(field.into(), value);
+            }
+            ChangeTo::Set(patch)
+        }
+        None => ChangeTo::Retire,
+    };
+    let change = Change::Records {
+        ty: ty.into(),
+        filter: Box::new(filter.into()),
+        to,
+        only: BTreeMap::new(),
+        skip_restricted: false,
+    };
+    let json = |e: serde_json::Error| Failure::new(e.to_string(), "report it as a bug");
+    let answer = match plan_id {
+        Some(id) => {
+            let outcome = catalog.enact(who, change, id).await;
+            serde_json::to_value(outcome.map_err(Failure::from)?).map_err(json)?
+        }
+        None => {
+            let plan = catalog.plan(who, change).await.map_err(Failure::from)?;
+            let mut v = serde_json::to_value(&plan.data).map_err(json)?;
+            v["said"] = say::plan(&plan.data).into();
+            v
+        }
+    };
+    put(out, answer)
+}
+
 /// Write a bundle's aging rules after its declarations, each as its
 /// `sys.aging_rule` record, skipping a rule whose stored fields already
 /// equal the file's. A field the stored rule holds and the file does not

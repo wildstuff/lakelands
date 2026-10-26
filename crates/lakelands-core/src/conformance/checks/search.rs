@@ -837,6 +837,7 @@ pub(super) fn doc_search(mode: SearchMode) -> Search {
         cursor: None,
         filter: None,
         with_meta: false,
+        matches: false,
         at: ReadAt::default(),
         rerank: None,
     }

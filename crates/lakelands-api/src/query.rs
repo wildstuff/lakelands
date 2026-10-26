@@ -168,6 +168,25 @@ pub enum Projection {
     /// key)`; a page that would walk past the lake's `max_graph_nodes` is
     /// refused `too_large` (`docs/decisions/018-one-pattern-query.md`).
     Reach,
+    /// PageRank: one row per record of the graph the start records reach
+    /// over the steps' relations, each in its step's direction, `type`,
+    /// `key` and `page_rank`. Damping 85/100, at most 100 rounds in
+    /// integers of 10^-12, the same on every engine. Ordered by
+    /// `page_rank`, highest first, then by `(type, key)`. With no start
+    /// type, every record that holds a link it may see over the steps'
+    /// relations is a start. Past the lake's `max_graph_nodes` refused
+    /// `too_large`, never cut (`docs/decisions/026-the-store-walks-the-graph.md`).
+    PageRank,
+    /// The cheapest walk from the one start to `to`: one row per record
+    /// along it, `hop`, `type`, `key`, `relation`, `walk` and `cost`.
+    /// Each link costs its `weight`, a number or decimal field of its link
+    /// type, at 9 places. Least cost, then fewest hops, then each hop's
+    /// least predecessor by `(type, key)` over its least link
+    /// (`docs/decisions/018-one-pattern-query.md`).
+    Cheapest {
+        /// The field of every step's link type that a link costs.
+        weight: FieldName,
+    },
 }
 
 impl<'de> Deserialize<'de> for Projection {
@@ -187,6 +206,10 @@ impl<'de> Deserialize<'de> for Projection {
             Degree {},
             Components {},
             Reach {},
+            PageRank {},
+            Cheapest {
+                weight: FieldName,
+            },
         }
         Ok(match Wire::deserialize(d)? {
             Wire::Rows { fields } => Projection::Rows { fields },
@@ -195,6 +218,8 @@ impl<'de> Deserialize<'de> for Projection {
             Wire::Degree {} => Projection::Degree,
             Wire::Components {} => Projection::Components,
             Wire::Reach {} => Projection::Reach,
+            Wire::PageRank {} => Projection::PageRank,
+            Wire::Cheapest { weight } => Projection::Cheapest { weight },
         })
     }
 }
@@ -692,9 +717,22 @@ pub struct Search {
     /// Return each field's provenance with its value.
     #[serde(default)]
     pub with_meta: bool,
+    /// Answer, on each hit, where the search's text matched it
+    /// ([`Hit::matches`]). A search with no text cannot ask for it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub matches: bool,
     /// The time axes.
     #[serde(default, flatten)]
     pub at: ReadAt,
+}
+
+impl Search {
+    /// What the search asks that no ranking can do
+    /// ([`SearchMode::misfit`]), or `matches` with no text to match.
+    pub fn misfit(&self) -> Option<(Option<FieldName>, Case)> {
+        let textless = self.matches && matches!(self.mode, SearchMode::Vector { .. });
+        (self.mode.misfit()).or_else(|| textless.then_some((None, Case::MatchesWithoutText)))
+    }
 }
 
 fn default_k() -> u32 {
@@ -719,6 +757,8 @@ struct SearchWire {
     rerank: Option<Rerank>,
     #[serde(default)]
     with_meta: bool,
+    #[serde(default)]
+    matches: bool,
     #[serde(default, flatten)]
     at: ReadAt,
 }
@@ -735,8 +775,16 @@ impl<'de> Deserialize<'de> for Search {
         let mode =
             serde_json::from_value(Value::Object(mode.collect())).map_err(D::Error::custom)?;
         let w: SearchWire = serde_json::from_value(Value::Object(own)).map_err(D::Error::custom)?;
-        let (ty, k, cursor, filter, rerank, with_meta, at) =
-            (w.ty, w.k, w.cursor, w.filter, w.rerank, w.with_meta, w.at);
+        let (ty, k, cursor, filter, rerank, with_meta, matches, at) = (
+            w.ty,
+            w.k,
+            w.cursor,
+            w.filter,
+            w.rerank,
+            w.with_meta,
+            w.matches,
+            w.at,
+        );
         Ok(Search {
             ty,
             mode,
@@ -745,6 +793,7 @@ impl<'de> Deserialize<'de> for Search {
             filter,
             rerank,
             with_meta,
+            matches,
             at,
         })
     }
@@ -807,6 +856,34 @@ pub struct Hit {
     pub record: Record,
     /// Higher is more relevant; comparable within one answer only.
     pub score: f64,
+    /// Each searched field of the record that its text matched, by name;
+    /// empty unless the search asked for `matches`. Only a field the
+    /// record answers its reader is named.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub matches: BTreeMap<FieldName, Matched>,
+}
+
+/// The most spans a field of a hit answers in [`Hit::matches`].
+pub const MATCH_SPANS: usize = 32;
+
+/// Where a search's text matched one field of a hit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Matched {
+    /// The first [`MATCH_SPANS`] matched tokens, in text order.
+    pub spans: Vec<Span>,
+    /// Every matched token in the field, so a caller knows the spans
+    /// were cut.
+    pub count: u32,
+}
+
+/// One matched token of a field's text, in chars (Unicode scalar
+/// values), its end exclusive: the unit refusals count offsets in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Span {
+    /// Its first char.
+    pub start: u32,
+    /// The char after its last.
+    pub end: u32,
 }
 
 /// The score of a vector search: the cosine of the angle between two

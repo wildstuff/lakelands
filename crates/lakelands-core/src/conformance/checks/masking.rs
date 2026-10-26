@@ -28,6 +28,17 @@ check!(
     "024, extended (lakelands#727): a relation carried by a reference field is not shown to a reader who may not know of the field: `describe_type` does not list it, a walk out over it is answered as over a relation the type does not declare, and so is a graph from its type, while a walk in and a graph from its target reach only another type's relation of the same name; to a reader who sees the field masked it is shown, and a walk over it, out, in or as a graph, is refused as not granted, naming the field, and so is a walk of two hops, a graph or `components` that meets it past its first hop; an author held from the field who sends a relation of its name is refused, word for word, as the owner is for a type that declares a relation twice, and the type stays as it is"
 );
 
+check!(
+    RANK_UNSEEN = page_rank_counts_no_far_end_its_reader_may_not_see,
+    "024 and 026: `page_rank` ranks the graph its reader may see: a record restricted from it is no record of the graph, ranked or cited, and a restricted link is no arc, so its scores are those of the graph without them, to the bit"
+);
+
+check!(
+    WEIGHT_HIDDEN =
+        a_weight_its_reader_may_not_read_is_refused_not_granted_and_a_hidden_one_as_undeclared,
+    "006 and 018: a `cheapest` weight its reader sees masked on the links is refused not_granted naming it, and one it may not know of is refused as a field the links do not declare, word for word, before a record is read"
+);
+
 /// What a pattern answered, short: the keys it reached, or the refusal.
 fn walked(answer: lakelands_api::Result<lakelands_api::Reply<QueryResult>>) -> String {
     if let Some((f, Refusal::NotGranted)) = refused_on(&answer) {
@@ -1372,7 +1383,177 @@ fn lexical(ty: &str, text: &str, fields: Option<Vec<FieldName>>, with_meta: bool
         cursor: None,
         filter: None,
         with_meta,
+        matches: false,
         at: ReadAt::default(),
         rerank: None,
     }
+}
+
+/// Pages a..d, linked by `cites` records a → b → c → a, b → a, c → d and
+/// d → a, where d and the link b → a are restricted.
+async fn page_rank_counts_no_far_end_its_reader_may_not_see(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    let mut page = type_decl("page", vec![field("name", StorageKind::Text)]);
+    page.relations = vec![RelationDecl {
+        cardinality: Cardinality::ManyToMany,
+        ..RelationDecl::to("cites", "page")
+    }];
+    l.declare(page).await?;
+    for p in ["a", "b", "c", "d"] {
+        l.upsert("page", p, json!({"name": p})).await?;
+    }
+    let cites = [
+        ("a", "b"),
+        ("b", "a"),
+        ("b", "c"),
+        ("c", "a"),
+        ("c", "d"),
+        ("d", "a"),
+    ];
+    for (from, to) in cites {
+        l.cat
+            .link(
+                &l.own,
+                &"page".into(),
+                &from.into(),
+                &"cites".into(),
+                &to.into(),
+                patch(json!({})),
+                WriteOpts::default(),
+            )
+            .await
+            .must(&format!("linking {from} to {to}"))?;
+    }
+    restrict(store.as_ref(), "page", "d", "hold").await?;
+    let held = link_key(&"b".into(), &"a".into());
+    restrict(store.as_ref(), "sys.link.page.cites", held, "hold").await?;
+    let ranked = || {
+        pattern(
+            "page",
+            None,
+            vec![step("cites", Walk::Out)],
+            Projection::PageRank,
+        )
+    };
+    let reader = reads_all(store.as_ref(), "reader");
+    for (who, want, what) in [
+        (
+            &l.own,
+            vec![
+                "a=0.358955638074",
+                "b=0.342612292363",
+                "c=0.183110224255",
+                "d=0.115321845308",
+            ],
+            "the owner",
+        ),
+        (
+            &reader,
+            vec!["a=0.333333333334", "b=0.333333333333", "c=0.333333333333"],
+            "a reader without `restricted`",
+        ),
+    ] {
+        let answer = l.cat.query(who, ranked()).await;
+        let rows = match answer.must(&format!("PageRank to {what}"))?.data {
+            QueryResult::Rows { rows, .. } => rows,
+            other => return Err(Failure::new(format!("{what} was answered {other:?}"))),
+        };
+        let got: Vec<String> = (rows.iter())
+            .map(|r| {
+                format!(
+                    "{}={}",
+                    r["key"].as_str().unwrap_or_default(),
+                    r["page_rank"]
+                )
+            })
+            .collect();
+        ensure!(
+            got == want,
+            "PageRank to {what} is {want:?}; it answered {got:?}"
+        );
+    }
+    Ok(())
+}
+
+async fn a_weight_its_reader_may_not_read_is_refused_not_granted_and_a_hidden_one_as_undeclared(
+    store: Store,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    let mut town = type_decl("town", vec![field("name", StorageKind::Text)]);
+    town.relations = vec![RelationDecl {
+        cardinality: Cardinality::ManyToMany,
+        fields: vec![field("km", StorageKind::Number)],
+        ..RelationDecl::to("road", "town")
+    }];
+    l.declare(town).await?;
+    let cheap = |from: &str, weight: &str| Pattern {
+        to: Some(("town".into(), "b".into())),
+        ..pattern(
+            "town",
+            Some(from),
+            vec![Step {
+                depth: lakelands_api::query::Depth { min: 0, max: 2 },
+                ..step("road", Walk::Out)
+            }],
+            Projection::Cheapest {
+                weight: weight.into(),
+            },
+        )
+    };
+    let link = "sys.link.town.road";
+    let masked = field_access(store.as_ref(), "masked", link, &[("km", Access::Masked)]);
+    let hidden = field_access(store.as_ref(), "hidden", link, &[("km", Access::None)]);
+    // Before a record is written, as after: judged on the declarations.
+    for written in [false, true] {
+        if written {
+            for t in ["a", "b"] {
+                l.upsert("town", t, json!({"name": t})).await?;
+            }
+            l.cat
+                .link(
+                    &l.own,
+                    &"town".into(),
+                    &"a".into(),
+                    &"road".into(),
+                    &"b".into(),
+                    patch(json!({"km": 3})),
+                    WriteOpts::default(),
+                )
+                .await
+                .must("building the road from a to b")?;
+            let owned = l.cat.query(&l.own, cheap("a", "km")).await;
+            ensure!(
+                matches!(&owned, Ok(r) if matches!(&r.data, QueryResult::Rows { rows, .. } if rows.len() == 2)),
+                "the owner's cheapest a to b by `km` is the road between them; it answered \
+                 {owned:?}"
+            );
+        }
+        let answer = l.cat.query(&masked, cheap("a", "km")).await;
+        ensure!(
+            matches!(refused_on(&answer), Some(("km", Refusal::NotGranted))),
+            "a reader who sees `km` masked on the roads is refused not_granted naming it \
+             (written: {written}); it was answered {answer:?}"
+        );
+        let held = l.cat.query(&hidden, cheap("a", "km")).await.map(|_| ());
+        let absent = l.cat.query(&hidden, cheap("a", "nope")).await.map(|_| ());
+        let (Err(held), Err(absent)) = (held, absent) else {
+            return Err(Failure::new(format!(
+                "a weight the reader may not know of, and one never declared, are refused \
+                 (written: {written})"
+            )));
+        };
+        let what = format!("a hidden `km` (written: {written})");
+        alike_renamed(&what, &held, &absent, ("nope", "km"))?;
+        ensure!(
+            matches!(
+                held.case(),
+                Some(Said {
+                    case: Case::WeightNotOnLink { .. },
+                    ..
+                })
+            ),
+            "a hidden `km` is refused `weight_not_on_link`; it failed with {held:?}"
+        );
+    }
+    Ok(())
 }

@@ -532,6 +532,101 @@ fn recompute_names_a_function_or_a_type_and_says_where_it_holds() {
     }
 }
 
+/// `change` prints the plan of a change to records as one JSON document
+/// and changes nothing; with `--plan` it makes the change against that
+/// plan, and a plan the lake moved from is refused `plan_stale` (081).
+#[test]
+fn change_prints_the_plan_and_makes_the_change_only_against_it() {
+    for backend in BACKENDS {
+        let sh = Shell::on("change", backend);
+        sh.lake();
+        assert_eq!(sh.run(&["apply", &sh.fixture()]).code, 0);
+        let store = sh.lakes.lock().unwrap()["finance"].clone();
+        let owner = lakelands_api::Principal {
+            kind: lakelands_api::PrincipalKind::Human,
+            id: "owner".into(),
+            lake: store.lake().clone(),
+            grants: lakelands_api::Grants::owner(),
+        };
+        let put = |key: &str, status: &str| {
+            let patch = [("status".into(), serde_json::json!(status))].into();
+            let catalog = store.catalog(lakelands_api::WriteContext::default());
+            let at = (&"invoice".into(), &key.into());
+            let done = catalog.upsert(&owner, at.0, at.1, patch, Default::default());
+            block_on(done).unwrap();
+        };
+        put("INV-1", "open");
+        put("INV-2", "open");
+        let head = block_on(store.head()).unwrap();
+        let args = ["change", "invoice", "--where", "status = 'open'"];
+        let planned = sh.run(&[&args[..], &["--set", "status=\"late\""]].concat());
+        assert_eq!((planned.code, planned.err.as_str()), (0, ""));
+        let plan: serde_json::Value = serde_json::from_str(&planned.out).unwrap();
+        assert_eq!(plan["records"]["selected"], 2, "{}", planned.out);
+        assert_eq!(
+            plan["said"][0],
+            "The condition selects 2 records of `invoice`: `INV-1`, `INV-2`."
+        );
+        assert_eq!(block_on(store.head()).unwrap(), head, "a plan appended");
+        let id = plan["report_id"].as_str().unwrap();
+
+        put("INV-2", "paid");
+        let at = [&args[..], &["--set", "status=\"late\"", "--plan", id]].concat();
+        let stale = sh.run(&at);
+        assert_eq!((stale.code, stale.out.as_str()), (1, ""), "{}", stale.err);
+        assert!(stale.err.contains("plan"), "{}", stale.err);
+
+        let plan = sh.run(&[&args[..], &["--set", "status=\"late\""]].concat());
+        let plan: serde_json::Value = serde_json::from_str(&plan.out).unwrap();
+        let id = plan["report_id"].as_str().unwrap();
+        let at = [&args[..], &["--set", "status=\"late\"", "--plan", id]].concat();
+        let done = sh.run(&at);
+        assert_eq!((done.code, done.err.as_str()), (0, ""));
+        let outcome: serde_json::Value = serde_json::from_str(&done.out).unwrap();
+        assert_eq!(outcome["outcome"], "applied", "{}", done.out);
+
+        // Neither `--set` nor `--retire` is a usage error; a value that
+        // is no JSON is refused, saying which.
+        let neither = sh.run(&args);
+        assert_eq!(
+            (neither.code, neither.out.as_str()),
+            (2, ""),
+            "{}",
+            neither.err
+        );
+        let bad = sh.run(&[&args[..], &["--set", "status=late"]].concat());
+        assert_eq!((bad.code, bad.out.as_str()), (1, ""), "{}", bad.err);
+        assert!(bad.err.contains("status=late"), "{}", bad.err);
+
+        // `--retire` is planned, changes nothing until enacted against its
+        // plan, and then retires what the condition selected.
+        put("INV-5", "scrap");
+        let scrap = [
+            "change",
+            "invoice",
+            "--where",
+            "status = 'scrap'",
+            "--retire",
+        ];
+        let head = block_on(store.head()).unwrap();
+        let planned = sh.run(&scrap);
+        assert_eq!((planned.code, planned.err.as_str()), (0, ""));
+        let plan: serde_json::Value = serde_json::from_str(&planned.out).unwrap();
+        assert_eq!(plan["records"]["selected"], 1, "{}", planned.out);
+        assert_eq!(block_on(store.head()).unwrap(), head, "a plan appended");
+        let id = plan["report_id"].as_str().unwrap();
+        let done = sh.run(&[&scrap[..], &["--plan", id]].concat());
+        assert_eq!((done.code, done.err.as_str()), (0, ""));
+        let outcome: serde_json::Value = serde_json::from_str(&done.out).unwrap();
+        assert_eq!(outcome["outcome"], "applied", "{}", done.out);
+        let again = sh.run(&scrap);
+        let again: serde_json::Value = serde_json::from_str(&again.out).unwrap();
+        assert_eq!(again["records"]["selected"], 0, "{again}");
+        let both = sh.run(&[&scrap[..], &["--set", "status=\"x\""]].concat());
+        assert_eq!((both.code, both.out.as_str()), (2, ""), "{}", both.err);
+    }
+}
+
 #[test]
 fn apply_refuses_a_broken_bundle_whole_naming_every_problem() {
     for backend in BACKENDS {

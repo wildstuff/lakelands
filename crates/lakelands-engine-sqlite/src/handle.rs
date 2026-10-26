@@ -888,12 +888,14 @@ impl ProjectionStore for SqliteLake {
                     "INSERT INTO routes (at, kind, ty, key, source) VALUES (?1, ?2, ?3, ?4, ?5)",
                 )
                 .map_err(sql)?;
+            let kind = engines::kind_code(applied.kind).expect("a kind the format lists");
             let source = applied.source.as_ref().map(SourceId::as_str);
+            let source = source.map(|s| projection::name_id(conn, s)).transpose()?;
             for a in &applied.about {
-                let (ty, key) = (a.ty.as_ref().map(TypeName::as_str), a.key.as_ref());
-                let key = key.map(RecordKey::as_str);
+                let ty = a.ty.as_ref().map(|t| projection::name_id(conn, t.as_str()));
+                let key = a.key.as_ref().map(RecordKey::as_str);
                 route
-                    .execute(params![at, applied.kind, ty, key, source])
+                    .execute(params![at, kind, ty.transpose()?, key, source])
                     .map_err(sql)?;
             }
             Ok(())

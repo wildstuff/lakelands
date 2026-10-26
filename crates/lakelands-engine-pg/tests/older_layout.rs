@@ -1,5 +1,5 @@
 //! A projection an older build laid out (lakelands#1151): its `routes`
-//! without the `source` column, its states without the `procedure` a
+//! naming kinds, types and sources in text, its states without the `procedure` a
 //! computed field's metadata names (lakelands#1191), its states holding
 //! their rows' type, key and position and their false flags
 //! (lakelands#1318), and its mark one layout back. A reader's open is refused naming the layouts; the
@@ -71,7 +71,10 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
     let layout = format!("SELECT n FROM \"{schema}\".meta WHERE k = 'layout'");
     let wanted = tokio::task::block_in_place(|| one(&url, &layout));
     let older = format!(
-        "DROP INDEX \"{schema}\".routes_source; ALTER TABLE \"{schema}\".routes DROP COLUMN source; \
+        "DROP TABLE \"{schema}\".routes; DROP TABLE \"{schema}\".names; \
+         CREATE TABLE \"{schema}\".routes (at BIGINT NOT NULL, kind TEXT NOT NULL, ty TEXT, \
+         key TEXT, source TEXT); \
+         CREATE INDEX routes_source ON \"{schema}\".routes (source, at); \
          UPDATE \"{schema}\".meta SET n = {} WHERE k = 'layout'",
         wanted - 1
     );
@@ -102,7 +105,10 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
     assert_eq!(note.fields["text"], "kept");
     let procedure = note.meta["double"].procedure.as_deref();
     assert_eq!(procedure, Some("twice"), "the rebuild names the function");
-    let sourced = format!("SELECT count(*) FROM \"{schema}\".routes WHERE source = 'crm'");
+    let sourced = format!(
+        "SELECT count(*) FROM \"{schema}\".routes r JOIN \"{schema}\".names n ON n.id = r.source \
+         WHERE n.name = 'crm' AND pg_typeof(r.kind) = 'integer'::regtype"
+    );
     let (sourced, now) = tokio::task::block_in_place(|| (one(&url, &sourced), one(&url, &layout)));
     assert!(
         sourced > 0 && now == wanted,
@@ -158,6 +164,7 @@ async fn pages(l: &Lake, who: &Principal, q: &[f32]) -> (Vec<(String, u64)>, boo
             filter: None,
             rerank: None,
             with_meta: false,
+            matches: false,
             at: ReadAt::default(),
         };
         let page = l.cat.search(who, asked).await.unwrap().data;
