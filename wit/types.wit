@@ -1116,6 +1116,7 @@ interface types {
         where: option<condition>,
         rerank: option<rerank>,
         with-meta: bool,
+        matches: bool,
         at: read-at,
     }
 
@@ -1129,6 +1130,22 @@ interface types {
     record hit {
         %record: %record,
         score: f64,
+        /// Each searched field its text matched; empty unless asked.
+        matches: list<field-match>,
+    }
+
+    /// Where a search's text matched one field of a hit: the first 32
+    /// matched tokens and the count of every one.
+    record field-match {
+        field: field-name,
+        spans: list<span>,
+        count: u32,
+    }
+
+    /// A matched token, in chars of the field's text, its end exclusive.
+    record span {
+        start: u32,
+        end: u32,
     }
 
     record hits {

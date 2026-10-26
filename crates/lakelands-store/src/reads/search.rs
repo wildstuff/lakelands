@@ -15,7 +15,7 @@ impl<'a> Reader<'a> {
             let ty = s.ty.clone();
             return Err(Error::invalid(Case::ViewNotSearched { ty }));
         }
-        if let Some((field, case)) = s.mode.misfit() {
+        if let Some((field, case)) = s.misfit() {
             let reason = Refusal::Invalid(Box::new(case.into()));
             return Err(Error::refused(field, reason));
         }
@@ -167,9 +167,13 @@ impl<'a> Reader<'a> {
             offset,
             read,
             skipped,
+            marking,
         } = first;
         let more = hits.len() + skipped > offset + k;
-        let page: Vec<Hit> = (hits.into_iter()).skip(offset - skipped).take(k).collect();
+        let mut page: Vec<Hit> = (hits.into_iter()).skip(offset - skipped).take(k).collect();
+        if let Some(marks) = marking.and_then(|m| m.marks(s, self.named_type(&s.ty).ok()?)) {
+            marks.mark(&mut page);
+        }
         let next_cursor = more.then(|| {
             encode(&CursorState {
                 at: self.position,
@@ -202,6 +206,7 @@ impl<'a> Reader<'a> {
         mut carried: Option<Pulled>,
     ) -> Result<Judged<First>> {
         let (decl, text_fields, filter, ranks) = self.searched(s)?;
+        let marking = self.marking(s, &decl, text_fields, &ranks);
         let vectors = s.mode.vectors();
         let vector_fields: Vec<&FieldName> = vectors.iter().map(|v| v.0).collect();
         // A search that names no fields reads the searchable fields the
@@ -394,7 +399,39 @@ impl<'a> Reader<'a> {
             offset,
             read: search_read,
             skipped,
+            marking,
         }))
+    }
+
+    /// What `s`'s first stage searched, which its hits are marked by
+    /// (025), where it asks for `matches` or has a second stage that may
+    /// carry it: the fields its text was ranked in by the head, by their
+    /// names at the read's position, and the language that ranked. A read
+    /// not given the head ranked nothing and marks nothing.
+    pub(super) fn marking(
+        &self,
+        s: &Search,
+        decl: &TypeDecl,
+        named: Option<&[FieldName]>,
+        ranks: &Ranks,
+    ) -> Option<Marking> {
+        let asked = s.matches || s.rerank.is_some();
+        if !asked || matches!(s.mode, SearchMode::Vector { .. }) {
+            return None;
+        }
+        let head = ranks.decl.as_ref()?;
+        let ranked = |n: &&FieldName| ranks.fields.get(*n).is_some_and(|f| f.searchable);
+        let fields = match named {
+            Some(n) => n.iter().filter(ranked).cloned().collect(),
+            None => self
+                .sight
+                .searched_fields(decl)
+                .filter(ranked)
+                .cloned()
+                .collect(),
+        };
+        let tag = head.language.clone().unwrap_or_default();
+        Some(Marking { fields, tag })
     }
 
     /// The part of this read's selection an engine judges beside its
@@ -609,7 +646,12 @@ impl<'a> Reader<'a> {
                 continue;
             }
             if let Some(record) = self.sight.visible(decl, &r, with_meta) {
-                hits.push(Hit { record, score });
+                let matches = BTreeMap::new();
+                hits.push(Hit {
+                    record,
+                    score,
+                    matches,
+                });
             }
         }
         Ok(hits)
@@ -681,5 +723,52 @@ impl<'a> Reader<'a> {
             self.sight.check_probe(target, to.iter())?;
         }
         Ok(())
+    }
+}
+
+/// What a search's first stage searched, which its hits are marked by:
+/// a second stage carries it in its order, so each of its pages marks
+/// what a page of the first stage alone would (025).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Marking {
+    fields: Vec<FieldName>,
+    tag: String,
+}
+
+impl Marking {
+    /// What `s` marks its hits of `decl` by, if it asks for `matches`.
+    /// A second stage's text moves no mark.
+    pub(super) fn marks(&self, s: &Search, decl: &TypeDecl) -> Option<Marks> {
+        let (true, SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. }) =
+            (s.matches, &s.mode)
+        else {
+            return None;
+        };
+        Some(Marks {
+            decl: decl.clone(),
+            fields: self.fields.clone(),
+            query: core_engines::tokens(text, &self.tag),
+            tag: self.tag.clone(),
+        })
+    }
+}
+
+/// What a search that asks for `matches` marks its page's hits by.
+pub(super) struct Marks {
+    decl: TypeDecl,
+    fields: Vec<FieldName>,
+    query: BTreeSet<String>,
+    tag: String,
+}
+
+impl Marks {
+    /// Where the text matched each of `hits`, in the record it answers.
+    /// Only a page's hits are marked, after the cut, so no mark moves a
+    /// ranking.
+    pub(super) fn mark(&self, hits: &mut [Hit]) {
+        for h in hits {
+            let (fields, query) = (&self.fields, &self.query);
+            h.matches = core_engines::matched(&self.decl, &h.record, fields, query, &self.tag);
+        }
     }
 }

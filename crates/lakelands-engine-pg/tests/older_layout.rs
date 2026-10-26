@@ -158,6 +158,7 @@ async fn pages(l: &Lake, who: &Principal, q: &[f32]) -> (Vec<(String, u64)>, boo
             filter: None,
             rerank: None,
             with_meta: false,
+            matches: false,
             at: ReadAt::default(),
         };
         let page = l.cat.search(who, asked).await.unwrap().data;

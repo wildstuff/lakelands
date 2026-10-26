@@ -131,6 +131,7 @@ async fn a_cursor_continues_only_the_answer_it_was_handed_out_for(store: Store) 
         cursor,
         filter: None,
         with_meta: false,
+        matches: false,
         at: ReadAt::default(),
         rerank: None,
     };
@@ -300,6 +301,7 @@ async fn a_cursor_continues_only_the_read_it_was_handed_out_for(store: Store) ->
         cursor,
         filter: None,
         with_meta: false,
+        matches: false,
         at: ReadAt::default(),
         rerank: None,
     };
@@ -350,6 +352,7 @@ async fn a_cursor_continues_only_the_read_it_was_handed_out_for(store: Store) ->
     let wider = Search {
         k: 2,
         with_meta: true,
+        matches: false,
         ..search(Some(of_search.clone()), SearchMode::lexical("same"))
     };
     cat.search(own, wider)

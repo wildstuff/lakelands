@@ -10436,6 +10436,7 @@ async fn read_doors(c: &Arc<dyn Catalog>, who: &Principal, t: &str) -> Vec<(&'st
         cursor: None,
         filter: None,
         with_meta: false,
+        matches: false,
         at: at(),
         rerank: None,
     };
@@ -11262,6 +11263,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
                         cursor: None,
                         filter: None,
                         with_meta: false,
+                        matches: false,
                         at: ReadAt {
                             as_of,
                             valid_at: None,
@@ -11303,6 +11305,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
                 cursor: None,
                 filter: None,
                 with_meta: false,
+                matches: false,
                 at: ReadAt::default(),
                 ty,
                 mode,
@@ -11352,6 +11355,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
         cursor: None,
         filter: None,
         with_meta: false,
+        matches: false,
         at: ReadAt::default(),
         ty: ty("doc"),
         mode: hybrid(),
@@ -11904,6 +11908,7 @@ pub async fn a_vector_ranking_reads_a_vector_field(store: Arc<dyn LakeStore>) {
         cursor: None,
         filter: None,
         with_meta: false,
+        matches: false,
         at: ReadAt::default(),
         rerank: None,
     };
@@ -12166,6 +12171,7 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
         cursor: None,
         filter: None,
         with_meta: false,
+        matches: false,
         at: ReadAt::default(),
         rerank: None,
     };
@@ -12343,6 +12349,7 @@ pub async fn a_search_limited_to_named_fields_matches_and_probes_only_those(
         cursor: None,
         filter: None,
         with_meta: false,
+        matches: false,
         at: ReadAt::default(),
         rerank: None,
     };
@@ -12494,6 +12501,7 @@ pub async fn a_search_weighs_its_own_text_fields_over_its_types(store: Arc<dyn L
         cursor: None,
         filter: None,
         with_meta: false,
+        matches: false,
         at: ReadAt::default(),
         rerank: None,
     };
@@ -12597,6 +12605,7 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
         cursor: None,
         filter: None,
         with_meta: false,
+        matches: false,
         at: ReadAt::default(),
         rerank: None,
     };

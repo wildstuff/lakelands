@@ -1239,6 +1239,11 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             ("where", json!({"type": "string"})),
             ("rerank", rerank_schema()),
             ("with_meta", json!({"type": "boolean"})),
+            (
+                "matches",
+                json!({"type": "boolean",
+                "description": format!("Answer on each hit the searched fields its text matched, each with the char spans of its first {} matched tokens and their count; needs a text.", crate::query::MATCH_SPANS)}),
+            ),
         ]);
         time_axes(&mut p);
         out.push(ToolSpec {

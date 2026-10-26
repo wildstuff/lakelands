@@ -394,6 +394,7 @@ async fn after_a_rebuild_every_index_answers_as_before(store: Store) -> Held {
             cursor: None,
             filter: None,
             with_meta: false,
+            matches: false,
             at: ReadAt::default(),
             rerank: None,
         };

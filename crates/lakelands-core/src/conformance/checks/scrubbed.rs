@@ -255,6 +255,7 @@ async fn reads(
                 filter: None,
                 rerank: None,
                 with_meta: true,
+                matches: false,
                 at,
             };
             let r = l.cat.search(&l.own, search).await;

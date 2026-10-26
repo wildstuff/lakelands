@@ -73,6 +73,7 @@ mod links;
 mod logged_ids;
 mod made_of;
 mod masking;
+mod matches;
 mod metered;
 mod migrate;
 mod only;
@@ -233,6 +234,14 @@ pub const ALL: &[Check] = &[
     risky_calls::EXPR_HAS_NO_RISK,
     query_model::QUERY_MODEL_CHECKED,
     query_model::QUERY_MODEL_AFTER_RIGHTS,
+    matches::MATCHES_NAMED,
+    matches::MATCHES_UNASKED,
+    matches::MATCHES_NEED_TEXT,
+    matches::MATCHES_SHOWN,
+    matches::MATCHES_HYBRID,
+    matches::MATCHES_CAPPED,
+    matches::MATCHES_READ_THEN,
+    matches::MATCHES_DECLARED_SINCE,
     views::GROUPS_AND_SUMS,
     view_stack::VIEW_STACK,
     views::FAILING_MEASURE_REFUSES,

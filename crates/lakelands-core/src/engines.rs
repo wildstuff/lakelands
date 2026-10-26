@@ -41,9 +41,9 @@ use lakelands_api::event::SegmentDigest;
 use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::id::{FieldName, LakeId, Position, RecordKey, RelationName, TypeName};
 use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
-use lakelands_api::query::Edge;
+use lakelands_api::query::{Edge, MATCH_SPANS, Matched, Span};
 use lakelands_api::read::{Direction, Order, OrderBy};
-use lakelands_api::record::{FieldMeta, StoredRecord, Value};
+use lakelands_api::record::{FieldMeta, Record, StoredRecord, Value};
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, DeclarationKind, Proposal, ProposalFilter, ProposedWrite};
 
@@ -1417,10 +1417,54 @@ fn field_tokens<'r>(
     fields: Option<&'r [FieldName]>,
 ) -> impl Iterator<Item = (&'r FieldName, BTreeSet<String>)> {
     let tag = decl.language.as_deref().unwrap_or("");
+    searched_texts(decl, &record.fields, fields).map(move |(f, text)| (f, tokens(text, tag)))
+}
+
+/// The text each of a record's searchable fields holds in `values`, only
+/// those `fields` names when it names any: the fields a search reads.
+fn searched_texts<'r>(
+    decl: &'r TypeDecl,
+    values: &'r BTreeMap<FieldName, Value>,
+    fields: Option<&'r [FieldName]>,
+) -> impl Iterator<Item = (&'r FieldName, &'r str)> {
     decl.fields
         .iter()
         .filter(move |f| f.searchable && fields.is_none_or(|named| named.contains(&f.name)))
-        .filter_map(move |f| Some((&f.name, tokens(record.fields.get(&f.name)?.as_str()?, tag))))
+        .filter_map(move |f| Some((&f.name, values.get(&f.name)?.as_str()?)))
+}
+
+/// Where a search's `query` tokens stand in `record`, as its reader is
+/// answered it: in each of the fields [`field_tokens`] walks for `fields`
+/// that the record holds, every token the pipeline under `tag` makes a
+/// query token of is a match, in text order, its first [`MATCH_SPANS`]
+/// answered as spans and every one counted. A field none matched is not
+/// named, so neither is one the record does not answer its reader.
+pub fn matched(
+    decl: &TypeDecl,
+    record: &Record,
+    fields: &[FieldName],
+    query: &BTreeSet<String>,
+    tag: &str,
+) -> BTreeMap<FieldName, Matched> {
+    let at = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    let mut out = BTreeMap::new();
+    for (field, text) in searched_texts(decl, &record.fields, Some(fields)) {
+        let (mut spans, mut count) = (Vec::new(), 0u32);
+        let found = crate::stem::stem_tokens(text, tag).filter(|t| query.contains(&t.2));
+        for (start, end, _) in found {
+            count = count.saturating_add(1);
+            if spans.len() < MATCH_SPANS {
+                spans.push(Span {
+                    start: at(start),
+                    end: at(end),
+                });
+            }
+        }
+        if count > 0 {
+            out.insert(field.clone(), Matched { spans, count });
+        }
+    }
+    out
 }
 
 /// Full-text hits, as `docs/seams.md` §`ranked` defines them: the
