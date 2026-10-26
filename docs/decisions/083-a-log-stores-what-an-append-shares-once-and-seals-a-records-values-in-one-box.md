@@ -2,8 +2,8 @@
 
 ## What is decided
 
-**Proposed** on lakelands#1413 (2026-10-25), for the operator to accept,
-for 0.20.0, in format 20. It amends
+**Accepted** on lakelands#1413 (2026-10-26, by the operator), for
+0.20.0, in format 20. It amends
 `docs/decisions/020-events-are-hash-chained-over-canonical-bytes.md`,
 whose log now stores the form an event's canonical bytes are restored
 from and digests a segment over those bytes;
@@ -15,8 +15,7 @@ whose step to 20 reads a lake of 19 without a rewrite;
 no longer keeps the keys a delivery was sealed apart with; and
 `docs/decisions/077-a-backup-is-an-export-that-grows.md`, whose backup
 writes a form of its own and continues after its last whole frame. Each
-amended rule is marked proposed where it stands and comes in force with
-the issue that builds it; until then the rule beside it stands.
+amended rule is marked where it stands as accepted for 0.20.0.
 `docs/log-format.md` §1.2, §1.4, §3, §4 and §6 specify it.
 
 ### A segment's lines are a stored form, and each restores to exactly one canonical event

@@ -96,9 +96,9 @@ reads, so that binary reaches the ends and judges them (lakelands#1468);
 where the only append of 20 is still the last, as right after an
 upgrade, it takes that append for a crash's tail, finds 19 and refuses
 the projection's layout instead, and its rebuild cuts that append
-alone, as nothing was written after it. Its one step is proposed to
-carry also a new stored form of the log and a record's values sealed in
-one box, each in force with the issue that builds it
+alone, as nothing was written after it. Its one step carries also a new
+stored form of the log and a record's values sealed in one box,
+accepted as 083
 (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`,
 lakelands#1413), and a lake of 19 is read without a rewrite.
 
@@ -110,7 +110,7 @@ lakelands#1413), and a lake of 19 is read without a rewrite.
   release's, and the event keeps its `v`, its bytes and its hash. Every
   hash, checkpoint and export a host already holds stays true; a log
   that replaced the events with new ones would be a second truth (001).
-  A step that changes how events are stored, as 083 proposes for 20,
+  A step that changes how events are stored, as 083 accepts for 20,
   changes it only for the lines written after it: a line of an earlier
   format is a full event, read as it stands beside the new ones in one
   segment, and a value sealed in an earlier format opens by its event's
@@ -237,5 +237,5 @@ them.
   own before any form it adds, the vectors of 18 kept as v0.17.0 holds
   them (lakelands#1330).
 - 0.20.0's step, to 20, changing also how the log stores events, a
-  lake of 19 keeping its lines as they stand, proposed with 083
+  lake of 19 keeping its lines as they stand, accepted with 083
   (lakelands#1413).

@@ -609,6 +609,46 @@ pub fn searchable(name: &str) -> FieldDecl {
     }
 }
 
+/// The one function's ranking of `text` (`docs/seams.md` §`ranked`) over
+/// `heads` under `decl`, each a key and its fields, for a reader counted
+/// over every one of them: keys and scores, best first, ties by key. The
+/// search reads the fields `fields` names when it names any, weighed by
+/// `weights`.
+pub fn bm25f(
+    decl: &TypeDecl,
+    heads: &[(&str, Value)],
+    (text, fields): (&str, Option<&[&str]>),
+    weights: &[(&str, f64)],
+) -> Vec<(String, f64)> {
+    let head = |(key, fields): &(&str, Value)| lakelands_api::record::StoredRecord {
+        ty: decl.name.clone(),
+        key: RecordKey::from(*key),
+        version: lakelands_api::Version(1),
+        fields: serde_json::from_value(fields.clone()).unwrap_or_default(),
+        meta: Default::default(),
+        position: Position(1),
+        made: Position(1),
+        retired: false,
+        restricted: false,
+    };
+    let heads: Vec<_> = heads.iter().map(head).collect();
+    let fields: Option<Vec<FieldName>> = fields.map(|f| f.iter().map(|&f| f.into()).collect());
+    let weights = weights.iter().map(|&(f, w)| (f.into(), w)).collect();
+    let mut counts = lakelands_api::engine::TextCounts::default();
+    crate::engines::text_stats(decl, &heads, ("", None), &mut counts);
+    let counts = crate::engines::Counts::Kept(&counts.fields);
+    let ranked = crate::engines::lexical(
+        decl,
+        &heads,
+        text,
+        fields.as_deref(),
+        &weights,
+        counts,
+        u32::MAX,
+    );
+    ranked.into_iter().map(|(k, s)| (k.0, s)).collect()
+}
+
 /// A type whose records are keyed by the writer, with these fields.
 pub fn type_decl(name: &str, fields: Vec<FieldDecl>) -> TypeDecl {
     TypeDecl {

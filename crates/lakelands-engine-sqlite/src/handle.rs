@@ -202,6 +202,7 @@ impl SqliteLake {
                 // it folded past its mark or wrote its setting) is rebuilt
                 // from the head, once.
                 projection::catch_up_sorted(&conn)?;
+                projection::catch_up_text_stats(&conn)?;
                 Some(conn)
             }
             // Whatever layout made the projection, nothing is read from it
@@ -260,6 +261,7 @@ impl SqliteLake {
         conn.execute_batch(&format!("BEGIN IMMEDIATE; {schema} {mark} COMMIT;"))
             .map_err(sql)?;
         projection::catch_up_sorted(&conn)?;
+        projection::catch_up_text_stats(&conn)?;
         let reader = connect(&path, &tuning, false)?;
         Ok(SqliteLake {
             lease_file: LeaseFile::new(&dir),
@@ -647,9 +649,8 @@ impl LakeEngine for SqliteLake {
         conn.execute_batch("BEGIN").map_err(sql)?;
         let ranked = projection::folded(&conn).and_then(|position| {
             let mut lists = Vec::new();
-            if let Some((text, fields)) = &asked.text {
-                let (fields, weights) = (fields.as_deref(), &asked.text_weights);
-                lists.push(crate::view::lexical(&conn, ty, text, fields, weights, k)?);
+            if asked.text.is_some() {
+                lists.push(crate::view::lexical(&conn, ty, asked, k)?);
             }
             let decl = match &asked.seen {
                 Some(_) if !asked.vectors.is_empty() => projection::type_at(&conn, ty, position)?,
@@ -786,6 +787,7 @@ impl ProjectionStore for SqliteLake {
             }
             projection::set_folded(conn, through)?;
             projection::mark_sorted(conn, folded, through)?;
+            projection::mark_text_stats(conn, folded, through)?;
             conn.execute_batch("COMMIT").map_err(sql)?;
             Ok(heads)
         })?;

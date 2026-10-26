@@ -2,11 +2,11 @@
 //! `docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`,
 //! extended).
 //!
-//! The setting `search_weights.<type>` takes `text_fields`: each distinct
-//! query token counts at the weight of the heaviest searched field that
-//! holds it, 1 for a field it does not name, so with none the score is
-//! the count of the tokens held. It weighs every ranking of text, a
-//! lexical search's and a hybrid search's lexical half before the fusion.
+//! The setting `search_weights.<type>` takes `text_fields`: BM25F weighs
+//! a query token's length-normalised frequency in each searched field by
+//! that field's weight, 1 for a field it does not name, before it
+//! saturates their sum. It weighs every ranking of text, a lexical
+//! search's and a hybrid search's lexical half before the fusion.
 //!
 //! A lexical or hybrid search may give its own `text_fields`, each
 //! field's weight winning over the setting's (lakelands#1237), judged as
@@ -16,13 +16,13 @@ use crate::conformance::fixture::get_at;
 use crate::conformance::prelude::*;
 
 check!(
-    WEIGHTS_TEXT = a_types_text_fields_weigh_each_token_at_its_heaviest_field,
-    "025, extended (lakelands#1230): under `search_weights.<type>`'s `text_fields`, a lexical search scores each distinct query token at the weight of the heaviest searched field holding it, a field not named at 1, summed: a word in the title at 4 outranks it in a body, and a record holding it in both scores 4, not 5; a search limited to `fields` reads no weight of a field it does not name; a read as of a position before the setting ranks without it, and a field the setting names that a migration removed weighs nothing and is no error; a field renamed since a read's position is weighed there by the name it bore there, and at the head, where the setting names it no more, at 1"
+    WEIGHTS_TEXT = a_types_text_fields_weigh_each_fields_matches,
+    "025, extended (lakelands#1230): under `search_weights.<type>`'s `text_fields`, a lexical search scores the one function's bits, each searched field's matches weighed by the field's weight, a field not named at 1: a word in a title at 4 outranks it in a body it outranked unweighed; a search limited to `fields` reads no weight of a field it does not name; a read as of a position before the setting ranks without it, and a field the setting names that a migration removed weighs nothing and is no error; a field renamed since a read's position is weighed there by the name it bore there, and at the head, where the setting names it no more, at 1"
 );
 
 check!(
-    WEIGHTS_TEXT_UNWEIGHTED = without_text_fields_a_lexical_score_is_the_tokens_count,
-    "025, extended (lakelands#1230): with no `text_fields`, no setting or one of other members, a lexical score is the count of the distinct query tokens a record holds, to the bit, a token held in two fields counted once"
+    WEIGHTS_TEXT_UNWEIGHTED = without_text_fields_every_field_weighs_one,
+    "025, extended (lakelands#1230): with no `text_fields`, no setting or one of other members, a lexical score is the one function's with every field at 1, to the bit"
 );
 
 check!(
@@ -73,11 +73,9 @@ fn memo(titled: bool) -> TypeDecl {
     type_decl("memo", fields)
 }
 
-/// The issue's two memos, `c` naming the invoice twice, `d` the rent in
-/// its heading; `title` written where it is declared.
-async fn memos(store: &dyn lakelands_api::LakeStore, titled: bool) -> Result<Lake, Failure> {
-    let l = Lake::of(store);
-    l.declare(memo(titled)).await?;
+/// The issue's memos as written, `c` naming the invoice twice, `d` the
+/// rent in its heading; `title` written where it is declared.
+fn heads(titled: bool) -> Vec<(&'static str, Value)> {
     let rows = [
         (
             "a",
@@ -96,7 +94,7 @@ async fn memos(store: &dyn lakelands_api::LakeStore, titled: bool) -> Result<Lak
         ("c", "invoice", "", "an invoice copy", [0.6, 0.8]),
         ("d", "", "rent", "the invoice", [0.8, 0.6]),
     ];
-    for (key, title, heading, body, v) in rows {
+    let head = |(key, title, heading, body, v): (_, &str, &str, _, [f64; 2])| {
         let mut fields = json!({"body": body, "note": "invoice rent", "v": v});
         if titled && !title.is_empty() {
             fields["title"] = json!(title);
@@ -104,6 +102,16 @@ async fn memos(store: &dyn lakelands_api::LakeStore, titled: bool) -> Result<Lak
         if !heading.is_empty() {
             fields["heading"] = json!(heading);
         }
+        (key, fields)
+    };
+    rows.map(head).to_vec()
+}
+
+/// The memos of [`heads`] in a lake of `memo`.
+async fn memos(store: &dyn lakelands_api::LakeStore, titled: bool) -> Result<Lake, Failure> {
+    let l = Lake::of(store);
+    l.declare(memo(titled)).await?;
+    for (key, fields) in heads(titled) {
         l.upsert("memo", key, fields).await?;
     }
     Ok(l)
@@ -125,99 +133,165 @@ fn scored(h: &Hits) -> Vec<(String, u64)> {
 }
 
 /// `scored` as written: keys and scores.
-fn want(hits: &[(&str, f64)]) -> Vec<(String, u64)> {
+fn want(hits: &[(impl AsRef<str>, f64)]) -> Vec<(String, u64)> {
     hits.iter()
-        .map(|(k, s)| ((*k).to_owned(), s.to_bits()))
+        .map(|(k, s)| (k.as_ref().to_owned(), s.to_bits()))
         .collect()
+}
+
+/// The one function's ranking of the lexical search `s` over `heads`
+/// under `decl`, its own `text_fields` weighing over `set`, the
+/// setting's weights at the search.
+fn one(
+    decl: &TypeDecl,
+    heads: &[(&str, Value)],
+    s: &Value,
+    set: &[(&str, f64)],
+) -> Vec<(String, f64)> {
+    let text = s["text"].as_str().unwrap_or("");
+    let named = s["fields"]
+        .as_array()
+        .map(|a| a.iter().filter_map(Value::as_str).collect());
+    let mut weights: BTreeMap<&str, f64> = set.iter().copied().collect();
+    for (f, w) in s["text_fields"].as_object().into_iter().flatten() {
+        weights.insert(f, w.as_f64().unwrap_or(1.0));
+    }
+    let weights: Vec<_> = weights.into_iter().collect();
+    let named: Option<Vec<&str>> = named;
+    bm25f(decl, heads, (text, named.as_deref()), &weights)
+}
+
+/// The keys of a ranking, best first.
+fn keys(ranking: &[(String, f64)]) -> Vec<&str> {
+    ranking.iter().map(|(k, _)| k.as_str()).collect()
+}
+
+/// A hybrid search's fused scores of the lexical ranking `text` and the
+/// keys `near` nearest first, by reciprocal rank at weight 1 each.
+fn fused(text: &[(String, f64)], near: &[&str]) -> Vec<(String, f64)> {
+    let rank = |k: &str, of: &[&str]| {
+        of.iter()
+            .position(|n| *n == k)
+            .map(|r| 1.0 / (60.0 + r as f64))
+    };
+    let text = keys(text);
+    let mut all: Vec<(String, f64)> = (near.iter())
+        .map(|k| {
+            (
+                k.to_string(),
+                rank(k, &text).unwrap_or(0.0) + rank(k, near).unwrap_or(0.0),
+            )
+        })
+        .collect();
+    all.sort_by(|x, y| y.1.total_cmp(&x.1).then(x.0.cmp(&y.0)));
+    all
 }
 
 fn lexical(text: &str) -> Value {
     json!({"mode": "lexical", "text": text})
 }
 
-/// Each search the lake `l` answers its owner otherwise than `table` says.
-async fn misranked(l: &Lake, table: &[(Value, &[(&str, f64)])]) -> Result<Vec<String>, Failure> {
+/// Each search the lake `l` answers its owner otherwise than the one
+/// function over `heads` under `decl`, each beside the setting's weights
+/// at the search.
+async fn misranked(
+    l: &Lake,
+    (decl, heads): (&TypeDecl, &[(&str, Value)]),
+    table: &[(Value, &[(&str, f64)])],
+) -> Result<Vec<String>, Failure> {
     let mut wrong = Vec::new();
-    for (s, hits) in table {
+    for (s, set) in table {
         let said = scored(&search(l, &l.own, s.clone()).await?);
-        if said != want(hits) {
-            wrong.push(format!("{s}: {said:?}"));
+        let one = one(decl, heads, s, set);
+        if said != want(&one) {
+            wrong.push(format!("{s}: {said:?}, not {one:?}"));
         }
     }
     Ok(wrong)
 }
 
-async fn a_types_text_fields_weigh_each_token_at_its_heaviest_field(store: Store) -> Held {
+async fn a_types_text_fields_weigh_each_fields_matches(store: Store) -> Held {
     let l = memos(store.as_ref(), true).await?;
+    let (decl, heads) = (memo(true), heads(true));
     let before = store.head().await.must("reading the head")?;
+    let unweighed = keys(&one(&decl, &heads, &lexical("invoice"), &[])).join(" ");
     l.set("search_weights.memo", json!({"text_fields": {"title": 4}}))
         .await?;
+    let titled = search(&l, &l.own, lexical("invoice")).await?;
+    let titled: Vec<&str> = (titled.hits.iter())
+        .map(|h| h.record.key.as_str())
+        .collect();
+    let mut wrong = Vec::new();
+    if unweighed != "c d b a" || titled != ["c", "b", "d", "a"] {
+        wrong.push(format!(
+            "`invoice` ranked {unweighed} unweighed and {titled:?} with `title` at 4; `b`, \
+             holding it in its title, must pass `d`, holding it in a short body"
+        ));
+    }
     let mut body = lexical("invoice");
     body["fields"] = json!(["body"]);
     let mut then = lexical("invoice");
     then["as_of"] = json!(before);
-    let mut wrong = misranked(
-        &l,
-        &[
-            (
-                lexical("invoice"),
-                &[("b", 4.0), ("c", 4.0), ("a", 1.0), ("d", 1.0)],
-            ),
-            (body, &[("a", 1.0), ("c", 1.0), ("d", 1.0)]),
-            (then, &[("a", 1.0), ("b", 1.0), ("c", 1.0), ("d", 1.0)]),
-        ],
-    )
-    .await?;
-    let three = json!({"text_fields": {"title": 4, "heading": 2, "body": 0.5}});
-    l.set("search_weights.memo", three).await?;
-    let both = [("a", 4.5), ("b", 4.5), ("c", 4.0), ("d", 2.5)];
-    wrong.extend(misranked(&l, &[(lexical("invoice rent"), &both)]).await?);
+    let title: &[(&str, f64)] = &[("title", 4.0)];
+    wrong.extend(
+        misranked(
+            &l,
+            (&decl, &heads),
+            &[(lexical("invoice"), title), (body, title), (then, &[])],
+        )
+        .await?,
+    );
+    let three = [("title", 4.0), ("heading", 2.0), ("body", 0.5)];
+    let set = json!({"text_fields": {"title": 4, "heading": 2, "body": 0.5}});
+    l.set("search_weights.memo", set).await?;
+    wrong.extend(misranked(&l, (&decl, &heads), &[(lexical("invoice rent"), &three)]).await?);
     // `heading` removed: the setting still names it, and weighs nothing.
     let mut gone = memo(true);
     gone.fields.retain(|f| f.name.as_str() != "heading");
-    l.migrate(gone).await?;
-    let left = [("a", 4.5), ("b", 4.5), ("c", 4.0), ("d", 0.5)];
-    wrong.extend(misranked(&l, &[(lexical("invoice rent"), &left)]).await?);
+    l.migrate(gone.clone()).await?;
+    wrong.extend(misranked(&l, (&gone, &heads), &[(lexical("invoice rent"), &three)]).await?);
     // `title` renamed `headline`: as of before, the setting names it.
     let named = store.head().await.must("reading the head")?;
-    let mut renamed = memo(true);
-    renamed.fields.retain(|f| f.name.as_str() != "heading");
+    let mut renamed = gone;
     renamed.fields[0].name = "headline".into();
-    l.migrate_renaming(renamed, &[("title", "headline")])
+    l.migrate_renaming(renamed.clone(), &[("title", "headline")])
         .await?;
+    let heads: Vec<_> = (heads.into_iter())
+        .map(|(key, mut fields)| {
+            if let Some(t) = fields.as_object_mut().and_then(|f| f.remove("title")) {
+                fields["headline"] = t;
+            }
+            (key, fields)
+        })
+        .collect();
     let mut then = lexical("invoice rent");
     then["as_of"] = json!(named);
-    let head = [("a", 1.5), ("b", 1.5), ("c", 1.0), ("d", 0.5)];
-    wrong.extend(misranked(&l, &[(then, &left), (lexical("invoice rent"), &head)]).await?);
+    let (there, here) = ([("headline", 4.0), ("body", 0.5)], [("body", 0.5)]);
+    let table = [(then, &there[..]), (lexical("invoice rent"), &here[..])];
+    wrong.extend(misranked(&l, (&renamed, &heads), &table).await?);
     ensure!(
         wrong.is_empty(),
-        "a type's `text_fields` must weigh each token at its heaviest field: {wrong:?}"
+        "a type's `text_fields` must weigh each field's matches: {wrong:?}"
     );
     Ok(())
 }
 
-async fn without_text_fields_a_lexical_score_is_the_tokens_count(store: Store) -> Held {
+async fn without_text_fields_every_field_weighs_one(store: Store) -> Held {
     let l = memos(store.as_ref(), true).await?;
-    let table: [(Value, &[(&str, f64)]); 2] = [
-        (
-            lexical("invoice"),
-            &[("a", 1.0), ("b", 1.0), ("c", 1.0), ("d", 1.0)],
-        ),
-        (
-            lexical("invoice rent"),
-            &[("a", 2.0), ("b", 2.0), ("d", 2.0), ("c", 1.0)],
-        ),
-    ];
-    let mut wrong = misranked(&l, &table).await?;
+    let (decl, heads) = (memo(true), heads(true));
+    let table: [(Value, &[(&str, f64)]); 2] =
+        [(lexical("invoice"), &[]), (lexical("invoice rent"), &[])];
+    let mut wrong = misranked(&l, (&decl, &heads), &table).await?;
     l.set(
         "search_weights.memo",
         json!({"text_weight": 0.5, "fields": {"v": 2}}),
     )
     .await?;
-    wrong.extend(misranked(&l, &table).await?);
+    wrong.extend(misranked(&l, (&decl, &heads), &table).await?);
     ensure!(
         wrong.is_empty(),
-        "without `text_fields` a lexical score must be the count of the tokens held: {wrong:?}"
+        "without `text_fields` a lexical score must be the one function's with every field at \
+         1: {wrong:?}"
     );
     Ok(())
 }
@@ -230,17 +304,14 @@ async fn a_hybrid_search_fuses_its_weighed_lexical_ranking(store: Store, reopen:
     l.set("search_weights.memo", json!({"text_fields": {"title": 4}}))
         .await?;
     let weighed = search(&l, &l.own, hybrid).await?;
-    // Near (1, 0): `a`, `d`, `c`, `b`. Weighed, `invoice` ranks `b` and
-    // `c` (title) above `a` and `d` (body): ranks 2, 0, 1, 3.
-    let fused = |text: f64, near: f64| 1.0 / (60.0 + text) + 1.0 / (60.0 + near);
-    let ranks = [
-        ("a", 2.0, 0.0),
-        ("b", 0.0, 3.0),
-        ("c", 1.0, 2.0),
-        ("d", 3.0, 1.0),
-    ];
-    let mut expected: Vec<(&str, f64)> = ranks.map(|(k, t, n)| (k, fused(t, n))).to_vec();
-    expected.sort_by(|x, y| y.1.total_cmp(&x.1).then(x.0.cmp(y.0)));
+    // Near (1, 0): `a`, `d`, `c`, `b`; the text as the title at 4 ranks it.
+    let text = one(
+        &memo(true),
+        &heads(true),
+        &lexical("invoice"),
+        &[("title", 4.0)],
+    );
+    let expected = fused(&text, &["a", "d", "c", "b"]);
     let mut wrong = Vec::new();
     if scored(&weighed) != want(&expected) {
         wrong.push(format!("fused: {:?}, not {expected:?}", scored(&weighed)));
@@ -268,10 +339,9 @@ async fn a_hybrid_search_fuses_its_weighed_lexical_ranking(store: Store, reopen:
     let l = Lake::of(store.as_ref());
     let fallback = json!({"mode": "hybrid", "text": "invoice", "field": "e"});
     let alone = search(&l, &l.own, fallback).await?;
-    let text = [("b", 4.0), ("c", 4.0), ("a", 1.0), ("d", 1.0)];
     if scored(&alone) != want(&text) || !alone.ranked_by.starts_with("lexical") {
         wrong.push(format!(
-            "its fallback: {} {:?}",
+            "its fallback: {} {:?}, not {text:?}",
             alone.ranked_by,
             scored(&alone)
         ));
@@ -448,9 +518,11 @@ async fn a_text_fields_weight_is_refused_for_what_a_search_could_not_weigh(store
 
 async fn a_searchs_own_text_fields_win_over_its_types(store: Store) -> Held {
     let l = memos(store.as_ref(), true).await?;
+    let (decl, heads) = (memo(true), heads(true));
     let before = store.head().await.must("reading the head")?;
     let set = json!({"text_fields": {"title": 4, "heading": 2}});
     l.set("search_weights.memo", set).await?;
+    let setting: &[(&str, f64)] = &[("title", 4.0), ("heading", 2.0)];
     let own = |text: &str, weights: Value| {
         let mut s = lexical(text);
         s["text_fields"] = weights;
@@ -462,31 +534,26 @@ async fn a_searchs_own_text_fields_win_over_its_types(store: Store) -> Held {
     then["as_of"] = json!(before);
     let mut body = own("invoice rent", json!({"title": 4, "body": 2}));
     body["fields"] = json!(["body"]);
-    let mut wrong = misranked(
-        &l,
-        &[
-            (
-                quarter(),
-                &[("d", 3.0), ("a", 1.25), ("b", 1.25), ("c", 1.0)],
-            ),
-            (then, &[("d", 2.0), ("a", 1.25), ("b", 1.25), ("c", 1.0)]),
-            (body, &[("a", 2.0), ("b", 2.0), ("c", 2.0), ("d", 2.0)]),
-        ],
-    )
-    .await?;
-    // Weighed, `invoice` ranks a, c, d, b; near (1, 0) is a, d, c, b.
-    let hybrid = json!({"mode": "hybrid", "text": "invoice", "field": "v",
-                        "vector": [1.0, 0.0], "text_fields": {"title": 0.25}});
-    let fused = |text: f64, near: f64| 1.0 / (60.0 + text) + 1.0 / (60.0 + near);
-    let ranks = [
-        ("a", 0.0, 0.0),
-        ("b", 3.0, 3.0),
-        ("c", 1.0, 2.0),
-        ("d", 2.0, 1.0),
-    ];
-    let mut expected: Vec<(&str, f64)> = ranks.map(|(k, t, n)| (k, fused(t, n))).to_vec();
-    expected.sort_by(|x, y| y.1.total_cmp(&x.1).then(x.0.cmp(y.0)));
-    wrong.extend(misranked(&l, &[(hybrid, &expected)]).await?);
+    let table = [(quarter(), setting), (then, &[][..]), (body, setting)];
+    let mut wrong = misranked(&l, (&decl, &heads), &table).await?;
+    let whole = one(&decl, &heads, &quarter(), setting);
+    let mut text = own("invoice", json!({"title": 0.25}));
+    let invoice = one(&decl, &heads, &text, setting);
+    if keys(&whole).first() != Some(&"d") || keys(&invoice).last() != Some(&"b") {
+        wrong.push(format!(
+            "`invoice rent` ranked {whole:?} and `invoice` {invoice:?}, `title` at 0.25: `d`, \
+             holding `rent` in its heading at 2, must lead the first, and `b`, holding \
+             `invoice` in its title only, close the second"
+        ));
+    }
+    // Near (1, 0) is a, d, c, b.
+    (text["field"], text["vector"], text["mode"]) =
+        (json!("v"), json!([1.0, 0.0]), json!("hybrid"));
+    let expected = fused(&invoice, &["a", "d", "c", "b"]);
+    let fused_said = scored(&search(&l, &l.own, text).await?);
+    if fused_said != want(&expected) {
+        wrong.push(format!("hybrid: {fused_said:?}, not {expected:?}"));
+    }
     // Two pages of the weighed ranking; its cursor continues no other.
     let mut paged = quarter();
     paged["k"] = json!(2);
@@ -497,7 +564,6 @@ async fn a_searchs_own_text_fields_win_over_its_types(store: Store) -> Held {
     paged["cursor"] = json!(next);
     let second = search(&l, &l.own, paged).await?;
     let pages = [scored(&first), scored(&second)].concat();
-    let whole = [("d", 3.0), ("a", 1.25), ("b", 1.25), ("c", 1.0)];
     if pages != want(&whole) {
         wrong.push(format!("its pages: {pages:?}"));
     }
@@ -519,7 +585,7 @@ async fn a_searchs_own_text_fields_win_over_its_types(store: Store) -> Held {
             .collect(),
         _ => vec!["not rows"],
     };
-    if keys != ["d", "a", "b", "c"] {
+    if keys != self::keys(&whole) {
         wrong.push(format!("a pattern started from it: {rows:?}"));
     }
     ensure!(

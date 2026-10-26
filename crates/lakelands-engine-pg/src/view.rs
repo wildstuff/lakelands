@@ -21,7 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::engine::{Chosen, Declared, Matched, ProjectionView, Scan};
+use lakelands_api::engine::{Chosen, Declared, Matched, ProjectionView, Rankings, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, TypeName};
@@ -353,19 +353,17 @@ pub fn read_statements(schema: &str, head: bool) -> [String; 5] {
     ]
 }
 
-/// The full-text hits of `text` over `ty` as the rows hold them, at the
-/// head (`docs/seams.md` §`ranked`), each field weighed by `weights`,
-/// read through `db`.
+/// The full-text hits of `asked`'s text over `ty` as the rows hold them,
+/// at the head (`docs/seams.md` §`ranked`), read through `db`.
 pub(crate) fn lexical(
     db: &mut Db,
     names: &Names,
     ty: &TypeName,
-    text: &str,
-    fields: Option<&[FieldName]>,
-    weights: &BTreeMap<FieldName, f64>,
+    asked: &Rankings,
     k: u32,
 ) -> Result<Vec<(RecordKey, f64)>> {
-    let Some(decl) = projection::type_at(db, names, ty, None)? else {
+    let decl = projection::type_at(db, names, ty, None)?;
+    let (Some(decl), Some((text, _))) = (decl, &asked.text) else {
         return Ok(Vec::new());
     };
     let query: Vec<String> = engines::tokens(text, decl.language.as_deref().unwrap_or(""))
@@ -393,7 +391,8 @@ pub(crate) fn lexical(
             &RecordKey::from(key),
         )?);
     }
-    Ok(engines::lexical(&decl, &head, text, fields, weights, k))
+    let kept = |held| projection::text_counts(db, names, (ty, &decl), held);
+    engines::ranked_text(&decl, &head, asked, k, kept)
 }
 
 impl PgView<'_> {

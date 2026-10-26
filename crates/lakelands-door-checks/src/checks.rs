@@ -12805,15 +12805,21 @@ pub async fn a_search_weighs_its_own_text_fields_over_its_types(store: Arc<dyn L
         at: ReadAt::default(),
         rerank: None,
     };
+    // BM25F of one token, once in a field of one word, weighed by `w`:
+    // both records hold it, over two fields, so its idf is ln(6/5).
+    let bm25f = |w: f64| ((6.0_f64 / 5.0).ln() * w * 2.2 / (w + 1.2) * 1e9).round() as i64;
     for (weights, want) in [
-        (json!({"body": 2}), [("a", 4.0), ("b", 2.0)]),
-        (json!({"title": 0.5}), [("b", 1.0), ("a", 0.5)]),
+        (json!({"body": 2}), [("a", bm25f(4.0)), ("b", bm25f(2.0))]),
+        (
+            json!({"title": 0.5}),
+            [("b", bm25f(1.0)), ("a", bm25f(0.5))],
+        ),
     ] {
         let got = (f.catalog.search(owner, lexical(weights.clone())).await)
             .expect("a weighed search answers")
             .data;
-        let scored: Vec<(&str, f64)> = (got.hits.iter())
-            .map(|h| (h.record.key.as_str(), h.score))
+        let scored: Vec<(&str, i64)> = (got.hits.iter())
+            .map(|h| (h.record.key.as_str(), (h.score * 1e9).round() as i64))
             .collect();
         assert_eq!(scored, want, "a search weighing its text by {weights}");
     }

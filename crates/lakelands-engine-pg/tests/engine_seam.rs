@@ -98,6 +98,29 @@ impl EngineHarness for Pg {
         true
     }
 
+    fn stale_text_stats(&self, lake: &LakeId, behind: bool) -> bool {
+        let schema = self.schemas.lock().unwrap()[lake.as_str()].clone();
+        let url = self.url.clone();
+        let stale = match behind {
+            true => format!(
+                "UPDATE \"{schema}\".meta SET n = n - 1 WHERE k = 'text_stats'; \
+                 UPDATE \"{schema}\".text_stats SET records = records * 2, tokens = tokens * 2 + 1; \
+                 DELETE FROM \"{schema}\".text_lengths"
+            ),
+            false => format!(
+                "DROP TABLE \"{schema}\".text_stats; DROP TABLE \"{schema}\".text_lengths; \
+                 DELETE FROM \"{schema}\".meta WHERE k = 'text_stats'"
+            ),
+        };
+        let left = std::thread::spawn(move || {
+            let mut db = postgres::Client::connect(&url, postgres::NoTls)?;
+            db.batch_execute(&stale)
+        });
+        let left = left.join().expect("the staling thread");
+        left.expect("leaving the text statistics stale");
+        true
+    }
+
     fn scratch(&self, lake: &LakeId) -> lakelands_api::Result<Box<dyn LakeEngine>> {
         PgOpener.open_scratch(&self.location(lake.as_str()))
     }

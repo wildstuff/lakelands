@@ -68,6 +68,7 @@ mod key_versions;
 mod keys;
 mod landing;
 mod latest;
+mod lexical_score;
 mod link_paths;
 mod link_triggers;
 mod links;
@@ -891,6 +892,13 @@ pub const ALL: &[Check] = &[
     search_text_weights::WEIGHTS_TEXT_UNWEIGHTED,
     search_text_weights::WEIGHTS_TEXT_FUSED,
     search_text_weights::WEIGHTS_TEXT_HIDDEN,
+    lexical_score::LEXICAL_BITS,
+    lexical_score::LEXICAL_RARITY,
+    lexical_score::LEXICAL_LENGTH,
+    lexical_score::LEXICAL_HELD,
+    lexical_score::LEXICAL_ONLY,
+    lexical_score::LEXICAL_HIDDEN_AS_OF,
+    lexical_score::LEXICAL_RECOUNT,
     search_text_weights::WEIGHTS_TEXT_REFUSED,
     search_text_weights::WEIGHTS_TEXT_OWN,
     search_text_weights::WEIGHTS_TEXT_OWN_HIDDEN,

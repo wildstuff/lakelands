@@ -31,7 +31,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::engine::{Choose, Chosen, Declared};
+use lakelands_api::engine::{Choose, Chosen, Declared, TextCounts};
 use lakelands_api::error::Result;
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::ontology::TypeDecl;
@@ -139,10 +139,20 @@ CREATE TABLE IF NOT EXISTS vectors (
     PRIMARY KEY (ty, key, field, since)
 );
 CREATE INDEX IF NOT EXISTS vectors_head ON vectors (ty, field, key) WHERE until IS NULL;
+CREATE TABLE IF NOT EXISTS text_stats (
+    ty TEXT NOT NULL, field TEXT NOT NULL, held INTEGER NOT NULL,
+    records INTEGER NOT NULL, tokens INTEGER NOT NULL,
+    PRIMARY KEY (ty, field, held)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS text_lengths (
+    ty TEXT NOT NULL, key TEXT NOT NULL, field TEXT NOT NULL,
+    held INTEGER NOT NULL, tokens INTEGER NOT NULL,
+    PRIMARY KEY (ty, key, field)
+) WITHOUT ROWID;
 ";
 
 /// Every table the projection holds, cleared by a rebuild.
-pub(crate) const TABLES: [&str; 17] = [
+pub(crate) const TABLES: [&str; 19] = [
     "meta",
     "declarations",
     "records",
@@ -160,6 +170,8 @@ pub(crate) const TABLES: [&str; 17] = [
     "search_rows",
     "full_text",
     "vectors",
+    "text_stats",
+    "text_lengths",
 ];
 
 /// A history table: its name and the columns naming one thing in it.
@@ -398,7 +410,10 @@ pub(crate) fn made(conn: &Connection) -> Result<bool> {
 /// The statement that marks a projection with this build's layout, as
 /// it is made or cleared.
 pub(crate) fn mark() -> String {
-    format!("INSERT INTO meta (k, v) VALUES ('layout', {LAYOUT}) ON CONFLICT (k) DO NOTHING;")
+    format!(
+        "INSERT INTO meta (k, v) VALUES ('layout', {LAYOUT}) ON CONFLICT (k) DO NOTHING; \
+         INSERT INTO meta (k, v) VALUES ('{TEXT_STATS}', -1) ON CONFLICT (k) DO NOTHING;"
+    )
 }
 
 /// The position the projection reflects, if any.
@@ -901,6 +916,7 @@ pub(crate) fn index_record(
             .map_err(sql)
     };
     if !fresh {
+        unlength(conn, &r.ty, &r.key)?;
         drop("DELETE FROM text_index WHERE ty = ?1 AND key = ?2")?;
         drop("DELETE FROM edges WHERE src_ty = ?1 AND src_key = ?2")?;
         // Only a type the lake keeps an order index for has rows in it:
@@ -963,6 +979,7 @@ pub(crate) fn index_record(
     let Some(decl) = decl else {
         return Ok(());
     };
+    length(conn, decl, r)?;
     for e in engines::links_of(decl, r, None) {
         run(
             conn,
@@ -1219,7 +1236,181 @@ pub(crate) fn drop_record(conn: &Connection, ty: &TypeName, key: &RecordKey) -> 
             .and_then(|mut s| s.execute(params![ty.as_str(), key.as_str()]))
             .map_err(sql)?;
     }
+    unlength(conn, ty, key)
+}
+
+/// The meta key of the position the text statistics are folded through;
+/// -1 where they count an empty projection.
+const TEXT_STATS: &str = "text_stats";
+
+/// Add a live head's text into its type's counts (`docs/seams.md`
+/// §`ranked`): each searchable field's tokens, under its hold, kept beside
+/// so that the next write of the record takes out exactly this.
+fn length(conn: &Connection, decl: &TypeDecl, r: &StoredRecord) -> Result<()> {
+    if r.retired {
+        return Ok(());
+    }
+    let (ty, key, held) = (r.ty.as_str(), r.key.as_str(), r.restricted);
+    for (field, tokens) in engines::text_lengths(decl, r) {
+        let at = params![ty, key, field.as_str(), held, tokens as i64];
+        (conn.prepare_cached(
+            "INSERT INTO text_lengths (ty, key, field, held, tokens) VALUES (?1, ?2, ?3, ?4, ?5)",
+        ))
+        .and_then(|mut s| s.execute(at))
+        .map_err(sql)?;
+        (conn.prepare_cached(
+            "INSERT INTO text_stats (ty, field, held, records, tokens) VALUES (?1, ?2, ?3, 1, ?4) \
+             ON CONFLICT (ty, field, held) DO UPDATE \
+             SET records = records + 1, tokens = tokens + excluded.tokens",
+        ))
+        .and_then(|mut s| s.execute(params![ty, field.as_str(), held, tokens as i64]))
+        .map_err(sql)?;
+    }
     Ok(())
+}
+
+/// Take what [`length`] added for a record out of its type's counts.
+fn unlength(conn: &Connection, ty: &TypeName, key: &RecordKey) -> Result<()> {
+    let at = params![ty.as_str(), key.as_str()];
+    (conn.prepare_cached(
+        "UPDATE text_stats SET records = text_stats.records - 1, \
+         tokens = text_stats.tokens - l.tokens \
+         FROM (SELECT field, held, tokens FROM text_lengths WHERE ty = ?1 AND key = ?2) AS l \
+         WHERE text_stats.ty = ?1 AND text_stats.field = l.field AND text_stats.held = l.held",
+    ))
+    .and_then(|mut s| s.execute(at))
+    .map_err(sql)?;
+    (conn.prepare_cached("DELETE FROM text_lengths WHERE ty = ?1 AND key = ?2"))
+        .and_then(|mut s| s.execute(at))
+        .map(drop)
+        .map_err(sql)
+}
+
+/// Whether the text statistics describe the head: their mark is the
+/// position folded through, or -1 on an empty projection.
+fn text_stats_held(conn: &Connection) -> Result<bool> {
+    let mark: Option<i64> = one(conn, "SELECT v FROM meta WHERE k = ?1", [TEXT_STATS])?;
+    let folded = folded(conn)?.map_or(-1, |p| p.0 as i64);
+    Ok(mark == Some(folded))
+}
+
+/// Record that the text statistics are folded through `through`, where
+/// they were through `from`, the position the fold folded from; a writer
+/// that keeps none folded past them otherwise, and they stay behind until
+/// a writer's open counts them again.
+pub(crate) fn mark_text_stats(
+    conn: &Connection,
+    from: Option<Position>,
+    through: Position,
+) -> Result<()> {
+    let from = from.map_or(-1, |p| p.0 as i64);
+    (conn.prepare_cached("UPDATE meta SET v = ?1 WHERE k = ?2 AND v = ?3"))
+        .and_then(|mut s| s.execute(params![through.0 as i64, TEXT_STATS, from]))
+        .map(drop)
+        .map_err(sql)
+}
+
+/// Each head of `ty` that is not ended, a page at a time.
+fn head_pages(
+    conn: &Connection,
+    ty: &str,
+    mut each: impl FnMut(Vec<StoredRecord>) -> Result<()>,
+) -> Result<()> {
+    let mut after = String::new();
+    loop {
+        let page = records(
+            conn,
+            "SELECT ty, key, since, state FROM records WHERE ty = ?1 AND until IS NULL \
+             AND key > ?2 ORDER BY key LIMIT 1024",
+            params![ty, after],
+        )?;
+        let next = (page.len() == 1024).then(|| page.last().map(|r| r.key.to_string()));
+        each(page.into_iter().filter(|r| !r.is_ended()).collect())?;
+        match next.flatten() {
+            Some(last) => after = last,
+            None => return Ok(()),
+        }
+    }
+}
+
+/// Count the text statistics again from the head where their mark is
+/// absent or behind: a lake written before they were kept, or folded by
+/// a writer that keeps none. Once, in one transaction.
+pub(crate) fn catch_up_text_stats(conn: &Connection) -> Result<()> {
+    if text_stats_held(conn)? {
+        return Ok(());
+    }
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(sql)?;
+    let counted = (|| {
+        conn.execute_batch("DELETE FROM text_stats; DELETE FROM text_lengths;")
+            .map_err(sql)?;
+        let types: Vec<String> = column(
+            conn,
+            "SELECT DISTINCT ty FROM records WHERE until IS NULL",
+            [],
+            Ok,
+        )?;
+        for ty in types
+            .iter()
+            .filter(|t| !lakelands_api::seam::is_head_only(&t.as_str().into()))
+        {
+            let Some(decl) = type_at(conn, &ty.as_str().into(), None)? else {
+                continue;
+            };
+            head_pages(conn, ty, |page| {
+                page.iter().try_for_each(|r| length(conn, &decl, r))
+            })?;
+        }
+        let folded = folded(conn)?.map_or(-1, |p| p.0 as i64);
+        run(
+            conn,
+            "INSERT INTO meta (k, v) VALUES (?1, ?2) ON CONFLICT (k) DO UPDATE SET v = ?2",
+            params![TEXT_STATS, folded],
+        )
+    })();
+    match counted {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(sql),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+/// The counts of `ty`'s fields over its live heads that are not held,
+/// and with `held` over every one: as kept, where they describe the head,
+/// else counted from it at the read.
+pub(crate) fn text_counts(
+    conn: &Connection,
+    ty: &TypeName,
+    decl: &TypeDecl,
+    held: bool,
+) -> Result<BTreeMap<FieldName, (u64, u64)>> {
+    if !text_stats_held(conn)? {
+        let mut counts = TextCounts::default();
+        head_pages(conn, ty.as_str(), |page| {
+            let class = page
+                .iter()
+                .filter(|r| !r.retired && (held || !r.restricted));
+            engines::text_stats(decl, class, ("", None), &mut counts);
+            Ok(())
+        })?;
+        return Ok(counts.fields);
+    }
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT field, sum(records), sum(tokens) FROM text_stats \
+             WHERE ty = ?1 AND (held = 0 OR ?2) GROUP BY field",
+        )
+        .map_err(sql)?;
+    let rows = stmt.query_map(params![ty.as_str(), held], |r| {
+        let (n, l): (i64, i64) = (r.get(1)?, r.get(2)?);
+        Ok((
+            FieldName::from(r.get::<_, String>(0)?),
+            (n as u64, l as u64),
+        ))
+    });
+    rows.and_then(Iterator::collect).map_err(sql)
 }
 
 /// Delete the bases no record's state names.

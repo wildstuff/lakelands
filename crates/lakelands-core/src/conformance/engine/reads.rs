@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 
 use lakelands_api::engine::{
-    After, Declared, LakeEngine, ProjectionStore, ProjectionView, Rankings, Scan,
+    After, Declared, LakeEngine, ProjectionStore, ProjectionView, Rankings, Scan, TextCounts,
 };
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
@@ -28,6 +28,7 @@ use super::EngineHarness;
 use super::projection::{fold, fold_one, record, view};
 use crate::conformance::fixture::{Must, order, reason};
 use crate::conformance::{Failure, Held};
+use crate::engines::{self as core_engines, Counts};
 
 engine_check!(
     COUNT_IS_THE_SCAN = a_count_is_the_number_of_records_its_scan_selects,
@@ -101,7 +102,7 @@ engine_check!(
 
 engine_check!(
     LEXICAL_HITS = lexical_hits_are_the_pipelines_over_searchable_live_records,
-    "025 and seams §ranked: a hit holds a token the one pipeline makes of the query in a searchable field of a live record, restricted ones included (the store applies grants); the hit set is the same on every engine, ties by key, at most k"
+    "025 and seams §ranked: a hit holds a token the one pipeline makes of the query in a searchable field of a live record, restricted ones included (the store applies grants); it scores the one BM25F function's bits over every live head, so a rarer token outranks a commoner one; the hit set and the scores are the same on every engine, ties by key, at most k"
 );
 
 engine_check!(
@@ -116,12 +117,17 @@ engine_check!(
 
 engine_check!(
     LEXICAL_NAMED_FIELDS = lexical_over_named_fields_is_the_pipelines_over_those_fields,
-    "025 and seams §ranked: a search limited to named fields matches, scores and ties over the head text of the named searchable fields only, and no engine cuts its candidates at k before it narrows them: a record matching in a named field is a hit however many others match only in fields not named"
+    "025 and seams §ranked: a search limited to named fields matches, scores and ties over the head text of the named searchable fields only, the statistics too: a token's heads are those holding it in a named field, and the records counted those of the named fields; no engine cuts its candidates at k before it narrows them: a record matching in a named field is a hit however many others match only in fields not named"
 );
 
 engine_check!(
-    LEXICAL_WEIGHTED = a_weighed_text_scores_each_token_at_its_heaviest_field_before_the_cut,
-    "025 and seams §ranked, extended (lakelands#1230): a text's list weighs each distinct query token at the heaviest searched field holding it, a field not weighed at 1, and sums them in the tokens' order, so a token in two fields counts once and an unweighed list scores the tokens' count; the list is cut at k by that score, so a candidate holding fewer tokens in a heavier field outranks one holding more in a lighter one; a weight for a field the search does not name weighs nothing"
+    LEXICAL_WEIGHTED = a_weighed_text_scores_each_fields_frequency_by_its_weight_before_the_cut,
+    "025 and seams §ranked, extended (lakelands#1230): a text's list weighs a token's length-normalised frequency in each searched field by that field's weight, a field not weighed at 1, and saturates their sum once, BM25F's combined field; the list is cut at k by that score, so a heavier field lifts a candidate past one it trailed unweighed; a weight for a field the search does not name weighs nothing"
+);
+
+engine_check!(
+    STATS_COUNTED_AT_OPEN = reopening a_projection_without_statistics_counts_them_at_open,
+    "025 and seams §ranked (lakelands#1453): a projection whose text statistics are behind its head, as a build that keeps none left them by folding past them, or absent, as a build before them left it, scores a text as one with them: read-only, it counts them from the head at the read; a writer's open counts them once, and its commits keep them, a reader's scores following; for a reader holding `restricted` over every live head, and for one without over the heads that are not held"
 );
 
 engine_check!(
@@ -759,6 +765,26 @@ fn hit_keys(hits: &[(RecordKey, f64)]) -> Vec<String> {
     hits.iter().map(|(k, _)| k.to_string()).collect()
 }
 
+/// The one function's ranking of `text` over `heads` under `decl`, as a
+/// reader holding `restricted` reads them: its counts made over every
+/// live head, and the function handed every head.
+fn reference(
+    decl: &Declaration,
+    heads: &[StoredRecord],
+    (text, fields): (&str, Option<&[FieldName]>),
+    weights: &BTreeMap<FieldName, f64>,
+    k: u32,
+) -> Vec<(RecordKey, f64)> {
+    let Declaration::Type(decl) = decl else {
+        return Vec::new();
+    };
+    let live = || heads.iter().filter(|r| !r.retired);
+    let mut counts = TextCounts::default();
+    core_engines::text_stats(decl, live(), ("", None), &mut counts);
+    let counts = Counts::Kept(&counts.fields);
+    core_engines::lexical(decl, live(), text, fields, weights, counts, k)
+}
+
 /// The one list `ranked` answers for `asked`.
 fn one_list(
     engine: &dyn LakeEngine,
@@ -819,36 +845,47 @@ pub fn nearest(
 }
 
 fn lexical_hits_are_the_pipelines_over_searchable_live_records(engine: &dyn LakeEngine) -> Held {
-    fold(engine, 1, |p| {
-        p.put_declaration(&documents(), 1, None, Position(0))?;
-        p.put_record(&record(
+    let mut retired = record("doc", "retired", json!({"body": "run"}), 1);
+    retired.retired = true;
+    let mut held = record("doc", "held", json!({"body": "run"}), 1);
+    held.restricted = true;
+    let heads = [
+        record(
             "doc",
             "two",
             json!({"title": "Running", "body": "the rivers"}),
             1,
-        ))?;
-        p.put_record(&record("doc", "one-b", json!({"body": "runs"}), 1))?;
-        p.put_record(&record("doc", "one-a", json!({"body": "A RIVER"}), 1))?;
-        p.put_record(&record("doc", "note", json!({"note": "run river"}), 1))?;
-        let mut retired = record("doc", "retired", json!({"body": "run"}), 1);
-        retired.retired = true;
-        let mut held = record("doc", "held", json!({"body": "run"}), 1);
-        held.restricted = true;
-        p.put_record(&retired)?;
-        p.put_record(&held)
+        ),
+        record("doc", "one-b", json!({"body": "runs"}), 1),
+        record("doc", "one-a", json!({"body": "A RIVER"}), 1),
+        record("doc", "note", json!({"note": "run river"}), 1),
+        retired,
+        held,
+    ];
+    fold(engine, 1, |p| {
+        p.put_declaration(&documents(), 1, None, Position(0))?;
+        heads.iter().try_for_each(|r| p.put_record(r))
     })?;
     let ty = TypeName::from("doc");
     let hits = lexical(engine, &ty, "run rivers", None, 10).must("searching")?;
     ensure!(
-        hit_keys(&hits) == ["two", "held", "one-a", "one-b"],
+        hit_keys(&hits) == ["two", "one-a", "held", "one-b"],
         "searching `run rivers` answered {:?}; the English pipeline makes `run` and `river` of \
-         it, `two` holds both, `held` (restricted), `one-a` and `one-b` one each (ties by key), \
-         `note` holds them only in an unsearchable field, and a retired record is no hit",
+         it, `two` holds both, `one-a` holds `river`, which two heads hold, and `held` \
+         (restricted) and `one-b` hold `run`, which three hold, in a body as short (ties by \
+         key); `note` holds them only in an unsearchable field, and a retired record is no hit",
         hit_keys(&hits)
     );
+    let one = reference(
+        &documents(),
+        &heads,
+        ("run rivers", None),
+        &BTreeMap::new(),
+        10,
+    );
     ensure!(
-        hits[0].1 > hits[1].1 && hits[1].1 == hits[2].1 && hits[2].1 == hits[3].1,
-        "the scores {hits:?} must rank the better match higher and tie the equal ones"
+        hits == one,
+        "the scores {hits:?} are not the one function's {one:?} over the live heads"
     );
     let one = lexical(engine, &ty, "run rivers", None, 1).must("searching for one")?;
     ensure!(
@@ -924,58 +961,62 @@ fn ranked_answers_every_list_from_one_state_and_says_its_position(engine: &dyn L
 }
 
 fn lexical_over_named_fields_is_the_pipelines_over_those_fields(engine: &dyn LakeEngine) -> Held {
-    fold(engine, 1, |p| {
-        p.put_declaration(&documents(), 1, None, Position(0))?;
-        p.put_record(&record(
+    let mut heads = vec![
+        record(
             "doc",
             "both",
             json!({"title": "rivers running", "body": "run"}),
             1,
-        ))?;
-        p.put_record(&record("doc", "t-only", json!({"title": "river"}), 1))?;
-        // More records match only in `body` than a search limited to
-        // `title` asks for, and every one sorts before `t-only`.
-        for key in ["b-1", "b-2", "b-3"] {
-            p.put_record(&record("doc", key, json!({"body": "river"}), 1))?;
-        }
-        p.put_record(&record("doc", "note", json!({"note": "river"}), 1))
+        ),
+        record("doc", "t-only", json!({"title": "river"}), 1),
+    ];
+    // More records match only in `body` than a search limited to `title`
+    // asks for, and every one sorts before `t-only`.
+    for key in ["b-1", "b-2", "b-3"] {
+        heads.push(record("doc", key, json!({"body": "river"}), 1));
+    }
+    heads.push(record("doc", "note", json!({"note": "river"}), 1));
+    fold(engine, 1, |p| {
+        p.put_declaration(&documents(), 1, None, Position(0))?;
+        heads.iter().try_for_each(|r| p.put_record(r))
     })?;
-    fold_one(
-        engine,
-        2,
-        record("doc", "late", json!({"title": "river"}), 2),
-    )?;
+    let late = record("doc", "late", json!({"title": "river"}), 2);
+    fold_one(engine, 2, late.clone())?;
+    heads.push(late);
     let ty = TypeName::from("doc");
     let title = [FieldName::from("title")];
     let body = [FieldName::from("body")];
+    let one = |fields, k| {
+        reference(
+            &documents(),
+            &heads,
+            ("river run", fields),
+            &BTreeMap::new(),
+            k,
+        )
+    };
     let all = lexical(engine, &ty, "river run", None, 10).must("searching every field")?;
     ensure!(
-        hit_keys(&all) == ["both", "b-1", "b-2", "b-3", "late", "t-only"],
-        "searching `river run` in every searchable field answered {:?}",
-        hit_keys(&all)
+        hit_keys(&all) == ["both", "late", "t-only", "b-1", "b-2", "b-3"] && all == one(None, 10),
+        "searching `river run` in every searchable field answered {all:?}, not the one \
+         function's {:?}: `both` holds the rare `run`, and `river` in a one-token title weighs \
+         more than in a one-token body, the titles being the longer on average",
+        one(None, 10)
     );
     let titled = lexical(engine, &ty, "river run", Some(&title), 3).must("searching `title`")?;
     ensure!(
-        titled
-            == [
-                ("both".into(), 2.0),
-                ("late".into(), 1.0),
-                ("t-only".into(), 1.0)
-            ],
-        "searching `river run` in `title` with k = 3 answered {titled:?}; `both` holds both \
-         tokens in its title, `late` and `t-only` one each, and `b-1` to `b-3` match only in \
-         `body`, which was not named: a hit set cut at k before it was narrowed loses them"
+        hit_keys(&titled) == ["both", "late", "t-only"] && titled == one(Some(&title), 3),
+        "searching `river run` in `title` with k = 3 answered {titled:?}, not the one \
+         function's {:?} over the titles; `b-1` to `b-3` match only in `body`, which was not \
+         named: a hit set cut at k before it was narrowed loses them",
+        one(Some(&title), 3)
     );
     let bodied = lexical(engine, &ty, "river run", Some(&body), 10).must("searching `body`")?;
     ensure!(
-        bodied
-            == [
-                ("b-1".into(), 1.0),
-                ("b-2".into(), 1.0),
-                ("b-3".into(), 1.0),
-                ("both".into(), 1.0)
-            ],
-        "searching `river run` in `body` answered {bodied:?}; `both` holds only `run` there"
+        hit_keys(&bodied) == ["both", "b-1", "b-2", "b-3"] && bodied == one(Some(&body), 10),
+        "searching `river run` in `body` answered {bodied:?}, not the one function's {:?}; \
+         `both` holds only `run` there, which one body holds and `river` three",
+        one(Some(&body), 10)
     );
     let noted = lexical(engine, &ty, "river", Some(&[FieldName::from("note")]), 10)
         .must("searching `note`")?;
@@ -987,65 +1028,66 @@ fn lexical_over_named_fields_is_the_pipelines_over_those_fields(engine: &dyn Lak
     Ok(())
 }
 
-fn a_weighed_text_scores_each_token_at_its_heaviest_field_before_the_cut(
+fn a_weighed_text_scores_each_fields_frequency_by_its_weight_before_the_cut(
     engine: &dyn LakeEngine,
 ) -> Held {
+    let rows = [
+        ("both", json!({"title": "river", "body": "river"})),
+        ("heavy", json!({"title": "river"})),
+        ("light-a", json!({"body": "river run"})),
+        ("light-b", json!({"body": "rivers running"})),
+        ("noted", json!({"note": "river run"})),
+    ];
+    let heads: Vec<_> = rows
+        .into_iter()
+        .map(|(key, f)| record("doc", key, f, 1))
+        .collect();
     fold(engine, 1, |p| {
         p.put_declaration(&documents(), 1, None, Position(0))?;
-        let rows = [
-            ("both", json!({"title": "river", "body": "river"})),
-            ("heavy", json!({"title": "river"})),
-            ("light-a", json!({"body": "river run"})),
-            ("light-b", json!({"body": "rivers running"})),
-            ("noted", json!({"note": "river run"})),
-        ];
-        for (key, fields) in rows {
-            p.put_record(&record("doc", key, fields, 1))?;
-        }
-        Ok(())
+        heads.iter().try_for_each(|r| p.put_record(r))
     })?;
     let ty = TypeName::from("doc");
-    let weighed = |text: &str, fields: Option<&[FieldName]>, weights: &[(&str, f64)], k| {
-        let weights = weights.iter().map(|(f, w)| (FieldName::from(*f), *w));
-        lexical_weighed(engine, &ty, text, fields, weights.collect(), k)
-    };
-    let keyed = |hits: &[(&str, f64)]| -> Vec<(RecordKey, f64)> {
-        hits.iter()
-            .map(|(k, s)| (RecordKey::from(*k), *s))
+    let weights_of = |weights: &[(&str, f64)]| -> BTreeMap<FieldName, f64> {
+        weights
+            .iter()
+            .map(|(f, w)| (FieldName::from(*f), *w))
             .collect()
     };
-    let none = weighed("river run", None, &[], 3).must("ranking unweighed")?;
+    let weighed = |text: &str, fields: Option<&[FieldName]>, weights: &[(&str, f64)], k| {
+        let weights = weights_of(weights);
+        let got = lexical_weighed(engine, &ty, text, fields, weights.clone(), k)
+            .must(&format!("ranking `{text}` weighed {weights:?}"))?;
+        let one = reference(&documents(), &heads, (text, fields), &weights, k);
+        ensure!(
+            got == one,
+            "`{text}` weighed {weights:?} with k = {k} answered {got:?}, not the one \
+             function's {one:?}: each field's frequency weighed by its weight, summed, \
+             saturated once"
+        );
+        Ok::<_, Failure>(hit_keys(&got))
+    };
+    let none = weighed("river", None, &[], 3)?;
     ensure!(
-        none == keyed(&[("light-a", 2.0), ("light-b", 2.0), ("both", 1.0)]),
-        "unweighed, `river run` answered {none:?}: the count of the distinct tokens held, \
-         `both` holding `river` in two fields counted once"
+        none == ["both", "heavy", "light-a"],
+        "unweighed, `river` with k = 3 answered {none:?}: `both` holds it in two fields, \
+         `heavy` in a title of one token, `light-a` in a body of two"
     );
-    let title = weighed("river run", None, &[("title", 4.0)], 3).must("ranking by title")?;
+    let body = weighed("river", None, &[("body", 4.0)], 3)?;
     ensure!(
-        title == keyed(&[("both", 4.0), ("heavy", 4.0), ("light-a", 2.0)]),
-        "with `title` at 4, `river run` with k = 3 answered {title:?}: `both` and `heavy` hold \
-         `river` in the title (4, not 4 + 1 for `both`), `light-a` and `light-b` hold both \
-         tokens in `body`, which weighs 1; a list cut at k before it was weighed loses `heavy`"
-    );
-    let both = [("title", 4.0), ("body", 0.25)];
-    let halved = weighed("river run", None, &both, 10).must("ranking by both fields")?;
-    let light = 0.25 + 0.25;
-    ensure!(
-        halved
-            == keyed(&[
-                ("both", 4.0),
-                ("heavy", 4.0),
-                ("light-a", light),
-                ("light-b", light)
-            ]),
-        "with `title` at 4 and `body` at 0.25, `river run` answered {halved:?}"
+        body == ["both", "light-a", "light-b"],
+        "with `body` at 4, `river` with k = 3 answered {body:?}: the bodies holding it now \
+         outrank `heavy`, which holds it only in its title; a list cut at k before it was \
+         weighed keeps `heavy` and loses `light-b`"
     );
     let bodied = [FieldName::from("body")];
-    let named = weighed("river", Some(&bodied), &[("title", 4.0)], 10).must("ranking `body`")?;
+    let plain = weighed("river", Some(&bodied), &[], 10)?;
+    let named = weighed("river", Some(&bodied), &[("title", 4.0)], 10)?;
     ensure!(
-        named == keyed(&[("both", 1.0), ("light-a", 1.0), ("light-b", 1.0)]),
-        "`river` in `body`, `title` at 4, answered {named:?}: a field not searched weighs nothing"
+        named == plain && plain == ["both", "light-a", "light-b"],
+        "`river` in `body` answered {plain:?}, and {named:?} with `title` at 4: a field not \
+         searched weighs nothing"
     );
+    weighed("river run", None, &[("title", 4.0), ("body", 0.25)], 10)?;
     Ok(())
 }
 
@@ -1073,6 +1115,83 @@ fn a_record_put_after_a_redeclaration_in_the_same_transaction_is_indexed_under_i
          `river` answered {:?}, but under the declaration in force both are hits",
         hit_keys(&hits)
     );
+    Ok(())
+}
+
+fn a_projection_without_statistics_counts_them_at_open(
+    engine: &dyn LakeEngine,
+    harness: &dyn EngineHarness,
+) -> Held {
+    use lakelands_api::engine::{OpenMode, TextStats};
+    let mut held = record("doc", "held", json!({"body": "run run river"}), 1);
+    held.restricted = true;
+    let mut heads = vec![
+        record(
+            "doc",
+            "long",
+            json!({"title": "River", "body": "the river runs long and far away"}),
+            1,
+        ),
+        record("doc", "short", json!({"body": "a river"}), 1),
+        record("doc", "titled", json!({"title": "Running water"}), 1),
+        held,
+    ];
+    fold(engine, 1, |p| {
+        p.put_declaration(&documents(), 1, None, Position(0))?;
+        heads.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    let ty = TypeName::from("doc");
+    let body = [FieldName::from("body")];
+    let answers = |opened: &dyn LakeEngine, heads: &[StoredRecord], when: &str| -> Held {
+        let unheld: Vec<StoredRecord> = heads.iter().filter(|r| !r.restricted).cloned().collect();
+        for (text, fields) in [("run river", None), ("river", Some(&body[..]))] {
+            for (class, heads) in [(None, heads), (Some(TextStats::Unheld), &unheld[..])] {
+                let asked = Rankings {
+                    text: Some((text.to_owned(), fields.map(<[FieldName]>::to_vec))),
+                    text_stats: class.clone(),
+                    ..Rankings::default()
+                };
+                let hits = one_list(opened, &ty, asked, 10).must("searching")?;
+                let one = reference(&documents(), heads, (text, fields), &BTreeMap::new(), 10);
+                ensure!(
+                    hits == one,
+                    "{when}, searching `{text}` in {fields:?} for the class {class:?} scored \
+                     {hits:?}; the one function over the class's head scores {one:?}"
+                );
+            }
+        }
+        Ok(())
+    };
+    let open = |mode: OpenMode| {
+        let opened = harness.reopen(engine.lake(), mode);
+        opened.map_err(|e| Failure::new(format!("opening the lake {mode:?}: {e}")))
+    };
+    let left = [(true, "behind, its counts stale"), (false, "dropped")];
+    for (through, (behind, stats)) in (2..).zip(left) {
+        if !harness.stale_text_stats(engine.lake(), behind) {
+            return Ok(());
+        }
+        let reader = open(OpenMode::Read)?;
+        answers(
+            reader.as_ref(),
+            &heads,
+            &format!("read-only, statistics {stats}"),
+        )?;
+        let writer = open(OpenMode::Write)?;
+        let when = format!("after a writer's open, statistics {stats}");
+        answers(writer.as_ref(), &heads, &when)?;
+        let next = record(
+            "doc",
+            &format!("twice{through}"),
+            json!({"body": "river river"}),
+            2,
+        );
+        heads.push(next.clone());
+        fold_one(writer.as_ref(), through, next)?;
+        let when = format!("after a commit of the writer, statistics {stats} at its open");
+        answers(writer.as_ref(), &heads, &when)?;
+        answers(reader.as_ref(), &heads, &format!("read-only, {when}"))?;
+    }
     Ok(())
 }
 

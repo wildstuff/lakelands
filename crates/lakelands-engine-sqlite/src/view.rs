@@ -8,9 +8,9 @@
 //! directly. Either way `lakelands_core::engines` decides what matches,
 //! where it sorts and what it scores, exactly as on every other engine.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-use lakelands_api::engine::{Chosen, Declared, Matched, ProjectionView, Scan};
+use lakelands_api::engine::{Chosen, Declared, Matched, ProjectionView, Rankings, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, SourceId, TypeName};
@@ -357,18 +357,15 @@ pub fn read_statements(ty: &TypeName, head: bool) -> [String; 4] {
     ]
 }
 
-/// The full-text hits of `text` over `ty` as the index holds them, at the
-/// head (`docs/seams.md` §`ranked`), each field weighed by `weights`,
-/// read through `conn`.
+/// The full-text hits of `asked`'s text over `ty` as the index holds
+/// them, at the head (`docs/seams.md` §`ranked`), read through `conn`.
 pub(crate) fn lexical(
     conn: &Connection,
     ty: &TypeName,
-    text: &str,
-    fields: Option<&[FieldName]>,
-    weights: &BTreeMap<FieldName, f64>,
+    asked: &Rankings,
     k: u32,
 ) -> Result<Vec<(RecordKey, f64)>> {
-    let Some(decl) = projection::type_at(conn, ty, None)? else {
+    let (Some(decl), Some((text, _))) = (projection::type_at(conn, ty, None)?, &asked.text) else {
         return Ok(Vec::new());
     };
     let query = engines::tokens(text, decl.language.as_deref().unwrap_or(""));
@@ -396,7 +393,8 @@ pub(crate) fn lexical(
     for key in keys {
         head.extend(projection::head_record(conn, ty, &RecordKey::from(key))?);
     }
-    Ok(engines::lexical(&decl, &head, text, fields, weights, k))
+    let kept = |held| projection::text_counts(conn, ty, &decl, held);
+    engines::ranked_text(&decl, &head, asked, k, kept)
 }
 
 impl SqliteView<'_> {

@@ -371,13 +371,9 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
         ],
         ..lakelands_api::ontology::RelationDecl::to("buddy", "staff")
     }];
-    l.declare(staff_decl).await?;
-    l.upsert(
-        "staff",
-        "s1",
-        json!({"name": "ann", "plain": "pp", "secret": "ss"}),
-    )
-    .await?;
+    l.declare(staff_decl.clone()).await?;
+    let s1 = json!({"name": "ann", "plain": "pp", "secret": "ss"});
+    l.upsert("staff", "s1", s1.clone()).await?;
     let hidden = ["plain", "secret", "feed"].map(|f| (f, Access::None));
     let mut by_name = field_access(store.as_ref(), "x", "staff", &hidden);
     by_name.grants.ingest = true;
@@ -484,10 +480,18 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
     let theirs = unnamed(&by_name);
     let theirs = theirs.await.must("a search naming no fields")?.data;
     let score = |h: &lakelands_api::query::Hits| h.hits.iter().map(|h| h.score).collect::<Vec<_>>();
+    let one = |decl: &TypeDecl| {
+        let ranked = bm25f(decl, &[("s1", s1.clone())], ("ss pp ann", None), &[]);
+        ranked.into_iter().map(|(_, s)| s).collect::<Vec<_>>()
+    };
+    let named = type_decl("staff", vec![searchable("name")]);
     ensure!(
-        score(&mine) == [3.0] && score(&theirs) == [1.0],
+        score(&mine) == one(&staff_decl) && score(&theirs) == one(&named),
         "a search naming no fields reads only the searchable fields the principal knows of: \
-         the owner's `ss pp ann` scores 3, theirs only `ann`, 1; they scored {:?} and {:?}",
+         the owner's `ss pp ann` scores {:?}, three fields matching, theirs {:?}, as where \
+         `staff` declares only `name`; they scored {:?} and {:?}",
+        one(&staff_decl),
+        one(&named),
         score(&mine),
         score(&theirs)
     );

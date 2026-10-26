@@ -198,8 +198,8 @@ async fn a_reranked_window_is_answered_in_the_stages_order_and_pages_without_ask
         texts(&asked[0])
     );
     // A write that would rank first lands between the pages.
-    l.upsert("doc", "d0", json!({"body": "invoice overdue overdue"}))
-        .await?;
+    let d0 = json!({"body": "invoice invoice invoice invoice overdue overdue"});
+    l.upsert("doc", "d0", d0).await?;
     let mut next = first.clone();
     next["cursor"] = json!(one.next_cursor);
     let two = ask(&l, own, next).await?;

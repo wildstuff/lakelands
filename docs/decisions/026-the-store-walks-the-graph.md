@@ -47,14 +47,14 @@ counted (018). Components hold every record they reach, up to the lake's
 PageRank and communities hold the same graph, `page_rank` walking each
 step's relation in its own direction, and are bounded alike.
 
-**A measure adds integers, never floats** (lakelands#1412, proposed for
-0.20.0, in force with the issue that builds each measure). The store
-hands a measure a set of records and a set of links, each sorted and
-without repeats, so a different order from an engine gives it the same
-input; what could still differ is arithmetic, since a sum of floats
-taken in another order may differ in its last bit (031). So every sum a
-measure takes is of integers, which is the same in any order, and its
-records are indexed by type and key, the store's one order (025).
+**A measure adds integers, never floats** (lakelands#1412, accepted for
+0.20.0). The store hands a measure a set of records and a set of links,
+each sorted and without repeats, so a different order from an engine
+gives it the same input; what could still differ is arithmetic, since a
+sum of floats taken in another order may differ in its last bit (031).
+So every sum a measure takes is of integers, which is the same in any
+order, and its records are indexed by type and key, the store's one
+order (025).
 
 - **PageRank** holds the whole mass as `10^12` units in `u64`. Each
   record starts with an equal share, the units left over going one each
@@ -152,23 +152,22 @@ page boundary, `more` and a cursor tell nothing of a held start or end.
 
 ### The cheapest walk holds the neighbourhood it may pass through
 
-`cheapest` (018) is proposed for 0.20.0 (lakelands#1412) and comes in
-force with the issue that builds it. The walk that costs least within
-the steps' hops is not the one that costs least without a bound on
-hops, which is what a search that settles the nearest record first
-finds: a cheaper walk of more hops than the steps allow would settle a
-record that the walk within them cannot use. So the store holds the
-neighbourhood within the steps' hops, read level by level a page at a
-time as a path reads it, and then relaxes it in memory one hop at a
-time: after hop `k` each record holds the least walk of exactly `k`
+`cheapest` (018) is accepted for 0.20.0 (lakelands#1412). The walk that
+costs least within the steps' hops is not the one that costs least
+without a bound on hops, which is what a search that settles the nearest
+record first finds: a cheaper walk of more hops than the steps allow
+would settle a record that the walk within them cannot use. So the store
+holds the neighbourhood within the steps' hops, read level by level a
+page at a time as a path reads it, and then relaxes it in memory one hop
+at a time: after hop `k` each record holds the least walk of exactly `k`
 hops that reaches it, compared by cost, then the record it came from by
 type and key, then the link by relation and ends. The answer is the
 least by cost, then hops, of those that reach `to`, unwound hop by hop.
 Holding the neighbourhood is required, not a shortcut, since the
 cheapest walk may pass any record within reach; past `max_graph_nodes`
-it is refused `too_large`, never cut. Every choice is the least of a
-set under one total order, so the order an engine returns links in
-cannot move it.
+it is refused `too_large`, never cut. Every choice is the least of a set
+under one total order, so the order an engine returns links in cannot
+move it.
 
 A weight is a decimal at 9 places, held as an integer in `i128`: an
 integer enters exactly, a float by its shortest decimal form, a decimal
