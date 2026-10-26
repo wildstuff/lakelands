@@ -1,4 +1,4 @@
-//! The commands that open a lake: `apply`, `ingest`, `feed`, `age`,
+//! The commands that open a lake: `apply`, `query`, `ingest`, `feed`, `age`,
 //! `purge`, `forget`, `values remove`, `rebuild`, `compact`, `export` and
 //! `serve`. Each calls the library in-process and prints the position of
 //! every answer that has one.
@@ -396,6 +396,43 @@ pub async fn change(
             v["said"] = say::plan(&plan.data).into();
             v
         }
+    };
+    put(out, answer)
+}
+
+/// `query`: the openCypher statement `statement` with the `params` given
+/// as `NAME=JSON`, translated and run as the pattern it reads; the answer
+/// is printed as one JSON document. A statement that begins with
+/// `EXPLAIN` prints `{"pattern": …}` instead and reads nothing.
+pub async fn query(
+    out: Out<'_>,
+    catalog: &dyn Catalog,
+    who: &Principal,
+    statement: &str,
+    pairs: Vec<String>,
+) -> Result<(), Failure> {
+    let mut params = lakelands_api::Params::new();
+    for pair in pairs {
+        let bad = |what: &str| {
+            Failure::new(
+                format!("--param `{pair}`: {what}"),
+                "give each as NAME=JSON, such as status='\"open\"'",
+            )
+        };
+        let (name, raw) = pair.split_once('=').ok_or_else(|| bad("no `=`"))?;
+        let value = serde_json::from_str(raw).map_err(|e| bad(&e.to_string()))?;
+        params.insert(name.into(), value);
+    }
+    let t = lakelands_cypher::translate(statement, &params).map_err(Failure::from)?;
+    let lakelands_cypher::Statement::Read(pattern) = t.statement else {
+        unreachable!("the subset translates a read alone")
+    };
+    let json = |e: serde_json::Error| Failure::new(e.to_string(), "report it as a bug");
+    let answer = if t.explain {
+        serde_json::json!({ "pattern": pattern })
+    } else {
+        let read = catalog.query(who, pattern).await.map_err(Failure::from)?;
+        serde_json::to_value(read).map_err(json)?
     };
     put(out, answer)
 }

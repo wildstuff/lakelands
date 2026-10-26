@@ -627,6 +627,62 @@ fn change_prints_the_plan_and_makes_the_change_only_against_it() {
     }
 }
 
+/// `query --cypher` reads the lake with an openCypher statement and its
+/// `--param`s and prints the answer as one JSON document; `EXPLAIN` prints
+/// the pattern the statement translates to and reads nothing. A statement
+/// the lake refuses, and a `--param` that is no JSON, are said on stderr.
+#[test]
+fn query_runs_an_open_cypher_statement_with_its_params() {
+    for backend in BACKENDS {
+        let sh = Shell::on("query", backend);
+        sh.lake();
+        assert_eq!(sh.run(&["apply", &sh.fixture()]).code, 0);
+        let store = sh.lakes.lock().unwrap()["finance"].clone();
+        let owner = lakelands_api::Principal {
+            kind: lakelands_api::PrincipalKind::Human,
+            id: "owner".into(),
+            lake: store.lake().clone(),
+            grants: lakelands_api::Grants::owner(),
+        };
+        for (key, status) in [("INV-1", "open"), ("INV-2", "paid"), ("INV-3", "open")] {
+            let patch = [("status".into(), serde_json::json!(status))].into();
+            let catalog = store.catalog(lakelands_api::WriteContext::default());
+            let at = (&"invoice".into(), &key.into());
+            let done = catalog.upsert(&owner, at.0, at.1, patch, Default::default());
+            block_on(done).unwrap();
+        }
+        let statement = "MATCH (i:invoice) WHERE i.status = $status \
+                         RETURN i.key ORDER BY i.key";
+        let status = ["--param", "status=\"open\""];
+        let read = sh.run(&[&["query", "--cypher", statement][..], &status].concat());
+        assert_eq!((read.code, read.err.as_str()), (0, ""));
+        let answer: serde_json::Value = serde_json::from_str(&read.out).unwrap();
+        assert_eq!(
+            answer["data"]["rows"],
+            serde_json::json!([{ "i.key": "INV-1" }, { "i.key": "INV-3" }]),
+            "{}",
+            read.out
+        );
+
+        let explain = format!("EXPLAIN {statement}");
+        let head = block_on(store.head()).unwrap();
+        let shown = sh.run(&[&["query", "--cypher", &explain][..], &status].concat());
+        assert_eq!((shown.code, shown.err.as_str()), (0, ""));
+        let shown: serde_json::Value = serde_json::from_str(&shown.out).unwrap();
+        let start = shown["pattern"]["start"].to_string();
+        assert!(start.contains("\"invoice\""), "{shown}");
+        assert_eq!(shown.get("data"), None, "{shown}");
+        assert_eq!(block_on(store.head()).unwrap(), head);
+
+        let missing = sh.run(&["query", "--cypher", statement]);
+        assert_eq!((missing.code, missing.out.as_str()), (1, ""));
+        assert!(missing.err.contains("status"), "{}", missing.err);
+        let bad = sh.run(&["query", "--cypher", statement, "--param", "status=open"]);
+        assert_eq!((bad.code, bad.out.as_str()), (1, ""), "{}", bad.err);
+        assert!(bad.err.contains("status=open"), "{}", bad.err);
+    }
+}
+
 #[test]
 fn apply_refuses_a_broken_bundle_whole_naming_every_problem() {
     for backend in BACKENDS {

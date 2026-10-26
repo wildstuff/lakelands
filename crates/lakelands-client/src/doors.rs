@@ -179,7 +179,7 @@ pub enum Answered {
     /// `EXPLAIN`: the pattern the statement translates into.
     Explained {
         /// The pattern, with the axes and the cursor it would be read at.
-        pattern: Pattern,
+        pattern: Box<Pattern>,
     },
     /// The pattern's answer.
     Read(Reply<QueryResult>),
