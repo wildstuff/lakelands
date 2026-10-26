@@ -19,6 +19,7 @@ futures-core.workspace = true
 lakelands-api.workspace = true
 lakelands-backings.workspace = true
 lakelands-core.workspace = true
+lakelands-cypher.workspace = true
 lakelands-engine-mem.workspace = true
 lakelands-engine-pg = { workspace = true, optional = true }
 lakelands-engine-sqlite.workspace = true

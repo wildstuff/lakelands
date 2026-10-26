@@ -116,6 +116,7 @@ key may hold any character.
 | `POST …/verbs/<verb>/<key>` | a verb declared on a record | body: its payload (none is `{}`); `If-Match`, `Idempotency-Key` |
 | `POST …/verbs/<verb>` | a verb declared on its type | body: its payload (none is `{}`); `Idempotency-Key` |
 | `POST …/query` | the pattern query | body: the query tool's arguments |
+| `POST …/cypher` | an openCypher statement, run as the pattern it translates to | body: `statement`, `params`, `cursor`, `as_of`, `valid_at` |
 | `POST …/search` | search | body: the search tool's arguments |
 | `GET …/describe` | describe the lake | query: `as_of`, `valid_at` |
 | `GET …/describe/<type>` | describe one type | query: `as_of`, `valid_at` |
@@ -178,6 +179,20 @@ what a principal may read is decided by its grants alone
 (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
 extended). A key without a namespace is refused as `invalid` (422), and
 one in `sys.` or `lakelands.` as `reserved` (403), naming the key.
+
+`cypher` is REST's alone, and the CLI's `lakelands query --cypher`: no
+MCP tool takes a statement. The statement, in the openCypher subset
+`lakelands-cypher` reads, with the values of its `$name`s as `params`,
+is translated to a pattern and run as `POST …/query` runs it; its
+answer is that route's. How many rows a page holds is the statement's
+`LIMIT`, so the body takes no `limit`; `cursor` continues a page.
+A statement that begins with `EXPLAIN` answers `{"pattern": …}`, the
+pattern it translates to with `as_of`, `valid_at` and `cursor` set,
+and reads nothing. A statement that does not parse, a construct outside
+the subset, a condition nested more than 32 levels deep, and a parameter
+missing, unused or of a kind its place does not take are `invalid`
+(422), each by its own case, with the character offset where it has
+one. A member the route does not take is `invalid` (400), naming it.
 
 `schema/declare` and `schema/apply` are REST's alone: MCP offers
 `declare_type`, since an agent authors types, while a program may

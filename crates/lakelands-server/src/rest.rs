@@ -542,6 +542,14 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
             BodyAs::Args,
             Writes::No,
         ),
+        (["cypher"], Method::POST) => r(
+            Door::Cypher,
+            "POST …/cypher",
+            none,
+            &[],
+            BodyAs::Args,
+            Writes::No,
+        ),
         (["search"], Method::POST) => r(
             Door::Search,
             "POST …/search",

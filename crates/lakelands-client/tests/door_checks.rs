@@ -2,7 +2,8 @@
 //! a fresh in-memory store per check, served by `serve_http` on
 //! loopback, with a resolver whose entries are the checks' cast, each
 //! principal with its grants and the key `k-<id>`, and a `RemoteLake`
-//! keyed by those ids. The checks that call a host operation, and those
+//! keyed by those ids, and the statement checks through its `cypher`
+//! over the route. The checks that call a host operation, and those
 //! that read where one in-process feed poll stops (`in_process_feed`),
 //! are marked so in `door_checks!` and are ignored here, each saying why.
 
@@ -11,8 +12,13 @@ mod common;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use lakelands_api::LakeStore;
+use async_trait::async_trait;
+use lakelands_api::id::Cursor;
 use lakelands_api::location::Limits;
+use lakelands_api::{Error, LakeStore, Params, Principal, ReadAt};
+use lakelands_client::RemoteLake;
+use lakelands_door_checks::statements::Statements;
+use serde_json::Value;
 
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -38,10 +44,38 @@ fn fresh() -> String {
     )
 }
 
-fn remote() -> Arc<dyn LakeStore> {
+fn served() -> Arc<RemoteLake> {
     let store = block_on(common::memory_lake(&fresh(), Limits::default()));
     let (addr, keys) = block_on(common::serve(store.clone()));
     Arc::new(common::remote(addr, store.lake(), keys))
 }
 
+fn remote() -> Arc<dyn LakeStore> {
+    served()
+}
+
+/// The statement door over REST: the client's `cypher`, answered as JSON.
+struct OverRest(Arc<RemoteLake>);
+
+#[async_trait]
+impl Statements for OverRest {
+    async fn cypher(
+        &self,
+        who: &Principal,
+        statement: &str,
+        params: &Params,
+        at: ReadAt,
+        cursor: Option<&Cursor>,
+    ) -> Result<Value, Error> {
+        let answer = self.0.cypher(who, statement, params, at, cursor).await?;
+        Ok(serde_json::to_value(answer).expect("an answer is JSON"))
+    }
+}
+
+fn remote_with_statements() -> (Arc<dyn LakeStore>, Arc<dyn Statements>) {
+    let lake = served();
+    (lake.clone(), Arc::new(OverRest(lake)))
+}
+
 lakelands_door_checks::door_checks!(remote, block_on, remote);
+lakelands_door_checks::statement_checks!(remote_with_statements, block_on);

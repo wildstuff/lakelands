@@ -106,6 +106,10 @@ pub enum Door {
     Unsubscribe,
     /// `query`.
     Query,
+    /// `cypher`: a statement of the openCypher subset, translated into one
+    /// pattern and run as `query` runs it. Served over REST only; the
+    /// generator makes no tool of it.
+    Cypher,
     /// `search`.
     Search,
     /// `propose`.

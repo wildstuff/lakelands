@@ -186,33 +186,49 @@ async fn mcp_on(backend: Backend) {
 
 // ------------------------------------------------------- a read's request
 
-/// A read asked with a member it does not take inside another: its REST
-/// route (none for a find, which REST reads from the query string), its
-/// MCP tool, its arguments, and what the refusal names.
-fn reads() -> Vec<(
+/// A read asked with a member it does not take inside another, or, for
+/// a statement, beside it: its REST route (none for a find, which REST
+/// reads from the query string), its MCP tool (none for a statement),
+/// its arguments, and what the refusal names.
+type Read = (
     Option<&'static str>,
-    &'static str,
+    Option<&'static str>,
     Value,
     &'static [&'static str],
-)> {
+);
+
+fn reads() -> Vec<Read> {
+    let statement = "MATCH (i:invoice) RETURN i.key";
     vec![
         (
             Some("query"),
-            "query",
+            Some("query"),
             json!({"start": {"type": "invoice", "zzz": 1}}),
             &["zzz", "start"],
         ),
         (
             Some("search"),
-            "search",
+            Some("search"),
             json!({"type": "invoice", "mode": "lexical", "text": "a", "zzz": 1}),
             &["zzz"],
         ),
         (
             None,
-            "invoice_find",
+            Some("invoice_find"),
             json!({"aggregate": {"measures": [{"name": "n", "func": "count", "zzz": 1}]}}),
             &["zzz", "aggregate.measures[0]"],
+        ),
+        (
+            Some("cypher"),
+            None,
+            json!({"statement": statement, "limit": 5}),
+            &["limit"],
+        ),
+        (
+            Some("cypher"),
+            None,
+            json!({"statement": statement, "clock": "2026-01-01T00:00:00Z"}),
+            &["clock"],
         ),
     ]
 }
@@ -235,6 +251,7 @@ async fn a_read_refuses_a_member_it_does_not_take_inside_another_naming_it() {
                 let what = answer["what"].as_str().unwrap_or_default();
                 names_all(what, names).unwrap_or_else(|e| panic!("{at}: {e}"));
             }
+            let Some(tool) = tool else { continue };
             let result = mcp.call(tool, args).await;
             let at = format!("{backend:?}, {tool}");
             assert_eq!(result["isError"], true, "{at}: {result}");

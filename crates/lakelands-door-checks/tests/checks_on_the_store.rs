@@ -1,4 +1,5 @@
-//! The door checks, run on the store over memory and SQLite.
+//! The door checks, run on the store over memory and SQLite, and the
+//! statement checks through a host that translates the statement itself.
 //!
 //! Every check runs against `lakelands_store::open` on both engines. A
 //! check that passes on one and fails on the other is a divergence between
@@ -10,7 +11,8 @@ use std::sync::{Arc, OnceLock};
 
 use lakelands_api::engine::OpenMode;
 use lakelands_api::seam::Seams;
-use lakelands_api::{LakeStore, Location};
+use lakelands_api::{LakeStore, Location, WriteContext};
+use lakelands_door_checks::statements::{InProcess, Statements};
 
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -60,12 +62,20 @@ fn sqlite() -> Arc<dyn LakeStore> {
     open(Location::sqlite(lake, dir))
 }
 
+/// A lake and the statement door of a host that holds it.
+fn with_statements(lake: Arc<dyn LakeStore>) -> (Arc<dyn LakeStore>, Arc<dyn Statements>) {
+    let door = InProcess(lake.catalog(WriteContext::default()));
+    (lake, Arc::new(door))
+}
+
 mod on_memory {
     use super::*;
     lakelands_door_checks::door_checks!(memory, block_on);
+    lakelands_door_checks::statement_checks!(|| with_statements(memory()), block_on);
 }
 
 mod on_sqlite {
     use super::*;
     lakelands_door_checks::door_checks!(sqlite, block_on);
+    lakelands_door_checks::statement_checks!(|| with_statements(sqlite()), block_on);
 }

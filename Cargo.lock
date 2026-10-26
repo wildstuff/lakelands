@@ -1037,6 +1037,7 @@ dependencies = [
  "lakelands-backings",
  "lakelands-client",
  "lakelands-core",
+ "lakelands-cypher",
  "lakelands-engine-mem",
  "lakelands-engine-pg",
  "lakelands-engine-sqlite",
@@ -1109,8 +1110,10 @@ dependencies = [
 name = "lakelands-door-checks"
 version = "0.19.0"
 dependencies = [
+ "async-trait",
  "futures-core",
  "lakelands-api",
+ "lakelands-cypher",
  "lakelands-engine-mem",
  "lakelands-engine-sqlite",
  "lakelands-store",
@@ -1178,6 +1181,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "lakelands-api",
+ "lakelands-cypher",
  "lakelands-door-checks",
  "lakelands-engine-mem",
  "lakelands-engine-sqlite",

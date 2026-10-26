@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Case;
 use crate::expr::Condition;
 use crate::id::{Cursor, FieldName, RecordKey, RelationName, TypeName};
-use crate::read::{Aggregate, Order, Params, ReadAt};
+use crate::read::{Aggregate, Order, Params, ReadAt, Reply};
 use crate::record::{Record, Value};
 
 /// Which way a step walks a relation.
@@ -352,6 +352,24 @@ impl Pattern {
         p.to = Some(to);
         p
     }
+}
+
+/// What a statement of the openCypher subset answers: the read of the
+/// pattern it translates into, as [`Catalog::query`] answers it, or, for
+/// one that begins with `EXPLAIN`, `{"pattern": …}`, with no record read.
+///
+/// [`Catalog::query`]: crate::Catalog::query
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+#[non_exhaustive]
+pub enum StatementAnswer {
+    /// `EXPLAIN`: the pattern, at the axes and from the cursor given.
+    Explained {
+        /// The pattern.
+        pattern: Box<Pattern>,
+    },
+    /// The pattern's read.
+    Read(Reply<QueryResult>),
 }
 
 /// The answer to a pattern query.

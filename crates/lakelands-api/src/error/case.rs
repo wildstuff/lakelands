@@ -1181,6 +1181,8 @@ catalog! {
         CypherSkip { skip: u64 } => "`SKIP {skip}`: a pattern continues by the cursor its answer hands out (`next_cursor`), passed beside the statement",
         /// A first node with no label.
         CypherStartType { offset: usize } => "the first node names its type, as in `(a:invoice)` (at character {offset})",
+        /// A condition nested deeper than the subset reads.
+        CypherTooDeep { max: usize, offset: usize } => "a condition nests at most {max} levels deep: parentheses, `NOT` and a unary `-` each go one deeper (at character {offset})",
         /// A part that begins at a name nothing bound.
         CypherUnbound { name: String, offset: usize } => "`{name}` is bound by nothing before it: a part begins at a name an earlier part bound (at character {offset})",
         /// A `SKIP` or `LIMIT` given what is no whole number.
