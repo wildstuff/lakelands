@@ -32,7 +32,7 @@ check!(
 
 check!(
     SET_AT_READ_MERGED = a_views_merged_source_names_a_set_decided_at_the_read_by_its_where,
-    "066, lakelands#1441: a view whose `merge[]` entry's `where` calls `in_set` of a set decided at the read, a set of the merged type, is refused `set_at_read_named` naming the set and the view, kept or not, and nothing refused is appended"
+    "066, lakelands#1441: every view's `where` and every `merge[]` entry's `where` counts as decided at a write, kept or not: a view whose merged source's `where` calls `in_set` of a set decided at the read, a set of the merged type, is refused `set_at_read_named` naming the set and the view, and nothing refused is appended"
 );
 
 check!(
