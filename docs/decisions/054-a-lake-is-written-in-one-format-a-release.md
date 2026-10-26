@@ -91,9 +91,14 @@ number (lakelands#1164). 0.17.0 takes the fourth, to 18: it reads 14 to
 writes 19, so a 0.17.0 binary refuses its lakes by their number
 (lakelands#1330). 0.20.0 takes the sixth, to 20: it reads 14 to 20 and
 writes 20, so a 0.19.0 binary refuses its lakes by their number
-(lakelands#1409). Its one step is proposed to carry also a new stored
-form of the log and a record's values sealed in one box, each in force
-with the issue that builds it
+(lakelands#1409). Its SQLite index keeps the two line shapes 0.19.0
+reads, so that binary reaches the ends and judges them (lakelands#1468);
+where the only append of 20 is still the last, as right after an
+upgrade, it takes that append for a crash's tail, finds 19 and refuses
+the projection's layout instead, and its rebuild cuts that append
+alone, as nothing was written after it. Its one step is proposed to
+carry also a new stored form of the log and a record's values sealed in
+one box, each in force with the issue that builds it
 (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`,
 lakelands#1413), and a lake of 19 is read without a rewrite.
 

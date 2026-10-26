@@ -193,6 +193,66 @@ fn a_read_from_any_position_answers_the_events_from_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An append of eight events: the first whole, two framed, one whole,
+/// and two frames of two after it, one beside the other. Its index
+/// counts each frame's events without reading the frame's line, and a
+/// read from any position, of any length, answers each with its frame.
+#[test]
+fn a_frame_that_covers_part_of_an_append_is_counted_by_its_index() {
+    use lakelands_api::event::{EventId, LOG_FORMAT_VERSION};
+    let dir = scratch("frames-in-part");
+    let engine = open(&dir, OpenMode::Create);
+    let lease = engine.take_lease("writer").unwrap();
+    let mut prev = Digest::zero();
+    let mut events: Vec<CanonicalEvent> = (0..8)
+        .map(|p| {
+            let fence = if p == 0 { 0 } else { lease.fence };
+            let mut event = json!({
+                "body": {"kind": "note", "n": p},
+                "fence": fence,
+                "known_at": "2026-01-01T00:00:00.000000Z",
+                "position": p,
+                "prev": prev.0,
+                "v": LOG_FORMAT_VERSION,
+            });
+            let hash = Digest(lakelands_core::canonical::sha256_hex(&event));
+            event["hash"] = json!(hash.0);
+            let prev = std::mem::replace(&mut prev, hash.clone());
+            CanonicalEvent {
+                position: Position(p),
+                id: EventId(format!("{p:032x}")),
+                prev,
+                hash,
+                fence,
+                bytes: lakelands_core::canonical::to_vec(&event),
+                frame: None,
+            }
+        })
+        .collect();
+    for run in [1..3, 4..6, 6..8] {
+        lakelands_core::log::frame_append(&mut events[run]);
+    }
+    let covered: Vec<bool> = events.iter().map(|e| e.frame.is_some()).collect();
+    assert_eq!(covered, [false, true, true, false, true, true, true, true]);
+    engine.append(&lease, &events).unwrap();
+    let lines = std::fs::read_to_string(index(&dir, 0)).unwrap();
+    assert!(
+        lines
+            .lines()
+            .all(|l| l == "[\"c\"]" || l.starts_with("[\"e\","))
+    );
+    for handle in [engine, open(&dir, OpenMode::Read)] {
+        for from in 0..8 {
+            for n in 1..=8 {
+                let want = &events[from..(from + n).min(8)];
+                let read = handle.read(Position(from as u64), n as u32).unwrap();
+                assert_eq!(read, want, "{n} from {from}");
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_read_goes_on_past_an_append_and_across_a_seal() {
     let dir = scratch("across-a-seal");
@@ -289,7 +349,7 @@ async fn a_damaged_line_is_found_by_the_read_that_meets_it_and_by_verify_not_by_
     // Position 20's line names 21 instead, the file's length unchanged.
     let index = index(&dir, 0);
     let text = std::fs::read_to_string(&index).unwrap();
-    let damaged = text.replacen("[\"d\",20,", "[\"d\",21,", 1);
+    let damaged = text.replacen("[\"e\",20,", "[\"e\",21,", 1);
     assert_ne!(text, damaged, "the index holds position 20's line");
     std::fs::write(&index, damaged).unwrap();
 
@@ -489,13 +549,7 @@ fn a_line_that_names_another_position_is_refused_when_it_alone_is_read() {
     // and reads that answered the one asked for without meeting the line.
     let (mut wrong, mut unmet) = (Vec::new(), Vec::new());
     for q in 0..599u64 {
-        // A segment's first event line names its `prev`, the rest do not.
-        let kind = if q == 0 { "e" } else { "d" };
-        let damaged = text.replacen(
-            &format!("[\"{kind}\",{q},"),
-            &format!("[\"{kind}\",{},", q + 1),
-            1,
-        );
+        let damaged = text.replacen(&format!("[\"e\",{q},"), &format!("[\"e\",{},", q + 1), 1);
         assert_ne!(text, damaged, "the index holds position {q}'s line");
         std::fs::write(&index, damaged).unwrap();
         let reader = match SqliteOpener.open(&Location::sqlite("lake", &dir), OpenMode::Read) {

@@ -451,7 +451,7 @@ fn an_index_line_naming_another_position_is_a_damaged_index() {
     // Position 300's line names 301 instead, the file's length unchanged.
     let index = dir.join("index").join(format!("{:020}.idx", 0));
     let text = std::fs::read_to_string(&index).unwrap();
-    let damaged = text.replacen("[\"d\",300,", "[\"d\",301,", 1);
+    let damaged = text.replacen("[\"e\",300,", "[\"e\",301,", 1);
     assert_ne!(text, damaged, "the index holds position 300's line");
     std::fs::write(&index, damaged).unwrap();
 
