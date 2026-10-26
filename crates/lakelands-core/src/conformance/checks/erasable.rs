@@ -280,7 +280,7 @@ fn boxed(e: &Event) -> Option<&str> {
 /// Whether `e` holds none of `needles` outside its box. The box is random
 /// ciphertext, so a short word can occur in its text by chance; the
 /// plaintext is looked for in everything else the event carries.
-fn plain_outside_box(e: &Event, needles: &[&str]) -> bool {
+pub(in crate::conformance) fn plain_outside_box(e: &Event, needles: &[&str]) -> bool {
     let mut bare = e.clone();
     if let Some(s) = bare.sealed.as_mut() {
         s.boxed = None;
@@ -708,7 +708,7 @@ async fn an_output_computed_from_a_sources_erasable_values_is_sealed_under_its_k
     let base64 = output
         .as_ref()
         .and_then(|o| o.as_str())
-        .is_some_and(|s| !s.is_empty() && s != "Ada");
+        .is_some_and(|s| !s.is_empty() && s.len() % 4 == 0 && s != "Ada");
     ensure!(
         base64,
         "the output is held sealed, as base64 that is not the plaintext; it is {output:?}"
