@@ -57,7 +57,7 @@ fn placed(client: &mut postgres::Client, schema: &str, want: impl Fn(&str, usize
     for row in rows.unwrap() {
         let (name, table, index): (String, String, bool) = (row.get(0), row.get(1), row.get(2));
         let part = match table.as_str() {
-            "lease" | "segments" | "log" => 0,
+            "lease" | "segments" | "log" | "frames" => 0,
             "vectors" => 3,
             _ => 1 + usize::from(index),
         };

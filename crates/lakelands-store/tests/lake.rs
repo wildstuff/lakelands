@@ -3241,6 +3241,7 @@ async fn verify_refuses_a_known_at_that_goes_back_naming_its_position() {
                 hash: Digest(s("hash")),
                 fence: e["fence"].as_u64().unwrap(),
                 bytes: line.as_bytes().to_vec(),
+                frame: None,
             }
         })
         .collect();

@@ -1,18 +1,22 @@
 //! The log as the format's lines, one row per event.
 //!
-//! **Rows.** An event's canonical bytes are stored unchanged, with the
-//! position, id, `prev`, `hash` and fence the store hands beside them, and
-//! the first position of the segment the event belongs to. A read gives
-//! them back unchanged without parsing the bytes.
+//! **Rows.** An event's line, its bytes in the stored form, is kept
+//! unchanged, with the position, id, `prev`, `hash` and fence the store
+//! hands beside it, and the first position of the segment the event
+//! belongs to; a frame the events of an append share is one row of
+//! `frames`, keyed by the first position it covers, beside them. A read
+//! gives each event back unchanged with the frame that covers it, without
+//! parsing the bytes. A lake made before frames has no `frames` table
+//! until a writer opens it, and a read there finds none.
 //!
 //! **Segments.** The last segment is the active one and takes appends;
 //! every other is sealed and never changes. Sealing starts the next
 //! segment, named by the position of its first event, and inserts that
 //! segment's first events in the same transaction, so no later segment is
-//! ever empty; it keeps the sealed one's digest: the SHA-256 of its
-//! events' bytes, each followed by one line feed, which is the digest of
-//! the file `docs/log-format.md` §4.2 describes. [`export`] writes the
-//! segments as those files.
+//! ever empty; it keeps the sealed one's digest: the SHA-256 of its events
+//! as they restore, each followed by one line feed, which is the digest
+//! `docs/log-format.md` §4.2 names. [`export`] writes the segments as the
+//! files §4.2 describes, each frame's line before its first event's.
 //!
 //! **All or none.** An append is one transaction on the lease connection:
 //! it checks the fence against the lease row, checks that the events
@@ -37,7 +41,9 @@
 use std::io::Write as _;
 use std::path::Path;
 
-use lakelands_api::engine::{CanonicalEvent, Lease};
+use std::sync::Arc;
+
+use lakelands_api::engine::{CanonicalEvent, Frame, Lease};
 use lakelands_api::error::{Act, Case, Doing, Error, Part, Result, Situation};
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::Position;
@@ -215,6 +221,7 @@ fn add(
     let fence = (!imported).then_some(lease.fence);
     let prev = tip.as_ref().map_or_else(Digest::zero, |(_, h)| h.clone());
     lakelands_core::engines::append_fault(events, first, prev, fence, floor)?;
+    lakelands_core::log::frame_fault(events)?;
     // The window's events in one statement, from arrays.
     let (mut positions, mut fences) = (Vec::new(), Vec::new());
     let (mut ids, mut prevs, mut hashes, mut bytes) =
@@ -236,6 +243,25 @@ fn add(
         ),
         &[&positions, &segment, &fences, &ids, &prevs, &hashes, &bytes],
     )?;
+    let frames = events
+        .iter()
+        .filter_map(|e| e.frame.as_ref().filter(|f| f.first == e.position));
+    let (mut firsts, mut counts, mut lines) = (Vec::new(), Vec::new(), Vec::new());
+    for f in frames {
+        firsts.push(f.first.0 as i64);
+        counts.push(f.events as i32);
+        lines.push(f.bytes.as_slice());
+    }
+    if !firsts.is_empty() {
+        db.execute(
+            &format!(
+                "INSERT INTO {} (first, events, bytes) \
+                 SELECT * FROM unnest($1::int8[], $2::int4[], $3::bytea[])",
+                names.t("frames")
+            ),
+            &[&firsts, &counts, &lines],
+        )?;
+    }
     if imported && let Some(last) = events.last() {
         db.execute(
             &format!(
@@ -270,13 +296,13 @@ pub(crate) fn read(
     }
     let rows = db.query(
         &format!(
-            "SELECT position, fence, id, prev, hash, bytes FROM {} WHERE position >= $1 \
-             ORDER BY position LIMIT $2",
+            "SELECT position, fence, id, prev, hash, bytes, to_regclass($3) IS NOT NULL \
+             FROM {} WHERE position >= $1 ORDER BY position LIMIT $2",
             names.t("log")
         ),
-        &[&from, &i64::from(limit)],
+        &[&from, &i64::from(limit), &names.t("frames")],
     )?;
-    Ok(rows
+    let mut events: Vec<CanonicalEvent> = rows
         .iter()
         .map(|r| CanonicalEvent {
             position: Position(r.get::<_, i64>(0) as u64),
@@ -285,35 +311,119 @@ pub(crate) fn read(
             prev: Digest(r.get(3)),
             hash: Digest(r.get(4)),
             bytes: r.get(5),
+            frame: None,
         })
-        .collect())
+        .collect();
+    let (Some(first), Some(last)) = (events.first(), events.last()) else {
+        return Ok(events);
+    };
+    if !rows[0].get::<_, bool>(6) {
+        return Ok(events);
+    }
+    let (first, last) = (first.position.0 as i64, last.position.0 as i64);
+    // Frames never overlap, so the first that can cover `first` is the
+    // last to begin at or before it: the key bounds the scan both ways.
+    let frames = db.query(
+        &format!(
+            "SELECT first, events, bytes FROM {f} WHERE first <= $2 AND first >= \
+             coalesce((SELECT max(first) FROM {f} WHERE first <= $1), $1) ORDER BY first",
+            f = names.t("frames")
+        ),
+        &[&first, &last],
+    )?;
+    let frames: Vec<Arc<Frame>> = frames.iter().map(frame_of).collect();
+    for event in &mut events {
+        let after = frames.partition_point(|f| f.first <= event.position);
+        let frame = after.checked_sub(1).map(|i| &frames[i]);
+        event.frame = frame.filter(|f| covers(f, event.position)).cloned();
+    }
+    Ok(events)
 }
 
-/// Hand a segment's lines to `f` in position order, one at a time: each
-/// event's bytes, without the line feed that ends it in the file. A
-/// segment is never held whole.
-fn each_line(
+/// A row of `frames`, as the frame it keeps.
+fn frame_of(row: &postgres::Row) -> Arc<Frame> {
+    Arc::new(Frame {
+        first: Position(row.get::<_, i64>(0) as u64),
+        events: row.get::<_, i32>(1) as u32,
+        bytes: row.get(2),
+    })
+}
+
+/// Whether `frame` covers `position`.
+fn covers(frame: &Frame, position: Position) -> bool {
+    position
+        .0
+        .checked_sub(frame.first.0)
+        .is_some_and(|i| i < u64::from(frame.events))
+}
+
+/// Hand a segment's events to `f` in position order, one at a time, each
+/// with the frame that covers it and, at the frame's first event, the
+/// frame's line: what the file of the segment holds before the event's
+/// own. A segment is never held whole.
+fn each_event(
     db: &mut Db,
     names: &Names,
     first: i64,
-    mut f: impl FnMut(&[u8]) -> Result<()> + Send,
+    mut f: impl FnMut(Option<&[u8]>, &CanonicalEvent) -> Result<()> + Send,
 ) -> Result<()> {
+    let mut held: Option<Arc<Frame>> = None;
+    let framed = db
+        .query_one("SELECT to_regclass($1) IS NOT NULL", &[&names.t("frames")])?
+        .get::<_, bool>(0);
+    // A lake no writer of frames has opened has no `frames` table.
+    let (frame, join) = match framed {
+        true => {
+            let join = format!("LEFT JOIN {} f ON f.first = l.position", names.t("frames"));
+            ("f.events, f.bytes", join)
+        }
+        false => ("NULL::int, NULL::bytea", String::new()),
+    };
     db.query_each(
         &format!(
-            "SELECT bytes FROM {} WHERE segment = $1 ORDER BY position",
-            names.t("log")
+            "SELECT l.position, l.prev, l.bytes, {frame}, l.id, l.hash, l.fence FROM {} l {join} \
+             WHERE l.segment = $1 ORDER BY l.position",
+            names.t("log"),
         ),
         &[&first],
-        |r| f(r.get::<_, &[u8]>(0)),
+        |r| {
+            let position = Position(r.get::<_, i64>(0) as u64);
+            if let Some(events) = r.get::<_, Option<i32>>(3) {
+                let (events, bytes) = (events as u32, r.get(4));
+                held = Some(Arc::new(Frame {
+                    first: position,
+                    events,
+                    bytes,
+                }));
+            }
+            let frame = held.clone().filter(|f| covers(f, position));
+            let event = CanonicalEvent {
+                position,
+                prev: Digest(r.get(1)),
+                bytes: r.get(2),
+                frame,
+                id: EventId(r.get(5)),
+                hash: Digest(r.get(6)),
+                fence: r.get::<_, i64>(7) as u64,
+            };
+            let line = event.frame.as_ref().filter(|f| f.first == position);
+            f(line.map(|f| f.bytes.as_slice()), &event)
+        },
     )
 }
 
 /// A segment's digest (`docs/log-format.md` §4.2): the SHA-256 of its
-/// lines, each followed by a line feed, hashed as they are read.
+/// events as they restore, each followed by a line feed, hashed as they
+/// are read.
 fn digest_of(db: &mut Db, names: &Names, first: i64) -> Result<Digest> {
     let mut hash = Sha256::new();
-    each_line(db, names, first, |line| {
-        hash.update(line);
+    each_event(db, names, first, |_, event| {
+        let (restored, whole) = lakelands_core::log::restore_json(event)
+            .map_err(|flaw| lakelands_core::damaged(Part::Log, Some(event.position), flaw))?;
+        match whole {
+            true => hash.update(&event.bytes),
+            false => hash.update(lakelands_core::canonical::to_vec(&restored)),
+        }
         hash.update(b"\n");
         Ok(())
     })?;
@@ -433,16 +543,19 @@ pub(crate) fn export(db: &mut Db, names: &Names, dir: &Path) -> Result<()> {
         let partial = log.join(format!("{first:020}.jsonl.partial"));
         let failed = |e: std::io::Error| lakelands_core::io_failed(Doing::Write, Part::Export, &e);
         let mut file: Option<std::io::BufWriter<std::fs::File>> = None;
-        each_line(db, names, first, |line| {
+        each_event(db, names, first, |frame, event| {
             if file.is_none() {
                 file = Some(std::io::BufWriter::new(
                     std::fs::File::create(&partial).map_err(failed)?,
                 ));
             }
             let w = file.as_mut().expect("opened above");
-            w.write_all(line)
-                .and_then(|()| w.write_all(b"\n"))
-                .map_err(failed)
+            for line in frame.into_iter().chain([event.bytes.as_slice()]) {
+                w.write_all(line)
+                    .and_then(|()| w.write_all(b"\n"))
+                    .map_err(failed)?;
+            }
+            Ok(())
         })?;
         if let Some(w) = file {
             w.into_inner()

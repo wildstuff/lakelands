@@ -4,8 +4,14 @@
 //! canonicalises the event without its `hash`, hashes those bytes, links
 //! the event to its predecessor, and hands the engine the canonical bytes
 //! of the whole event (`docs/decisions/020-events-are-hash-chained-over-canonical-bytes.md`).
-//! Reading back, it parses the bytes, recomputes the hash and checks the
-//! link, so an engine that altered a byte is caught at the first read.
+//! It writes each append in the log's stored form
+//! (`docs/log-format.md` §1.2): framed where it is two or more events,
+//! and `position` and `prev` left to the event before but on a segment's
+//! first line ([`lakelands_core::log::frame_append`]). Reading back, it
+//! restores the event from its line, its frame and the members the engine
+//! keeps beside them, recomputes the hash and checks the link, so an
+//! engine that altered a byte, of a line or of a frame, is caught at the
+//! first read of an event it restores.
 
 use lakelands_api::engine::CanonicalEvent;
 use lakelands_api::error::{Case, Detail, Flaw, Part};
@@ -135,6 +141,7 @@ pub(crate) fn seal_judged(
         hash: event.hash.clone(),
         fence,
         bytes,
+        frame: None,
     };
     (event, stored, fault)
 }
@@ -209,7 +216,15 @@ pub fn one_format(lake: &LakeId, ends: Option<&(CanonicalEvent, CanonicalEvent)>
     let Some((first, tip)) = ends else {
         return Ok(LOG_FORMAT_VERSION);
     };
-    let read = |e: &CanonicalEvent| serde_json::from_slice::<serde_json::Value>(&e.bytes).ok();
+    // Every line holds its `v`; a `lake_created` may leave members to its
+    // frame.
+    let read = |e: &CanonicalEvent| {
+        let line = || serde_json::from_slice::<serde_json::Value>(&e.bytes).ok();
+        lakelands_core::log::restore(e)
+            .ok()
+            .map(|(e, _)| e)
+            .or_else(line)
+    };
     let (first, tip) = (read(first), read(tip));
     let made = |f: &&serde_json::Value| f.pointer("/body/kind") == Some(&"lake_created".into());
     let created = (first.as_ref().filter(made)).and_then(|f| f.pointer("/body/format"));
@@ -258,32 +273,23 @@ fn corrupt(position: Position, flaw: Flaw) -> Error {
     lakelands_core::damaged(Part::Log, Some(position), flaw)
 }
 
-/// Parse a stored event and verify it: the bytes are canonical, the hash
-/// is the hash of the event without it, and the members the engine keeps
-/// beside the bytes agree with them. An event in another format version
-/// than the release's one is refused before anything else of it is read
-/// (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
+/// Restore a stored event and verify it: its line and its frame are
+/// canonical and restore it (`lakelands_core::log::restore`), the hash is
+/// the hash of the restored event without it, and the members the engine
+/// keeps beside the line agree with it. An event in another format
+/// version than the release's one is refused before anything else of it
+/// is read (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 pub fn open(stored: &CanonicalEvent) -> Result<Event> {
     let at = stored.position;
-    let value: serde_json::Value = serde_json::from_slice(&stored.bytes).map_err(|e| {
-        let detail = Detail::json(&e);
-        corrupt(at, Flaw::NotJson { detail })
-    })?;
+    let (value, whole) = lakelands_core::log::restore(stored).map_err(|f| corrupt(at, f))?;
     let v = format_of(&value);
-    if !lakelands_core::log::reads_format(v) {
-        let reads = LOG_FORMAT_VERSION.into();
-        return Err(corrupt(at, Flaw::FormatOther { v, reads }));
-    }
-    if canonical::to_vec(&value) != stored.bytes {
-        return Err(corrupt(at, Flaw::NotCanonical));
-    }
     // An older event is read as the release's format says its members; its
     // bytes and its hash stay as stored.
     let original = value.clone();
     let value = lakelands_core::log::converted(v, value);
-    // Where the conversion left the value alone, its bytes are the stored
-    // ones, already checked above: no second pass over them.
-    let converted = if value == original {
+    // Where the line is the whole event and the conversion left it alone,
+    // its bytes are the stored ones, already checked: no second pass.
+    let converted = if whole && value == original {
         stored.bytes.clone()
     } else {
         canonical::to_vec(&value)

@@ -20,12 +20,17 @@
 //! absent directory, and a failed export leaves nothing behind.
 //!
 //! [`backup`] writes the same files and no manifest, and run again into
-//! its directory writes only what follows its last line; it writes into
+//! its directory writes again the run its last line ends, then what
+//! follows; it writes into
 //! no directory holding anything beside `log/` and `export.json`
 //! (`docs/decisions/077-a-backup-is-an-export-that-grows.md`).
 //!
-//! [`verify`] reads only `log/`, a line at a time: canonical lines,
-//! consecutive positions, the hash chain from 64 zeros, every checkpoint
+//! Each file holds its events in a copy's stored form (§4.2): runs of
+//! consecutive events that share `known_at`, framed, every event line
+//! holding its `position`, and `prev` only on the file's first.
+//!
+//! [`verify`] reads only `log/`, a line at a time, each event restored
+//! from its line and its frame: canonical lines, consecutive positions, the hash chain from 64 zeros, every checkpoint
 //! against the files before it, one format version this release reads, and
 //! no member a reader of the lake refuses (`crate::log::misplaced`), so an
 //! import refuses it before it writes.
@@ -48,6 +53,9 @@ use crate::canonical;
 /// How many events the export reads from the feed at a time.
 const PAGE: u32 = 1_000;
 
+/// How many events one run of a copy frames at most (§4.2).
+const RUN: usize = 1_000;
+
 /// One segment file of an export.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SegmentFile {
@@ -57,7 +65,8 @@ pub struct SegmentFile {
     pub first: Position,
     /// Its last position.
     pub last: Position,
-    /// SHA-256 over its bytes.
+    /// SHA-256 over its events' canonical bytes, each followed by a line
+    /// feed: its digest (§4.2).
     pub digest: Digest,
 }
 
@@ -120,8 +129,9 @@ async fn write_from(store: &dyn LakeStore, feed: &dyn ChangeFeed, dir: &Path) ->
     written
 }
 
-/// The segment file being written: its lines go out as they come, and
-/// its digest is taken over the same bytes.
+/// The segment file being written: its lines go out a run at a time
+/// (`docs/log-format.md` §4.2), and its digest is taken over its events'
+/// canonical bytes.
 struct Segment {
     file: String,
     path: PathBuf,
@@ -129,6 +139,9 @@ struct Segment {
     last: Position,
     out: BufWriter<File>,
     digest: Sha256,
+    /// The run not yet written: consecutive events that share `known_at`.
+    run: Vec<Value>,
+    known_at: Option<lakelands_api::Timestamp>,
 }
 
 impl Segment {
@@ -145,20 +158,42 @@ impl Segment {
             last: first,
             out: BufWriter::new(out),
             digest: Sha256::new(),
+            run: Vec::new(),
+            known_at: None,
         })
     }
 
     fn line(&mut self, event: &Event) -> Result<()> {
-        let mut bytes = canonical::of(event);
-        bytes.push(b'\n');
+        let bytes = canonical::of(event);
         self.digest.update(&bytes);
+        self.digest.update(b"\n");
         self.last = event.position;
-        self.out
-            .write_all(&bytes)
-            .map_err(|e| io(Doing::Write, &self.path, e))
+        if self.known_at != Some(event.known_at) || self.run.len() >= RUN {
+            self.flush()?;
+        }
+        self.known_at = Some(event.known_at);
+        let value = serde_json::from_slice(&bytes).expect("an event's canonical bytes are JSON");
+        self.run.push(value);
+        Ok(())
     }
 
-    fn finish(self) -> Result<SegmentFile> {
+    /// Writes the run held, its `prev` only on the segment's first line.
+    fn flush(&mut self) -> Result<()> {
+        let first = self.first;
+        let holds = |_: usize, e: &Value| (true, e["position"].as_u64() == Some(first.0));
+        let (frame, lines) = crate::log::stored_form(&self.run, holds);
+        self.run.clear();
+        for line in frame.into_iter().chain(lines) {
+            self.out
+                .write_all(&line)
+                .and_then(|()| self.out.write_all(b"\n"))
+                .map_err(|e| io(Doing::Write, &self.path, e))?;
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<SegmentFile> {
+        self.flush()?;
         let file = self
             .out
             .into_inner()
@@ -295,28 +330,44 @@ pub async fn backup(store: &dyn LakeStore, feed: &dyn ChangeFeed, dir: &Path) ->
             let m = write_from(store, feed, dir).await?;
             break (None, m.segments, m.hash, m.through);
         };
-        let Some((line, len)) = last_line(&path)? else {
+        let Some(tail) = tail(&path)? else {
             torn.push(path);
             continue;
         };
-        let held = serde_json::from_slice::<Value>(&line).ok();
-        let held = Position(
-            held.and_then(|v| v["position"].as_u64())
-                .unwrap_or(u64::MAX),
-        );
-        let found = feed.poll(held, &FeedFilter::default(), 1).await?;
-        let found = found.events.into_iter().next();
-        let Some(event) = found.filter(|e| e.position == held && canonical::of(e) == line) else {
+        let held = tail.position;
+        let at = |position| async move {
+            let found = feed.poll(position, &FeedFilter::default(), 1).await?;
+            Ok::<_, Error>(found.events.into_iter().find(|e| e.position == position))
+        };
+        let derived = |e: &Event| {
+            let restored = crate::log::restored(
+                tail.line.clone(),
+                tail.frame.as_ref(),
+                Some((held, &e.prev)),
+            );
+            restored.is_ok_and(|(r, _)| canonical::to_vec(&r) == canonical::of(e))
+        };
+        if !at(held).await?.as_ref().is_some_and(derived) {
+            return Err(refused(Case::BackupOtherLog { held }));
+        }
+        // The run that holds the last line is written again, so that it
+        // is as long as an export's would be (§4.2).
+        let Some(start) = at(tail.run).await? else {
             return Err(refused(Case::BackupOtherLog { held }));
         };
         removed(&torn)?;
         let cut = OpenOptions::new().write(true).open(&path);
-        let cut = cut.and_then(|f| f.set_len(len).and_then(|()| f.sync_all()));
+        let cut = cut.and_then(|f| f.set_len(tail.cut).and_then(|()| f.sync_all()));
         cut.map_err(|e| io(Doing::Write, &path, e))?;
         let through = store.head().await?;
-        let open = Segment::start(dir, Position(first_of(&path).unwrap_or(held.0)))?;
-        let (segments, hash) =
-            copy(feed, dir, (Some(open), held.next(), event.hash), through).await?;
+        let open = match tail.cut {
+            0 => None,
+            _ => Some(Segment::start(
+                dir,
+                Position(first_of(&path).unwrap_or(held.0)),
+            )?),
+        };
+        let (segments, hash) = copy(feed, dir, (open, tail.run, start.prev), through).await?;
         break (Some(held), segments, hash, through);
     };
     let _ = fs::remove_file(dir.join("export.json"));
@@ -336,9 +387,64 @@ fn removed(paths: &[PathBuf]) -> Result<()> {
     paths.iter().try_for_each(gone)
 }
 
-/// The last whole line of the file at `path`, without its line feed, and
-/// the length the file is cut to after it; `None` where it holds none.
-fn last_line(path: &Path) -> Result<Option<(Vec<u8>, u64)>> {
+/// The end of a backup's file: its last event line, the frame that
+/// covers it, the position it names, the first position of the run that
+/// holds it, and the byte that run begins at. A frame line that covers no
+/// line after it is a stopped run's.
+struct Tail {
+    line: Value,
+    frame: Option<crate::log::Framed>,
+    position: Position,
+    run: Position,
+    cut: u64,
+}
+
+/// The end of the file at `path`, read from its last lines; `None` where
+/// it holds no whole event line.
+fn tail(path: &Path) -> Result<Option<Tail>> {
+    let mut lines = last_lines(path, RUN + 2)?;
+    let parsed = |bytes: &[u8]| serde_json::from_slice::<Value>(bytes).ok();
+    while lines
+        .last()
+        .is_some_and(|(_, l)| parsed(l).is_some_and(|v| crate::log::is_frame(&v)))
+    {
+        lines.pop();
+    }
+    let Some((at, last)) = lines.last() else {
+        return Ok(None);
+    };
+    let line = parsed(last).unwrap_or_default();
+    let position = Position(line["position"].as_u64().unwrap_or(u64::MAX));
+    let framed = lines
+        .iter()
+        .enumerate()
+        .rev()
+        .skip(1)
+        .take(RUN)
+        .find_map(|(i, (at, l))| {
+            let frame = parsed(l).filter(crate::log::is_frame)?;
+            Some((i, *at, crate::log::Framed::of(frame).ok()))
+        });
+    let after = |i: usize| (lines.len() - 1 - i) as u64;
+    let (frame, run, cut) = match framed {
+        Some((i, begins, Some(f))) if after(i) <= f.events => {
+            let first = position.0.saturating_sub(after(i) - 1);
+            (Some(f), Position(first), begins)
+        }
+        _ => (None, position, *at),
+    };
+    Ok(Some(Tail {
+        line,
+        frame,
+        position,
+        run,
+        cut,
+    }))
+}
+
+/// The last `n` whole lines of the file at `path`, or all it holds, each
+/// without its line feed and with the byte it begins at, oldest first.
+fn last_lines(path: &Path, n: usize) -> Result<Vec<(u64, Vec<u8>)>> {
     let failed = |e: std::io::Error| io(Doing::Read, path, e);
     let mut file = File::open(path).map_err(failed)?;
     let (len, mut back) = (file.metadata().map_err(failed)?.len(), 64 << 10);
@@ -346,22 +452,36 @@ fn last_line(path: &Path) -> Result<Option<(Vec<u8>, u64)>> {
         let (from, mut bytes) = (len.saturating_sub(back), Vec::new());
         file.seek(SeekFrom::Start(from)).map_err(failed)?;
         file.read_to_end(&mut bytes).map_err(failed)?;
-        let end = bytes.iter().rposition(|b| *b == b'\n');
-        let start = end.map(|end| bytes[..end].iter().rposition(|b| *b == b'\n'));
-        match (end, start) {
-            (None, _) if from == 0 => return Ok(None),
-            (Some(end), Some(start)) if start.is_some() || from == 0 => {
-                let line = bytes[start.map_or(0, |s| s + 1)..end].to_vec();
-                return Ok(Some((line, from + end as u64 + 1)));
-            }
-            _ => back *= 2,
+        let feeds: Vec<usize> = bytes
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| **b == b'\n')
+            .map(|(i, _)| i)
+            .collect();
+        // A line begins after a line feed, or at the file's start.
+        let whole = feeds.len().saturating_sub(usize::from(from > 0));
+        if whole < n && from > 0 {
+            back *= 2;
+            continue;
         }
+        let begins = feeds.iter().rev().skip(1).map(|i| i + 1);
+        let begins: Vec<usize> = begins
+            .chain((from == 0).then_some(0))
+            .take(whole.min(n))
+            .collect();
+        let lines = begins
+            .iter()
+            .rev()
+            .zip(feeds[feeds.len() - begins.len()..].iter());
+        return Ok(lines
+            .map(|(b, e)| (from + *b as u64, bytes[*b..*e].to_vec()))
+            .collect());
     }
 }
 
 /// Where a verification stands: the next position, the hash before it,
-/// the last `known_at` (none before the first line), and the files sealed
-/// so far.
+/// the last `known_at` (none before the first line), the files sealed so
+/// far, and where the reader of the file's lines stands.
 struct Chain {
     next: Position,
     prev: Digest,
@@ -369,11 +489,13 @@ struct Chain {
     formats: crate::log::FormatSteps,
     fence: u64,
     sealed: Vec<(Position, Position, String)>,
+    lines: crate::log::Lines,
 }
 
 impl Chain {
-    /// Check one line of the file `index` (from 0), which starts at `first`.
-    fn line(&mut self, line: &[u8], index: usize, first: Position) -> Result<()> {
+    /// Check one line of the file `index` (from 0), which starts at `first`:
+    /// the canonical bytes of the event it restores, none for a frame line.
+    fn line(&mut self, line: &[u8], index: usize, first: Position) -> Result<Option<Vec<u8>>> {
         let at = self.next;
         let value: Value = serde_json::from_slice(line).or_else(|e| {
             damaged(
@@ -393,6 +515,14 @@ impl Chain {
             let reads = LOG_FORMAT_VERSION.into();
             return damaged(at, Flaw::FormatOther { v, reads });
         }
+        let before = (at != first).then(|| (Position(at.0 - 1), &self.prev));
+        let Some((value, _)) = self
+            .lines
+            .line(value, before)
+            .or_else(|flaw| damaged(at, flaw))?
+        else {
+            return Ok(None);
+        };
         let read = crate::log::converted(v, value.clone());
         let converted = canonical::to_vec(&read);
         // The parser's own words, which name the member it does not know:
@@ -441,6 +571,7 @@ impl Chain {
         if event.prev != self.prev {
             return damaged(at, Flaw::PrevHash);
         }
+        let restored = canonical::to_vec(&value);
         if crate::engines::hash_of(value) != event.hash.0 {
             return damaged(at, Flaw::HashMismatch);
         }
@@ -472,7 +603,7 @@ impl Chain {
         }
         self.prev = event.hash;
         self.next = at.next();
-        Ok(())
+        Ok(Some(restored))
     }
 }
 
@@ -510,6 +641,7 @@ pub fn verify(dir: &Path) -> Result<Verification> {
         formats: crate::log::FormatSteps::default(),
         fence: 0,
         sealed: Vec::new(),
+        lines: crate::log::Lines::default(),
     };
     for (index, path) in files.iter().enumerate() {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -528,6 +660,7 @@ pub fn verify(dir: &Path) -> Result<Verification> {
         let mut reader = BufReader::new(File::open(path).map_err(|e| io(Doing::Read, path, e))?);
         let mut digest = Sha256::new();
         let mut line = Vec::new();
+        chain.lines = crate::log::Lines::default();
         loop {
             line.clear();
             let n = reader
@@ -536,13 +669,19 @@ pub fn verify(dir: &Path) -> Result<Verification> {
             if n == 0 {
                 break;
             }
-            digest.update(&line);
             if line.pop() != Some(b'\n') {
                 let name = name.to_string();
                 return damaged(chain.next, Flaw::NoLineFeed { name });
             }
-            chain.line(&line, index, first)?;
+            if let Some(event) = chain.line(&line, index, first)? {
+                digest.update(&event);
+                digest.update(b"\n");
+            }
         }
+        chain
+            .lines
+            .end()
+            .or_else(|flaw| damaged(chain.next, flaw))?;
         if chain.next == first {
             let name = name.to_string();
             return damaged(first, Flaw::NoEventIn { name });

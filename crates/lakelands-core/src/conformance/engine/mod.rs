@@ -158,6 +158,10 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     log::GREATER_FENCE,
     log::WHOLE_OR_NOTHING,
     log::SEGMENT_DIGEST,
+    log::FRAMED_UNCHANGED,
+    log::FRAME_HELD_WHOLE,
+    log::MIXED_DIGEST,
+    log::FRAME_BROKEN,
     log::RELEASE_STALE,
     log::READ_BOUNDS,
     log::FENCE_AT_ZERO,
@@ -297,6 +301,7 @@ pub fn event(position: u64, prev: &Digest, fence: u64, body: Value) -> Canonical
         hash,
         fence,
         bytes: crate::canonical::to_vec(&whole),
+        frame: None,
     }
 }
 

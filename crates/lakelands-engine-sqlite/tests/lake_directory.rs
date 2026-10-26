@@ -168,13 +168,28 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
             "{} ends with a line feed",
             file.display()
         );
+        // The stored form (log-format §1.2): each event restored from its
+        // line, its frame and the event before it, and digested so.
+        let (mut lines, mut restored) = (lakelands_core::log::Lines::default(), Vec::new());
         for line in raw[..raw.len() - 1].split(|b| *b == b'\n') {
-            let event: Value = serde_json::from_slice(line).unwrap();
+            let read: Value = serde_json::from_slice(line).unwrap();
             assert_eq!(
-                lakelands_core::canonical::to_vec(&event),
+                lakelands_core::canonical::to_vec(&read),
                 line,
                 "the stored line is canonical"
             );
+            let before = (next != first).then(|| {
+                (
+                    lakelands_api::Position(next - 1),
+                    lakelands_api::event::Digest(prev.clone()),
+                )
+            });
+            let before = before.as_ref().map(|(p, h)| (*p, h));
+            let Some((event, _)) = lines.line(read, before).unwrap() else {
+                continue;
+            };
+            restored.extend(lakelands_core::canonical::to_vec(&event));
+            restored.push(b'\n');
             assert_eq!(event["position"], json!(next));
             assert_eq!(event["prev"], json!(prev));
             let mut body = event.clone();
@@ -192,7 +207,7 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
         digests.push(json!({
             "first": first,
             "last": next - 1,
-            "digest": hex(&Sha256::digest(&raw)),
+            "digest": hex(&Sha256::digest(&restored)),
         }));
     }
 
@@ -436,7 +451,7 @@ fn an_index_line_naming_another_position_is_a_damaged_index() {
     // Position 300's line names 301 instead, the file's length unchanged.
     let index = dir.join("index").join(format!("{:020}.idx", 0));
     let text = std::fs::read_to_string(&index).unwrap();
-    let damaged = text.replacen("[\"e\",300,", "[\"e\",301,", 1);
+    let damaged = text.replacen("[\"d\",300,", "[\"d\",301,", 1);
     assert_ne!(text, damaged, "the index holds position 300's line");
     std::fs::write(&index, damaged).unwrap();
 

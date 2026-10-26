@@ -70,9 +70,11 @@ async fn a_writers_open_refuses_a_held_ingest_sealed_under_another_source() {
     let text = std::fs::read_to_string(&path).unwrap();
     let entry = |line: &str| {
         let mut e: serde_json::Value = serde_json::from_str(line).unwrap();
-        if e[7] == old.as_str() {
+        // An event line ends with its hash, whether it names `prev` or not.
+        let last = e.as_array().unwrap().len() - 1;
+        if e[last] == old.as_str() {
             e[4] = (e[4].as_u64().unwrap() + sealed.len() as u64 - 14).into();
-            e[7] = hash.as_str().into();
+            e[last] = hash.as_str().into();
         }
         e.to_string() + "\n"
     };

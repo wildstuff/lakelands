@@ -134,6 +134,7 @@ mod shown_hash;
 mod sized;
 mod sorted_whole;
 mod standby;
+mod stored_form;
 mod stored_vectors;
 mod streaming;
 mod taken_lease;
@@ -808,6 +809,9 @@ pub const ALL: &[Check] = &[
     rekey::RENAMED_REFERENCE,
     export::ONE_FILE_PER_SEGMENT,
     export::VERIFIES,
+    export::FRAMED_COPY,
+    export::FRAMED_DAMAGE,
+    stored_form::APPEND_FRAMED,
     export::GROWS,
     export::NOT_EMPTY,
     export::DAMAGE,
@@ -815,6 +819,7 @@ pub const ALL: &[Check] = &[
     export::IMPORT_REFUSED,
     export::BACKUP_CUT,
     export::BACKUP_TORN,
+    export::BACKUP_FRAME_CUT,
     export::BACKUP_DAMAGED,
     export::ONE_FORMAT,
     export::ANOTHER_RELEASES,

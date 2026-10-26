@@ -13,6 +13,7 @@ fn weighing(at: &mut Position, weighs: usize) -> Result<CanonicalEvent> {
         hash: Digest(String::new()),
         fence: 1,
         bytes: vec![b'x'; weighs],
+        frame: None,
     })
 }
 

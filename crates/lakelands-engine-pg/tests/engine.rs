@@ -109,13 +109,28 @@ async fn an_exported_lake_verifies_from_its_segment_files_alone() {
             "{} ends with a line feed",
             file.display()
         );
+        // The stored form (log-format §1.2): each event restored from its
+        // line, its frame and the event before it, and digested so.
+        let (mut lines, mut restored) = (lakelands_core::log::Lines::default(), Vec::new());
         for line in raw[..raw.len() - 1].split(|b| *b == b'\n') {
-            let event: Value = serde_json::from_slice(line).unwrap();
+            let read: Value = serde_json::from_slice(line).unwrap();
             assert_eq!(
-                lakelands_core::canonical::to_vec(&event),
+                lakelands_core::canonical::to_vec(&read),
                 line,
                 "the stored line is canonical"
             );
+            let before = (next != first).then(|| {
+                (
+                    lakelands_api::Position(next - 1),
+                    lakelands_api::event::Digest(prev.clone()),
+                )
+            });
+            let before = before.as_ref().map(|(p, h)| (*p, h));
+            let Some((event, _)) = lines.line(read, before).unwrap() else {
+                continue;
+            };
+            restored.extend(lakelands_core::canonical::to_vec(&event));
+            restored.push(b'\n');
             assert_eq!(event["position"], json!(next));
             assert_eq!(event["prev"], json!(prev));
             let mut body = event.clone();
@@ -133,12 +148,14 @@ async fn an_exported_lake_verifies_from_its_segment_files_alone() {
         digests.push(json!({
             "first": first,
             "last": next - 1,
-            "digest": hex(&Sha256::digest(&raw)),
+            "digest": hex(&Sha256::digest(&restored)),
         }));
     }
 
     // The store's export, over the feed of the same lake opened to read,
-    // writes the same files byte for byte.
+    // writes the same files in a copy's form (log-format §4.2), where the
+    // engine's writes its lines as the writer stored them (§1.2): the two
+    // hold the same events, with the same digests, and verify alike.
     let seams = Seams {
         engines: vec![Arc::new(PgOpener)],
         ..Seams::default()
@@ -157,14 +174,17 @@ async fn an_exported_lake_verifies_from_its_segment_files_alone() {
         .map(|f| format!("log/{}", f.file_name().unwrap().to_string_lossy()))
         .collect();
     assert_eq!(names, engine_names, "the same files");
-    for name in &names {
-        assert_eq!(
-            std::fs::read(via.join(name)).unwrap(),
-            std::fs::read(dir.join(name)).unwrap(),
-            "{name}: the store's export and the engine's agree byte for byte"
-        );
-    }
-    lakelands_core::export::verify(&dir).unwrap();
+    let held: Vec<Value> = manifest
+        .segments
+        .iter()
+        .map(|s| json!({"first": s.first.0, "last": s.last.0, "digest": s.digest.0}))
+        .collect();
+    assert_eq!(held, digests, "the same events, digested alike");
+    assert_eq!(
+        lakelands_core::export::verify(&dir).unwrap(),
+        lakelands_core::export::verify(&via).unwrap(),
+        "the two verify alike"
+    );
     drop(reader);
 
     // The engine's export reads the log alone: a projection of another
@@ -207,6 +227,61 @@ async fn an_exported_lake_verifies_from_its_segment_files_alone() {
     }
     tokio::task::block_in_place(|| again("no-projection"));
     let _ = std::fs::remove_dir_all(&via);
+    let _ = std::fs::remove_dir_all(&dir);
+    common::drop_schema(&url, &schema);
+}
+
+/// A lake laid out before frames, which no writer of this release has
+/// opened, has no `frames` table: a reader reads its events and its sealed
+/// segments, one whose digest was never kept digested from its rows, and
+/// the engine's export, which only reads, writes its lines as they are
+/// kept.
+#[test]
+fn a_lake_laid_out_before_frames_is_read_and_exported_as_it_is_kept() {
+    let Some(url) = common::url_or_skip("before frames") else {
+        return;
+    };
+    let schema = common::fresh_schema();
+    let location = common::location(&url, "older", &schema);
+    let engine = PgOpener.open(&location, OpenMode::Create).unwrap();
+    let lease = engine.take_lease("writer").unwrap();
+    let events = chain(0, 3, &lakelands_api::event::Digest::zero(), &lease);
+    engine.append(&lease, &events).unwrap();
+    let next = chain(3, 1, &events[2].hash, &lease);
+    let sealed = lakelands_core::conformance::engine::seal(engine.as_ref(), &lease, &next)
+        .unwrap()
+        .expect("the first segment sealed");
+    engine.release_lease(&lease).unwrap();
+    drop(engine);
+    let older =
+        format!("DROP TABLE \"{schema}\".frames; UPDATE \"{schema}\".segments SET digest = NULL");
+    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    client.batch_execute(&older).unwrap();
+
+    let reader = PgOpener.open(&location, OpenMode::Read).unwrap();
+    let all = [events.clone(), next.clone()].concat();
+    assert_eq!(reader.read(lakelands_api::Position(0), 10).unwrap(), all);
+    assert_eq!(
+        reader.read(lakelands_api::Position(2), 1).unwrap(),
+        all[2..3]
+    );
+    assert_eq!(reader.segments().unwrap(), [sealed]);
+    drop(reader);
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("pg-before-frames-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    lakelands_engine_pg::export(&location, &dir).unwrap();
+    for (file, held) in [(0, &events), (3, &next)] {
+        let lines: Vec<u8> = held
+            .iter()
+            .flat_map(|e| [&e.bytes[..], b"\n"].concat())
+            .collect();
+        let path = dir.join(format!("log/{file:020}.jsonl"));
+        assert_eq!(std::fs::read(&path).unwrap(), lines, "{}", path.display());
+    }
+    let frames = format!("SELECT to_regclass('\"{schema}\".frames') IS NULL");
+    let still: bool = client.query_one(&frames, &[]).unwrap().get(0);
+    assert!(still, "a reader and an export make no `frames` table");
     let _ = std::fs::remove_dir_all(&dir);
     common::drop_schema(&url, &schema);
 }

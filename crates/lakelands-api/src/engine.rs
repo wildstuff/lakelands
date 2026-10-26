@@ -50,10 +50,24 @@ pub struct Lease {
     pub holder: String,
 }
 
-/// One event as it crosses the engine seam: its canonical bytes, and the
-/// envelope members an engine needs to check an append without parsing
-/// them. The store builds it; the engine stores `bytes` unchanged and
-/// gives the same value back from `read`.
+/// A frame of the log's stored form (`docs/log-format.md` §1.2): one line
+/// holding the members the `events` events from `first` on share, which
+/// their own lines leave out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Frame {
+    /// The position of the first event it covers.
+    pub first: Position,
+    /// How many events it covers, its line's `events`.
+    pub events: u32,
+    /// Its line's canonical bytes, without the line feed that ends it.
+    pub bytes: Vec<u8>,
+}
+
+/// One event as it crosses the engine seam: its line of the stored form
+/// and the frame it shares, and the envelope members an engine needs to
+/// check an append without parsing them. The store builds it; the engine
+/// stores `bytes` and `frame` unchanged and gives the same value back
+/// from `read`, where the events one frame covers share it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CanonicalEvent {
     /// The event's position.
@@ -66,9 +80,12 @@ pub struct CanonicalEvent {
     pub hash: Digest,
     /// The lease fence it was appended under.
     pub fence: u64,
-    /// Its canonical bytes (`docs/log-format.md` §1.2), without the line
-    /// feed that ends it in a segment file.
+    /// Its line of the stored form (`docs/log-format.md` §1.2), without
+    /// the line feed that ends it in a segment file: its canonical bytes
+    /// less what its frame holds and what the event before it gives.
     pub bytes: Vec<u8>,
+    /// The frame whose members its line leaves out, if any.
+    pub frame: Option<std::sync::Arc<Frame>>,
 }
 
 /// How a lake is opened.

@@ -866,6 +866,7 @@ pub fn canonical_line(event: lakelands_api::event::Event) -> lakelands_api::engi
         hash,
         fence,
         bytes,
+        frame: None,
     }
 }
 

@@ -782,6 +782,7 @@ What a refusal is about.
 | `url_no_host` | — | a URL that names no host | A URL that names no host. |
 | `url_scheme` | — | neither an `http` nor an `https` URL | A URL of another scheme than `http` or `https`. |
 | `active_segment_named` | `named` (Position), `position` (Position) | the active segment is named for position {named}, and the event to append is at position {position}; nothing was appended | A segment to append to, named for another position than the event's. |
+| `append_frame` | `position` (Position) | the event at position {position} shares a frame the append does not hold whole and in order, from its first event on; nothing was appended | An event whose frame the append does not hold whole. |
 | `append_line_feed` | `position` (Position) | the event at position {position} holds a line feed in its bytes, which canonical bytes never do; nothing was appended | An event with a line feed in its bytes. |
 | `append_not_next` | `position` (Position), `next` (u64) | the event at position {position} does not continue the log, whose next position is {next}; nothing was appended | An event not at the log's next position. |
 | `append_prev` | `position` (Position), `named` (String), `hash` (String) | the event at position {position} names `{named}` as the hash before it, but that hash is `{hash}`; nothing was appended | An event whose `prev` is not the hash before it. |
@@ -1030,6 +1031,12 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `disagrees` | — | the engine's record of the event disagrees with its bytes | The engine's record of the event disagrees with its bytes. |
 | `position` | `expected` (Position), `found` (Position, optional) | [position {found} stands where \|expected ]position {expected}[{?found} belongs] | Another position stands where one belongs, or none does. |
 | `prev_hash` | — | it does not name the hash of the event before it | It does not name the hash of the event before it. |
+| `not_a_frame` | — | a line holds `events` or `frame` and is no frame: a frame holds those two and `v` alone, `events` a count from 1, and `frame` an object of the members a frame may hold | A line holds `events` or `frame` and is no frame. |
+| `frame_other` | `frame` (u64), `v` (u64) | a frame of log format {frame} covers an event of format {v}: a frame holds its events' format | A frame's log format is not its events'. |
+| `frame_short` | `events` (u64), `held` (u64) | a frame covers {events} events, and its segment holds {held} of them after it | A frame covers more events than its segment holds after it. |
+| `frame_in_frame` | — | a frame line stands among the lines a frame covers | A frame line stands among the lines a frame covers. |
+| `framed_twice` | `member` (String) | its line holds `{member}`, which its frame holds | An event's line holds a member its frame holds. |
+| `start_unheld` | — | it is a segment's first event line, and does not hold both its `position` and its `prev` | A segment's first event line does not hold its `position` and its `prev`. |
 | `known_at_back` | `known_at` (Timestamp), `before` (Timestamp) | its known_at {known_at} is before the {before} of the event before it | Its `known_at` is before that of the event before it. |
 | `integer_too_large` | `n` (Number) | the integer {n} in it is beyond ±(2^53 − 1), which not every reader reads exactly | It holds a number written as an integer beyond ±(2^53 − 1). |
 | `no_checkpoint` | — | a segment begins there, and its first event is no checkpoint | A segment begins there, and its first event is no checkpoint. |
