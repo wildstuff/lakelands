@@ -112,8 +112,9 @@ The tasks name no type, field or key. Each is about one of the records
 Task 9's P-1842 is a multistage pump whose description repeats
 "pump" and names seawater once; P-2639's name and description both
 hold "seawater", the rarer word. BM25F weighs a word by its rarity and
-saturates its repeats, so P-2639 ranks first; a count of the query's
-words held puts P-1842 first.
+saturates its repeats, so P-2639 ranks first. A count of the query's
+words held, repeats counted, puts P-1842 first (8 against 4); counted
+once each, the two tie at 2 and P-1842 leads only on its key.
 
 The lake, the tasks, their reference answers and the runner were
 committed at 66ff9f08 (18:10:33 UTC), before any run. The shared name
@@ -246,8 +247,8 @@ misspelled or missing names, which took 14 and 12 calls in runs 1 and
 - **BM25F picked task 9's product, and the agents trusted the
   order.** Every run asked "seawater pump" once lexically and answered
   with the first hit, P-2639, above P-1842 (15.7
-  against 7.9, in runs 2, 3 and 4); a count of the words held would
-  have put P-1842 first.
+  against 7.9, in all four runs); a count of the words held, repeats
+  counted, would have put P-1842 first.
   Run 2 first tried a hybrid search, refused (finding 2).
 - **A misspelled name is where the door told the agent least.** The
   lexical search matches a word as written, so "Kestral" and
@@ -376,8 +377,12 @@ hand, field by field.
 
 Two runs and a third were made before them, from 19:20 UTC, on a lake
 whose shared customer name was a word the vocabulary gate refuses
-anywhere in the repository. Their transcripts hold that word and are
-not kept. The name was changed in the generator, the prompt and
+anywhere in the repository. The withdrawn runs 1 and 2 were
+committed at 9e8ecd6b, removed at b654127f and replaced at d24c3d70; their transcripts,
+and the generator, prompt and `answers.py` of 66ff9f08, hold that word
+in the branch's history, kept so that the pre-registration commit
+stands as it was made. The withdrawn run 3 was never committed. The
+name was changed at b654127f in the generator, the prompt and
 `answers.py`, every key, record and reference answer unchanged, and
 the runs were made again. The withdrawn runs 1 and 2 met the same
 refusals (the infix `contains` in both, the hybrid without `field` in
