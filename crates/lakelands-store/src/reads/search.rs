@@ -118,22 +118,11 @@ impl<'a> Reader<'a> {
                 return Ok(Ranks { ty, decl, fields });
             }
         };
-        let mut ty = decl.name.clone();
-        let mut names: Vec<(FieldName, FieldName)> =
-            named.map(|n| (n.clone(), n.clone())).collect();
-        for r in shape.renames.iter().filter(|r| r.at > self.position) {
-            if r.ty != ty {
-                continue;
-            }
-            for (_, now) in &mut names {
-                if let Some((_, to)) = r.renames.iter().find(|(from, _)| from == now) {
-                    *now = to.clone();
-                }
-            }
-            if let Some(to) = &r.to {
-                ty = to.clone();
-            }
-        }
+        let asked: Vec<FieldName> = named.cloned().collect();
+        let mut now = asked.clone();
+        let since = shape.renames.iter().filter(|r| r.at > self.position);
+        let ty = followed(since, &decl.name, &mut now);
+        let names: Vec<(FieldName, FieldName)> = asked.into_iter().zip(now).collect();
         let decl = shape.ontology.ty(&ty).ok().cloned();
         let sees = Sight::held(who, shape.as_ref());
         let shown = |now: &FieldName| {
@@ -506,6 +495,9 @@ impl<'a> Reader<'a> {
     /// `lists`, pulled for `asked` over `ty` at the head, as the head tells
     /// its reader each record (006): one a hiding selects there ranks by
     /// its text as told, and is no candidate of a vector the hiding lowers.
+    /// As of a position, a field a hiding lowers on the record there is
+    /// lowered too: a ranking reaches a field only where its reader is
+    /// shown it there and at the head (025).
     fn told_lists(
         &self,
         ty: &TypeName,
@@ -518,7 +510,25 @@ impl<'a> Reader<'a> {
             (false, None) => return Ok(()),
         };
         let sees = Sight::held(who, shape.as_ref());
-        let Some(decl) = shape.ontology.ty(ty).ok().filter(|_| sees.hides(ty)) else {
+        // The type as named at the read's position, and each of its fields
+        // there under its name at the head.
+        let since = shape.renames.iter().filter(|r| r.at > self.position);
+        let then = (self.head.as_ref()).filter(|_| !self.at_head).map(|h| {
+            let back = |name: TypeName, r: &Renamed| match r.to.as_ref() == Some(&name) {
+                true => r.ty.clone(),
+                false => name,
+            };
+            (h, since.clone().rev().fold(ty.clone(), back))
+        });
+        let then = then.filter(|(_, named)| self.sight.hides(named));
+        let ahead = |f: &FieldName, named: &TypeName| {
+            let mut f = [f.clone()];
+            followed(since.clone(), named, &mut f);
+            let [f] = f;
+            f
+        };
+        let hides = sees.hides(ty) || then.is_some();
+        let Some(decl) = shape.ontology.ty(ty).ok().filter(|_| hides) else {
             return Ok(());
         };
         let vectors = asked
@@ -531,16 +541,40 @@ impl<'a> Reader<'a> {
             let held = view.get_many(ty, &keys)?.into_iter();
             let held: BTreeMap<RecordKey, StoredRecord> =
                 held.map(|r| (r.key.clone(), r)).collect();
+            // Each record as the read's position holds it, by its key here.
+            let mut was = BTreeMap::new();
+            if let Some((h, named)) = &then {
+                let at: BTreeMap<RecordKey, &RecordKey> = (keys.iter())
+                    .filter_map(|k| Some((h.since.key_then(ty, k)?, k)))
+                    .collect();
+                for r in self
+                    .view
+                    .get_many(named, &at.keys().cloned().collect::<Vec<_>>())?
+                {
+                    if let Some(k) = at.get(&r.key) {
+                        was.insert((*k).clone(), r);
+                    }
+                }
+            }
             list.retain_mut(|(key, score)| {
                 let Some(r) = held.get(key) else {
                     return true;
                 };
-                let lowered = sees.lowered(ty, &r.fields);
+                let mut lowered = (*sees.lowered(ty, &r.fields)).clone();
+                if let (Some((_, named)), Some(w)) = (&then, was.get(key)) {
+                    let low = self.sight.lowered(named, &w.fields);
+                    let low = low.iter().map(|(f, a)| (ahead(f, named), *a));
+                    lowered.extend(low);
+                }
                 match (&axis, &asked.text) {
                     _ if lowered.is_empty() => true,
                     (Some(v), _) => !lowered.contains_key(v),
                     (None, Some((text, fields))) => {
-                        let (told, w) = (sees.told(r), &asked.text_weights);
+                        let told = sees.told(r).map(|mut t| {
+                            lowered.keys().for_each(|f| _ = t.to_mut().fields.remove(f));
+                            t
+                        });
+                        let w = &asked.text_weights;
                         let hit = core_engines::lexical(decl, told, text, fields.as_deref(), w, 1);
                         hit.first().map(|h| *score = h.1).is_some()
                     }
@@ -828,4 +862,28 @@ impl Marks {
             h.matches = core_engines::matched(&self.decl, &h.record, fields, query, &self.tag);
         }
     }
+}
+
+/// `ty` as `renames`, in their order, name it after them, and each of its
+/// `fields` renamed to the name it bears there.
+fn followed<'r>(
+    renames: impl Iterator<Item = &'r Renamed>,
+    ty: &TypeName,
+    fields: &mut [FieldName],
+) -> TypeName {
+    let mut ty = ty.clone();
+    for r in renames {
+        if r.ty != ty {
+            continue;
+        }
+        for now in fields.iter_mut() {
+            if let Some((_, to)) = r.renames.iter().find(|(from, _)| from == now) {
+                *now = to.clone();
+            }
+        }
+        if let Some(to) = &r.to {
+            ty = to.clone();
+        }
+    }
+    ty
 }
