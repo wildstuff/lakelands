@@ -61,6 +61,18 @@ check!(
 );
 
 check!(
+    HIDDEN_SEARCH_AS_OF =
+        a_search_as_of_a_position_matches_no_field_hidden_on_a_record_selected_then,
+    "006 and 025: a search as of a position, lexical or by vector, reaches no field on a record its condition field selects there or at the head: it is neither matched nor ranked by one, named in its matches or answered it, before the record was selected and after, its fields and its link type renamed since; every other record is found and answered as at any position"
+);
+
+check!(
+    HIDDEN_RERANKED =
+        a_reranked_window_neither_ranks_nor_reranks_by_a_field_hidden_where_a_condition_holds,
+    "006 and 067: a hybrid search with `rerank` ranks a selected record in its first stage and its second by its fields as told: it scores as a twin that holds no hidden field, is answered and named in its matches without it, and is handed the reranker without its text; its other fields still rank it"
+);
+
+check!(
     HIDDEN_NO_EDGE = an_edge_built_from_a_field_hidden_where_a_condition_holds_is_not_walked_there,
     "006 and 044: a walk over a relation derived from a field hidden on the selected records, or carried by a reference field hidden there, crosses no edge of a selected record, out or in; on any other record the edge stands"
 );
@@ -605,6 +617,256 @@ async fn a_read_as_of_a_position_judges_a_hiding_by_the_condition_then(store: St
     ensure!(
         !body(None).await?,
         "after the rename the hiding must follow `doc` to `kind`"
+    );
+    Ok(())
+}
+
+/// `note` with the condition field `doc`, the searchable `title` and
+/// `body` and a vector `v`, each of `rows` written by its key; and
+/// `bea`, who reads no `body` of a secret note.
+async fn notes(
+    l: &Lake,
+    store: &dyn LakeStore,
+    rows: &[(&str, Value)],
+) -> Result<Principal, Failure> {
+    let fields = vec![
+        field("doc", Text),
+        searchable("title"),
+        searchable("body"),
+        vector("v", 2),
+    ];
+    l.declare(type_decl("note", fields)).await?;
+    for (key, fields) in rows {
+        l.upsert("note", key, fields.clone()).await?;
+    }
+    let hide = json!([{"field": "doc", "values": ["secret"], "fields": {"body": "none"}}]);
+    let grants = json!({"default": "read", "types": {"note": {"hide_where": hide}}});
+    Ok(holder(store, "bea", grants))
+}
+
+/// `who`'s search, `asked` its JSON, of `note` where it names no type,
+/// matches asked for where it has text: each hit by key,
+/// `key:fields/matched fields`, and its score.
+async fn noted(l: &Lake, who: &Principal, asked: Value) -> Result<Vec<(String, f64)>, Failure> {
+    let mut s = asked;
+    s["matches"] = json!(s.get("text").is_some());
+    if s.get("type").is_none() {
+        s["type"] = json!("note");
+    }
+    let what = format!("{}'s search {s}", who.id);
+    let hits = l.cat.search(who, de(s)).await.must(&what)?.data.hits;
+    let mut said: Vec<(String, f64)> = (hits.iter())
+        .map(|h| {
+            let fields: Vec<&str> = h.record.fields.keys().map(|f| f.as_str()).collect();
+            let matched: Vec<&str> = h.matches.keys().map(|f| f.as_str()).collect();
+            let (key, fields, matched) = (&h.record.key, fields.join(" "), matched.join(" "));
+            (format!("{key}:{fields}/{matched}"), h.score)
+        })
+        .collect();
+    said.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(said)
+}
+
+/// What `said` tells of its hits, without their scores.
+fn told_hits(said: &[(String, f64)]) -> String {
+    let told: Vec<&str> = said.iter().map(|h| h.0.as_str()).collect();
+    told.join(" ")
+}
+
+async fn a_search_as_of_a_position_matches_no_field_hidden_on_a_record_selected_then(
+    store: Store,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    let v = || json!([1.0, 0.0]);
+    let rows = [
+        (
+            "n1",
+            json!({"doc": "open", "title": "taxi", "body": "rome", "v": v()}),
+        ),
+        ("n2", json!({"doc": "open", "title": "taxi", "v": v()})),
+        (
+            "n3",
+            json!({"doc": "secret", "title": "bus", "body": "rome", "v": v()}),
+        ),
+    ];
+    notes(&l, store.as_ref(), &rows).await?;
+    // The same notes as links of `seen`, whose link type is renamed.
+    l.declare(type_decl("partner", vec![field("name", Text)]))
+        .await?;
+    let seen = |name: &str| {
+        let mut r = super::links::dated();
+        (r.name, r.inverse) = (name.into(), None);
+        r.fields = vec![field("doc", Text), searchable("body"), vector("v", 2)];
+        super::links::invoice(vec![r])
+    };
+    l.declare(seen("seen")).await?;
+    l.upsert("partner", "p1", json!({"name": "p1"})).await?;
+    let link = |from: &'static str, fields: Value| {
+        let (ty, rel, to) = ("invoice".into(), "seen".into(), "p1".into());
+        let (cat, own, from) = (l.cat.clone(), l.own.clone(), from.into());
+        async move {
+            let opts = Default::default();
+            let linked = cat.link(&own, &ty, &from, &rel, &to, patch(fields), opts);
+            linked.await.must("linking").map(drop)
+        }
+    };
+    for (key, doc) in [("i1", "open"), ("i2", "open"), ("i3", "secret")] {
+        l.upsert("invoice", key, json!({"amount": "1"})).await?;
+        link(key, json!({"doc": doc, "body": "rome", "v": v()})).await?;
+    }
+    let hidden = json!({"body": "none", "v": "none"});
+    let hide = json!({"hide_where": [{"field": "doc", "values": ["secret"], "fields": hidden}]});
+    let types = json!({"note": hide, "sys.link.invoice.seen": hide});
+    let bea = holder(
+        store.as_ref(),
+        "bea",
+        json!({"default": "read", "types": types}),
+    );
+    let before = store.head().await.must("reading the head")?;
+    let after = l.upsert("note", "n1", json!({"doc": "secret"})).await?;
+    l.upsert("note", "n3", json!({"doc": "open"})).await?;
+    link("i1", json!({"doc": "secret"})).await?;
+    link("i3", json!({"doc": "open"})).await?;
+    // `body` is `text` at the head, and the hiding follows it there.
+    let text = vec![
+        field("doc", Text),
+        searchable("title"),
+        searchable("text"),
+        vector("v", 2),
+    ];
+    let mut m = crate::conformance::fixture::migration(type_decl("note", text));
+    m.renames = vec![("body".into(), "text".into())];
+    let mut seen_saw = crate::conformance::fixture::migration(seen("saw"));
+    seen_saw.relation_renames = vec![("seen".into(), "saw".into())];
+    // And `seen` is `saw`, its link type with it.
+    for m in [m, seen_saw] {
+        let id = l.cat.migrate(&l.own, m.clone()).await.must("previewing")?;
+        let id = id.data.report_id;
+        let applied = l.cat.migrate_apply(&l.own, m, &id).await;
+        applied.must("renaming")?;
+    }
+    // n3 and i3 are secret before, n1 and i1 at the head, n1 and n3 both
+    // at `after`; i2 is never.
+    let lexical = json!({"mode": "lexical", "text": "taxi rome"});
+    let vector = json!({"mode": "vector", "field": "v", "vector": v()});
+    let ty = |asked: &Value, ty: &str| {
+        let mut asked = asked.clone();
+        asked["type"] = json!(format!("sys.link.invoice.{ty}"));
+        asked
+    };
+    let (at, now) = (Some(before), Some(after.position()));
+    let mut wrong = Vec::new();
+    for (at, asked, want) in [
+        (
+            at,
+            lexical.clone(),
+            "n1:body doc title v/body title n2:doc title v/title",
+        ),
+        (at, vector.clone(), "n2:doc title v/"),
+        (
+            now,
+            lexical.clone(),
+            "n1:doc title/title n2:doc title v/title",
+        ),
+        (now, vector.clone(), "n2:doc title v/"),
+        (
+            None,
+            lexical.clone(),
+            "n1:doc title/title n2:doc title v/title n3:doc text title v/text",
+        ),
+        (None, vector.clone(), "n2:doc title v/ n3:doc text title v/"),
+        (at, ty(&lexical, "seen"), "i2:p1:body doc from to v/body"),
+        (at, ty(&vector, "seen"), "i2:p1:body doc from to v/"),
+        (
+            None,
+            ty(&lexical, "saw"),
+            "i2:p1:body doc from to v/body i3:p1:body doc from to v/body",
+        ),
+        (
+            None,
+            ty(&vector, "saw"),
+            "i2:p1:body doc from to v/ i3:p1:body doc from to v/",
+        ),
+    ] {
+        let mut asked = asked;
+        if let Some(at) = at {
+            asked["as_of"] = json!(at.0);
+        }
+        let said = told_hits(&noted(&l, &bea, asked.clone()).await?);
+        if said != want {
+            wrong.push(format!("{asked}: `{said}`, not `{want}`"));
+        }
+    }
+    ensure!(
+        wrong.is_empty(),
+        "a body and a vector must bring bea no hit where they are secret: {wrong:?}"
+    );
+    Ok(())
+}
+
+async fn a_reranked_window_neither_ranks_nor_reranks_by_a_field_hidden_where_a_condition_holds(
+    store: Store,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    // m1 is m2 but for its secret body, which the reranker scores.
+    let rows = [
+        (
+            "m1",
+            json!({"doc": "secret", "title": "reminder", "body": "overdue overdue"}),
+        ),
+        ("m2", json!({"doc": "open", "title": "reminder"})),
+        (
+            "m3",
+            json!({"doc": "open", "title": "memo", "body": "overdue"}),
+        ),
+    ];
+    let bea = notes(&l, store.as_ref(), &rows).await?;
+    for (key, v) in [("m1", [1.0, 0.0]), ("m2", [1.0, 0.0]), ("m3", [0.0, 1.0])] {
+        l.upsert("note", key, json!({"v": v})).await?;
+    }
+    let bound = store.bind_rerank(backing::reranker());
+    bound.must("binding the reranker")?;
+    // The first stage's text ranks m1 as m2 for bea, as its stage does.
+    let text = json!({"mode": "lexical", "text": "overdue reminder"});
+    let mut reranked = json!({"mode": "hybrid", "field": "v", "vector": [1.0, 0.0]});
+    (reranked["text"], reranked["rerank"]) = (text["text"].clone(), json!({"top": 10}));
+    let (mut wrong, since) = (Vec::new(), backing::rerank_calls().len());
+    for (who, asked, want) in [
+        (&bea, &text, None),
+        (&l.own, &text, None),
+        (&bea, &reranked, Some([1.0, 1.0, 2.0])),
+        (&l.own, &reranked, Some([5.0, 1.0, 2.0])),
+    ] {
+        let said = noted(&l, who, asked.clone()).await?;
+        let s: Vec<f64> = said.iter().map(|h| h.1).collect();
+        let (bea, body) = (who.id == bea.id, "m3:body doc title v/body");
+        if want.is_some_and(|w| s != w) || (s[0] == s[1]) != bea {
+            wrong.push(format!("{asked}: {} scores {s:?}, not {want:?}", who.id));
+        }
+        let want = match bea {
+            true => format!("m1:doc title v/title m2:doc title v/title {body}"),
+            false => format!("m1:body doc title v/body title m2:doc title v/title {body}"),
+        };
+        if told_hits(&said) != want {
+            wrong.push(format!("{}: `{}`, not `{want}`", who.id, told_hits(&said)));
+        }
+    }
+    let handed = backing::rerank_calls().split_off(since).into_iter();
+    let m1 = handed.map(|c| {
+        (c.candidates.into_iter()).find_map(|c| (c.key.as_str() == "m1").then_some(c.text))
+    });
+    let m1: Vec<Option<String>> = m1.collect();
+    if m1
+        != [
+            Some("reminder".into()),
+            Some("reminder\n\noverdue overdue".into()),
+        ]
+    {
+        wrong.push(format!("m1 handed the reranker {m1:?}"));
+    }
+    ensure!(
+        wrong.is_empty(),
+        "a secret note's body must neither rank nor rerank it for bea: {wrong:?}"
     );
     Ok(())
 }

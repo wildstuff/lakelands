@@ -502,6 +502,8 @@ pub const ALL: &[Check] = &[
     hidden_where::HIDING_UNAPPLIED,
     hidden_where::HIDDEN_DESCRIBED,
     hidden_where::HIDDEN_AS_OF,
+    hidden_where::HIDDEN_SEARCH_AS_OF,
+    hidden_where::HIDDEN_RERANKED,
     hidden_where::HIDDEN_NO_EDGE,
     hidden_where::HIDDEN_PROPOSED,
     hidden_where::HIDDEN_CHANGED,
