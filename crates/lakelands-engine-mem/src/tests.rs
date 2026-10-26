@@ -40,6 +40,7 @@ pub(crate) fn chain(start: u64, n: u64, fence: u64, prev: Digest) -> Vec<Canonic
                 // Position 0 is written before any lease exists.
                 fence: if p == 0 { 0 } else { fence },
                 bytes: format!("{{\"p\":{p}}}").into_bytes(),
+                frame: None,
             };
             prev = hash;
             e

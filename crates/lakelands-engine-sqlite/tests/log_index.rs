@@ -151,7 +151,7 @@ fn an_open_reads_back_past_every_block_that_holds_no_commit_line() {
 
 #[test]
 fn a_read_from_any_position_answers_the_events_from_it() {
-    const N: u64 = 3000;
+    const N: u64 = 4500;
     let dir = scratch("any-position");
     let engine = open(&dir, OpenMode::Create);
     let lease = engine.take_lease("writer").unwrap();
@@ -276,7 +276,9 @@ async fn a_damaged_line_is_found_by_the_read_that_meets_it_and_by_verify_not_by_
     l.declare(type_decl("note", vec![sourced("text", Text)]))
         .await
         .unwrap();
-    for i in 0..40 {
+    // An index longer than a read's `NEAR`, so that the halving of a read
+    // of the tip lands past position 20.
+    for i in 0..80 {
         let record = source_record("note", &format!("n{i}"), json!({"text": "a note"}));
         l.ingest("load", vec![record]).await.unwrap();
     }
@@ -287,7 +289,7 @@ async fn a_damaged_line_is_found_by_the_read_that_meets_it_and_by_verify_not_by_
     // Position 20's line names 21 instead, the file's length unchanged.
     let index = index(&dir, 0);
     let text = std::fs::read_to_string(&index).unwrap();
-    let damaged = text.replacen("[\"e\",20,", "[\"e\",21,", 1);
+    let damaged = text.replacen("[\"d\",20,", "[\"d\",21,", 1);
     assert_ne!(text, damaged, "the index holds position 20's line");
     std::fs::write(&index, damaged).unwrap();
 
@@ -396,7 +398,7 @@ fn an_open_and_a_read_read_blocks_of_the_index_not_the_index() {
     let events = lake_of(&dir, 12_000, 32);
     let block = BLOCK as u64;
     let whole = std::fs::metadata(index(&dir, 0)).unwrap().len();
-    assert!(whole > 32 * block, "the index is {whole} bytes");
+    assert!(whole > 16 * block, "the index is {whole} bytes");
 
     let (reader, opened) = cost(|| open(&dir, OpenMode::Read));
     assert!(
@@ -487,7 +489,13 @@ fn a_line_that_names_another_position_is_refused_when_it_alone_is_read() {
     // and reads that answered the one asked for without meeting the line.
     let (mut wrong, mut unmet) = (Vec::new(), Vec::new());
     for q in 0..599u64 {
-        let damaged = text.replacen(&format!("[\"e\",{q},"), &format!("[\"e\",{},", q + 1), 1);
+        // A segment's first event line names its `prev`, the rest do not.
+        let kind = if q == 0 { "e" } else { "d" };
+        let damaged = text.replacen(
+            &format!("[\"{kind}\",{q},"),
+            &format!("[\"{kind}\",{},", q + 1),
+            1,
+        );
         assert_ne!(text, damaged, "the index holds position {q}'s line");
         std::fs::write(&index, damaged).unwrap();
         let reader = match SqliteOpener.open(&Location::sqlite("lake", &dir), OpenMode::Read) {

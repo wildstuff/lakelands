@@ -16,9 +16,12 @@ or newer, is refused
 Given a directory, `python3 verify.py <dir>` checks a lake's log as an
 export or a SQLite lake directory holds it instead, reading only
 `<dir>/log/` (log-format §4.2): canonical lines each ending in a line
-feed, positions consecutive from 0 and naming their files in 20 digits,
+feed, each event restored from its line, its frame and the event before
+it (log-format §1.2), and every break of that form refused, positions
+consecutive from 0 and naming their files in 20 digits,
 the hash chain from 64 zeros, every checkpoint against the position,
-the hash and the files before it, every line in the one format, `cause`
+the hash and the digests of the files before it, over their restored
+events, every line in the one format, `cause`
 never inside `context`, `upstream` only on a `record_ingested` event,
 `sealed` only on a `record_ingested` or an `output_recorded`, `apart`
 and a selection by `seen_before` or `deliveries` only from format 18 on,
@@ -154,6 +157,158 @@ FORMAT = 20
 OLDEST = 14
 ZEROS = "0" * 64
 ONE_FORM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
+
+
+# The first format whose lines are a stored form (log-format §1.2): a
+# frame line, and event lines that leave out what their frame holds and
+# may leave out `position` and `prev`. A line of a format before it is a
+# full event, taken as it stands.
+FRAMED_FROM = 20
+# The members a frame never holds, and those it holds one level into.
+UNFRAMED = ("hash", "id", "position", "prev", "v")
+NESTED = ("body", "sealed")
+
+
+def restored(lines, need, before=None):
+    """Each event the lines of one segment hold, restored (log-format §1.2),
+    in order: a frame's members added to the lines it covers, those under
+    `body` and `sealed` one level deep, and a `position` or a `prev` a line
+    leaves out derived from the event before it, which a line that holds
+    them must name. Each line is JSON and canonical; `need` says a break
+    and exits. `before` is the position and hash of the event before the
+    lines, where they do not begin a segment."""
+    frame, left = None, 0
+    for line in lines:
+        try:
+            read = json.loads(line.decode("utf-8"))
+        except ValueError as e:
+            need(False, f"the line is JSON ({e})")
+        need(canon(read, lambda why: need(False, why)) == line, "the line is canonical")
+        if "events" in read or "frame" in read:
+            need(left == 0, "a frame line stands among the lines a frame covers")
+            v, n, members = read.get("v"), read.get("events"), read.get("frame")
+            need(set(read) == {"events", "frame", "v"} and type(v) is int and v >= FRAMED_FROM
+                 and type(n) is int and n >= 1 and isinstance(members, dict)
+                 and not any(k in UNFRAMED for k in members)
+                 and all(isinstance(members.get(k, {0: 0}), dict) and members.get(k, {0: 0}) for k in NESTED),
+                 "a frame line holds `events` from 1, `frame` and `v` from 20 alone, and its frame no member a frame never holds")
+            frame, left = read, n
+            continue
+        v = read.get("v")
+        event = dict(read)
+        if left:
+            need(v == frame["v"], f"a line of format {v} is covered by a frame of format {frame['v']}")
+        if type(v) is int and v >= FRAMED_FROM:
+            if before is None:
+                need("position" in read and "prev" in read, "a segment's first event line holds its `position` and its `prev`")
+            for name, value in (frame["frame"].items() if left else ()):
+                if name in NESTED:
+                    held = event.setdefault(name, {})
+                    need(isinstance(held, dict), f"the line holds `{name}`, which its frame holds")
+                    event[name] = held = dict(held)
+                    for inner, x in value.items():
+                        need(inner not in held, f"the line holds `{name}.{inner}`, which its frame holds")
+                        held[inner] = x
+                else:
+                    need(name not in event, f"the line holds `{name}`, which its frame holds")
+                    event[name] = value
+            if before is not None:
+                event.setdefault("position", before[0] + 1)
+                event.setdefault("prev", before[1])
+        if before is not None:
+            need(event.get("position") == before[0] + 1, f"position {event.get('position')} is not the position after {before[0]}")
+            need(event.get("prev") == before[1], "the line's `prev` does not name the hash of the event before it")
+        if left:
+            left -= 1
+        before = (event.get("position"), event.get("hash"))
+        yield event
+    need(left == 0, f"the segment ends with {left} of a frame's lines still to come")
+
+
+# What `restored` says of each break of `framed.json`, by the code of the
+# flaw it is refused for.
+BREAKS = {
+    "frame_in_frame": "a frame line stands among the lines a frame covers",
+    "framed_twice": "which its frame holds",
+    "frame_short": "of a frame's lines still to come",
+    "not_a_frame": "a frame line holds `events` from 1",
+    "frame_other": "is covered by a frame of format",
+    "position": "is not the position after",
+    "prev_hash": "does not name the hash of the event before it",
+    "start_unheld": "a segment's first event line holds its `position` and its `prev`",
+}
+
+
+class Refused(Exception):
+    """A break `restored` found, with what it says."""
+
+
+def refusal(lines, after):
+    """Where `restored` refuses `lines` after the event `after` (none: at
+    a segment's start), the index of the line it refuses or None at their
+    end, and what it says; None where it reads them all."""
+    at = {"line": None}
+
+    def counted():
+        for i, line in enumerate(lines):
+            at["line"] = i
+            yield line
+        at["line"] = None
+
+    def need(ok, why):
+        if not ok:
+            raise Refused(why)
+
+    try:
+        list(restored(counted(), need, after and (after["position"], after["hash"])))
+    except Refused as e:
+        return at["line"], str(e)
+    return None
+
+
+def same(a, b):
+    """Whether two JSON values are one value: compared as canonical bytes,
+    so that `true` is not `1`."""
+    return canonical(a) == canonical(b)
+
+
+def writer_form(events):
+    """The lines a writer of this format stores `events`, one append's, as
+    (log-format §1.2): where they are two or more, a frame line holding
+    exactly the members every one of them holds with one value, top-level
+    and one level into `body` and `sealed`, none a frame never holds; and
+    each event's line, its event less what the frame holds and less its
+    `position` and `prev`, which only a segment's first event line holds,
+    the `lake_created` at position 0 or a `checkpoint`."""
+    v = events[0]["v"]
+    framed = len(events) >= 2 and v >= FRAMED_FROM and all(e["v"] == v for e in events)
+    shared = {}
+    for name, value in events[0].items() if framed else ():
+        if name in UNFRAMED:
+            continue
+        if name in NESTED and isinstance(value, dict):
+            common = {k: x for k, x in value.items()
+                      if all(isinstance(e.get(name), dict) and k in e[name] and same(e[name][k], x) for e in events[1:])}
+            if common:
+                shared[name] = common
+        elif all(name in e and same(e[name], value) for e in events[1:]):
+            shared[name] = value
+    lines = [canonical({"events": len(events), "frame": shared, "v": v})] if framed else []
+    for event in events:
+        line = dict(event)
+        if event["v"] >= FRAMED_FROM and not (event["position"] == 0 or event["body"]["kind"] == "checkpoint"):
+            del line["position"], line["prev"]
+        for name, value in shared.items():
+            if name in NESTED and isinstance(value, dict):
+                held = {k: x for k, x in line[name].items() if k not in value}
+                if held:
+                    line[name] = held
+                else:
+                    del line[name]
+            else:
+                del line[name]
+        lines.append(canonical(line))
+    return lines
 
 
 def annotated(body):
@@ -450,12 +605,10 @@ def verify_dir(root):
         raw = path.read_bytes()
         need(raw, f"{path.name} holds an event")
         need(raw.endswith(b"\n"), f"{path.name} ends in a line feed")
-        for line in raw[:-1].split(b"\n"):
-            try:
-                event = json.loads(line.decode("utf-8"))
-            except ValueError as e:
-                need(False, f"the line is JSON ({e})")
-            need(canon(event, lambda why: need(False, why)) == line, "the line is canonical")
+        # The segment's digest is over its events as restored (§4.2).
+        digested = hashlib.sha256()
+        for event in restored(raw[:-1].split(b"\n"), need):
+            digested.update(canonical(event) + b"\n")
             need(event.get("position") == position, f"the line is position {event.get('position')}")
             v = event.get("v")
             need(type(v) is int and OLDEST <= v <= FORMAT, f"format {v} is one from {OLDEST} to {FORMAT}")
@@ -524,7 +677,8 @@ def verify_dir(root):
                 need(b.get("segments") == sealed, "the checkpoint lists every file before it with its digest")
             prev = event["hash"]
             position += 1
-        sealed.append({"first": first, "last": position - 1, "digest": sha(raw)})
+        need(position > first, f"{path.name} holds an event")
+        sealed.append({"first": first, "last": position - 1, "digest": digested.hexdigest()})
         print(f"ok   {path.name}: positions {first}..{position - 1}")
     need(owed is None, f"the log ends after a `lease_taken` that raised the format to {owed and owed[1]} with no `lake_upgraded`")
     print(f"ok   {root}: verified through position {position - 1}, hash {prev}")
@@ -574,7 +728,9 @@ def stamp(n):
     `expected.json` repeat get what the lines now hash to. A `misplaced`
     line is restamped after the position before its own, so it stays
     refused for its one reason alone, and so is
-    `negative/known-at-goes-back`. `negative/another-format` is written
+    `negative/known-at-goes-back`. The framed append of `framed.json` is
+    restamped after them and its stored lines written again; its breaks
+    move to format `n`. `negative/another-format` is written
     from the first segment, its last event in format `n - 1`. No id
     moves: an id is random or made from members that leave `v` out, and
     `main` recomputes them after this. Last, `FORMAT` in this file's
@@ -601,6 +757,37 @@ def stamp(n):
         before = events[event["position"] - 1]["hash"]
         entry["line"] = canonical(restamp(event, n, before)).decode("utf-8")
     path.write_text(json.dumps(further, indent=2, ensure_ascii=False) + "\n", "utf-8")
+
+    # The framed append follows them: its events restamped, its stored
+    # lines the writer's form of them again, and each break's lines and
+    # flaw moved to the new format, its hashes, which no reader reaches,
+    # left as they were.
+    path = HERE / "framed.json"
+    framed = json.loads(path.read_text("utf-8"))
+    other = set(framed) - {"about", "after", "stored", "events", "breaks"}
+    for entry in framed["breaks"]:
+        other |= set(entry) - {"shows", "about", "after", "stored", "refused"}
+    if other:
+        sys.exit(f"FAIL framed.json: --stamp does not know the members {sorted(other)}")
+    framed["after"] = {"position": events[-1]["position"], "hash": events[-1]["hash"]}
+    appended = []
+    for entry in framed["events"]:
+        event = restamp(json.loads(entry["line"]), n, (appended or events)[-1]["hash"])
+        appended.append(event)
+        entry["line"], entry["hash"] = canonical(event).decode("utf-8"), event["hash"]
+    framed["stored"] = [line.decode("utf-8") for line in writer_form(appended)]
+
+    def moved(line):
+        line["v"] += n - FORMAT
+        return canonical(line).decode("utf-8")
+
+    for entry in framed["breaks"]:
+        entry["stored"] = [moved(json.loads(line)) for line in entry["stored"]]
+        entry["after"] = entry["after"] and framed["after"]
+        flaw = entry["refused"]["flaw"]
+        for name in ("frame", "v") if flaw["code"] == "frame_other" else ():
+            flaw[name] += n - FORMAT
+    path.write_text(json.dumps(framed, indent=2, ensure_ascii=False) + "\n", "utf-8")
 
     expected = json.loads((HERE / "expected.json").read_text("utf-8"))
     for want in expected["events"]:
@@ -727,6 +914,43 @@ def main():
         check(MISPLACED[shows](event), f"misplaced at {pos}: {MISPLACED[shows].__doc__}")
     check(sorted(entry["shows"] for entry in further["misplaced"]) == sorted(MISPLACED),
           "further.json: every misplaced member this verifier checks is shown once")
+
+    # One append in the stored form (§1.2), after the last event of
+    # `further.json`: the writer's lines for its events, which restore to
+    # them byte for byte, and the breaks a reader refuses.
+    framed = json.loads((HERE / "framed.json").read_text("utf-8"))
+    after = framed["after"]
+    check(after == {"position": events[-1]["position"], "hash": events[-1]["hash"]},
+          f"framed.json: it follows position {events[-1]['position']}")
+    appended, before = [], events[-1]
+    for entry in framed["events"]:
+        event = json.loads(entry["line"])
+        pos = event["position"]
+        check(canon(event, lambda why: check(False, f"framed.json at {pos}: {why}")) == entry["line"].encode("utf-8"),
+              f"framed.json at {pos}: the event is canonical")
+        check(event["v"] == FORMAT, f"framed.json at {pos}: format {FORMAT}")
+        check(pos == before["position"] + 1 and event["prev"] == before["hash"],
+              f"framed.json at {pos}: it follows position {before['position']}")
+        body = {k: v for k, v in event.items() if k != "hash"}
+        check(sha(canonical(body)) == event["hash"] == entry["hash"], f"framed.json at {pos}: hash {entry['hash'][:12]}…")
+        check(ingest_id(event) == event["id"], f"framed.json at {pos}: ingest id {event['id']}")
+        appended.append(event)
+        before = event
+    stored = [line.encode("utf-8") for line in framed["stored"]]
+    check(writer_form(appended) == stored,
+          "framed.json: the stored lines are the writer's: a frame holding what every event shares, and lines without `position` or `prev`")
+    check(refusal(stored, after) is None, "framed.json: the stored lines read after the event before them")
+    got = list(restored(stored, lambda ok, why: ok or check(False, f"framed.json: {why}"), (after["position"], after["hash"])))
+    check([canonical(e) for e in got] == [e["line"].encode("utf-8") for e in framed["events"]],
+          "framed.json: the stored lines restore to the events, byte for byte")
+    for entry in framed["breaks"]:
+        shows, want = entry["shows"], entry["refused"]
+        check(shows in BREAKS and want["flaw"]["code"] == shows, f"framed.json: `{shows}` is a break this verifier checks")
+        said = refusal([line.encode("utf-8") for line in entry["stored"]], entry["after"])
+        check(said is not None and said[0] == want["at"] and BREAKS[shows] in said[1],
+              f"framed.json: the break `{shows}` is refused at line {want['at']}: {said and said[1]}")
+    check(sorted(entry["shows"] for entry in framed["breaks"]) == sorted(BREAKS),
+          "framed.json: every break this verifier checks is shown once")
 
     for n, want in [(1e21, "1e+21"), (1e-7, "1e-7"), (0.000001, "0.000001"), (333333333.3333333, "333333333.3333333"),
                     (-0.0, "0"), (9007199254740992.0, "9007199254740992"), (5e-324, "5e-324")]:

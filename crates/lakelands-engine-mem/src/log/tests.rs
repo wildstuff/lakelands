@@ -1,3 +1,5 @@
+use sha2::{Digest as _, Sha256};
+
 use super::*;
 use crate::tests::chain;
 

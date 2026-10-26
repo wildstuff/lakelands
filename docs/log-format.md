@@ -119,9 +119,9 @@ restored exactly
   before gives; a segment's first event line that does not hold both. A
   line of a format before 20 is a full event, taken as it stands; a
   segment may hold lines of both (§6).
-- **The writer's form**, proposed with 083 (lakelands#1413) and in force
-  with the issue that builds it; until then the store writes every line
-  as a full event, which is a stored form too. The store frames each
+- **The writer's form** (083, lakelands#1413, in force from
+  lakelands#1433; a store of format 20 before it wrote every line as a
+  full event, which is a stored form too). The store frames each
   append (§4.1) of two or more events, with exactly the members all its
   events share, and writes `position` and `prev` only on a segment's
   first event line; an append of one event has no frame. A copy of the
@@ -898,9 +898,9 @@ a frame or a derived member has no file of those bytes, and its digest
 is the same whatever stored form holds its events. The first segment's
 first event is `lake_created`; every later one's is a `checkpoint`.
 
-**A copy of the log writes a form of its own** (proposed with 083, in
-force with the issue that builds it; until then a copy writes every
-line as a full event). An export and a backup read the log through the
+**A copy of the log writes a form of its own** (083, in force from
+lakelands#1433; a copy made before it wrote every line as a full event,
+a form a reader reads alike). An export and a backup read the log through the
 feed, which answers events, not lines, and tells no append's end. They
 frame each run of two or more, and at most 1 000, consecutive events of
 one segment that share `known_at`, each run as long as those bounds let

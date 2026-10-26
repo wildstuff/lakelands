@@ -1,12 +1,14 @@
 //! The log, the writer lease and the segments of one lake.
 //!
 //! The log keeps each [`CanonicalEvent`] exactly as the store handed it,
-//! bytes included, and gives the same value back. An append is checked
-//! before anything changes and then made whole: the lease must be the
-//! current one and every event must carry its fence, the positions must
-//! continue the tip with no gap and no overlap, each `prev` must be
-//! the hash before it, and no event's bytes may hold a line feed. The engine does not recompute hashes; verifying
-//! them is the store's, over the bytes it reads back.
+//! its line and its frame included, and gives the same value back. An
+//! append is checked before anything changes and then made whole: the
+//! lease must be the current one and every event must carry its fence,
+//! the positions must continue the tip with no gap and no overlap, each
+//! `prev` must be the hash before it, no event's line may hold a line
+//! feed, and the append must hold each frame it shares whole. The engine
+//! does not recompute hashes; verifying them is the store's, over the
+//! events it restores from what it reads back.
 //!
 //! The lease is a fencing token and a holder. Taking it while it is held
 //! fails at once and names the holder; every take gets a token greater
@@ -14,15 +16,14 @@
 //! refused by its stale token rather than forking the chain.
 //!
 //! Segments are ranges of the log. Sealing closes the active one,
-//! digests it as a segment file would hold it (each event's bytes
+//! digests it over its events as restored (each event's canonical bytes
 //! followed by a line feed, `docs/log-format.md` §4.2), and begins the
 //! next with its first events, in one change.
 
 use lakelands_api::engine::{CanonicalEvent, Lease};
-use lakelands_api::error::{Case, Error, Result, Situation};
+use lakelands_api::error::{Case, Error, Part, Result, Situation};
 use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::Position;
-use sha2::{Digest as _, Sha256};
 
 /// One lake's log, lease and segments.
 #[derive(Debug, Default)]
@@ -131,6 +132,7 @@ impl Log {
         let prev = self.tip().map_or_else(Digest::zero, |(_, hash)| hash);
         let floor = self.events.last().map_or(0, |e| e.fence);
         lakelands_core::engines::append_fault(events, first, prev, fence, floor)?;
+        lakelands_core::log::frame_fault(events)?;
         self.events.extend_from_slice(events);
         Ok(())
     }
@@ -163,15 +165,12 @@ impl Log {
         let Some(last) = active.last() else {
             return Ok(None);
         };
-        let mut hasher = Sha256::new();
-        for event in active {
-            hasher.update(&event.bytes);
-            hasher.update(b"\n");
-        }
+        let digest = lakelands_core::log::digest_of(active)
+            .map_err(|(at, flaw)| lakelands_core::damaged(Part::Log, Some(at), flaw))?;
         let segment = SegmentDigest {
             first: Position(from),
             last: last.position,
-            digest: Digest(lakelands_core::canonical::hex(&hasher.finalize())),
+            digest,
         };
         let events = lakelands_core::engines::first_of_next(first, &segment)?;
         if imported {

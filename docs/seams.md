@@ -65,12 +65,17 @@ Two rules shape the engine seam:
 
 - **The store canonicalises; the engine keeps bytes.** The store turns
   every event into its canonical bytes and hash (`docs/log-format.md`
-  §1.2) and hands the engine a `CanonicalEvent`: the bytes, with the
+  §1.2), writes them in the stored form, and hands the engine a
+  `CanonicalEvent`: the event's line, which leaves out what its frame
+  holds and what the event before it gives, and `frame`, the frame its
+  append shares, if any (its line, its first position and how many
+  events it covers, one value for every event it covers), with the
   position, id, `prev`, `hash` and `fence` beside them so the engine can
-  check an append without parsing. The engine stores the bytes and gives
-  back the same `CanonicalEvent`. The store parses and verifies what it
-  reads. Byte identity is checked through this seam by the conformance
-  suite.
+  check an append without parsing. The engine stores the line and the
+  frame and gives back the same `CanonicalEvent`. The store restores the
+  events and verifies what it reads; a segment's digest is over the
+  events restored (§4.2). Byte identity is checked through this seam by
+  the conformance suite, frames included.
 - **The projection keeps its history.** Every `put_*` adds a state valid
   from a position and keeps the state it supersedes. `view(as_of)` is a
   filter over kept states, never a replay: "what did the agent see at
@@ -112,8 +117,8 @@ promises that have no check yet.
 | `release_lease(lease)` | Give the lease up; the next taker gets a greater token. The lease is always released; an engine that also records the holder in storage reports a failure to clear that record as `Unavailable`, after releasing. Releasing a lease that is no longer the current one does nothing, so a writer that lost the lease cannot release its successor's. A handle that is dropped releases the lease it took and still holds, so a writer that ends without closing does not keep the lake from every later writer. |
 | `lease_free()` | Whether no handle holds the lease now, asked of any handle, one opened read-only included; it takes and changes nothing, and the answer is stale once given: a take made on it may still be refused as held. A standby asks it before it opens the lake for writing (`docs/decisions/076-a-lake-keeps-one-writer-and-a-dataset-that-outgrows-it-becomes-several-lakes.md`). The default answers true: a standby over an engine that cannot tell tries the take itself. |
 | `tip` | The last event's position and hash, or none for an empty lake. |
-| `append(lease, events)` | Append a group of `CanonicalEvent`s, all or none, **durably before returning**: once it returns, the events survive a crash of the process and of the machine. `Unavailable` when `lease` is not the current lease, when this handle did not take it (another handle's lease, copied, appends nothing), or when the handle is read-only. `Invalid` when an event's fence differs from the lease's — except the event at position 0, which carries fence 0 — when the positions do not continue the tip without a gap, or when a `prev` is not the hash before it; nothing of a refused append is kept. An append that answers `Unavailable` because a write failed keeps nothing either: the handle goes on under its lease, and its next append is not written behind what the failed one left. An empty group appends nothing. Stores each event's bytes unchanged and never parses them. |
-| `read(from, limit)` | At most `limit` `CanonicalEvent`s from `from` on, in position order, exactly as appended: the same members, the same bytes. Empty when `from` is past the tip or `limit` is 0. |
+| `append(lease, events)` | Append a group of `CanonicalEvent`s, all or none, **durably before returning**: once it returns, the events survive a crash of the process and of the machine. `Unavailable` when `lease` is not the current lease, when this handle did not take it (another handle's lease, copied, appends nothing), or when the handle is read-only. `Invalid` when an event's fence differs from the lease's — except the event at position 0, which carries fence 0 — when the positions do not continue the tip without a gap, or when a `prev` is not the hash before it; `Invalid` as `append_frame`, naming the position, when the group does not hold each frame its events share whole and in order, from the frame's first position to its last; nothing of a refused append is kept. An append that answers `Unavailable` because a write failed keeps nothing either: the handle goes on under its lease, and its next append is not written behind what the failed one left. An empty group appends nothing. Stores each event's bytes and frame unchanged and never parses them. |
+| `read(from, limit)` | At most `limit` `CanonicalEvent`s from `from` on, in position order, exactly as appended: the same members, the same bytes, each with its frame, also where the read begins inside one. Empty when `from` is past the tip or `limit` is 0. |
 | `import(lease, events)` | Append events carried over from another lake's log, as an import does (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`): as `append`, all or none and durably, except that each event keeps the fence it was written under, 0 at position 0 and never below the fence of the event before it, instead of carrying the lease's. `Invalid` unless the log holds nothing but imported events (it is empty, or every event in it came through `import`), so a lake that was ever appended to is never imported into. Afterwards the next `take_lease` answers a token greater than every fence imported. The store checks, before it imports, that every fence is its writer's (log format §4.1). |
 | `seal_segment(lease, imported, first)` | Close the active segment at its last event and begin the next with the events `first` answers for the closed segment's range and digest, **in one step: both hold, or the log is as it was.** A segment after the first therefore never exists without its first event, after a failure and after a crash (`docs/log-format.md` §4.2; lakelands#623). The events enter as `append`'s do, or as `import`'s when `imported`: events that do not continue the log, imported events behind appended ones, and none are refused as `Invalid`, an error from `first` is answered as it is, and nothing is sealed. `first` is asked once, after the lease is found current, and **runs inside the step: it calls nothing of the engine**, which holds its log while it runs. None, and `first` is not asked, if the active segment is empty. Refused as `append` is for a stale lease, a lease this handle did not take or a read-only handle, before `first` is asked. The store's `checkpoint` hands the `checkpoint` event so; an import hands each later file's first events, after it has compared the digest with that file's. |
 | `segments` | Every sealed segment's range and digest (`docs/log-format.md` §4.2), oldest first; the ranges start at 0 and follow each other with no gap. |
@@ -250,8 +255,10 @@ and every statement names it; no connection's `search_path` is set.
   record an ingest writes once, and its applied id once, so an ingest
   costs about two round trips per record there and about fifteen per
   window on the other two connections.
-- **The log.** It is kept as rows holding each event's canonical bytes
-  unchanged, and an append is one transaction that checks the fence
+- **The log.** It is kept as rows holding each event's line of the
+  stored form unchanged, and each frame once, in `frames`, keyed by the
+  first position it covers (a lake made before frames gains the table at
+  its next writer's open), and an append is one transaction that checks the fence
   against the lease row. `lakelands_engine_pg::export` writes the
   segments as the §4.2 files, which verify without the engine, for a
   lake whose store cannot be opened; they are the bytes the store's
@@ -932,7 +939,11 @@ holds it to.
 | a held lease is refused at once, naming its holder | engine: `a_held_lease_is_refused_at_once_naming_its_holder` |
 | every take of the lease has a greater fence | engine: `every_take_of_the_lease_has_a_greater_fence` |
 | an append with a gap or a wrong `prev` is refused whole | engine: `an_append_with_a_gap_or_a_wrong_prev_is_refused_whole` |
-| a sealed segment's digest is over its lines, and it is what the seal hands `first`; sealing an empty segment answers none and adds nothing | engine: `a_sealed_segment_is_digested_as_its_lines` |
+| a sealed segment's digest is over its events as restored, and it is what the seal hands `first`; sealing an empty segment answers none and adds nothing | engine: `a_sealed_segment_is_digested_as_its_lines` |
+| a framed append comes back unchanged, each event with its frame, read from the frame's first position, from within it and one event at a time | engine: `a_framed_append_comes_back_unchanged_read_from_within_it` |
+| an append that holds a frame in part is refused as `append_frame`, whole | engine: `an_append_that_holds_a_frame_in_part_is_refused_whole` |
+| a segment of format-19 lines and framed ones reads back as appended and is digested over its events restored | engine: `a_segment_of_older_lines_and_framed_ones_is_digested_over_its_events_restored` |
+| a line kept as handed that does not restore comes back unchanged, and sealing its segment is refused as `damaged` at its position | engine: `a_framed_line_that_holds_what_its_frame_holds_is_refused_where_it_is_restored` |
 | a dropped writer releases its lease | engine: `a_dropped_writer_releases_its_lease` |
 | a read-only handle refuses the lease, appends and sealing, and reads | engine: `a_read_only_handle_refuses_the_lease_and_appends` |
 | a read-only handle tells whether the lease is free, and takes nothing | engine: `a_read_only_handle_tells_whether_the_lease_is_free` |

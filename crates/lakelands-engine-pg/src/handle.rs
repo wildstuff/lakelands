@@ -543,7 +543,7 @@ pub(crate) fn room(target: &Target) -> Result<u64> {
         WHERE r.oid = c.reltoastrelid \
         OR r.oid IN (SELECT indexrelid FROM pg_catalog.pg_index WHERE indrelid = c.oid))";
     let mut db = connect::connect(target)?;
-    let log = projection::LAKE_TABLES[..4].to_vec();
+    let log = projection::LAKE_TABLES[..5].to_vec();
     let args: &[&(dyn postgres::types::ToSql + Sync)] = &[&target.schema, &log];
     db.batch("SET lock_timeout = '1s'")?;
     let measured = format!(

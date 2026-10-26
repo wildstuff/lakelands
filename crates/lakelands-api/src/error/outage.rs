@@ -717,6 +717,18 @@ catalog! {
         } => "[position {found} stands where |expected ]position {expected}[{?found} belongs]",
         /// It does not name the hash of the event before it.
         PrevHash => "it does not name the hash of the event before it",
+        /// A line holds `events` or `frame` and is no frame.
+        NotAFrame => "a line holds `events` or `frame` and is no frame: a frame holds those two and `v` alone, `events` a count from 1, and `frame` an object of the members a frame may hold",
+        /// A frame's log format is not its events'.
+        FrameOther { frame: u64, v: u64 } => "a frame of log format {frame} covers an event of format {v}: a frame holds its events' format",
+        /// A frame covers more events than its segment holds after it.
+        FrameShort { events: u64, held: u64 } => "a frame covers {events} events, and its segment holds {held} of them after it",
+        /// A frame line stands among the lines a frame covers.
+        FrameInFrame => "a frame line stands among the lines a frame covers",
+        /// An event's line holds a member its frame holds.
+        FramedTwice { member: String } => "its line holds `{member}`, which its frame holds",
+        /// A segment's first event line does not hold its `position` and its `prev`.
+        StartUnheld => "it is a segment's first event line, and does not hold both its `position` and its `prev`",
         /// Its `known_at` is before that of the event before it.
         KnownAtBack { known_at: Timestamp, before: Timestamp } => "its known_at {known_at} is before the {before} of the event before it",
         /// It holds a number written as an integer beyond ±(2^53 − 1).

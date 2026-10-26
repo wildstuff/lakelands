@@ -181,6 +181,22 @@ The files:
   `record_retired`, `cause` inside `context`, an `output_recorded`
   with both `output` and `output_at`, `sealed` on a `record_retired`,
   and `delivery` on a `record_retired`.
+- `framed.json`: the lake's next append, three `record_ingested` of
+  `erp` at positions 82 to 84, in the stored form a writer of format 20
+  writes (`docs/log-format.md` §1.2): `stored`, a frame line holding every
+  member the three share, top-level and one level into `body`, and each
+  event's line holding the rest, none with `position` or `prev`, which
+  the event before it gives; and `events`, the canonical events those
+  lines restore to, with their hashes and ingest ids. Each verifier makes
+  the writer's lines from the events and holds them to `stored`, and
+  restores `stored` byte for byte. Its `breaks` are the lines of one
+  segment a reader refuses, each for one flaw, named by its code, at the
+  line `at` (null: at the segment's end), after the event `after` (null:
+  at a segment's start): a frame line among a frame's lines, a line
+  holding `body.type` its frame holds, a segment ending inside a frame, a
+  frame holding `position`, a frame of format 20 over a line of 19, a
+  `position` and a `prev` that are not the ones the event before gives,
+  and a segment's first event line holding neither.
 - `schema-hash.json`: a view type whose conditions are written as text,
   the shape object it hashes (conditions in typed form, Appendix B), the
   shape's canonical bytes, and the schema hash; and the hash of the same
@@ -202,7 +218,9 @@ Two implementations check them, sharing no code:
 
 `verify.py <dir>` checks a lake's log instead: an export
 (`lakelands export --to <dir>`) or a SQLite lake directory. It reads
-only `<dir>/log/` and checks every line is canonical, the positions run
+only `<dir>/log/`, restores each event from the stored form (§1.2),
+refusing every break of it, and checks every line is canonical, each
+segment's digest is taken over its events as restored, the positions run
 from 0 and name their files in 20 digits, the hash chain, every
 checkpoint against the position, the hash and the files before it, and
 that every line is in the one format, `FORMAT` in `verify.py`; it prints
@@ -230,8 +248,10 @@ directory then stays as its release ships it (`../README.md`). The stamp
 rewrites the copy as the same lake's log in format N, with `verify.py`'s own
 serialiser: every line's `v`, `lake_created`'s `format`, each `prev` and
 `hash` along the chain, the checkpoint's hash and digest, the hashes
-`expected.json` and `further.json` repeat, the `misplaced` lines, both
-negative vectors, and `FORMAT` in `verify.py`.
+`expected.json` and `further.json` repeat, the `misplaced` lines, the
+framed append, whose stored lines it writes again from its restamped
+events and whose breaks it moves to format N, both negative vectors, and
+`FORMAT` in `verify.py`.
 It then checks what it wrote. No id changes: none is made from `v`. The
 repository's tests hold the result to `LOG_FORMAT_VERSION` and to the
 version `docs/log-format.md` opens with. Called without a number, or

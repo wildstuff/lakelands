@@ -126,6 +126,7 @@ impl Lake {
             events.push(event);
             stored.push(canon);
         }
+        lakelands_core::log::frame_append(&mut stored);
         Ok((lease, events, stored))
     }
 

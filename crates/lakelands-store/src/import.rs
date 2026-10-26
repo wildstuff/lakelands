@@ -32,12 +32,17 @@
 //! what is left of one, and refuses the import as damaged before an
 //! event is carried.
 //!
-//! **Then the files, as they are.** The first file's events go to
+//! **Then the events, as they are.** Each file's events are restored from
+//! its lines and frames (`docs/log-format.md` §1.2) and appended as any
+//! writer appends them: a batch is one append, framed as the store frames
+//! one, so the stored form is the new lake's own and only the events are
+//! the export's. The first file's events go to
 //! `LakeEngine::import` in batches of at most [`BATCH`] bytes, an event
 //! larger than that alone. Each later file starts with its `checkpoint`:
 //! its first batch is handed to `LakeEngine::seal_segment`, which closes
 //! the segment before it and begins the next with that batch in one step,
-//! once the digest the engine takes of that segment is the file's; the
+//! once the digest the engine takes of that segment, over its restored
+//! events, is the file's; the
 //! rest follows through `import`.
 //! The projection is folded under the import's lease as a rebuild folds
 //! it, and nothing is appended: the head is the export's. No segment is
@@ -66,6 +71,7 @@ use lakelands_api::event::{Digest, LOG_FORMAT_VERSION};
 use lakelands_api::location::Location;
 use lakelands_api::seam::Seams;
 use lakelands_api::{Error, LakeId, Position, Result, SourceId};
+use serde::Deserialize as _;
 use sha2::{Digest as _, Sha256};
 
 use crate::lake::Lake;
@@ -190,28 +196,43 @@ struct Sealed {
     apart: Vec<lakelands_api::id::KeyId>,
 }
 
-/// Each line of `path` as the event the store would append, with its
+/// Each event of `path`, restored from its line and its frame
+/// (`docs/log-format.md` §1.2), as the event the store would append, its
+/// bytes the event's canonical bytes and framed by none, with its
 /// envelope, in order.
 fn events(path: &Path) -> Result<impl Iterator<Item = Result<(CanonicalEvent, Envelope)>> + '_> {
     let file = fs::File::open(path).map_err(|e| io(Doing::Open, path, e))?;
-    Ok(BufReader::new(file).split(b'\n').map(move |line| {
+    let (mut lines, mut before) = (
+        lakelands_core::log::Lines::default(),
+        None::<(Position, Digest)>,
+    );
+    let read = BufReader::new(file).split(b'\n').map(move |line| {
         let line = line.map_err(|e| io(Doing::Read, path, e))?;
+        let damaged = |flaw| lakelands_core::damaged(Part::Export, None, flaw);
+        let value = lakelands_core::log::line_of(&line).map_err(damaged)?;
+        let after = before.as_ref().map(|(p, h)| (*p, h));
+        let Some(value) = lines.line(value, after).map_err(damaged)? else {
+            return Ok(None);
+        };
         // The parser's own words, which name the member it does not know:
         // an import's caller is the operator, and the export is its own.
-        let e: Envelope = serde_json::from_slice(&line).map_err(|err| {
+        let e = Envelope::deserialize(&value).map_err(|err| {
             let detail = Detail::scrubbed(err);
-            lakelands_core::damaged(Part::Export, None, Flaw::NotAnEvent { detail })
+            damaged(Flaw::NotAnEvent { detail })
         })?;
+        before = Some((e.position, e.hash.clone()));
         let stored = CanonicalEvent {
             position: e.position,
             id: e.id.clone(),
             prev: e.prev.clone(),
             hash: e.hash.clone(),
             fence: e.fence,
-            bytes: line,
+            bytes: lakelands_core::canonical::to_vec(&value),
+            frame: None,
         };
-        Ok((stored, e))
-    }))
+        Ok(Some((stored, e)))
+    });
+    Ok(read.filter_map(Result::transpose))
 }
 
 /// What only an import checks, over the whole export, before anything is
@@ -223,7 +244,7 @@ fn events(path: &Path) -> Result<impl Iterator<Item = Result<(CanonicalEvent, En
 /// and so do those under a key an act of removal destroyed, a version or
 /// one of a delivery sealed apart, though their other keys are gone too
 /// (065).
-/// Answers each file's digest.
+/// Answers each file's digest, over the events it restores.
 fn check(
     files: &[PathBuf],
     lake: &LakeId,
@@ -234,13 +255,13 @@ fn check(
     let mut fence = 0;
     let mut digests = Vec::with_capacity(files.len());
     for path in files {
-        // Hashed as it is read, so a segment is never held whole.
+        // Over the events it restores, as an engine digests a segment
+        // (§4.2), hashed as they are read, so a segment is never held whole.
         let mut hasher = Sha256::new();
-        let mut file = fs::File::open(path).map_err(|e| io(Doing::Open, path, e))?;
-        std::io::copy(&mut file, &mut hasher).map_err(|e| io(Doing::Read, path, e))?;
-        digests.push(Digest(lakelands_core::canonical::hex(&hasher.finalize())));
         for event in events(path)? {
-            let (_, event) = event?;
+            let (stored, event) = event?;
+            hasher.update(&stored.bytes);
+            hasher.update(b"\n");
             if event.lake != *lake {
                 let (position, held) = (event.position, Box::new(event.lake.clone()));
                 let lake = Box::new(lake.clone());
@@ -282,6 +303,7 @@ fn check(
                 ));
             }
         }
+        digests.push(Digest(lakelands_core::canonical::hex(&hasher.finalize())));
     }
     let kept = |(s, ks): &(SourceId, Vec<lakelands_api::id::KeyId>)| {
         !forgot.contains(s)
@@ -389,14 +411,17 @@ fn carry(
         // with the seal of the one before, whose digest is checked against
         // that file's before anything is sealed.
         let mut seals = i > 0;
+        // Each batch is an append, framed as the store's writer frames one.
         let mut hand = |batch: &[CanonicalEvent]| -> Result<()> {
+            let mut batch = batch.to_vec();
+            lakelands_core::log::frame_append(&mut batch);
             if !std::mem::take(&mut seals) {
-                return engine.import(lease, batch);
+                return engine.import(lease, &batch);
             }
             let before = &digests[i - 1];
             let sealed = engine.seal_segment(lease, true, &mut |sealed| {
                 if &sealed.digest == before {
-                    return Ok(batch.to_vec());
+                    return Ok(batch.clone());
                 }
                 let (engine, file) = (sealed.digest.0.clone(), before.0.clone());
                 let flaw = Flaw::DigestDiffers { engine, file };

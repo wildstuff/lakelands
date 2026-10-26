@@ -1359,16 +1359,22 @@ pub fn restore_keys(
     Ok(keyring)
 }
 
-/// The lake an export holds, as its first event names it: the manifest is
-/// never trusted. `None` when the first event cannot be read; the import's
-/// own verification then says why.
+/// The lake an export holds, as its first event names it, or the frame
+/// before it where that holds it: the manifest is never trusted. `None`
+/// when the first event cannot be read; the import's own verification
+/// then says why.
 pub fn exported_lake(dir: &Path) -> Option<String> {
     let first = dir.join(export::file_name(lakelands_api::Position::GENESIS));
     let file = std::fs::File::open(first).ok()?;
-    let mut line = String::new();
-    std::io::BufRead::read_line(&mut std::io::BufReader::new(file), &mut line).ok()?;
-    let event: serde_json::Value = serde_json::from_str(&line).ok()?;
-    event["lake"].as_str().map(str::to_owned)
+    let mut lines = std::io::BufRead::lines(std::io::BufReader::new(file));
+    let line: serde_json::Value = serde_json::from_str(&lines.next()?.ok()?).ok()?;
+    if let Some(framed) = line.get("frame") {
+        let event: serde_json::Value = serde_json::from_str(&lines.next()?.ok()?).ok()?;
+        return [&framed["lake"], &event["lake"]]
+            .iter()
+            .find_map(|l| l.as_str().map(str::to_owned));
+    }
+    line["lake"].as_str().map(str::to_owned)
 }
 
 /// `import`: the export in `dir` becomes the lake at `location`, which

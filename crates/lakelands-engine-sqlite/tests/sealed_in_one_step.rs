@@ -90,15 +90,20 @@ fn file(first: u64, extension: &str) -> String {
     format!("{first:020}.{extension}")
 }
 
-/// The kind of the first event of each segment file, in order.
+/// The kind of the first event of each segment file, in order, as it is
+/// restored from the lines that hold it.
 fn first_kinds(dir: &Path) -> Vec<String> {
     lakelands_core::export::segment_files(dir)
         .unwrap()
         .iter()
         .map(|path| {
             let raw = std::fs::read(path).unwrap();
-            let line = raw.split(|b| *b == b'\n').next().unwrap();
-            let event: Value = serde_json::from_slice(line).unwrap();
+            let mut lines = lakelands_core::log::Lines::default();
+            let first = raw
+                .split(|b| *b == b'\n')
+                .find_map(|line| lines.read(line).unwrap())
+                .unwrap();
+            let event: Value = serde_json::from_slice(&first).unwrap();
             event["body"]["kind"].as_str().unwrap().to_owned()
         })
         .collect()

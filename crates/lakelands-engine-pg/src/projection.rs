@@ -81,7 +81,7 @@ pub(crate) struct Names {
 
 /// The tables of the log and the lease, which a scratch reads in the
 /// lake's schema.
-const LOG_TABLES: [&str; 3] = ["lease", "segments", "log"];
+const LOG_TABLES: [&str; 4] = ["lease", "segments", "log", "frames"];
 
 impl Names {
     /// The tables of the lake `target` names.
@@ -168,7 +168,10 @@ CREATE TABLE IF NOT EXISTS {s}.log (
     position BIGINT PRIMARY KEY, segment BIGINT NOT NULL, fence BIGINT NOT NULL,
     id TEXT NOT NULL, prev TEXT NOT NULL, hash TEXT NOT NULL, bytes BYTEA NOT NULL
 );
-CREATE INDEX IF NOT EXISTS log_segment ON {s}.log (segment, position);"
+CREATE INDEX IF NOT EXISTS log_segment ON {s}.log (segment, position);
+CREATE TABLE IF NOT EXISTS {s}.frames (
+    first BIGINT PRIMARY KEY, events INT NOT NULL, bytes BYTEA NOT NULL
+);"
             ),
         };
         format!(
@@ -293,11 +296,12 @@ pub(crate) const LAYOUT: u64 = 8;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
-pub(crate) const LAKE_TABLES: [&str; 22] = [
+pub(crate) const LAKE_TABLES: [&str; 23] = [
     "meta",
     "lease",
     "segments",
     "log",
+    "frames",
     "declarations",
     "records",
     "proposals",
@@ -320,7 +324,7 @@ pub(crate) const LAKE_TABLES: [&str; 22] = [
 
 /// The projection's tables, cleared by a rebuild; the log, its segments,
 /// the lease and the lake's name stay.
-pub(crate) const PROJECTION_TABLES: &[&str] = LAKE_TABLES.split_at(4).1;
+pub(crate) const PROJECTION_TABLES: &[&str] = LAKE_TABLES.split_at(5).1;
 
 /// The projection's tables an earlier layout had and this one does not:
 /// a layout that drops or renames a table names the old one here, so a

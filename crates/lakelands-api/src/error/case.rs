@@ -1905,6 +1905,8 @@ catalog! {
         // ---- engines
         /// A segment to append to, named for another position than the event's.
         ActiveSegmentNamed { named: Position, position: Position } => "the active segment is named for position {named}, and the event to append is at position {position}; nothing was appended",
+        /// An event whose frame the append does not hold whole.
+        AppendFrame { position: Position } => "the event at position {position} shares a frame the append does not hold whole and in order, from its first event on; nothing was appended",
         /// An event with a line feed in its bytes.
         AppendLineFeed { position: Position } => "the event at position {position} holds a line feed in its bytes, which canonical bytes never do; nothing was appended",
         /// An event not at the log's next position.

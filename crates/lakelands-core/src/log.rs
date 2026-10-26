@@ -1,18 +1,35 @@
 //! What the log format derives from content: event ids and record keys
 //! (`docs/log-format.md` §2.3 and §3), and the members an event never
-//! carries where it is ([`misplaced`]).
+//! carries where it is ([`misplaced`]); and the stored form of §1.2, the
+//! lines an event is restored from: a frame holding what a run of events
+//! shares, and the `position` and `prev` the event before gives.
+//!
+//! **The stored form.** [`stored_form`] writes a run of events as lines,
+//! [`frame_append`] writes an append as the store's writer frames it, and
+//! [`restore`] gives back the canonical event a line of the seam restores
+//! to; [`Lines`] reads a segment's lines in order, as a verifier and an
+//! engine that keeps lines read them, and refuses every break of §1.2.
+//! A segment's digest is over the restored events ([`digest_of`]), so it
+//! is the same whatever form holds them, and where every line is a full
+//! event, as up to format 19, it is the file's bytes.
 //!
 //! These are pure functions of the values they name, so a writer, a
 //! verifier and the published vectors compute them the same way; the
 //! store calls them, and so does the vector test. The key rule itself
 //! lives in `lakelands_api::key`, where a host reaches it too.
 
-use lakelands_api::error::Flaw;
-use lakelands_api::event::{Event, EventBody, EventId, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT};
+use std::sync::Arc;
+
+use lakelands_api::engine::{CanonicalEvent, Frame};
+use lakelands_api::error::{Case, Detail, Error, Flaw, Result};
+use lakelands_api::event::{
+    Digest, Event, EventBody, EventId, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT,
+};
 use lakelands_api::write::Selection;
 use lakelands_api::{
     IdempotencyKey, LakeId, Patch, Position, ProposalId, RecordKey, SourceId, TypeName,
 };
+use serde_json::{Map, Value};
 use sha2::{Digest as _, Sha256};
 
 use crate::canonical;
@@ -375,6 +392,489 @@ fn event_kind(body: &EventBody) -> String {
         .ok()
         .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_owned))
         .unwrap_or_else(|| "unknown".to_owned())
+}
+
+/// The first log format whose lines are a stored form with frames and
+/// derived members (`docs/log-format.md` §1.2): a line of a format before
+/// it is a full event, taken as it stands.
+pub const FRAMED_FROM: u64 = 20;
+
+/// The top-level members a frame never holds.
+const UNFRAMED: [&str; 5] = ["hash", "id", "position", "prev", "v"];
+
+/// The members a frame holds one level into.
+const NESTED: [&str; 2] = ["body", "sealed"];
+
+/// The format a line or an event says, 0 where it says none.
+fn format_of(line: &Value) -> u64 {
+    line.get("v").and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// Whether a line, read, is a frame line: an event holds neither `events`
+/// nor `frame`.
+pub fn is_frame(line: &Value) -> bool {
+    line.get("events").is_some() || line.get("frame").is_some()
+}
+
+/// A frame line, read: its format, how many events it covers, and the
+/// members it holds for them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Framed {
+    /// Its `v`, its events' format.
+    pub v: u64,
+    /// Its `events`, how many lines after it it covers.
+    pub events: u64,
+    members: Map<String, Value>,
+}
+
+impl Framed {
+    /// The frame `line` is, a line read as [`line_of`] reads one: it holds
+    /// `events`, `frame` and `v` alone, `v` from [`FRAMED_FROM`] on,
+    /// `events` a count from 1, and `frame` an object of members a frame
+    /// may hold, with no empty `body` or `sealed`; anything else is
+    /// [`Flaw::NotAFrame`].
+    pub fn of(line: Value) -> std::result::Result<Framed, Flaw> {
+        let Value::Object(mut line) = line else {
+            return Err(Flaw::NotAFrame);
+        };
+        let v = line.remove("v").and_then(|v| v.as_u64());
+        let events = line.remove("events").and_then(|n| n.as_u64());
+        let (Some(Value::Object(members)), Some(v), Some(events)) =
+            (line.remove("frame"), v, events)
+        else {
+            return Err(Flaw::NotAFrame);
+        };
+        let nested = |name: &&str| match members.get(*name) {
+            None => true,
+            Some(Value::Object(inner)) => !inner.is_empty(),
+            Some(_) => false,
+        };
+        let fits = line.is_empty()
+            && v >= FRAMED_FROM
+            && (1..=u64::from(u32::MAX)).contains(&events)
+            && !members.keys().any(|k| UNFRAMED.contains(&k.as_str()))
+            && NESTED.iter().all(nested);
+        match fits {
+            true => Ok(Framed { v, events, members }),
+            false => Err(Flaw::NotAFrame),
+        }
+    }
+}
+
+/// A line of the stored form, read: JSON, in a format this release reads
+/// (its `v` read before anything else of it, a frame line's as an
+/// event's), and canonical, judged in that order.
+pub fn line_of(bytes: &[u8]) -> std::result::Result<Value, Flaw> {
+    let line: Value = serde_json::from_slice(bytes).map_err(|e| Flaw::NotJson {
+        detail: Detail::json(&e),
+    })?;
+    let v = format_of(&line);
+    if !reads_format(v) {
+        let reads = LOG_FORMAT_VERSION.into();
+        return Err(Flaw::FormatOther { v, reads });
+    }
+    if canonical::to_vec(&line) != bytes {
+        return Err(Flaw::NotCanonical);
+    }
+    Ok(line)
+}
+
+/// The event an event's line restores to (§1.2), the line read as
+/// [`line_of`] reads one: its frame's members added to it, those under
+/// `body` and `sealed` merged into its own one level deep, and, where it
+/// holds none, the `position` and the `prev` of `derived`, those the
+/// event before it gives. A line of a format before [`FRAMED_FROM`] is a
+/// full event and is taken as it stands. A frame line, a frame whose
+/// format is not the line's, and a member the line holds that its frame
+/// holds too, are refused; what is no event is left to its reader.
+pub fn restored(
+    line: Value,
+    frame: Option<&Framed>,
+    derived: Option<(Position, &Digest)>,
+) -> std::result::Result<Value, Flaw> {
+    restored_whole(line, frame, derived).map(|(event, _)| event)
+}
+
+/// [`restored`], and whether the line was the whole event: its frame
+/// added nothing, and nor did `derived`.
+fn restored_whole(
+    line: Value,
+    frame: Option<&Framed>,
+    derived: Option<(Position, &Digest)>,
+) -> std::result::Result<(Value, bool), Flaw> {
+    if is_frame(&line) {
+        return Err(Flaw::FrameInFrame);
+    }
+    let v = format_of(&line);
+    if let Some(f) = frame
+        && f.v != v
+    {
+        return Err(Flaw::FrameOther { frame: f.v, v });
+    }
+    let Value::Object(mut event) = line else {
+        return Ok((line, true));
+    };
+    if v < FRAMED_FROM {
+        return Ok((Value::Object(event), true));
+    }
+    let whole = frame.is_none() && event.contains_key("position") && event.contains_key("prev");
+    for (name, value) in frame.map(|f| &f.members).into_iter().flatten() {
+        let twice = |member: String| Err(Flaw::FramedTwice { member });
+        match (value, NESTED.contains(&name.as_str())) {
+            (Value::Object(framed), true) => {
+                let held = event
+                    .entry(name.clone())
+                    .or_insert_with(|| Map::new().into());
+                let Value::Object(held) = held else {
+                    return twice(name.clone());
+                };
+                for (inner, value) in framed {
+                    if held.insert(inner.clone(), value.clone()).is_some() {
+                        return twice(format!("{name}.{inner}"));
+                    }
+                }
+            }
+            _ => {
+                if event.insert(name.clone(), value.clone()).is_some() {
+                    return twice(name.clone());
+                }
+            }
+        }
+    }
+    if let Some((position, prev)) = derived {
+        event.entry("position").or_insert_with(|| position.0.into());
+        event.entry("prev").or_insert_with(|| prev.0.clone().into());
+    }
+    Ok((Value::Object(event), whole))
+}
+
+/// The canonical event an event at the engine seam restores to: its line
+/// and its frame read as [`line_of`] reads one, the frame covering its
+/// position, and its line restored by [`restored`] with the `position`
+/// and `prev` the engine keeps beside it. A frame that does not say what
+/// the engine keeps of it, or does not cover the event, is
+/// [`Flaw::Disagrees`].
+pub fn restore(stored: &CanonicalEvent) -> std::result::Result<Value, Flaw> {
+    restore_whole(stored).map(|(event, _)| event)
+}
+
+/// [`restore`], and whether the event's line was the whole event, so that
+/// its canonical bytes are the line's.
+pub fn restore_whole(stored: &CanonicalEvent) -> std::result::Result<(Value, bool), Flaw> {
+    restore_read(stored, line_of)
+}
+
+/// [`restore`] with the line and the frame read as JSON alone, in no
+/// format judged: what an engine, which keeps events of any format, checks
+/// an event's hash and digests a segment with.
+pub fn restore_json(stored: &CanonicalEvent) -> std::result::Result<(Value, bool), Flaw> {
+    restore_read(stored, json_of)
+}
+
+/// A line read as JSON alone.
+fn json_of(bytes: &[u8]) -> std::result::Result<Value, Flaw> {
+    serde_json::from_slice(bytes).map_err(|e| Flaw::NotJson {
+        detail: Detail::json(&e),
+    })
+}
+
+/// [`restore_whole`], each line read by `read`.
+fn restore_read(
+    stored: &CanonicalEvent,
+    read: fn(&[u8]) -> std::result::Result<Value, Flaw>,
+) -> std::result::Result<(Value, bool), Flaw> {
+    let frame = match &stored.frame {
+        None => None,
+        Some(f) => {
+            let framed = Framed::of(read(&f.bytes)?)?;
+            let within = stored.position.0.checked_sub(f.first.0);
+            let covers = within.is_some_and(|i| i < u64::from(f.events));
+            if framed.events != u64::from(f.events) || !covers {
+                return Err(Flaw::Disagrees);
+            }
+            Some(framed)
+        }
+    };
+    let derived = Some((stored.position, &stored.prev));
+    restored_whole(read(&stored.bytes)?, frame.as_ref(), derived)
+}
+
+/// A segment's digest (§4.2): SHA-256 over the canonical bytes of its
+/// events as [`restore_json`] restores them, each followed by a line feed;
+/// a line that is its whole event is hashed as it is kept.
+pub fn digest_of<'a>(
+    events: impl IntoIterator<Item = &'a CanonicalEvent>,
+) -> std::result::Result<Digest, (Position, Flaw)> {
+    let mut hash = Sha256::new();
+    for event in events {
+        let (restored, whole) = restore_json(event).map_err(|flaw| (event.position, flaw))?;
+        match whole {
+            true => hash.update(&event.bytes),
+            false => hash.update(canonical::to_vec(&restored)),
+        }
+        hash.update(b"\n");
+    }
+    Ok(Digest(canonical::hex(&hash.finalize())))
+}
+
+/// Where a reader of one segment's lines stands, read in order (§1.2,
+/// §4.3): the frame whose lines follow, how many of them it has read and
+/// has still to read, and the position and hash of the last event
+/// [`Lines::read`] restored.
+#[derive(Clone, Debug, Default)]
+pub struct Lines {
+    frame: Option<Framed>,
+    left: u64,
+    held: u64,
+    before: Option<(Position, Digest)>,
+}
+
+impl Lines {
+    /// Reads the segment's next line as it is stored, as JSON alone, after
+    /// the lines read before it by this method: [`Lines::line`] after the
+    /// event it last restored, none before the first. It answers the
+    /// restored event's canonical bytes, a line that is its whole event as
+    /// it is kept: what a segment's digest is taken over.
+    pub fn read(&mut self, bytes: &[u8]) -> std::result::Result<Option<Vec<u8>>, Flaw> {
+        let before = self.before.clone();
+        let read = self.line_whole(json_of(bytes)?, before.as_ref().map(|(p, h)| (*p, h)))?;
+        let Some((event, whole)) = read else {
+            return Ok(None);
+        };
+        let position = event.get("position").and_then(Value::as_u64).map(Position);
+        let hash = event.get("hash").and_then(Value::as_str);
+        self.before = position.zip(hash).map(|(p, h)| (p, Digest(h.to_owned())));
+        Ok(Some(match whole {
+            true => bytes.to_vec(),
+            false => canonical::to_vec(&event),
+        }))
+    }
+
+    /// Reads the segment's next line, read as [`line_of`] reads one,
+    /// after the event `before`, the position and hash of the event before
+    /// it in the segment, none at its first: `None` for a frame line, and
+    /// else the event it restores. A frame line among the lines a frame
+    /// covers, what [`restored`] refuses, a `position` or a `prev` that is
+    /// not the one `before` gives, and a segment's first event line of a
+    /// format from [`FRAMED_FROM`] on that does not hold both, are
+    /// refused.
+    pub fn line(
+        &mut self,
+        line: Value,
+        before: Option<(Position, &Digest)>,
+    ) -> std::result::Result<Option<Value>, Flaw> {
+        Ok(self.line_whole(line, before)?.map(|(event, _)| event))
+    }
+
+    /// [`Lines::line`], and whether the line was the whole event.
+    fn line_whole(
+        &mut self,
+        line: Value,
+        before: Option<(Position, &Digest)>,
+    ) -> std::result::Result<Option<(Value, bool)>, Flaw> {
+        if is_frame(&line) {
+            if self.left > 0 {
+                return Err(Flaw::FrameInFrame);
+            }
+            let framed = Framed::of(line)?;
+            (self.left, self.held) = (framed.events, 0);
+            self.frame = Some(framed);
+            return Ok(None);
+        }
+        let holds = |name| line.get(name).is_some();
+        if before.is_none()
+            && format_of(&line) >= FRAMED_FROM
+            && !(holds("position") && holds("prev"))
+        {
+            return Err(Flaw::StartUnheld);
+        }
+        let derived = before.map(|(p, hash)| (p.next(), hash));
+        let frame = self.frame.as_ref().filter(|_| self.left > 0);
+        let (event, whole) = restored_whole(line, frame, derived)?;
+        if let Some((expected, prev)) = derived {
+            let found = event.get("position").and_then(Value::as_u64).map(Position);
+            if found != Some(expected) {
+                return Err(Flaw::Position { expected, found });
+            }
+            if event.get("prev").and_then(Value::as_str) != Some(prev.0.as_str()) {
+                return Err(Flaw::PrevHash);
+            }
+        }
+        if self.left > 0 {
+            (self.left, self.held) = (self.left - 1, self.held + 1);
+        }
+        Ok(Some((event, whole)))
+    }
+
+    /// Whether the last line read was a frame line: the frame covers lines
+    /// still to come and none of them is read yet.
+    pub fn framing(&self) -> bool {
+        self.left > 0 && self.held == 0
+    }
+
+    /// Refuses a segment that ends among the lines a frame covers.
+    pub fn end(&self) -> std::result::Result<(), Flaw> {
+        match self.left {
+            0 => Ok(()),
+            left => Err(Flaw::FrameShort {
+                events: left + self.held,
+                held: self.held,
+            }),
+        }
+    }
+}
+
+/// The stored form of `events`, the canonical values of events that
+/// follow each other in one segment, as one run (§1.2): a frame line,
+/// where they are two or more, all of one format from [`FRAMED_FROM`] on,
+/// holding exactly the members they all share; and each event's line,
+/// which leaves out what the frame holds and, where `holds` says it does
+/// not hold them, its `position` and its `prev`. `holds` is asked of each
+/// event by its index in the run and its value, and answers whether its
+/// line holds `position`, and whether it holds `prev`; an event of a
+/// format before [`FRAMED_FROM`] keeps every member.
+pub fn stored_form(
+    events: &[Value],
+    holds: impl Fn(usize, &Value) -> (bool, bool),
+) -> (Option<Vec<u8>>, Vec<Vec<u8>>) {
+    let v = events.first().map_or(0, format_of);
+    let framed = events.len() >= 2 && v >= FRAMED_FROM && events.iter().all(|e| format_of(e) == v);
+    let shared = match framed {
+        true => shared(events),
+        false => Map::new(),
+    };
+    let lines = events.iter().enumerate().map(|(i, event)| {
+        let Value::Object(members) = event else {
+            return canonical::to_vec(event);
+        };
+        let mut line = members.clone();
+        if format_of(event) >= FRAMED_FROM {
+            let (position, prev) = holds(i, event);
+            for (name, keep) in [("position", position), ("prev", prev)] {
+                if !keep {
+                    line.remove(name);
+                }
+            }
+        }
+        for (name, value) in &shared {
+            match (value, line.get_mut(name)) {
+                (Value::Object(framed), Some(Value::Object(held)))
+                    if NESTED.contains(&name.as_str()) =>
+                {
+                    framed.keys().for_each(|k| drop(held.remove(k)));
+                    if held.is_empty() {
+                        line.remove(name);
+                    }
+                }
+                _ => drop(line.remove(name)),
+            }
+        }
+        canonical::to_vec(&Value::Object(line))
+    });
+    let lines = lines.collect();
+    let frame = framed.then(|| {
+        let line = serde_json::json!({"events": events.len(), "frame": shared, "v": v});
+        canonical::to_vec(&line)
+    });
+    (frame, lines)
+}
+
+/// The members every one of `events` holds with an equal value that a
+/// frame may hold: top-level ones, and those one level into `body` and
+/// `sealed`.
+fn shared(events: &[Value]) -> Map<String, Value> {
+    let Some((Value::Object(first), rest)) = events.split_first() else {
+        return Map::new();
+    };
+    let mut frame = Map::new();
+    for (name, value) in first {
+        if UNFRAMED.contains(&name.as_str()) {
+            continue;
+        }
+        if NESTED.contains(&name.as_str()) {
+            let Value::Object(inner) = value else {
+                continue;
+            };
+            let all = |k: &String, v: &Value| {
+                let held = |e: &Value| e.get(name).and_then(|n| n.get(k)) == Some(v);
+                rest.iter().all(held)
+            };
+            let common: Map<String, Value> = inner
+                .iter()
+                .filter(|(k, v)| all(k, v))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            if !common.is_empty() {
+                frame.insert(name.clone(), common.into());
+            }
+        } else if rest.iter().all(|e| e.get(name) == Some(value)) {
+            frame.insert(name.clone(), value.clone());
+        }
+    }
+    frame
+}
+
+/// Writes `events`, one append's, each holding its canonical bytes, in the
+/// store's writer's form (§1.2): framed where they are two or more, with
+/// exactly the members they all share, and each line holding `position`
+/// and `prev` only where it is a segment's first event, the `lake_created`
+/// at position 0 or a `checkpoint`.
+pub fn frame_append(events: &mut [CanonicalEvent]) {
+    let values: Vec<Value> = events
+        .iter()
+        .map(|e| serde_json::from_slice(&e.bytes).expect("an event's canonical bytes are JSON"))
+        .collect();
+    let first = |_: usize, e: &Value| {
+        let first = e.get("position") == Some(&0.into())
+            || e.pointer("/body/kind") == Some(&"checkpoint".into());
+        (first, first)
+    };
+    let (frame, lines) = stored_form(&values, first);
+    let frame = frame.map(|bytes| {
+        Arc::new(Frame {
+            first: events[0].position,
+            events: events.len() as u32,
+            bytes,
+        })
+    });
+    for (event, line) in events.iter_mut().zip(lines) {
+        (event.bytes, event.frame) = (line, frame.clone());
+    }
+}
+
+/// Refuses `events`, an append's, unless every frame they share is held
+/// whole by them and in order: a frame begins at the position of the
+/// first event that carries it, which is no event of another frame's,
+/// every event it covers carries it and no other does, it covers no
+/// position past the append's last, and its bytes hold no line feed.
+pub fn frame_fault(events: &[CanonicalEvent]) -> Result<()> {
+    let end = events.last().map_or(0, |e| e.position.0 + 1);
+    // The frame the events now read carry, and how many more it covers.
+    let mut open: Option<(&Arc<Frame>, u32)> = None;
+    for event in events {
+        let fits = match (&event.frame, open) {
+            (None, None) => true,
+            (Some(f), None) => {
+                f.first == event.position
+                    && f.events > 0
+                    && f.first.0 + u64::from(f.events) <= end
+                    && !f.bytes.contains(&b'\n')
+            }
+            (Some(f), Some((held, _))) => f == held,
+            (None, Some(_)) => false,
+        };
+        if !fits {
+            let position = event.position;
+            return Err(Error::invalid(Case::AppendFrame { position }));
+        }
+        open = match (&event.frame, open) {
+            (Some(_), Some((held, left))) => Some((held, left - 1)),
+            (Some(f), None) => Some((f, f.events - 1)),
+            _ => None,
+        }
+        .filter(|(_, left)| *left > 0);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

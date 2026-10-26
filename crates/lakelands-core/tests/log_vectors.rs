@@ -22,12 +22,13 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+use lakelands_api::engine::CanonicalEvent;
 use lakelands_api::error::{Flaw, Situation};
 use lakelands_api::event::{
-    ChangeKind, DepthBound, Event, EventBody, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT,
+    ChangeKind, DepthBound, Digest, Event, EventBody, LOG_FORMAT_VERSION, OLDEST_LOG_FORMAT,
 };
 use lakelands_api::expr::Condition;
-use lakelands_api::id::KeyId;
+use lakelands_api::id::{KeyId, Position};
 use lakelands_api::ontology::{AtIngest, TypeDecl, VerbScope};
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, ProposedWrite};
@@ -194,7 +195,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 613, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 649, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -917,6 +918,161 @@ fn every_misplaced_line_is_refused_for_the_member_it_misplaces() {
         }
     }
 }
+
+/// The stored lines a segment holds from `stored`, read in order after
+/// the event `after` (none: at a segment's start) as a reader reads them:
+/// each line as `log::line_of` reads one, then `log::Lines`, and the
+/// segment's end. Answers the events restored, or the line refused (none:
+/// the end) and its flaw.
+fn read_stored(stored: &[Value], after: &Value) -> Result<Vec<Value>, (Option<usize>, Flaw)> {
+    let mut lines = log::Lines::default();
+    let mut before = after.as_object().map(|a| {
+        let at = Position(a["position"].as_u64().unwrap());
+        (at, Digest(str_of(after, "hash").to_owned()))
+    });
+    let mut events = Vec::new();
+    for (i, line) in stored.iter().enumerate() {
+        let read = log::line_of(line.as_str().unwrap().as_bytes())
+            .and_then(|l| lines.line(l, before.as_ref().map(|(p, h)| (*p, h))));
+        let Some(event) = read.map_err(|flaw| (Some(i), flaw))? else {
+            continue;
+        };
+        let at = Position(event["position"].as_u64().unwrap());
+        before = Some((at, Digest(str_of(&event, "hash").to_owned())));
+        events.push(event);
+    }
+    lines.end().map_err(|flaw| (None, flaw))?;
+    Ok(events)
+}
+
+/// `framed.json`, one append in the stored form (§1.2) after the last
+/// event of `further.json`. Its events recompute; the store's writer frames
+/// them as its `stored` lines, which restore to them byte for byte, at the
+/// seam and read in order; and each of its breaks is refused at its line
+/// for the flaw it names.
+#[test]
+fn a_framed_append_is_stored_as_the_writer_frames_it_and_every_break_is_refused() {
+    let framed = read_json("framed.json");
+    let last = chain().pop().unwrap();
+    assert_eq!(framed["after"]["position"], last.position.0, "it follows");
+    assert_eq!(str_of(&framed["after"], "hash"), last.hash.0, "it follows");
+    let lines: Vec<String> = framed["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| str_of(e, "line").to_owned())
+        .collect();
+    let mut prev = last.hash.clone();
+    let mut appended = Vec::new();
+    for (entry, line) in framed["events"].as_array().unwrap().iter().zip(&lines) {
+        let event: Event = serde_json::from_str(line).unwrap();
+        let at = event.position.0;
+        assert_eq!(
+            canonical::to_vec(&serde_json::from_str::<Value>(line).unwrap()),
+            line.as_bytes()
+        );
+        assert_eq!(hash_of(line), event.hash.0, "at {at}: hash");
+        assert_eq!(
+            str_of(entry, "hash"),
+            event.hash.0,
+            "at {at}: the hash repeated"
+        );
+        assert_eq!(event.prev, prev, "at {at}: it follows the event before it");
+        assert_eq!(event.v, LOG_FORMAT_VERSION, "at {at}: its format");
+        let EventBody::RecordIngested {
+            ty,
+            key,
+            version,
+            patch,
+            ..
+        } = &event.body
+        else {
+            panic!("at {at}: an ingest");
+        };
+        let source = event.source.as_ref().unwrap();
+        let id = log::ingest_id(source, ty, key, version.0 - 1, patch);
+        assert_eq!(id, event.id, "at {at}: its ingest id");
+        prev = event.hash.clone();
+        appended.push(CanonicalEvent {
+            position: event.position,
+            id: event.id,
+            prev: event.prev,
+            hash: event.hash,
+            fence: event.fence,
+            bytes: line.as_bytes().to_vec(),
+            frame: None,
+        });
+    }
+    log::frame_append(&mut appended);
+    let stored = framed["stored"].as_array().unwrap();
+    let frame = appended[0]
+        .frame
+        .clone()
+        .expect("an append of three is framed");
+    assert_eq!((frame.first, frame.events), (appended[0].position, 3));
+    let written = std::iter::once(&frame.bytes).chain(appended.iter().map(|e| &e.bytes));
+    let written: Vec<&str> = written.map(|b| std::str::from_utf8(b).unwrap()).collect();
+    assert_eq!(
+        written,
+        stored
+            .iter()
+            .map(|l| l.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        "the writer's lines"
+    );
+    for (event, line) in appended.iter().zip(&lines) {
+        let restored = log::restore(event).unwrap();
+        assert_eq!(
+            canonical::to_vec(&restored),
+            line.as_bytes(),
+            "restored at the seam"
+        );
+    }
+    let read = read_stored(stored, &framed["after"]).unwrap();
+    let read: Vec<Vec<u8>> = read.iter().map(canonical::to_vec).collect();
+    assert_eq!(
+        read,
+        lines
+            .iter()
+            .map(|l| l.as_bytes().to_vec())
+            .collect::<Vec<_>>(),
+        "read in order"
+    );
+
+    let breaks = framed["breaks"].as_array().unwrap();
+    let shown: Vec<&str> = breaks.iter().map(|b| str_of(b, "shows")).collect();
+    assert_eq!(shown, BREAKS, "one break for each flaw this test checks");
+    for entry in breaks {
+        let shows = str_of(entry, "shows");
+        let stored = entry["stored"].as_array().unwrap();
+        let (at, flaw) = read_stored(stored, &entry["after"])
+            .err()
+            .unwrap_or_else(|| panic!("the break `{shows}` is refused"));
+        let refused = &entry["refused"];
+        assert_eq!(
+            at.map(|i| i as u64),
+            refused["at"].as_u64(),
+            "`{shows}`: the line refused"
+        );
+        assert_eq!(
+            serde_json::to_value(&flaw).unwrap(),
+            refused["flaw"],
+            "`{shows}`: {flaw}"
+        );
+    }
+}
+
+/// The breaks of `framed.json`, by the code of the flaw each is refused for.
+const BREAKS: [&str; 8] = [
+    "frame_in_frame",
+    "framed_twice",
+    "frame_short",
+    "not_a_frame",
+    "frame_other",
+    "position",
+    "prev_hash",
+    "start_unheld",
+];
 
 /// `delivery` on a `record_ingested` of a format before 17, which has no
 /// such member: the vectors' delivery line, its format set back, is
