@@ -88,15 +88,25 @@ every retraction (lakelands#473).
   co-owned record refuses it whole: a host learns at the preflight that
   it must narrow the set or open the lake with a higher ceiling.
 - **`purge_source` may repeat the id.** It is then refused as invalid if
-  the lake has moved since, by any append, as a migration's apply is.
-  The id is of the source, the type and the head: the report is a
-  function of the three, so the same head means the same report. An id
-  of the source and the head alone would let the report of the source
-  whole authorise a purge from one type at the same head, and the
-  reverse. An id that does not fit is refused as invalid in one sentence
-  for both causes: the store cannot tell a moved lake from another
-  purge's id. Without an id the purge is what it was, and its own report
-  names what it left behind.
+  the lake has moved since, by any append but a `lease_taken` or a
+  `checkpoint`. The id is of the source, the type and the head, the
+  log's last event that is neither: the report is a function of the
+  three, so the same head means the same report. Only the position the
+  report names may differ, as it is the log's last event when read,
+  lease or not. An id of the source and the head alone would let the
+  report of the source whole authorise a purge from one type at the same
+  head, and the reverse. An id that does not fit is refused as invalid
+  in one sentence for both causes: the store cannot tell a moved lake
+  from another purge's id. Without an id the purge is what it was, and
+  its own report names what it left behind.
+- **A lease does not move the head** (lakelands#1469). Each process
+  that opens the lake for writing appends a `lease_taken` before it
+  acts, and may seal the segment it ends with a `checkpoint`; neither
+  moves a record, key or declaration a report is made from. Were they
+  counted, an operator's preflight and act, run as two commands, would
+  never meet at one head. Every other append, a record of any source or
+  a declaration, moves it. A forgetting's id (058) and a removal's (065)
+  name the head the same way.
 
 The reference pass reads each type that can refer into the purge once,
 in key order, a page at a time: a type that declares a `via` relation

@@ -306,8 +306,9 @@ report gives, in counts and the first keys:
 
 `RemoveReport::said` puts it in sentences a host can tell its operator.
 
-Its id is of the source, the selection and the head. The act refuses a
-report of another head.
+Its id is of the source, the selection and the head, as 039 names it,
+so a lease between the preflight and the act leaves the id as it was.
+The act refuses a report of another head.
 
 The act never refuses for a constraint, nor for a `required` field it
 leaves empty. A record it leaves breaking one is listed, and the host

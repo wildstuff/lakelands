@@ -330,7 +330,7 @@ pub fn preflight(lake: &Lake, source: &SourceId, ty: Option<&TypeName>) -> Resul
     let now = w.last_known_at;
     let (_, set_off) = retirements(lake, (&w, view.as_ref()), purged, now, false)?;
     (report.set_off, report.max_set_changes) = (set_off, lake.limits.max_set_changes);
-    report.report_id = id(source, ty, view.position());
+    report.report_id = id(source, ty, lake.report_head(view.position())?);
     Ok(report)
 }
 
@@ -374,7 +374,9 @@ pub fn run(
 ) -> Result<PurgeReport> {
     let mut w = lake.for_write()?;
     let view = lake.engine.view(None)?;
-    if report_id.is_some_and(|given| given != id(source, ty, view.position())) {
+    if let Some(given) = report_id
+        && given != id(source, ty, lake.report_head(view.position())?)
+    {
         return Err(Error::invalid(Case::PurgeReportStale));
     }
     let (purged, unsearched) = selection(lake, view.as_ref(), &w.ontology, source, ty)?;

@@ -519,7 +519,7 @@ fn preflight_of(lake: &Lake, set: &[SourceId], known: bool) -> Result<ForgetSetR
     let reports = refuse_unknown(found, view.as_ref(), known)?;
     let way = way(lake, view.as_ref(), set)?;
     let mut report = of_set(reports, view.as_ref(), lake, way);
-    report.report_id = id(set, view.position());
+    report.report_id = id(set, lake.report_head(view.position())?);
     report.expected_ms = (report.expected_ms).saturating_add(crate::lake::elapsed_ms(began));
     settle(&mut report);
     Ok(report)
@@ -595,7 +595,9 @@ fn run_of(
         report.reclaimed = reclaimed;
         return Ok(report);
     }
-    if report_id.is_some_and(|given| given != id(set, view.position())) {
+    if let Some(given) = report_id
+        && given != id(set, lake.report_head(view.position())?)
+    {
         return Err(Error::invalid(Case::ForgetReportStale));
     }
     let (found, retire) = found(lake, view.as_ref(), &w.ontology, set)?;

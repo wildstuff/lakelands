@@ -69,12 +69,13 @@ for engine in ${engines[@]+"${engines[@]}"}; do
     echo "conformance: $engine runs ${tests[*]}"
     cargo nextest run --locked ${flags[@]+"${flags[@]}"} \
         -p "lakelands-engine-$engine" "${tests[@]}"
-    # The mirror's and `verify`'s checks run on every engine the CLI
-    # carries; the workspace job has no server, so their PostgreSQL rows
-    # run here.
+    # The mirror's, `verify`'s and the two-process report checks run on
+    # every engine the CLI carries; the workspace job has no server, so
+    # their PostgreSQL rows run here.
     if needs_server "$engine"; then
-        echo "conformance: $engine runs the CLI's mirror and verify checks"
-        cargo nextest run --locked -p lakelands-cli --test mirror --test verify
+        echo "conformance: $engine runs the CLI's mirror, verify and report checks"
+        cargo nextest run --locked -p lakelands-cli --test mirror --test verify \
+            --test report_across_processes
         # The door checks through a forwarding handle beside a writer on
         # this engine (lakelands#1394).
         echo "conformance: $engine runs the door checks through a forwarding handle"

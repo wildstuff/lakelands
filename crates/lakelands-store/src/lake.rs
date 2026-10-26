@@ -935,6 +935,39 @@ impl Lake {
         Ok(out)
     }
 
+    /// The head a preflight's id names and its act compares: `head` with
+    /// the `lease_taken`s and `checkpoint`s that end the log there passed
+    /// over. Each process that opens the lake for writing appends a lease,
+    /// the preflight's and the act's own among them, and may seal the
+    /// segment it ends; neither moves a record, key or declaration a
+    /// report is made from. Any other append moves this head
+    /// (lakelands#1469). Read back a page at a time: an idle lake gathers
+    /// a lease for every command run on it.
+    pub(crate) fn report_head(&self, head: Option<Position>) -> Result<Option<Position>> {
+        const BACK: u64 = 16;
+        let mut end = head;
+        while let Some(last) = end {
+            let first = last.0.saturating_sub(BACK - 1);
+            let page = self
+                .engine
+                .read(Position(first), (last.0 - first + 1) as u32)?;
+            if page.is_empty() {
+                return Ok(Some(last));
+            }
+            for stored in page.iter().rev() {
+                let body = log::open(stored)?.body;
+                if !matches!(
+                    body,
+                    EventBody::LeaseTaken { .. } | EventBody::Checkpoint { .. }
+                ) {
+                    return Ok(Some(stored.position));
+                }
+            }
+            end = first.checked_sub(1).map(Position);
+        }
+        Ok(None)
+    }
+
     /// Refuse a context deeper than the ceiling of the trigger whose firing
     /// its cause names, or whose firing was dropped there (lakelands#1216);
     /// any other cause binds nothing more.

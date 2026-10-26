@@ -603,7 +603,7 @@ pub fn preflight(lake: &Lake, source: &SourceId, selection: &Selection) -> Resul
         (source, selection),
         (None, &earlier),
     )?;
-    report.report_id = id(source, selection, view.position());
+    report.report_id = id(source, selection, lake.report_head(view.position())?);
     report.expected_ms = (report.expected_ms).saturating_add(crate::lake::elapsed_ms(began));
     Ok(report)
 }
@@ -641,7 +641,9 @@ pub fn run(
         report.reclaimed = reclaimed;
         return Ok(report);
     }
-    if report_id.is_some_and(|given| given != id(source, selection, view.position())) {
+    if let Some(given) = report_id
+        && given != id(source, selection, lake.report_head(view.position())?)
+    {
         return Err(Error::invalid(Case::RemoveReportStale));
     }
     // What an earlier act took is not taken again: a repeat that selects
