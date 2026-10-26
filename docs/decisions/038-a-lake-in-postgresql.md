@@ -42,6 +42,14 @@ configured. With `disable` the connection is plaintext.
 - A segment's digest is the SHA-256 of its events' bytes, each followed
   by one line feed: the digest of the file the format describes
   (`docs/log-format.md` §4.2).
+- Proposed for 0.20.0 (lakelands#1413), in force with the issue that
+  builds it
+  (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`):
+  a row holds its event's line of the stored form, a frame is a row of
+  its own in a table of frames beside them, and a segment's digest is
+  over its events' canonical bytes as restored, which for a row of
+  format 19 are its bytes. `lakelands_engine_pg::export` writes the
+  stored form as it stands, each frame's line before its events'.
 - `lakelands_engine_pg::export` writes a lake's segments as those files,
   and they verify with nothing but the format. It is a raw copy of the
   log's lines, for a lake whose store cannot be opened, and judges none
@@ -244,3 +252,5 @@ file answers on disk: it dies with its holder.
 - The layout is 7: a field the lake asks an index for keeps a graph per
   class of reader in tables of its own, and `vectors` loses its unit
   vector and its partial indexes (078, lakelands#1254).
+- A row holding the stored form, a table of frames, and a digest over
+  the restored bytes, proposed with 083 (lakelands#1413).
