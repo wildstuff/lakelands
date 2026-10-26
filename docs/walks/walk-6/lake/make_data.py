@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Writes walk 6's data files (`data/*.ndjson`) and prints the reference
+"""Writes walk 6's data files (`make_data.py write DIR`: DIR/*.ndjson) and prints the reference
 answer of every task, computed from the same lists and not from the lake."""
 import json
+import random
 import sys
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -49,6 +51,31 @@ ORDERS = [
     ("O-1012", "C-4", "2026-10-20", "open", [("P-10", 90), ("P-12", 300)]),
 ]
 
+# The rest of the trade: customers, suppliers and products of their own,
+# drawn with a fixed seed, so that no read of one page holds a type and
+# the walk's records above stay as they are. A record of the rest never
+# links to one above.
+rng = random.Random(6)
+COUNTRIES = ["DE", "NL", "GB", "IE", "CZ", "PT", "FR", "PL", "AT", "DK"]
+SEGMENTS = ["industry", "retail", "utility", "wholesale"]
+REST_CATEGORIES = ["bearings", "cables", "fittings", "tools", "fasteners", "seals"]
+for i in range(5, 13):
+    SUPPLIERS.append((f"S-{i}", f"Supplier {i}", ["FR", "PL", "IT", "ES", "DE", "SE", "IT", "CN"][i - 5]))
+for i in range(100, 170):
+    s = f"S-{5 + (i - 100) % 8}"
+    c = REST_CATEGORIES[(i - 100) % len(REST_CATEGORIES)]
+    PRODUCTS.append((f"P-{i}", f"{c.title()} item {i}", c, f"{rng.randint(50, 9000) / 100:.2f}", s))
+for i in range(7, 61):
+    CUSTOMERS.append((f"C-{i}", f"Customer {i}", rng.choice(COUNTRIES), rng.choice(SEGMENTS)))
+rest = [p[0] for p in PRODUCTS[11:]][:-3]  # the last three are never ordered
+day0 = date(2026, 1, 5)
+for n in range(1013, 2501):
+    c = f"C-{rng.randint(7, 60)}"
+    st = rng.choices(["shipped", "open", "cancelled"], [6, 3, 1])[0]
+    ls = [(p, rng.randint(1, 80)) for p in rng.sample(rest, rng.randint(1, 5))]
+    ORDERS.append((f"O-{n}", c, (day0 + timedelta(days=rng.randint(0, 290))).isoformat(), st, ls))
+ORDERS.sort(key=lambda o: o[0])
+
 price = {p[0]: Decimal(p[3]) for p in PRODUCTS}
 lines = []
 for o, _, _, _, ls in ORDERS:
@@ -74,6 +101,7 @@ def answers():
     prod = {p[0]: p for p in PRODUCTS}
     sup = {s[0]: s for s in SUPPLIERS}
     order = {o[0]: o for o in ORDERS}
+    print(f"records: {len(SUPPLIERS)} suppliers, {len(PRODUCTS)} products, {len(CUSTOMERS)} customers, {len(ORDERS)} orders, {len(lines)} order lines")
     print("1. Harbor Supplies' orders:")
     for o in ORDERS:
         if o[1] == "C-2":
@@ -87,10 +115,13 @@ def answers():
         print(f"   {sup[s][1]} ({s}) {sup[s][2]}")
     print("4. Open orders with a valve:")
     print("  ", sorted({o for k, o, p, q in lines if prod[p][2] == "valves" and order[o][3] == "open"}))
-    print("5. Orders and value per customer:")
-    for c in CUSTOMERS:
-        os_ = [o for o in ORDERS if o[1] == c[0]]
-        print(f"   {c[1]}: {len(os_)} orders, {sum((total[o[0]] for o in os_), Decimal(0)):.2f}")
+    print("5. Orders and their value by the customer's country:")
+    by = {}
+    for o in ORDERS:
+        n, v = by.get(cust[o[1]][2], (0, Decimal(0)))
+        by[cust[o[1]][2]] = (n + 1, v + total[o[0]])
+    for c in sorted(by):
+        print(f"   {c}: {by[c][0]} orders, {by[c][1]:.2f}")
     print("6. Units per category, cancelled orders left out:")
     units = {}
     for k, o, p, q in lines:
@@ -98,23 +129,23 @@ def answers():
             units[prod[p][2]] = units.get(prod[p][2], 0) + q
     for cat in sorted(units):
         print(f"   {cat}: {units[cat]}")
-    print("7. Order lines by quantity, ranks 6 to 10:")
+    print("7. Order lines by quantity, ranks 5 to 11:")
     ranked = sorted(lines, key=lambda l: -l[3])
     for r, (k, o, p, q) in enumerate(ranked, 1):
         if 5 <= r <= 11:
             print(f"   {r}. {k} {o} {p} {q}")
     print("8. Shortest chains from Kestrel Farms (C-4) to Ostrava Machining (C-5):")
     edges = {}
+    def link(a, b):
+        edges.setdefault(a, set()).add(b)
+        edges.setdefault(b, set()).add(a)
     for k, o, p, q in lines:
-        for a, b in ((k, o), (k, p)):
-            edges.setdefault(a, set()).add(b)
-            edges.setdefault(b, set()).add(a)
+        link(k, o)
+        link(k, p)
     for o in ORDERS:
-        edges.setdefault(o[0], set()).add(o[1])
-        edges.setdefault(o[1], set()).add(o[0])
+        link(o[0], o[1])
     for p in PRODUCTS:
-        edges.setdefault(p[0], set()).add(p[4])
-        edges.setdefault(p[4], set()).add(p[0])
+        link(p[0], p[4])
     paths, frontier = [], [["C-4"]]
     while frontier and not paths:
         frontier = [f + [n] for f in frontier for n in sorted(edges[f[-1]]) if n not in f]
@@ -122,10 +153,13 @@ def answers():
     for f in paths:
         print(f"   {len(f) - 1} links:", " - ".join(f))
     print("9. Never ordered:", sorted(set(prod) - {p for _, _, p, _ in lines}))
+    print("10. Customers in Germany who bought a product made in Italy:")
+    got = sorted({order[o][1] for k, o, p, q in lines if cust[order[o][1]][2] == "DE" and sup[prod[p][4]][2] == "IT"})
+    print("  ", [f"{c} {cust[c][1]}" for c in got])
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] == ["write"]:
-        write(Path(__file__).parent / "data")
+    if sys.argv[1:2] == ["write"]:
+        write(Path(sys.argv[2]))
     else:
         answers()

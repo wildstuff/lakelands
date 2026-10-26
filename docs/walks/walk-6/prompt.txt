@@ -5,11 +5,12 @@ Answer the following questions, in order:
 2. Which products are on order O-1007, and how many units of each?
 3. Which suppliers make the products on order O-1004, and in which countries are they?
 4. Which open orders contain at least one valve (a product in the category `valves`)?
-5. How many orders has each customer placed, and what do they come to in total? Count every order, whatever its status.
+5. For each country, how many orders have its customers placed, and what do those orders come to in total? Count every order, whatever its status.
 6. Leaving out cancelled orders, how many units of each product category have been ordered?
 7. Rank all order lines by quantity, highest first, and give me ranks 6 to 10: each line's id, its order, its product and its quantity. Read the ranking from the store at most five lines at a time.
 8. Kestrel Farms and Ostrava Machining: how are they connected in the data? Give the shortest chain of records that links them.
 9. Which products have never been ordered?
+10. Which customers in Germany have bought at least one product made in Italy?
 
 Before every tool call, write one sentence saying what you are about to do and why. When a tool refuses you or an answer surprises you, work out from the answer alone what to change, and try again; if you conclude that a question cannot be answered, say why and move on to the next.
 

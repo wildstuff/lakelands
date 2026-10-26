@@ -8,10 +8,11 @@ mkdir -p "$1" && cd "$1"
 "$bin" init walk
 cd walk
 "$bin" lake new trade
-mkdir trade && cp -r "$here/lake/types" trade/
+mkdir trade data && cp -r "$here/lake/types" trade/
+python3 "$here/lake/make_data.py" write data
 "$bin" apply trade
 for f in suppliers products customers orders order_lines; do
-  "$bin" ingest "$here/lake/data/$f.ndjson" --source erp
+  "$bin" ingest "data/$f.ndjson" --source erp
 done
 python3 - "$here/lake/principal.json" <<'PY'
 import json, sys
