@@ -90,6 +90,54 @@ What a REST path segment a client sends names.
 | `proposal` | — | the proposal | A proposal. |
 | `source` | — | the source | A source. |
 
+## `Construct`
+
+An openCypher construct outside the subset Lakelands reads, spelt as the statement spells it.
+
+| code | parameters | sentence | about |
+|---|---|---|---|
+| `create` | — | `CREATE` (a write goes through the typed write doors) | A `CREATE` clause. |
+| `merge` | — | `MERGE` (a write goes through the typed write doors) | A `MERGE` clause. |
+| `set` | — | `SET` (a write goes through the typed write doors) | A `SET` clause. |
+| `delete` | — | `DELETE` (a write goes through the typed write doors) | A `DELETE` clause. |
+| `detach_delete` | — | `DETACH DELETE` (a write goes through the typed write doors) | A `DETACH DELETE` clause. |
+| `remove` | — | `REMOVE` (a write goes through the typed write doors) | A `REMOVE` clause. |
+| `foreach` | — | `FOREACH` (a write goes through the typed write doors) | A `FOREACH` clause. |
+| `load_csv` | — | `LOAD CSV` (a write goes through the typed write doors) | A `LOAD CSV` clause. |
+| `call` | — | `CALL` (a procedure or a subquery) | A procedure call or a `CALL` subquery. |
+| `with` | — | `WITH` | A `WITH` clause. |
+| `union` | — | `UNION` | A `UNION` of statements. |
+| `unwind` | — | `UNWIND` | An `UNWIND` clause. |
+| `use` | — | `USE` | A `USE` clause. |
+| `profile` | — | `PROFILE` (there is no plan to profile; `EXPLAIN` shows the pattern) | `PROFILE` before a statement. |
+| `several_statements` | — | a second statement | A statement after the first. |
+| `distinct` | — | `DISTINCT` | `DISTINCT`. |
+| `list_comprehension` | — | a list comprehension | A list comprehension. |
+| `pattern_comprehension` | — | a pattern comprehension | A pattern comprehension. |
+| `map_projection` | — | a map projection | A map projection. |
+| `count_subquery` | — | `COUNT` over a subquery | A `COUNT` subquery. |
+| `exists` | — | `EXISTS` (a `WHERE` reads only `NOT EXISTS` over a part of one relationship, as a whole conjunct) | An `EXISTS` other than a `NOT EXISTS` conjunct. |
+| `case` | — | `CASE` | A `CASE` expression. |
+| `xor` | — | `XOR` | `XOR`. |
+| `modulo` | — | `%` | The `%` operator. |
+| `power` | — | `^` | The `^` operator. |
+| `ends_with` | — | `ENDS WITH` | `ENDS WITH`. |
+| `list_literal` | — | a list outside `IN` | A list outside `IN`. |
+| `map_literal` | — | a map outside a node | A map outside a node. |
+| `named_path` | — | a named path | A path bound to a name. |
+| `shortest_path` | — | a shortest path | `shortestPath` or `allShortestPaths`. |
+| `relationship_variable` | — | a variable on a relationship (a link's fields are read through its link type) | A variable on a relationship. |
+| `relationship_properties` | — | properties on a relationship (a link's fields are read through its link type) | Properties on a relationship. |
+| `relation_alternation` | — | a choice of relationship types (`:a\|b`) | A choice of relationship types. |
+| `several_labels` | — | a node of several labels | A node of more than one label. |
+| `unbounded_length` | — | a length with no upper bound (`*`, `*2..`; none is made up) | A variable length with no upper bound. |
+| `calendar_duration` | — | a duration in months or years, which has no fixed length | A duration in months or years. |
+| `match_from_optional` | — | a `MATCH` reading a name only an `OPTIONAL MATCH` binds (it would drop the rows the optional part keeps; write the part as a `MATCH`) | A `MATCH` part reading a name only an optional part binds. |
+| `optional_from_optional` | — | an `OPTIONAL MATCH` walking from a name only another `OPTIONAL MATCH` binds (the two would match or miss as one) | An `OPTIONAL MATCH` walking from a name another one binds. |
+| `optional_parts` | — | an `OPTIONAL MATCH` walking from more than one name bound before it (an optional part is one branch from one name) | An `OPTIONAL MATCH` hanging from more than one bound name. |
+| `aggregate_in_expression` | — | an aggregate inside an expression (a measure is one function of one path) | An aggregate inside an expression. |
+| `using` | — | `USING` (an index hint) | A `USING` hint. |
+
 ## `Act`
 
 What a write left undone where its lease did not hold.
@@ -401,6 +449,19 @@ What a refusal is about.
 | `call_arity` | `name` (String), `given` (usize) | {name}() does not take {given} argument(s) | A call with a number of arguments its function does not take. |
 | `call_takes_field` | `name` (String) | {name}() takes one field name | A call that takes a field name given something else. |
 | `call_takes_quoted` | `name` (String) | {name}() takes a quoted name | A call that takes a quoted name given something else. |
+| `cypher_alias` | `item` (String) | an aggregate or an expression is named with `AS`: `{item} AS <name>` | An aggregate or an expression returned with no name. |
+| `cypher_count` | `item` (String) | `count` counts rows: `count(*)` or `count(<name>)` of a name no optional part binds, not `{item}` | A `count` of what is no row. |
+| `cypher_function` | `name` (String), `offset` (usize) | `{name}()` is no function of Lakelands' expression grammar (at character {offset}) | A function the expression grammar does not have. |
+| `cypher_order_item` | `item` (String) | `ORDER BY` names a path, as in `a.amount`, not `{item}` | A sort key that is no path. |
+| `cypher_outside` | `construct` (Construct), `offset` (usize) | {construct} is outside the openCypher subset Lakelands reads (at character {offset}) | A construct outside the openCypher subset. |
+| `cypher_param_missing` | `name` (ParamName) | the statement reads `${name}`, which is not given | A parameter the statement reads that is not given. |
+| `cypher_param_unused` | `name` (ParamName) | `{name}` is given and the statement does not read it | A parameter given that the statement does not read. |
+| `cypher_param_value` | `name` (ParamName) | `${name}` cannot stand where it is read: an object, a list outside `IN`, a key that is not text, or a limit or skip that is no whole number | A parameter whose value cannot stand where it is read. |
+| `cypher_row_item` | `item` (String) | a row holds paths (`a.amount`) or every bound name (`RETURN *`); `{item}` is neither | A row item that is neither a path nor every bound name. |
+| `cypher_skip` | `skip` (u64) | `SKIP {skip}`: a pattern continues by the cursor its answer hands out (`next_cursor`), passed beside the statement | A `SKIP` other than 0. |
+| `cypher_start_type` | `offset` (usize) | the first node names its type, as in `(a:invoice)` (at character {offset}) | A first node with no label. |
+| `cypher_unbound` | `name` (String), `offset` (usize) | `{name}` is bound by nothing before it: a part begins at a name an earlier part bound (at character {offset}) | A part that begins at a name nothing bound. |
+| `cypher_whole` | `clause` (String), `offset` (usize) | `{clause}` takes a whole number, written or a parameter (at character {offset}) | A `SKIP` or `LIMIT` given what is no whole number. |
 | `division_by_zero` | — | division by zero | A division by zero. |
 | `in_empty` | — | an `in` lists one value at least | An `in` with an empty list. |
 | `exists_here` | — | exists() has meaning in a verb's `requires` and set values, over a relation a path may begin at | An `exists` outside a verb's `requires` and set values. |
@@ -450,6 +511,7 @@ What a refusal is about.
 | `set_of_other_type` | `set` (String), `of` (TypeName), `type` (TypeName) | in_set('{set}') names a set of `{of}`, not of `{type}` | A set of another type named in a filter. |
 | `set_undeclared` | `set` (String) | in_set('{set}') names an object set that is not declared | A set named in a filter that is not declared. |
 | `setting_takes_key` | `value` (Operand) | setting() takes a key, not {value} | A `setting` given what is no key. |
+| `statement_not_parsed` | `why` (Case) | the statement does not parse as the openCypher subset Lakelands reads (`MATCH … RETURN …`): {why} | An openCypher statement that does not parse. |
 | `steps_into_reference` | `expr` (String), `field` (FieldName) | `{expr}` steps into `{field}`, which is a reference: a condition reads the record's own fields. Compare the reference's key, or walk to the record it names in a pattern | A path into a reference's members. |
 | `steps_into_scalar` | `expr` (String), `field` (FieldName) | `{expr}` steps into `{field}`, which is no `json` field, and has no members | A path into the members of what has none. |
 | `sum_not_number` | `value` (Operand) | sum() met {value}, which is not a number | A sum of what is no number. |
@@ -472,6 +534,7 @@ What a refusal is about.
 | `after_unfit` | `index` (usize), `field` (FieldName), `why` (Case) | `after.values` member {index} does not fit `{field}`: {why} | An `after` value its order's field does not take. |
 | `after_with_aggregate` | — | `after` pages records; an `aggregate` has no pages | An `after` beside an aggregate. |
 | `after_with_cursor` | — | `after` and `cursor` both name where a page starts; give one | An `after` beside a cursor. |
+| `cheapest_needs_to` | — | `cheapest` answers the walk that costs least from the start to one record; name that record with `to` | A `cheapest` walk with no `to`. |
 | `components_both_ways` | `relation` (RelationName) | `components` takes every link both ways; the step over `{relation}` must walk `both` | A `components` step that does not walk both ways. |
 | `cursor_foreign` | — | the cursor is not one this lake handed out | A cursor the lake did not hand out. |
 | `cursor_other_door` | `was` (String), `was_ty` (TypeName, optional), `door` (String), `type` (TypeName, optional) | the cursor was handed out for `{was}`[ on `{was_ty}`], not `{door}`[ on `{type}`]; continue it there | A cursor handed out for another door or type. |
@@ -485,6 +548,7 @@ What a refusal is about.
 | `latest_no_change` | `type` (TypeName, optional) | `order_by` `latest` orders records by their latest change, and [`{type}` is a view, whose records are computed and have none\|a query's rows are projections of a walk, not records] | A `latest` order where no record has a change of its own. |
 | `latest_takes_no_field` | `field` (FieldName) | `latest` orders by the position of each record's latest change and takes no field, and `{field}` was given | A `latest` order given a field. |
 | `limit_range` | `max` (u32) | a limit is between 1 and {max} | A limit out of range. |
+| `matches_without_text` | — | `matches` says where a search's text matched each hit, and a vector search brings no text; a lexical or hybrid search is told it | A search that asks for `matches` and brings no text. |
 | `measure_no_depth` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no step `depth`: it reads each record's links, not hops | A measure's step with a depth. |
 | `measure_no_order` | `measure` (String) | `{measure}` is a measure over the steps' relations and takes no `order_by`: its rows come in the measure's own order | A measure with an order. |
 | `measure_no_steps` | `measure` (String) | `{measure}` walks the relations its steps name; name at least one | A measure with no step. |
@@ -540,6 +604,10 @@ What a refusal is about.
 | `view_not_searched` | `type` (TypeName) | `{type}` is a view, and a view is not searched: its records are computed on read and no index holds them | A search of a view. |
 | `view_reads_itself` | `type` (TypeName), `chain` (Names) | view `{type}` reads itself through other views, reading {chain} in turn, so it has no records | A view that reads itself through views the reader did not check. |
 | `weight_alone` | — | `weight` weighs one vector field's ranking against another's, and the search names no other in `also` | A `weight` on a vector search of one field. |
+| `weight_missing` | `relation` (RelationName), `from` (RecordKey), `to` (RecordKey) | the `{relation}` link from `{from}` to `{to}` has no weight, and the cheapest walk neither skips a link nor prices it by default; declare an `initial` on the weight field for one | A link the cheapest walk weighs that has no weight. |
+| `weight_negative` | `relation` (RelationName), `from` (RecordKey), `to` (RecordKey) | the `{relation}` link from `{from}` to `{to}` weighs less than 0, and over a cycle that costs less than 0 no walk is cheapest | A link the cheapest walk weighs whose weight is below 0. |
+| `weight_not_number` | `relation` (RelationName), `field` (FieldName) | `{field}` of the links of `{relation}` is neither a `number` nor a `decimal`, so it weighs nothing | A weight field of a kind other than `number` or `decimal`. |
+| `weight_not_on_link` | `relation` (RelationName), `field` (FieldName) | the links of `{relation}` hold no field `{field}` to weigh by; a relation carried by `via` or `derived` holds no link record | A weight field the links of a step's relation do not hold. |
 | `weight_range` | `field` (FieldName) | the weight of `{field}` must be above 0 and at most 1000000 | A field's weight out of range. |
 | `call_declined` | `verb` (VerbName), `reason` (Detail, optional) | the host declined the call of `{verb}`[ ({reason})]: it did not run, and a retry under the same idempotency key answers the same | A call a verb's executor declined by the host's policy. |
 | `cause_past_head` | `cause` (Position), `head` (Position, optional) | the cause {cause} is past the lake's head [{head}\|(none)] | A host's cause past the head. |

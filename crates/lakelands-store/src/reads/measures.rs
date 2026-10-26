@@ -1,12 +1,12 @@
-//! The whole-graph measures of the pattern query: degree centrality and
-//! connected components, answered as rows.
+//! The whole-graph measures of the pattern query: degree centrality,
+//! connected components and PageRank, answered as rows.
 //!
 //! The graph is the one every walk reads through [`Visible`]: link records
 //! and via references at the read's position, far ends the principal may
 //! see, restricted links only with the grant. The start's records are the
 //! seeds, read a page at a time, so a degree over a whole type holds one
-//! page and the best rows asked for, never the type; components hold what
-//! they reach, up to the lake's `max_graph_nodes`
+//! page and the best rows asked for, never the type; components and
+//! PageRank hold what they reach, up to the lake's `max_graph_nodes`
 //! (`docs/decisions/026-the-store-walks-the-graph.md`).
 
 use std::cmp::Reverse;
@@ -16,23 +16,22 @@ use lakelands_api::error::{Case, Place};
 use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Step, Walk};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::{Cursor, Error, Params, RecordKey, RelationName, Result, TypeName, Value};
-use lakelands_core::graph::{self, Components, Node};
+use lakelands_core::graph::{self, Components, Holding, Node};
 
 use super::{CursorState, Judged, Pulled, Reader, Visible, encode};
 
 const PAGE: usize = 256;
 
 pub(super) fn is_measure(p: &Projection) -> bool {
-    matches!(p, Projection::Degree | Projection::Components)
+    matches!(
+        p,
+        Projection::Degree | Projection::Components | Projection::PageRank
+    )
 }
 
 /// Refuses a member a measure would otherwise ignore.
 pub(super) fn check(p: &Pattern) -> Result<()> {
-    let measure = match p.project {
-        Projection::Degree => "degree",
-        _ => "components",
-    }
-    .to_owned();
+    let measure = super::projection_name(&p.project);
     if p.to.is_some() {
         return Err(Error::invalid(Case::MeasureNoTo { measure }));
     }
@@ -62,8 +61,9 @@ pub(super) fn check(p: &Pattern) -> Result<()> {
 }
 
 impl Reader<'_> {
-    /// `components` with no start type: every record that holds a link it
-    /// may see over the steps' relations, in every type, is a start (018).
+    /// `components` and `page_rank` with no start type: every record that
+    /// holds a link it may see over the steps' relations, in every type, is
+    /// a start (018).
     /// Any other projection, and a start member that picks records of one
     /// type, is refused naming what needs the type; a step's relation is
     /// one some type it is shown declares, or that relation's inverse.
@@ -73,7 +73,7 @@ impl Reader<'_> {
                 asks: asks.to_owned(),
             })
         };
-        if p.project != Projection::Components {
+        if !matches!(p.project, Projection::Components | Projection::PageRank) {
             return Err(asks(&super::projection_name(&p.project)));
         }
         let s = &p.start;
@@ -93,7 +93,8 @@ impl Reader<'_> {
         super::query::tree(p, false)?;
         check(p)?;
         // An inverse names every relation that bears it, each walked as
-        // its own step: components take the steps' relations as one set.
+        // its own step from its owner's end: components take the steps'
+        // relations as one set, and PageRank walks each the other way.
         let (mut steps, mut reach) = (Vec::new(), Vec::new());
         for step in std::mem::take(&mut p.steps) {
             let inverses = self.inverses_anywhere(&step.relation);
@@ -109,6 +110,11 @@ impl Reader<'_> {
                 steps.push(step);
                 continue;
             }
+            let walk = match step.walk {
+                Walk::Out => Walk::In,
+                Walk::In => Walk::Out,
+                Walk::Both => Walk::Both,
+            };
             for (relation, owner) in inverses {
                 let far = None;
                 reach.push(super::Reach {
@@ -117,6 +123,7 @@ impl Reader<'_> {
                 });
                 steps.push(Step {
                     relation,
+                    walk,
                     ..step.clone()
                 });
             }
@@ -195,6 +202,47 @@ impl Reader<'_> {
                             ("type".to_owned(), Value::String(ty.to_string())),
                             ("key".to_owned(), Value::String(key.to_string())),
                             ("degree".to_owned(), Value::from(d)),
+                        ])
+                    })
+                    .collect()
+            }
+            Projection::PageRank => {
+                let steps: Vec<(RelationName, Walk)> = p
+                    .steps
+                    .iter()
+                    .map(|s| (s.relation.clone(), s.walk))
+                    .collect();
+                let max = self.lake.limits.max_graph_nodes;
+                // With no start type, no record stands alone (018).
+                let alone = p.start.ty.is_some();
+                let mut held = Holding::new(hidden, steps, max, alone);
+                let mut seeds: Vec<Node> = Vec::with_capacity(graph::PAGE);
+                let moved = self.seeds((p, hidden.reach), carried, |node| {
+                    seeds.push(node);
+                    if seeds.len() == graph::PAGE {
+                        held.add(&seeds)?;
+                        seeds.clear();
+                    }
+                    Ok(())
+                })?;
+                if let Some(moved) = moved {
+                    return Ok(Err(moved));
+                }
+                held.add(&seeds)?;
+                let g = held.finish();
+                let ranks = graph::page_rank(&g);
+                // Highest first, then by type and key: the records' order.
+                let mut order: Vec<usize> = (0..g.nodes.len()).collect();
+                order.sort_by_key(|&i| (Reverse(ranks[i]), i));
+                order
+                    .into_iter()
+                    .map(|i| {
+                        let (ty, key) = &g.nodes[i];
+                        let rank = ranks[i] as f64 / graph::RANK_MASS as f64;
+                        BTreeMap::from([
+                            ("type".to_owned(), Value::String(ty.to_string())),
+                            ("key".to_owned(), Value::String(key.to_string())),
+                            ("page_rank".to_owned(), Value::from(rank)),
                         ])
                     })
                     .collect()

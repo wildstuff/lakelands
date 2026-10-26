@@ -308,6 +308,15 @@ fn command() -> Command {
                 .arg(Arg::new("bundle").value_name("DIR").required(true).help("The bundle's directory")),
         )
         .subcommand(
+            Command::new("change")
+                .about("Set values on, or retire, the records of a type that a condition selects: planned first, and made only against that plan")
+                .arg(Arg::new("type").value_name("TYPE").required(true).help("The type"))
+                .arg(Arg::new("where").long("where").value_name("EXPR").required(true).help("The records to change: a condition in the expression grammar"))
+                .arg(Arg::new("set").long("set").value_name("FIELD=JSON").action(ArgAction::Append).required_unless_present("retire").conflicts_with("retire").help("A value to set on every record selected; repeated for more fields"))
+                .arg(Arg::new("retire").long("retire").action(ArgAction::SetTrue).help("Retire every record selected"))
+                .arg(Arg::new("plan").long("plan").value_name("ID").help("Make the change only if its plan is still this one (the `report_id` the plan printed); without it, print the plan and change nothing")),
+        )
+        .subcommand(
             Command::new("recompute")
                 .about("Compute again what a function or a type in force computes: retry a failed call, make a field that waits")
                 .arg(Arg::new("function").long("function").value_name("NAME").conflicts_with("type").help("A function: every type that names it"))
@@ -800,6 +809,16 @@ async fn dispatch(
         "plan" => {
             let dir = text(sub, "bundle").unwrap_or_default();
             commands::plan(out, catalog.as_ref(), &who, Path::new(&dir)).await
+        }
+        "change" => {
+            let set = sub.get_many::<String>("set").map(|v| v.cloned().collect());
+            let at = (
+                text(sub, "type").unwrap_or_default(),
+                text(sub, "where").unwrap_or_default(),
+            );
+            let plan = text(sub, "plan");
+            let to = (set, plan.as_deref());
+            commands::change(out, catalog.as_ref(), &who, (&at.0, &at.1), to).await
         }
         "recompute" => {
             let (function, ty) = (text(sub, "function"), text(sub, "type"));

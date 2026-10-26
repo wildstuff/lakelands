@@ -417,6 +417,8 @@ fn projection_name(p: &Projection) -> String {
         Projection::Degree => "degree",
         Projection::Components => "components",
         Projection::Reach => "reach",
+        Projection::PageRank => "page_rank",
+        Projection::Cheapest { .. } => "cheapest",
     }
     .into()
 }

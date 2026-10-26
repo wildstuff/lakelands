@@ -646,6 +646,62 @@
    "name": "s"
   },
   {
+   "code": "cypher_alias",
+   "item": "s"
+  },
+  {
+   "code": "cypher_count",
+   "item": "s"
+  },
+  {
+   "code": "cypher_function",
+   "name": "s",
+   "offset": 1
+  },
+  {
+   "code": "cypher_order_item",
+   "item": "s"
+  },
+  {
+   "code": "cypher_outside",
+   "construct": "create",
+   "offset": 1
+  },
+  {
+   "code": "cypher_param_missing",
+   "name": "p"
+  },
+  {
+   "code": "cypher_param_unused",
+   "name": "p"
+  },
+  {
+   "code": "cypher_param_value",
+   "name": "p"
+  },
+  {
+   "code": "cypher_row_item",
+   "item": "s"
+  },
+  {
+   "code": "cypher_skip",
+   "skip": 1
+  },
+  {
+   "code": "cypher_start_type",
+   "offset": 1
+  },
+  {
+   "code": "cypher_unbound",
+   "name": "s",
+   "offset": 1
+  },
+  {
+   "clause": "s",
+   "code": "cypher_whole",
+   "offset": 1
+  },
+  {
    "code": "division_by_zero"
   },
   {
@@ -887,6 +943,14 @@
    }
   },
   {
+   "code": "statement_not_parsed",
+   "why": {
+    "code": "unknown_field",
+    "field": "f",
+    "type": "t"
+   }
+  },
+  {
    "code": "steps_into_reference",
    "expr": "s",
    "field": "f"
@@ -1000,6 +1064,9 @@
    "code": "after_with_cursor"
   },
   {
+   "code": "cheapest_needs_to"
+  },
+  {
    "code": "components_both_ways",
    "relation": "r"
   },
@@ -1056,6 +1123,9 @@
   {
    "code": "limit_range",
    "max": 1
+  },
+  {
+   "code": "matches_without_text"
   },
   {
    "code": "measure_no_depth",
@@ -1301,6 +1371,28 @@
   },
   {
    "code": "weight_alone"
+  },
+  {
+   "code": "weight_missing",
+   "from": "k",
+   "relation": "r",
+   "to": "k"
+  },
+  {
+   "code": "weight_negative",
+   "from": "k",
+   "relation": "r",
+   "to": "k"
+  },
+  {
+   "code": "weight_not_number",
+   "field": "f",
+   "relation": "r"
+  },
+  {
+   "code": "weight_not_on_link",
+   "field": "f",
+   "relation": "r"
   },
   {
    "code": "weight_range",

@@ -20,6 +20,7 @@ use lakelands_api::seam::RerankCandidate;
 use lakelands_api::{Error, FieldName, Params, RecordKey, Result, Timestamp, TypeName, Value};
 use serde::{Deserialize, Serialize};
 
+use super::search::Marking;
 use super::{CursorState, Judged, Pulled, Reader, encode, resume, same_read, search_read};
 
 /// A window of the first stage, as the reranker ranks it.
@@ -39,12 +40,15 @@ pub struct Window {
     pub axes: Vec<Axis>,
     /// Whether the first stage held more hits than the window.
     pub truncated: bool,
+    /// What the first stage searched, which the stage's pages mark by.
+    pub marking: Option<Marking>,
 }
 
 /// A second stage's order and what its first page said: the keys of the
 /// window with the reranker's scores, best first, ties in the first
-/// stage's order, and the answer's `ranked_by`, `axes` and `truncated`,
-/// which every page repeats.
+/// stage's order, the answer's `ranked_by`, `axes` and `truncated`,
+/// which every page repeats, and what the first stage searched, which
+/// every page marks by.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Staged {
     pub(super) order: Vec<(RecordKey, f64)>,
@@ -52,6 +56,8 @@ pub struct Staged {
     axes: Vec<Axis>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    marking: Option<Marking>,
 }
 
 impl Staged {
@@ -75,6 +81,7 @@ impl Staged {
             ranked_by: format!("{} + rerank", window.ranked_by),
             axes,
             truncated: window.truncated,
+            marking: window.marking.clone(),
         }
     }
 }
@@ -101,6 +108,8 @@ pub(super) struct First {
     /// How many of the hits before `offset` were not read: those of a
     /// list the engine judged.
     pub skipped: usize,
+    /// What the first stage searched, where its hits may be marked.
+    pub marking: Option<Marking>,
 }
 
 impl Reader<'_> {
@@ -173,6 +182,7 @@ impl Reader<'_> {
             ranked_by: first.ranked_by.clone(),
             axes: first.axes.clone(),
             truncated: first.hits.len() > top,
+            marking: first.marking.clone(),
         }))
     }
 
@@ -206,6 +216,7 @@ impl Reader<'_> {
             filter: p.start.filter.clone(),
             rerank: p.start.rerank.clone(),
             with_meta: false,
+            matches: false,
             at: ReadAt::default(),
         })
     }
@@ -242,7 +253,12 @@ impl Reader<'_> {
         };
         let k = s.k.max(1) as usize;
         let keys = stage.order.iter().skip(offset).take(k).cloned().collect();
-        let hits = self.visible_hits(&decl, filter.as_ref(), keys, s.with_meta)?;
+        let mut hits = self.visible_hits(&decl, filter.as_ref(), keys, s.with_meta)?;
+        // Marked by what the first stage searched, which the read of its
+        // window judged at the head: this read ranks nothing (025).
+        if let Some(marks) = stage.marking.as_ref().and_then(|m| m.marks(s, &decl)) {
+            marks.mark(&mut hits);
+        }
         let more = stage.order.len() > offset + k;
         self.second.borrow_mut().decided = Some(stage.clone());
         let next_cursor = more.then(|| {

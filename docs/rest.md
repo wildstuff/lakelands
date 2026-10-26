@@ -120,9 +120,9 @@ key may hold any character.
 | `GET …/describe` | describe the lake | query: `as_of`, `valid_at` |
 | `GET …/describe/<type>` | describe one type | query: `as_of`, `valid_at` |
 | `GET …/proposals` | proposals | query: `state`, `type`, `kind`, `limit`, `order_by`, `cursor`, `as_of`, `valid_at` |
-| `POST …/proposals` | propose | body: `write` (`upsert`, `retire`, `call`, `declare` with `declarations`, or `migrate` with `migration`), `why` |
+| `POST …/proposals` | propose | body: `write` (`upsert`, `retire`, `call`, `declare` with `declarations`, `migrate` with `migration`, or `records` with `type`, `where` and `to`), `why` |
 | `POST …/proposals/<id>/accept` | accept | — |
-| `POST …/proposals/<id>/accept_planned` | accept a proposed change to the ontology against the plan of its change at the head | body: `plan_id` |
+| `POST …/proposals/<id>/accept_planned` | accept a proposed change to the ontology, or to records, against the plan of its change at the head; a records proposal is accepted only so | body: `plan_id` |
 | `POST …/proposals/<id>/reject` | reject | body: `reason` (optional) |
 | `POST …/schema/declare_type` | declare a type | body: `type` |
 | `POST …/schema/declare` | declare anything that does not reshape stored records | body: `declaration` |
@@ -131,7 +131,7 @@ key may hold any character.
 | `POST …/schema/recompute` | compute again what a declaration in force computes | body: `function` or `type` |
 | `POST …/schema/migrate` | a migration's preflight | body: `to`, `renames` and `relation_renames`, or `value_type` |
 | `POST …/schema/migrate/apply` | apply a migration | body: `to`, `renames` and `relation_renames`, or `value_type`; and `report_id` |
-| `POST …/schema/plan` | a change's plan: what it would do, changing nothing | body: `change` (`declare` with `declarations`, `add_field` with `type` and `field`, `recompute` with `what`, `migrate` or `migrate_value_type` with `migration`) and its members |
+| `POST …/schema/plan` | a change's plan: what it would do, changing nothing | body: `change` (`declare` with `declarations`, `add_field` with `type` and `field`, `recompute` with `what`, `migrate` or `migrate_value_type` with `migration`, or `records`, below) and its members |
 | `POST …/schema/enact` | make a change against its plan | body: as `…/schema/plan`, and `plan_id` |
 | `POST …/ingest/<source>` | ingest | body: NDJSON, one record per line; query: `delivery` |
 | `GET …/feed` | the change feed | query: `from`, `kinds`, `types`, `key` (repeated); `Last-Event-ID` |
@@ -190,6 +190,21 @@ the ontology take `plan` and `plan_id` instead. A plan, and an answer
 that carries one (a change's outcome, a proposal's, a listed proposal),
 comes with `said`: a sentence per finding, for the person who decides
 on it (`docs/decisions/062-a-change-plans-before-it-acts.md`).
+
+The same two routes carry a change to the records a condition selects
+(`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`):
+`{"change": "records", "type": …, "where": …, "to": …}`, with `to` either
+`{"set": {field: value, …}}`, the same values on every record selected, or
+`"retire"`. `schema/plan` answers the plan with a `records` section
+(`type`, `selected`, `sample_keys`, `fields` and `refused`) and changes
+nothing; `schema/enact`, with the plan's `report_id` as `plan_id`, makes
+exactly that change in one append, and is refused `plan_stale` (`invalid`, 422) if a
+selected record changed or the selection moved, and `too_large` (422) past the
+lake's `max_change_records`. A records proposal is filed on
+`POST …/proposals` as `{"write": "records", "type": …, "where": …, "to": …}`
+and accepted only on `…/accept_planned` with the `report_id` of the plan
+of its change now; `…/accept` of it is refused `plan_stale`. No route
+offers `only`.
 
 A trigger's `max_depth` caps the reactions to its firings: writes a
 host makes naming a firing as their cause

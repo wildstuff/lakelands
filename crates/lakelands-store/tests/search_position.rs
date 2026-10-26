@@ -105,6 +105,7 @@ async fn search_of(
         cursor,
         filter: filter.map(Into::into),
         with_meta: false,
+        matches: false,
         at: read_at(at),
         rerank: None,
     };
@@ -598,6 +599,7 @@ async fn a_write_inside_a_reranked_searchs_window_read_loses_no_scored_hit() {
         cursor,
         filter: None,
         with_meta: false,
+        matches: false,
         at: read_at(None),
         rerank: Some(lakelands_api::query::Rerank { top: 3, text: None }),
     };
