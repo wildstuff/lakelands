@@ -1,0 +1,6 @@
+{
+  "name": "analyst",
+  "kind": "agent",
+  "id": "analyst",
+  "grants": { "default": "read" }
+}

@@ -1,0 +1,6 @@
+{"type": "customer", "key": "C-1", "fields": {"id": "C-1", "name": "Delta Metals", "country": "DE", "segment": "industry"}}
+{"type": "customer", "key": "C-2", "fields": {"id": "C-2", "name": "Harbor Supplies", "country": "NL", "segment": "retail"}}
+{"type": "customer", "key": "C-3", "fields": {"id": "C-3", "name": "Brightwater Utilities", "country": "GB", "segment": "utility"}}
+{"type": "customer", "key": "C-4", "fields": {"id": "C-4", "name": "Kestrel Farms", "country": "IE", "segment": "retail"}}
+{"type": "customer", "key": "C-5", "fields": {"id": "C-5", "name": "Ostrava Machining", "country": "CZ", "segment": "industry"}}
+{"type": "customer", "key": "C-6", "fields": {"id": "C-6", "name": "Vale Hardware", "country": "PT", "segment": "retail"}}

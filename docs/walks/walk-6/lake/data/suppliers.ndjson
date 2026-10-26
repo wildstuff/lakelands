@@ -1,0 +1,4 @@
+{"type": "supplier", "key": "S-1", "fields": {"id": "S-1", "name": "Nordic Fasteners", "country": "SE"}}
+{"type": "supplier", "key": "S-2", "fields": {"id": "S-2", "name": "Lago Valvole", "country": "IT"}}
+{"type": "supplier", "key": "S-3", "fields": {"id": "S-3", "name": "Rhein Pumpen", "country": "DE"}}
+{"type": "supplier", "key": "S-4", "fields": {"id": "S-4", "name": "Torino Guarnizioni", "country": "IT"}}
