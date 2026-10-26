@@ -300,7 +300,7 @@ pub(crate) const LAYOUT: u64 = 9;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
-pub(crate) const LAKE_TABLES: [&str; 23] = [
+pub(crate) const LAKE_TABLES: [&str; 24] = [
     "meta",
     "lease",
     "segments",
