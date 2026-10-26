@@ -180,8 +180,9 @@ what a principal may read is decided by its grants alone
 extended). A key without a namespace is refused as `invalid` (422), and
 one in `sys.` or `lakelands.` as `reserved` (403), naming the key.
 
-`cypher` is REST's alone, and the CLI's `lakelands query --cypher`: no
-MCP tool takes a statement. The statement, in the openCypher subset
+`cypher` is served here, as the CLI's `lakelands query --cypher`, and
+at the MCP door as the `cypher` read tool, listed where `query` is,
+with the same members. The statement, in the openCypher subset
 `lakelands-cypher` reads, with the values of its `$name`s as `params`,
 is translated to a pattern and run as `POST …/query` runs it; its
 answer is that route's. How many rows a page holds is the statement's

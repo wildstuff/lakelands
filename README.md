@@ -101,15 +101,16 @@ belongs to whoever stands on it; the life on top is Wildstuff's product.
 `get`, `upsert`, `retire` — each with a JSON schema derived from the
 type and filtered by the caller's rights, a `link` and `unlink` pair for
 each relation carried by link records, plus one tool per declared verb,
-`describe`, `query` and `search`. Rights can remove a door as well
+`describe`, `query`, `cypher` and `search`. Rights can remove a door as well
 as narrow it: a type whose fields all come from a source has no
 `upsert`. Beside them an agent sees the lake's other doors: `pin` for
 the position its turn reads at, `subscribe` and `unsubscribe` to be told
 of changes without polling, `propose`, `proposals`, `accept` and
 `reject` for writes that wait for a review, and `declare_type`,
 `add_field`, `migrate` and `recompute` for the schema. Served over MCP
-(stdio and HTTP) and REST from one catalog. Agents never write a query
-language.
+(stdio and HTTP) and REST from one catalog. Agents write no query
+language of Lakelands' own: `cypher` reads a statement of the
+openCypher subset as the `query` pattern it translates into.
 
 ## Verify it
 

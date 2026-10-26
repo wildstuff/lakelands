@@ -79,11 +79,13 @@ the read subset refuses what lies outside it:
 
 ### The doors that serve it
 
-Write statements are served where the read subset is: REST, the CLI and
-the client. An agent at the MCP door changes many records through 081's
-typed tools, whose plan is structured so a host can word it for the
-person who confirms it; whether the subset becomes an MCP tool at all is
-decided by a walk, not here.
+Write statements are served at REST, the CLI and the client. Walk 6
+(`docs/walks/walk-6.md`) decided whether the subset is an MCP tool: it
+is, as the `cypher` read tool beside `query`, never in its place, and
+that tool takes no write statement; it refuses one naming its clause.
+An agent at the MCP door changes many records through 081's typed
+tools, whose plan is structured so a host can word it for the person
+who confirms it.
 
 ## Why
 
