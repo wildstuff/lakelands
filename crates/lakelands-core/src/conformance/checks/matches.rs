@@ -135,11 +135,13 @@ fn spans(fields: &[Told]) -> BTreeMap<FieldName, Matched> {
         .collect()
 }
 
-/// Each hit's key and its matches.
+/// Each hit's key and its matches, by key: what ranks them is not theirs.
 fn marked(h: &Hits) -> Vec<(String, BTreeMap<FieldName, Matched>)> {
-    (h.hits.iter())
+    let mut marked: Vec<_> = (h.hits.iter())
         .map(|h| (h.record.key.0.clone(), h.matches.clone()))
-        .collect()
+        .collect();
+    marked.sort_by(|a, b| a.0.cmp(&b.0));
+    marked
 }
 
 /// Each hit's key and its score's bits.
@@ -177,7 +179,8 @@ async fn a_search_asked_for_matches_names_each_field_and_span_its_text_matched(
         wrong.push(format!("`overdue invoice`: {:?}", marked(&got)));
     }
     let body = minutes();
-    let words: Vec<String> = (got.hits.first().map(|h| &h.matches))
+    let d1 = got.hits.iter().find(|h| h.record.key.as_str() == "d1");
+    let words: Vec<String> = (d1.map(|h| &h.matches))
         .and_then(|m| m.get(&FieldName::from("body")))
         .map(|m| m.spans.iter().map(|s| covered(&body, s)).collect())
         .unwrap_or_default();

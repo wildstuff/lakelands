@@ -42,6 +42,7 @@ lakelands-engine-mem = { path = "crates/lakelands-engine-mem" }
 lakelands-engine-pg = { path = "crates/lakelands-engine-pg" }
 lakelands-engine-sqlite = { path = "crates/lakelands-engine-sqlite" }
 rust_decimal = "1"
+libm = "0.2"
 ryu = "1"
 rust-stemmers = "1"
 serde = { version = "1", features = ["derive"] }

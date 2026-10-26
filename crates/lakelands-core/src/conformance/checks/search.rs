@@ -1525,13 +1525,15 @@ async fn a_search_as_of_a_position_ranks_by_the_heads_declaration(
         ),
         (
             // A tie, in the order of the keys at the head: `q`, then `z`.
+            // Each token is held by one of two heads, ln(6/3), and to `w`
+            // by the one head it is counted over, ln(4/3) (025).
             "lexical, both",
             "keyed",
             Some(pk),
             SearchMode::lexical("quay harbour"),
             10.0,
-            &[("z", 10.0), ("a", 10.0)],
-            &[("z", 10.0)],
+            &[("z", 7.0), ("a", 7.0)],
+            &[("z", 3.0)],
         ),
         (
             "lexical, the held one",
@@ -1539,7 +1541,7 @@ async fn a_search_as_of_a_position_ranks_by_the_heads_declaration(
             Some(pk),
             SearchMode::lexical("quay"),
             10.0,
-            &[("a", 10.0)],
+            &[("a", 7.0)],
             &[],
         ),
         // Fused by reciprocal rank: `z` by its text and second by its

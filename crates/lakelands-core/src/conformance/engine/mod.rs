@@ -111,6 +111,17 @@ pub trait EngineHarness: Send + Sync {
         false
     }
 
+    /// Leave the projection of the lake `lake` names as a build that keeps
+    /// no text statistics left it: with `behind`, as one folding a commit
+    /// past them would, their mark one position behind the one folded
+    /// through and their counts no longer the head's (each doubled, the
+    /// lengths gone); without, as one before them made it, their tables and
+    /// their mark gone. `false` for an engine whose projection no other
+    /// build opens.
+    fn stale_text_stats(&self, _lake: &LakeId, _behind: bool) -> bool {
+        false
+    }
+
     /// A handle onto the scratch beside the projection of the lake `lake`
     /// names, as `EngineOpener::open_scratch` opens it in a second process;
     /// unbound, as this default answers, for an engine that keeps none.
@@ -222,6 +233,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::CHANGED_ROWS,
     reads::MANY_PUTS,
     reads::LEXICAL_REDECLARED_MID_FOLD,
+    reads::STATS_COUNTED_AT_OPEN,
     reads::NEAREST_BY_COSINE,
     reads::ZERO_AND_WRONG_LENGTH,
     reads::PUT_AND_REMOVE,

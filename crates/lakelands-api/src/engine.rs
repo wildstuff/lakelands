@@ -214,10 +214,13 @@ pub trait LakeEngine: Send + Sync {
     /// all read from one state of the head's indexes, with the position
     /// the projection was folded through in that state. The indexes
     /// describe the head only, so the candidates are the records live
-    /// there, restricted ones included; what a read at any position may
-    /// see of them is the store's, which judges them at the position
-    /// answered (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`). An
-    /// engine that keeps no vector index refuses a vector's ranking as
+    /// there, restricted ones included, but a text's are those of the
+    /// class `asked.text_stats` names, scored by BM25F over its
+    /// statistics, kept per type, field and hold or counted by the store
+    /// (`docs/seams.md` §`ranked`); what a read at any position may see
+    /// of them is the store's, which judges them at the position answered
+    /// (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
+    /// An engine that keeps no vector index refuses a vector's ranking as
     /// unbound.
     fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked>;
 
@@ -562,6 +565,32 @@ pub struct Rankings {
     /// Rank every vector list exactly, from no graph: for a reader whose
     /// records are no class.
     pub exact: bool,
+    /// What the text's ranking is counted over (`docs/seams.md`
+    /// §`ranked`). `None`: every live head, for a reader holding
+    /// `restricted`.
+    pub text_stats: Option<TextStats>,
+}
+
+/// What a text's ranking reads its statistics from: the live heads of a
+/// reader's class, or what the store counted for a reader with no class.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TextStats {
+    /// The heads that are not held, as the engine keeps their counts: a
+    /// reader without `restricted`. A held candidate is no hit.
+    Unheld,
+    /// What the store counted over the heads it admits a reader with no
+    /// class, as it is told them: every live candidate ranks by these.
+    Counted(TextCounts),
+}
+
+/// The statistics a lexical score reads (`docs/seams.md` §`ranked`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TextCounts {
+    /// Each searchable field's heads that hold a token in it, and the
+    /// tokens they hold there, repeats counted.
+    pub fields: BTreeMap<FieldName, (u64, u64)>,
+    /// Each query token's heads that hold it in a searched field.
+    pub df: BTreeMap<String, u64>,
 }
 
 /// What [`LakeEngine::ranked`] answers.

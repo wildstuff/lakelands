@@ -749,16 +749,14 @@ fn lexical_search_scores_matched_tokens_over_searchable_text() {
         p.put_record(&held).unwrap();
     });
     let hits = lexical(e.as_ref(), &"doc".into(), "invoice runs", None, 10).unwrap();
+    let keys: Vec<&str> = hits.iter().map(|(k, _)| k.as_str()).collect();
+    // Both tokens are in three titles: `d`'s one word outranks `b`'s two.
     assert_eq!(
-        hits,
-        vec![
-            ("a".into(), 2.0),
-            ("h".into(), 2.0),
-            ("b".into(), 1.0),
-            ("d".into(), 1.0)
-        ],
+        keys,
+        ["a", "h", "d", "b"],
         "a restricted record is a candidate; a retired one is not"
     );
+    assert_eq!(hits[0].1, hits[1].1, "`a` and `h` hold the same text");
     assert_eq!(
         lexical(e.as_ref(), &"doc".into(), "invoice runs", None, 1)
             .unwrap()
