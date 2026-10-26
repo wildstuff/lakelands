@@ -36,7 +36,8 @@ check!(
 );
 
 check!(
-    SET_AT_READ_RIGHTS = a_set_decided_at_the_read_is_read_by_the_right_to_read_what_its_filter_reads,
+    SET_AT_READ_RIGHTS =
+        a_set_decided_at_the_read_is_read_by_the_right_to_read_what_its_filter_reads,
     "006, lakelands#1441: `in_set` of a set decided at the read, directly or through another set decided at the read, is answered to a reader kept from the field its `where` reads as a set that is not declared, to a holder of `schema` as to anyone else, and `describe` lists it to that reader no such set; a reader who may read the field is answered the set's members at the read and is listed it"
 );
 
