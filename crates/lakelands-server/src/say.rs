@@ -337,6 +337,33 @@ pub fn plan(plan: &Plan) -> Vec<String> {
             first(&keys, v.misfits)
         ));
     }
+    if let Some(r) = plan.records.as_deref() {
+        let ty = &r.ty;
+        said.push(match r.selected {
+            0 => format!("The condition selects no record of `{ty}`."),
+            n => format!(
+                "The condition selects {} of `{ty}`{}",
+                records(n),
+                first(&r.sample_keys, n)
+            ),
+        });
+        for f in &r.fields {
+            let (field, n) = (&f.field, records(f.records));
+            said.push(format!("`{field}` would change on {n}."));
+        }
+        for g in &r.refused {
+            let n = records(g.records);
+            said.push(format!(
+                "{n} would be refused, {}{}",
+                g.refusal,
+                first(&g.sample_keys, g.records)
+            ));
+        }
+        if !plan.lossless {
+            said.push("It cannot be enacted: a selected record would be refused.".to_owned());
+        }
+        return said;
+    }
     if said.is_empty() {
         said.push("The change would leave every stored record as it is.".to_owned());
     }

@@ -1287,3 +1287,165 @@ async fn an_operator_reads_a_proposals_plan_beside_the_plan_at_the_head_and_acce
         ]
     );
 }
+
+/// A change to records over `schema/plan` and `schema/enact` (081): the
+/// plan is worded as `said` and appends nothing, its `report_id` enacts it,
+/// and a selection that moved since is refused `plan_stale`, appending
+/// nothing.
+#[tokio::test]
+async fn a_change_to_records_is_planned_enacted_and_refused_stale_over_rest() {
+    let store = rest_lake(Backend::Memory).await;
+    let (c, owner) = (store.catalog(WriteContext::default()), common::owner());
+    let put = |key: &'static str, status: &'static str| {
+        let (c, owner) = (c.clone(), owner.clone());
+        let patch = lakelands_door_checks::checks::patch(&[("status", json!(status))]);
+        async move {
+            let at = (&"invoice".into(), &key.into());
+            c.upsert(&owner, at.0, at.1, patch, WriteOpts::default())
+                .await
+                .unwrap();
+        }
+    };
+    put("INV-1", "open").await;
+    put("INV-2", "open").await;
+    let (addr, task) = serve(store.clone()).await;
+    let post = |route: &'static str, body: serde_json::Value| async move {
+        let start = format!("POST /lakes/finance/schema/{route}");
+        let body = body.to_string();
+        exchange(addr, &[&start, "authorization: Bearer k-owner", &body]).await
+    };
+    let change = json!({"change": "records", "type": "invoice", "where": "status = 'open'",
+                        "to": {"set": {"status": "late"}}});
+    let head = store.head().await.unwrap();
+    let (status, _, body) = post("plan", change.clone()).await;
+    assert!(status.starts_with('2'), "{status} {body}");
+    let plan: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(store.head().await.unwrap(), head, "a plan appended");
+    assert_eq!(plan["data"]["records"]["selected"], json!(2));
+    assert_eq!(
+        plan["said"],
+        json!([
+            "The condition selects 2 records of `invoice`: `INV-1`, `INV-2`.",
+            "`status` would change on 2 records."
+        ])
+    );
+    let plan_id = plan["data"]["report_id"].as_str().unwrap().to_owned();
+
+    // The selection moved since the plan: refused, nothing appended.
+    put("INV-2", "paid").await;
+    let head = store.head().await.unwrap();
+    let mut enact = change.clone();
+    enact["plan_id"] = json!(plan_id);
+    let (status, _, body) = post("enact", enact.clone()).await;
+    assert!(
+        status.starts_with('4') && body.contains("plan_stale"),
+        "{status} {body}"
+    );
+    assert_eq!(store.head().await.unwrap(), head, "a stale enact appended");
+
+    let (_, _, body) = post("plan", change).await;
+    let plan: serde_json::Value = serde_json::from_str(&body).unwrap();
+    enact["plan_id"] = plan["data"]["report_id"].clone();
+    let (status, _, body) = post("enact", enact).await;
+    task.abort();
+    assert!(status.starts_with('2'), "{status} {body}");
+    let outcome: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(outcome["outcome"], json!("applied"));
+    let got = lakelands_door_checks::checks::get("INV-1");
+    let record = c.get(&owner, &"invoice".into(), got).await;
+    let record = record.unwrap().data;
+    assert_eq!(record.fields["status"], json!("late"));
+}
+
+/// A change to records proposed over `POST …/proposals` lists as kind
+/// `records` with its wording, is refused a plain `accept`, refused
+/// `accept_planned` with a stale plan id, and made by `accept_planned` with
+/// the id of a current plan.
+#[tokio::test]
+async fn a_proposed_change_to_records_is_accepted_over_rest_only_against_its_plan() {
+    let store = rest_lake(Backend::Memory).await;
+    let (c, owner) = (store.catalog(WriteContext::default()), common::owner());
+    let put = |key: &'static str, status: &'static str| {
+        let (c, owner) = (c.clone(), owner.clone());
+        let patch = lakelands_door_checks::checks::patch(&[("status", json!(status))]);
+        async move {
+            let at = (&"invoice".into(), &key.into());
+            c.upsert(&owner, at.0, at.1, patch, WriteOpts::default())
+                .await
+                .unwrap();
+        }
+    };
+    put("INV-1", "open").await;
+    put("INV-2", "open").await;
+    let (addr, task) = serve(store.clone()).await;
+    let post = |path: String, body: serde_json::Value| async move {
+        let start = format!("POST /lakes/finance/{path}");
+        let body = body.to_string();
+        exchange(addr, &[&start, "authorization: Bearer k-owner", &body]).await
+    };
+    let change = json!({"change": "records", "type": "invoice", "where": "status = 'open'",
+                        "to": {"set": {"status": "late"}}});
+    let write = json!({"write": "records", "type": "invoice", "where": "status = 'open'",
+                       "to": {"set": {"status": "late"}}});
+    let (status, _, body) = post(
+        "proposals".into(),
+        json!({"write": write, "why": "mark them late"}),
+    )
+    .await;
+    assert!(status.starts_with('2'), "{status} {body}");
+    let filed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let id = filed["proposal"].as_str().unwrap().to_owned();
+
+    let listed = exchange(
+        addr,
+        &[
+            "GET /lakes/finance/proposals?kind=records",
+            "authorization: Bearer k-owner",
+        ],
+    )
+    .await;
+    let listed: serde_json::Value = serde_json::from_str(&listed.2).unwrap();
+    let held = listed["data"].as_array().unwrap();
+    assert!(
+        held.iter().any(|p| p["id"] == json!(id)
+            && p["write"]["write"] == json!("records")
+            && p["said"].as_array().is_some_and(|s| !s.is_empty())),
+        "{listed}"
+    );
+
+    let head = store.head().await.unwrap();
+    let start = format!("POST /lakes/finance/proposals/{id}/accept");
+    let (status, _, body) = exchange(addr, &[&start, "authorization: Bearer k-owner"]).await;
+    assert!(
+        status.starts_with('4') && body.contains("plan_stale"),
+        "{status} {body}"
+    );
+    let (_, _, shown) = post("schema/plan".into(), change.clone()).await;
+    let shown: serde_json::Value = serde_json::from_str(&shown).unwrap();
+    let stale_id = shown["data"]["report_id"].clone();
+    put("INV-2", "paid").await;
+    let head = head.max(store.head().await.unwrap());
+    let (status, _, body) = post(
+        format!("proposals/{id}/accept_planned"),
+        json!({"plan_id": stale_id}),
+    )
+    .await;
+    assert!(
+        status.starts_with('4') && body.contains("plan_stale"),
+        "{status} {body}"
+    );
+    assert_eq!(store.head().await.unwrap(), head, "a refusal appended");
+
+    let (_, _, shown) = post("schema/plan".into(), change).await;
+    let shown: serde_json::Value = serde_json::from_str(&shown).unwrap();
+    let (status, _, body) = post(
+        format!("proposals/{id}/accept_planned"),
+        json!({"plan_id": shown["data"]["report_id"]}),
+    )
+    .await;
+    task.abort();
+    assert!(status.starts_with('2'), "{status} {body}");
+    let got = lakelands_door_checks::checks::get("INV-1");
+    let record = c.get(&owner, &"invoice".into(), got).await;
+    assert_eq!(record.unwrap().data.fields["status"], json!("late"));
+}

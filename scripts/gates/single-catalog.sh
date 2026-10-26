@@ -23,7 +23,11 @@
 . "$(dirname "$0")/lib.sh"
 
 GENERATOR='crates/lakelands-api/src/tools'   # tools.rs or tools/
-DOORS='find|get|upsert|retire|link|unlink'
+DOORS='find|get|upsert|retire|change|link|unlink'
+
+# Words of other vocabularies that end in a door suffix: a derived field's
+# `on_input_change` setting, and a token a trigger test echoes. Not tool names.
+NOT_TOOLS='on_input_change|trigger_change'
 
 # The generic tool names, joined by `|`: the value of every constant
 # `GENERIC_TOOLS` lists. A constant it lists that is not declared as one
@@ -43,8 +47,9 @@ while IFS= read -r -d '' file; do
     case "$file" in "$GENERATOR".rs|"$GENERATOR"/*) continue ;; esac
     files=$((files + 1))
     while IFS= read -r hit; do fail "$hit"; done < <(perl -ne '
-        BEGIN { ($doors, $generic, $file) = splice @ARGV, 0, 3 }
+        BEGIN { ($doors, $generic, $other, $file) = splice @ARGV, 0, 4 }
         while (/"([a-z][a-z0-9_]*_(?:$doors))"/g) {
+            next if $1 =~ /^(?:$other)$/;
             print "$file:$.: tool name \"$1\" outside the generator\n";
         }
         while (/"(_(?:$doors))"/g) {
@@ -58,7 +63,7 @@ while IFS= read -r -d '' file; do
                 print "$file:$.: tool name \"$1\" outside the generator\n";
             }
         }
-    ' "$DOORS" "$GENERIC" "$file" "$file")
+    ' "$DOORS" "$GENERIC" "$NOT_TOOLS" "$file" "$file")
 done < <(git ls-files -z --cached --others --exclude-standard -- ':(glob)**/src/**/*.rs')
 
 verdict "$files source file(s) outside $GENERATOR, $(tr -cd '|' <<<"$GENERIC|" | wc -c | tr -d ' ') generic name(s)"

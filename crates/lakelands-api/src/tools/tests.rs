@@ -132,6 +132,7 @@ fn a_type_gives_four_doors_and_the_generic_tools_follow_rights() {
             "add_field",
             "declare_type",
             "describe",
+            "invoice_change",
             "invoice_find",
             "invoice_get",
             "invoice_retire",
@@ -211,11 +212,11 @@ fn a_verb_tool_says_whether_its_executor_is_bound() {
 }
 
 #[test]
-fn twenty_types_offer_about_eighty_tools() {
+fn twenty_types_offer_about_a_hundred_tools() {
     let types = (0..20).map(|i| ty(&format!("t{i}"), ALL, vec![])).collect();
     let t = tools_ok(&lake(types, vec![], LakeRights::default()));
     // describe, pin, subscribe, unsubscribe, query, search, propose
-    assert_eq!(t.len(), 80 + 7);
+    assert_eq!(t.len(), 100 + 7);
 }
 
 #[test]
@@ -487,6 +488,7 @@ fn the_generic_tools_emitted_are_exactly_the_generic_list() {
                 Door::Find { .. }
                     | Door::Get { .. }
                     | Door::Upsert { .. }
+                    | Door::Change { .. }
                     | Door::Retire { .. }
                     | Door::Link { .. }
                     | Door::Unlink { .. }
@@ -587,5 +589,57 @@ fn the_outcome_schema_names_every_member_an_outcome_answers() {
         kinds,
         &serde_json::json!(named),
         "the kinds are every kind, as answered"
+    );
+}
+
+/// A type the principal may write has a `<type>_change` tool: `set` takes
+/// the fields it may write, `retire` is there only where it may retire,
+/// and a type it may only read has none (081).
+#[test]
+fn a_change_tool_follows_what_its_principal_may_write() {
+    let t = tools_ok(&lake(vec![invoice()], vec![], OWNER));
+    let change = t.iter().find(|t| t.name == "invoice_change").unwrap();
+    assert_eq!(
+        change.door,
+        Door::Change {
+            ty: "invoice".into()
+        }
+    );
+    let props = &change.input_schema["properties"];
+    for member in ["where", "set", "retire", "plan", "plan_id"] {
+        assert!(props.get(member).is_some(), "{member}");
+    }
+    assert!(props["set"]["properties"].get("verdict").is_some());
+    assert!(props["set"]["properties"].get("score").is_none());
+    for named in ["plan_stale", "too_large"] {
+        assert!(change.description.contains(named), "{}", change.description);
+    }
+    let mut reader = invoice();
+    reader.may.upsert = false;
+    reader.may.retire = false;
+    let t = tools_ok(&lake(vec![reader], vec![], OWNER));
+    assert!(t.iter().all(|t| t.name != "invoice_change"));
+}
+
+#[test]
+fn a_change_tool_on_a_link_type_sets_its_own_fields_or_unlinks_and_names_no_end() {
+    let (invoice, mut link_type) = linked_invoice();
+    link_type.may = ALL;
+    let t = tools_ok(&lake_of(vec![invoice, link_type]));
+    let change = t
+        .iter()
+        .find(|t| t.name == "sys_link_invoice_approved_by_change")
+        .expect("the change tool of the link type");
+    let set = &change.input_schema["properties"]["set"]["properties"];
+    assert!(set["since"].is_object(), "{set}");
+    assert!(set.get("score").is_none(), "a read-only field: {set}");
+    assert!(
+        set.get("from").is_none() && set.get("to").is_none(),
+        "{set}"
+    );
+    assert!(
+        change.description.contains("unlink"),
+        "{}",
+        change.description
     );
 }
