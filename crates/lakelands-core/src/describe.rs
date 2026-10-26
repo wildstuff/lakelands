@@ -628,12 +628,14 @@ pub fn declaration_probes(
 /// described to (024): the triggers and object sets `describe` lists to
 /// it, and of those only where it reads every field the condition names.
 /// Being shown a definition is not reading what it reads, and naming a
-/// reaction says that its condition held.
+/// reaction says that its condition held. A field hidden on some records
+/// is not read: the reaction would say what it holds there (006).
 pub fn named_reactions(lake: &LakeDescription, set_off: &mut lakelands_api::write::SetOff) {
     let reads = |ty: &TypeName, c: Option<&Condition>| {
         let fields = lake.types.iter().find(|t| &t.name == ty).map(|t| &t.fields);
         let read = |n: &FieldName| {
-            fields.is_some_and(|f| f.iter().any(|f| &f.name == n && f.access.reads()))
+            let told = |f: &&FieldDescription| f.access.reads() && f.hidden_where.is_empty();
+            fields.is_some_and(|f| f.iter().filter(told).any(|f| &f.name == n))
         };
         let sets = |n: &str| {
             let named = lake.object_sets.iter().find(|d| d.name == n);
