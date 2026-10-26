@@ -738,7 +738,7 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
             (
                 "where",
                 json!({"type": "string",
-                       "description": "A condition in the expression grammar, e.g. status = 'open' and amount > 100."}),
+                       "description": "A condition in the expression grammar, e.g. status = 'open' and amount > 100; a list is written in parentheses, status in ('open', 'paid'), not in brackets as a `cypher` statement writes it."}),
             ),
             (
                 "order_by",
@@ -750,7 +750,11 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
                 },
             ),
             ("limit", json!({"type": "integer", "minimum": 1})),
-            ("cursor", json!({"type": "string"})),
+            (
+                "cursor",
+                json!({"type": "string",
+                       "description": "The `next_cursor` of the page before, to read the next page: give it with the same `where` and `order_by` the first page was read with."}),
+            ),
             (
                 "offset",
                 json!({"type": "integer", "minimum": 0,
@@ -1242,7 +1246,8 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                     "type": {"type": "string"}, "where": {"type": "string"},
                     "depth": {"type": "object", "properties": {
                         "min": {"type": "integer", "minimum": 0},
-                        "max": {"type": "integer", "minimum": 0}}},
+                        "max": {"type": "integer", "minimum": 0}},
+                        "description": "How many hops the step walks, both members given, as {\"min\": 0, \"max\": 6}. A graph or a path (`to`) whose steps all have `min` 0 is one walk over their relations, in any order; a step with `min` 1 or more makes it a chain, each step walking on from where the one before it stopped."},
                     "as": {"type": "string", "description": STEP_BINDING},
                     "from": {"type": "string", "description": STEP_FROM},
                     "join": {"type": "string", "description": STEP_JOIN},

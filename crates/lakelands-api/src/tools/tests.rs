@@ -665,3 +665,27 @@ fn a_change_tool_on_a_link_type_sets_its_own_fields_or_unlinks_and_names_no_end(
         change.description
     );
 }
+
+/// What walk 7's agent was refused for not knowing is said where it
+/// reads first: a find's cursor goes back with the `where` and
+/// `order_by` of its first page, a find's list is written in
+/// parentheses, and a step's depth takes both members, a graph or a path
+/// being one walk only where every step's `min` is 0.
+#[test]
+fn a_cursor_a_list_and_a_depth_say_what_their_refusals_ask() {
+    let t = tools_ok(&lake_of(vec![invoice()]));
+    let door = |d: Door| t.iter().find(|t| t.door == d).expect("the door is offered");
+    let find = &door(Door::Find { ty: "invoice".into() }).input_schema["properties"];
+    let said = |v: &Value| v["description"].as_str().unwrap_or_default().to_owned();
+    let cursor = said(&find["cursor"]);
+    for words in ["`next_cursor`", "`where`", "`order_by`"] {
+        assert!(cursor.contains(words), "the cursor says {words}: {cursor}");
+    }
+    let condition = said(&find["where"]);
+    assert!(condition.contains("in ('open', 'paid')"), "{condition}");
+    let query = &door(Door::Query).input_schema["properties"];
+    let depth = said(&query["steps"]["items"]["properties"]["depth"]);
+    for words in ["both members", "`to`", "`min` 0", "chain"] {
+        assert!(depth.contains(words), "the depth says {words}: {depth}");
+    }
+}
