@@ -185,18 +185,14 @@ impl Call<'_> {
                 // to refuse, as before (062).
                 let mut changed = declarations.clone();
                 changed.retain(|d| !w.ontology.in_force(d));
-                let bundled = match changed.is_empty() {
+                let types = match changed.is_empty() {
                     true => {
                         in_force = Some(declarations.clone());
-                        Some(Vec::new())
+                        Vec::new()
                     }
-                    false => Some(
-                        as_plain
-                            .bundle_drafts(&w, changed, (now, 0, judging))?
-                            .types,
-                    ),
+                    false => (as_plain.bundle_drafts(&w, changed, (now, 0, judging))?).types,
                 };
-                *plan = bundled.map(|types| Box::new(plan::plan_of(&w, (types, Vec::new()))));
+                *plan = Some(Box::new(plan::plan_of(self.lake, &w, (types, Vec::new()))?));
             }
             ProposedWrite::Migrate { migration, report } => {
                 let author = self.authored(&w.ontology, migration)?;
@@ -278,11 +274,11 @@ impl Call<'_> {
             ProposedWrite::Migrate { migration, report } => {
                 let mut types = vec![self.shown(&w, migration, (**report).clone())?];
                 types.extend(plan::others_shown(&d.at.sight, std::mem::take(&mut others)));
-                Some(plan::plan_of(&w, (types, Vec::new())))
+                Some(plan::plan_of(self.lake, &w, (types, Vec::new()))?)
             }
             ProposedWrite::MigrateValueType { report, .. } => {
                 let report = self.shown_value_type(&w.ontology, (**report).clone());
-                Some(plan::plan_of(&w, (Vec::new(), vec![report])))
+                Some(plan::plan_of(self.lake, &w, (Vec::new(), vec![report]))?)
             }
             ProposedWrite::Records { plan, .. } => Some((**plan).clone()),
             _ => None,
@@ -844,7 +840,7 @@ impl Call<'_> {
             outcome = with_declared(outcome, &w.ontology, declarations, accepted_at);
         }
         if let (true, Outcome::Applied { plan, .. }) = (write.is_schema(), &mut outcome) {
-            *plan = Some(Box::new(plan::plan_of(&w, sections)));
+            *plan = Some(Box::new(plan::plan_of(self.lake, &w, sections)?));
         }
         if let (Some(p), Outcome::Applied { plan, .. }) = (records_plan, &mut outcome) {
             *plan = Some(Box::new(p));

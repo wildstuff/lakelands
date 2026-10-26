@@ -1,8 +1,9 @@
 //! A change to the ontology plans before it acts
 //! (`docs/decisions/062-a-change-plans-before-it-acts.md`).
 
-use lakelands_api::write::{Change, Plan, ValueTypeMigration, WriteOpts};
+use lakelands_api::write::{Change, Plan, ProposedWrite, ValueTypeMigration, WriteOpts};
 
+use super::erasable::again as reopened;
 use super::only::{de, holder};
 use crate::conformance::prelude::*;
 
@@ -30,6 +31,12 @@ check!(
 check!(
     PLAN_TOLD = a_proposal_is_lossless_as_its_proposer_is_told,
     "062, 027, 006: a proposed migration is lossless as its proposer is told it, and so is a change's `plan` and a preview to a holder of `schema` without `restricted`, whose `enact`, `migrate_apply` and `migrate_value_type_apply` are refused `grant_needed` whatever the lake holds, as are its `declare`, `apply`, `add_field` and `recompute` and a reviewer's `accept` without `restricted`: twins whose one record a change would leave breaking a constraint that refuses, by a function declared again, by a field a migration computes again, by a re-key that rewrites another type's reference to it or by a value type's rename, or whose one link a narrowing to `many_to_one` would leave second at its end, is restricted in the one and retired or unlinked in the other are planned, previewed, proposed and listed alike to callers without `restricted`, its acts refused alike to that holder of `schema`, and the owner's accept refuses the one and applies the other; with that record live and unrestricted, each proposal is refused and the plan and preview are lossy or refused as the act"
+);
+
+check!(
+    PLAN_REOPENED = a_plans_id_holds_across_an_open_and_not_across_a_write,
+    "062, extended (lakelands#1476): a plan's id, and its migration's or value type's section's, names the head 039 names; the lake opened again between `plan` and `enact` of a function declared again, of a migration and of a value type's migration appends a lease, and each is made under the plan's id, a `migrated` it appends naming the id of its section; a migration and a value type's migration proposed after such an open are listed under their sections' ids; a record written after such an open moves the head, and `enact` under the id is refused `plan_stale`, appending nothing",
+    given
 );
 
 /// A plan as one line: per section its type, the records computed again,
@@ -1416,5 +1423,142 @@ async fn a_proposal_is_lossless_as_its_proposer_is_told(store: Store) -> Held {
         "pr proposes k3: narrowing_breaks_links",
     ];
     ensure!(said == expected, "the proposals were otherwise: {said:#?}");
+    Ok(())
+}
+
+/// `q`, whose `d` is `f` of `s` and whose `e` is `s` by `expr`.
+fn q(expr: &str) -> Value {
+    let text = |name: &str| json!({"name": name, "type": {"kind": "text"}});
+    json!({"name": "q", "fields": [text("s"),
+        {"name": "c", "type": {"kind": "text", "value_type": "tone"}},
+        {"name": "d", "type": {"kind": "text"}, "authority": "derived", "function": "f",
+         "depends_on": ["s"]},
+        {"name": "e", "type": {"kind": "text"}, "authority": "derived", "derived": expr,
+         "depends_on": ["s"]}]})
+}
+
+/// The changes to `q`'s records whose plans hold across an open: `f`
+/// declared again, `e` migrated and `tone` widened.
+fn reopened_changes() -> [(&'static str, Change); 3] {
+    let tone = json!({"name": "tone", "kind": "text", "one_of": ["a", "b", "c"]});
+    let migration = Box::new(ValueTypeMigration::from(de::<ValueTypeDecl>(tone)));
+    let to = Migration::to(de(q("if(s = 'a0', 'b', s)")));
+    [
+        ("a function declared again", again("")),
+        (
+            "a migration",
+            Change::Migrate {
+                migration: Box::new(to),
+            },
+        ),
+        (
+            "a value type's migration",
+            Change::MigrateValueType { migration },
+        ),
+    ]
+}
+
+async fn a_plans_id_holds_across_an_open_and_not_across_a_write(
+    store: Store,
+    given: Given,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    let tone =
+        json!({"declare": "value_type", "name": "tone", "kind": "text", "one_of": ["a", "b"]});
+    l.declare_json(tone).await?;
+    l.declare_json(function("f", "s")).await?;
+    let mut declared = q("s");
+    declared["declare"] = json!("type");
+    l.declare_json(declared).await?;
+    for k in ["a0", "a1"] {
+        l.upsert("q", k, json!({"s": k, "c": "a"})).await?;
+    }
+    let mut store = store;
+    // A migration and a value type's migration proposed after an open are
+    // listed under the ids of their plan's sections.
+    for (what, change) in reopened_changes().into_iter().skip(1) {
+        let l = Lake::of(store.as_ref());
+        let planned = l.cat.plan(&l.own, change.clone()).await;
+        let plan = planned.must(&format!("planning {what}"))?.data;
+        store = reopened(&given.reopen, store, Seams::default(), "after a plan").await?;
+        let l = Lake::of(store.as_ref());
+        let write = match change {
+            Change::Migrate { migration } => ProposedWrite::Migrate {
+                migration,
+                report: Default::default(),
+            },
+            Change::MigrateValueType { migration: m } => ProposedWrite::MigrateValueType {
+                to: Box::new(m.to),
+                renames: m.renames,
+                report: Default::default(),
+            },
+            _ => continue,
+        };
+        let proposed = l.cat.propose(&l.own, write, "why".into()).await;
+        proposed.must(&format!("proposing {what}"))?;
+        let listed = l.cat.proposals(&l.own, Default::default()).await;
+        let ids: Vec<_> = (listed.must("the listing")?.data.into_iter())
+            .filter_map(|p| match p.write? {
+                ProposedWrite::Migrate { report, .. } => Some(report.report_id),
+                ProposedWrite::MigrateValueType { report, .. } => Some(report.report_id),
+                _ => None,
+            })
+            .collect();
+        let made = (plan.types.iter().map(|t| &t.report_id))
+            .chain(plan.value_types.iter().map(|v| &v.report_id));
+        let made: Vec<_> = made.collect();
+        ensure!(
+            made.len() == 1 && ids.contains(made[0]),
+            "{what} proposed after an open is listed under its plan's section {made:?}; it is \
+             listed {ids:?}"
+        );
+    }
+    for moved in [true, false] {
+        for (what, change) in reopened_changes() {
+            let l = Lake::of(store.as_ref());
+            let planned = l.cat.plan(&l.own, change.clone()).await;
+            let plan = planned.must(&format!("planning {what}"))?.data;
+            let (id, sections) = (&plan.report_id, plan.types.iter().map(|t| &t.report_id));
+            let sections: Vec<_> = sections.collect();
+            let read = store.head().await.must("reading the head")?;
+            store = reopened(&given.reopen, store, Seams::default(), "after a plan").await?;
+            let kinds: Vec<_> = (events_after(store.as_ref(), read).await?)
+                .iter()
+                .map(|e| e.body.kind())
+                .collect();
+            ensure!(
+                kinds.contains(&"lease_taken"),
+                "opening the lake again appends a lease; it appended {kinds:?}"
+            );
+            let l = Lake::of(store.as_ref());
+            if !moved {
+                let read = store.head().await.must("reading the head")?;
+                let migrates = matches!(change, Change::Migrate { .. });
+                let made = l.cat.enact(&l.own, change, id).await;
+                made.must(&format!("{what} under its plan, the lake opened between"))?;
+                let logged: Vec<_> = (events_after(store.as_ref(), read).await?)
+                    .into_iter()
+                    .filter_map(|e| match e.body {
+                        EventBody::Migrated { report_id, .. } => Some(report_id),
+                        _ => None,
+                    })
+                    .collect();
+                ensure!(
+                    logged.len() == usize::from(migrates)
+                        && logged.iter().all(|r| sections.contains(&r)),
+                    "{what}'s `migrated` names its plan's section {sections:?}; it names {logged:?}"
+                );
+                continue;
+            }
+            l.upsert("q", "moved", json!({ "s": what })).await?;
+            let head = store.head().await.must("reading the head")?;
+            refused_like(
+                &format!("{what} under a plan before an open and a write"),
+                l.cat.enact(&l.own, change, id).await,
+                &json!({"code": "plan_stale"}),
+            )?;
+            head_unmoved(store.as_ref(), head, "a change under a stale plan").await?;
+        }
+    }
     Ok(())
 }

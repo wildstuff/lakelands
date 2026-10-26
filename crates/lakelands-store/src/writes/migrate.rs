@@ -1055,7 +1055,7 @@ impl Call<'_> {
         // held from its reader tells nothing that a retired one would not.
         report.lossless &= plan.lossless;
         let listed = plan.listed();
-        report.report_id = report_id(&report, view.position());
+        report.report_id = report_id(&report, self.lake.report_head(view.position())?);
         // A record of another type whose reference to a moved key the fold
         // rewrites: decided for the sets whose filter reads that field, a
         // page of the type at a time.
@@ -1637,7 +1637,7 @@ impl Call<'_> {
         if !renames.is_empty() {
             conditions(&w.ontology, view, self.who, &mut report, &renames)?;
         }
-        let head = view.position().map_or(0, |p| p.0);
+        let head = (self.lake.report_head(view.position())?).map_or(0, |p| p.0);
         // Named as its reader is shown it; one that renames is never trimmed.
         let shown = self.shown_value_type(&w.ontology, report.clone());
         let said = if renames.is_empty() { &shown } else { &report };

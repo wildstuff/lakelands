@@ -1640,7 +1640,8 @@ pub struct Plan {
     /// the SHA-256 of `{"plan": …, "head": …}` in canonical form, the plan
     /// as its reader is shown it with this member empty.
     pub report_id: String,
-    /// The head it was made at.
+    /// The head it was made at: the log's last event that is neither a
+    /// `lease_taken` nor a `checkpoint`.
     pub at: Position,
     /// Each type whose stored records the change would change, by name: a
     /// migration's report, of the type migrated or of one a declaration

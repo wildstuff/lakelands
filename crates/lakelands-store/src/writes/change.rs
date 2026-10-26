@@ -103,7 +103,7 @@ impl Call<'_> {
         };
         let mut plan = Plan {
             report_id: String::new(),
-            at: head(w),
+            at: (self.lake.report_head(Some(head(w)))?).unwrap_or(Position::GENESIS),
             types: Vec::new(),
             value_types: Vec::new(),
             lossless: section.refused.is_empty(),
