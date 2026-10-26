@@ -137,6 +137,7 @@ An openCypher construct outside the subset Lakelands reads, spelt as the stateme
 | `optional_parts` | — | an `OPTIONAL MATCH` walking from more than one name bound before it (an optional part is one branch from one name) | An `OPTIONAL MATCH` hanging from more than one bound name. |
 | `aggregate_in_expression` | — | an aggregate inside an expression (a measure is one function of one path) | An aggregate inside an expression. |
 | `using` | — | `USING` (an index hint) | A `USING` hint. |
+| `order_by_aggregate` | — | `ORDER BY` beside an aggregate (its groups come in one fixed order, by the fields returned beside it: leave `ORDER BY` out) | `ORDER BY` beside an aggregate. |
 
 ## `Act`
 
