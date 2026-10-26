@@ -675,7 +675,10 @@ fn a_change_tool_on_a_link_type_sets_its_own_fields_or_unlinks_and_names_no_end(
 fn a_cursor_a_list_and_a_depth_say_what_their_refusals_ask() {
     let t = tools_ok(&lake_of(vec![invoice()]));
     let door = |d: Door| t.iter().find(|t| t.door == d).expect("the door is offered");
-    let find = &door(Door::Find { ty: "invoice".into() }).input_schema["properties"];
+    let find = &door(Door::Find {
+        ty: "invoice".into(),
+    })
+    .input_schema["properties"];
     let said = |v: &Value| v["description"].as_str().unwrap_or_default().to_owned();
     let cursor = said(&find["cursor"]);
     for words in ["`next_cursor`", "`where`", "`order_by`"] {

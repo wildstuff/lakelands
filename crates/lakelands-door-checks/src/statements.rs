@@ -784,7 +784,10 @@ pub async fn a_record_named_in_plain_words_is_found_through_describe_and_cypher(
     }
     assert_eq!(reaching, [(json!("invoice"), json!("billed_by"))], "{d}");
     let (ty, relation) = (&reaching[0].0, &reaching[0].1);
-    let (ty, relation) = (ty.as_str().expect("a type"), relation.as_str().expect("a relation"));
+    let (ty, relation) = (
+        ty.as_str().expect("a type"),
+        relation.as_str().expect("a relation"),
+    );
     let s = format!(
         "MATCH (p:partner {{name: $name}})<-[:{relation}]-(i:{ty}) \
          RETURN i.key, i.status ORDER BY i.key LIMIT 2"
