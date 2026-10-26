@@ -9,6 +9,11 @@
 //! [`InProcess`] for a host that holds its lake and translates the
 //! statement itself. [`statement_checks!`](crate::statement_checks)
 //! expands to one `#[test]` per check.
+//!
+//! The MCP door serves the same statements as its `cypher` tool, listed
+//! where `query` is. [`cypher_tool_checks!`](crate::cypher_tool_checks)
+//! checks it against a [`Statements`] door over the same lake, through
+//! [`Tools`]: a session of one principal, listing and calling.
 
 use std::sync::Arc;
 
@@ -17,6 +22,7 @@ use lakelands_api::error::{Case, Construct, Error, Refusal, Said};
 use lakelands_api::id::{Cursor, Position};
 use lakelands_api::query::Pattern;
 use lakelands_api::read::{Params, ReadAt};
+use lakelands_api::tools::{Door, tools};
 use lakelands_api::{Catalog, LakeStore, Principal};
 use serde_json::{Value, json};
 
@@ -47,6 +53,33 @@ macro_rules! statement_checks {
             fn $name() {
                 let (lake, door) = ($new)();
                 $block_on($crate::statements::$name(lake, door));
+            }
+        )*
+    };
+}
+
+/// Expands to one `#[test]` per check of the `cypher` tool.
+///
+/// `$new` is called once per check and gives a fresh, empty lake, a
+/// statement door over it and the MCP door's tools over it, as
+/// `(Arc<dyn LakeStore>, Arc<dyn Statements>, Arc<dyn Tools>)`.
+#[macro_export]
+macro_rules! cypher_tool_checks {
+    ($new:expr, $block_on:path) => {
+        $crate::cypher_tool_checks!(@each $new, $block_on;
+            the_cypher_tool_is_listed_where_query_is,
+            a_statement_through_the_tool_answers_as_at_the_door,
+            the_tool_pages_with_the_cursor_beside_the_statement,
+            a_write_statement_is_refused_by_the_tool_naming_it,
+            an_order_beside_an_aggregate_is_refused_in_the_statements_words,
+            a_type_not_shown_is_answered_through_cypher_as_through_query);
+    };
+    (@each $new:expr, $block_on:path; $($name:ident),* $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                let (lake, door, tools) = ($new)();
+                $block_on($crate::statements::$name(lake, door, tools));
             }
         )*
     };
@@ -86,6 +119,18 @@ impl Statements for InProcess {
         let answer = lakelands_cypher::run(c, who, statement, params, at, cursor.cloned());
         Ok(serde_json::to_value(answer.await?).expect("an answer is JSON"))
     }
+}
+
+/// The MCP door's tools, as a session of one principal lists and calls
+/// them.
+#[async_trait]
+pub trait Tools: Send + Sync {
+    /// What `tools/list` lists for `who`, each tool as listed.
+    async fn list(&self, who: &Principal) -> Vec<Value>;
+
+    /// `tools/call` of `name` with `arguments`, as `who`: the structured
+    /// content of the answer, or the error a refused call carries.
+    async fn call(&self, who: &Principal, name: &str, arguments: Value) -> Result<Value, Error>;
 }
 
 const STATEMENT: &str = "MATCH (i:invoice)-[:billed_by]->(p:partner) \
@@ -417,6 +462,254 @@ pub async fn a_statement_nested_past_the_limit_is_refused_where_it_goes_deeper(
         Some(4),
         "{read}"
     );
+}
+
+/// The names `tools/list` lists for `who`.
+async fn listed(tools: &dyn Tools, who: &Principal) -> Vec<String> {
+    let listed = tools.list(who).await;
+    let name = |t: &Value| t["name"].as_str().expect("a tool is named").to_owned();
+    listed.iter().map(name).collect()
+}
+
+/// The name the generator gives `door` for `who`, if it offers it.
+async fn named(f: &Fixture, who: &Principal, door: &Door) -> Option<String> {
+    let d = f.catalog.describe(who, ReadAt::default()).await;
+    let d = d.expect("the principal is described").data;
+    let offered = tools(&d).expect("the fixture's names are valid");
+    offered
+        .into_iter()
+        .find(|t| t.door == *door)
+        .map(|t| t.name)
+}
+
+/// The `cypher` tool through the MCP door, as `who`: `statement` with
+/// `params`, and `cursor`.
+async fn through_tool(
+    (tools, f): (&dyn Tools, &Fixture),
+    who: &Principal,
+    statement: &str,
+    params: &Params,
+    cursor: Option<&Cursor>,
+) -> Result<Value, Error> {
+    let mut a = json!({ "statement": statement, "params": params });
+    if let Some(c) = cursor {
+        a["cursor"] = serde_json::to_value(c).expect("a cursor is JSON");
+    }
+    let name = named(f, &f.cast.owner, &Door::Cypher).await;
+    tools
+        .call(who, &name.expect("the owner is offered it"), a)
+        .await
+}
+
+/// The `cypher` tool is listed exactly where `query` is, for every
+/// principal of the cast, with its schema: the statement, its parameters,
+/// the cursor and the two axes; and its description says what `ORDER BY`,
+/// `LIMIT` and an aggregate may name, what the subset cannot spell, which
+/// `query` can, and how the cursor is passed.
+pub async fn the_cypher_tool_is_listed_where_query_is(
+    lake: Arc<dyn LakeStore>,
+    _door: Arc<dyn Statements>,
+    tools: Arc<dyn Tools>,
+) {
+    let f = setup(lake).await;
+    let c = &f.cast;
+    let cast = [
+        &c.owner,
+        &c.clerk,
+        &c.architect,
+        &c.auditor,
+        &c.reviewer,
+        &c.importer,
+        &c.stranger,
+        &c.keeper,
+        &c.tuner,
+    ];
+    for who in cast {
+        let names = listed(tools.as_ref(), who).await;
+        let cypher = named(&f, who, &Door::Cypher).await;
+        let query = named(&f, who, &Door::Query).await;
+        assert_eq!(cypher.is_some(), query.is_some(), "{}: {names:?}", who.id);
+        for offered in [&cypher, &query].into_iter().flatten() {
+            assert!(names.contains(offered), "{}: {names:?}", who.id);
+        }
+    }
+
+    let owner = tools.list(&c.owner).await;
+    let cypher = named(&f, &c.owner, &Door::Cypher).await;
+    let tool = owner
+        .iter()
+        .find(|t| t["name"].as_str() == cypher.as_deref());
+    let tool = tool.expect("the owner is listed the tool");
+    let schema = &tool["inputSchema"];
+    let members: Vec<&String> = schema["properties"]
+        .as_object()
+        .expect("the members")
+        .keys()
+        .collect();
+    let want = ["as_of", "cursor", "params", "statement", "valid_at"];
+    assert_eq!(members, want, "{schema}");
+    assert_eq!(schema["required"], json!(["statement"]), "{schema}");
+    let said = tool["description"].as_str().expect("a description");
+    for words in [
+        "ORDER BY",
+        "LIMIT",
+        "count(*)",
+        "shortest",
+        "degree",
+        "`query`",
+        "`next_cursor`",
+        "the same statement and parameters",
+    ] {
+        assert!(said.contains(words), "the description says {words}: {said}");
+    }
+}
+
+/// A statement read through the tool answers what the statement door
+/// answers, as the same principal: the owner the note, the clerk not.
+pub async fn a_statement_through_the_tool_answers_as_at_the_door(
+    lake: Arc<dyn LakeStore>,
+    door: Arc<dyn Statements>,
+    tools: Arc<dyn Tools>,
+) {
+    let f = setup(lake).await;
+    billed(&f).await;
+    let open = given("open");
+    for who in [&f.cast.owner, &f.cast.clerk] {
+        let tool = through_tool((tools.as_ref(), &f), who, STATEMENT, &open, None).await;
+        let tool = tool.expect("the tool reads the statement");
+        let at_door = door.cypher(who, STATEMENT, &open, at(None), None).await;
+        let at_door = at_door.expect("the door reads the statement");
+        assert_eq!(uncursored(tool.clone()), uncursored(at_door), "{}", who.id);
+        let rows = &tool["data"]["rows"];
+        assert_eq!(rows[0]["i.key"], json!("INV-1"), "{tool}");
+    }
+}
+
+/// A page past the first is read with the answer's `next_cursor` passed
+/// beside the same statement and parameters, and is the page the
+/// statement door reads from that cursor; the last page hands out none.
+pub async fn the_tool_pages_with_the_cursor_beside_the_statement(
+    lake: Arc<dyn LakeStore>,
+    door: Arc<dyn Statements>,
+    tools: Arc<dyn Tools>,
+) {
+    let f = setup(lake).await;
+    billed(&f).await;
+    let (clerk, open) = (&f.cast.clerk, given("open"));
+    let first = through_tool((tools.as_ref(), &f), clerk, STATEMENT, &open, None).await;
+    let first = first.expect("the first page");
+    let next = first["data"]["next_cursor"].clone();
+    let next: Cursor = serde_json::from_value(next).expect("a second page");
+    let second = through_tool((tools.as_ref(), &f), clerk, STATEMENT, &open, Some(&next)).await;
+    let second = second.expect("the second page");
+    let at_door = door
+        .cypher(clerk, STATEMENT, &open, at(None), Some(&next))
+        .await;
+    let at_door = at_door.expect("the door reads the second page");
+    assert_eq!(uncursored(second.clone()), uncursored(at_door));
+    let rows = &second["data"]["rows"];
+    assert_eq!(rows[0]["i.key"], json!("INV-4"), "{second}");
+    assert_eq!(rows.as_array().map(Vec::len), Some(1), "{second}");
+    assert_eq!(second["data"].get("next_cursor"), None, "{second}");
+}
+
+/// A statement that writes is refused by the tool naming the clause, at
+/// its offset, as the statement door refuses it, and nothing is written.
+pub async fn a_write_statement_is_refused_by_the_tool_naming_it(
+    lake: Arc<dyn LakeStore>,
+    door: Arc<dyn Statements>,
+    tools: Arc<dyn Tools>,
+) {
+    let f = setup(lake).await;
+    billed(&f).await;
+    let (owner, none) = (&f.cast.owner, Params::new());
+    let head = f.store.head().await.expect("the head");
+    for (s, construct) in [
+        (
+            "MATCH (i:invoice) SET i.status = 'paid' RETURN i.key",
+            Construct::Set,
+        ),
+        ("CREATE (i:invoice {key: 'INV-9'})", Construct::Create),
+        ("MATCH (i:invoice) DETACH DELETE i", Construct::DetachDelete),
+    ] {
+        let word = construct.to_string();
+        let first = word.trim_start_matches('`').split('`').next();
+        let offset = s.find(first.expect("a clause")).expect("the clause");
+        let case = Case::CypherOutside { construct, offset };
+        let tool = through_tool((tools.as_ref(), &f), owner, s, &none, None).await;
+        assert_eq!(tool.expect_err(s), invalid(case.clone()), "{s}");
+        let at_door = door.cypher(owner, s, &none, at(None), None).await;
+        assert_eq!(at_door.expect_err(s), invalid(case), "{s}");
+    }
+    let after = f.store.head().await.expect("the head");
+    assert_eq!(after, head, "nothing is written");
+}
+
+/// `ORDER BY` beside an aggregate is refused in the statement's words,
+/// at the tool as at the statement door: the clause, at its offset, and
+/// what to write instead. The statement written so is answered, its
+/// groups in the order of the field returned beside them.
+pub async fn an_order_beside_an_aggregate_is_refused_in_the_statements_words(
+    lake: Arc<dyn LakeStore>,
+    door: Arc<dyn Statements>,
+    tools: Arc<dyn Tools>,
+) {
+    let f = setup(lake).await;
+    billed(&f).await;
+    let (owner, none) = (&f.cast.owner, Params::new());
+    let grouped = "MATCH (i:invoice)-[:billed_by]->(p:partner) \
+        RETURN p.name, count(*) AS invoices";
+    let s = format!("{grouped} ORDER BY p.name LIMIT 10");
+    let offset = s.find("ORDER BY").expect("an order");
+    let tool = through_tool((tools.as_ref(), &f), owner, &s, &none, None).await;
+    let at_door = door.cypher(owner, &s, &none, at(None), None).await;
+    for e in [tool.expect_err(&s), at_door.expect_err(&s)] {
+        let wire = serde_json::to_value(&e).expect("an error is JSON");
+        let reason = &wire["reason"];
+        let got = json!([reason["code"], reason["construct"], reason["offset"]]);
+        let want = json!(["cypher_outside", "order_by_aggregate", offset]);
+        assert_eq!(got, want, "{wire}");
+        let said = e.to_string();
+        assert!(said.contains("leave `ORDER BY` out"), "{said}");
+        assert!(!said.contains("order_by"), "{said}");
+    }
+    let read = through_tool((tools.as_ref(), &f), owner, grouped, &none, None).await;
+    let read = read.expect("the groups are read");
+    let names: Vec<&Value> = (0..2)
+        .map(|i| &read["data"]["rows"][i]["by"]["p.name"])
+        .collect();
+    assert_eq!(names, [&json!("Acme"), &json!("Brix")], "{read}");
+}
+
+/// A principal not shown a type is answered through `cypher` as through
+/// `query` given the pattern the statement translates into: the stranger,
+/// shown an invoice's status alone, neither reads a partner nor an
+/// invoice's amount by either tool.
+pub async fn a_type_not_shown_is_answered_through_cypher_as_through_query(
+    lake: Arc<dyn LakeStore>,
+    door: Arc<dyn Statements>,
+    tools: Arc<dyn Tools>,
+) {
+    let f = setup(lake).await;
+    billed(&f).await;
+    let (stranger, none) = (&f.cast.stranger, Params::new());
+    for s in [
+        "MATCH (p:partner) RETURN p.name",
+        "MATCH (i:invoice)-[:billed_by]->(p:partner) RETURN i.key, p.name",
+        "MATCH (i:invoice) RETURN i.status, i.amount ORDER BY i.key",
+    ] {
+        let explain = format!("EXPLAIN {s}");
+        let pattern = door.cypher(&f.cast.owner, &explain, &none, at(None), None);
+        let pattern = pattern.await.expect("the owner explains it")["pattern"].take();
+        let query = named(&f, stranger, &Door::Query).await;
+        let query = query.expect("the stranger is offered `query`");
+        let by_query = tools.call(stranger, &query, pattern).await;
+        let by_cypher = through_tool((tools.as_ref(), &f), stranger, s, &none, None).await;
+        match (by_cypher, by_query) {
+            (Ok(c), Ok(q)) => assert_eq!(uncursored(c), uncursored(q), "{s}"),
+            (c, q) => assert_eq!(c, q, "{s}"),
+        }
+    }
 }
 
 fn given_as(name: &str, value: &str) -> Params {

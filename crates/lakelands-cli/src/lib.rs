@@ -56,6 +56,10 @@ use lakelands_server::say;
 pub use root::{CONFIG, Config, KeysConfig, StandbyConfig};
 pub use say::Failure;
 
+/// `query`'s flag that takes the statement: a word of the command line,
+/// not the MCP tool the catalog makes of the same word.
+const CYPHER: &str = "cypher";
+
 /// A lake being opened.
 pub type Opening = Pin<Box<dyn Future<Output = Result<Arc<dyn LakeStore>>> + Send>>;
 
@@ -319,7 +323,7 @@ fn command() -> Command {
         .subcommand(
             Command::new("query")
                 .about("Read the lake with an openCypher statement; with EXPLAIN, print the pattern it translates to and read nothing")
-                .arg(Arg::new("cypher").long("cypher").value_name("STATEMENT").required(true).help("The statement, in the openCypher subset the lake reads"))
+                .arg(Arg::new(CYPHER).long(CYPHER).value_name("STATEMENT").required(true).help("The statement, in the openCypher subset the lake reads"))
                 .arg(Arg::new("param").long("param").value_name("NAME=JSON").action(ArgAction::Append).help("A value for the statement's `$NAME`; repeated for more parameters"))
                 .arg(Arg::new("as-of").long("as-of").value_name("POSITION").value_parser(clap::value_parser!(u64)).help("Read the lake as it was at this position"))
                 .arg(Arg::new("valid-at").long("valid-at").value_name("INSTANT").help("Read what was true in the world at this instant, as `2026-06-30T00:00:00Z`"))
@@ -833,7 +837,7 @@ async fn dispatch(
             let pairs = sub
                 .get_many::<String>("param")
                 .map(|v| v.cloned().collect());
-            let statement = text(sub, "cypher").unwrap_or_default();
+            let statement = text(sub, CYPHER).unwrap_or_default();
             let at = (
                 sub.get_one::<u64>("as-of").map(|p| Position(*p)),
                 text(sub, "valid-at"),

@@ -130,6 +130,7 @@ fn a_type_gives_four_doors_and_the_generic_tools_follow_rights() {
         [
             "accept",
             "add_field",
+            "cypher",
             "declare_type",
             "describe",
             "invoice_change",
@@ -215,8 +216,8 @@ fn a_verb_tool_says_whether_its_executor_is_bound() {
 fn twenty_types_offer_about_a_hundred_tools() {
     let types = (0..20).map(|i| ty(&format!("t{i}"), ALL, vec![])).collect();
     let t = tools_ok(&lake(types, vec![], LakeRights::default()));
-    // describe, pin, subscribe, unsubscribe, query, search, propose
-    assert_eq!(t.len(), 100 + 7);
+    // describe, pin, subscribe, unsubscribe, query, cypher, search, propose
+    assert_eq!(t.len(), 100 + 8);
 }
 
 #[test]
@@ -507,6 +508,27 @@ fn the_generic_tools_emitted_are_exactly_the_generic_list() {
         "{:?}",
         names(&t)
     );
+}
+
+/// `cypher` is offered exactly where `query` is: beside it for a lake
+/// with a type the principal may find, and with neither for one without.
+#[test]
+fn cypher_is_offered_where_query_is() {
+    let unread = TypeRights {
+        find: false,
+        get: false,
+        ..ALL
+    };
+    for (t, offered) in [(invoice(), true), (ty("invoice", unread, vec![]), false)] {
+        let t = tools_ok(&lake_of(vec![t]));
+        let has = |d: &Door| t.iter().any(|t| t.door == *d);
+        assert_eq!(
+            (has(&Door::Query), has(&Door::Cypher)),
+            (offered, offered),
+            "{:?}",
+            names(&t)
+        );
+    }
 }
 
 #[test]
