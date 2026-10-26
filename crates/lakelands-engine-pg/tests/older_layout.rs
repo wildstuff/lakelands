@@ -2,7 +2,8 @@
 //! naming kinds, types and sources in text, its states without the `procedure` a
 //! computed field's metadata names (lakelands#1191), its states holding
 //! their rows' type, key and position and their false flags
-//! (lakelands#1318), and its mark one layout back. A reader's open is refused naming the layouts; the
+//! (lakelands#1318), no table `bases` (lakelands#1432), and its mark one
+//! layout back. A reader's open is refused naming the layouts; the
 //! writer's open rebuilds it from the log under its lease, saying why,
 //! and the next writer's open rebuilds nothing. A projection layout 6
 //! kept under a vector index (unit vectors in `vectors`, a partial HNSW
@@ -72,6 +73,7 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
     let wanted = tokio::task::block_in_place(|| one(&url, &layout));
     let older = format!(
         "DROP TABLE \"{schema}\".routes; DROP TABLE \"{schema}\".names; \
+         DROP TABLE \"{schema}\".bases; \
          CREATE TABLE \"{schema}\".routes (at BIGINT NOT NULL, kind TEXT NOT NULL, ty TEXT, \
          key TEXT, source TEXT); \
          CREATE INDEX routes_source ON \"{schema}\".routes (source, at); \
@@ -124,6 +126,11 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
         held, 0,
         "no state holds what its row holds, or a false flag"
     );
+    let tables = format!(
+        "SELECT count(*) FROM pg_tables WHERE schemaname = '{schema}' AND tablename = 'bases'"
+    );
+    let bases = tokio::task::block_in_place(|| one(&url, &tables));
+    assert_eq!(bases, 1, "the rebuild lays out `bases`");
     store.close().await.unwrap();
     let store = open(&location, OpenMode::Write).await.unwrap();
     assert_eq!(

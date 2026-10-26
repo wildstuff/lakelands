@@ -5,7 +5,7 @@
 use lakelands_api::Get;
 use lakelands_api::record::Origin;
 
-use crate::conformance::fixture::{source_record, upsert};
+use crate::conformance::fixture::{get_at, source_record, upsert};
 use crate::conformance::prelude::*;
 
 check!(
@@ -21,6 +21,12 @@ check!(
 check!(
     FIELD_PROVENANCE = every_field_carries_its_own_provenance,
     "010: with meta, each field answers its origin, known_at, position and writer, and a value from a source also its source and seen_at; a record whose fields a source wrote in two ingests, an author in a third, and a mirror's ingest with its `upstream` answers each field's own provenance, a cleared field's too, at the head, as of an earlier position and after the projection is rebuilt, however a record keeps it (lakelands#1018)"
+);
+
+check!(
+    BASE_PER_RECORD = each_record_reads_the_provenance_of_its_own_writes,
+    "010, extended (lakelands#1432): records one append wrote share their provenance and those another wrote hold their own, whether three records of the append share it or one or two do: two sources' ingests, a source's second, of a record it wrote before and of a new one, and an author's write each answer, per field, their write's origin, source, position and writer, through `get`, `find` and a lexical search with meta alike, as of before the later writes and after the projection is rebuilt; once the first source is forgotten, the record another hand co-owns reads its field that is not erasable as that source wrote it and its erasable one as erased, the other source's record reads its own, and a rebuild answers the same",
+    reopens
 );
 
 fn day(m: u32, d: u32) -> String {
@@ -297,6 +303,191 @@ async fn every_field_carries_its_own_provenance(store: Store) -> Held {
         plain.data.meta.is_empty(),
         "a read that does not ask for meta answered provenance for {:?}",
         plain.data.meta.keys().collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+/// The position of the write each field reads, by record; `None` where
+/// the field reads as erased.
+type Wanted<'a> = Vec<(&'a str, Vec<(&'a str, Option<Position>)>)>;
+
+async fn each_record_reads_the_provenance_of_its_own_writes(store: Store, reopen: Reopen) -> Held {
+    let (_keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    let title = FieldDecl {
+        searchable: true,
+        erasable: true,
+        ..sourced("title", StorageKind::Text)
+    };
+    let fields = vec![title, sourced("n", StorageKind::Decimal)];
+    let mut note = type_decl("note", fields);
+    note.fields.push(field("status", StorageKind::Text));
+    l.declare(note).await?;
+    let row = |key: &str, fields: Value| source_record("note", key, fields);
+    // Three records of one write share its base, and the others one or two:
+    // a projection that keeps a base apart only where `engines::SHARED`
+    // records of a write name it holds both.
+    const _: () = assert!(
+        crate::engines::SHARED <= 3,
+        "the first write shares its base"
+    );
+    let three = vec![
+        row("a", json!({"title": "alpha one", "n": "1"})),
+        row("b", json!({"title": "beta one", "n": "2"})),
+        row("e", json!({"title": "epsilon one", "n": "5"})),
+    ];
+    l.ingest("crm", three)
+        .await
+        .must("ingesting `a`, `b` and `e`")?;
+    let c = vec![row("c", json!({"title": "gamma one", "n": "3"}))];
+    l.ingest("erp", c).await.must("ingesting `c`")?;
+    let clerk = field_writer(store.as_ref(), "clerk", "note", &["status"]);
+    upsert(cat.as_ref(), &clerk, "note", "a", json!({"status": "open"})).await?;
+    let b = row("b", json!({"title": "beta two"}));
+    let d = row("d", json!({"title": "delta two", "n": "4"}));
+    l.ingest("crm", vec![b, d])
+        .await
+        .must("ingesting `b` again and `d`")?;
+    // Each record's writes, by the position of its own event.
+    let events = events_after(store.as_ref(), Position::GENESIS).await?;
+    let made = |key: &str| -> Vec<Position> {
+        let about = |e: &&Event| {
+            (crate::feed::about(&e.body).iter()).any(|a| {
+                a.ty.as_ref().is_some_and(|t| t.as_str() == "note")
+                    && a.key.as_ref().is_some_and(|k| k.as_str() == key)
+            })
+        };
+        events.iter().filter(about).map(|e| e.position).collect()
+    };
+    let (a, b, c, d, e) = (made("a"), made("b"), made("c"), made("d"), made("e"));
+    let (&[a1, authored], &[b1, again], &[erp], &[d1], &[e1]) =
+        (&a[..], &b[..], &c[..], &d[..], &e[..])
+    else {
+        return Err(Failure::new(format!(
+            "the log holds two writes of `a` and `b` and one of `c`, `d` and `e`; it holds \
+             {a:?}, {b:?}, {c:?}, {d:?} and {e:?}"
+        )));
+    };
+    let head: Wanted = vec![
+        (
+            "a",
+            vec![
+                ("title", Some(a1)),
+                ("n", Some(a1)),
+                ("status", Some(authored)),
+            ],
+        ),
+        ("b", vec![("title", Some(again)), ("n", Some(b1))]),
+        ("c", vec![("title", Some(erp)), ("n", Some(erp))]),
+        ("e", vec![("title", Some(e1)), ("n", Some(e1))]),
+        ("d", vec![("title", Some(d1)), ("n", Some(d1))]),
+    ];
+    let mut before = head.clone();
+    before.pop();
+    before[0].1.pop();
+    before[1].1[0].1 = Some(b1);
+    // crm forgotten: `b`, `d` and `e` retire, `a`'s title reads as erased.
+    let forgotten: Wanted = vec![
+        (
+            "a",
+            vec![("title", None), ("n", Some(a1)), ("status", Some(authored))],
+        ),
+        ("c", vec![("title", Some(erp)), ("n", Some(erp))]),
+    ];
+    // A field reads its write's provenance: that event's.
+    let of = |m: &lakelands_api::record::FieldMeta, at: Option<Position>| {
+        let Some(at) = at else { return m.erased };
+        events.iter().find(|e| e.position == at).is_some_and(|e| {
+            (
+                m.position, &m.origin, &m.source, &m.writer, m.known_at, m.seen_at,
+            ) == (at, &e.origin, &e.source, &e.writer, e.known_at, e.seen_at)
+        })
+    };
+    let mut wrong = Vec::new();
+    let mut held = |door: &str, r: &Record, wanted: &Wanted| {
+        let Some((_, fields)) = wanted.iter().find(|(k, _)| *k == r.key.as_str()) else {
+            return wrong.push(format!("{door} answered `{}`, which no write made", r.key));
+        };
+        let reads = (fields.iter()).all(|(f, at)| r.meta.get(*f).is_some_and(|m| of(m, *at)));
+        if !reads || r.meta.len() != fields.len() {
+            wrong.push(format!(
+                "{door}: `{}` reads {:?}, not the writes at {fields:?}",
+                r.key, r.meta
+            ));
+        }
+    };
+    let l = &l;
+    let read_all = |as_of: Option<Position>, keys: &'static [&'static str]| async move {
+        let mut doors = Vec::new();
+        for key in keys {
+            let got = cat.get(own, &"note".into(), get_at(key, as_of)).await;
+            doors.push(("`get`", got.must("reading a note")?.data));
+        }
+        let find = Find {
+            with_meta: true,
+            at: read_at(as_of),
+            ..Find::default()
+        };
+        let found = l.all_found("note", find).await?;
+        doors.extend(found.into_iter().map(|r| ("`find`", r)));
+        let search = Search {
+            ty: TypeName::from("note"),
+            mode: SearchMode::Lexical {
+                text: "one two".into(),
+                fields: None,
+                text_fields: None,
+            },
+            k: 10,
+            cursor: None,
+            filter: None,
+            with_meta: true,
+            matches: false,
+            at: read_at(as_of),
+            rerank: None,
+        };
+        let hits = cat.search(own, search).await.must("searching the notes")?;
+        let hits = hits.data.hits.into_iter();
+        doors.extend(hits.map(|h| ("a lexical search", h.record)));
+        Ok::<_, Failure>(doors)
+    };
+    let all = &["a", "b", "c", "e", "d"];
+    let first = read_all(None, all).await?;
+    let earlier = read_all(Some(erp), &all[..4]).await?;
+    store.rebuild().await.must("rebuilding the projection")?;
+    let rebuilt = read_all(None, all).await?;
+    let crm = SourceId::from("crm");
+    store
+        .forget_source(&crm, None)
+        .await
+        .must("forgetting crm")?;
+    let kept = &["a", "c"];
+    let after = read_all(None, kept).await?;
+    store.rebuild().await.must("rebuilding the projection")?;
+    let again = read_all(None, kept).await?;
+    let counts = [
+        first.len(),
+        earlier.len(),
+        rebuilt.len(),
+        after.len(),
+        again.len(),
+    ];
+    for (when, doors, wanted) in [
+        ("at the head", first, &head),
+        ("as of the second ingest", earlier, &before),
+        ("after a rebuild", rebuilt, &head),
+        ("after crm is forgotten", after, &forgotten),
+        ("after crm is forgotten and a rebuild", again, &forgotten),
+    ] {
+        for (door, r) in doors {
+            held(&format!("{door} {when}"), &r, wanted);
+        }
+    }
+    ensure!(
+        wrong.is_empty() && counts == [15, 12, 15, 5, 5],
+        "each note reads the provenance of the writes that made its fields, through every \
+         door ({counts:?} records read, not [15, 12, 15, 5, 5]):\n{}",
+        wrong.join("\n")
     );
     Ok(())
 }

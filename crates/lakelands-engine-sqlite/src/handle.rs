@@ -50,6 +50,8 @@ struct Transaction {
     /// the transaction, and all forgotten when a declaration or a
     /// `sort_index.<type>` setting is put, which may change one.
     kept: projection::Kept,
+    /// The bases of the write it puts, inline until it shares them.
+    sharing: engines::Sharing,
     /// The declarations and the `lookup_index.<type>` settings it put: the
     /// commit decides the exact-text index's fields again for what they move.
     relook: engines::Relook,
@@ -825,7 +827,7 @@ impl ProjectionStore for SqliteLake {
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
         self.stage(record.position, |conn, t| {
             t.relook.record(record);
-            projection::put_record(conn, &mut t.kept, record)
+            projection::put_record(conn, (&mut t.kept, &mut t.sharing), record)
         })
     }
 
@@ -838,9 +840,14 @@ impl ProjectionStore for SqliteLake {
     }
 
     fn drop_states(&self, of: StatesOf<'_>) -> Result<()> {
-        self.stage(Position::GENESIS, |conn, _| match of {
+        self.stage(Position::GENESIS, |conn, t| match of {
             StatesOf::Record(ty, key) => projection::drop_record(conn, ty, key),
             StatesOf::Output(seam, input) => projection::drop_output(conn, seam, &input.0),
+            // A row the write kept may go: its later states count afresh.
+            StatesOf::Bases => {
+                t.sharing = engines::Sharing::default();
+                projection::drop_bases(conn)
+            }
         })
     }
 

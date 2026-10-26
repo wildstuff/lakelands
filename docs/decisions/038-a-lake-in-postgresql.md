@@ -143,7 +143,7 @@ force at a position, so they keep no heads, which every put would write
 and no read would use. A record's key is compared bytewise
 (`COLLATE "C"`), so the primary keys hold the order keys are read in.
 
-### The layout is 7
+### The layout is 9
 
 These tables are not the ones layout 1 made, which would be read as if
 they held no heads, so the engine's layout number became 2, and a
@@ -165,6 +165,14 @@ the position it is stale from, and `graph_keys` names the keys a write
 touched while a graph is built; `vectors` keeps no unit vector and no
 partial index
 (`docs/decisions/078-under-an-index-a-search-pages-one-ranking-of-what-its-reader-may-see.md`).
+At 8, a route names its kind, type and source by number (lakelands#1427).
+At 9, the base a write's records share, their provenance less
+its position, is one row of `bases` their states name, where three or
+more records of the write, what one transaction puts, name it; a base
+fewer share stays whole in the state, since a row of its own costs
+more than it saves. A
+forgetting, or an act of removal, deletes the rows no state names any
+more (lakelands#1432).
 
 ### The rulebook decides
 
@@ -252,5 +260,10 @@ file answers on disk: it dies with its holder.
 - The layout is 7: a field the lake asks an index for keeps a graph per
   class of reader in tables of its own, and `vectors` loses its unit
   vector and its partial indexes (078, lakelands#1254).
+- The layout is 8: a route names its kind, type and source by number
+  (lakelands#1427).
+- The layout is 9: a base three or more records of a write share is one
+  row of `bases` their states name; a base fewer share stays in the
+  state (lakelands#1432).
 - A row holding the stored form, a table of frames, and a digest over
   the restored bytes, proposed with 083 (lakelands#1413).

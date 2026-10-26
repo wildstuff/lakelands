@@ -29,7 +29,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use lakelands_api::engine::{CanonicalEvent, LakeEngine, Lease, OpenMode, ProjectionView};
+use lakelands_api::engine::{
+    CanonicalEvent, LakeEngine, Lease, OpenMode, ProjectionView, StatesOf,
+};
 use lakelands_api::error::{Detail, Flaw, Part, Seam, Situation};
 use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_VERSION, SegmentDigest};
 use lakelands_api::location::{EngineConfig, Limits, Location};
@@ -1114,7 +1116,7 @@ impl Lake {
                     *state = "done".to_owned();
                 }
             }
-            self.put_lists(&list, &acts, head)?;
+            self.put_lists(&list, &acts, false, head)?;
         }
         Ok(Ok(lakelands_api::write::CompactReport {
             before: reclaimed.before,
@@ -1125,17 +1127,22 @@ impl Lake {
 
     /// Put the forgotten sources and the acts of removal, each with its
     /// state, at `head` in a transaction of their own: a list that is
-    /// empty is left as it is.
+    /// empty is left as it is. After a scoped refold (`swept`), the bases
+    /// no state names any more go in the same transaction.
     pub(crate) fn put_lists(
         &self,
         list: &BTreeMap<SourceId, String>,
         acts: &BTreeMap<Position, String>,
+        swept: bool,
         head: Position,
     ) -> Result<()> {
         let projection = self.engine.projection();
         let at = crate::sealing::forgotten_at();
         projection.begin()?;
         let written = (|| {
+            if swept {
+                projection.drop_states(StatesOf::Bases)?;
+            }
             if !list.is_empty() {
                 let list = serde_json::to_value(list).expect("a list serialises");
                 projection.put_output(crate::sealing::FORGOTTEN, &at, &list, head)?;

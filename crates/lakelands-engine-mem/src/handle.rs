@@ -19,7 +19,7 @@ use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
 
-use crate::projection::{Held, Put};
+use crate::projection::Put;
 use crate::vectors::Indexed;
 use crate::view::MemView;
 use crate::{Lake, NAME, REBUILD_RATE, lock};
@@ -196,7 +196,7 @@ impl LakeEngine for MemoryLake {
                 Ok(keys
                     .into_iter()
                     .filter_map(head)
-                    .map(Held::record)
+                    .map(|h| h.record(&p.bases))
                     .collect())
             };
             lists.push(lakelands_core::engines::rank_seen(k, seen, top, read)?);
@@ -287,6 +287,7 @@ impl ProjectionStore for MemoryLake {
         self.stage(match of {
             StatesOf::Record(ty, key) => Put::DroppedRecord(ty.clone(), key.clone()),
             StatesOf::Output(seam, input) => Put::DroppedOutput(seam.to_owned(), input.clone()),
+            StatesOf::Bases => Put::DroppedBases,
         })
     }
 

@@ -15,7 +15,7 @@ fn two_types_put_in_turn_are_each_read_once() {
     conn.set_prepared_statement_cache_capacity(64);
     conn.execute_batch(SCHEMA).unwrap();
     let types = [TypeName::from("t"), kept_name(&TypeName::from("v"))];
-    let mut kept = Kept::new();
+    let (mut kept, mut sharing) = (Kept::new(), lakelands_core::engines::Sharing::default());
     for at in 1..=100 {
         let record = StoredRecord {
             ty: types[at as usize % 2].clone(),
@@ -28,7 +28,7 @@ fn two_types_put_in_turn_are_each_read_once() {
             retired: false,
             restricted: false,
         };
-        put_record(&conn, &mut kept, &record).unwrap();
+        put_record(&conn, (&mut kept, &mut sharing), &record).unwrap();
     }
     // The statement of `type_at` at the head, as it prepares it.
     let read = conn

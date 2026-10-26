@@ -307,6 +307,7 @@ pub const ALL: &[Check] = &[
     provenance::TWO_TIME_AXES,
     provenance::VALID_TIME_IS_A_DATE_TIME,
     provenance::FIELD_PROVENANCE,
+    provenance::BASE_PER_RECORD,
     masking::MASKED_AND_ABSENT,
     masking::BUILT_FROM_HIDDEN,
     computed_inputs::COMPUTED_AS_ITS_INPUTS,

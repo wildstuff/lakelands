@@ -370,6 +370,10 @@ pub enum StatesOf<'a> {
     Record(&'a TypeName, &'a RecordKey),
     /// A seam's output for one input.
     Output(&'a str, &'a Digest),
+    /// The bases no record's state names any more: those only the states
+    /// a scoped refold, an act of removal or a later state of a record
+    /// replaced named.
+    Bases,
 }
 
 /// A step of building or dropping an order index the lake chose.

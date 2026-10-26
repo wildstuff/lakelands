@@ -53,7 +53,7 @@
 //!
 //! Every table is named with the lake's schema ([`Names`]).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use lakelands_api::engine::{Applied, Choose, Chosen, Declared};
 use lakelands_api::error::Result;
@@ -212,6 +212,10 @@ CREATE TABLE IF NOT EXISTS {s}.routes (
 CREATE TABLE IF NOT EXISTS {s}.names (
     id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name TEXT NOT NULL UNIQUE
 ){pt};
+CREATE TABLE IF NOT EXISTS {s}.bases (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, block TEXT NOT NULL
+){pt};
+CREATE INDEX IF NOT EXISTS bases_block ON {s}.bases (md5(block));
 CREATE INDEX IF NOT EXISTS routes_kind ON {s}.routes (kind, at);
 CREATE INDEX IF NOT EXISTS routes_ty ON {s}.routes (ty, at);
 CREATE INDEX IF NOT EXISTS routes_key ON {s}.routes (key, at);
@@ -289,11 +293,11 @@ fn heads_sql(s: &str, pt: &str) -> String {
 /// table changes so that a projection made before would answer wrongly,
 /// not fail: one made with another layout is never read, and is rebuilt
 /// from the log.
-pub(crate) const LAYOUT: u64 = 8;
+pub(crate) const LAYOUT: u64 = 9;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
-pub(crate) const LAKE_TABLES: [&str; 22] = [
+pub(crate) const LAKE_TABLES: [&str; 23] = [
     "meta",
     "lease",
     "segments",
@@ -306,6 +310,7 @@ pub(crate) const LAKE_TABLES: [&str; 22] = [
     "applied",
     "routes",
     "names",
+    "bases",
     "text_index",
     "lookup_fields",
     "edges",
@@ -577,13 +582,7 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
     let setting = setting_at(&row, ty, [1, 4])?;
     let chosen = chosen_decoded(row.get(3));
     let sorted = match &declared {
-        Some(d) => engines::order_fields(
-            ty,
-            d,
-            setting.as_ref().and_then(engines::setting_value),
-            &chosen,
-            true,
-        ),
+        Some(d) => engines::order_fields(ty, d, setting.as_ref(), &chosen, true),
         None => Vec::new(),
     };
     let own = view.as_ref().unwrap_or(ty);
@@ -1116,7 +1115,9 @@ pub(crate) fn record_at(row: &Row, at: usize) -> Result<(StoredRecord, engines::
 }
 
 /// The records `read`, each vector its state keeps apart read from its
-/// row: one statement for them all, none where no state keeps one apart.
+/// row and each base it names from its row of `bases`: one statement for
+/// all the vectors and one for all the bases, none where no state keeps
+/// one.
 pub(crate) fn joined<T>(
     db: &mut Db,
     names: &Names,
@@ -1125,8 +1126,21 @@ pub(crate) fn joined<T>(
     let mut asked = VectorRows::default();
     for (_, (r, apart)) in &read {
         let ident = [r.ty.to_string(), r.key.to_string()];
-        for (f, at) in apart {
+        for (f, at) in &apart.vectors {
             asked.push(&ident, f, at.0 as i64, None);
+        }
+    }
+    let mut ids: Vec<i64> = (read.iter())
+        .filter_map(|(_, (_, apart))| Some(apart.base.as_ref()?.id))
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut blocks = HashMap::new();
+    if !ids.is_empty() {
+        let bases = names.t("bases");
+        let sql = format!("SELECT id, block FROM {bases} WHERE id = ANY($1::int8[])");
+        for row in db.query(&sql, &[&ids])? {
+            blocks.insert(row.get::<_, i64>(0), row.get::<_, String>(1));
         }
     }
     // Each row found by its place among those asked for.
@@ -1150,7 +1164,11 @@ pub(crate) fn joined<T>(
     }
     let (mut out, mut n) = (Vec::with_capacity(read.len()), 0);
     for (t, (mut r, apart)) in read {
-        for (f, _) in apart {
+        if let Some(based) = apart.base {
+            let block = blocks.get(&based.id).map(String::as_str);
+            engines::rebase(&mut r, based, block)?;
+        }
+        for (f, _) in apart.vectors {
             n += 1;
             engines::rejoin(&mut r, f, rows.remove(&n))?;
         }
@@ -1176,14 +1194,15 @@ pub(crate) fn records_at(
         .collect())
 }
 
-/// The `sort_index.<type>` setting of `ty` a row holds as two scalar
-/// reads of its head, its state in the column `state` and its position in
-/// `since`; `None` where it is unset.
+/// The value of the `sort_index.<type>` setting of `ty` a row holds as
+/// two scalar reads of its head, its state in the column `state` and its
+/// position in `since`; `None` where it is unset. Its value alone: the
+/// provenance of a base its state names is not read.
 pub(crate) fn setting_at(
     row: &Row,
     ty: &TypeName,
     [state, since]: [usize; 2],
-) -> Result<Option<StoredRecord>> {
+) -> Result<Option<serde_json::Value>> {
     let (Some(s), Some(at)) = (
         row.get::<_, Option<&str>>(state),
         row.get::<_, Option<i64>>(since),
@@ -1192,7 +1211,8 @@ pub(crate) fn setting_at(
     };
     let key = engines::sort_index_key(ty);
     let at = Position(at as u64);
-    engines::decode_record(SETTING_TYPE, &key, at, s).map(|(r, _)| Some(r))
+    let (setting, _) = engines::decode_record(SETTING_TYPE, &key, at, s)?;
+    Ok(engines::setting_value(&setting).cloned())
 }
 
 /// The declaration of a type in force at `at` (`None` for the head).
@@ -1453,7 +1473,7 @@ pub(crate) struct Buffer {
     records: BTreeMap<(Vec<String>, i64), StoredRecord>,
     /// The last state put of each key of a head-only name, none for one
     /// ended: written over whatever the key held, with no row beside it.
-    heads: BTreeMap<(String, String), (i64, Option<String>)>,
+    heads: BTreeMap<(String, String), (i64, Option<StoredRecord>)>,
     /// The head-only names whose every key was ended: deleted before the
     /// heads are written.
     ended: BTreeSet<String>,
@@ -1469,6 +1489,8 @@ pub(crate) struct Buffer {
     dropped: BTreeSet<(String, String)>,
     /// The outputs whose every state goes, by seam and input, likewise.
     dropped_outputs: BTreeSet<(String, String)>,
+    /// Whether the bases no state names go, once every put is written.
+    dropped_bases: bool,
     /// The vector index's last put (`Some`) or remove of each field of a
     /// key whose state it holds, by type, key and field: made when it is
     /// written where the rows its last state leaves differ.
@@ -1486,7 +1508,8 @@ impl Buffer {
             self.records.len() + self.heads.len() + self.ended.len(),
             self.proposals.len() + self.outputs.len(),
         );
-        let dropped = self.dropped.len() + self.dropped_outputs.len();
+        let dropped =
+            self.dropped.len() + self.dropped_outputs.len() + usize::from(self.dropped_bases);
         records + states + self.members.len() + self.applied.len() + dropped
     }
 
@@ -1505,6 +1528,11 @@ impl Buffer {
         self.outputs
             .retain(|(ident, _), _| ident[0] != seam || ident[1] != input);
         (self.dropped_outputs).insert((seam.to_owned(), input.to_owned()));
+    }
+
+    /// The bases no state names go, once the buffer's puts are written.
+    pub(crate) fn drop_bases(&mut self) {
+        self.dropped_bases = true;
     }
 
     /// The state of `ty`'s `key` the buffer puts last, if any.
@@ -1531,8 +1559,7 @@ impl Buffer {
 
     pub(crate) fn record(&mut self, r: &StoredRecord) {
         if lakelands_api::seam::is_head_only(&r.ty) {
-            let apart = BTreeMap::new();
-            let state = (!r.is_ended()).then(|| engines::record_state(r, &apart));
+            let state = (!r.is_ended()).then(|| r.clone());
             let key = (r.ty.to_string(), r.key.to_string());
             self.heads.insert(key, (r.position.0 as i64, state));
             return;
@@ -1627,7 +1654,9 @@ impl Buffer {
     /// head indexes of the records whose latest state is now a buffered
     /// one, under their types' declarations at the head as `types` reads
     /// them after every declaration the transaction put, and the applied
-    /// ids. That leaves what putting them one by one leaves. The types
+    /// ids; the bases [`engines::SHARED`] states of one write share before
+    /// them, and last, after a sweep, the rows of `bases` no state names
+    /// any more. That leaves what putting them one by one leaves. The types
     /// whose `vector_index.<type>` setting it wrote go into `asked`, and
     /// the records it wrote or erased into `touched`, for the graphs
     /// (`crate::vector_index`). It answers the order index rows the
@@ -1653,12 +1682,24 @@ impl Buffer {
             keys.or_default().insert(key.clone());
         }
         let mut apart = self.put_vectors(db, names, types)?;
+        let heads = self.heads.values().filter_map(|(_, r)| r.as_ref());
+        // A write the buffer flushes in two pages is counted a page at a time.
+        let shared = engines::shared_bases(self.records.values().chain(heads));
+        let ids = put_bases(db, names, &shared)?;
+        let base = |b: &str| {
+            if !shared.contains(b) {
+                return Ok(None);
+            }
+            let id = ids.get(b).copied().map(Some);
+            id.ok_or_else(|| engines::base_missing("its write kept no row of it"))
+        };
         let records: BTreeMap<(Vec<String>, i64), String> = (self.records.iter())
             .map(|(k, r)| {
                 let apart = apart.remove(k).unwrap_or_default();
-                (k.clone(), engines::record_state(r, &apart))
+                let state = engines::record_state(r, &apart, &mut |b| base(b))?;
+                Ok((k.clone(), state))
             })
-            .collect();
+            .collect::<Result<_>>()?;
         let heads = RECORDS.put_many(db, names, &records)?;
         // A head-only name's key is one row, written over in place, and its
         // head beside it.
@@ -1673,11 +1714,14 @@ impl Buffer {
         }
         if !self.heads.is_empty() {
             let (mut tys, mut keys, mut since, mut states) = (vec![], vec![], vec![], vec![]);
-            for ((ty, key), (at, state)) in &self.heads {
+            for ((ty, key), (at, r)) in &self.heads {
                 tys.push(ty.as_str());
                 keys.push(key.as_str());
                 since.push(*at);
-                states.push(state.as_deref());
+                let state = r
+                    .as_ref()
+                    .map(|r| engines::record_state(r, &BTreeMap::new(), &mut |b| base(b)));
+                states.push(state.transpose()?);
             }
             let b = "unnest($1::text[], $2::text[]) AS b(ty, key)";
             let gone = |t: &str| {
@@ -1790,8 +1834,46 @@ impl Buffer {
                 &[&at, &kinds, &tys, &keys, &sources],
             )?;
         }
+        if self.dropped_bases {
+            db.execute(
+                &format!(
+                    "DELETE FROM {} b WHERE NOT EXISTS \
+                     (SELECT 1 FROM {} r WHERE r.state::jsonb -> 'base' = to_jsonb(b.id))",
+                    names.t("bases"),
+                    names.t("records")
+                ),
+                &[],
+            )?;
+        }
         Ok(rebuilt)
     }
+}
+
+/// Keep each of the `shared` bases that `bases` does not hold, in one
+/// statement, and answer the id of every one by its block. A base is
+/// found by the hash of its block and then the block, so two blocks of one
+/// hash are two rows.
+fn put_bases(db: &mut Db, names: &Names, shared: &HashSet<String>) -> Result<HashMap<String, i64>> {
+    let blocks: BTreeSet<&str> = shared.iter().map(String::as_str).collect();
+    if blocks.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let blocks: Vec<&str> = blocks.into_iter().collect();
+    let held = names.t("bases");
+    let rows = db.query(
+        &format!(
+            "WITH u AS (SELECT * FROM unnest($1::text[]) AS u(block)), \
+             i AS (INSERT INTO {held} (block) SELECT block FROM u \
+             WHERE NOT EXISTS (SELECT 1 FROM {held} b \
+             WHERE md5(b.block) = md5(u.block) AND b.block = u.block) RETURNING id, block) \
+             SELECT id, block FROM i UNION ALL SELECT b.id, b.block FROM {held} b JOIN u \
+             ON md5(b.block) = md5(u.block) AND b.block = u.block"
+        ),
+        &[&blocks],
+    )?;
+    Ok((rows.iter())
+        .map(|r| (r.get::<_, String>(1), r.get::<_, i64>(0)))
+        .collect())
 }
 
 /// A record's rows of `vectors` in force, as [`Buffer::put_vectors`] reads

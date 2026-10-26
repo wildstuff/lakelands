@@ -467,22 +467,129 @@ fn a_state_keeps_shared_provenance_once_and_reads_every_fields_back() {
         record(xyz.clone(), json!({"x": a, "y": b, "z": a})),
         record(json!({"x": 1}), json!({})),
     ];
+    let mut bases = Vec::new();
     for r in &cases {
-        let state = record_state(r, &BTreeMap::new());
+        let state = kept(r, &mut bases);
         assert_eq!(
-            &decode_record("t", "k", r.position, &state).unwrap().0,
+            &read_back("t", "k", r.position, &state, &bases),
             r,
             "{state}"
         );
+        let alone = inline(r);
+        assert_eq!(&read_back("t", "k", r.position, &alone, &[]), r, "{alone}");
+        if let Some(base) = base_of(r) {
+            let id = bases.iter().position(|b| *b == base).unwrap() as i64;
+            let named = name_base(&alone, &base, id).unwrap();
+            assert_eq!(named.as_deref(), Some(state.as_str()), "named as kept");
+            let other = name_base(&alone, "{}", id).unwrap();
+            assert_eq!(other, None, "another base is not named");
+        }
         let whole = serde_json::to_string(r).unwrap();
-        assert_eq!(&decode_record("t", "k", r.position, &whole).unwrap().0, r);
+        assert_eq!(&read_back("t", "k", r.position, &whole, &bases), r);
     }
-    let shared = record_state(&cases[0], &BTreeMap::new());
-    assert_eq!(
-        shared.matches("\"origin\"").count(),
-        1,
-        "one block for three fields: {shared}"
+    let shared = kept(&cases[0], &mut bases);
+    assert!(
+        !shared.contains("\"origin\""),
+        "the block is the base's: {shared}"
     );
+    let alone = inline(&cases[0]);
+    assert_eq!(
+        alone.matches("\"origin\"").count(),
+        1,
+        "one block inline: {alone}"
+    );
+    assert_eq!(bases.len(), 1, "one base for six records: {bases:?}");
+    let missing = decode_record("t", "k", Position(9), &shared).unwrap();
+    let (mut r, based) = (missing.0, missing.1.base.unwrap());
+    assert!(rebase(&mut r, based, None).is_err(), "a base not held");
+}
+
+/// The state an engine keeps of `r`, its base kept once in `bases` at
+/// the index that is its id.
+fn kept(r: &StoredRecord, bases: &mut Vec<String>) -> String {
+    let mut id = |b: &str| {
+        let at = bases.iter().position(|h| h == b).unwrap_or_else(|| {
+            bases.push(b.to_owned());
+            bases.len() - 1
+        });
+        Ok(Some(at as i64))
+    };
+    record_state(r, &BTreeMap::new(), &mut id).unwrap()
+}
+
+/// The state an engine keeps of `r`, its base inline.
+fn inline(r: &StoredRecord) -> String {
+    record_state(r, &BTreeMap::new(), &mut |_| Ok(None)).unwrap()
+}
+
+/// The record a state [`kept`] reads back, its base from `bases`.
+fn read_back(ty: &str, key: &str, at: Position, state: &str, bases: &[String]) -> StoredRecord {
+    let (mut r, apart) = decode_record(ty, key, at, state).unwrap();
+    if let Some(based) = apart.base {
+        let block = bases.get(based.id as usize).map(String::as_str);
+        rebase(&mut r, based, block).unwrap();
+    }
+    r
+}
+
+/// A base is shared from the [`SHARED`]th record of one write naming it,
+/// whose states before it are named then, by their own positions, each
+/// record once however often it is put; another write's base is another.
+#[test]
+fn a_write_shares_a_base_from_its_shared_th_record() {
+    // The records of write `w` each have a position of their own and its time.
+    let record = |key: &str, w: u64, at: u64| -> StoredRecord {
+        let meta = json!({"origin": "source", "source": "crm",
+            "known_at": format!("2026-01-0{w}T00:00:00Z"), "position": at, "writer": "w"});
+        let r = json!({"type": "t", "key": key, "version": 1, "fields": {"x": 1},
+            "meta": {"x": meta}, "position": at, "made": at});
+        serde_json::from_value(r).unwrap()
+    };
+    let write = |w: u64, n: usize| -> Vec<StoredRecord> {
+        let at = |i| w * 100 + i as u64;
+        (0..n).map(|i| record(&format!("k{i}"), w, at(i))).collect()
+    };
+    let base = base_of(&record("k", 1, 1)).unwrap();
+    assert_eq!(
+        base_of(&record("k", 1, 2)),
+        Some(base.clone()),
+        "its position apart"
+    );
+    let shared = shared_bases(write(1, SHARED).iter().chain(&write(2, SHARED - 1)));
+    assert_eq!(shared, HashSet::from([base.clone()]));
+    let twice = write(3, SHARED - 1);
+    assert!(
+        shared_bases(twice.iter().chain(&twice)).is_empty(),
+        "each record once"
+    );
+    let mut sharing = Sharing::default();
+    let (mut kept, mut named) = (0, Vec::new());
+    let mut id = |r: &StoredRecord| {
+        let mut keep = |_: &str| {
+            kept += 1;
+            Ok(7)
+        };
+        let mut name = |_: &TypeName, key: &RecordKey, at: Position, id| {
+            named.push((key.to_string(), at.0, id));
+            Ok(())
+        };
+        sharing
+            .id(r, &base_of(r).unwrap(), &mut keep, &mut name)
+            .unwrap()
+    };
+    // A record put again counts once.
+    let mut ids: Vec<_> = write(1, SHARED - 1).iter().map(&mut id).collect();
+    ids.push(id(&record("k0", 1, 140)));
+    ids.extend(write(1, SHARED + 1)[SHARED - 1..].iter().map(&mut id));
+    ids.push(id(&record("k0", 1, 150)));
+    ids.push(id(&record("k0", 2, 200)));
+    let mut wanted = vec![None; SHARED];
+    wanted.extend([Some(7), Some(7), Some(7), None]);
+    assert_eq!(ids, wanted);
+    assert_eq!(kept, 1, "kept once");
+    let before = (1..SHARED - 1).map(|i| (format!("k{i}"), 100 + i as u64, 7));
+    let before: Vec<_> = before.chain([("k0".to_owned(), 140, 7)]).collect();
+    assert_eq!(named, before, "the states before it name it");
 }
 
 /// The state leaves out what its row holds and what is false, and reads
@@ -501,6 +608,7 @@ fn a_state_round_trips_through_its_row_whatever_the_record() {
         seed % n
     };
     let keys = ["k", "a%3Ab", "50%25", "zürich:ü", "日本", ""];
+    let mut bases = Vec::new();
     for _ in 0..2000 {
         let position = Position(1 + next(40));
         let block = |at: u64, source: bool| {
@@ -535,9 +643,14 @@ fn a_state_round_trips_through_its_row_whatever_the_record() {
         if next(10) == 0 {
             r = StoredRecord::ended(r.ty, r.key, r.position);
         }
-        let state = record_state(&r, &BTreeMap::new());
-        let back = decode_record("t.ü", key, position, &state).unwrap().0;
+        let state = kept(&r, &mut bases);
+        let back = read_back("t.ü", key, position, &state, &bases);
         assert_eq!(back, r, "{state}");
+        let alone = inline(&r);
+        assert_eq!(read_back("t.ü", key, position, &alone, &[]), r, "{alone}");
+        let inline: serde_json::Value = serde_json::from_str(&alone).unwrap();
+        let at = inline.get("base").and_then(|b| b.get("position"));
+        assert_ne!(at, Some(&json!(position.0)), "{alone}");
         let kept: serde_json::Value = serde_json::from_str(&state).unwrap();
         for member in ["type", "key", "position"] {
             assert!(kept.get(member).is_none(), "{member} kept in {state}");
@@ -545,9 +658,13 @@ fn a_state_round_trips_through_its_row_whatever_the_record() {
         for flag in ["retired", "restricted"] {
             assert_ne!(kept.get(flag), Some(&json!(false)), "{state}");
         }
-        let base = kept.get("base").and_then(|b| b.get("position"));
-        assert_ne!(base, Some(&json!(position.0)), "{state}");
+        assert_ne!(kept.get("base_at"), Some(&json!(position.0)), "{state}");
     }
+    assert!(
+        bases.len() <= 2,
+        "a block is kept once, its position apart: {bases:?}"
+    );
+    assert!(bases.iter().all(|b| !b.contains("position")), "{bases:?}");
 }
 
 #[test]
