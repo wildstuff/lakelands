@@ -282,6 +282,7 @@ impl Session {
                 | Door::Get { .. }
                 | Door::Describe
                 | Door::Query
+                | Door::Cypher
                 | Door::Search
                 | Door::Proposals => self.pinned_args(a),
                 _ => (a, None),

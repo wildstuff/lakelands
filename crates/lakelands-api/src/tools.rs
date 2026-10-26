@@ -164,6 +164,7 @@ const PIN: &str = "pin";
 const SUBSCRIBE: &str = "subscribe";
 const UNSUBSCRIBE: &str = "unsubscribe";
 const QUERY: &str = "query";
+const CYPHER: &str = "cypher";
 const SEARCH: &str = "search";
 
 /// The second stage a search or a pattern's start asks for.
@@ -198,12 +199,13 @@ pub const CHANGE_KINDS: [&str; 7] = [
 
 /// The names of the generic tools, which no type or verb may produce.
 /// The generator emits these constants and no other generic name.
-pub const GENERIC_TOOLS: [&str; 14] = [
+pub const GENERIC_TOOLS: [&str; 15] = [
     DESCRIBE,
     PIN,
     SUBSCRIBE,
     UNSUBSCRIBE,
     QUERY,
+    CYPHER,
     SEARCH,
     PROPOSE,
     PROPOSALS,
@@ -1222,60 +1224,32 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
     });
 
     if findable {
+        // Walk 6 (lakelands#1442): `query` replaced by `cypher` for the
+        // walk's condition C. This branch never merges.
         let mut p = props([
             (
-                "start",
-                json!({"type": "object", "properties": {
-                    "type": names(|t| t.may.find), "key": {"type": "string"},
-                    "where": {"type": "string"}, "search": {"type": "object"},
-                    "rerank": rerank_schema(),
-                    "params": {"type": "object",
-                               "description": "The parameters of a view the pattern starts on, by name."},
-                    "as": {"type": "string", "description": BINDING}}}),
+                "statement",
+                json!({"type": "string", "minLength": 1,
+                       "description": "One statement of the openCypher subset, as in `MATCH (c:customer {name: $name})<-[:placed_by]-(o:order) RETURN o.id, o.total ORDER BY o.total DESC LIMIT 20`."}),
             ),
             (
-                "steps",
-                json!({"type": "array", "items": {"type": "object", "properties": {
-                    "relation": {"type": "string"}, "walk": {"enum": ["out", "in", "both"]},
-                    "type": {"type": "string"}, "where": {"type": "string"},
-                    "depth": {"type": "object", "properties": {
-                        "min": {"type": "integer", "minimum": 0},
-                        "max": {"type": "integer", "minimum": 0}}},
-                    "as": {"type": "string", "description": STEP_BINDING},
-                    "from": {"type": "string", "description": STEP_FROM},
-                    "join": {"type": "string", "description": STEP_JOIN},
-                    "optional": {"type": "boolean", "description": STEP_OPTIONAL},
-                    "absent": {"type": "boolean", "description": STEP_ABSENT}},
-                    "required": ["relation"]}}),
+                "params",
+                json!({"type": "object",
+                       "description": "The value of every `$name` the statement reads, by name; a value given and not read is refused."}),
             ),
             (
-                "to",
-                json!({"type": "array", "prefixItems": [{"type": "string"}, {"type": "string"}],
-                       "minItems": 2, "maxItems": 2,
-                       "description": "[type, key]: return only the shortest walk to this record."}),
+                "cursor",
+                json!({"type": "string",
+                       "description": "The `next_cursor` of the page before, to read the next page of the same statement and parameters."}),
             ),
-            (
-                "project",
-                json!({"type": "object", "properties": {
-                "as": {"enum": ["rows", "graph", "aggregate", "degree", "components", "reach", "page_rank", "cheapest"],
-                       "description": "`degree` answers rows of `type`, `key` and `degree` (links over the steps' relations), highest first; `components` answers rows of `component`, `size`, `type` and `key`, largest component first; with no start `type` it grows from every linked record, in every type. Both take steps without `depth`, `where` or `type`; `components` walks each step `both`. `reach` answers rows of `step`, `depth`, `type` and `key`: what each step reaches from what the step before it kept, dead ends included, each record at the first step that reaches it. `page_rank` answers rows of `type`, `key` and `page_rank` over the graph the start reaches, each step in its own direction, highest first, the same on every engine; like `components` it takes steps without `depth`, `where` or `type`, and may leave the start `type` out. `cheapest` needs `to` and one start: rows of `hop`, `type`, `key`, `relation`, `walk` and `cost` along the walk that costs least, a link costing its `weight` field, then the fewest hops."},
-                "fields": {"type": "array", "items": {"type": "string"}},
-                "weight": {"type": "string", "description": "For `cheapest`: the number or decimal field of every step's link type that a link costs."}}}),
-            ),
-            (
-                "order_by",
-                value_order_schema(json!({"type": "string"}), "the rows: a path they hold"),
-            ),
-            ("limit", json!({"type": "integer", "minimum": 1})),
-            ("cursor", json!({"type": "string"})),
         ]);
         time_axes(&mut p);
         out.push(ToolSpec {
-            name: QUERY.into(),
-            description: "Walk declared relations from a start (a record, a filter or a search) and return rows or a graph. Covers neighbours, traversal, paths and subgraphs, whole-graph measures (degree centrality, connected components and PageRank) and the cheapest walk. A graph whose steps all start at depth 0 is one walk over their relations, each in its own step's direction and depth; any other is a chain, as rows walk it; a graph cut by `limit` pages with `next_cursor`. Rows and an aggregate may branch and join: a step's `from` names an earlier name, `join` closes a cycle, `optional` binds null where nothing matches and `absent` keeps a row only where nothing does. A path (`to`) has one start and answers a graph, or with `cheapest` rows. A measure is computed whole for every page: read it in one page, with `limit` up to the lake's `max_graph_nodes`.".into(),
-            input_schema: obj(p, &["start"]),
+            name: CYPHER.into(),
+            description: "Read the lake with one statement of the openCypher subset it reads: `MATCH`, `OPTIONAL MATCH`, `WHERE` and `RETURN`, with `ORDER BY` and `LIMIT`. The statement is translated into one pattern over the declared relations and read as one; it never writes. The first node names its type, as in `(o:order)`, and a node may carry a map of field values, as in `(c:customer {name: $name})`. A relationship names a declared relation and is walked in its direction, `(o:order)-[:placed_by]->(c:customer)`, or against it, `(c)<-[:placed_by]-(o)`; `-[:r*1..3]->` walks it 1 to 3 hops, its upper bound written. A further part, after a comma or in a further `MATCH`, begins at a name bound before it. `WHERE` takes the lake's expression grammar with Cypher's operators (`=`, `<>`, `<`, `AND`, `OR`, `NOT`, `IN [...]`, `STARTS WITH`, `CONTAINS`, `IS NULL`), and `NOT (p)<-[:r]-(:t)` keeps a row only where no such link is. A row holds fields (`o.total`) or every bound name (`RETURN *`). With `count(*)`, `sum(x.f)`, `min`, `max` or `avg`, each named with `AS`, the answer is one group per value of the fields returned beside them. `ORDER BY` names fields. `LIMIT` is a page's length; the next page is the same statement and parameters with the answer's `next_cursor` as `cursor`, and `SKIP` is refused. Give values as `$name` with `params`. A construct outside the subset (`WITH`, `DISTINCT`, `UNWIND`, a named path, a function the grammar lacks, a write) is refused, named, at its character offset. A statement that begins with `EXPLAIN` answers the pattern it translates to and reads nothing.".into(),
+            input_schema: obj(p, &["statement"]),
             output_schema: reply_schema(json!({"type": "object"})),
-            door: Door::Query,
+            door: Door::Cypher,
         });
 
         let mut p = props([
