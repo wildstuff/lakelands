@@ -723,3 +723,14 @@ fn a_where_and_a_search_mode_say_what_their_refusals_ask() {
         "the field says hybrid needs it: {field}"
     );
 }
+
+#[test]
+fn a_search_text_says_a_word_matches_only_as_written() {
+    let t = tools_ok(&lake_of(vec![invoice()]));
+    let search = t.iter().find(|t| t.door == Door::Search).expect("search");
+    let text = &search.input_schema["properties"]["text"]["description"];
+    let text = text.as_str().unwrap_or_default();
+    for words in ["misspelled", "starts_with"] {
+        assert!(text.contains(words), "the text says {words}: {text}");
+    }
+}

@@ -1320,7 +1320,11 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 json!({"enum": ["lexical", "vector", "hybrid"],
                 "description": "lexical ranks `text` in the searchable fields; vector ranks `vector` against `field`; hybrid fuses both and needs `text` and `field`, its `vector` optional."}),
             ),
-            ("text", json!({"type": "string"})),
+            (
+                "text",
+                json!({"type": "string",
+                "description": "lexical and hybrid: the words ranked; a word matches a field's word as written, its case and accents aside and stemmed where the type declares a `language`, so a misspelled word matches nothing: for a name half known, a find's `where` with starts_with or contains."}),
+            ),
             (
                 "fields",
                 json!({"type": "array", "items": {"type": "string"}, "minItems": 1,
