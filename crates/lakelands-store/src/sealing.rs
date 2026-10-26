@@ -660,9 +660,8 @@ fn nonce(parts: &[&[u8]]) -> [u8; 12] {
         }
         h.update(p);
     }
-    let mut n = [0; 12];
-    n.copy_from_slice(&h.finalize()[..12]);
-    n
+    let digest = h.finalize();
+    std::array::from_fn(|i| digest[i])
 }
 
 /// The nonce of what a source's key seals in `body`, by its place: a
