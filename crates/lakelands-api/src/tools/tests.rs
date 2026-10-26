@@ -707,7 +707,10 @@ fn a_where_and_a_search_mode_say_what_their_refusals_ask() {
     .input_schema["properties"];
     let condition = said(&find["where"]);
     for words in ["contains(name, 'Kest')", "starts_with(name, 'Kest')"] {
-        assert!(condition.contains(words), "the where says {words}: {condition}");
+        assert!(
+            condition.contains(words),
+            "the where says {words}: {condition}"
+        );
     }
     let search = &door(Door::Search).input_schema["properties"];
     let mode = said(&search["mode"]);
@@ -715,5 +718,8 @@ fn a_where_and_a_search_mode_say_what_their_refusals_ask() {
         assert!(mode.contains(words), "the mode says {words}: {mode}");
     }
     let field = said(&search["field"]);
-    assert!(field.contains("hybrid"), "the field says hybrid needs it: {field}");
+    assert!(
+        field.contains("hybrid"),
+        "the field says hybrid needs it: {field}"
+    );
 }

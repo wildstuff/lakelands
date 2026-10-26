@@ -73,7 +73,8 @@ macro_rules! cypher_tool_checks {
             a_write_statement_is_refused_by_the_tool_naming_it,
             an_order_beside_an_aggregate_is_refused_in_the_statements_words,
             a_type_not_shown_is_answered_through_cypher_as_through_query,
-            a_record_named_in_plain_words_is_found_through_describe_and_cypher);
+            a_record_named_in_plain_words_is_found_through_describe_and_cypher,
+            a_record_found_by_search_is_walked_from_by_its_key_through_cypher);
     };
     (@each $new:expr, $block_on:path; $($name:ident),* $(,)?) => {
         $(
@@ -813,6 +814,49 @@ pub async fn a_record_named_in_plain_words_is_found_through_describe_and_cypher(
     ];
     assert_eq!(keys, want, "{s}");
     assert_eq!(pages, 2, "{s}");
+}
+
+/// A record found by a word of its text is walked from through the MCP
+/// door alone, as an agent walks from it: `search` ranks the partner a
+/// lower-cased word of its name matches first, and a statement walks the
+/// relation against its direction from the hit's key: Acme's invoices.
+pub async fn a_record_found_by_search_is_walked_from_by_its_key_through_cypher(
+    lake: Arc<dyn LakeStore>,
+    _door: Arc<dyn Statements>,
+    tools: Arc<dyn Tools>,
+) {
+    let f = setup(lake).await;
+    billed(&f).await;
+    let clerk = &f.cast.clerk;
+    let search = named(&f, clerk, &Door::Search).await;
+    let search = search.expect("the clerk is offered `search`");
+    let asked = json!({"type": "partner", "mode": "lexical", "text": "acme"});
+    let hits = tools.call(clerk, &search, asked).await;
+    let hits = hits.expect("the clerk's search is answered");
+    let found: Vec<&Value> = hits["data"]["hits"]
+        .as_array()
+        .expect("the hits")
+        .iter()
+        .map(|h| &h["record"]["key"])
+        .collect();
+    assert_eq!(found, [&json!("P-1")], "{hits}");
+    let key = found[0].as_str().expect("a key");
+    let s = "MATCH (p:partner {key: $key})<-[:billed_by]-(i:invoice) \
+             RETURN i.key, i.status ORDER BY i.key";
+    let page = through_tool((tools.as_ref(), &f), clerk, s, &given_as("key", key), None).await;
+    let page = page.unwrap_or_else(|e| panic!("{s}: {e}"));
+    let rows: Vec<Value> = page["data"]["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .map(|r| json!([r["i.key"], r["i.status"]]))
+        .collect();
+    let want = [
+        json!(["INV-1", "open"]),
+        json!(["INV-2", "paid"]),
+        json!(["INV-4", "open"]),
+    ];
+    assert_eq!(rows, want, "{s}: {page}");
 }
 
 fn given_as(name: &str, value: &str) -> Params {
