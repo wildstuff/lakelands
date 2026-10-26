@@ -185,7 +185,7 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
                 )
             });
             let before = before.as_ref().map(|(p, h)| (*p, h));
-            let Some(event) = lines.line(read, before).unwrap() else {
+            let Some((event, _)) = lines.line(read, before).unwrap() else {
                 continue;
             };
             restored.extend(lakelands_core::canonical::to_vec(&event));

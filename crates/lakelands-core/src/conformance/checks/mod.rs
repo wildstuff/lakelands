@@ -133,6 +133,7 @@ mod shown_hash;
 mod sized;
 mod sorted_whole;
 mod standby;
+mod stored_form;
 mod stored_vectors;
 mod streaming;
 mod taken_lease;
@@ -801,6 +802,8 @@ pub const ALL: &[Check] = &[
     export::ONE_FILE_PER_SEGMENT,
     export::VERIFIES,
     export::FRAMED_COPY,
+    export::FRAMED_DAMAGE,
+    stored_form::APPEND_FRAMED,
     export::GROWS,
     export::NOT_EMPTY,
     export::DAMAGE,

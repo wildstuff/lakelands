@@ -177,9 +177,7 @@ impl Segment {
         Ok(())
     }
 
-    /// Writes the run held: a frame line where it frames, and each event's
-    /// line, holding its `position`, and its `prev` where it is the
-    /// segment's first.
+    /// Writes the run held, its `prev` only on the segment's first line.
     fn flush(&mut self) -> Result<()> {
         let first = self.first;
         let holds = |_: usize, e: &Value| (true, e["position"].as_u64() == Some(first.0));
@@ -347,7 +345,7 @@ pub async fn backup(store: &dyn LakeStore, feed: &dyn ChangeFeed, dir: &Path) ->
                 tail.frame.as_ref(),
                 Some((held, &e.prev)),
             );
-            restored.is_ok_and(|r| canonical::to_vec(&r) == canonical::of(e))
+            restored.is_ok_and(|(r, _)| canonical::to_vec(&r) == canonical::of(e))
         };
         if !at(held).await?.as_ref().is_some_and(derived) {
             return Err(refused(Case::BackupOtherLog { held }));
@@ -518,7 +516,7 @@ impl Chain {
             return damaged(at, Flaw::FormatOther { v, reads });
         }
         let before = (at != first).then(|| (Position(at.0 - 1), &self.prev));
-        let Some(value) = self
+        let Some((value, _)) = self
             .lines
             .line(value, before)
             .or_else(|flaw| damaged(at, flaw))?

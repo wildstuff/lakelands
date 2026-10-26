@@ -126,7 +126,7 @@ async fn an_exported_lake_verifies_from_its_segment_files_alone() {
                 )
             });
             let before = before.as_ref().map(|(p, h)| (*p, h));
-            let Some(event) = lines.line(read, before).unwrap() else {
+            let Some((event, _)) = lines.line(read, before).unwrap() else {
                 continue;
             };
             restored.extend(lakelands_core::canonical::to_vec(&event));
@@ -227,6 +227,61 @@ async fn an_exported_lake_verifies_from_its_segment_files_alone() {
     }
     tokio::task::block_in_place(|| again("no-projection"));
     let _ = std::fs::remove_dir_all(&via);
+    let _ = std::fs::remove_dir_all(&dir);
+    common::drop_schema(&url, &schema);
+}
+
+/// A lake laid out before frames, which no writer of this release has
+/// opened, has no `frames` table: a reader reads its events and its sealed
+/// segments, one whose digest was never kept digested from its rows, and
+/// the engine's export, which only reads, writes its lines as they are
+/// kept.
+#[test]
+fn a_lake_laid_out_before_frames_is_read_and_exported_as_it_is_kept() {
+    let Some(url) = common::url_or_skip("before frames") else {
+        return;
+    };
+    let schema = common::fresh_schema();
+    let location = common::location(&url, "older", &schema);
+    let engine = PgOpener.open(&location, OpenMode::Create).unwrap();
+    let lease = engine.take_lease("writer").unwrap();
+    let events = chain(0, 3, &lakelands_api::event::Digest::zero(), &lease);
+    engine.append(&lease, &events).unwrap();
+    let next = chain(3, 1, &events[2].hash, &lease);
+    let sealed = lakelands_core::conformance::engine::seal(engine.as_ref(), &lease, &next)
+        .unwrap()
+        .expect("the first segment sealed");
+    engine.release_lease(&lease).unwrap();
+    drop(engine);
+    let older =
+        format!("DROP TABLE \"{schema}\".frames; UPDATE \"{schema}\".segments SET digest = NULL");
+    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    client.batch_execute(&older).unwrap();
+
+    let reader = PgOpener.open(&location, OpenMode::Read).unwrap();
+    let all = [events.clone(), next.clone()].concat();
+    assert_eq!(reader.read(lakelands_api::Position(0), 10).unwrap(), all);
+    assert_eq!(
+        reader.read(lakelands_api::Position(2), 1).unwrap(),
+        all[2..3]
+    );
+    assert_eq!(reader.segments().unwrap(), [sealed]);
+    drop(reader);
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("pg-before-frames-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    lakelands_engine_pg::export(&location, &dir).unwrap();
+    for (file, held) in [(0, &events), (3, &next)] {
+        let lines: Vec<u8> = held
+            .iter()
+            .flat_map(|e| [&e.bytes[..], b"\n"].concat())
+            .collect();
+        let path = dir.join(format!("log/{file:020}.jsonl"));
+        assert_eq!(std::fs::read(&path).unwrap(), lines, "{}", path.display());
+    }
+    let frames = format!("SELECT to_regclass('\"{schema}\".frames') IS NULL");
+    let still: bool = client.query_one(&frames, &[]).unwrap().get(0);
+    assert!(still, "a reader and an export make no `frames` table");
     let _ = std::fs::remove_dir_all(&dir);
     common::drop_schema(&url, &schema);
 }

@@ -2,16 +2,8 @@
 //! (`docs/log-format.md` §2.3 and §3), and the members an event never
 //! carries where it is ([`misplaced`]); and the stored form of §1.2, the
 //! lines an event is restored from: a frame holding what a run of events
-//! shares, and the `position` and `prev` the event before gives.
-//!
-//! **The stored form.** [`stored_form`] writes a run of events as lines,
-//! [`frame_append`] writes an append as the store's writer frames it, and
-//! [`restore`] gives back the canonical event a line of the seam restores
-//! to; [`Lines`] reads a segment's lines in order, as a verifier and an
-//! engine that keeps lines read them, and refuses every break of §1.2.
-//! A segment's digest is over the restored events ([`digest_of`]), so it
-//! is the same whatever form holds them, and where every line is a full
-//! event, as up to format 19, it is the file's bytes.
+//! shares, and the `position` and `prev` the event before gives. A
+//! segment's digest is over the restored events, whatever form holds them.
 //!
 //! These are pure functions of the values they name, so a writer, a
 //! verifier and the published vectors compute them the same way; the
@@ -486,18 +478,10 @@ pub fn line_of(bytes: &[u8]) -> std::result::Result<Value, Flaw> {
 /// event before it gives. A line of a format before [`FRAMED_FROM`] is a
 /// full event and is taken as it stands. A frame line, a frame whose
 /// format is not the line's, and a member the line holds that its frame
-/// holds too, are refused; what is no event is left to its reader.
+/// holds too, are refused; what is no event is left to its reader. It
+/// answers too whether the line was the whole event: its frame added
+/// nothing, and nor did `derived`.
 pub fn restored(
-    line: Value,
-    frame: Option<&Framed>,
-    derived: Option<(Position, &Digest)>,
-) -> std::result::Result<Value, Flaw> {
-    restored_whole(line, frame, derived).map(|(event, _)| event)
-}
-
-/// [`restored`], and whether the line was the whole event: its frame
-/// added nothing, and nor did `derived`.
-fn restored_whole(
     line: Value,
     frame: Option<&Framed>,
     derived: Option<(Position, &Digest)>,
@@ -553,14 +537,9 @@ fn restored_whole(
 /// position, and its line restored by [`restored`] with the `position`
 /// and `prev` the engine keeps beside it. A frame that does not say what
 /// the engine keeps of it, or does not cover the event, is
-/// [`Flaw::Disagrees`].
-pub fn restore(stored: &CanonicalEvent) -> std::result::Result<Value, Flaw> {
-    restore_whole(stored).map(|(event, _)| event)
-}
-
-/// [`restore`], and whether the event's line was the whole event, so that
-/// its canonical bytes are the line's.
-pub fn restore_whole(stored: &CanonicalEvent) -> std::result::Result<(Value, bool), Flaw> {
+/// [`Flaw::Disagrees`]. It answers too whether the event's line was the
+/// whole event, so that its canonical bytes are the line's.
+pub fn restore(stored: &CanonicalEvent) -> std::result::Result<(Value, bool), Flaw> {
     restore_read(stored, line_of)
 }
 
@@ -578,7 +557,7 @@ fn json_of(bytes: &[u8]) -> std::result::Result<Value, Flaw> {
     })
 }
 
-/// [`restore_whole`], each line read by `read`.
+/// [`restore`], each line read by `read`.
 fn restore_read(
     stored: &CanonicalEvent,
     read: fn(&[u8]) -> std::result::Result<Value, Flaw>,
@@ -596,7 +575,7 @@ fn restore_read(
         }
     };
     let derived = Some((stored.position, &stored.prev));
-    restored_whole(read(&stored.bytes)?, frame.as_ref(), derived)
+    restored(read(&stored.bytes)?, frame.as_ref(), derived)
 }
 
 /// A segment's digest (§4.2): SHA-256 over the canonical bytes of its
@@ -637,7 +616,7 @@ impl Lines {
     /// it is kept: what a segment's digest is taken over.
     pub fn read(&mut self, bytes: &[u8]) -> std::result::Result<Option<Vec<u8>>, Flaw> {
         let before = self.before.clone();
-        let read = self.line_whole(json_of(bytes)?, before.as_ref().map(|(p, h)| (*p, h)))?;
+        let read = self.line(json_of(bytes)?, before.as_ref().map(|(p, h)| (*p, h)))?;
         let Some((event, whole)) = read else {
             return Ok(None);
         };
@@ -657,17 +636,8 @@ impl Lines {
     /// covers, what [`restored`] refuses, a `position` or a `prev` that is
     /// not the one `before` gives, and a segment's first event line of a
     /// format from [`FRAMED_FROM`] on that does not hold both, are
-    /// refused.
+    /// refused. It answers too whether the line was the whole event.
     pub fn line(
-        &mut self,
-        line: Value,
-        before: Option<(Position, &Digest)>,
-    ) -> std::result::Result<Option<Value>, Flaw> {
-        Ok(self.line_whole(line, before)?.map(|(event, _)| event))
-    }
-
-    /// [`Lines::line`], and whether the line was the whole event.
-    fn line_whole(
         &mut self,
         line: Value,
         before: Option<(Position, &Digest)>,
@@ -690,7 +660,7 @@ impl Lines {
         }
         let derived = before.map(|(p, hash)| (p.next(), hash));
         let frame = self.frame.as_ref().filter(|_| self.left > 0);
-        let (event, whole) = restored_whole(line, frame, derived)?;
+        let (event, whole) = restored(line, frame, derived)?;
         if let Some((expected, prev)) = derived {
             let found = event.get("position").and_then(Value::as_u64).map(Position);
             if found != Some(expected) {
@@ -704,12 +674,6 @@ impl Lines {
             (self.left, self.held) = (self.left - 1, self.held + 1);
         }
         Ok(Some((event, whole)))
-    }
-
-    /// Whether the last line read was a frame line: the frame covers lines
-    /// still to come and none of them is read yet.
-    pub fn framing(&self) -> bool {
-        self.left > 0 && self.held == 0
     }
 
     /// Refuses a segment that ends among the lines a frame covers.

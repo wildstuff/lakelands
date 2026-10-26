@@ -942,11 +942,11 @@ holds it to.
 | a held lease is refused at once, naming its holder | engine: `a_held_lease_is_refused_at_once_naming_its_holder` |
 | every take of the lease has a greater fence | engine: `every_take_of_the_lease_has_a_greater_fence` |
 | an append with a gap or a wrong `prev` is refused whole | engine: `an_append_with_a_gap_or_a_wrong_prev_is_refused_whole` |
-| a sealed segment's digest is over its events as restored, and it is what the seal hands `first`; sealing an empty segment answers none and adds nothing | engine: `a_sealed_segment_is_digested_as_its_lines` |
+| a sealed segment's digest is over its events as restored, and it is what the seal hands `first`; sealing an empty segment answers none and adds nothing | engine: `a_sealed_segment_is_digested_over_its_events_as_they_restore` |
 | a framed append comes back unchanged, each event with its frame, read from the frame's first position, from within it and one event at a time | engine: `a_framed_append_comes_back_unchanged_read_from_within_it` |
 | an append that holds a frame in part is refused as `append_frame`, whole | engine: `an_append_that_holds_a_frame_in_part_is_refused_whole` |
 | a segment of format-19 lines and framed ones reads back as appended and is digested over its events restored | engine: `a_segment_of_older_lines_and_framed_ones_is_digested_over_its_events_restored` |
-| a line kept as handed that does not restore comes back unchanged, and sealing its segment is refused as `damaged` at its position | engine: `a_framed_line_that_holds_what_its_frame_holds_is_refused_where_it_is_restored` |
+| a frame that is no frame, a line that holds what its frame holds, a line of another format than its frame's and a frame line among a frame's lines come back unchanged as handed, and sealing their segment is refused as `damaged` at the position that does not restore, naming its flaw | engine: `a_framed_append_that_does_not_restore_comes_back_unchanged_and_is_refused_where_it_is_restored` |
 | a dropped writer releases its lease | engine: `a_dropped_writer_releases_its_lease` |
 | a read-only handle refuses the lease, appends and sealing, and reads | engine: `a_read_only_handle_refuses_the_lease_and_appends` |
 | a read-only handle tells whether the lease is free, and takes nothing | engine: `a_read_only_handle_tells_whether_the_lease_is_free` |

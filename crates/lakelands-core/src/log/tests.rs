@@ -414,7 +414,7 @@ fn a_framed_append_restores_to_the_events_it_was_made_from() {
     assert!(!held(&events[1], "position") && !held(&events[2], "prev"));
     assert_eq!(frame_fault(&events), Ok(()));
     for (i, e) in events.iter().enumerate() {
-        let restored = restore(e).unwrap();
+        let (restored, _) = restore(e).unwrap();
         assert_eq!(canonical::to_vec(&restored), made[i], "event {i}");
         assert_eq!(restored, values[i]);
         assert_eq!(crate::engines::hash_of(restored), e.hash.0);
@@ -446,7 +446,7 @@ fn a_single_event_and_an_older_format_are_kept_whole() {
         older.iter().map(|e| e.bytes.clone()).collect::<Vec<_>>(),
         lines
     );
-    assert_eq!(restore_whole(&older[1]).map(|(_, whole)| whole), Ok(true));
+    assert_eq!(restore(&older[1]).map(|(_, whole)| whole), Ok(true));
 }
 
 #[test]
@@ -462,7 +462,7 @@ fn a_segment_reads_older_lines_and_framed_ones_in_order() {
     let mut read = Vec::new();
     for bytes in &file {
         let line = line_of(bytes).unwrap();
-        if let Some(event) = lines
+        if let Some((event, _)) = lines
             .line(line, before.as_ref().map(|(p, h)| (*p, h)))
             .unwrap()
         {
@@ -486,7 +486,7 @@ fn refusal(file: &[Vec<u8>]) -> Option<Flaw> {
         };
         match lines.line(line, before.as_ref().map(|(p, h)| (*p, h))) {
             Err(flaw) => return Some(flaw),
-            Ok(Some(event)) => {
+            Ok(Some((event, _))) => {
                 let hash = Digest(event["hash"].as_str().unwrap().to_owned());
                 before = Some((Position(event["position"].as_u64().unwrap()), hash));
             }

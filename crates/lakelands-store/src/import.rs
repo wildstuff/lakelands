@@ -211,7 +211,7 @@ fn events(path: &Path) -> Result<impl Iterator<Item = Result<(CanonicalEvent, En
         let damaged = |flaw| lakelands_core::damaged(Part::Export, None, flaw);
         let value = lakelands_core::log::line_of(&line).map_err(damaged)?;
         let after = before.as_ref().map(|(p, h)| (*p, h));
-        let Some(value) = lines.line(value, after).map_err(damaged)? else {
+        let Some((value, _)) = lines.line(value, after).map_err(damaged)? else {
             return Ok(None);
         };
         // The parser's own words, which name the member it does not know:

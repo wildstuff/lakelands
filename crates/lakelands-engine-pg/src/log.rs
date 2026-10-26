@@ -321,11 +321,13 @@ pub(crate) fn read(
         return Ok(events);
     }
     let (first, last) = (first.position.0 as i64, last.position.0 as i64);
+    // Frames never overlap, so the first that can cover `first` is the
+    // last to begin at or before it: the key bounds the scan both ways.
     let frames = db.query(
         &format!(
-            "SELECT first, events, bytes FROM {} WHERE first <= $2 AND first + events > $1 \
-             ORDER BY first",
-            names.t("frames")
+            "SELECT first, events, bytes FROM {f} WHERE first <= $2 AND first >= \
+             coalesce((SELECT max(first) FROM {f} WHERE first <= $1), $1) ORDER BY first",
+            f = names.t("frames")
         ),
         &[&first, &last],
     )?;
@@ -366,19 +368,33 @@ fn each_event(
     mut f: impl FnMut(Option<&[u8]>, &CanonicalEvent) -> Result<()> + Send,
 ) -> Result<()> {
     let mut held: Option<Arc<Frame>> = None;
+    let framed = db
+        .query_one("SELECT to_regclass($1) IS NOT NULL", &[&names.t("frames")])?
+        .get::<_, bool>(0);
+    // A lake no writer of frames has opened has no `frames` table.
+    let (frame, join) = match framed {
+        true => {
+            let join = format!("LEFT JOIN {} f ON f.first = l.position", names.t("frames"));
+            ("f.events, f.bytes", join)
+        }
+        false => ("NULL::int, NULL::bytea", String::new()),
+    };
     db.query_each(
         &format!(
-            "SELECT l.position, l.prev, l.bytes, f.events, f.bytes, l.id, l.hash, l.fence FROM {} l \
-             LEFT JOIN {} f ON f.first = l.position WHERE l.segment = $1 ORDER BY l.position",
+            "SELECT l.position, l.prev, l.bytes, {frame}, l.id, l.hash, l.fence FROM {} l {join} \
+             WHERE l.segment = $1 ORDER BY l.position",
             names.t("log"),
-            names.t("frames"),
         ),
         &[&first],
         |r| {
             let position = Position(r.get::<_, i64>(0) as u64);
             if let Some(events) = r.get::<_, Option<i32>>(3) {
                 let (events, bytes) = (events as u32, r.get(4));
-                held = Some(Arc::new(Frame { first: position, events, bytes }));
+                held = Some(Arc::new(Frame {
+                    first: position,
+                    events,
+                    bytes,
+                }));
             }
             let frame = held.clone().filter(|f| covers(f, position));
             let event = CanonicalEvent {

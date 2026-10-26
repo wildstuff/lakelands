@@ -13,11 +13,11 @@
 use std::time::{Duration, Instant};
 
 use lakelands_api::Error;
-use lakelands_api::engine::{CanonicalEvent, LakeEngine, OpenMode};
-use lakelands_api::error::Situation;
+use lakelands_api::engine::{CanonicalEvent, Frame, LakeEngine, OpenMode};
+use lakelands_api::error::{Flaw, Situation};
 use lakelands_api::event::Digest;
 use lakelands_api::id::Position;
-use serde_json::json;
+use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
 use super::{EngineHarness, chain, event, seal};
@@ -60,7 +60,7 @@ engine_check!(
 );
 
 engine_check!(
-    SEGMENT_DIGEST = a_sealed_segment_is_digested_as_its_lines,
+    SEGMENT_DIGEST = a_sealed_segment_is_digested_over_its_events_as_they_restore,
     "log format §4.2: a segment's digest is SHA-256 over its events as they restore, each event's canonical bytes followed by a line feed, which for whole lines are its file's bytes, whatever the engine keeps them in"
 );
 
@@ -80,8 +80,8 @@ engine_check!(
 );
 
 engine_check!(
-    FRAME_BROKEN = a_framed_line_that_holds_what_its_frame_holds_is_refused_where_it_is_restored,
-    "log format §1.2 and §4.2: the engine keeps a line as it is handed, so a line that holds a member its frame holds comes back unchanged and does not restore, and a seal of its segment, which digests its events as restored, is refused as `damaged` at its position and seals nothing"
+    FRAME_BROKEN = reopening a_framed_append_that_does_not_restore_comes_back_unchanged_and_is_refused_where_it_is_restored,
+    "log format §1.2 and §4.2: the engine keeps a frame and a line as they are handed, so a frame that is no frame, a line that holds a member its frame holds, a line of another format than its frame's and a frame line among the lines a frame covers come back unchanged and do not restore, and a seal of their segment, which digests its events as restored, is refused as `damaged` at the position of the event that does not restore, naming its flaw, and seals nothing"
 );
 
 engine_check!(
@@ -504,7 +504,7 @@ fn an_append_with_a_gap_or_a_wrong_prev_is_refused_whole(engine: &dyn LakeEngine
     Ok(())
 }
 
-fn a_sealed_segment_is_digested_as_its_lines(engine: &dyn LakeEngine) -> Held {
+fn a_sealed_segment_is_digested_over_its_events_as_they_restore(engine: &dyn LakeEngine) -> Held {
     let lease = engine.take_lease("conformance").must("taking the lease")?;
     let events = chain(0, 3, &Digest::zero(), &lease);
     let empty = seal(engine, &lease, &events).must("sealing an empty segment")?;
@@ -1067,47 +1067,112 @@ fn a_segment_of_older_lines_and_framed_ones_is_digested_over_its_events_restored
     Ok(())
 }
 
-fn a_framed_line_that_holds_what_its_frame_holds_is_refused_where_it_is_restored(
-    engine: &dyn LakeEngine,
-) -> Held {
-    let lease = engine.take_lease("conformance").must("taking the lease")?;
-    let (mut stored, _) = framed(20, 0, 3, &Digest::zero(), &lease);
-    // The second event's line holds `known_at`, which its frame holds.
-    let mut line: serde_json::Value = serde_json::from_slice(&stored[1].bytes)
+/// The line of the event at `at` among `stored`, edited by `edit`.
+fn edit_line(stored: &mut [CanonicalEvent], at: usize, edit: impl FnOnce(&mut Value)) -> Held {
+    let mut line: Value = serde_json::from_slice(&stored[at].bytes)
         .map_err(|e| Failure::new(format!("a stored line is JSON: {e}")))?;
-    line["known_at"] = json!("2026-01-01T00:00:00.000000Z");
-    stored[1].bytes = crate::canonical::to_vec(&line);
-    engine
-        .append(&lease, &stored)
-        .must("appending three events framed, one line holding what its frame holds")?;
-    let read = engine.read(Position(0), 10).must("reading the log")?;
-    let back = crate::log::restore_json(&read[1]);
-    ensure!(
-        read == stored
-            && back
-                == Err(lakelands_api::error::Flaw::FramedTwice {
-                    member: "known_at".into()
-                }),
-        "the log reads back {:?}, the line as appended, which is refused as `framed_twice` \
-         where it is restored; it restores to {back:?}",
-        render(&read)
-    );
-    let next = chain(3, 1, &stored[2].hash, &lease);
-    let sealed = seal(engine, &lease, &next);
-    let at_one = matches!(
-        sealed.as_ref().err().and_then(Error::situation),
-        Some(Situation::Damaged {
-            position: Some(Position(1)),
-            ..
-        })
-    );
-    let segments = engine.segments().must("listing the segments")?;
-    let tip = engine.tip().must("reading the tip")?;
-    ensure!(
-        at_one && segments.is_empty() && tip.as_ref().map(|(p, _)| *p) == Some(Position(2)),
-        "sealing a segment whose line at 1 does not restore is refused as `damaged` at 1 and \
-         seals nothing; it answered {sealed:?}, with the segments {segments:?} and the tip \
-         {tip:?}"
-    );
+    edit(&mut line);
+    stored[at].bytes = crate::canonical::to_vec(&line);
+    Ok(())
+}
+
+/// The frame `stored` share, edited by `edit`, carried by each of them.
+fn edit_frame(stored: &mut [CanonicalEvent], edit: impl FnOnce(&mut Value)) -> Held {
+    let frame = stored[0]
+        .frame
+        .clone()
+        .ok_or_else(|| Failure::new("a framed append's first event carries its frame"))?;
+    let mut line: Value = serde_json::from_slice(&frame.bytes)
+        .map_err(|e| Failure::new(format!("a stored frame is JSON: {e}")))?;
+    edit(&mut line);
+    let edited = std::sync::Arc::new(Frame {
+        bytes: crate::canonical::to_vec(&line),
+        ..Frame::clone(&frame)
+    });
+    for e in stored {
+        e.frame = Some(edited.clone());
+    }
+    Ok(())
+}
+
+fn a_framed_append_that_does_not_restore_comes_back_unchanged_and_is_refused_where_it_is_restored(
+    engine: &dyn LakeEngine,
+    harness: &dyn EngineHarness,
+) -> Held {
+    type Plant = fn(&mut [CanonicalEvent]) -> Held;
+    let breaks: [(&str, u64, Flaw, Plant); 4] = [
+        (
+            "the second event's line holds `known_at`, which its frame holds",
+            1,
+            Flaw::FramedTwice {
+                member: "known_at".into(),
+            },
+            |s| {
+                edit_line(s, 1, |l| {
+                    l["known_at"] = json!("2026-01-01T00:00:00.000000Z")
+                })
+            },
+        ),
+        (
+            "the frame says format 19, which frames none",
+            0,
+            Flaw::NotAFrame,
+            |s| edit_frame(s, |f| f["v"] = json!(19)),
+        ),
+        (
+            "the second event's line says format 19 under a frame of 20",
+            1,
+            Flaw::FrameOther { frame: 20, v: 19 },
+            |s| edit_line(s, 1, |l| l["v"] = json!(19)),
+        ),
+        (
+            "the second event's line holds `frame`, as a frame line does",
+            1,
+            Flaw::FrameInFrame,
+            |s| edit_line(s, 1, |l| l["frame"] = json!({})),
+        ),
+    ];
+    for (i, (what, at, flaw, plant)) in breaks.into_iter().enumerate() {
+        // Each break on a lake of its own: a seal refused leaves it active.
+        let own = match i {
+            0 => None,
+            _ => Some(
+                harness
+                    .fresh()
+                    .map_err(|e| Failure::new(format!("opening a fresh lake: {e}")))?,
+            ),
+        };
+        let engine = own.as_deref().unwrap_or(engine);
+        let lease = engine.take_lease("conformance").must("taking the lease")?;
+        let (mut stored, _) = framed(20, 0, 3, &Digest::zero(), &lease);
+        plant(&mut stored)?;
+        engine
+            .append(&lease, &stored)
+            .must(&format!("appending three events framed where {what}"))?;
+        let read = engine.read(Position(0), 10).must("reading the log")?;
+        let back = crate::log::restore_json(&read[at as usize]);
+        ensure!(
+            read == stored && back.as_ref().err() == Some(&flaw),
+            "where {what}, the log reads back {:?}, as appended, and the event at {at} is \
+             refused as {flaw:?} where it is restored; it restores to {back:?}",
+            render(&read)
+        );
+        let next = chain(3, 1, &stored[2].hash, &lease);
+        let sealed = seal(engine, &lease, &next);
+        let damaged = match sealed.as_ref().err().and_then(Error::situation) {
+            Some(Situation::Damaged { position, flaw, .. }) => Some((*position, flaw)),
+            _ => None,
+        };
+        let segments = engine.segments().must("listing the segments")?;
+        let tip = engine.tip().must("reading the tip")?;
+        ensure!(
+            damaged == Some((Some(Position(at)), &flaw))
+                && segments.is_empty()
+                && tip.as_ref().map(|(p, _)| *p) == Some(Position(2)),
+            "where {what}, sealing the segment is refused as `damaged` at {at}, naming \
+             {flaw:?}, and seals nothing; it answered {sealed:?}, with the segments {segments:?} \
+             and the tip {tip:?}"
+        );
+    }
     Ok(())
 }

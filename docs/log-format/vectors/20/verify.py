@@ -196,11 +196,11 @@ def restored(lines, need, before=None):
             continue
         v = read.get("v")
         event = dict(read)
+        if before is None and type(v) is int and v >= FRAMED_FROM:
+            need("position" in read and "prev" in read, "a segment's first event line holds its `position` and its `prev`")
         if left:
             need(v == frame["v"], f"a line of format {v} is covered by a frame of format {frame['v']}")
         if type(v) is int and v >= FRAMED_FROM:
-            if before is None:
-                need("position" in read and "prev" in read, "a segment's first event line holds its `position` and its `prev`")
             for name, value in (frame["frame"].items() if left else ()):
                 if name in NESTED:
                     held = event.setdefault(name, {})

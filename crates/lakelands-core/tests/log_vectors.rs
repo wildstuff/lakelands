@@ -934,7 +934,7 @@ fn read_stored(stored: &[Value], after: &Value) -> Result<Vec<Value>, (Option<us
     for (i, line) in stored.iter().enumerate() {
         let read = log::line_of(line.as_str().unwrap().as_bytes())
             .and_then(|l| lines.line(l, before.as_ref().map(|(p, h)| (*p, h))));
-        let Some(event) = read.map_err(|flaw| (Some(i), flaw))? else {
+        let Some((event, _)) = read.map_err(|flaw| (Some(i), flaw))? else {
             continue;
         };
         let at = Position(event["position"].as_u64().unwrap());
@@ -1021,7 +1021,7 @@ fn a_framed_append_is_stored_as_the_writer_frames_it_and_every_break_is_refused(
         "the writer's lines"
     );
     for (event, line) in appended.iter().zip(&lines) {
-        let restored = log::restore(event).unwrap();
+        let (restored, _) = log::restore(event).unwrap();
         assert_eq!(
             canonical::to_vec(&restored),
             line.as_bytes(),

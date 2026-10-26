@@ -220,7 +220,10 @@ pub fn one_format(lake: &LakeId, ends: Option<&(CanonicalEvent, CanonicalEvent)>
     // frame.
     let read = |e: &CanonicalEvent| {
         let line = || serde_json::from_slice::<serde_json::Value>(&e.bytes).ok();
-        lakelands_core::log::restore(e).ok().or_else(line)
+        lakelands_core::log::restore(e)
+            .ok()
+            .map(|(e, _)| e)
+            .or_else(line)
     };
     let (first, tip) = (read(first), read(tip));
     let made = |f: &&serde_json::Value| f.pointer("/body/kind") == Some(&"lake_created".into());
@@ -278,7 +281,7 @@ fn corrupt(position: Position, flaw: Flaw) -> Error {
 /// is read (`docs/decisions/054-a-lake-is-written-in-one-format-a-release.md`).
 pub fn open(stored: &CanonicalEvent) -> Result<Event> {
     let at = stored.position;
-    let (value, whole) = lakelands_core::log::restore_whole(stored).map_err(|f| corrupt(at, f))?;
+    let (value, whole) = lakelands_core::log::restore(stored).map_err(|f| corrupt(at, f))?;
     let v = format_of(&value);
     // An older event is read as the release's format says its members; its
     // bytes and its hash stay as stored.

@@ -177,13 +177,6 @@ struct FrameAt {
     len: u64,
 }
 
-impl FrameAt {
-    /// Whether it covers `position`.
-    fn covers(&self, position: u64) -> bool {
-        position >= self.first && position - self.first < u64::from(self.events)
-    }
-}
-
 /// One index line.
 #[derive(Clone, Debug)]
 enum Line {
@@ -193,17 +186,6 @@ enum Line {
     Frame(FrameAt),
     /// A commit line, closing an append.
     Commit,
-}
-
-impl Line {
-    /// The position it names: an event's own, a frame's first.
-    fn position(&self) -> Option<u64> {
-        match self {
-            Line::Event(e) => Some(e.position),
-            Line::Frame(f) => Some(f.first),
-            Line::Commit => None,
-        }
-    }
 }
 
 /// Where a read goes on from in a segment's index: the position the next
@@ -228,7 +210,8 @@ impl Resume {
             Line::Event(mut e) => {
                 let prev = e.prev.take().or_else(|| self.hash.clone());
                 e.prev = Some(prev.ok_or_else(|| damaged(path, Flaw::UnknownLine))?);
-                e.frame = self.frame.filter(|f| f.covers(e.position));
+                let within = |f: &FrameAt| e.position.checked_sub(f.first);
+                e.frame = (self.frame).filter(|f| within(f).is_some_and(|i| i < f.events.into()));
                 (self.expected, self.hash) = (e.position + 1, Some(e.hash.clone()));
                 return Ok(Some(e));
             }
@@ -449,14 +432,17 @@ fn bytes_at(mut file: &File, from: u64, len: u64) -> io::Result<Vec<u8>> {
 /// One index line, an event line or a frame line checked to name
 /// `expected`.
 fn parse_at(path: &Path, line: &[u8], expected: u64) -> Result<Line> {
-    match parse_line(path, line)? {
-        line if line.position().is_some_and(|p| p != expected) => {
-            let found = line.position().map(Position);
-            let expected = Position(expected);
-            Err(damaged(path, Flaw::Position { expected, found }))
-        }
-        line => Ok(line),
+    let line = parse_line(path, line)?;
+    let found = match &line {
+        Line::Event(e) => e.position,
+        Line::Frame(f) => f.first,
+        Line::Commit => return Ok(line),
+    };
+    if found != expected {
+        let (expected, found) = (Position(expected), Some(Position(found)));
+        return Err(damaged(path, Flaw::Position { expected, found }));
     }
+    Ok(line)
 }
 
 /// Where `wanted` last begins in the first `end` bytes of `file`, read
