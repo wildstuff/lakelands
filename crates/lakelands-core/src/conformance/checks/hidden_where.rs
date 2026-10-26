@@ -676,6 +676,21 @@ async fn a_search_as_of_a_position_matches_no_field_hidden_on_a_record_selected_
     let before = store.head().await.must("reading the head")?;
     let after = l.upsert("note", "n1", json!({"doc": "secret"})).await?;
     l.upsert("note", "n3", json!({"doc": "open"})).await?;
+    // `body` is `text` at the head, and the hiding follows it there.
+    let text = vec![
+        field("doc", Text),
+        searchable("title"),
+        searchable("text"),
+        vector("v", 2),
+    ];
+    let mut m = crate::conformance::fixture::migration(type_decl("note", text));
+    m.renames = vec![("body".into(), "text".into())];
+    let id = l.cat.migrate(&l.own, m.clone()).await.must("previewing")?;
+    let id = id.data.report_id;
+    l.cat
+        .migrate_apply(&l.own, m, &id)
+        .await
+        .must("renaming `body`")?;
     // n3 is secret before, n1 at the head, and both at `after`.
     let mut wrong = Vec::new();
     for (at, want) in [
@@ -689,7 +704,7 @@ async fn a_search_as_of_a_position_matches_no_field_hidden_on_a_record_selected_
         ),
         (
             None,
-            "n1:doc title/title n2:doc title/title n3:body doc title/body",
+            "n1:doc title/title n2:doc title/title n3:doc text title/text",
         ),
     ] {
         let mut asked = json!({"mode": "lexical", "text": "taxi rome"});
