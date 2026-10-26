@@ -530,3 +530,44 @@ fn reopen_with_keys_opens_with_a_new_key_store_and_answers_it() {
     );
     assert_eq!(seen.len(), 1);
 }
+
+/// A sealed `record_ingested` whose patch is `patch`, whose box is
+/// `boxed` and whose writer is `writer`.
+fn sealed_event(
+    patch: serde_json::Value,
+    boxed: &str,
+    writer: &str,
+) -> lakelands_api::event::Event {
+    serde_json::from_value(serde_json::json!({
+        "v": 20, "lake": "finance", "position": 1, "id": "0".repeat(32),
+        "prev": lakelands_api::event::Digest::zero(), "known_at": "2026-09-24T00:00:00.000000Z",
+        "writer": writer, "origin": "source", "source": "crm",
+        "context": {"origin": "direct", "depth": 0}, "fence": 0,
+        "sealed": {"key": "k1", "fields": ["name"], "box": boxed},
+        "body": {"kind": "record_ingested", "type": "person", "key": "p1",
+                 "version": 1, "patch": patch, "made": true},
+        "hash": lakelands_api::event::Digest::zero(),
+    }))
+    .unwrap()
+}
+
+#[test]
+fn the_plaintext_search_goes_red_on_a_leak_and_ignores_the_box() {
+    use checks::erasable::plain_outside_box as clean;
+    let issue_box = "WVQGaXJMNhbAda80xQzut+RoXUztV4s1tah588X5";
+    let ok = sealed_event(
+        serde_json::json!({"city": "Oslo"}),
+        "QUJDREVGR0g=",
+        "system:a",
+    );
+    assert!(clean(&ok, &["Ada"]));
+    // The ciphertext of the flake: `Ada` in the box text by chance.
+    let chance = sealed_event(serde_json::json!({"city": "Oslo"}), issue_box, "system:a");
+    assert!(clean(&chance, &["Ada"]));
+    // A leak in the patch, and in another field.
+    let in_patch = sealed_event(serde_json::json!({"name": "Ada"}), issue_box, "system:a");
+    assert!(!clean(&in_patch, &["Ada"]));
+    let in_writer = sealed_event(serde_json::json!({"city": "Oslo"}), issue_box, "user:Ada");
+    assert!(!clean(&in_writer, &["Ada"]));
+    assert!(!clean(&in_patch, &["Bob", "Ada"]));
+}
