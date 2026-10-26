@@ -647,7 +647,7 @@ async fn a_new_subscription_follows_the_hub_of_its_kinds() {
 
 async fn serve(store: Arc<dyn LakeStore>) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let open = Arc::new(
-        move |_: &lakelands_api::LakeId| -> lakelands_api::Result<Arc<dyn LakeStore>> {
+        move |_: &lakelands_api::id::LakeId| -> lakelands_api::Result<Arc<dyn LakeStore>> {
             Ok(store.clone())
         },
     );
@@ -1392,6 +1392,115 @@ async fn an_output_that_fills_a_field_is_told_as_a_change_of_it() {
         ),
         (&json!("output_recorded"), &json!("p1"), &json!(["name"])),
         "{m}"
+    );
+}
+
+/// One key of each source, random, kept while the lake is open.
+#[derive(Default)]
+struct OneKey(std::sync::Mutex<Option<[u8; 32]>>);
+
+impl lakelands_api::seam::KeyStore for OneKey {
+    fn create(
+        &self,
+        _: &lakelands_api::id::LakeId,
+        _: &lakelands_api::id::SourceId,
+    ) -> lakelands_api::Result<lakelands_api::id::KeyId> {
+        let mut k = [0; 32];
+        getrandom::fill(&mut k).unwrap();
+        *self.0.lock().unwrap() = Some(k);
+        Ok("k1".into())
+    }
+
+    fn key(
+        &self,
+        _: &lakelands_api::id::LakeId,
+        _: &lakelands_api::id::SourceId,
+        _: &lakelands_api::id::KeyId,
+    ) -> lakelands_api::Result<Option<lakelands_api::seam::DataKey>> {
+        Ok(self.0.lock().unwrap().map(lakelands_api::seam::DataKey))
+    }
+
+    fn destroy(
+        &self,
+        _: &lakelands_api::id::LakeId,
+        _: &lakelands_api::id::SourceId,
+    ) -> lakelands_api::Result<()> {
+        *self.0.lock().unwrap() = None;
+        Ok(())
+    }
+
+    fn ids(
+        &self,
+        _: &lakelands_api::id::LakeId,
+        _: &lakelands_api::id::SourceId,
+    ) -> lakelands_api::Result<Vec<lakelands_api::id::KeyId>> {
+        Ok(self.0.lock().unwrap().iter().map(|_| "k1".into()).collect())
+    }
+}
+
+/// A source's ingest seals its erasable members in one box, out of its
+/// patch: it is told as a change of each, also where it changes nothing
+/// else (lakelands#1452).
+#[tokio::test]
+async fn an_ingest_is_told_as_a_change_of_the_members_it_seals() {
+    use lakelands_api::seam::Seams;
+    let store = lakelands_store::open(
+        lakelands_api::Location::memory("finance"),
+        Seams {
+            engines: vec![Arc::new(lakelands_engine_mem::MemoryOpener::new())],
+            keys: Some(Arc::new(OneKey::default())),
+            ..Seams::default()
+        },
+        lakelands_api::engine::OpenMode::Create,
+    )
+    .await
+    .unwrap();
+    declare_memo(store.as_ref()).await;
+    let text = json!({"kind": "text"});
+    declare(
+        store.as_ref(),
+        json!({"declare": "type", "name": "person", "key": ["id"], "fields": [
+            {"name": "id", "type": text, "authority": "source"},
+            {"name": "name", "type": text, "authority": "source", "erasable": true},
+            {"name": "city", "type": text, "authority": "source"}]}),
+    )
+    .await;
+    let mut s = Stdio::open(store.clone(), common::owner()).await;
+    s.call(
+        "subscribe",
+        json!({"kinds": ["record_ingested", "record_upserted"]}),
+    )
+    .await;
+    let cat = store.catalog(WriteContext::default());
+    let (own, crm) = (common::owner(), "crm".into());
+    for fields in [
+        json!({"id": "p1", "name": "Ada", "city": "Oslo"}),
+        json!({"id": "p1", "name": "Bob"}),
+    ] {
+        let record = lakelands_api::SourceRecord {
+            source: None,
+            upstream: None,
+            ty: "person".into(),
+            key: "p1".into(),
+            fields: serde_json::from_value(fields).unwrap(),
+            seen_at: None,
+        };
+        let fed = lakelands_api::ingest_all(cat.as_ref(), &own, &crm, vec![record]);
+        fed.await.unwrap();
+    }
+    write(store.as_ref(), "memo", "m1", json!({"text": "after"})).await;
+    let mut told = Vec::new();
+    for _ in 0..3 {
+        let m = s.change().await;
+        told.push((m["params"]["kind"].clone(), m["params"]["fields"].clone()));
+    }
+    assert_eq!(
+        told,
+        [
+            (json!("record_ingested"), json!(["city", "id", "name"])),
+            (json!("record_ingested"), json!(["id", "name"])),
+            (json!("record_upserted"), json!(["text"])),
+        ],
     );
 }
 

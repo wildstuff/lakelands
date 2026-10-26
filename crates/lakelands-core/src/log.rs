@@ -297,6 +297,17 @@ pub fn created_in_another(event: &Event) -> Option<Flaw> {
     }
 }
 
+/// Whether `b` is padded standard base64 of at least the 16 bytes of an
+/// AES-256-GCM-SIV tag, as a box is (`docs/log-format.md` §1.4).
+fn padded(b: &str) -> bool {
+    let body = b.trim_end_matches('=');
+    let alphabet = |c: u8| c.is_ascii_alphanumeric() || c == b'+' || c == b'/';
+    b.len().is_multiple_of(4)
+        && b.len() >= 24
+        && b.len() - body.len() <= 2
+        && body.bytes().all(alphabet)
+}
+
 /// Why an event carries a member where it never sits, if it does:
 /// `cause` inside `context`, since a host's cause is the envelope's
 /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`); and
@@ -315,7 +326,9 @@ pub fn created_in_another(event: &Event) -> Option<Flaw> {
 /// (`docs/log-format.md` §1.1); and a `trigger_dropped`, or a
 /// `trigger_fired`'s `change` or `created`, before format 17; and `apart`,
 /// in `sealed` or on a `values_removed`, and a `values_removed` selecting
-/// by `seen_before` or by `deliveries`, before format 18 (065).
+/// by `seen_before` or by `deliveries`, before format 18 (065); and
+/// `sealed.box` on any but a `record_ingested` of format 20 on, or of a
+/// form a reader without the key refuses (`docs/log-format.md` §1.4).
 /// No door
 /// puts any there; a reader holds the rule for a log written by something
 /// else.
@@ -375,6 +388,14 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
     if boxed && (!ingest || event.v < BOXED_FROM) {
         let (kind, v) = (kind.clone(), event.v);
         return Some(Flaw::BoxedOn { kind, v });
+    }
+    if let (EventBody::RecordIngested { patch, .. }, Some(sealed)) = (&event.body, &event.sealed)
+        && let Some(b) = &sealed.boxed
+        && (sealed.fields.is_empty()
+            || sealed.fields.iter().any(|f| patch.contains_key(f))
+            || !padded(b))
+    {
+        return Some(Flaw::BoxForm);
     }
     if let EventBody::ValuesRemoved { selection, .. } = &event.body
         && event.v < APART_FROM

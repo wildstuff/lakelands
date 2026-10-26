@@ -1026,6 +1026,7 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `removed_before` | `v` (u32) | an event of format {v} is a `values_removed`, which format 17 added | A `values_removed` event in a format before the one that added it. |
 | `apart_before` | `v` (u32) | an event of format {v} carries `apart`, which format 18 added | An event of a format before 18 carries `apart`. |
 | `boxed_on` | `kind` (String), `v` (u32) | a `{kind}` event of format {v} carries `sealed.box`, which only a `record_ingested` of format 20 on carries | An event other than a `record_ingested` of format 20 on carries `sealed.box`. |
+| `box_form` | — | a `sealed.box` names no member in `sealed.fields`, or one the patch holds too, or is not padded base64 of at least 16 bytes | A box that names no member, holds a member the patch holds too, or is not padded base64 of at least the tag's 16 bytes. |
 | `selects_later` | `v` (u32), `by` (String) | a `values_removed` of format {v} selects by `{by}`, which format 18 added | A `values_removed` of a format before 18 selects by `seen_before` or by a set of deliveries. |
 | `upstream_on` | `kind` (String) | a `{kind}` event carries `upstream`, which only a `record_ingested` event carries | An event other than `record_ingested` carries `upstream`. |
 | `hash_mismatch` | — | the hash does not match the event | The hash does not match the event. |
