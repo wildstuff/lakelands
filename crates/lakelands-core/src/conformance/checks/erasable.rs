@@ -277,6 +277,18 @@ fn boxed(e: &Event) -> Option<&str> {
     e.sealed.as_ref()?.boxed.as_deref()
 }
 
+/// Whether `e` holds none of `needles` outside its box. The box is random
+/// ciphertext, so a short word can occur in its text by chance; the
+/// plaintext is looked for in everything else the event carries.
+pub(in crate::conformance) fn plain_outside_box(e: &Event, needles: &[&str]) -> bool {
+    let mut bare = e.clone();
+    if let Some(s) = bare.sealed.as_mut() {
+        s.boxed = None;
+    }
+    let text = json!(bare).to_string();
+    !needles.iter().any(|n| text.contains(n))
+}
+
 /// The value of `f` in `person` `key` at the head.
 pub(super) async fn read(l: &Lake, key: &str, f: &str) -> Result<Value, Failure> {
     let r = l.read("person", key).await?;
@@ -328,7 +340,8 @@ async fn a_sources_value_of_an_erasable_field_is_sealed_in_the_log_and_read_plai
         "the event's `sealed` names key `{k}` and the field `name`; it is {:?}",
         e.sealed
     );
-    let base64 = boxed(e).is_some_and(|s| !s.is_empty() && s.len() % 4 == 0 && !s.contains("Ada"));
+    let base64 = boxed(e).is_some_and(|s| !s.is_empty() && s.len() % 4 == 0)
+        && plain_outside_box(e, &["Ada"]);
     ensure!(
         base64 && stored(e, "name").is_null(),
         "the log holds `name` in `sealed.box` as base64 that is not the plaintext, and not in the patch; it holds {e:?}"
@@ -414,7 +427,7 @@ async fn a_records_sealed_members_are_sealed_in_one_box(store: Store, reopen: Re
         "`sealed.fields` names `email` and `name`; it is {:?}",
         e.sealed
     );
-    let one = boxed(e).is_some_and(|b| !b.contains("Ada") && !b.contains("ada@"));
+    let one = boxed(e).is_some_and(|b| !b.is_empty()) && plain_outside_box(e, &["Ada", "ada@"]);
     let out = stored(e, "name").is_null() && stored(e, "email").is_null();
     ensure!(
         one && out && stored(e, "city") == json!("Oslo"),
@@ -695,7 +708,7 @@ async fn an_output_computed_from_a_sources_erasable_values_is_sealed_under_its_k
     let base64 = output
         .as_ref()
         .and_then(|o| o.as_str())
-        .is_some_and(|s| !s.contains("Ada"));
+        .is_some_and(|s| !s.is_empty() && s.len() % 4 == 0 && s != "Ada");
     ensure!(
         base64,
         "the output is held sealed, as base64 that is not the plaintext; it is {output:?}"
