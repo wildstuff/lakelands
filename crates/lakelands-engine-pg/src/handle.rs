@@ -152,6 +152,7 @@ impl PgLake {
                 let mut projection = connect::connect(&target)?;
                 prepare(&mut projection, &names, &target.schema, &lake, mode)?;
                 projection::catch_up_sorted(&mut projection, &names)?;
+                projection::catch_up_text_stats(&mut projection, &names)?;
                 scratch::sweep(&mut projection, &target, &names, &lake)?;
                 let found = vector_index::find(&mut projection, true);
                 let why = found.as_ref().map_err(String::as_str);
@@ -253,14 +254,13 @@ impl PgLake {
                 db.batch(&scratch::remove_sql(&names))?;
             }
             db.batch(&names.schema_sql())?;
-            db.execute(
-                &format!(
-                    "INSERT INTO {m} (k, n) VALUES ('layout', {layout}) ON CONFLICT DO NOTHING; ",
-                    m = names.t("meta"),
-                    layout = projection::LAYOUT
-                ),
-                &[],
-            )?;
+            db.batch(&format!(
+                "INSERT INTO {m} (k, n) VALUES ('layout', {layout}) ON CONFLICT DO NOTHING; \
+                 INSERT INTO {m} (k, n) VALUES ('{stats}', NULL) ON CONFLICT DO NOTHING",
+                m = names.t("meta"),
+                layout = projection::LAYOUT,
+                stats = projection::TEXT_STATS,
+            ))?;
             db.execute(
                 &format!(
                     "INSERT INTO {} (k, t) VALUES ('lake', $1) ON CONFLICT DO NOTHING",
@@ -270,6 +270,7 @@ impl PgLake {
             )
         })?;
         projection::catch_up_sorted(&mut projection, &names)?;
+        projection::catch_up_text_stats(&mut projection, &names)?;
         let found = vector_index::find(&mut projection, true);
         let why = found.as_ref().map_err(String::as_str);
         vector_index::opened(&mut projection, &names, why, lake.as_str())?;
@@ -656,9 +657,11 @@ fn prepare(db: &mut Db, names: &Names, schema: &str, lake: &LakeId, mode: OpenMo
         )?;
         db.batch(&names.schema_sql())?;
         db.batch(&format!(
-            "INSERT INTO {} (k, n) VALUES ('layout', {}) ON CONFLICT DO NOTHING",
-            names.t("meta"),
-            projection::LAYOUT
+            "INSERT INTO {m} (k, n) VALUES ('layout', {}) ON CONFLICT DO NOTHING; \
+             INSERT INTO {m} (k, n) VALUES ('{}', NULL) ON CONFLICT DO NOTHING",
+            projection::LAYOUT,
+            projection::TEXT_STATS,
+            m = names.t("meta"),
         ))?;
         if mode == OpenMode::Create {
             db.execute(
@@ -841,7 +844,9 @@ impl LakeEngine for PgLake {
     /// tables and makes them again: the tables read here are taken in
     /// `ACCESS SHARE` mode before the snapshot is, in the order `clear`
     /// drops them, so a list is never an emptied table's under the
-    /// position read before it (`crate::view`).
+    /// position read before it (`crate::view`). `text_stats` is not
+    /// taken: a lake an earlier build made has none until a writer opens
+    /// it, and `clear` drops it after every table taken here.
     fn ranked(&self, ty: &TypeName, asked: &Rankings, k: u32) -> Result<Ranked> {
         self.reading(|db| self.ranked_on(db, ty, asked, k))
     }
@@ -929,12 +934,8 @@ impl PgLake {
             let folded = folded.into_iter().flatten().next();
             let position = folded.and_then(|f| f.parse().ok()).map(Position);
             let mut lists = Vec::new();
-            if let Some((text, fields)) = &asked.text {
-                let (fields, weights) = (fields.as_deref(), &asked.text_weights);
-                let names = &self.names;
-                lists.push(crate::view::lexical(
-                    db, names, ty, text, fields, weights, k,
-                )?);
+            if asked.text.is_some() {
+                lists.push(crate::view::lexical(db, &self.names, ty, asked, k)?);
             }
             let decl = match &asked.seen {
                 Some(_) if vectors => projection::head_type(db, &self.names, ty)?.decl,
@@ -1188,12 +1189,13 @@ impl ProjectionStore for PgLake {
             "BEGIN; {dropped} {graphs} {schema} \
              DELETE FROM {m} WHERE k = 'folded' OR k LIKE 'vindex.%' OR k LIKE 'chosen.%' \
              OR k = '{chosen}'; \
-             INSERT INTO {m} (k, n) VALUES ('layout', {layout}) \
+             INSERT INTO {m} (k, n) VALUES ('layout', {layout}), ('{stats}', NULL) \
              ON CONFLICT (k) DO UPDATE SET n = EXCLUDED.n; COMMIT;",
             schema = self.names.schema_sql(),
             m = self.names.t("meta"),
             layout = projection::LAYOUT,
             chosen = engines::CHOSEN_THROUGH,
+            stats = projection::TEXT_STATS,
         ))
     }
 

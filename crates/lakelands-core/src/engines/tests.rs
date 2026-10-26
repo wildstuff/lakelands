@@ -881,3 +881,63 @@ fn every_kind_has_the_code_the_projections_store() {
     assert_eq!(kind_code("lake_created"), Some(1));
     assert_eq!(kind_code("a_newer_kind"), None);
 }
+
+/// BM25F by hand: `body` held by two records, two tokens and one long,
+/// so its mean length is 1.5 and N is 2. `b`, held by one, weighs
+/// ln(6/3); `a`, held by both, ln(6/5), and scores the shorter record
+/// higher. The store's count of the same heads scores alike to the bit.
+#[test]
+fn lexical_scores_bm25f_over_the_counts_it_is_handed() {
+    let record = |key: &str, body: &str| -> StoredRecord {
+        let r = json!({"type": "t", "key": key, "version": 1, "fields": {"body": body},
+                       "position": 1, "made": 1});
+        serde_json::from_value(r).unwrap()
+    };
+    let decl: TypeDecl = serde_json::from_value(json!({"name": "t", "fields": [
+        {"name": "body", "type": {"kind": "text"}, "searchable": true}]}))
+    .unwrap();
+    let heads = [record("r1", "a b"), record("r2", "a")];
+    let mut counts = TextCounts::default();
+    text_stats(&decl, &heads, ("", None), &mut counts);
+    let body = FieldName::from("body");
+    assert_eq!(counts.fields[&body], (2, 3));
+    let kept = |text| {
+        let weights = BTreeMap::new();
+        lexical(
+            &decl,
+            &heads,
+            text,
+            None,
+            &weights,
+            Counts::Kept(&counts.fields),
+            10,
+        )
+    };
+    let close = |got: f64, want: f64| (got - want).abs() < 1e-12;
+    let b = kept("b");
+    assert_eq!(b[0].0, RecordKey::from("r1"));
+    assert!(close(b[0].1, std::f64::consts::LN_2 * 0.88), "{b:?}");
+    let a = kept("a");
+    let ln = libm::log(1.2);
+    assert_eq!(
+        a.iter().map(|h| h.0.as_str()).collect::<Vec<_>>(),
+        ["r2", "r1"]
+    );
+    assert!(
+        close(a[0].1, ln * 22.0 / 19.0) && close(a[1].1, ln * 0.88),
+        "{a:?}"
+    );
+    let mut counted = TextCounts::default();
+    text_stats(&decl, &heads, ("a", None), &mut counted);
+    let weights = BTreeMap::new();
+    let by_store = lexical(
+        &decl,
+        &heads,
+        "a",
+        None,
+        &weights,
+        Counts::Counted(&counted),
+        10,
+    );
+    assert_eq!(by_store, a);
+}

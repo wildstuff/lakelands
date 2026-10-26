@@ -359,7 +359,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 19
-< {"data":{"axes":[{"axis":"lexical"}],"hits":[{"record":{"fields":{"status":"paid"},"key":"INV-2","type":"invoice","version":3},"score":1.0}],"ranked_by":"lexical"},"position":19}
+< {"data":{"axes":[{"axis":"lexical"}],"hits":[{"record":{"fields":{"status":"paid"},"key":"INV-2","type":"invoice","version":3},"score":0.6931471805599453}],"ranked_by":"lexical"},"position":19}
 
 # retire, with the version the last write answered; If-None-Match is
 # PUT's alone.

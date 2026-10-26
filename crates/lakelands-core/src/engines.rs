@@ -35,7 +35,9 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 
-use lakelands_api::engine::{After, CanonicalEvent, Choose, Chosen, Scan};
+use lakelands_api::engine::{
+    After, CanonicalEvent, Choose, Chosen, Rankings, Scan, TextCounts, TextStats,
+};
 use lakelands_api::error::{Case, Detail, Error, Flaw, Part, Place as At, Refusal, Result, Said};
 use lakelands_api::event::SegmentDigest;
 use lakelands_api::expr::{Condition, Expr};
@@ -1393,6 +1395,12 @@ pub fn order_edges(edges: &mut Vec<Edge>) {
 
 /// The distinct tokens of `text` under the language `tag`.
 pub fn tokens(text: &str, tag: &str) -> BTreeSet<String> {
+    token_list(text, tag).into_iter().collect()
+}
+
+/// The tokens of `text` under the language `tag`, in text order, repeats
+/// kept: a field's length and a token's frequency in it count these.
+fn token_list(text: &str, tag: &str) -> Vec<String> {
     crate::stem::stem_text(text, tag)
         .split(' ')
         .filter(|t| !t.is_empty())
@@ -1422,11 +1430,11 @@ fn field_tokens<'r>(
 
 /// The text each of a record's searchable fields holds in `values`, only
 /// those `fields` names when it names any: the fields a search reads.
-fn searched_texts<'r>(
-    decl: &'r TypeDecl,
-    values: &'r BTreeMap<FieldName, Value>,
-    fields: Option<&'r [FieldName]>,
-) -> impl Iterator<Item = (&'r FieldName, &'r str)> {
+fn searched_texts<'d, 'v>(
+    decl: &'d TypeDecl,
+    values: &'v BTreeMap<FieldName, Value>,
+    fields: Option<&'d [FieldName]>,
+) -> impl Iterator<Item = (&'d FieldName, &'v str)> {
     decl.fields
         .iter()
         .filter(move |f| f.searchable && fields.is_none_or(|named| named.contains(&f.name)))
@@ -1467,50 +1475,187 @@ pub fn matched(
     out
 }
 
-/// Full-text hits, as `docs/seams.md` §`ranked` defines them: the
-/// records of one type as they stand at the head, `decl` the type's
-/// declaration there, are hits when they are live and their searchable
+/// Each field of a record that a search of `fields` reads and that holds
+/// a token, in its declaration's order: its length and how often it
+/// holds each token, repeats counted.
+fn field_counts<'d>(
+    decl: &'d TypeDecl,
+    record: &StoredRecord,
+    fields: Option<&'d [FieldName]>,
+) -> impl Iterator<Item = (&'d FieldName, u64, BTreeMap<String, u64>)> {
+    let tag = decl.language.as_deref().unwrap_or("");
+    searched_texts(decl, &record.fields, fields).filter_map(move |(f, text)| {
+        let list = token_list(text, tag);
+        let mut tf = BTreeMap::new();
+        for t in &list {
+            *tf.entry(t.clone()).or_insert(0u64) += 1;
+        }
+        (!list.is_empty()).then_some((f, list.len() as u64, tf))
+    })
+}
+
+/// The tokens each searchable field of `record` holds, repeats counted,
+/// for the fields that hold any: what an engine keeps of a head's text and
+/// adds into its counts of the type's field.
+pub fn text_lengths(decl: &TypeDecl, record: &StoredRecord) -> Vec<(FieldName, u64)> {
+    let lengths = field_counts(decl, record, None).map(|(f, len, _)| (f.clone(), len));
+    lengths.collect()
+}
+
+/// Add into `out` the statistics a search of `text` in `fields` reads
+/// over `heads` (`docs/seams.md` §`ranked`): for each searched field, the
+/// heads whose field holds a token and the tokens they hold there; for
+/// each query token, the heads that hold it in a searched field. `heads`
+/// are live heads counted over, each as its reader is told it.
+pub fn text_stats(
+    decl: &TypeDecl,
+    heads: impl IntoIterator<Item = impl std::borrow::Borrow<StoredRecord>>,
+    (text, fields): (&str, Option<&[FieldName]>),
+    out: &mut TextCounts,
+) {
+    let query = tokens(text, decl.language.as_deref().unwrap_or(""));
+    for r in heads {
+        let mut held = BTreeSet::new();
+        for (f, len, tf) in field_counts(decl, r.borrow(), fields) {
+            let (n, l) = out.fields.entry(f.clone()).or_insert((0, 0));
+            (*n, *l) = (*n + 1, *l + len);
+            held.extend(query.iter().filter(|t| tf.contains_key(*t)));
+        }
+        for t in held {
+            *out.df.entry(t.clone()).or_insert(0) += 1;
+        }
+    }
+}
+
+/// The text's ranking an engine answers for `asked` (`docs/seams.md`
+/// §`ranked`), its candidates any superset of the hits among the live
+/// heads, each once: [`lexical`] over the class `asked.text_stats` names.
+/// `kept(held)` answers the counts the engine keeps of the type's fields,
+/// over the heads that are not held and, with `held`, over every head; a
+/// reader with no class is ranked by what the store counted for it.
+pub fn ranked_text<E>(
+    decl: &TypeDecl,
+    candidates: impl IntoIterator<Item = impl std::borrow::Borrow<StoredRecord>>,
+    asked: &Rankings,
+    k: u32,
+    kept: impl FnOnce(bool) -> std::result::Result<BTreeMap<FieldName, (u64, u64)>, E>,
+) -> std::result::Result<Vec<(RecordKey, f64)>, E> {
+    let Some((text, fields)) = &asked.text else {
+        return Ok(Vec::new());
+    };
+    let (fields, weights) = (fields.as_deref(), &asked.text_weights);
+    let candidates = candidates.into_iter();
+    Ok(match &asked.text_stats {
+        Some(TextStats::Counted(counted)) => {
+            let counts = Counts::Counted(counted);
+            lexical(decl, candidates, text, fields, weights, counts, k)
+        }
+        Some(TextStats::Unheld) => {
+            let class = candidates.filter(|r| !r.borrow().restricted);
+            let counts = Counts::Kept(&kept(false)?);
+            lexical(decl, class, text, fields, weights, counts, k)
+        }
+        None => {
+            let counts = Counts::Kept(&kept(true)?);
+            lexical(decl, candidates, text, fields, weights, counts, k)
+        }
+    })
+}
+
+/// The statistics [`lexical`] scores by.
+pub enum Counts<'a> {
+    /// The counts of each field kept over the heads of the reader's class;
+    /// the candidates handed in are of that class, and each query token's
+    /// heads are counted over them.
+    Kept(&'a BTreeMap<FieldName, (u64, u64)>),
+    /// Every count, as the store counted it for a reader with no class.
+    Counted(&'a TextCounts),
+}
+
+/// BM25F's saturation (`docs/seams.md` §`ranked`).
+const K1: f64 = 1.2;
+/// BM25F's length normalisation (`docs/seams.md` §`ranked`).
+const B: f64 = 0.75;
+
+/// Full-text hits, as `docs/seams.md` §`ranked` defines them: of the
+/// `candidates`, records of one type as they stand at the head, `decl`
+/// the type's declaration there, the hits are those live whose searchable
 /// text holds a query token — the text of the searchable fields `fields`
-/// names, when it names any. A restricted record is a candidate like any
-/// other; whether a principal may see it is the store's, as for `find`
-/// and `get`. A hit scores each distinct query token its text holds at
-/// the weight of the heaviest field holding it, `weights` giving each
-/// field's and 1 for one it does not name, summed in the tokens' order;
-/// best first, ties by key, at most `k`. With every weight 1 that is the
-/// count of the tokens it holds.
+/// names, when it names any. A hit scores by BM25F in its combined-field
+/// form over `counts`, each field weighing what `weights` gives it and 1
+/// for one it does not name; best first, ties by key, at most `k`. The
+/// sums run in one order, fields in their declaration's and tokens in
+/// theirs, from 0, and `ln` is `libm`'s, so a score's bits are the same
+/// on every engine and target.
 ///
-/// An engine may hand in any superset of the hits as `head`: a record
-/// whose named fields hold no query token scores nothing and is dropped
-/// here, before the ranking is cut at `k`.
+/// An engine may hand in any superset of the hits: a record whose named
+/// fields hold no query token scores nothing and is dropped here, before
+/// the ranking is cut at `k`.
 pub fn lexical(
     decl: &TypeDecl,
-    head: impl IntoIterator<Item = impl std::borrow::Borrow<StoredRecord>>,
+    candidates: impl IntoIterator<Item = impl std::borrow::Borrow<StoredRecord>>,
     text: &str,
     fields: Option<&[FieldName]>,
     weights: &BTreeMap<FieldName, f64>,
+    counts: Counts<'_>,
     k: u32,
 ) -> Vec<(RecordKey, f64)> {
     let query = tokens(text, decl.language.as_deref().unwrap_or(""));
-    let mut hits: Vec<(RecordKey, f64)> = head
+    let held: Vec<_> = candidates
         .into_iter()
         .filter(|r| !r.borrow().retired)
         .filter_map(|r| {
             let r = r.borrow();
-            let held: Vec<(f64, BTreeSet<String>)> = field_tokens(decl, r, fields)
-                .map(|(f, t)| (weights.get(f).copied().unwrap_or(1.0), t))
-                .collect();
-            let heaviest = |t: &String| {
-                let w = held
-                    .iter()
-                    .filter(|(_, ts)| ts.contains(t))
-                    .map(|(w, _)| *w);
-                w.reduce(f64::max)
-            };
-            let (mut score, mut any) = (0.0, false);
-            for w in query.iter().filter_map(heaviest) {
-                (score, any) = (score + w, true);
+            let held: Vec<_> = field_counts(decl, r, fields).collect();
+            let holds = |t: &String| held.iter().any(|(_, _, tf)| tf.contains_key(t));
+            query.iter().any(holds).then(|| (r.key.clone(), held))
+        })
+        .collect();
+    let (lengths, df) = match counts {
+        Counts::Counted(c) => (&c.fields, c.df.clone()),
+        Counts::Kept(kept) => {
+            let mut df = BTreeMap::new();
+            for t in &query {
+                let holds = |h: &&(_, Vec<(_, _, BTreeMap<String, u64>)>)| {
+                    h.1.iter().any(|(_, _, tf)| tf.contains_key(t))
+                };
+                df.insert(t.clone(), held.iter().filter(holds).count() as u64);
             }
-            any.then(|| (r.key.clone(), score))
+            (kept, df)
+        }
+    };
+    let searched = decl
+        .fields
+        .iter()
+        .filter(|f| f.searchable && fields.is_none_or(|named| named.contains(&f.name)));
+    let n = searched
+        .filter_map(|f| lengths.get(&f.name))
+        .map(|c| c.0)
+        .sum::<u64>() as f64;
+    let mut hits: Vec<(RecordKey, f64)> = held
+        .into_iter()
+        .map(|(key, held)| {
+            let mut score = 0.0;
+            for t in &query {
+                let (mut x, mut any) = (0.0, false);
+                for (f, len, tf) in &held {
+                    let Some(tf) = tf.get(t) else { continue };
+                    any = true;
+                    let len = *len as f64;
+                    let avg = match lengths.get(*f) {
+                        Some(&(n_f, l_f)) if n_f > 0 && l_f > 0 => l_f as f64 / n_f as f64,
+                        _ => len,
+                    };
+                    let w = weights.get(*f).copied().unwrap_or(1.0);
+                    x += w * *tf as f64 / (1.0 - B + B * len / avg);
+                }
+                if any {
+                    let df = df.get(t).copied().unwrap_or(0) as f64;
+                    let idf = libm::log((2.0 * n + 2.0) / (2.0 * df + 1.0));
+                    score += idf * x * (K1 + 1.0) / (x + K1);
+                }
+            }
+            (key, score)
         })
         .collect();
     rank(&mut hits, k);

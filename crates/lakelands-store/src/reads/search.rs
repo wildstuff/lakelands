@@ -2,6 +2,9 @@
 
 use super::*;
 
+use lakelands_api::engine::{TextCounts, TextStats};
+use lakelands_core::engines::Counts;
+
 impl<'a> Reader<'a> {
     /// What `search` refuses before it ranks: the type its principal is
     /// shown, a view, a misfit, the fields it probes, the `where`. A
@@ -289,6 +292,7 @@ impl<'a> Reader<'a> {
             if ranked {
                 asked.text = Some((text.clone(), text_fields.map(<[FieldName]>::to_vec)));
                 asked.text_weights = text_weights;
+                asked.text_stats = self.text_stats(&ranks.ty, text, text_fields)?;
             }
             lists.push((weight.unwrap_or(1.0), ranked));
             axes.push(axis(None));
@@ -510,23 +514,7 @@ impl<'a> Reader<'a> {
             (false, None) => return Ok(()),
         };
         let sees = Sight::held(who, shape.as_ref());
-        // The type as named at the read's position, and each of its fields
-        // there under its name at the head.
-        let since = shape.renames.iter().filter(|r| r.at > self.position);
-        let then = (self.head.as_ref()).filter(|_| !self.at_head).map(|h| {
-            let back = |name: TypeName, r: &Renamed| match r.to.as_ref() == Some(&name) {
-                true => r.ty.clone(),
-                false => name,
-            };
-            (h, since.clone().rev().fold(ty.clone(), back))
-        });
-        let then = then.filter(|(_, named)| self.sight.hides(named));
-        let ahead = |f: &FieldName, named: &TypeName| {
-            let mut f = [f.clone()];
-            followed(since.clone(), named, &mut f);
-            let [f] = f;
-            f
-        };
+        let then = self.hidden_then(ty);
         let hides = sees.hides(ty) || then.is_some();
         let Some(decl) = shape.ontology.ty(ty).ok().filter(|_| hides) else {
             return Ok(());
@@ -541,31 +529,13 @@ impl<'a> Reader<'a> {
             let held = view.get_many(ty, &keys)?.into_iter();
             let held: BTreeMap<RecordKey, StoredRecord> =
                 held.map(|r| (r.key.clone(), r)).collect();
-            // Each record as the read's position holds it, by its key here.
-            let mut was = BTreeMap::new();
-            if let Some((h, named)) = &then {
-                let at: BTreeMap<RecordKey, &RecordKey> = (keys.iter())
-                    .filter_map(|k| Some((h.since.key_then(ty, k)?, k)))
-                    .collect();
-                for r in self
-                    .view
-                    .get_many(named, &at.keys().cloned().collect::<Vec<_>>())?
-                {
-                    if let Some(k) = at.get(&r.key) {
-                        was.insert((*k).clone(), r);
-                    }
-                }
-            }
+            let was = self.lowered_then(ty, then.as_ref(), &keys)?;
             list.retain_mut(|(key, score)| {
                 let Some(r) = held.get(key) else {
                     return true;
                 };
                 let mut lowered = (*sees.lowered(ty, &r.fields)).clone();
-                if let (Some((_, named)), Some(w)) = (&then, was.get(key)) {
-                    let low = self.sight.lowered(named, &w.fields);
-                    let low = low.iter().map(|(f, a)| (ahead(f, named), *a));
-                    lowered.extend(low);
-                }
+                lowered.extend(was.get(key).into_iter().flatten().cloned());
                 match (&axis, &asked.text) {
                     _ if lowered.is_empty() => true,
                     (Some(v), _) => !lowered.contains_key(v),
@@ -575,7 +545,7 @@ impl<'a> Reader<'a> {
                             t
                         });
                         let w = &asked.text_weights;
-                        let hit = core_engines::lexical(decl, told, text, fields.as_deref(), w, 1);
+                        let hit = told_lexical(decl, told, text, fields.as_deref(), w, asked);
                         hit.first().map(|h| *score = h.1).is_some()
                     }
                     (None, None) => true,
@@ -584,6 +554,115 @@ impl<'a> Reader<'a> {
             core_engines::rank(list, u32::MAX);
         }
         Ok(())
+    }
+
+    /// Where the read is as of a position and its sight there hides on
+    /// `ty`, named at the head: the head, and the type as named there.
+    fn hidden_then(&self, ty: &TypeName) -> Option<(&Head<'a>, TypeName)> {
+        let h = self.head.as_ref().filter(|_| !self.at_head)?;
+        let since = h.shape.renames.iter().filter(|r| r.at > self.position);
+        let back = |name: TypeName, r: &Renamed| match r.to.as_ref() == Some(&name) {
+            true => r.ty.clone(),
+            false => name,
+        };
+        let named = since.rev().fold(ty.clone(), back);
+        self.sight.hides(&named).then_some((h, named))
+    }
+
+    /// The fields, by their names at the head, a hiding lowers on each of
+    /// `keys` of `ty` as the read's position holds the record (006), with
+    /// `then` the [`hidden_then`](Self::hidden_then) of `ty`.
+    fn lowered_then(
+        &self,
+        ty: &TypeName,
+        then: Option<&(&Head<'a>, TypeName)>,
+        keys: &[RecordKey],
+    ) -> Result<BTreeMap<RecordKey, Vec<(FieldName, Access)>>> {
+        let mut was = BTreeMap::new();
+        let Some((h, named)) = then else {
+            return Ok(was);
+        };
+        let since = h.shape.renames.iter().filter(|r| r.at > self.position);
+        let at: BTreeMap<RecordKey, &RecordKey> = (keys.iter())
+            .filter_map(|k| Some((h.since.key_then(ty, k)?, k)))
+            .collect();
+        for r in (self.view).get_many(named, &at.keys().cloned().collect::<Vec<_>>())? {
+            let (Some(k), low) = (at.get(&r.key), self.sight.lowered(named, &r.fields)) else {
+                continue;
+            };
+            let mut fields: Vec<FieldName> = low.keys().cloned().collect();
+            followed(since.clone(), named, &mut fields);
+            was.insert(
+                (*k).clone(),
+                fields.into_iter().zip(low.values().copied()).collect(),
+            );
+        }
+        Ok(was)
+    }
+
+    /// What the text's ranking of a search over `ty`, the type's name at
+    /// the head, counts its statistics over (025): for a reader of a class,
+    /// the live heads of that class, as the engine keeps them; for one of
+    /// no class, what is counted here over the heads it is admitted there,
+    /// as it is told them, so that nothing it may not see moves a score;
+    /// as of a position, each without a field a hiding lowers on it there.
+    fn text_stats(
+        &self,
+        ty: &TypeName,
+        text: &str,
+        fields: Option<&[FieldName]>,
+    ) -> Result<Option<TextStats>> {
+        let (view, shape, who) = match (self.at_head, &self.head) {
+            (true, _) => (self.view.as_ref(), &self.shape, self.sight.who()),
+            (false, Some(h)) => (h.view.as_ref(), &h.shape, &h.who),
+            // No ranking reaches here; one that did counts no held record.
+            (false, None) => return Ok(Some(TextStats::Unheld)),
+        };
+        let sees = Sight::held(who, shape.as_ref());
+        let Ok(decl) = shape.ontology.ty(ty) else {
+            let unheld = !sees.sees_restricted();
+            return Ok(unheld.then_some(TextStats::Unheld));
+        };
+        let then = self.hidden_then(ty);
+        let whole = sees.admit(ty).pairs().is_some_and(|p| p.is_empty())
+            && !sees.judges_ends(decl)
+            && !sees.narrows(ty)
+            && then.is_none();
+        if whole {
+            return Ok((!sees.sees_restricted()).then_some(TextStats::Unheld));
+        }
+        const BATCH: u32 = 1024;
+        let (mut counted, mut after) = (TextCounts::default(), None);
+        loop {
+            let scan = Scan {
+                after: after.take(),
+                limit: BATCH,
+                restricted: true,
+                ..Scan::default()
+            };
+            let rows = view.scan(ty, &scan)?;
+            let fields_of: Vec<_> = rows.iter().map(|r| &r.fields).collect();
+            let ends = sees.ends(decl, &fields_of, &mut |end, keys| view.get_many(end, keys))?;
+            let keys: Vec<RecordKey> = rows.iter().map(|r| r.key.clone()).collect();
+            let was = self.lowered_then(ty, then.as_ref(), &keys)?;
+            let admitted = (rows.iter().zip(ends)).filter(|(r, end)| *end && sees.answers(ty, r));
+            let told = admitted.filter_map(|(r, _)| sees.told(r)).map(|mut t| {
+                let lowered = was.get(&t.key).into_iter().flatten();
+                lowered.for_each(|(f, _)| _ = t.to_mut().fields.remove(f));
+                t
+            });
+            core_engines::text_stats(decl, told, (text, fields), &mut counted);
+            match rows.last() {
+                Some(last) if rows.len() == BATCH as usize => {
+                    let key = last.key.clone();
+                    after = Some(After {
+                        values: Vec::new(),
+                        key,
+                    });
+                }
+                _ => return Ok(Some(TextStats::Counted(counted))),
+            }
+        }
     }
 
     /// A fused search's hits: its lists fused by weighted reciprocal rank
@@ -862,6 +941,35 @@ impl Marks {
             h.matches = core_engines::matched(&self.decl, &h.record, fields, query, &self.tag);
         }
     }
+}
+
+/// [`core_engines::lexical`] of a record as its reader is told it, scored
+/// over what the store counted for that reader (`asked.text_stats`): a
+/// reader a hiding selects records for narrows, so is of no class, and is
+/// always counted for.
+fn told_lexical(
+    decl: &TypeDecl,
+    told: Option<std::borrow::Cow<'_, StoredRecord>>,
+    text: &str,
+    fields: Option<&[FieldName]>,
+    weights: &BTreeMap<FieldName, f64>,
+    asked: &Rankings,
+) -> Vec<(RecordKey, f64)> {
+    debug_assert!(matches!(asked.text_stats, Some(TextStats::Counted(_))));
+    let none = TextCounts::default();
+    let counted = match &asked.text_stats {
+        Some(TextStats::Counted(counted)) => counted,
+        _ => &none,
+    };
+    core_engines::lexical(
+        decl,
+        told,
+        text,
+        fields,
+        weights,
+        Counts::Counted(counted),
+        1,
+    )
 }
 
 /// `ty` as `renames`, in their order, name it after them, and each of its

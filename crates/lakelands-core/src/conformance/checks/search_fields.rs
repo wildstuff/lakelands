@@ -31,33 +31,50 @@ check!(
 );
 
 /// `doc` with two searchable texts, `note` and `secret`, a text that is
-/// not searchable, `label`, and a plain vector `w`. For "harbour
-/// quayside", `a` and `b` hold both words and `c` one over every
-/// searchable field; `b` holds both in `note`, `a` one, `c` none.
-async fn accounts(store: &dyn LakeStore) -> Held {
-    let l = Lake::of(store);
-    let w = vector("w", 2);
-    l.declare(type_decl(
-        "doc",
-        vec![
-            searchable("note"),
-            searchable("secret"),
-            field("label", StorageKind::Text),
-            w,
-        ],
-    ))
-    .await?;
-    for (key, fields) in [
+/// not searchable, `label`, and a plain vector `w`.
+fn doc() -> TypeDecl {
+    let fields = vec![
+        searchable("note"),
+        searchable("secret"),
+        field("label", StorageKind::Text),
+        vector("w", 2),
+    ];
+    type_decl("doc", fields)
+}
+
+/// The records of [`accounts`]. For "harbour quayside", `a` and `b` hold
+/// both words and `c` one over every searchable field; `b` holds both in
+/// `note`, `a` one, `c` none.
+fn heads() -> [(&'static str, Value); 3] {
+    [
         (
             "a",
             json!({"note": "harbour", "secret": "quayside harbour", "w": [0.0, 1.0]}),
         ),
         ("b", json!({"note": "harbour quayside", "w": [1.0, 0.0]})),
         ("c", json!({"secret": "harbour", "label": "harbour"})),
-    ] {
+    ]
+}
+
+/// [`doc`] holding [`heads`].
+async fn accounts(store: &dyn LakeStore) -> Held {
+    let l = Lake::of(store);
+    l.declare(doc()).await?;
+    for (key, fields) in heads() {
         l.upsert("doc", key, fields).await?;
     }
     Ok(())
+}
+
+/// The one function's ranking of "harbour quayside" over [`heads`] in
+/// `fields`, as `scored` answers it.
+fn one(fields: Option<&[&str]>) -> Vec<(String, f64)> {
+    bm25f(&doc(), &heads(), ("harbour quayside", fields), &[])
+}
+
+/// `scored` with owned keys.
+fn owned(hits: Vec<(&str, f64)>) -> Vec<(String, f64)> {
+    hits.into_iter().map(|(k, s)| (k.to_owned(), s)).collect()
 }
 
 fn named(names: &[&str]) -> Option<Vec<lakelands_api::FieldName>> {
@@ -121,9 +138,11 @@ async fn a_search_limited_to_named_fields_matches_and_ranks_in_those_only(
     )
     .await?;
     ensure!(
-        scored(&every) == [("a", 2.0), ("b", 2.0), ("c", 1.0)],
-        "searching \"harbour quayside\" in every searchable field answered {:?}",
-        scored(&every)
+        owned(scored(&every)) == one(None),
+        "searching \"harbour quayside\" in every searchable field answered {:?}, not the one \
+         function's {:?}",
+        scored(&every),
+        one(None)
     );
     let note = answer(
         store.as_ref(),
@@ -133,10 +152,12 @@ async fn a_search_limited_to_named_fields_matches_and_ranks_in_those_only(
     )
     .await?;
     ensure!(
-        scored(&note) == [("b", 2.0), ("a", 1.0)],
-        "searching \"harbour quayside\" in `note` answered {:?}; `b` holds both words there, \
-         `a` one, and `c` holds them only in `secret`, which was not named",
-        scored(&note)
+        owned(scored(&note)) == one(Some(&["note"])) && keys(&note) == ["b", "a"],
+        "searching \"harbour quayside\" in `note` answered {:?}, not the one function's {:?} \
+         over `note`; `b` holds both words there, `a` one, and `c` holds them only in \
+         `secret`, which was not named",
+        scored(&note),
+        one(Some(&["note"]))
     );
     let secret = answer(
         store.as_ref(),
@@ -146,9 +167,10 @@ async fn a_search_limited_to_named_fields_matches_and_ranks_in_those_only(
     )
     .await?;
     ensure!(
-        scored(&secret) == [("a", 2.0), ("c", 1.0)],
-        "searching \"harbour quayside\" in `secret` answered {:?}",
-        scored(&secret)
+        owned(scored(&secret)) == one(Some(&["secret"])) && keys(&secret) == ["a", "c"],
+        "searching \"harbour quayside\" in `secret` answered {:?}, not the one function's {:?}",
+        scored(&secret),
+        one(Some(&["secret"]))
     );
     // Without a vector, over `e`, the embedding of `note`: declared where
     // the suite's backend is bound, searched where none is (lakelands#743).
@@ -178,7 +200,8 @@ async fn a_search_limited_to_named_fields_matches_and_ranks_in_those_only(
     )
     .await?;
     ensure!(
-        scored(&fallback) == [("b", 2.0), ("a", 1.0)] && fallback.ranked_by.starts_with("lexical"),
+        owned(scored(&fallback)) == one(Some(&["note"]))
+            && fallback.ranked_by.starts_with("lexical"),
         "a hybrid search in `note` without a vector or a backend falls back to lexical over \
          `note`; it answered {:?}, ranked by {:?}",
         scored(&fallback),
@@ -205,9 +228,10 @@ async fn a_search_limited_to_readable_fields_is_answered_beside_a_masked_one(sto
     )
     .await?;
     ensure!(
-        scored(&note) == [("b", 2.0), ("a", 1.0)],
-        "the reader's search in `note` answered {:?}; it must answer as the owner's does",
-        scored(&note)
+        owned(scored(&note)) == one(Some(&["note"])),
+        "the reader's search in `note` answered {:?}; it must answer as the owner's does, {:?}",
+        scored(&note),
+        one(Some(&["note"]))
     );
     ensure!(
         scored(&every) == scored(&note),

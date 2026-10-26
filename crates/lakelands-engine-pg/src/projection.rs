@@ -55,7 +55,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use lakelands_api::engine::{Applied, Choose, Chosen, Declared};
+use lakelands_api::engine::{Applied, Choose, Chosen, Declared, TextCounts};
 use lakelands_api::error::Result;
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::ontology::TypeDecl;
@@ -237,6 +237,16 @@ CREATE TABLE IF NOT EXISTS {s}.graphs (
 CREATE TABLE IF NOT EXISTS {s}.graph_keys (
     ty TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, PRIMARY KEY (ty, key)
 ){pt};
+CREATE TABLE IF NOT EXISTS {s}.text_stats (
+    ty TEXT NOT NULL, field TEXT NOT NULL, held BOOLEAN NOT NULL,
+    records BIGINT NOT NULL, tokens BIGINT NOT NULL,
+    PRIMARY KEY (ty, field, held)
+){pt};
+CREATE TABLE IF NOT EXISTS {s}.text_lengths (
+    ty TEXT NOT NULL, key TEXT NOT NULL, field TEXT NOT NULL,
+    held BOOLEAN NOT NULL, tokens BIGINT NOT NULL,
+    PRIMARY KEY (ty, key, field)
+){pt};
 {vs}CREATE TABLE IF NOT EXISTS {s}.vectors (
     ty TEXT NOT NULL, key TEXT COLLATE \"C\" NOT NULL, field TEXT NOT NULL,
     since BIGINT NOT NULL, until BIGINT, single BOOLEAN NOT NULL, data BYTEA NOT NULL,
@@ -309,7 +319,7 @@ pub(crate) const LAYOUT: u64 = 9;
 
 /// Every table of a lake's schema: the log's and the lease's, then the
 /// projection's.
-pub(crate) const LAKE_TABLES: [&str; 24] = [
+pub(crate) const LAKE_TABLES: [&str; 26] = [
     "meta",
     "lease",
     "segments",
@@ -334,6 +344,8 @@ pub(crate) const LAKE_TABLES: [&str; 24] = [
     "records_head",
     "graphs",
     "graph_keys",
+    "text_stats",
+    "text_lengths",
 ];
 
 /// The projection's tables, cleared by a rebuild; the log, its segments,
@@ -917,16 +929,17 @@ pub(crate) fn folded(db: &mut Db, names: &Names) -> Result<Option<Position>> {
 
 /// Record the position folded through, and that every order index the
 /// lake keeps (a `sorted.<type>` mark each) is kept through it too, in
-/// one statement. So are the chosen fields among them if they were kept
-/// through the position it folds from (the statement reads `folded` as
-/// it was); a writer that keeps none folded past them otherwise, and
-/// they stay behind until a writer's open drops them.
+/// one statement. So are the chosen fields among them, and the text
+/// statistics, if they were kept through the position it folds from (the
+/// statement reads `folded` as it was); a writer that keeps none folded
+/// past them otherwise, and they stay behind until a writer's open drops
+/// or counts them.
 pub(crate) fn set_folded(db: &mut Db, names: &Names, through: Position) -> Result<()> {
     db.execute(
         &format!(
             "WITH s AS (UPDATE {m} SET n = $1 \
-             WHERE k LIKE 'sorted.%' \
-             OR (k = $2 AND n IS NOT DISTINCT FROM (SELECT n FROM {m} WHERE k = 'folded'))) \
+             WHERE k LIKE 'sorted.%' OR (k IN ($2, '{TEXT_STATS}') \
+             AND n IS NOT DISTINCT FROM (SELECT n FROM {m} WHERE k = 'folded'))) \
              INSERT INTO {m} (k, n) VALUES ('folded', $1) ON CONFLICT (k) DO UPDATE SET n = $1",
             m = names.t("meta")
         ),
@@ -1378,6 +1391,14 @@ pub(crate) fn index_records(
             rows.tokens[2].push(key.to_owned());
         }
     }
+    if !stale.is_empty() {
+        let (tys, keys): (Vec<&str>, Vec<&str>) = stale.iter().copied().unzip();
+        unlength(db, names, &tys, &keys)?;
+    }
+    let lengths = records
+        .iter()
+        .filter_map(|(head, r)| Some((head.decl.as_ref()?, *r)));
+    length(db, names, lengths)?;
     let [t1, t2, t3, t4] = &rows.text;
     let [f1, f2, f3] = &rows.tokens;
     let [e1, e2, e3, e4, e5] = &rows.edges;
@@ -1463,6 +1484,172 @@ pub(crate) fn index_records(
         ),
         &params,
     )
+}
+
+/// The meta key of the position the text statistics are folded through;
+/// null where they count an empty projection.
+pub(crate) const TEXT_STATS: &str = "text_stats";
+
+/// Add live heads' text into their types' counts (`docs/seams.md`
+/// §`ranked`), each under its type's declaration at the head: each
+/// searchable field's tokens, under its hold, kept beside so that the next
+/// write of the record takes out exactly this. One statement.
+fn length<'r>(
+    db: &mut Db,
+    names: &Names,
+    records: impl Iterator<Item = (&'r TypeDecl, &'r StoredRecord)>,
+) -> Result<()> {
+    let (mut tys, mut keys, mut fields) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut held, mut tokens) = (Vec::new(), Vec::new());
+    for (decl, r) in records.filter(|(_, r)| !r.retired) {
+        for (field, n) in engines::text_lengths(decl, r) {
+            tys.push(r.ty.as_str());
+            keys.push(r.key.as_str());
+            fields.push(field.to_string());
+            held.push(r.restricted);
+            tokens.push(n as i64);
+        }
+    }
+    if tys.is_empty() {
+        return Ok(());
+    }
+    db.execute(
+        &format!(
+            "WITH n AS (SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::bool[], \
+             $5::bigint[]) AS n(ty, key, field, held, tokens)), \
+             x AS (INSERT INTO {lengths} (ty, key, field, held, tokens) SELECT * FROM n) \
+             INSERT INTO {stats} AS s (ty, field, held, records, tokens) \
+             SELECT ty, field, held, count(*), sum(tokens)::bigint FROM n GROUP BY ty, field, held \
+             ON CONFLICT (ty, field, held) DO UPDATE \
+             SET records = s.records + EXCLUDED.records, tokens = s.tokens + EXCLUDED.tokens",
+            lengths = names.t("text_lengths"),
+            stats = names.t("text_stats"),
+        ),
+        &[&tys, &keys, &fields, &held, &tokens],
+    )
+}
+
+/// Take what [`length`] added for records out of their types' counts.
+fn unlength(db: &mut Db, names: &Names, tys: &[&str], keys: &[&str]) -> Result<()> {
+    db.execute(
+        &format!(
+            "WITH d AS (SELECT * FROM unnest($1::text[], $2::text[]) AS d(ty, key)), \
+             gone AS (DELETE FROM {lengths} t USING d WHERE t.ty = d.ty AND t.key = d.key \
+             RETURNING t.ty, t.field, t.held, t.tokens), \
+             sums AS (SELECT ty, field, held, count(*) AS n, sum(tokens)::bigint AS l \
+             FROM gone GROUP BY ty, field, held) \
+             UPDATE {stats} s SET records = s.records - sums.n, tokens = s.tokens - sums.l \
+             FROM sums WHERE s.ty = sums.ty AND s.field = sums.field AND s.held = sums.held",
+            lengths = names.t("text_lengths"),
+            stats = names.t("text_stats"),
+        ),
+        &[&tys, &keys],
+    )
+}
+
+/// Whether the text statistics describe the head: their mark is the
+/// position folded through, or null on an empty projection.
+fn text_stats_held(db: &mut Db, names: &Names) -> Result<bool> {
+    let m = names.t("meta");
+    let row = db.query_opt(
+        &format!(
+            "SELECT n IS NOT DISTINCT FROM (SELECT n FROM {m} WHERE k = 'folded') \
+             FROM {m} WHERE k = $1"
+        ),
+        &[&TEXT_STATS],
+    )?;
+    Ok(row.is_some_and(|r| r.get(0)))
+}
+
+/// Count the text statistics again from the head where their mark is
+/// absent or behind: a lake written before they were kept, or folded by
+/// a writer that keeps none. Once, in one transaction.
+pub(crate) fn catch_up_text_stats(db: &mut Db, names: &Names) -> Result<()> {
+    db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
+        if text_stats_held(db, names)? {
+            return Ok(());
+        }
+        let (stats, lengths, m) = (
+            names.t("text_stats"),
+            names.t("text_lengths"),
+            names.t("meta"),
+        );
+        db.batch(&format!("DELETE FROM {stats}; DELETE FROM {lengths}"))?;
+        let types: Vec<String> = db.column(
+            &format!("SELECT DISTINCT ty FROM {}", names.t("records_head")),
+            &[],
+        )?;
+        for ty in types.iter().map(|t| TypeName::from(t.as_str())) {
+            let Some(decl) = head_type(db, names, &ty)?.decl else {
+                continue;
+            };
+            head_pages(db, names, &ty, |db, page| {
+                length(db, names, page.iter().map(|r| (&decl, r)))
+            })?;
+        }
+        db.execute(
+            &format!(
+                "INSERT INTO {m} (k, n) VALUES ($1, (SELECT n FROM {m} WHERE k = 'folded')) \
+                 ON CONFLICT (k) DO UPDATE SET n = EXCLUDED.n"
+            ),
+            &[&TEXT_STATS],
+        )
+    })
+}
+
+/// Each head of `ty` that is not ended, a page at a time.
+fn head_pages(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    mut each: impl FnMut(&mut Db, Vec<StoredRecord>) -> Result<()>,
+) -> Result<()> {
+    let mut after = String::new();
+    loop {
+        let page = head_records_after(db, names, ty, &after, PAGE as i64)?;
+        let next = (page.len() == PAGE).then(|| page.last().map(|r| r.key.to_string()));
+        each(db, page.into_iter().filter(|r| !r.is_ended()).collect())?;
+        match next.flatten() {
+            Some(last) => after = last,
+            None => return Ok(()),
+        }
+    }
+}
+
+/// The counts of `ty`'s fields over its live heads that are not held,
+/// and with `held` over every one: as kept, where they describe the head,
+/// else counted from it at the read.
+pub(crate) fn text_counts(
+    db: &mut Db,
+    names: &Names,
+    (ty, decl): (&TypeName, &TypeDecl),
+    held: bool,
+) -> Result<BTreeMap<FieldName, (u64, u64)>> {
+    if !text_stats_held(db, names)? {
+        let mut counts = TextCounts::default();
+        head_pages(db, names, ty, |_, page| {
+            let class = page
+                .iter()
+                .filter(|r| !r.retired && (held || !r.restricted));
+            engines::text_stats(decl, class, ("", None), &mut counts);
+            Ok(())
+        })?;
+        return Ok(counts.fields);
+    }
+    let rows = db.query(
+        &format!(
+            "SELECT field, sum(records)::bigint, sum(tokens)::bigint FROM {} \
+             WHERE ty = $1 AND (NOT held OR $2) GROUP BY field",
+            names.t("text_stats")
+        ),
+        &[&ty.as_str(), &held],
+    )?;
+    let count = |r: &Row, i| r.get::<_, i64>(i) as u64;
+    let field = |r: &Row| FieldName::from(r.get::<_, String>(0));
+    Ok(rows
+        .iter()
+        .map(|r| (field(r), (count(r, 1), count(r, 2))))
+        .collect())
 }
 
 /// How many puts the buffer holds before it is written, and how many
@@ -1646,6 +1833,7 @@ impl Buffer {
                 ),
                 &[&tys, &keys],
             )?;
+            unlength(db, names, &tys, &keys)?;
         }
         if !self.dropped_outputs.is_empty() {
             let (seams, inputs): (Vec<&str>, Vec<&str>) = (self.dropped_outputs.iter())

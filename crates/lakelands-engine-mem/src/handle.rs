@@ -11,13 +11,14 @@ use std::sync::{Arc, Mutex};
 
 use lakelands_api::engine::{
     Applied, CanonicalEvent, Choose, Declared, LakeEngine, Lease, OpenMode, ProjectionStore,
-    ProjectionView, Ranked, Rankings, Reclaimed, StatesOf, VectorIndex,
+    ProjectionView, Ranked, Rankings, Reclaimed, StatesOf, TextCounts, VectorIndex,
 };
 use lakelands_api::error::{Act, Case, Error, Result, Situation};
 use lakelands_api::event::{Digest, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
+use lakelands_core::engines;
 
 use crate::projection::Put;
 use crate::vectors::Indexed;
@@ -180,12 +181,22 @@ impl LakeEngine for MemoryLake {
         let lake = lock(&self.shared);
         let p = &lake.projection;
         let mut lists = Vec::new();
-        if let Some((text, fields)) = &asked.text {
-            let head = p.records_at(ty, p.folded);
-            lists.push(p.type_at(ty, p.folded).map_or_else(Vec::new, |decl| {
-                let weights = &asked.text_weights;
-                lakelands_core::engines::lexical(decl, head, text, fields.as_deref(), weights, k)
-            }));
+        // The memory engine keeps no counts: it counts them over the head,
+        // in the same pass, and is the reference.
+        if asked.text.is_some() {
+            let head = || p.records_at(ty, p.folded).filter(|r| !r.retired);
+            lists.push(match p.type_at(ty, p.folded) {
+                Some(decl) => {
+                    let kept = |held: bool| {
+                        let class = head().filter(|r| held || !r.restricted);
+                        let mut counts = TextCounts::default();
+                        engines::text_stats(decl, class, ("", None), &mut counts);
+                        Ok::<_, Error>(counts.fields)
+                    };
+                    engines::ranked_text(decl, head(), asked, k, kept)?
+                }
+                None => Vec::new(),
+            });
         }
         let decl = p.type_at(ty, p.folded);
         let seen = asked.seen.as_ref().map(|s| (s, decl));
