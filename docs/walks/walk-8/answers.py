@@ -77,16 +77,16 @@ made = [p for p in d.PRODUCTS if p[5] == t]
 print(f"2. Torino Guarnizoni: no supplier is so called; the one near it is {t} {sup[t][1]}, in {sup[t][2]}; "
       f"{len(made)} products: {', '.join(p[0] for p in made)}")
 
-print("3. Atlas Supplies in Portugal,", name(C["atlas-pt"]), "- units by product, cancelled orders left out:")
+print("3. Halden Supplies in Portugal,", name(C["halden-pt"]), "- units by product, cancelled orders left out:")
 units = {}
 for k, o, p, q in d.lines:
-    if order[o][1] == C["atlas-pt"] and order[o][3] != "cancelled":
+    if order[o][1] == C["halden-pt"] and order[o][3] != "cancelled":
         units[p] = units.get(p, 0) + q
 for p, u in sorted(units.items(), key=lambda x: (-x[1], x[0])):
     print(f"   {p} {prod[p][1]}: {u}")
 
-print("4. Atlas Supplies: three customers are so called; each one's last order:")
-for tag in ("atlas-nl", "atlas-pt", "atlas-gb"):
+print("4. Halden Supplies: three customers are so called; each one's last order:")
+for tag in ("halden-nl", "halden-pt", "halden-gb"):
     last = max((o for o in d.ORDERS if o[1] == C[tag]), key=lambda o: o[2])
     print(f"   {name(C[tag])}: {last[0]} on {last[2]}, {last[3]}")
 

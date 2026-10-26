@@ -3,8 +3,8 @@ You are an assistant working for an analyst at a small trading house. The tradin
 Answer the following questions, in order:
 1. How many orders has Kestral Farms placed with us, and what do they come to altogether, whatever their status?
 2. Torino Guarnizoni: in which country do they make their goods, and how many of the products we sell are theirs?
-3. Atlas Supplies, the customer in Portugal: which of our products have they bought the most units of, leaving out cancelled orders, and how many units?
-4. When did Atlas Supplies last place an order with us, and what is that order's status?
+3. Halden Supplies, the customer in Portugal: which of our products have they bought the most units of, leaving out cancelled orders, and how many units?
+4. When did Halden Supplies last place an order with us, and what is that order's status?
 5. We sell a pump for draining flooded cellars. What is it called, who makes it, and what does it cost?
 6. Which customers have bought the valve we sell for breweries and dairies, and how many units has each bought? Leave out cancelled orders.
 7. One of our makers is a family firm on Lake Como that also repairs what it sells. Which of our customers in Germany have ordered its goods? Count every order, whatever its status.

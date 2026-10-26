@@ -163,7 +163,7 @@ PRODUCTS = [tuple(p) for p in PRODUCTS]
 
 # Customers: a word and a trade, some with a second word; many share a
 # word and a few a whole name. Kestrel Farms is the one Kestrel; three
-# customers are called Atlas Supplies, beside other Atlas names.
+# customers are called Halden Supplies, beside other Halden names.
 WORDS = ("Alder Amber Anchor Apex Arrow Ash Aspen Aurora Badger Bay Beacon Bear Beech Birch Bluebell Bolt Bramble Bridge "
          "Bright Brook Buzzard Canal Castle Cedar Central Chalk Cherry Cliff Clover Coast Cobalt Comet Copper Coral Crane "
          "Crown Crystal Curlew Cypress Dale Dawn Deer Delta Dune Eagle East Echo Elm Ember Falcon Fern Field Finch Fir "
@@ -179,11 +179,11 @@ COUNTRIES = ["DE", "NL", "GB", "IE", "CZ", "PT", "FR", "PL", "AT", "DK", "IT", "
 SEGMENTS = ["industry", "retail", "utility", "wholesale"]
 PLANTED_CUSTOMERS = [
     ("kestrel", "Kestrel Farms", "IE", "retail"),
-    ("atlas-nl", "Atlas Supplies", "NL", "wholesale"),
-    ("atlas-pt", "Atlas Supplies", "PT", "retail"),
-    ("atlas-gb", "Atlas Supplies", "GB", "industry"),
-    ("atlas-metals", "Atlas Metals", "PT", "industry"),
-    ("atlas-hardware", "Atlas Hardware", "DE", "retail"),
+    ("halden-nl", "Halden Supplies", "NL", "wholesale"),
+    ("halden-pt", "Halden Supplies", "PT", "retail"),
+    ("halden-gb", "Halden Supplies", "GB", "industry"),
+    ("halden-metals", "Halden Metals", "PT", "industry"),
+    ("halden-hardware", "Halden Hardware", "DE", "retail"),
 ]
 CUSTOMERS = []
 for _ in range(3000 - len(PLANTED_CUSTOMERS)):
@@ -211,16 +211,16 @@ PLANTED_ORDERS = [
     ("kestrel", "2026-06-23", "cancelled", [(drawn[1500], 30), (drawn[61], 2)]),
     ("kestrel", "2026-08-30", "open", [(drawn[1222], 15), (drawn[17], 25), (drawn[388], 4)]),
     ("kestrel", "2026-10-08", "open", [(drawn[702], 9)]),
-    ("atlas-pt", "2026-03-04", "shipped", [(drawn[512], 30), (drawn[1300], 18)]),
-    ("atlas-pt", "2026-05-19", "shipped", [(drawn[512], 25), (drawn[77], 40)]),
-    ("atlas-pt", "2026-07-07", "cancelled", [(drawn[1650], 120)]),
-    ("atlas-pt", "2026-09-15", "open", [(drawn[77], 20), (drawn[1300], 10), (drawn[808], 5)]),
-    ("atlas-nl", "2026-04-28", "shipped", [(drawn[1650], 16)]),
-    ("atlas-nl", "2026-09-30", "open", [(drawn[512], 8), (drawn[44], 3)]),
-    ("atlas-gb", "2026-06-12", "shipped", [(drawn[1999], 60)]),
-    ("atlas-gb", "2026-10-15", "cancelled", [(drawn[400], 7)]),
-    ("atlas-metals", "2026-08-20", "shipped", [(drawn[512], 90)]),
-    ("atlas-hardware", "2026-09-01", "open", [(drawn[1300], 11)]),
+    ("halden-pt", "2026-03-04", "shipped", [(drawn[512], 30), (drawn[1300], 18)]),
+    ("halden-pt", "2026-05-19", "shipped", [(drawn[512], 25), (drawn[77], 40)]),
+    ("halden-pt", "2026-07-07", "cancelled", [(drawn[1650], 120)]),
+    ("halden-pt", "2026-09-15", "open", [(drawn[77], 20), (drawn[1300], 10), (drawn[808], 5)]),
+    ("halden-nl", "2026-04-28", "shipped", [(drawn[1650], 16)]),
+    ("halden-nl", "2026-09-30", "open", [(drawn[512], 8), (drawn[44], 3)]),
+    ("halden-gb", "2026-06-12", "shipped", [(drawn[1999], 60)]),
+    ("halden-gb", "2026-10-15", "cancelled", [(drawn[400], 7)]),
+    ("halden-metals", "2026-08-20", "shipped", [(drawn[512], 90)]),
+    ("halden-hardware", "2026-09-01", "open", [(drawn[1300], 11)]),
 ]
 planted_keys = set(PLANTED_CUST.values())
 others = [c[0] for c in CUSTOMERS if c[0] not in planted_keys]
@@ -256,7 +256,7 @@ def check():
     assert holding(SUPPLIERS, "guarnizoni", 1, 3) == [] and holding(CUSTOMERS, "kestral", 1) == []
     names = [c[1].lower() for c in CUSTOMERS]
     assert [n for n in names if "kes" in n] == ["kestrel farms"], "Kestrel is the one"
-    assert sum(n == "atlas supplies" for n in names) == 3
+    assert sum(n == "halden supplies" for n in names) == 3
     assert not any("quil" in n or "illon" in n for n in names), "no customer is like Quillon"
     assert sum("aerospace" in n for n in names) > 50, "Aerospace is a common word"
     assert len(SUPPLIERS) == 300 and len(PRODUCTS) == 2000 and len(CUSTOMERS) == 3000
