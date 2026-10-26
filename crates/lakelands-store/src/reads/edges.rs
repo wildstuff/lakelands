@@ -328,6 +328,30 @@ impl EdgeSource for Visible<'_, '_> {
         let read =
             |e: &Edge| (shown.iter()).any(|(t, x)| t.name == e.from.0 && x.name == e.relation);
         lists.iter_mut().for_each(|list| list.retain(read));
+        // An edge carried by a field a hiding lowers on its owner record
+        // does not exist for its reader (006).
+        let via = |e: &Edge| {
+            let (t, x) =
+                (shown.iter()).find(|(t, x)| t.name == e.from.0 && x.name == e.relation)?;
+            x.via.as_ref().filter(|_| r.sight.hides(&t.name))
+        };
+        let mut owners: BTreeMap<TypeName, Vec<RecordKey>> = BTreeMap::new();
+        for e in lists.iter().flatten().filter(|e| via(e).is_some()) {
+            owners
+                .entry(e.from.0.clone())
+                .or_default()
+                .push(e.from.1.clone());
+        }
+        let mut lowered = BTreeMap::new();
+        for (ty, keys) in owners {
+            for o in r.get_many(&ty, &keys)? {
+                lowered.insert((ty.clone(), o.key.clone()), r.sight.lowered(&ty, &o.fields));
+            }
+        }
+        let carries = |e: &Edge| {
+            via(e).is_none_or(|f| !lowered.get(&e.from).is_some_and(|l| l.contains_key(f)))
+        };
+        lists.iter_mut().for_each(|list| list.retain(carries));
         // A link's edge comes from its own record: walked only with the
         // `restricted` grant if restricted, its fields as far as readable.
         let carried = |e: &Edge| {
@@ -371,10 +395,12 @@ impl EdgeSource for Visible<'_, '_> {
                         continue;
                     }
                     if let Ok(decl) = decl {
+                        let low = r.sight.lowered(&lt, &link.fields);
                         e.fields.retain(|name, _| {
-                            decl.fields
-                                .iter()
-                                .any(|f| &f.name == name && r.sight.field_access(decl, f).reads())
+                            !low.contains_key(name)
+                                && (decl.fields.iter()).any(|f| {
+                                    &f.name == name && r.sight.field_access(decl, f).reads()
+                                })
                         });
                     }
                 }

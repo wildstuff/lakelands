@@ -79,6 +79,8 @@ pub struct Sight<'o> {
     shown: RefCell<BTreeMap<TypeName, bool>>,
     /// The value types a use of which it is shown, found in one pass.
     pub(crate) used: OnceCell<BTreeSet<ValueTypeName>>,
+    /// What each type's hidings lower, by which of them select a record.
+    pub(crate) lowerings: RefCell<rights::Lowerings>,
 }
 
 impl<'o> Sight<'o> {
@@ -100,6 +102,7 @@ impl<'o> Sight<'o> {
             hidden,
             shown: RefCell::default(),
             used: OnceCell::new(),
+            lowerings: RefCell::default(),
         }
     }
 
@@ -115,6 +118,7 @@ impl<'o> Sight<'o> {
             hidden: Vec::new(),
             shown: RefCell::default(),
             used: OnceCell::new(),
+            lowerings: RefCell::default(),
         }
     }
 
@@ -176,10 +180,29 @@ impl<'o> Sight<'o> {
         !self.withheld(r) && self.admit(ty).holds(&r.fields)
     }
 
-    /// Whether its principal may not be told some records of `ty`, as
-    /// [`Self::setting`] tells them: `ty` is `sys.setting`
-    /// and something is held from the principal.
+    /// Whether its principal may be told some records of `ty` otherwise
+    /// than they are held ([`Self::told`]): `ty` is `sys.setting` and
+    /// something is held from the principal, or its grant hides a field of
+    /// `ty` on some records.
     pub fn narrows(&self, ty: &TypeName) -> bool {
+        self.narrows_settings(ty) || self.hides(ty)
+    }
+
+    /// Whether a read of `ty` that reads the fields `read` is evaluated
+    /// over the records as told, never by an engine: [`Self::narrows`],
+    /// where a hiding narrows it, only when it reads a field one lowers.
+    pub fn narrows_reading<'f>(
+        &self,
+        ty: &TypeName,
+        read: impl IntoIterator<Item = &'f FieldName>,
+    ) -> bool {
+        let lowers = |d| read.into_iter().any(|f| self.lowers_somewhere(d, f));
+        self.narrows_settings(ty) || self.force.ty(ty).is_some_and(lowers)
+    }
+
+    /// Whether `ty` is `sys.setting` and something is held from its
+    /// principal, so it may be told a setting otherwise than it is held.
+    pub fn narrows_settings(&self, ty: &TypeName) -> bool {
         ty.as_str() == lakelands_api::seam::SETTING_TYPE && !self.holds_all()
     }
 
@@ -206,19 +229,25 @@ impl<'o> Sight<'o> {
 
     /// `r` as its principal is told it: a record of `sys.setting` with its
     /// value as [`Self::setting`] tells it, none where it is not told;
-    /// any other record as it is.
+    /// without each field a hiding lowers on it ([`Self::lowered`]), so
+    /// every read over it reads such a field as null (006); any other
+    /// record as it is.
     pub fn told<'r>(&self, r: &'r StoredRecord) -> Option<Cow<'r, StoredRecord>> {
-        if !self.narrows(&r.ty) {
-            return Some(Cow::Borrowed(r));
+        let lowered = self.lowered(&r.ty, &r.fields);
+        let mut told = Cow::Borrowed(r);
+        for f in lowered.keys() {
+            told.to_mut().fields.remove(f);
+            told.to_mut().meta.remove(f);
+        }
+        if !self.narrows_settings(&r.ty) {
+            return Some(told);
         }
         let value = r.fields.get("value").cloned().unwrap_or(Value::Null);
-        let told = self.setting(r.key.as_str(), value.clone())?;
-        if told == value {
-            return Some(Cow::Borrowed(r));
+        let said = self.setting(r.key.as_str(), value.clone())?;
+        if said != value {
+            told.to_mut().fields.insert("value".into(), said);
         }
-        let mut r = r.clone();
-        r.fields.insert("value".into(), told);
-        Some(Cow::Owned(r))
+        Some(told)
     }
 
     /// The settings `all` as its principal is told them, each as

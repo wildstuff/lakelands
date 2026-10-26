@@ -427,10 +427,10 @@ impl Sight<'_> {
     /// Whether nothing of the records the view `v` reads is held from its
     /// principal: decided for no reader, a membership over the view's
     /// whole face tells what each of them adds (lakelands#1185). It holds
-    /// `restricted`, no `only` on a source at any depth nor, of a link
-    /// type, on its ends, and reads every field and is told every setting
-    /// a source's `where`, grouping and measures read. `inside` are the
-    /// views judged so far.
+    /// `restricted`, no `only` nor hiding on a source at any depth nor, of
+    /// a link type, `only` on its ends, and reads every field and is told
+    /// every setting a source's `where`, grouping and measures read.
+    /// `inside` are the views judged so far.
     fn unheld_under<'v>(&'v self, v: &'v ViewDecl, inside: &mut Vec<&'v ViewDecl>) -> bool {
         let who = self.who();
         let ty = |n: &TypeName| self.force.ty(n);
@@ -447,6 +447,7 @@ impl Sight<'_> {
                     let inner = inner.filter(|i| !inside.iter().any(|v| std::ptr::eq(*v, *i)));
                     crate::rights::own_only(who, from).is_empty()
                         && crate::rights::held_ends(who, t, &ty).is_empty()
+                        && !self.hides(from)
                         && self.reads_all(names, from)
                         && inner.is_none_or(|i| self.unheld_under(i, inside))
                 })
@@ -974,6 +975,8 @@ impl Sight<'_> {
             };
             asked && fed.contains(&f.name)
         };
+        let told = self.hidden_where(t);
+        let mut hidden = told.clone();
         let fields: Vec<FieldDescription> = t
             .fields
             .iter()
@@ -981,6 +984,7 @@ impl Sight<'_> {
             .filter(|(_, a)| *a != Access::None)
             .map(|(f, a)| FieldDescription {
                 required_at_create: a.reads() && required(f),
+                hidden_where: hidden.remove(&f.name).unwrap_or_default(),
                 ..FieldDescription::of(f, a)
             })
             .collect();
@@ -1044,7 +1048,12 @@ impl Sight<'_> {
         let view = (t.view.clone()).filter(|v| self.view_visible(v));
         // The hash of the shape as it is shown (024, extended).
         let whole = d.schema_hash.as_deref().unwrap_or_default();
-        let schema_hash = crate::rights::shown_hash(who, t, view.is_some(), whole, find);
+        let mut schema_hash = crate::rights::shown_hash(who, t, view.is_some(), whole, find);
+        // A hiding is described, so it moves the hash (006).
+        if !told.is_empty() {
+            let held = serde_json::json!([schema_hash, told]);
+            schema_hash = lakelands_api::canonical::sha256_hex(&held);
+        }
         Some(TypeDescription {
             // Told to one who reads every field it reads, as a set's
             // condition is (lakelands#1119).

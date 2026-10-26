@@ -22,10 +22,11 @@
 //! [`Sight`], and the `rights-private` gate keeps it so.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use lakelands_api::error::Case;
 use lakelands_api::ontology::{Authority, FieldDecl, RetiredBy, TypeDecl, VerbDecl, VerbEffect};
-use lakelands_api::principal::TypeGrants;
+use lakelands_api::principal::{HiddenWhere, TypeGrants};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Migration, MigrationReport};
 use lakelands_api::{
@@ -220,8 +221,15 @@ impl Sight<'_> {
         if stored.retired || self.withheld(stored) {
             return None;
         }
+        // A field a hiding lowers on the record is answered as its access
+        // there says, masked whether or not it holds a value (006).
+        let lowered = self.lowered(&decl.name, &stored.fields);
         let stored = self.told(stored)?;
         let who = self.who();
+        let access = |f: &FieldDecl| match lowered.get(&f.name) {
+            Some(a) => *a,
+            None => field_access(who, decl, f),
+        };
         let mut fields = BTreeMap::new();
         let mut masked = Vec::new();
         let mut meta = BTreeMap::new();
@@ -237,13 +245,16 @@ impl Sight<'_> {
                         .meta
                         .get(&f.name)
                         .filter(|m| m.error.is_some() || m.erased || f.embed.is_some())
-                    && field_access(who, decl, f).reads()
+                    && access(f).reads()
                 {
                     meta.insert(f.name.clone(), m.clone());
                 }
+                if lowered.get(&f.name) == Some(&Access::Masked) {
+                    masked.push(f.name.clone());
+                }
                 continue;
             };
-            match field_access(who, decl, f) {
+            match access(f) {
                 a if a.reads() => {
                     fields.insert(f.name.clone(), value.clone());
                     if with_meta && let Some(m) = stored.meta.get(&f.name) {
@@ -542,8 +553,9 @@ impl Sight<'_> {
 }
 
 /// Whether nothing `paths`, over `decl`, read across an edge is held from
-/// `who`: it holds `restricted`, no `only` on a far type nor, of a link
-/// type, on its ends, and reads every field on the way, the first of each
+/// `who`: it holds `restricted`, no hiding on `decl` or a far type, no
+/// `only` on a far type nor, of a link type, on its ends, and reads every
+/// field on the way, the first of each
 /// path with them. A set's `where` and a trigger's `when` are decided for
 /// no reader, so what they hold for a record tells what they read there
 /// (055, extended). With no path across, nothing is asked.
@@ -570,12 +582,19 @@ pub(crate) fn holds_nothing_across<'d>(
             .filter(|r| r.name.as_str() == p[0].as_str())
             .all(|r| crate::describe::relation_shown(decl, r, ty, who)),
     };
+    let bare = |t: &TypeName| {
+        who.grants
+            .types
+            .get(t)
+            .is_none_or(|g| g.hide_where.is_empty())
+    };
     let unheld = |(t, f): &(&TypeDecl, &FieldDecl)| {
         own_only(who, &t.name).is_empty()
             && held_ends(who, t, ty).is_empty()
             && field_access(who, t, f).reads()
+            && bare(&t.name)
     };
-    who.grants.restricted && paths.iter().all(first) && far.iter().all(unheld)
+    who.grants.restricted && bare(&decl.name) && paths.iter().all(first) && far.iter().all(unheld)
 }
 
 /// Whether `who` can make a record of `decl` that its grant admits: it
@@ -622,6 +641,169 @@ impl Sight<'_> {
         }
         let ty = decl.name.clone();
         Err(Error::invalid(Case::OnlyUnappliable { ty }))
+    }
+
+    /// Refuse a read that names `decl` where a hiding its principal's grant
+    /// holds on it cannot be applied ([`Self::lowered`]), naming the type
+    /// and never a field, as [`Self::check_only`] does.
+    pub fn check_hidings(&self, decl: &TypeDecl) -> Result<(), Error> {
+        match !self.hides(&decl.name) || self.lowering(decl, None).0 {
+            true => Ok(()),
+            false => Err(Error::invalid(Case::HidingUnappliable {
+                ty: decl.name.clone(),
+            })),
+        }
+    }
+
+    /// The fields of `ty` its principal's hidings lower on a record holding
+    /// `fields`, each with the access it has there; none on a record no
+    /// hiding selects (006). A field built from a lowered one is lowered as
+    /// a type-wide grant would lower it. A hiding applies where its field
+    /// is of kind `text` or `reference`, read by its holder, not computed
+    /// at the read and lowered by no hiding, its values are not empty, and
+    /// each field it lowers is no key, no valid time, none `only` names and
+    /// not its own, to `none` or `masked`. Where one does not, every hiding
+    /// on the type selects every record: it fails closed.
+    pub fn lowered(&self, ty: &TypeName, fields: &BTreeMap<FieldName, Value>) -> Lowered {
+        let hidings = self.hidings(ty);
+        if hidings.is_empty() {
+            return Lowered::default();
+        }
+        let Some(decl) = self.force.ty(ty) else {
+            return Lowered::default();
+        };
+        let applies = self.lowering(decl, None).0;
+        let holds = |h: &HiddenWhere| match fields.get(&h.field) {
+            Some(Value::String(v)) => h.values.contains(v),
+            _ => false,
+        };
+        let picked: Vec<bool> = hidings.iter().map(|h| !applies || holds(h)).collect();
+        match picked.contains(&true) {
+            true => self.lowering(decl, Some(picked)).1,
+            false => Lowered::default(),
+        }
+    }
+
+    /// The fields of `decl` lowered on a record each hiding `picked` names
+    /// selects, worked out once a sight; with none, whether the hidings
+    /// apply.
+    pub(crate) fn lowering(&self, decl: &TypeDecl, picked: Option<Vec<bool>>) -> (bool, Lowered) {
+        let key = (decl.name.clone(), picked.clone().unwrap_or_default());
+        if let Some(known) = self.lowerings.borrow().get(&key) {
+            return known.clone();
+        }
+        let (who, hidings) = (self.who(), self.hidings(&decl.name));
+        // Hidings that cannot be applied hide each field they name.
+        let fails = picked.is_some() && !self.lowering(decl, None).0;
+        let low = |picked: &[bool]| {
+            let mut low = who.clone();
+            let grant = low.grants.types.entry(decl.name.clone()).or_default();
+            for (h, _) in hidings.iter().zip(picked).filter(|p| *p.1) {
+                for (f, a) in &h.fields {
+                    let a = if fails { Access::None } else { *a };
+                    let was = (grant.fields.get(f).copied())
+                        .unwrap_or_else(|| who.grants.access(&decl.name, f));
+                    grant.fields.insert(f.clone(), was.lowest(a));
+                }
+            }
+            low
+        };
+        let known = match &picked {
+            Some(picked) => {
+                let low = low(picked);
+                let lowered = (decl.fields.iter())
+                    .map(|f| (f, field_access(&low, decl, f)))
+                    .filter(|(f, a)| *a != field_access(who, decl, f));
+                (
+                    true,
+                    Rc::new(lowered.map(|(f, a)| (f.name.clone(), a)).collect()),
+                )
+            }
+            None => {
+                let all = low(&vec![true; hidings.len()]);
+                let only = own_only(who, &decl.name);
+                let fixed = |f: &FieldName| {
+                    decl.key_fields().contains(f)
+                        || [&decl.valid_from, &decl.valid_to].contains(&&Some(f.clone()))
+                        || only.iter().any(|(o, _)| o == f)
+                };
+                let applies = |h: &HiddenWhere| {
+                    let g = decl.field(&h.field).filter(|g| {
+                        use lakelands_api::ontology::StorageKind::{Reference, Text};
+                        matches!(g.ty.kind, Text | Reference)
+                            && field_access(who, decl, g).reads()
+                            && field_access(&all, decl, g).reads()
+                            && !g.at_read()
+                    });
+                    let lowers = |(f, a): (&FieldName, &Access)| {
+                        matches!(a, Access::None | Access::Masked) && *f != h.field && !fixed(f)
+                    };
+                    g.is_some() && !h.values.is_empty() && h.fields.iter().all(lowers)
+                };
+                let records = decl.view.is_none();
+                (records && hidings.iter().all(applies), Lowered::default())
+            }
+        };
+        self.lowerings.borrow_mut().insert(key, known.clone());
+        known
+    }
+
+    /// Refuse a write whose patch carries a field its principal's hidings
+    /// lower on the record before the write or after it, naming the field
+    /// (012).
+    pub fn check_hidden_write(
+        &self,
+        ty: &TypeName,
+        records: [Option<&BTreeMap<FieldName, Value>>; 2],
+        sent: &[FieldName],
+    ) -> Result<(), Error> {
+        for fields in records.into_iter().flatten() {
+            let lowered = self.lowered(ty, fields);
+            if let Some(f) = sent.iter().find(|f| lowered.contains_key(*f)) {
+                return Err(Error::refused(Some(f.clone()), Refusal::NotGranted));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether its principal's hidings lower `f` of `decl` on some records.
+    pub fn lowers_somewhere(&self, decl: &TypeDecl, f: &FieldName) -> bool {
+        let all = vec![true; self.hidings(&decl.name).len()];
+        self.hides(&decl.name) && self.lowering(decl, Some(all)).1.contains_key(f)
+    }
+
+    /// The hidings its principal's grant on `ty` holds.
+    pub(crate) fn hidings(&self, ty: &TypeName) -> &[HiddenWhere] {
+        let held = self.who().grants.types.get(ty);
+        held.map_or(&[], |t| t.hide_where.as_slice())
+    }
+
+    /// Whether its principal's grant hides a field of `ty` on some records.
+    pub fn hides(&self, ty: &TypeName) -> bool {
+        !self.hidings(ty).is_empty()
+    }
+
+    /// Each field of `decl` its principal's hidings lower on some records,
+    /// with the field and values of each hiding that does, as `describe`
+    /// tells them: none where they cannot be applied, so it names no field
+    /// its reader may not read.
+    pub fn hidden_where(
+        &self,
+        decl: &TypeDecl,
+    ) -> BTreeMap<FieldName, Vec<(FieldName, BTreeSet<String>)>> {
+        let hidings = self.hidings(&decl.name);
+        let mut out: BTreeMap<FieldName, Vec<_>> = BTreeMap::new();
+        if hidings.is_empty() || !self.lowering(decl, None).0 {
+            return out;
+        }
+        for (i, h) in hidings.iter().enumerate() {
+            let picked = (0..hidings.len()).map(|j| j == i).collect();
+            for f in self.lowering(decl, Some(picked)).1.keys() {
+                let held = out.entry(f.clone()).or_default();
+                held.push((h.field.clone(), h.values.clone()));
+            }
+        }
+        out
     }
 
     /// Refuse a read that probes a field its principal may not read, or a
@@ -762,6 +944,14 @@ impl Sight<'_> {
         Ok(())
     }
 }
+
+/// The fields a record's hidings lower, each with its access there
+/// ([`Sight::lowered`]).
+pub type Lowered = Rc<BTreeMap<FieldName, Access>>;
+
+/// Whether a type's hidings apply, and what they lower, by which of them
+/// select a record.
+pub(crate) type Lowerings = BTreeMap<(TypeName, Vec<bool>), (bool, Lowered)>;
 
 /// The door a write comes through.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1118,7 +1308,7 @@ impl Sight<'_> {
     }
 
     /// Whether its principal reads every field of every type: no grant below
-    /// `read` and no `only`. Such a principal is shown the lake whole,
+    /// `read`, no `only` and no hiding. Such a principal is shown the lake whole,
     /// `sensitive` fields too, since only a `none` masks one.
     pub fn reads_all_fields(&self) -> bool {
         let who = self.who();
@@ -1127,6 +1317,7 @@ impl Sight<'_> {
             t.default.as_ref().is_none_or(reads)
                 && t.fields.values().all(reads)
                 && t.only.is_empty()
+                && t.hide_where.is_empty()
         };
         reads(&who.grants.default) && who.grants.types.values().all(typed)
     }

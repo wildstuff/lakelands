@@ -512,6 +512,9 @@ struct View<'a> {
 struct Shown {
     fields: Vec<String>,
     initial: Vec<String>,
+    /// Each field a hiding lowers on some records, with the field and
+    /// values of each hiding that does.
+    hidden: BTreeMap<String, Vec<(lakelands_api::FieldName, BTreeSet<String>)>>,
 }
 
 impl<'a> View<'a> {
@@ -608,6 +611,10 @@ impl<'a> View<'a> {
         if !setting && let Err(seen) = got {
             return seen;
         }
+        let hides = (self.who.grants.types.values()).any(|g| !g.hide_where.is_empty());
+        let now = (hides && !setting)
+            .then(|| got.as_ref().ok().cloned())
+            .flatten();
         // A setting's write as its principal is told the record before it
         // and after: what it is not told alone is not told, and a record
         // it is no longer told is told as retired (063).
@@ -671,8 +678,41 @@ impl<'a> View<'a> {
                     changed.sort();
                     changed.dedup();
                 }
-                let shown = shown.fields;
-                let kept: Vec<String> = changed.into_iter().filter(|f| shown.contains(f)).collect();
+                let mut kept: Vec<String> = changed
+                    .into_iter()
+                    .filter(|f| shown.fields.contains(f))
+                    .collect();
+                // A field hidden on the record before the write or after it
+                // is not told changed (006).
+                if hides && kept.iter().any(|f| shown.hidden.contains_key(f)) {
+                    let was = match at.0.checked_sub(1) {
+                        Some(p) => self.told(ty, key, Position(p)).await,
+                        None => Ok(None),
+                    };
+                    let was = match was {
+                        Ok(was) => was,
+                        Err(seen) => return seen,
+                    };
+                    let selects =
+                        |r: &Record, g: &lakelands_api::FieldName, v: &BTreeSet<String>| {
+                            r.fields
+                                .get(g)
+                                .and_then(Value::as_str)
+                                .is_some_and(|s| v.contains(s))
+                        };
+                    let hidden = |f: &String| {
+                        let on = |r: &Record| {
+                            shown
+                                .hidden
+                                .get(f)
+                                .into_iter()
+                                .flatten()
+                                .any(|(g, v)| selects(r, g, v))
+                        };
+                        was.as_ref().is_some_and(on) || now.as_ref().is_some_and(on)
+                    };
+                    kept.retain(|f| !hidden(f));
+                }
                 if kept.is_empty() {
                     return Seen::Hidden;
                 }
@@ -730,16 +770,19 @@ impl<'a> View<'a> {
             .map_err(|e| failed(&e))?;
         let appears = d.data.fields.iter().filter(|f| f.access.appears());
         let name = |f: &lakelands_api::describe::FieldDescription| f.name.to_string();
+        let hidden = d.data.fields.iter().filter(|f| !f.hidden_where.is_empty());
         let s = Shown {
             fields: appears.clone().map(name).collect(),
             initial: appears.filter(|f| f.initial.is_some()).map(name).collect(),
+            hidden: hidden.map(|f| (name(f), f.hidden_where.clone())).collect(),
         };
         self.shown.insert(ty.clone(), s.clone());
         Ok(s)
     }
 
     /// Whether the principal reads every field of `ty` in full at `at`,
-    /// as the host sees the type: none hidden, none masked.
+    /// as the host sees the type: none hidden, none masked, none hidden on
+    /// some records.
     async fn whole(&mut self, ty: &TypeName, at: Position) -> Result<bool, Seen> {
         if let Some(w) = self.whole.get(ty) {
             return Ok(*w);
@@ -764,7 +807,9 @@ impl<'a> View<'a> {
             .await
             .map_err(|e| failed(&e))?;
         let reads = |n: &lakelands_api::FieldName| {
-            (mine.data.fields.iter()).any(|f| &f.name == n && f.access.reads())
+            let read = |f: &&lakelands_api::describe::FieldDescription| f.access.reads();
+            let whole = |f: &&lakelands_api::describe::FieldDescription| f.hidden_where.is_empty();
+            (mine.data.fields.iter()).any(|f| &f.name == n && read(&f) && whole(&f))
         };
         let w = d.data.fields.iter().all(|f| reads(&f.name));
         self.whole.insert(ty.clone(), w);

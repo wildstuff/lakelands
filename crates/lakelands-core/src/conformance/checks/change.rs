@@ -90,7 +90,7 @@ fn section<'a>(p: &'a Plan, what: &str) -> Result<&'a RecordsPlan, Failure> {
 
 /// A section as one line: the count, the first keys, each field's count,
 /// and each refusal's code, count and first keys.
-fn line(p: &Plan) -> String {
+pub(super) fn line(p: &Plan) -> String {
     let Some(r) = p.records.as_deref() else {
         return "no records".to_owned();
     };

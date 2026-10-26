@@ -400,9 +400,14 @@ impl Decide<'_> {
         sent: &[FieldName],
     ) -> Result<()> {
         let plan = self.plans.get(self.ontology, decl);
+        // A field a hiding lowers on the record, before or after, is read
+        // as one its grant does not let it read (006).
+        let low = [live.map(|b| &b.fields), Some(&after.fields)]
+            .map(|f| f.map(|f| self.at.sight.lowered(&decl.name, f)));
         let reads = |f: &FieldName| {
             let mut fields = decl.fields.iter().filter(|d| &d.name == f);
-            fields.any(|d| self.at.sight.field_access(decl, d).reads())
+            let told = low.iter().flatten().all(|l| !l.contains_key(f));
+            told && fields.any(|d| self.at.sight.field_access(decl, d).reads())
         };
         for c in &plan.constraints {
             let admits = matches!(self.door, Door::Source) && !c.decl.at_ingest.refuses();
@@ -473,7 +478,7 @@ impl Decide<'_> {
         // of a type it is not shown is answered as one never declared (063).
         let declared = |t: &TypeName| o.ty(t).ok();
         let shown = |t: &TypeName| sees.describe_type(t);
-        let judged_early = sees.narrows(&decl.name);
+        let judged_early = decl.name.as_str() == SETTING_TYPE && sees.narrows(&decl.name);
         if judged_early {
             let value = patch.get("value");
             lakelands_api::seam::check_setting(key.as_str(), value, &declared, &shown)?;
@@ -517,6 +522,10 @@ impl Decide<'_> {
         });
         let before = t.before.as_ref().filter(|_| !other);
         let after = self.apply(before, &draft)?;
+        // A field its writer's grant hides on the record, before the write
+        // or after it, its derived fields made, is not written (012).
+        let records = [live.map(|b| &b.fields), Some(&after.fields)];
+        sees.check_hidden_write(&decl.name, records, &sent)?;
         record::check_required(decl, &after.fields)?;
         self.constraints_hold(decl, live.filter(|_| !other), &after, &sent)?;
         if after.ty.as_str() == AGING_RULE_TYPE {

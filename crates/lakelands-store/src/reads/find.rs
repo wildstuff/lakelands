@@ -168,9 +168,14 @@ impl<'a> Reader<'a> {
             };
             let after = Self::skipped(&find.order_by, after, skip, &page)?;
             page(after, limit + 1)?.into_iter().map(row).collect()
-        } else if decl.view.is_some() || self.sight.narrows(&decl.name) {
+        } else if decl.view.is_some()
+            || self
+                .sight
+                .narrows_reading(&decl.name, find.order_by.iter().map(|o| &o.field))
+        {
             // A view's records are computed from its source, whole, and
-            // settings a reader may not be told are ordered as told.
+            // settings a reader may not be told, and a field a hiding
+            // lowers, are ordered as told.
             let all = self.records(&decl, filter.as_ref())?;
             let mut keyed: Vec<_> = all.into_iter().map(row).collect();
             keyed.sort_by(|a, b| Self::compare(&find.order_by, &a.0, &b.0));

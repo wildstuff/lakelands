@@ -704,10 +704,25 @@ impl<'a> Reader<'a> {
     }
 
     /// Records of `ty` as an engine holds them, as this read answers them:
-    /// fields computed at the read, with this read's clock; a setting as
-    /// its reader is told it ([`Sight::told`]), so a `where`, an order and
-    /// an aggregate read what it is told.
+    /// fields computed at the read, with this read's clock; then as its
+    /// reader is told it ([`Sight::told`]: a setting narrowed, a field a
+    /// hiding lowers gone), so a `where`, an order and an aggregate read
+    /// what it is told.
     fn at_read(&self, ty: &TypeName, mut rows: Vec<StoredRecord>) -> Vec<StoredRecord> {
+        let o = &self.shape.ontology;
+        if let Some(decl) = o
+            .ty(ty)
+            .ok()
+            .filter(|t| t.fields.iter().any(|f| f.at_read()))
+        {
+            let (decl, value_types) = (
+                crate::record::resolve_functions(decl, o),
+                o.value_type_list(),
+            );
+            for r in &mut rows {
+                core_derive::at_read(&decl, &value_types, r, self.told(), self.now);
+            }
+        }
         if self.sight.narrows(ty) {
             let told = |r: StoredRecord| match self.sight.told(&r)? {
                 std::borrow::Cow::Owned(o) => Some(o),
@@ -715,30 +730,19 @@ impl<'a> Reader<'a> {
             };
             rows = rows.into_iter().filter_map(told).collect();
         }
-        let o = &self.shape.ontology;
-        let Some(decl) = o
-            .ty(ty)
-            .ok()
-            .filter(|t| t.fields.iter().any(|f| f.at_read()))
-        else {
-            return rows;
-        };
-        let (decl, value_types) = (
-            crate::record::resolve_functions(decl, o),
-            o.value_type_list(),
-        );
-        for r in &mut rows {
-            core_derive::at_read(&decl, &value_types, r, self.told(), self.now);
-        }
         rows
     }
 
     /// Whether the store evaluates `e` over records of `decl` itself: it
     /// needs the store, or reads a field computed at the read, which no
-    /// engine holds, or a setting its reader may not be told.
+    /// engine holds, or a setting its reader may not be told, or a field a
+    /// hiding lowers on some records (006).
     fn store_only(&self, decl: &TypeDecl, e: &Expr) -> bool {
         let at_read = |n: &&FieldName| decl.fields.iter().any(|f| &f.name == *n && f.at_read());
-        needs_store(e) || e.fields_read().iter().any(at_read) || self.sight.narrows(&decl.name)
+        let read = e.fields_read();
+        needs_store(e)
+            || read.iter().any(at_read)
+            || self.sight.narrows_reading(&decl.name, read.iter().copied())
     }
 
     /// Refuse an order by a field computed at the read: it moves with the
@@ -1075,10 +1079,11 @@ impl<'a> Reader<'a> {
     }
 
     /// The type a read door names, as [`Self::visible_type`], refused where
-    /// its reader's `only` on it cannot be applied (051).
+    /// its reader's `only` on it, or a hiding, cannot be applied (051, 006).
     fn named_type(&self, ty: &TypeName) -> Result<&TypeDecl> {
         let decl = self.visible_type(ty)?;
         self.sight.check_only(decl)?;
+        self.sight.check_hidings(decl)?;
         Ok(decl)
     }
 
@@ -1107,7 +1112,8 @@ impl<'a> Reader<'a> {
     /// `only` (051), or, without `restricted`, over a link type, or a view
     /// computed so, whose links are judged by their ends, as no kept face
     /// can (006); or whose computation names a setting the reader is told
-    /// otherwise than the fold reads it ([`Self::told`]).
+    /// otherwise than the fold reads it ([`Self::told`]); or that reads a
+    /// type a hiding of the reader's lowers, at any depth (006).
     fn computes(&self, ty: &TypeName) -> bool {
         if let Some(known) = self.computes_known.borrow().get(ty) {
             return *known;
@@ -1136,7 +1142,11 @@ impl<'a> Reader<'a> {
         let settings = |s: &&TypeName| {
             s.as_str() == SETTING || (find(s).is_some_and(|d| d.view.is_some()) && self.computes(s))
         };
+        // A view over a type a hiding narrows reads it as told (006).
+        let hides = (self.sight.who().grants.types.values()).any(|t| !t.hide_where.is_empty());
+        let hidden = |s: &&TypeName| self.sight.hides(s) || self.computes(s);
         self.sight.computed_only(ty, &find)
+            || (hides && sources.iter().any(hidden))
             || (!self.sight.sees_restricted() && sources.iter().any(links))
             || (narrowed
                 && (find(ty).is_some_and(|d| crate::kept::names_settings(&self.shape.ontology, d))

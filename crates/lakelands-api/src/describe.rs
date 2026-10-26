@@ -3,7 +3,7 @@
 //! rights, actions, lineage and lifecycle — as one principal may see it.
 //! The tool catalog is generated from this answer and nothing else.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -203,6 +203,11 @@ pub struct FieldDescription {
     /// The host's own marks on the field, to a principal who reads it.
     #[serde(default, skip_serializing_if = "Annotations::is_empty")]
     pub annotations: Annotations,
+    /// Where its holder's grant lowers it below `access`: on the records
+    /// whose field holds one of the values
+    /// (`006 § A field may be hidden on only the records a condition selects`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_where: Vec<(FieldName, BTreeSet<String>)>,
 }
 
 impl FieldDescription {
@@ -240,6 +245,7 @@ impl FieldDescription {
             label: decl.label,
             embed: decl.embed,
             annotations: decl.annotations,
+            hidden_where: Vec::new(),
         }
     }
 

@@ -1338,6 +1338,61 @@ async fn a_create_is_told_as_a_change_of_each_field_it_filled() {
     }
 }
 
+/// A field hidden where a condition holds is a change told only of a
+/// record the condition selects neither before the write nor after it.
+#[tokio::test]
+async fn a_field_hidden_where_a_condition_holds_is_told_only_where_it_is_not() {
+    use lakelands_api::principal::HiddenWhere;
+    for backend in BACKENDS {
+        let store = common::lake_on(backend).await;
+        declare(
+            store.as_ref(),
+            json!({"declare": "type", "name": "chunk", "fields": [
+                {"name": "kind", "type": {"kind": "text"}},
+                {"name": "body", "type": {"kind": "text"}}]}),
+        )
+        .await;
+        let clerk = Principal {
+            kind: PrincipalKind::Agent,
+            id: "clerk".into(),
+            lake: "finance".into(),
+            grants: Grants {
+                default: Access::Read,
+                types: [(
+                    "chunk".into(),
+                    TypeGrants {
+                        hide_where: vec![HiddenWhere {
+                            field: "kind".into(),
+                            values: ["secret".to_owned()].into(),
+                            fields: [("body".into(), Access::None)].into(),
+                        }],
+                        ..Default::default()
+                    },
+                )]
+                .into(),
+                ..Grants::default()
+            },
+        };
+        let mut clerk = Stdio::open(store.clone(), clerk).await;
+        clerk
+            .call("subscribe", json!({"kinds": ["record_upserted"]}))
+            .await;
+        let s = store.as_ref();
+        let made = write(s, "chunk", "c1", json!({"kind": "secret", "body": "x"})).await;
+        write(s, "chunk", "c1", json!({"body": "y"})).await;
+        let opened = write(s, "chunk", "c1", json!({"kind": "open", "body": "z"})).await;
+        let shown = write(s, "chunk", "c1", json!({"body": "w"})).await;
+        for (want, told) in [(made, ["kind"]), (opened, ["kind"]), (shown, ["body"])] {
+            let m = clerk.change().await;
+            assert_eq!(
+                (&m["params"]["position"], &m["params"]["fields"]),
+                (&json!(want), &json!(told)),
+                "{backend:?}: {m}"
+            );
+        }
+    }
+}
+
 /// An output a function backing records fills its field: a change of that
 /// field, told with its name.
 #[tokio::test]

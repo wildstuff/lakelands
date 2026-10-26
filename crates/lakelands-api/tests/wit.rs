@@ -35,7 +35,7 @@ use lakelands_api::ontology::{
     StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl,
     ViewParam, ViewSource,
 };
-use lakelands_api::principal::{Renamed, TypeGrants};
+use lakelands_api::principal::{HiddenWhere, Renamed, TypeGrants};
 use lakelands_api::query::{
     Axis, Depth, Edge, Hit, Hits, Matched, Pattern, Projection, QueryResult, Search, SearchMode,
     Span, Start, Step, VectorTerm, Walk,
@@ -646,6 +646,15 @@ fn field_description() -> FieldDescription {
         description: Some("d".into()),
         label: Some("l".into()),
         embed: Some(embed_decl()),
+        hidden_where: vec![("g".into(), ["x".to_owned()].into())],
+    }
+}
+
+fn hidden_where() -> HiddenWhere {
+    HiddenWhere {
+        field: "g".into(),
+        values: ["x".to_owned()].into(),
+        fields: [("f".into(), Access::None)].into(),
     }
 }
 
@@ -957,6 +966,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                         fields: [("f".into(), Access::Write)].into(),
                         only: [("o".into(), json!("a"))].into(),
                         verbs: ["v".into()].into(),
+                        hide_where: vec![hidden_where()],
                     },
                 )]
                 .into(),
@@ -974,11 +984,13 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     fields: [("f".into(), Access::Write)].into(),
                     only: [("o".into(), json!("a"))].into(),
                     verbs: ["v".into()].into(),
+                    hide_where: vec![hidden_where()],
                 }),
                 &[],
                 &["type"],
             ),
         ),
+        ("hidden_where", members(&hidden_where())),
         (
             "write_context",
             members(&WriteContext {

@@ -74,6 +74,21 @@ fn reading_everything_needs_every_grant_to_read_and_restricted() {
         !only.reads_everything(),
         "the feed is every owner's records"
     );
+    let mut hiding = reader.clone();
+    let hidden = HiddenWhere {
+        field: "doc".into(),
+        values: ["secret".to_owned()].into(),
+        fields: [("body".into(), Access::None)].into(),
+    };
+    let chunk = TypeGrants {
+        hide_where: vec![hidden],
+        ..TypeGrants::default()
+    };
+    hiding.types.insert("chunk".into(), chunk);
+    assert!(
+        !hiding.reads_everything(),
+        "the feed is every record's every field"
+    );
 }
 
 #[test]

@@ -191,6 +191,25 @@ pub struct TypeGrants {
     /// (`docs/decisions/070-a-verb-may-be-kept-to-the-callers-granted-it.md`).
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub verbs: BTreeSet<VerbName>,
+    /// Fields lowered on only the records a condition selects; on every
+    /// other record the access above stands
+    /// (`006 § A field may be hidden on only the records a condition selects`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hide_where: Vec<HiddenWhere>,
+}
+
+/// A hiding: on a record whose `field` holds one of `values`, compared as
+/// a pair of `only` is, each of `fields` has the lower of its access and
+/// the one given here, `none` or `masked`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HiddenWhere {
+    /// The field that selects: of kind `text` or `reference`, read by the
+    /// holder.
+    pub field: FieldName,
+    /// The values that select a record; not empty.
+    pub values: BTreeSet<String>,
+    /// Each field lowered on a selected record, and to what.
+    pub fields: BTreeMap<FieldName, Access>,
 }
 
 impl Grants {
@@ -208,7 +227,8 @@ impl Grants {
 
     /// Whether these grants read every field of every record, withheld
     /// records included: the lake default reads, every type's default and
-    /// every field grant reads, no type admits only some records, and
+    /// every field grant reads, no type admits only some records or hides
+    /// a field on some, and
     /// `restricted` is held. Only such a
     /// principal may read the change feed through a door, since the feed
     /// is the log unmasked
@@ -220,6 +240,7 @@ impl Grants {
                 t.default.is_none_or(Access::reads)
                     && t.fields.values().all(|a| a.reads())
                     && t.only.is_empty()
+                    && t.hide_where.is_empty()
             })
     }
 
@@ -233,12 +254,13 @@ impl Grants {
     /// chain of names that ends in its old name, the newest where several
     /// do, or starts one. A field `only` names is followed the same way:
     /// its pair holds on the name borne at `at` by every chain that has
-    /// borne it.
+    /// borne it; and so is each field a hiding names.
     pub fn follow(&mut self, list: &[Renamed], at: Option<Position>) {
         self.follow_names(list, at);
         let lake = self.default;
-        let named =
-            |t: &(&TypeName, &mut TypeGrants)| !t.1.fields.is_empty() || !t.1.only.is_empty();
+        let named = |t: &(&TypeName, &mut TypeGrants)| {
+            !t.1.fields.is_empty() || !t.1.only.is_empty() || !t.1.hide_where.is_empty()
+        };
         for (ty, held) in self.types.iter_mut().filter(named) {
             let mut chains: Vec<Vec<(&FieldName, Position)>> = Vec::new();
             for r in list.iter().filter(|r| &r.ty == ty) {
@@ -267,12 +289,38 @@ impl Grants {
                     .map_or(c[0].0, |c| c.0)
                     .clone()
             };
-            for (name, value) in std::mem::take(&mut held.only) {
-                let borne = chains.iter().filter(|c| c.iter().any(|n| n.0 == &name));
+            let borne = |name: &FieldName| {
+                let borne = chains.iter().filter(|c| c.iter().any(|n| n.0 == name));
                 let borne: Vec<FieldName> = borne.map(|c| borne_of(c)).collect();
-                for to in if borne.is_empty() { vec![name] } else { borne } {
+                if borne.is_empty() {
+                    vec![name.clone()]
+                } else {
+                    borne
+                }
+            };
+            for (name, value) in std::mem::take(&mut held.only) {
+                for to in borne(&name) {
                     unite(&mut held.only, to, &value);
                 }
+            }
+            for h in std::mem::take(&mut held.hide_where) {
+                let lowered = h
+                    .fields
+                    .iter()
+                    .flat_map(|(f, a)| borne(f).into_iter().map(|f| (f, *a)));
+                // Two names borne as one keep the lower access.
+                let mut fields: BTreeMap<FieldName, Access> = BTreeMap::new();
+                for (f, a) in lowered {
+                    let was = fields.entry(f).or_insert(a);
+                    *was = was.lowest(a);
+                }
+                let values = h.values;
+                let each = borne(&h.field).into_iter();
+                (held.hide_where).extend(each.map(|field| HiddenWhere {
+                    field,
+                    values: values.clone(),
+                    fields: fields.clone(),
+                }));
             }
             for chain in &chains {
                 let borne = &borne_of(chain);
@@ -339,6 +387,7 @@ impl Grants {
             for (f, v) in others.iter().flat_map(|t| &t.only) {
                 unite(&mut own.only, f.clone(), v);
             }
+            (own.hide_where).extend(others.iter().flat_map(|t| t.hide_where.iter().cloned()));
             own
         };
         // For each name borne at `at`: when it was taken, and the entry.
