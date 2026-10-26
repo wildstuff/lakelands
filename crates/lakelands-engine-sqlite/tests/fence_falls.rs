@@ -94,7 +94,7 @@ async fn verify_refuses_a_fence_that_falls_below_the_engine() {
     replace(
         only("index"),
         &[
-            (format!("[\"d\",{p},{high},"), format!("[\"d\",{p},{low},")),
+            (format!("[\"e\",{p},{high},"), format!("[\"e\",{p},{low},")),
             (format!("\"{old}\"]"), format!("\"{hash}\"]")),
         ],
     );
