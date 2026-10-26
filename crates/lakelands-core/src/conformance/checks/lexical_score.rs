@@ -3,7 +3,7 @@
 //! its length against the field's mean, and the statistics follow every
 //! write (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
 
-use super::only::holder;
+use super::only::{de, holder};
 use super::search::doc_search;
 use crate::conformance::fixture::{doors, owner, source_record};
 use crate::conformance::prelude::*;
@@ -31,6 +31,11 @@ check!(
 check!(
     LEXICAL_ONLY = an_only_readers_score_is_moved_by_nothing_outside_its_pairs,
     "025 and 051: a holder of `only` is scored over the records it is admitted, so a record outside its pairs, written, changed or retired, moves none of its scores to the bit"
+);
+
+check!(
+    LEXICAL_HIDDEN_AS_OF = a_search_as_of_a_position_counts_no_field_hidden_on_a_record_there,
+    "025 and 006: a reader with a field hidden where a condition holds is scored, as of a position, over the records as it is told them there and at the head: the field on a record selected at the position moves none of its statistics, and at the head the record counts whole"
 );
 
 check!(
@@ -391,4 +396,61 @@ async fn the_text_statistics_equal_a_recount_after_every_write(
     recounted(&decl, &heads, "forgetting the source").await?;
     s.rebuild().await.must("rebuilding the projection")?;
     recounted(&decl, &heads, "a rebuild").await
+}
+
+async fn a_search_as_of_a_position_counts_no_field_hidden_on_a_record_there(store: Store) -> Held {
+    let s = store.as_ref();
+    let l = Lake::of(s);
+    let fields = vec![
+        field("doc", StorageKind::Text),
+        searchable("title"),
+        searchable("body"),
+    ];
+    let decl = type_decl("note", fields);
+    l.declare(decl.clone()).await?;
+    let mut heads = [
+        (
+            "n1",
+            json!({"doc": "secret", "title": "taxi", "body": "rome rome"}),
+        ),
+        ("n2", json!({"doc": "open", "title": "bus", "body": "rome"})),
+        ("n3", json!({"doc": "open", "title": "taxi"})),
+    ];
+    for (key, fields) in &heads {
+        l.upsert("note", key, fields.clone()).await?;
+    }
+    let hide = json!([{"field": "doc", "values": ["secret"], "fields": {"body": "none"}}]);
+    let grants = json!({"default": "read", "types": {"note": {"hide_where": hide}}});
+    let bea = holder(s, "bea", grants);
+    let then = s.head().await.must("reading the head")?;
+    // n1 is secret at `then` and open at the head.
+    l.upsert("note", "n1", json!({"doc": "open"})).await?;
+    heads[0].1["doc"] = json!("open");
+    let text = "taxi rome";
+    let mut wrong = Vec::new();
+    for (at, told) in [
+        (Some(then), json!({"title": "taxi"})),
+        (None, heads[0].1.clone()),
+    ] {
+        let mut asked = json!({"type": "note", "mode": "lexical", "text": text});
+        if let Some(at) = at {
+            asked["as_of"] = json!(at.0);
+        }
+        let hits = l.cat.search(&bea, de(asked.clone())).await;
+        let hits = hits.must(&format!("bea's search {asked}"))?.data.hits;
+        let got: Vec<(String, f64)> = (hits.iter())
+            .map(|h| (h.record.key.0.clone(), h.score))
+            .collect();
+        let mut seen = heads.clone();
+        seen[0].1 = told;
+        let one = bm25f(&decl, &seen, (text, None), &[]);
+        if got != one {
+            wrong.push(format!("{asked} scored {got:?}, not {one:?}"));
+        }
+    }
+    ensure!(
+        wrong.is_empty(),
+        "bea, told n1 without its body at `then`, is scored over the notes as told: {wrong:?}"
+    );
+    Ok(())
 }

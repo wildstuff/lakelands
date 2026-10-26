@@ -1307,6 +1307,7 @@ belongs in the suite, not beside one engine:
 - `a_shorter_field_outranks_a_longer_one_at_equal_frequency` — 025: of two records holding a token as often, the one whose field is shorter than the field's mean ranks first
 - `a_held_record_moves_no_score_of_a_reader_without_restricted` — 025 and 006: a record held from a reader without `restricted` is not counted in its statistics, so holding one moves none of its scores to the bit, while the owner's move; lifted, the record counts to both
 - `an_only_readers_score_is_moved_by_nothing_outside_its_pairs` — 025 and 051: a holder of `only` is scored over the records it is admitted, so a record outside its pairs, written, changed or retired, moves none of its scores to the bit
+- `a_search_as_of_a_position_counts_no_field_hidden_on_a_record_there` — 025 and 006: a reader with a field hidden where a condition holds is scored, as of a position, over the records as it is told them there and at the head: the field on a record selected at the position moves none of its statistics, and at the head the record counts whole
 - `the_text_statistics_equal_a_recount_after_every_write` — 025: after a write, a change, a retirement, a hold and its release, a re-keying migration, a migration that renames a field and makes one unsearchable, an ingest, a forgetting and a rebuild, the owner's and a reader's without `restricted` scores are the one function's over the heads each sees, counted again
 
 **upgrade**

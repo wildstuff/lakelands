@@ -896,6 +896,7 @@ pub const ALL: &[Check] = &[
     lexical_score::LEXICAL_LENGTH,
     lexical_score::LEXICAL_HELD,
     lexical_score::LEXICAL_ONLY,
+    lexical_score::LEXICAL_HIDDEN_AS_OF,
     lexical_score::LEXICAL_RECOUNT,
     search_text_weights::WEIGHTS_TEXT_REFUSED,
     search_text_weights::WEIGHTS_TEXT_OWN,
