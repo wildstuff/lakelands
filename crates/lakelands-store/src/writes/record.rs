@@ -758,6 +758,10 @@ impl Decide<'_> {
         let limits = (self.at.depth, (self.at.settings, now));
         let stored = |ty: &TypeName, k: &RecordKey| pending.record(view, ty, k);
         let across = Across::new(o, on, (&far, &link, &stored), limits);
+        // A field a hiding lowers on the record is one its caller does not
+        // read there: a verb that reads it would say what it holds (006).
+        let low = self.at.sight.lowered(&verb.on, &record.fields);
+        granted((verb.fields_read()).is_some_and(|r| r.iter().all(|f| !low.contains_key(f))))?;
         // A part is named as the caller is shown what it reads: at an
         // accept, the reviewer.
         let told = |k: &str| {

@@ -2179,7 +2179,7 @@ it is in force from 0.20.0 (lakelands#1354).
 
 | what reads | on a selected record |
 |---|---|
-| `get`, `find`, `count`, an aggregate | `F` is not answered. A `where`, an order, a group or a measure over `F` reads it as null. The store evaluates them over the records as told: a filter that reads `F` is not handed to the engine, one that does not still is. |
+| `get`, `find`, `count`, an aggregate, a pattern query | `F` is not answered. A `where`, an order, a group or a measure over `F` reads it as null. The store evaluates them over the records as told: a filter or an order that reads `F` is not handed to the engine, one that does not still is. |
 | a lexical search | `F` brings no match and no rank, and the text statistics a ranking reads are counted over the text as told (025). |
 | a vector or hybrid search | a vector built from `F` brings no candidate. The reader has no class of its own and is ranked exactly over what it is told, as a holder of `only` is (078); a hybrid search fuses what each axis tells. |
 | a probe | probing `F` is allowed, since the holder reads it on other records; it reads null on a selected one, so it tells nothing of it. |
@@ -2189,7 +2189,7 @@ it is in force from 0.20.0 (lakelands#1354).
 | a subscription | the names of the fields a change moved are told per record, not per type. |
 | the change feed | refused: a principal with a hiding does not read everything. |
 | an export, a backup | unchanged: they take no principal and are the host's. |
-| a write | `F` on a record selected before or after the write is not writable: the write is refused whole, not granted, naming `F` (012), also to a writer that may write `F` on every other record. |
+| a write | `F` on a record selected before or after the write is not writable: the write is refused whole, not granted, naming `F` (012), also to a writer that may write `F` on every other record. Its answer names no trigger and no object set whose condition reads a field a hiding of the writer lowers (024), and a verb that reads `F` is refused not granted on a selected record, whether its `requires` holds or not (lakelands#1463). |
 | a read as of a position | a record is selected by its `G` at that position; a search ranks by the head's indexes, and a ranking reaches `F` on a record only where its reader is shown `F` there both at that position and at the head: a record selected at either, by its key and names there, is neither matched nor ranked by `F` (025). |
 | `describe` | `F` keeps its type-wide access, and its description tells the holder where it is lowered, `G` and the values, as `may.only` tells a holder its pairs; the schema hash follows what is described. |
 

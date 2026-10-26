@@ -735,7 +735,9 @@ impl<'a> Reader<'a> {
                     .fields
                     .iter()
                     .any(|x| x.name == field && !x.at_read());
-                let own = n == names[0] && stored && !self.lakes(&start_decl, &field);
+                // One a hiding lowers somewhere is ordered by as told, here.
+                let told = !self.sight.narrows_reading(&start_decl.name, [&field]);
+                let own = n == names[0] && stored && told && !self.lakes(&start_decl, &field);
                 own.then(|| Order { field, ..o.clone() })
             };
             p.order_by.iter().map(own).collect::<Option<Vec<Order>>>()
@@ -783,7 +785,7 @@ impl<'a> Reader<'a> {
             }
             Ok(self.holds(f, &rec, true))
         };
-        let row = |start: &graph::Node, binding: &[Option<graph::Reached>]| -> Result<_> {
+        let whole = |start: &graph::Node, binding: &[Option<graph::Reached>]| -> Result<_> {
             let mut row = BTreeMap::new();
             self.bind(&mut row, &names[0], (start, 0, None), hidden.record(start)?)?;
             for ((r, name), open) in binding.iter().zip(&names[1..]).zip(&shared[1..]) {
@@ -801,6 +803,10 @@ impl<'a> Reader<'a> {
                     }
                 }
             }
+            Ok(row)
+        };
+        let row = |start: &graph::Node, binding: &[Option<graph::Reached>]| -> Result<_> {
+            let mut row: BTreeMap<String, Value> = whole(start, binding)?;
             if let Projection::Rows { fields } = &p.project
                 && !fields.is_empty()
             {
@@ -912,7 +918,7 @@ impl<'a> Reader<'a> {
                             let (field, reason) = (Some(member.into()), Refusal::TooLarge { max });
                             return Err(Error::refused(field, reason));
                         }
-                        let r = row(start, binding)?;
+                        let r = whole(start, binding)?;
                         let value = |o: &Order| r.get(o.field.as_str()).cloned();
                         let vals = p.order_by.iter().map(|o| value(o).unwrap_or(Value::Null));
                         let vals: Vec<_> = vals.collect();
