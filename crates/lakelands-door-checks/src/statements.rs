@@ -559,6 +559,7 @@ pub async fn the_cypher_tool_is_listed_where_query_is(
         "`query`",
         "`next_cursor`",
         "the same statement and parameters",
+        "An aggregate answers every group in one page with no cursor, ignoring `LIMIT`",
     ] {
         assert!(said.contains(words), "the description says {words}: {said}");
     }
@@ -673,18 +674,47 @@ pub async fn an_order_beside_an_aggregate_is_refused_in_the_statements_words(
         assert!(said.contains("leave `ORDER BY` out"), "{said}");
         assert!(!said.contains("order_by"), "{said}");
     }
-    let read = through_tool((tools.as_ref(), &f), owner, grouped, &none, None).await;
-    let read = read.expect("the groups are read");
-    let names: Vec<&Value> = (0..2)
-        .map(|i| &read["data"]["rows"][i]["by"]["p.name"])
-        .collect();
-    assert_eq!(names, [&json!("Acme"), &json!("Brix")], "{read}");
+    // A partner written last whose name sorts first: the groups come in
+    // the order of the field beside the aggregate, not of the writes.
+    for (ty, key, fields) in [
+        ("partner", "P-3", patch(&[("name", json!("Abel"))])),
+        (
+            "invoice",
+            "INV-5",
+            patch(&[("status", json!("open")), ("partner", json!("P-3"))]),
+        ),
+    ] {
+        let (ty, key) = (ty.into(), key.into());
+        let put = f
+            .catalog
+            .upsert(owner, &ty, &key, fields, Default::default());
+        put.await.expect("the owner writes it");
+    }
+    // `LIMIT` beside an aggregate caps nothing: every group, one page.
+    for s in [grouped.to_string(), format!("{grouped} LIMIT 1")] {
+        let read = through_tool((tools.as_ref(), &f), owner, &s, &none, None).await;
+        let read = read.expect("the groups are read");
+        let groups: Vec<Value> = read["data"]["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .map(|r| json!([r["by"]["p.name"], r["values"]["invoices"]]))
+            .collect();
+        // A count comes as a decimal string.
+        let want = [
+            json!(["Abel", "1"]),
+            json!(["Acme", "3"]),
+            json!(["Brix", "1"]),
+        ];
+        assert_eq!(groups, want, "{s}: {read}");
+        assert!(read["data"].get("next_cursor").is_none(), "{s}: {read}");
+    }
 }
 
 /// A principal not shown a type is answered through `cypher` as through
 /// `query` given the pattern the statement translates into: the stranger,
-/// shown an invoice's status alone, neither reads a partner nor an
-/// invoice's amount by either tool.
+/// shown an invoice's status alone, reads it by either tool, and neither
+/// reads a partner nor an invoice's amount.
 pub async fn a_type_not_shown_is_answered_through_cypher_as_through_query(
     lake: Arc<dyn LakeStore>,
     door: Arc<dyn Statements>,
@@ -693,7 +723,9 @@ pub async fn a_type_not_shown_is_answered_through_cypher_as_through_query(
     let f = setup(lake).await;
     billed(&f).await;
     let (stranger, none) = (&f.cast.stranger, Params::new());
+    let mut answered = 0;
     for s in [
+        "MATCH (i:invoice) RETURN i.status ORDER BY i.key",
         "MATCH (p:partner) RETURN p.name",
         "MATCH (i:invoice)-[:billed_by]->(p:partner) RETURN i.key, p.name",
         "MATCH (i:invoice) RETURN i.status, i.amount ORDER BY i.key",
@@ -706,10 +738,22 @@ pub async fn a_type_not_shown_is_answered_through_cypher_as_through_query(
         let by_query = tools.call(stranger, &query, pattern).await;
         let by_cypher = through_tool((tools.as_ref(), &f), stranger, s, &none, None).await;
         match (by_cypher, by_query) {
-            (Ok(c), Ok(q)) => assert_eq!(uncursored(c), uncursored(q), "{s}"),
+            (Ok(c), Ok(q)) => {
+                answered += 1;
+                assert_eq!(uncursored(c.clone()), uncursored(q), "{s}");
+                let statuses: Vec<&Value> = c["data"]["rows"]
+                    .as_array()
+                    .expect("rows")
+                    .iter()
+                    .map(|r| &r["i.status"])
+                    .collect();
+                let want = ["open", "paid", "open", "open"].map(|v| json!(v));
+                assert_eq!(statuses, want.iter().collect::<Vec<_>>(), "{s}: {c}");
+            }
             (c, q) => assert_eq!(c, q, "{s}"),
         }
     }
+    assert_eq!(answered, 1, "the status alone is answered");
 }
 
 fn given_as(name: &str, value: &str) -> Params {
