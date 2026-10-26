@@ -72,7 +72,8 @@ macro_rules! cypher_tool_checks {
             the_tool_pages_with_the_cursor_beside_the_statement,
             a_write_statement_is_refused_by_the_tool_naming_it,
             an_order_beside_an_aggregate_is_refused_in_the_statements_words,
-            a_type_not_shown_is_answered_through_cypher_as_through_query);
+            a_type_not_shown_is_answered_through_cypher_as_through_query,
+            a_record_named_in_plain_words_is_found_through_describe_and_cypher);
     };
     (@each $new:expr, $block_on:path; $($name:ident),* $(,)?) => {
         $(
@@ -754,6 +755,64 @@ pub async fn a_type_not_shown_is_answered_through_cypher_as_through_query(
         }
     }
     assert_eq!(answered, 1, "the status alone is answered");
+}
+
+/// A record named in plain words is found through the MCP door alone, as
+/// an agent finds it: `describe` names the relation that reaches the
+/// type holding the name, a statement walks it against its direction
+/// from the record of that name, and its every page is read through the
+/// cursor beside the statement: the partner Acme's invoices, two a page.
+pub async fn a_record_named_in_plain_words_is_found_through_describe_and_cypher(
+    lake: Arc<dyn LakeStore>,
+    _door: Arc<dyn Statements>,
+    tools: Arc<dyn Tools>,
+) {
+    let f = setup(lake).await;
+    billed(&f).await;
+    let clerk = &f.cast.clerk;
+    let describe = named(&f, clerk, &Door::Describe).await;
+    let describe = describe.expect("the clerk is offered `describe`");
+    let d = tools.call(clerk, &describe, json!({})).await;
+    let d = d.expect("the clerk is described the lake");
+    let mut reaching = Vec::new();
+    for t in d["data"]["types"].as_array().expect("the types") {
+        for r in t["relations"].as_array().into_iter().flatten() {
+            if r["target"] == json!("partner") {
+                reaching.push((t["name"].clone(), r["name"].clone()));
+            }
+        }
+    }
+    assert_eq!(reaching, [(json!("invoice"), json!("billed_by"))], "{d}");
+    let (ty, relation) = (&reaching[0].0, &reaching[0].1);
+    let (ty, relation) = (
+        ty.as_str().expect("a type"),
+        relation.as_str().expect("a relation"),
+    );
+    let s = format!(
+        "MATCH (p:partner {{name: $name}})<-[:{relation}]-(i:{ty}) \
+         RETURN i.key, i.status ORDER BY i.key LIMIT 2"
+    );
+    let acme = given_as("name", "Acme");
+    let (mut keys, mut cursor, mut pages) = (Vec::new(), None::<Cursor>, 0);
+    loop {
+        let page = through_tool((tools.as_ref(), &f), clerk, &s, &acme, cursor.as_ref()).await;
+        let page = page.unwrap_or_else(|e| panic!("{s}: {e}"));
+        pages += 1;
+        for r in page["data"]["rows"].as_array().expect("rows") {
+            keys.push(json!([r["i.key"], r["i.status"]]));
+        }
+        match page["data"].get("next_cursor") {
+            Some(c) => cursor = Some(serde_json::from_value(c.clone()).expect("a cursor")),
+            None => break,
+        }
+    }
+    let want = [
+        json!(["INV-1", "open"]),
+        json!(["INV-2", "paid"]),
+        json!(["INV-4", "open"]),
+    ];
+    assert_eq!(keys, want, "{s}");
+    assert_eq!(pages, 2, "{s}");
 }
 
 fn given_as(name: &str, value: &str) -> Params {
