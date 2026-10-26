@@ -101,7 +101,7 @@ pub mod kind;
 mod rewrite;
 pub use check::{Place, check};
 pub use kept::keepable;
-pub use parse::{ParseError, arity, func_name, parse, print};
+pub use parse::{ParseError, arity, func_by_name, func_name, parse, print};
 pub use rewrite::{expand, expand_kept, rewrite};
 
 /// An expression in the one grammar, typed. A member this form does not

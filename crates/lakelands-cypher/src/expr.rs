@@ -12,47 +12,10 @@
 use lakelands_api::FieldName;
 use lakelands_api::Value;
 use lakelands_api::error::{Case, Construct};
-use lakelands_api::expr::{ArithOp, CmpOp, Expr, Func, Literal, arity, func_name};
+use lakelands_api::expr::{ArithOp, CmpOp, Expr, Func, Literal, arity, func_by_name, func_name};
 
 use crate::lex::Tok;
 use crate::parse::{Absent, Name, Parser, Result, absent_marker, outside, reserved};
-
-/// Every function of the grammar, looked up by [`func_name`].
-const FUNCS: [Func; 33] = [
-    Func::Now,
-    Func::Today,
-    Func::KnownAt,
-    Func::SeenAt,
-    Func::Previous,
-    Func::Setting,
-    Func::Param,
-    Func::InSet,
-    Func::Exists,
-    Func::Changed,
-    Func::Retired,
-    Func::Created,
-    Func::Coalesce,
-    Func::If,
-    Func::Lower,
-    Func::Upper,
-    Func::Trim,
-    Func::Len,
-    Func::Concat,
-    Func::Substr,
-    Func::Contains,
-    Func::Replace,
-    Func::StartsWith,
-    Func::Matches,
-    Func::Abs,
-    Func::Round,
-    Func::Floor,
-    Func::DateBucket,
-    Func::Count,
-    Func::Sum,
-    Func::Min,
-    Func::Max,
-    Func::Avg,
-];
 
 fn boxed(e: Expr) -> Box<Expr> {
     Box::new(e)
@@ -71,13 +34,33 @@ fn joined(mut args: Vec<Expr>, or: bool) -> Expr {
     }
 }
 
+/// How deep a condition nests: every parenthesis, call, list and
+/// condition enters at `or`, and `NOT` and a unary `-` go one deeper
+/// each. A deeper statement is refused, so no statement runs the parser
+/// out of stack and every pattern stays within what a JSON reader takes.
+const NESTING: usize = 32;
+
 impl Parser<'_> {
-    pub fn or(&mut self) -> Result<Expr> {
-        let mut args = vec![self.xor()?];
-        while self.kw("OR") {
-            args.push(self.xor()?);
+    /// `f`, one level deeper.
+    fn nested(&mut self, f: fn(&mut Self) -> Result<Expr>) -> Result<Expr> {
+        if self.depth == NESTING {
+            let (max, offset) = (NESTING, self.at());
+            return Err(Case::CypherTooDeep { max, offset });
         }
-        Ok(joined(args, true))
+        self.depth += 1;
+        let e = f(self);
+        self.depth -= 1;
+        e
+    }
+
+    pub fn or(&mut self) -> Result<Expr> {
+        self.nested(|p| {
+            let mut args = vec![p.xor()?];
+            while p.kw("OR") {
+                args.push(p.xor()?);
+            }
+            Ok(joined(args, true))
+        })
     }
 
     fn xor(&mut self) -> Result<Expr> {
@@ -107,7 +90,7 @@ impl Parser<'_> {
             return self.absent(at, exists);
         }
         Ok(Expr::Not {
-            arg: boxed(self.not()?),
+            arg: boxed(self.nested(Self::not)?),
         })
     }
 
@@ -297,7 +280,7 @@ impl Parser<'_> {
     fn unary(&mut self) -> Result<Expr> {
         if self.eat("-") {
             return Ok(Expr::Neg {
-                arg: boxed(self.unary()?),
+                arg: boxed(self.nested(Self::unary)?),
             });
         }
         self.eat("+");
@@ -416,16 +399,13 @@ impl Parser<'_> {
     }
 
     /// A call of `name`, at its `(`: a function of the grammar, by its
-    /// name in any case, or `duration` of a fixed length.
+    /// name (`func_name`) in any case, or `duration` of a fixed length.
     fn call(&mut self, name: String, at: usize) -> Result<Expr> {
         if name.eq_ignore_ascii_case("duration") {
             return self.duration(at);
         }
-        let found = FUNCS
-            .iter()
-            .find(|f| func_name(**f).eq_ignore_ascii_case(&name));
-        let Some(&func) = found else {
-            let lower = name.to_ascii_lowercase();
+        let lower = name.to_ascii_lowercase();
+        let Some(func) = func_by_name(&lower) else {
             if lower == "shortestpath" || lower == "allshortestpaths" {
                 return Err(outside(Construct::ShortestPath, at));
             }

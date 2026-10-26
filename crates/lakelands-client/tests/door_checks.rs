@@ -16,9 +16,9 @@ use async_trait::async_trait;
 use lakelands_api::id::Cursor;
 use lakelands_api::location::Limits;
 use lakelands_api::{Error, LakeStore, Params, Principal, ReadAt};
-use lakelands_client::{Answered, RemoteLake};
+use lakelands_client::RemoteLake;
 use lakelands_door_checks::statements::Statements;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -68,11 +68,7 @@ impl Statements for OverRest {
         cursor: Option<&Cursor>,
     ) -> Result<Value, Error> {
         let answer = self.0.cypher(who, statement, params, at, cursor).await?;
-        Ok(match answer {
-            Answered::Explained { pattern } => json!({ "pattern": pattern }),
-            Answered::Read(reply) => serde_json::to_value(reply).expect("an answer is JSON"),
-            other => panic!("a statement of the subset reads: {other:?}"),
-        })
+        Ok(serde_json::to_value(answer).expect("an answer is JSON"))
     }
 }
 

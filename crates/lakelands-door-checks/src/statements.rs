@@ -18,7 +18,6 @@ use lakelands_api::id::{Cursor, Position};
 use lakelands_api::query::Pattern;
 use lakelands_api::read::{Params, ReadAt};
 use lakelands_api::{Catalog, LakeStore, Principal};
-use lakelands_cypher::Statement;
 use serde_json::{Value, json};
 
 use crate::checks::{Fixture, patch, setup};
@@ -39,7 +38,8 @@ macro_rules! statement_checks {
             a_statement_is_answered_as_its_pattern,
             an_explained_statement_answers_its_pattern_and_reads_nothing,
             a_statement_outside_the_subset_is_refused_at_its_offset,
-            a_parameter_the_statement_reads_is_given_beside_it);
+            a_parameter_the_statement_reads_is_given_beside_it,
+            a_statement_nested_past_the_limit_is_refused_where_it_goes_deeper);
     };
     (@each $new:expr, $block_on:path; $($name:ident),* $(,)?) => {
         $(
@@ -69,7 +69,7 @@ pub trait Statements: Send + Sync {
 }
 
 /// The statement door of a host that holds its lake in process: the
-/// statement is translated here and its pattern read through the catalog.
+/// statement is run by [`lakelands_cypher::run`], as every door runs it.
 pub struct InProcess(pub Arc<dyn Catalog>);
 
 #[async_trait]
@@ -82,16 +82,9 @@ impl Statements for InProcess {
         at: ReadAt,
         cursor: Option<&Cursor>,
     ) -> Result<Value, Error> {
-        let t = lakelands_cypher::translate(statement, params)?;
-        let Statement::Read(mut p) = t.statement else {
-            unreachable!("the subset translates a read alone")
-        };
-        (p.at, p.cursor) = (at, cursor.cloned());
-        if t.explain {
-            return Ok(json!({ "pattern": p }));
-        }
-        let reply = self.0.query(who, p).await?;
-        Ok(serde_json::to_value(reply).expect("an answer is JSON"))
+        let c = self.0.as_ref();
+        let answer = lakelands_cypher::run(c, who, statement, params, at, cursor.cloned());
+        Ok(serde_json::to_value(answer.await?).expect("an answer is JSON"))
     }
 }
 
@@ -370,6 +363,12 @@ pub async fn a_parameter_the_statement_reads_is_given_beside_it(
     let name = "extra".into();
     let case = Case::CypherParamUnused { name };
     assert_eq!(unused.expect_err("`extra` is not read"), invalid(case));
+    let object = serde_json::from_value(json!({ "status": { "is": "open" } }));
+    let object = object.expect("parameters");
+    let kind = door.cypher(owner, STATEMENT, &object, at(None), None).await;
+    let name = "status".into();
+    let case = Case::CypherParamValue { name };
+    assert_eq!(kind.expect_err("an object is no status"), invalid(case));
     let quoted = "MATCH (i:invoice) WHERE i.status = '$status' RETURN i.key";
     let read = door
         .cypher(owner, quoted, &Params::new(), at(None), None)
@@ -379,6 +378,44 @@ pub async fn a_parameter_the_statement_reads_is_given_beside_it(
         read["data"]["rows"],
         json!([]),
         "no status is `$status`: {read}"
+    );
+}
+
+/// A condition nests at most 32 levels deep: a parenthesis, a `NOT` and
+/// a unary `-` each go one deeper. One level more is refused at the
+/// character where it begins, however deep the statement goes on, and
+/// the host that read it keeps answering.
+pub async fn a_statement_nested_past_the_limit_is_refused_where_it_goes_deeper(
+    lake: Arc<dyn LakeStore>,
+    door: Arc<dyn Statements>,
+) {
+    let f = setup(lake).await;
+    billed(&f).await;
+    let owner = &f.cast.owner;
+    let none = Params::new();
+    let at_limit = format!("{}true{}", "(".repeat(31), ")".repeat(31));
+    for (open, inner, close, n, begins) in [
+        ("(", "true", ")", 100_000, 56),
+        ("(", "true", ")", 32, 56),
+        ("NOT ", "false", "", 1_000, 152),
+        ("- ", "1 = 1", "", 1_000, 88),
+    ] {
+        let (open, close) = (open.repeat(n), close.repeat(n));
+        let s = format!("MATCH (i:invoice) WHERE {open}{inner}{close} RETURN i.key");
+        let e = door.cypher(owner, &s, &none, at(None), None).await;
+        let case = Case::CypherTooDeep {
+            max: 32,
+            offset: begins,
+        };
+        assert_eq!(e.expect_err("too deep"), invalid(case), "{}", &s[..80]);
+    }
+    let s = format!("MATCH (i:invoice) WHERE {at_limit} RETURN i.key ORDER BY i.key");
+    let read = door.cypher(owner, &s, &none, at(None), None).await;
+    let read = read.expect("32 levels are answered");
+    assert_eq!(
+        read["data"]["rows"].as_array().map(Vec::len),
+        Some(4),
+        "{read}"
     );
 }
 

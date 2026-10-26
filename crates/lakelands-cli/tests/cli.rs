@@ -628,7 +628,8 @@ fn change_prints_the_plan_and_makes_the_change_only_against_it() {
 }
 
 /// `query --cypher` reads the lake with an openCypher statement and its
-/// `--param`s and prints the answer as one JSON document; `EXPLAIN` prints
+/// `--param`s and prints the answer as one JSON document, a page further
+/// on by `--cursor` and an earlier lake by `--as-of`; `EXPLAIN` prints
 /// the pattern the statement translates to and reads nothing. A statement
 /// the lake refuses, and a `--param` that is no JSON, are said on stderr.
 #[test]
@@ -644,7 +645,9 @@ fn query_runs_an_open_cypher_statement_with_its_params() {
             lake: store.lake().clone(),
             grants: lakelands_api::Grants::owner(),
         };
+        let mut before = None;
         for (key, status) in [("INV-1", "open"), ("INV-2", "paid"), ("INV-3", "open")] {
+            before = before.or((key == "INV-3").then(|| block_on(store.head()).unwrap()));
             let patch = [("status".into(), serde_json::json!(status))].into();
             let catalog = store.catalog(lakelands_api::WriteContext::default());
             let at = (&"invoice".into(), &key.into());
@@ -662,6 +665,40 @@ fn query_runs_an_open_cypher_statement_with_its_params() {
             serde_json::json!([{ "i.key": "INV-1" }, { "i.key": "INV-3" }]),
             "{}",
             read.out
+        );
+
+        // A page continues by `--cursor`; `--as-of` reads an earlier lake.
+        let paged = format!("{statement} LIMIT 1");
+        let first = sh.run(&[&["query", "--cypher", &paged][..], &status].concat());
+        let first: serde_json::Value = serde_json::from_str(&first.out).unwrap();
+        assert_eq!(
+            first["data"]["rows"],
+            serde_json::json!([{ "i.key": "INV-1" }])
+        );
+        let cursor = first["data"]["next_cursor"].as_str().unwrap();
+        let on = [
+            &["query", "--cypher", &paged, "--cursor", cursor][..],
+            &status,
+        ]
+        .concat();
+        let next = sh.run(&on);
+        assert_eq!((next.code, next.err.as_str()), (0, ""));
+        let next: serde_json::Value = serde_json::from_str(&next.out).unwrap();
+        assert_eq!(
+            next["data"]["rows"],
+            serde_json::json!([{ "i.key": "INV-3" }])
+        );
+        let before = before.unwrap().0.to_string();
+        let earlier = [
+            &["query", "--cypher", statement, "--as-of", &before][..],
+            &status,
+        ];
+        let earlier = sh.run(&earlier.concat());
+        assert_eq!((earlier.code, earlier.err.as_str()), (0, ""));
+        let earlier: serde_json::Value = serde_json::from_str(&earlier.out).unwrap();
+        assert_eq!(
+            earlier["data"]["rows"],
+            serde_json::json!([{ "i.key": "INV-1" }])
         );
 
         let explain = format!("EXPLAIN {statement}");

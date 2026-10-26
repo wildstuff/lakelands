@@ -23,7 +23,7 @@ use lakelands_api::id::{
 };
 use lakelands_api::ontology::FieldDecl;
 use lakelands_api::principal::Principal;
-use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
+use lakelands_api::query::{Hits, Pattern, QueryResult, Search, StatementAnswer};
 use lakelands_api::read::{CONTEXT_HEADER, PRINCIPAL_HEADER};
 use lakelands_api::read::{Find, Found, Get, ReadAt, Reply};
 use lakelands_api::record::{Patch, Record};
@@ -93,7 +93,7 @@ impl RemoteCatalog {
         params: &Params,
         at: ReadAt,
         cursor: Option<&Cursor>,
-    ) -> Result<Answered> {
+    ) -> Result<StatementAnswer> {
         let mut body = members(&at, &[]);
         let o = body.as_object_mut().expect("the axes are an object");
         o.insert("statement".into(), json!(statement));
@@ -167,22 +167,6 @@ impl RemoteCatalog {
             ended: false,
         }))
     }
-}
-
-/// What a statement of the openCypher subset answers: the rows of the
-/// pattern it translates into, as `query` answers them, or, for one that
-/// begins with `EXPLAIN`, that pattern, with no record read.
-#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
-#[serde(untagged)]
-#[non_exhaustive]
-pub enum Answered {
-    /// `EXPLAIN`: the pattern the statement translates into.
-    Explained {
-        /// The pattern, with the axes and the cursor it would be read at.
-        pattern: Box<Pattern>,
-    },
-    /// The pattern's answer.
-    Read(Reply<QueryResult>),
 }
 
 /// Whether a held source may be read: once the answer's head has come.

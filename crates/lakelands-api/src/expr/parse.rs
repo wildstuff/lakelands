@@ -101,7 +101,7 @@ pub fn func_name(f: Func) -> &'static str {
 
 /// A function by its text name, which is its serde name (`func_name`
 /// spells the same names out).
-fn func_by_name(name: &str) -> Option<Func> {
+pub fn func_by_name(name: &str) -> Option<Func> {
     serde_json::from_value(serde_json::Value::from(name)).ok()
 }
 

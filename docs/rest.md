@@ -189,9 +189,10 @@ answer is that route's. How many rows a page holds is the statement's
 A statement that begins with `EXPLAIN` answers `{"pattern": …}`, the
 pattern it translates to with `as_of`, `valid_at` and `cursor` set,
 and reads nothing. A statement that does not parse, a construct outside
-the subset, and a parameter missing, unused or of a kind its place does
-not take are `invalid` (422), each by its own case, with the character
-offset where it has one.
+the subset, a condition nested more than 32 levels deep, and a parameter
+missing, unused or of a kind its place does not take are `invalid`
+(422), each by its own case, with the character offset where it has
+one. A member the route does not take is `invalid` (400), naming it.
 
 `schema/declare` and `schema/apply` are REST's alone: MCP offers
 `declare_type`, since an agent authors types, while a program may

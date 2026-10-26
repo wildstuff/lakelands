@@ -129,8 +129,9 @@ pub(crate) struct Sort {
 
 /// The parser's state: the tokens, the statement's characters for an
 /// item's text, the parameters and which of them were read, and what
-/// the expression under way reads.
+/// the expression under way reads, and how deep it nests.
 pub(crate) struct Parser<'p> {
+    pub depth: usize,
     pub toks: Vec<Token>,
     pub i: usize,
     pub chars: Vec<char>,
@@ -178,6 +179,7 @@ pub(crate) fn outside(construct: Construct, offset: usize) -> Case {
 impl<'p> Parser<'p> {
     pub fn new(toks: Vec<Token>, chars: Vec<char>, params: &'p Params) -> Self {
         Parser {
+            depth: 0,
             toks,
             i: 0,
             chars,

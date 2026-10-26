@@ -460,6 +460,7 @@ What a refusal is about.
 | `cypher_row_item` | `item` (String) | a row holds paths (`a.amount`) or every bound name (`RETURN *`); `{item}` is neither | A row item that is neither a path nor every bound name. |
 | `cypher_skip` | `skip` (u64) | `SKIP {skip}`: a pattern continues by the cursor its answer hands out (`next_cursor`), passed beside the statement | A `SKIP` other than 0. |
 | `cypher_start_type` | `offset` (usize) | the first node names its type, as in `(a:invoice)` (at character {offset}) | A first node with no label. |
+| `cypher_too_deep` | `max` (usize), `offset` (usize) | a condition nests at most {max} levels deep: parentheses, `NOT` and a unary `-` each go one deeper (at character {offset}) | A condition nested deeper than the subset reads. |
 | `cypher_unbound` | `name` (String), `offset` (usize) | `{name}` is bound by nothing before it: a part begins at a name an earlier part bound (at character {offset}) | A part that begins at a name nothing bound. |
 | `cypher_whole` | `clause` (String), `offset` (usize) | `{clause}` takes a whole number, written or a parameter (at character {offset}) | A `SKIP` or `LIMIT` given what is no whole number. |
 | `division_by_zero` | — | division by zero | A division by zero. |

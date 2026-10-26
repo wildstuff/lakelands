@@ -40,7 +40,6 @@ mod feed;
 mod forward;
 mod wire;
 
-pub use doors::Answered;
 pub use forward::{ForwardConfig, ForwardingLake};
 
 use std::collections::BTreeMap;
@@ -53,6 +52,7 @@ use async_trait::async_trait;
 use lakelands_api::error::{Error, Result};
 use lakelands_api::id::{Cursor, LakeId, Position, RecordKey, SourceId, TypeName};
 use lakelands_api::location::Limits;
+use lakelands_api::query::StatementAnswer;
 use lakelands_api::seam::ChangeFeed;
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::{
@@ -182,7 +182,7 @@ impl RemoteLake {
         params: &Params,
         at: ReadAt,
         cursor: Option<&Cursor>,
-    ) -> Result<Answered> {
+    ) -> Result<StatementAnswer> {
         let doors = doors::RemoteCatalog::new(self.wire.clone());
         doors.cypher(who, statement, params, at, cursor).await
     }
