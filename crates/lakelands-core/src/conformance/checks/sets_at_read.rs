@@ -7,6 +7,7 @@
 use lakelands_api::ontology::Precondition;
 use lakelands_api::write::{DecidedAt, ObjectSetDecl};
 
+use crate::conformance::fixture::type_of;
 use crate::conformance::prelude::*;
 
 check!(
@@ -27,6 +28,16 @@ check!(
 check!(
     SET_AT_READ_AGAIN = a_set_declared_again_between_kept_and_decided_at_the_read,
     "066, lakelands#1412: a kept set declared again as decided at the read ends each of its members in that append, caused by its `declared`, and a later write moves none; declared again as kept it decides the records already there; a rebuild keeps what each left, so a later write decides against it; and one reading `today()` declared again as kept is refused `set_reads_clock`, one reading a field computed at the read `reads_at_read`"
+);
+
+check!(
+    SET_AT_READ_MERGED = a_views_merged_source_names_a_set_decided_at_the_read_by_its_where,
+    "066, lakelands#1441: a view whose `merge[]` entry's `where` calls `in_set` of a set decided at the read, a set of the merged type, is refused `set_at_read_named` naming the set and the view, kept or not, and nothing refused is appended"
+);
+
+check!(
+    SET_AT_READ_RIGHTS = a_set_decided_at_the_read_is_read_by_the_right_to_read_what_its_filter_reads,
+    "006, lakelands#1441: `in_set` of a set decided at the read, directly or through another set decided at the read, is answered to a reader kept from the field its `where` reads as a set that is not declared, to a holder of `schema` as to anyone else, and `describe` lists it to that reader no such set; a reader who may read the field is answered the set's members at the read and is listed it"
 );
 
 /// The instant a read names `valid_at`: after `b2` falls due.
@@ -365,4 +376,102 @@ async fn a_set_declared_again_between_kept_and_decided_at_the_read(store: Store)
         .cat
         .declare(&l.own, object_set_on("lapsed", "bill", "late = true"));
     refused_like("`lapsed` declared again as kept", kept.await, &case)
+}
+
+async fn a_views_merged_source_names_a_set_decided_at_the_read_by_its_where(store: Store) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    bills(&l).await?;
+    l.declare(type_of("refund", &[("status", StorageKind::Text)]))
+        .await?;
+    l.declare_as(at_read("shut", "refund", "status = 'shut'"), "shut")
+        .await?;
+    let before = s.head().await.must("the head")?;
+    let named = json!({"code": "set_at_read_named", "set": "shut", "kind": "type",
+                       "name": "merged"});
+    let mut view = count_view("merged", "bill", "status");
+    if let Some(v) = view.view.as_mut() {
+        v.merge = vec![lakelands_api::ontology::ViewSource {
+            source: "refund".into(),
+            r#where: Some("in_set('shut')".into()),
+            group_by: vec!["status".into()],
+            measures: vec![crate::conformance::fixture::measure("n", "count()")],
+        }];
+    }
+    let declared = l.cat.declare(&l.own, Declaration::Type(view)).await;
+    refused_like("a view whose merged source names `shut`", declared, &named)?;
+    head_unmoved(s, before, "the refused view").await
+}
+
+async fn a_set_decided_at_the_read_is_read_by_the_right_to_read_what_its_filter_reads(
+    store: Store,
+) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    bills(&l).await?;
+    l.declare_as(at_read("open_now", "bill", "status = 'open'"), "open_now")
+        .await?;
+    l.declare_as(
+        at_read("open_late", "bill", "in_set('open_now') and due < today()"),
+        "open_late",
+    )
+    .await?;
+    let ty = TypeName::from("bill");
+    let read = |who: &Principal, filter: &str| {
+        let who = who.clone();
+        let find = find_where(filter);
+        let ty = ty.clone();
+        let cat = l.cat.clone();
+        let filter = filter.to_owned();
+        async move {
+            let found = cat.find(&who, &ty, find).await?.data;
+            let Found::Records { rows, .. } = found else {
+                return Ok(filter);
+            };
+            let mut keys: Vec<String> = rows.iter().map(|r| r.key.to_string()).collect();
+            keys.sort();
+            Ok::<_, Error>(keys.join(" "))
+        }
+    };
+    // `kept` reads everything of a bill but `status`.
+    let kept = field_access(s, "kept", "bill", &[("status", Access::None)]);
+    let mut author = kept.clone();
+    (author.grants.schema, author.grants.restricted) = (true, true);
+    for who in [&kept, &author] {
+        let ghost = read(who, "in_set('ghost')").await;
+        let ghost = ghost.must_fail("a read naming the set `ghost`")?;
+        for name in ["open_now", "open_late"] {
+            let what = format!(
+                "`{name}` reads `status`, which `{}` is kept from: a read naming it",
+                who.id
+            );
+            let hidden = read(who, &format!("in_set('{name}')")).await;
+            alike_renamed(&what, &hidden.must_fail(&what)?, &ghost, ("ghost", name))?;
+        }
+    }
+    let described = l.cat.describe(&kept, Default::default()).await;
+    let described = described.must("describing the lake to `kept`")?.data;
+    ensure!(
+        described.object_sets.is_empty(),
+        "`kept` is listed no set decided at the read; it was listed {:?}",
+        described.object_sets
+    );
+    // `clerk` reads every field: it is answered and listed both.
+    let clerk = field_access(s, "clerk", "bill", &[("due", Access::Write)]);
+    let described = l.cat.describe(&clerk, Default::default()).await;
+    let described = described.must("describing the lake to `clerk`")?.data;
+    let mut listed: Vec<&str> = (described.object_sets.iter())
+        .map(|d| d.name.as_str())
+        .collect();
+    listed.sort_unstable();
+    let (open, late) = (
+        read(&clerk, "in_set('open_now')").await,
+        read(&clerk, "in_set('open_late')").await,
+    );
+    ensure!(
+        open.as_deref().ok() == Some("b1 b3")
+            && late.as_deref().ok() == Some("b1")
+            && listed == ["open_late", "open_now"],
+        "`clerk` reads `status`: `open_now` answers `b1 b3` and `open_late` `b1`, and both are \
+         listed; it answered {open:?} and {late:?}, and was listed {listed:?}"
+    );
+    Ok(())
 }
