@@ -10,7 +10,7 @@ use std::fmt;
 
 use lakelands_api::error::{Case, Error, Naming, Place, Refusal, Said};
 use lakelands_api::expr::Condition;
-use lakelands_api::id::{ProposalId, RecordKey, RelationName, TypeName};
+use lakelands_api::id::{Cursor, ProposalId, RecordKey, RelationName, TypeName};
 use lakelands_api::ontology::{FieldDecl, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl};
 use lakelands_api::query::{Pattern, Search};
 use lakelands_api::read::{Find, Get, ReadAt};
@@ -20,7 +20,8 @@ use lakelands_api::write::{
     Change, ChangeTo, Declaration, FunctionDecl, Migration, ObjectSetDecl, ProposalFilter,
     ProposedWrite, SettingDecl, ValueTypeMigration, Withdrawal, WriteOpts,
 };
-use lakelands_api::{Catalog, Principal, Timestamp};
+use lakelands_api::{Catalog, Params, Principal, Timestamp};
+use lakelands_cypher::Statement;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde::de::value::StringDeserializer;
@@ -637,6 +638,30 @@ pub(crate) async fn run(
         }
         Door::Query => {
             let mut p: Pattern = args(label, &a)?;
+            p.at.clock = clock;
+            to_json(&c.query(who, p).await?)
+        }
+        Door::Cypher => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct S {
+                statement: String,
+                #[serde(default)]
+                params: Params,
+                #[serde(default)]
+                cursor: Option<Cursor>,
+                #[serde(flatten)]
+                at: ReadAt,
+            }
+            let s: S = args(label, &a)?;
+            let t = lakelands_cypher::translate(&s.statement, &s.params)?;
+            let Statement::Read(mut p) = t.statement else {
+                unreachable!("the subset translates a read alone")
+            };
+            (p.at, p.cursor) = (s.at, s.cursor);
+            if t.explain {
+                return Ok(serde_json::json!({ "pattern": p }));
+            }
             p.at.clock = clock;
             to_json(&c.query(who, p).await?)
         }

@@ -59,6 +59,7 @@ zeroize = "1"
 unicode-normalization = "0.1"
 lakelands-api = { path = "crates/lakelands-api" }
 lakelands-backings = { path = "crates/lakelands-backings" }
+lakelands-cypher = { path = "crates/lakelands-cypher" }
 lakelands-door-checks = { path = "crates/lakelands-door-checks" }
 
 [workspace.lints.rust]

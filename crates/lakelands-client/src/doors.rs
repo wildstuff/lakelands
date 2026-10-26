@@ -19,7 +19,7 @@ use lakelands_api::describe::{LakeDescription, TypeDescription};
 use lakelands_api::error::{Case, Detail, Error, Exchange, Result, Segment};
 use lakelands_api::expr::Condition;
 use lakelands_api::id::{
-    LakeId, ProposalId, RecordKey, RelationName, SourceId, TypeName, VerbName,
+    Cursor, LakeId, ProposalId, RecordKey, RelationName, SourceId, TypeName, VerbName,
 };
 use lakelands_api::ontology::FieldDecl;
 use lakelands_api::principal::Principal;
@@ -32,7 +32,7 @@ use lakelands_api::write::{
     Proposal, ProposalFilter, ProposedWrite, Recompute, ValueTypeMigration, ValueTypeReport,
     WriteOpts,
 };
-use lakelands_api::{Catalog, WriteContext};
+use lakelands_api::{Catalog, Params, WriteContext};
 use serde_json::{Value, json};
 use tokio::time::Instant;
 
@@ -81,6 +81,28 @@ impl RemoteCatalog {
     async fn go<T: serde::de::DeserializeOwned>(&self, who: &Principal, call: Call) -> Result<T> {
         let (key, call) = self.as_who(who, call)?;
         self.wire.exchange(key, call).await
+    }
+
+    /// A statement of the openCypher subset over `POST …/cypher`, with its
+    /// parameters beside it and never in its text, read at `at` and from
+    /// `cursor`.
+    pub(crate) async fn cypher(
+        &self,
+        who: &Principal,
+        statement: &str,
+        params: &Params,
+        at: ReadAt,
+        cursor: Option<&Cursor>,
+    ) -> Result<Answered> {
+        let mut body = members(&at, &[]);
+        let o = body.as_object_mut().expect("the axes are an object");
+        o.insert("statement".into(), json!(statement));
+        o.insert("params".into(), json!(params));
+        if let Some(cursor) = cursor {
+            o.insert("cursor".into(), json!(cursor));
+        }
+        let call = Call::new(Method::POST, "cypher".into()).json(&body);
+        self.go(who, call).await
     }
 
     /// An ingest whose source is held in `slot` and read only once the
@@ -145,6 +167,22 @@ impl RemoteCatalog {
             ended: false,
         }))
     }
+}
+
+/// What a statement of the openCypher subset answers: the rows of the
+/// pattern it translates into, as `query` answers them, or, for one that
+/// begins with `EXPLAIN`, that pattern, with no record read.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+#[serde(untagged)]
+#[non_exhaustive]
+pub enum Answered {
+    /// `EXPLAIN`: the pattern the statement translates into.
+    Explained {
+        /// The pattern, with the axes and the cursor it would be read at.
+        pattern: Pattern,
+    },
+    /// The pattern's answer.
+    Read(Reply<QueryResult>),
 }
 
 /// Whether a held source may be read: once the answer's head has come.
