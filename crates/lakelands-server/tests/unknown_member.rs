@@ -262,6 +262,12 @@ async fn a_read_refuses_a_member_it_does_not_take_inside_another_naming_it() {
                 );
                 let what = answer["what"].as_str().unwrap_or_default();
                 names_all(what, names).unwrap_or_else(|e| panic!("{at}: {e}"));
+                if names.contains(&"field") {
+                    assert_eq!(
+                        answer["reason"]["code"], "mode_needs_member",
+                        "{at}: {answer}"
+                    );
+                }
             }
             let Some(tool) = tool else { continue };
             let result = mcp.call(tool, args).await;
@@ -269,6 +275,9 @@ async fn a_read_refuses_a_member_it_does_not_take_inside_another_naming_it() {
             assert_eq!(result["isError"], true, "{at}: {result}");
             let text = result["content"][0]["text"].as_str().unwrap_or_default();
             names_all(text, names).unwrap_or_else(|e| panic!("{at}: {e}"));
+            if names.contains(&"field") {
+                assert!(text.contains("what to do"), "{at}: no advice: {text}");
+            }
         }
     }
 }
