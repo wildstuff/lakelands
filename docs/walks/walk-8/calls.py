@@ -2,8 +2,9 @@
 """Lists every call of one run (its `run-R.jsonl`, argv 1), numbered as
 `docs/walks/walk-5/render.py` numbers them: the tool, the characters the
 agent wrote to it, the characters it answered, and whether it refused.
-With task ranges after the run (`1=8-12 2=13-14 ...`), sums the calls
-and characters of each task instead."""
+With each task's calls after the run, as numbers and ranges
+(`1=3,5,9-11 2=4,8 ...`), sums the calls and characters of each task
+instead."""
 import json
 import sys
 
@@ -28,7 +29,10 @@ if len(sys.argv) == 2:
 else:
     print("task\tcalls\twrote\tanswered\trefused")
     for arg in sys.argv[2:]:
-        task, span = arg.split("=")
-        a, _, b = span.partition("-")
-        mine = [r for r in rows if int(a) <= r[0] <= int(b or a)]
+        task, spans = arg.split("=")
+        held = set()
+        for span in spans.split(","):
+            a, _, b = span.partition("-")
+            held.update(range(int(a), int(b or a) + 1))
+        mine = [r for r in rows if r[0] in held]
         print(f"{task}\t{len(mine)}\t{sum(r[2] for r in mine)}\t{sum(r[3] for r in mine)}\t{sum(r[4] for r in mine)}")
