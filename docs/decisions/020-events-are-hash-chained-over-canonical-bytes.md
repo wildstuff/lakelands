@@ -9,6 +9,17 @@ Canonicalization Scheme (RFC 8785). Its hash is SHA-256 over the
 canonical bytes of the event without its `hash` member, and every event
 names its predecessor's hash. The first event names 64 zeros.
 
+From format 20 the log stores each event in a stored form, from which
+its canonical bytes are restored exactly: a frame holds members the
+events after it share, and a line may leave out the `position` and
+`prev` the line before it gives. A segment's digest is then over its
+events' canonical bytes as restored, which up to format 19 are its
+file's bytes, and the engine keeps the stored form unchanged where this
+section says the bytes. This is proposed for 0.20.0 (lakelands#1413)
+and comes in force with the issue that builds it
+(`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`);
+until then the section stands as written.
+
 The log is cut into segments. Sealing a segment starts the next one with
 a checkpoint event that repeats the sealed segment's last hash and lists
 every sealed segment with its digest. A reader can verify any later
@@ -50,7 +61,10 @@ for the same event:
   accepted, and a denser form would be a new format version.
 - **A stored line is canonical or it is a break.** A reader re-serialises
   every event it parses and compares; a line that is valid JSON in
-  another spelling is refused like a wrong hash.
+  another spelling is refused like a wrong hash. The stored form 083
+  proposes for 0.20.0 is no second form of an event: each line restores
+  to the one canonical bytes, and a line that is not canonical is a
+  break there too.
 
 ### An ingest event's id includes the record's version before the event
 
@@ -63,6 +77,8 @@ dropped, leaving the lake on B. With the version in it, the id says
 state and appends nothing, and a genuine return is a new event. A
 re-import of unchanged data still appends nothing, because an ingest
 patch that changes no field is a duplicate before its id is looked at.
+The id of an ingest whose values are sealed in one box covers the box
+too; that is proposed for 0.20.0 with 083 (lakelands#1413).
 
 ## Why
 
@@ -104,3 +120,6 @@ recorded point.
 - At the rewrite (lakelands#817): the sentence that accepts a vector's
   size names no format version by its number; `docs/log-format.md` has
   it.
+- A stored form from which each event's canonical bytes are restored,
+  and a digest over the restored bytes, proposed with 083
+  (lakelands#1413).

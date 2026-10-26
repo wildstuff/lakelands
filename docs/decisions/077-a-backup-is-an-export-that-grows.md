@@ -46,6 +46,20 @@ after that line to the last file, and every later file as a
 never rewritten. The lines before the last are not read again: a byte
 changed in them is the restore's to find.
 
+Proposed for 0.20.0 (lakelands#1413), in force with the issue that
+builds it
+(`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`):
+a run writes the form a copy of the log writes (`docs/log-format.md`
+§4.2), every line holding its `position`, rather than each event's
+canonical bytes. Its last whole line is then the last line that ends a
+frame's lines, or stands in none: a frame a stopped run left without
+all its lines is cut with them. The event the line restores, from the
+line, its frame and the `hash` of the line before it, must be the
+lake's own at its position, its canonical bytes as the feed answers
+them, and a line that states no position is another log's. A
+directory a run of format 19 left ends in a full line, which states
+its position.
+
 ### A restore is an import
 
 `lakelands restore <DIR>` is `import` of the backup's directory: it
@@ -137,3 +151,8 @@ always at hand.
   run across an upgrade.
 - It takes no lock: two runs into one directory at once are the
   operator's to keep apart.
+
+## How it came to be
+
+- A run writing the form a copy of the log writes, and continuing after
+  its last whole frame, proposed with 083 (lakelands#1413).

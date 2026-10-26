@@ -9,14 +9,22 @@ The SQLite engine keeps a lake as a directory whose log anyone can read:
 - `log/<first position>.jsonl` holds the segments exactly as the log
   format names them, each event's canonical bytes and a line feed,
   nothing else. A verifier needs the format and these files, not the
-  engine.
+  engine. From format 20 the lines are the stored form the log format
+  names, from which each event's canonical bytes are restored; that is
+  proposed for 0.20.0 (lakelands#1413) and comes in force with the
+  issue that builds it
+  (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`).
 - `index/<first position>.idx` holds, per event, the members the engine
   was handed beside the bytes (position, id, `prev`, `hash`, fence) and
   where the bytes lie, and one commit line closing each append. An
   append writes its segment lines, then its index lines and the commit
   line, and syncs both files at once; every open checks the last group
   a crash may have left ahead of its bytes
-  (`docs/decisions/060-an-append-syncs-its-two-files-at-once.md`). Only
+  (`docs/decisions/060-an-append-syncs-its-two-files-at-once.md`). As
+  083 proposes for 0.20.0, an event's index line no longer holds
+  `prev`, the hash of the line before it, and each frame has an index
+  line of its own giving its offset; the index is the engine's own and
+  no part of the format. Only
   events before the last commit line exist, so an append is whole after
   a crash or not there at all. The next writer
   cuts off what an interrupted append left. A writer that goes on after
@@ -116,7 +124,9 @@ lake as a writer's open would.
   answers a position out of turn fails it.
 - It reads the feed a page at a time and writes each line as it comes,
   and a verifier reads a line at a time, so neither holds the log in
-  memory.
+  memory. Under 083, proposed for 0.20.0, the export holds a run of at
+  most 1 000 events sharing `known_at` until it writes their frame
+  (`docs/log-format.md` §4.2), and a verifier holds a frame line.
 - Beside `log/` it writes `export.json`, a manifest of the lake, the
   position and hash it read through, the format version this release
   writes, and each
@@ -197,6 +207,9 @@ file's contents; the operating system's lock does not.
   engines.
 - An export opens as the lake it came from, on any engine
   (lakelands#215).
+- The segment files holding the stored form, the index line of an event
+  without `prev` and a frame's own, and the export holding a run of
+  events for its frame, proposed with 083 (lakelands#1413).
 - A writer that goes on after a failed append cuts off what it left;
   the cut takes the index first and never a whole commit line
   (lakelands#618).
