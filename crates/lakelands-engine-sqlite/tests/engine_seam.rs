@@ -64,6 +64,25 @@ impl EngineHarness for Sqlite {
         true
     }
 
+    fn stale_text_stats(&self, lake: &LakeId, behind: bool) -> bool {
+        let path = self.root.join(lake.as_str()).join("projection.db");
+        let stale = match behind {
+            true => {
+                "UPDATE meta SET v = v - 1 WHERE k = 'text_stats'; \
+                 UPDATE text_stats SET records = records * 2, tokens = tokens * 2 + 1; \
+                 DELETE FROM text_lengths;"
+            }
+            false => {
+                "DROP TABLE text_stats; DROP TABLE text_lengths; \
+                 DELETE FROM meta WHERE k = 'text_stats';"
+            }
+        };
+        rusqlite::Connection::open(path)
+            .and_then(|db| db.execute_batch(stale))
+            .expect("leaving the text statistics stale");
+        true
+    }
+
     fn scratch(&self, lake: &LakeId) -> lakelands_api::Result<Box<dyn LakeEngine>> {
         SqliteOpener.open_scratch(&self.location(lake.as_str()))
     }

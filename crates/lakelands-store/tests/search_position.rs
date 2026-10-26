@@ -238,7 +238,8 @@ async fn a_hold_lifted_between_the_head_and_the_rankings_answers_its_record() {
         let w = field_writer(s, "w", "keyed", &[]);
         let mode = SearchMode::lexical("quay");
         let (hits, at, _) = search(s, &w, &mode, as_of.then_some(p), (10, None, None)).await;
-        assert_eq!(hits, [("v".to_owned(), 10_000)], "as of: {as_of}");
+        // ln(4/3): BM25F's idf of a token in the one record (025).
+        assert_eq!(hits, [("v".to_owned(), 2_877)], "as of: {as_of}");
         let head = s.head().await.unwrap();
         assert_eq!(at, if as_of { p } else { head }, "as of: {as_of}");
     }
@@ -501,7 +502,8 @@ async fn a_field_the_reader_may_not_read_declared_in_the_pause_matches_nothing_f
     assert_eq!((hits, at), (Vec::new(), s.head().await.unwrap()));
     assert_eq!(probe.ranked.load(Ordering::SeqCst), 2);
     let (hits, ..) = search(s, &owner(s), &mode, None, (10, None, None)).await;
-    assert_eq!(hits, [("v".to_owned(), 10_000)]);
+    // ln 2: one record over two searched fields, N = 2 (025).
+    assert_eq!(hits, [("v".to_owned(), 6_931)]);
 }
 
 /// A type renamed in the pause: a link type bears its relation's name,

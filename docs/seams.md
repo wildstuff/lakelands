@@ -770,54 +770,55 @@ read through a view. `LakeEngine::ranked(type, asked, k)` reads them:
   No search is refused or repeated for the writes beside it.
 
 **A text's list.** The engine answers from its full-text index as it
-stands at the head: the records live there, restricted ones included
-(the store applies the principal's grants to the hits, as for `find` and
-`get`); an engine is not required to keep a full-text index of earlier
-states. A record is a hit when one of its searchable fields' text at the
-head holds at least one token of the text. Tokens are what the store's one pipeline makes of the text
+stands at the head: the records live there of the reader's class
+`asked.text_stats` names (the store applies the principal's grants to
+the hits, as for `find` and `get`); an engine is not required to keep a
+full-text index of earlier states. A record is a hit when one of its
+searchable fields' text at the head holds at least one token of the
+text. Tokens are what the store's one pipeline makes of the text
 (`lakelands_core::stem::stem_text`, stemmed by the type's `language`, or only
 lower-cased and folded when it has none or the pipeline has no stemmer
 for it), applied the same way to the query and to the
 fields (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
 The set of hits, their order and their scores are the same on every
-engine: one function ranks (`lakelands_core::engines::lexical`). Today a
-hit scores each distinct query token it holds at the weight of the
-heaviest field holding it, summed in the tokens' order: `asked`'s
-`text_weights` give a field's weight under its name at the head, and a
-field they do not name weighs 1, so with none the score is the number
-of distinct query tokens the hit holds. Hits come best first, equal
-scores ordered by key ascending; at most `k`, cut by that score. A later
-release may score otherwise, on every engine at once, so a caller
-compares scores within one answer.
+engine: one function ranks (`lakelands_core::engines::lexical`), BM25F
+in its combined-field form, for every lake, with no switch per type: a
+token's frequency in each field, multiplied by the field's weight and
+scaled by the field's length against its average, summed over the
+fields and saturated once, times the token's rarity, in `f64` with `ln`
+from `libm`, the same bits on every engine (025 holds the formula and
+its constants). `asked`'s `text_weights` give a field's weight under its
+name at the head, and a field they do not name weighs 1. Hits come best
+first, equal scores ordered by key ascending; at most `k`, cut by that
+score. What the function reads:
 
-From 0.20.0 (lakelands#1412), in force with the issue that builds it,
-the function is BM25F in its combined-field form, which replaces that
-score for every lake, with no switch per type: a token's frequency in
-each field, multiplied by the field's weight and scaled by the field's
-length against its average, summed over the fields and saturated once,
-times the token's rarity, in `f64` with `ln` from `libm`, the same bits
-on every engine (025 holds the formula and its constants). What it
-reads:
-
+- **The class.** `asked.text_stats` absent: every live head, as for a
+  reader holding `restricted`. `Unheld`: the heads that are not held,
+  for a reader without it; a held record is no candidate and moves no
+  count. `Counted`: what the store counted for a reader with no class
+  (below); every live candidate ranks by it.
 - **`df`** is counted by the function over the candidates the engine
   hands it, admitted to the reader's class, since every candidate that
   holds a query token is handed. The engine keeps nothing for it.
 - **`n_f` and `L_f`**, the records of the class whose field `f` holds a
   token and the tokens of `f` over them, are kept by the engine per
   type, field and hold, one count for the heads that are not held and
-  one for the held: `asked.seen` without `restricted` reads the first,
-  with it the sum of both. SQLite and PostgreSQL keep the counts and
-  each record's tokens per field in their projection, written in the
-  fold's transaction beside the text rows and taken out where a record
-  is dropped, with a mark of the position they are folded through; a
-  writer that finds the mark absent or behind counts them again at
-  open, and a read that finds it behind counts at the search. The
-  memory engine counts them in the same pass and keeps none.
-- **A reader with no class.** Where `asked.seen` admits by `only`
-  pairs, by a link's ends or by what its reader is told of a record
-  (078), the store counts `n_f` and `L_f` over the heads it admits and
-  hands them in `asked.text_stats`; an engine handed them ranks by them
-  and not by its own.
+  one for the held: `Unheld` reads the first, an absent class the sum
+  of both. SQLite and PostgreSQL keep the counts and each record's
+  tokens per field in their projection (`text_stats` and
+  `text_lengths`), written in the fold's transaction beside the text
+  rows and taken out where a record is dropped, with a mark of the
+  position they are folded through (`text_stats` in `meta`); a writer
+  that finds the mark absent or behind counts them again at open, and a
+  read that finds it behind counts at the search. The memory engine
+  counts them in the same pass and keeps none.
+- **A reader with no class.** Where the store's sight of its reader
+  admits by `only` pairs, by a link's ends or by what it is told of a record
+  (078), the store counts `n_f`, `L_f` and each query token's `df` over
+  the heads it admits, as it is told them, through
+  `lakelands_core::engines::text_stats`, and hands them as
+  `TextStats::Counted`; an engine handed them ranks by them and not by
+  its own.
 
 They are taken at the head, as the lists are: a `where`, a `valid_at`
 and the position read do not shape them.
@@ -983,7 +984,7 @@ holds it to.
 | `count` is the number of records its scan selects, across batches, at the head and earlier; `find`'s `count()` is a full walk's length, holding a batch | engine: `a_count_is_the_number_of_records_its_scan_selects`; suite: `a_count_answers_as_many_records_as_a_full_find_walk`, the streaming check's `count` rows |
 | a `find` page crosses the seam as about `limit` rows, with or without a filter only the store evaluates | store: `tests/find_pages.rs` |
 | `scan`'s filter matches the evaluator exactly, including comparisons across kinds and filters that error; the flags and `valid_at` | engine: `scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors`, `scan_honours_retired_restricted_and_valid_at` |
-| `ranked`'s text list: its hit set, its language, searchable fields only, live at the head only (restricted included), ties by key, `k` | engine: `lexical_hits_are_the_pipelines_over_searchable_live_records`, `lexical_finds_every_token_the_pipeline_makes_beyond_ascii`, `lexical_over_named_fields_is_the_pipelines_over_those_fields` |
+| `ranked`'s text list: its hit set, its language, searchable fields only, live at the head only (restricted included for a reader of every live head, none for one of the heads not held), its BM25F scores, weights and statistics, kept or counted at open, ties by key, `k` | engine: `lexical_hits_are_the_pipelines_over_searchable_live_records`, `lexical_finds_every_token_the_pipeline_makes_beyond_ascii`, `lexical_over_named_fields_is_the_pipelines_over_those_fields`, `a_weighed_text_scores_each_fields_frequency_by_its_weight_before_the_cut`, `a_projection_without_statistics_counts_them_at_open`; suite: `lexical_score.rs` |
 | `ranked`'s lists are of one state, with its position: an open transaction moves neither, a commit both; a record retired at the head is no candidate | engine: `ranked_answers_every_list_from_one_state_and_says_its_position` |
 | a fold that commits between two statements of one `ranked` call is in none of its lists; on PostgreSQL the call holds every table it reads from its first statement, and a `clear` queued ahead of it is in its position | SQLite: `src/tests.rs`, `a_fold_committed_inside_one_ranked_call_is_in_none_of_its_lists` (the reader's statement trace commits the fold); PostgreSQL: `tests/ranked.rs`, `a_fold_committed_inside_one_call_is_in_none_of_its_lists`, `a_call_holds_every_table_it_reads_from_its_first_statement`, `a_clear_queued_ahead_of_a_call_is_in_its_position` |
 | A search's candidates are judged at the position they were read at: a re-key, a hold placed or lifted, a write between two pulls, a field or a link type renamed in between, a searchable field the reader may not read declared in between; a hold placed in between keeps its record out of a pattern started by a search and out of a fused search, and a record given to another is no hit of a holder of `only` | store: `tests/search_position.rs` (the memory engine, a write planted before `ranked` answers), the ten rows of the file |

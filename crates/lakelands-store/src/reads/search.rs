@@ -2,6 +2,9 @@
 
 use super::*;
 
+use lakelands_api::engine::{TextCounts, TextStats};
+use lakelands_core::engines::Counts;
+
 impl<'a> Reader<'a> {
     /// What `search` refuses before it ranks: the type its principal is
     /// shown, a view, a misfit, the fields it probes, the `where`. A
@@ -300,6 +303,7 @@ impl<'a> Reader<'a> {
             if ranked {
                 asked.text = Some((text.clone(), text_fields.map(<[FieldName]>::to_vec)));
                 asked.text_weights = text_weights;
+                asked.text_stats = self.text_stats(&ranks.ty, text, text_fields)?;
             }
             lists.push((weight.unwrap_or(1.0), ranked));
             axes.push(axis(None));
@@ -541,7 +545,7 @@ impl<'a> Reader<'a> {
                     (Some(v), _) => !lowered.contains_key(v),
                     (None, Some((text, fields))) => {
                         let (told, w) = (sees.told(r), &asked.text_weights);
-                        let hit = core_engines::lexical(decl, told, text, fields.as_deref(), w, 1);
+                        let hit = told_lexical(decl, told, text, fields.as_deref(), w, asked);
                         hit.first().map(|h| *score = h.1).is_some()
                     }
                     (None, None) => true,
@@ -550,6 +554,62 @@ impl<'a> Reader<'a> {
             core_engines::rank(list, u32::MAX);
         }
         Ok(())
+    }
+
+    /// What the text's ranking of a search over `ty`, the type's name at
+    /// the head, counts its statistics over (025): for a reader of a class,
+    /// the live heads of that class, as the engine keeps them; for one of
+    /// no class, what is counted here over the heads it is admitted there,
+    /// as it is told them, so that nothing it may not see moves a score.
+    fn text_stats(
+        &self,
+        ty: &TypeName,
+        text: &str,
+        fields: Option<&[FieldName]>,
+    ) -> Result<Option<TextStats>> {
+        let (view, shape, who) = match (self.at_head, &self.head) {
+            (true, _) => (self.view.as_ref(), &self.shape, self.sight.who()),
+            (false, Some(h)) => (h.view.as_ref(), &h.shape, &h.who),
+            // No ranking reaches here; one that did counts no held record.
+            (false, None) => return Ok(Some(TextStats::Unheld)),
+        };
+        let sees = Sight::held(who, shape.as_ref());
+        let Ok(decl) = shape.ontology.ty(ty) else {
+            let unheld = !sees.sees_restricted();
+            return Ok(unheld.then_some(TextStats::Unheld));
+        };
+        let whole = sees.admit(ty).pairs().is_some_and(|p| p.is_empty())
+            && !sees.judges_ends(decl)
+            && !sees.narrows(ty);
+        if whole {
+            return Ok((!sees.sees_restricted()).then_some(TextStats::Unheld));
+        }
+        const BATCH: u32 = 1024;
+        let (mut counted, mut after) = (TextCounts::default(), None);
+        loop {
+            let scan = Scan {
+                after: after.take(),
+                limit: BATCH,
+                restricted: true,
+                ..Scan::default()
+            };
+            let rows = view.scan(ty, &scan)?;
+            let fields_of: Vec<_> = rows.iter().map(|r| &r.fields).collect();
+            let ends = sees.ends(decl, &fields_of, &mut |end, keys| view.get_many(end, keys))?;
+            let admitted = (rows.iter().zip(ends)).filter(|(r, end)| *end && sees.answers(ty, r));
+            let told = admitted.filter_map(|(r, _)| sees.told(r));
+            core_engines::text_stats(decl, told, (text, fields), &mut counted);
+            match rows.last() {
+                Some(last) if rows.len() == BATCH as usize => {
+                    let key = last.key.clone();
+                    after = Some(After {
+                        values: Vec::new(),
+                        key,
+                    });
+                }
+                _ => return Ok(Some(TextStats::Counted(counted))),
+            }
+        }
     }
 
     /// A fused search's hits: its lists fused by weighted reciprocal rank
@@ -828,4 +888,33 @@ impl Marks {
             h.matches = core_engines::matched(&self.decl, &h.record, fields, query, &self.tag);
         }
     }
+}
+
+/// [`core_engines::lexical`] of a record as its reader is told it, scored
+/// over what the store counted for that reader (`asked.text_stats`): a
+/// reader a hiding selects records for narrows, so is of no class, and is
+/// always counted for.
+fn told_lexical(
+    decl: &TypeDecl,
+    told: Option<std::borrow::Cow<'_, StoredRecord>>,
+    text: &str,
+    fields: Option<&[FieldName]>,
+    weights: &BTreeMap<FieldName, f64>,
+    asked: &Rankings,
+) -> Vec<(RecordKey, f64)> {
+    debug_assert!(matches!(asked.text_stats, Some(TextStats::Counted(_))));
+    let none = TextCounts::default();
+    let counted = match &asked.text_stats {
+        Some(TextStats::Counted(counted)) => counted,
+        _ => &none,
+    };
+    core_engines::lexical(
+        decl,
+        told,
+        text,
+        fields,
+        weights,
+        Counts::Counted(counted),
+        1,
+    )
 }

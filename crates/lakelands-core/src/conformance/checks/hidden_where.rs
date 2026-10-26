@@ -230,7 +230,8 @@ async fn a_field_hidden_where_a_condition_holds_brings_no_lexical_match_or_rank(
     chunks(&l).await?;
     let ann = ann(store.as_ref(), "read", json!({}));
     let mut wrong = searches(&l, &ann, LEXICAL).await?;
-    // The owner is told k2 and finds it; k1 scores alike to both.
+    // The owner is told k2 and finds it; k1 scores to each as the one
+    // function does over the chunks as told, to ann k2 holding no body.
     let asked = json!({"mode": "lexical", "text": "taxi"});
     let (mine, theirs) = (
         search(&l, &l.own, asked.clone()).await?,
@@ -245,9 +246,19 @@ async fn a_field_hidden_where_a_condition_holds_brings_no_lexical_match_or_rank(
             .find(|h| h.record.key.as_str() == "k1")
             .map(|h| h.score)
     };
-    if score(&mine) != score(&theirs) {
+    let k1 = |k2: Value| {
+        let heads = [
+            ("k1", json!({"body": "taxi rome"})),
+            ("k2", k2),
+            ("k3", json!({"body": "hotel"})),
+        ];
+        let ranked = bm25f(&chunk("doc"), &heads, ("taxi", None), &[]);
+        ranked.into_iter().find(|(k, _)| k == "k1").map(|(_, s)| s)
+    };
+    let (told, whole) = (k1(json!({})), k1(json!({"body": "taxi paris"})));
+    if score(&theirs) != told || score(&mine) != whole {
         wrong.push(format!(
-            "k1 scores {:?} to ann, {:?} to the owner",
+            "k1 scores {:?} to ann, {:?} to the owner, not {told:?} and {whole:?}",
             score(&theirs),
             score(&mine)
         ));
