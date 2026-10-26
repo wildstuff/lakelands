@@ -1117,6 +1117,7 @@ pub async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) {
         of: INVOICE.into(),
         filter: Condition::from(filter),
         description: Some(filter.into()),
+        decided_at: Default::default(),
     };
     let (shout, hush) = (
         function("shout", "status", "upper(status)"),
@@ -2275,6 +2276,7 @@ pub async fn nothing_that_never_acts_is_declared_on_a_view(store: Arc<dyn LakeSt
         of: "partner_totals".into(),
         filter: "count > 0".into(),
         description: None,
+        decided_at: Default::default(),
     });
     let totals = || ty("partner_totals");
     let on = |name: &str| Place::Trigger { name: name.into() };

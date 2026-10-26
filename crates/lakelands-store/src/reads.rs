@@ -1182,9 +1182,13 @@ impl<'a> Reader<'a> {
         };
         let set = |n: &str| self.shape.ontology.set(n).filter(shown);
         // A set across an edge is read by its kept membership, its members
-        // read once a read (055, extended).
-        let across =
-            |n: &str| set(n).is_some_and(|s| crate::writes::reads_across(&self.shape.ontology, s));
+        // read once a read (055, extended). One decided at the read keeps
+        // none: it is expanded, and a kept set it names is read by its own.
+        let across = |n: &str| {
+            set(n).is_some_and(|s| {
+                !s.at_read() && crate::writes::reads_across(&self.shape.ontology, s)
+            })
+        };
         let e = crate::declare::filter_kept(&set, &across, ty, c, Eval::Record, at)?;
         let mut kept = Vec::new();
         lakelands_core::describe::in_sets(&e, &mut kept);

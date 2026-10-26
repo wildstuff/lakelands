@@ -945,7 +945,8 @@ fn computed_again(
 /// over its fields at `now`, the time of the write or the declaration that
 /// decides it, the sets it names read as `o` holds them, and what a path
 /// reads across an edge as `heads` reaches it. A write and a set's
-/// declaration decide by this one rule.
+/// declaration decide by this one rule. A set decided at the read holds
+/// no member: a read expands its `where` at its own clock.
 fn member_of(
     (set, o): (&ObjectSetDecl, &Ontology),
     record: &StoredRecord,
@@ -953,7 +954,7 @@ fn member_of(
     now: Timestamp,
     heads: Heads<'_>,
 ) -> Result<bool> {
-    if record.retired {
+    if record.retired || set.at_read() {
         return Ok(false);
     }
     let at = [Place::ObjectSet {

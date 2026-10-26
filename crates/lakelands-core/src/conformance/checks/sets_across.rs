@@ -40,7 +40,7 @@ check!(
 
 check!(
     SET_CLOCK = a_sets_where_that_reads_the_clock_is_refused,
-    "066, extended (lakelands#1223): a set's `where` that calls `now()` or `today()`, however deep in it, is refused `set_reads_clock` naming the set and the call, over a type and over a kept view alike, and a set whose `where` reads a stored date field declares: a set keeps what it decided at the write, so a clock would drift from a read's"
+    "066, extended (lakelands#1223, lakelands#1412): a kept set's `where` that calls `now()` or `today()`, however deep in it, is refused `set_reads_clock` naming the set and the call, over a type and over a kept view alike, and a set whose `where` reads a stored date field declares: a kept set keeps what it decided at the write, so a clock would drift from a read's; a set decided at the read is not refused (`SET_AT_READ`)"
 );
 
 check!(

@@ -978,7 +978,8 @@ impl Call<'_> {
     /// ontology as the append leaves it: a set is its filter, so a change
     /// reaches every set built on it, in the same append, and each of them
     /// once, whatever number of the sets it names the append declares
-    /// (`decided`). A set declared again unchanged decides nothing. Past the lake's
+    /// (`decided`). A set declared again unchanged decides nothing; one
+    /// declared again as decided at the read leaves its members. Past the lake's
     /// `max_set_changes`, counted over all of them, the declaration is
     /// refused `too_large`, naming the set whose change passed it, before
     /// anything is appended; the walk stops there.
@@ -990,7 +991,7 @@ impl Call<'_> {
         now: Timestamp,
     ) -> Result<Vec<Draft>> {
         let old = w.ontology.object_sets.get(&set.name).map(|e| &e.decl);
-        if old.is_some_and(|o| o.filter == set.filter) {
+        if old.is_some_and(|o| o.filter == set.filter && o.decided_at == set.decided_at) {
             return Ok(Vec::new());
         }
         let (view, ty) = (self.lake.engine.view(None)?, &set.of);

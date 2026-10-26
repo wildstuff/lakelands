@@ -437,6 +437,22 @@
    "set": "s"
   },
   {
+   "code": "set_at_read_steps",
+   "path": "s",
+   "set": "s"
+  },
+  {
+   "code": "set_at_read_named",
+   "kind": "type",
+   "name": "s",
+   "set": "s"
+  },
+  {
+   "code": "set_at_read_of_view",
+   "set": "s",
+   "view": "t"
+  },
+  {
    "code": "set_reads_computed",
    "field": "f",
    "type": "t"

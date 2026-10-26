@@ -1064,7 +1064,14 @@ catalog! {
         /// A declaration reading as stored a field computed at the read.
         ReadsAtRead { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "it reads `{field}`, which `{ty}` computes at the read; it is evaluated over the record as stored, which never holds it",
         /// A set's `where` reading the clock.
-        SetReadsClock { set: String, call: String } => "the set `{set}` reads `{call}` in its `where`; a set is decided at the write and keeps what it decided, so a read of `in_set` would drift from it; keep a time window in a view's `where` or a computed field",
+        SetReadsClock { set: String, call: String } => "the set `{set}` reads `{call}` in its `where`; a kept set is decided at the write and keeps what it decided, so a read of `in_set` would drift from it; declare it decided at the read, or keep a time window in a view's `where` or a computed field",
+        /// A set decided at the read whose `where` steps across a
+        /// reference or a relation.
+        SetAtReadSteps { set: String, path: String } => "the set `{set}` is decided at the read, which steps through no reference, and its `where` reads `{path}`",
+        /// A set decided at the read named by what a write decides.
+        SetAtReadNamed { set: String, kind: Naming, name: String } => "the set `{set}` is decided at the read and the {kind} `{name}` names it, which is decided at a write: what a write decides by it would drift from what a read of it answers",
+        /// A set decided at the read of a view.
+        SetAtReadOfView { set: String, view: TypeName } => "the set `{set}` is decided at the read and holds `{view}`, a view: in this release a set of a view is decided at the write; declare it kept, or of the view's source",
         /// A set's `where` or a trigger's `when` reading across an edge a
         /// field computed outside the lake.
         SetReadsComputed { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "it reads `{field}` of `{ty}` across an edge, which is computed outside the lake: its value lands with no write that would decide this again",

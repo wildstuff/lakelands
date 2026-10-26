@@ -407,11 +407,16 @@ interface types {
         recomputed,
     }
 
+    /// When an object set's membership is decided: at each write, kept;
+    /// or at every read that names it, at the read's clock, never kept.
+    enum decided-at { write, read }
+
     record object-set-decl {
         name: string,
         of: type-name,
         where: condition,
         description: option<string>,
+        decided-at: decided-at,
     }
 
     record function-decl {
