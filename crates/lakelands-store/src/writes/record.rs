@@ -752,8 +752,19 @@ impl Decide<'_> {
         let record = self.reached(on, key, expected)?;
         // A record read across a reference is reached where a write that
         // sends the reference would be accepted, and by nothing else.
+        // One a hiding selects is refused where the verb reads a field
+        // lowered there, as on its own record below (006).
         let (view, pending, sees) = (self.at.view, &self.pending, &self.at.sight);
-        let far = |ty: &TypeName, k: &RecordKey| live_for(view, pending, ty, k, sees);
+        let reads = verb.reads_across(on, &|n| o.ty(n).ok()).unwrap_or_default();
+        let far = |ty: &TypeName, k: &RecordKey| {
+            let found = live_for(view, pending, ty, k, sees)?;
+            let low = (found.as_ref())
+                .map(|r| sees.lowered(ty, &r.fields))
+                .unwrap_or_default();
+            let read =
+                |(t, f): &(&TypeDecl, &FieldDecl)| t.name == *ty && low.contains_key(&f.name);
+            granted(!reads.iter().any(read)).map(|()| found)
+        };
         let link = |r: &RelationName| link_from(view, &verb.on, r, key);
         let limits = (self.at.depth, (self.at.settings, now));
         let stored = |ty: &TypeName, k: &RecordKey| pending.record(view, ty, k);
@@ -761,7 +772,8 @@ impl Decide<'_> {
         // A field a hiding lowers on the record is one its caller does not
         // read there: a verb that reads it would say what it holds (006).
         let low = self.at.sight.lowered(&verb.on, &record.fields);
-        granted((verb.fields_read()).is_some_and(|r| r.iter().all(|f| !low.contains_key(f))))?;
+        let clear = |r: BTreeSet<FieldName>| r.iter().all(|f| !low.contains_key(f));
+        granted(low.is_empty() || verb.fields_read().is_some_and(clear))?;
         // A part is named as the caller is shown what it reads: at an
         // accept, the reviewer.
         let told = |k: &str| {
