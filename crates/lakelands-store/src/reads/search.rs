@@ -343,6 +343,10 @@ impl<'a> Reader<'a> {
         };
         let mut pull = u32::try_from(first).unwrap_or(u32::MAX);
         pull = pull.max(carried.as_ref().map_or(0, |p| p.k));
+        // A reader a hiding narrows is ranked over every candidate as told.
+        if self.sight.hides(&decl.name) {
+            pull = u32::MAX;
+        }
         let (hits, counts, skipped) = loop {
             let (read, judged) = match self.pull(&ranks.ty, &asked, pull, &mut carried)? {
                 Ok(read) => read,
@@ -490,9 +494,62 @@ impl<'a> Reader<'a> {
             },
         };
         Ok(match pulled.position() == head {
-            true => Ok((pulled.ranked.lists, pulled.ranked.judged)),
+            true => {
+                let mut lists = pulled.ranked.lists;
+                self.told_lists(ty, asked, &mut lists)?;
+                Ok((lists, pulled.ranked.judged))
+            }
             false => Err(pulled),
         })
+    }
+
+    /// `lists`, pulled for `asked` over `ty` at the head, as the head tells
+    /// its reader each record (006): one a hiding selects there ranks by
+    /// its text as told, and is no candidate of a vector the hiding lowers.
+    fn told_lists(
+        &self,
+        ty: &TypeName,
+        asked: &Rankings,
+        lists: &mut [Vec<(RecordKey, f64)>],
+    ) -> Result<()> {
+        let (view, shape, who) = match (self.at_head, &self.head) {
+            (true, _) => (self.view.as_ref(), &self.shape, self.sight.who()),
+            (false, Some(h)) => (h.view.as_ref(), &h.shape, &h.who),
+            (false, None) => return Ok(()),
+        };
+        let sees = Sight::held(who, shape.as_ref());
+        let Some(decl) = shape.ontology.ty(ty).ok().filter(|_| sees.hides(ty)) else {
+            return Ok(());
+        };
+        let vectors = asked
+            .vectors
+            .iter()
+            .map(|v| Some(FieldName::from(v.0.as_str())));
+        let axes = asked.text.iter().map(|_| None).chain(vectors);
+        for (list, axis) in lists.iter_mut().zip(axes) {
+            let keys: Vec<RecordKey> = list.iter().map(|h| h.0.clone()).collect();
+            let held = view.get_many(ty, &keys)?.into_iter();
+            let held: BTreeMap<RecordKey, StoredRecord> =
+                held.map(|r| (r.key.clone(), r)).collect();
+            list.retain_mut(|(key, score)| {
+                let Some(r) = held.get(key) else {
+                    return true;
+                };
+                let lowered = sees.lowered(ty, &r.fields);
+                match (&axis, &asked.text) {
+                    _ if lowered.is_empty() => true,
+                    (Some(v), _) => !lowered.contains_key(v),
+                    (None, Some((text, fields))) => {
+                        let (told, w) = (sees.told(r), &asked.text_weights);
+                        let hit = core_engines::lexical(decl, told, text, fields.as_deref(), w, 1);
+                        hit.first().map(|h| *score = h.1).is_some()
+                    }
+                    (None, None) => true,
+                }
+            });
+            core_engines::rank(list, u32::MAX);
+        }
+        Ok(())
     }
 
     /// A fused search's hits: its lists fused by weighted reciprocal rank

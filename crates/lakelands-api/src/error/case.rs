@@ -1418,6 +1418,12 @@ catalog! {
             #[serde(rename = "type")]
             ty: TypeName,
         } => "the grant's `only` on `{ty}` cannot be applied here; the host's grants need fixing",
+        /// A grant's hiding of a field on some records that cannot be
+        /// applied to the read.
+        HidingUnappliable {
+            #[serde(rename = "type")]
+            ty: TypeName,
+        } => "the grant's `hide_where` on `{ty}` cannot be applied here; the host's grants need fixing",
         /// An order by a field computed at the read.
         OrderAtRead { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "`order_by` names `{field}` of `{ty}`, which is computed at the read; order by a stored field it is computed from",
         /// An order by a value or a time that names no field.

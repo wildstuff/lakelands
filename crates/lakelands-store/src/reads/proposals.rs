@@ -404,7 +404,7 @@ impl<'a> Reader<'a> {
         let mut told = logged.clone();
         self.told_setting(&mut told);
         if let ProposedWrite::Retire { ty, key, .. } = &told
-            && self.sight.narrows(ty)
+            && self.sight.narrows_settings(ty)
         {
             let then = self.lake.engine.view(Some(at))?;
             let there = then.get(ty, key)?.filter(|r| !r.retired);
@@ -478,7 +478,8 @@ impl<'a> Reader<'a> {
             return;
         };
         let value = patch.get("value").cloned().unwrap_or(Value::Null);
-        if self.sight.narrows(ty) && self.sight.setting(key.as_str(), value).is_none() {
+        let setting = ty.as_str() == lakelands_api::seam::SETTING_TYPE;
+        if setting && self.sight.narrows(ty) && self.sight.setting(key.as_str(), value).is_none() {
             let (ty, key, opts) = (ty.clone(), key.clone(), opts.clone());
             *write = ProposedWrite::Retire { ty, key, opts };
         }
@@ -555,8 +556,18 @@ impl<'a> Reader<'a> {
             ProposedWrite::Upsert { ty, key, patch, .. } => {
                 let admitted = after(ty, key, patch)?;
                 let then_reads = |f: &FieldName| then.is_none_or(|(s, _)| s.reads(ty, f));
-                patch.retain(|field, _| read(ty, field) && then_reads(field));
                 let stored = self.view.get(ty, key)?;
+                // A field a hiding lowers on the record, before the write
+                // or after it, as a read of it would not tell it (006).
+                let before = stored
+                    .as_ref()
+                    .map(|r| r.fields.clone())
+                    .unwrap_or_default();
+                let mut made = before.clone();
+                made.extend(patch.clone());
+                let low = [&before, &made].map(|f| self.sight.lowered(ty, f));
+                let told = |f: &FieldName| low.iter().all(|l| !l.contains_key(f));
+                patch.retain(|field, _| read(ty, field) && then_reads(field) && told(field));
                 let untold = |r: &StoredRecord| r.retired || self.sight.told(r).is_none();
                 let free = stored.is_some_and(|r| untold(&r) && !self.sight.withheld(&r));
                 Ok(admitted && (free || answered(ty, key)?))
@@ -564,7 +575,7 @@ impl<'a> Reader<'a> {
             // A setting retired or not told now is a free key, as to an upsert;
             // the entry was judged where it was proposed (063).
             ProposedWrite::Retire { ty, key, .. } => {
-                let stored = self.view.get(ty, key)?.filter(|_| self.sight.narrows(ty));
+                let stored = (self.view.get(ty, key)?).filter(|_| self.sight.narrows_settings(ty));
                 let untold = |r: &StoredRecord| r.retired || self.sight.told(r).is_none();
                 let free = stored.is_some_and(|r| untold(&r) && !self.sight.withheld(&r));
                 Ok(free || answered(ty, key)?)
@@ -608,7 +619,13 @@ impl<'a> Reader<'a> {
                     None => self.sight.ty(&v.on).is_ok(),
                 };
                 let force = Some((self.sight, &self.shape.ontology));
-                if ![force, then].into_iter().flatten().all(sets) {
+                // A field a hiding lowers on some records is not told set.
+                let hidden = |a: &lakelands_api::ontology::Assignment| {
+                    (self.sight.ty(&v.on)).is_ok_and(|d| self.sight.lowers_somewhere(d, &a.field))
+                };
+                let lowers =
+                    matches!(&v.effect, VerbEffect::Write { set } if set.iter().any(hidden));
+                if lowers || ![force, then].into_iter().flatten().all(sets) {
                     payload.clear();
                 }
                 Ok(whole)
@@ -718,7 +735,10 @@ impl<'a> Reader<'a> {
                     return Ok(false);
                 }
                 if let lakelands_api::write::ChangeTo::Set(patch) = to {
-                    patch.retain(|f, _| read(ty, f));
+                    let hidden = |f: &FieldName| {
+                        (self.sight.ty(ty)).is_ok_and(|d| self.sight.lowers_somewhere(d, f))
+                    };
+                    patch.retain(|f, _| read(ty, f) && !hidden(f));
                 }
                 if !self.sight.sees_all() {
                     **plan = Default::default();
@@ -802,18 +822,24 @@ impl<'a> Reader<'a> {
         if key.is_none() && !whole_sight {
             return Ok(None);
         }
-        let whole = read.iter().all(|f| self.sight.reads(ty, f));
+        // A field a hiding lowers on the record is read as one it may not.
+        let rows = match key {
+            Some(key) => view.get_many(ty, std::slice::from_ref(key))?,
+            None => Vec::new(),
+        };
+        let low = (rows.first()).map(|r| self.sight.lowered(ty, &r.fields));
+        let told = |f: &FieldName| low.as_ref().is_none_or(|l| !l.contains_key(f));
+        let whole = read.iter().all(|f| self.sight.reads(ty, f) && told(f));
         if !whole {
             return Ok(Some((None, true)));
         }
         let mut shown = logged.clone();
-        if let (ProposedWrite::Compute { inputs, .. }, Some(key), Some(f)) =
+        if let (ProposedWrite::Compute { inputs, .. }, Some(_), Some(f)) =
             (&mut shown, key, o.functions.get(function))
         {
             // The inputs are the record's as its reader is answered them,
             // never the log's: a source forgotten leaves none behind (058).
             // A retired record's are none, whatever was made at its key since.
-            let rows = view.get_many(ty, std::slice::from_ref(key))?;
             *inputs = (rows.first().filter(|_| !earlier))
                 .map(|r| crate::backed::call_of(&f.decl, &r.fields)["inputs"].clone());
         }

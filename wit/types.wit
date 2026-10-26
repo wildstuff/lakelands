@@ -92,6 +92,16 @@ interface types {
         /// The verbs declared `granted` the principal may call, its field
         /// rights permitting.
         verbs: list<verb-name>,
+        /// Fields lowered on only the records a condition selects.
+        hide-where: list<hidden-where>,
+    }
+
+    /// Fields lowered on the records whose `field` holds one of `values`;
+    /// on any other record the type's access stands.
+    record hidden-where {
+        field: field-name,
+        values: list<string>,
+        fields: list<field-access>,
     }
 
     record grants {
@@ -1312,6 +1322,9 @@ interface types {
         description: option<string>,
         label: option<string>,
         embed: option<embed-decl>,
+        /// Where the holder's grant hides it: the field and values that
+        /// select each record it is hidden on.
+        hidden-where: list<tuple<field-name, list<string>>>,
         /// The host's own marks, to a principal who may see them.
         annotations: list<tuple<string, json>>,
     }

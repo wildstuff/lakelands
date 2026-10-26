@@ -2156,15 +2156,15 @@ selected record each `F` has the lower of its type-wide access and the
 hiding's; on every other record the type-wide access stands. A hiding
 only lowers an access, never raises one. The operator accepted its
 shape on lakelands#1400 (2026-10-25) with the five consequences below;
-it is proposed for 0.20.0 (lakelands#1412) and comes in force with the
-issue that builds it.
+it is in force from 0.20.0 (lakelands#1354).
 
 - **The condition is read only where its holder may read it.** `G` is a
   field of kind `text` or `reference`, which the holder reads at least
   `read`, not computed at the read, and lowered by no hiding of the
   grant. `F` is no key field, no valid-time field, no field the grant's
-  `only` names, and not `G`. A grant that breaks this is not applied
-  and not guessed at, as a grant whose `only` cannot be applied is not:
+  `only` names, and not `G`; the type is no view. A grant that breaks
+  this is not applied and not guessed at, as a grant whose `only`
+  cannot be applied is not:
   the doors that name the type refuse it as invalid, naming the type
   and never the field, and a walk or a view that reaches the type reads
   every `F` as hidden on every record, so it fails closed. A condition

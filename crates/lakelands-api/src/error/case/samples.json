@@ -1220,6 +1220,10 @@
    "type": "t"
   },
   {
+   "code": "hiding_unappliable",
+   "type": "t"
+  },
+  {
    "code": "order_at_read",
    "field": "f",
    "type": "t"

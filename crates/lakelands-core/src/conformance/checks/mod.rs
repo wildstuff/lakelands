@@ -56,6 +56,7 @@ mod graph_rank;
 mod graph_steps;
 mod grid;
 mod hidden_readers;
+mod hidden_where;
 mod host_cause;
 mod host_settings;
 mod ingest;
@@ -490,6 +491,18 @@ pub const ALL: &[Check] = &[
     only::ONLY_SCHEMA,
     only::ONLY_GRANT_CHECKED,
     only::ONLY_UNAPPLIED_ADMITS_NONE,
+    hidden_where::HIDDEN_NOT_ANSWERED,
+    hidden_where::HIDDEN_NOT_TOLD,
+    hidden_where::HIDDEN_NO_LEXICAL,
+    hidden_where::HIDDEN_NO_VECTOR,
+    hidden_where::HIDDEN_VIEW,
+    hidden_where::HIDDEN_NOT_WRITTEN,
+    hidden_where::HIDING_UNAPPLIED,
+    hidden_where::HIDDEN_DESCRIBED,
+    hidden_where::HIDDEN_AS_OF,
+    hidden_where::HIDDEN_NO_EDGE,
+    hidden_where::HIDDEN_PROPOSED,
+    hidden_where::HIDDEN_CHANGED,
     only_proposals::ONLY_PROPOSES,
     only_proposals::ONLY_DECIDES,
     reactions::VERB_WRITE_REACTS,

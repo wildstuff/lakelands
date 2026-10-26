@@ -36,7 +36,7 @@ use lakelands_api::ontology::{
     RelationDecl, Risk, StorageKind, TriggerDecl, TypeDecl, VerbDecl, VerbEffect, VerbScope,
     ViewDecl, ViewParam,
 };
-use lakelands_api::principal::{Access, Grants, Principal, PrincipalKind, TypeGrants};
+use lakelands_api::principal::{Access, Grants, HiddenWhere, Principal, PrincipalKind, TypeGrants};
 use lakelands_api::query::{Pattern, Search, SearchMode, Step, VectorTerm, Walk};
 use lakelands_api::read::{After, Direction, Find, Found, Get, Order, OrderBy, ReadAt};
 use lakelands_api::record::{Origin, Patch, Record, SourceRecord, Value};
@@ -123,6 +123,7 @@ macro_rules! door_checks {
             when_a_field_is_computed_is_declared_as_the_store_declares_it,
             #[own_principals]
             a_grants_only_on_a_field_computed_at_the_read_is_not_applied,
+            a_field_hidden_where_a_condition_holds_is_hidden_there_alone,
             a_migration_keeps_what_a_view_reads,
             a_declaration_reads_only_what_its_type_has,
             a_function_over_null_is_null_on_every_lake,
@@ -487,7 +488,8 @@ pub struct Cast {
     /// Reads everything but `secret`, sees `note` masked, writes `status`
     /// and `partner`; of a `doc`, which a check may declare, sees `body`
     /// masked; of a `credit`, which a check may declare, reads everything
-    /// but `hush`.
+    /// but `hush`; of a `chunk`, which a check may declare, reads `body`
+    /// only where `kind` is not `secret`.
     pub clerk: Principal,
     /// The clerk, holding the `schema` grant.
     pub architect: Principal,
@@ -536,6 +538,17 @@ impl Cast {
                 ..Default::default()
             },
         );
+        let hidden = HiddenWhere {
+            field: "kind".into(),
+            values: ["secret".to_owned()].into(),
+            fields: [(FieldName::from("body"), Access::None)].into(),
+        };
+        let chunk = TypeGrants {
+            default: Some(Access::Read),
+            hide_where: vec![hidden],
+            ..Default::default()
+        };
+        clerk.types.insert(TypeName::from("chunk"), chunk);
         let architect = Grants {
             schema: true,
             ..clerk.clone()
@@ -4049,6 +4062,77 @@ pub async fn a_grants_only_on_a_field_computed_at_the_read_is_not_applied(
         .expect_err("refused");
     let want = Case::OnlyUnappliable { ty: ty("ca") };
     assert_eq!(e, invalid(None, want));
+}
+
+/// A grant's `hide_where` hides a field on the records its condition
+/// selects and on no other: `get`, a filter and a lexical search answer
+/// it on the rest alone, and `describe_type` tells its holder where (006).
+pub async fn a_field_hidden_where_a_condition_holds_is_hidden_there_alone(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let (c, owner, clerk) = (&f.catalog, &f.cast.owner, &f.cast.clerk);
+    let chunk = json!({"declare": "type", "name": "chunk", "fields": [
+        {"name": "kind", "type": {"kind": "text"}},
+        {"name": "body", "type": {"kind": "text"}, "searchable": true}]});
+    let chunk = serde_json::from_value::<Declaration>(chunk).expect("a declaration");
+    c.declare(owner, chunk).await.expect("`chunk` is declared");
+    for (k, kind) in [("c1", "open"), ("c2", "secret")] {
+        let fields = patch(&[("kind", json!(kind)), ("body", json!("taxi"))]);
+        let made = c
+            .upsert(owner, &ty("chunk"), &key(k), fields, WriteOpts::default())
+            .await;
+        made.expect("the owner writes a chunk");
+    }
+    for (k, body) in [("c1", Some(json!("taxi"))), ("c2", None)] {
+        let get = serde_json::from_value(json!({"key": k})).expect("a get");
+        let r = c.get(clerk, &ty("chunk"), get).await;
+        let r = r.expect("the clerk reads a chunk").data;
+        assert_eq!(
+            (field(&r, "body"), r.masked.is_empty()),
+            (body.as_ref(), true),
+            "`{k}`"
+        );
+    }
+    let find = Find {
+        filter: Some("body = 'taxi'".into()),
+        ..Find::default()
+    };
+    let found = c
+        .find(clerk, &ty("chunk"), find)
+        .await
+        .expect("the clerk finds");
+    let Found::Records { rows, .. } = found.data else {
+        panic!("a find of records answers records");
+    };
+    assert_eq!(
+        keys_of(&rows),
+        ["c1"],
+        "a filter on `body` answers the open chunk alone"
+    );
+    let words = serde_json::from_value(json!({"type": "chunk", "mode": "lexical", "text": "taxi"}));
+    let hits = c
+        .search(clerk, words.expect("a search"))
+        .await
+        .expect("the clerk searches");
+    let hits: Vec<&str> = hits
+        .data
+        .hits
+        .iter()
+        .map(|h| h.record.key.as_str())
+        .collect();
+    assert_eq!(hits, ["c1"], "a secret chunk's body matches nothing");
+    let d = c
+        .describe_type(clerk, &ty("chunk"), ReadAt::default())
+        .await;
+    let d = d.expect("the clerk describes `chunk`").data;
+    let body = d
+        .fields
+        .iter()
+        .find(|x| x.name.as_str() == "body")
+        .expect("`body`");
+    let told = vec![("kind".into(), ["secret".to_owned()].into())];
+    assert_eq!((body.access, &body.hidden_where), (Access::Read, &told));
 }
 
 /// A derived field, an object set's `where`, a trigger's `when` and a
