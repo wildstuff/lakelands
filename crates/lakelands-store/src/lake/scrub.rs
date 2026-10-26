@@ -928,14 +928,16 @@ impl Lake {
         if plan.events() > 0 {
             self.scoped_rate.store(rate.max(1), Ordering::SeqCst);
         }
-        // Restated: the act waits on the reclaim alone, as after a rebuild.
+        // Restated: the act waits on the reclaim alone, as after a rebuild;
+        // the bases only the dropped states named go with it, a forgotten
+        // source's or a removed write's.
         let view = self.engine.view(None)?;
         let mut list = forgotten_list(view.as_ref(), &Staged::default())?;
         drop(view);
         for source in set {
             list.insert(source.clone(), "rebuilt".to_owned());
         }
-        self.put_lists(&list, &BTreeMap::new(), head)?;
+        self.put_lists(&list, &BTreeMap::new(), true, head)?;
         self.publish(w);
         Ok(())
     }
