@@ -92,7 +92,7 @@ writes 19, so a 0.17.0 binary refuses its lakes by their number
 (lakelands#1330). 0.20.0 takes the sixth, to 20: it reads 14 to 20 and
 writes 20, so a 0.19.0 binary refuses its lakes by their number
 (lakelands#1409). Its one step carries also a new stored
-form of the log and a record's values sealed in one box, accepted in
+form of the log and a record's values sealed in one box, accepted as 083
 (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`,
 lakelands#1413), and a lake of 19 is read without a rewrite.
 

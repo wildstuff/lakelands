@@ -48,13 +48,13 @@ PageRank and communities hold the same graph, `page_rank` walking each
 step's relation in its own direction, and are bounded alike.
 
 **A measure adds integers, never floats** (lakelands#1412, accepted for
-0.20.0). The store
-hands a measure a set of records and a set of links, each sorted and
-without repeats, so a different order from an engine gives it the same
-input; what could still differ is arithmetic, since a sum of floats
-taken in another order may differ in its last bit (031). So every sum a
-measure takes is of integers, which is the same in any order, and its
-records are indexed by type and key, the store's one order (025).
+0.20.0). The store hands a measure a set of records and a set of links,
+each sorted and without repeats, so a different order from an engine
+gives it the same input; what could still differ is arithmetic, since a
+sum of floats taken in another order may differ in its last bit (031).
+So every sum a measure takes is of integers, which is the same in any
+order, and its records are indexed by type and key, the store's one
+order (025).
 
 - **PageRank** holds the whole mass as `10^12` units in `u64`. Each
   record starts with an equal share, the units left over going one each

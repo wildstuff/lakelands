@@ -328,7 +328,7 @@ milestones. `0.20.0` built the openCypher subset as an MCP read tool
 beside `query`, PageRank and the cheapest walk, patterns that branch
 and join, a change planned before it acts, sets decided at the read, a
 field hidden on the records a condition selects, where a lexical hit
-matched, BM25F ranking, and the compact log format 20.
+matched, and the compact log format 20.
 
 ## Licence
 

@@ -321,7 +321,7 @@ of the walk was understood: each next call changed the right thing.
 | T1 13, T2 15 | `query`'s `project` schema shows `fields` but not an aggregate's `group_by` and `measures` | lakelands#1443 |
 | T1 22, T2 24 | A step's `depth` needs `min` and `max`, and `query`'s schema requires neither | lakelands#1444 |
 | T1 19, T2 21, C1 20 | A find's `cursor` has no description; three of four runs sent it without its `order_by` | lakelands#1445 |
-| C1 15, C2 12 | Cypher's `ORDER BY` beside an aggregate is refused in the pattern's words, as `order_by`, with no offset | lakelands#1446, fixed by lakelands#1451: the subset itself refuses it, as `order_by_aggregate`, at `ORDER`'s character offset |
+| C1 15, C2 12 | Cypher's `ORDER BY` beside an aggregate is refused in the pattern's words, as `order_by`, with no offset | lakelands#1446, fixed by lakelands#1451 |
 
 **Observations, with no issue:**
 
