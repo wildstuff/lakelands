@@ -120,6 +120,7 @@ fn object_set(name: &str, filter: &str) -> ObjectSetDecl {
         of: "ledger".into(),
         filter: Condition::from(filter),
         description: Some(format!("the lines where {filter}")),
+        decided_at: Default::default(),
     }
 }
 

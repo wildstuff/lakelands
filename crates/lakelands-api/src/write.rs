@@ -470,8 +470,8 @@ pub struct ProposalFilter {
 
 /// An object set: the records of one type, or the groups of a view the
 /// lake keeps, matching a condition. When a write moves a record or a
-/// group into or out of the set, the store appends `ObjectSetChanged` in
-/// the same append.
+/// group into or out of a kept set, the store appends `ObjectSetChanged`
+/// in the same append; a set decided at the read keeps no membership.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObjectSetDecl {
@@ -485,6 +485,36 @@ pub struct ObjectSetDecl {
     /// What the set is for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// When its membership is decided.
+    #[serde(default, skip_serializing_if = "DecidedAt::is_write")]
+    pub decided_at: DecidedAt,
+}
+
+/// When an object set's membership is decided.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecidedAt {
+    /// At each write that moves a record into or out of it: the
+    /// membership is kept, and its changes are in the log.
+    #[default]
+    Write,
+    /// At every read that names it, its `where` over the record read at
+    /// the read's clock: no membership is kept.
+    Read,
+}
+
+impl DecidedAt {
+    /// Whether it is [`DecidedAt::Write`], the default.
+    pub fn is_write(&self) -> bool {
+        *self == DecidedAt::Write
+    }
+}
+
+impl ObjectSetDecl {
+    /// Whether it is decided at every read ([`DecidedAt::Read`]).
+    pub fn at_read(&self) -> bool {
+        self.decided_at == DecidedAt::Read
+    }
 }
 
 /// One declaration of a lake's ontology. It is read strictly: a member it

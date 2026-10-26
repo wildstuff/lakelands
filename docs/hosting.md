@@ -1246,10 +1246,15 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   it the declaration is refused `too_large`. The host raises the limit
   for a quiet moment, or widens the filter in steps; `docs/seams.md`,
   "Declaring a set over a large type", has the costs.
-- **A set's `where` does not read the clock.** A set keeps the
-  memberships it decided at each write, so a `where` that calls `now()` or
-  `today()` is refused `set_reads_clock`; a host keeps a time window in a
-  view's `where` or in a computed field instead.
+- **Only a kept set's `where` does not read the clock.** A kept set
+  keeps the memberships it decided at each write, so a `where` that calls
+  `now()` or `today()` is refused `set_reads_clock`. A set declared with
+  `decided_at: read` keeps no membership and is judged at each read, at
+  the read's clock, so its `where` may read the clock and a field computed
+  at the read; it steps through no reference, is of a type and not of a
+  view, and nothing decided at a write (a kept set, a view, a trigger's
+  `when`, a verb's `requires`) names it. A host may also keep a time
+  window in a view's `where` or in a computed field.
 - **A whole-graph measure is read in one page.** `degree` and
   `components` are computed whole for every page read, so a walk through
   small pages computes the measure once per page. A host that wants the
