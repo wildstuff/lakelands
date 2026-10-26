@@ -52,10 +52,10 @@
 //! the shapes it reads, so it reaches its judgment and names the format.
 //! It checks the active segment's last group against its hashes as lines
 //! of its own format, and a line of 20 that shares a frame fails that
-//! check, so it takes that group for a crash's tail: where the lake's
-//! only events of 20 are its last append, just made or just upgraded, it
-//! reads the lake as if that append were not there; once another append
-//! follows, it reads that one and names 20.
+//! check, so it takes such a group for a crash's tail. The store writes
+//! the append that makes a lake, and the one that upgrades it, whole
+//! (`docs/log-format.md` §1.2): where a lake's only events of 20 are
+//! that append, still its last, the group passes and it names 20.
 //!
 //! **All or none.** An append writes its lines to the segment, then its
 //! index lines and the commit line, and syncs the two files at once. Only

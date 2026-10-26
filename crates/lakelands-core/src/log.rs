@@ -836,12 +836,22 @@ fn shared(events: &[Value]) -> Map<String, Value> {
 /// store's writer's form (§1.2): framed where they are two or more, with
 /// exactly the members they all share, and each line holding `position`
 /// and `prev` only where it is a segment's first event, the `lake_created`
-/// at position 0 or a `checkpoint`.
+/// at position 0 or a `checkpoint`. An append that holds a `lake_created`
+/// or a `lake_upgraded` begins the lake's format and is left whole, each
+/// line its event's canonical bytes: the release before reads it as lines
+/// of its own form and names the format, even while it is the last.
 pub fn frame_append(events: &mut [CanonicalEvent]) {
     let values: Vec<Value> = events
         .iter()
         .map(|e| serde_json::from_slice(&e.bytes).expect("an event's canonical bytes are JSON"))
         .collect();
+    let begins = |e: &Value| {
+        let kind = e.pointer("/body/kind").and_then(Value::as_str);
+        matches!(kind, Some("lake_created" | "lake_upgraded"))
+    };
+    if values.iter().any(begins) {
+        return;
+    }
     let first = |_: usize, e: &Value| {
         let first = e.get("position") == Some(&0.into())
             || e.pointer("/body/kind") == Some(&"checkpoint".into());

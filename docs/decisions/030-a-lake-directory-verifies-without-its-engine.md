@@ -26,7 +26,11 @@ The SQLite engine keeps a lake as a directory whose log anyone can read:
   event it covers, and the lines that name `prev` empty after it are
   the events it covers, so the index keeps the shapes 0.19.0 reads
   (lakelands#1468); the index is the engine's own and no part of the
-  format. Only
+  format. The open's check of the last group reads its lines as whole
+  events of their format; the store writes the append that creates a
+  lake, and the one that upgrades it, whole (`docs/log-format.md`
+  §1.2), so 0.19.0 counts that group even while it is a lake's only one
+  of 20, and names the format (lakelands#1477). Only
   events before the last commit line exist, so an append is whole after
   a crash or not there at all. The next writer
   cuts off what an interrupted append left. A writer that goes on after
@@ -215,6 +219,9 @@ file's contents; the operating system's lock does not.
 - The index in the two line shapes 0.19.0 reads, `prev` named empty and
   a frame found by its gap, so that release refuses a lake of 20 by its
   format and does not call it damaged (lakelands#1468).
+- The last group of a lake just made or just upgraded counted by 0.19.0,
+  its append stored whole; before, that release took it for a crash's
+  tail (lakelands#1477).
 - A writer that goes on after a failed append cuts off what it left;
   the cut takes the index first and never a whole commit line
   (lakelands#618).

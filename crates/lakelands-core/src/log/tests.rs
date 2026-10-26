@@ -433,15 +433,28 @@ fn a_firings_change_belongs_to_format_17_on() {
 /// Events of one append in format `v`, from `first`, after `prev`: their
 /// canonical values and the events the store hands an engine.
 fn append(v: u64, first: u64, prev: &str, n: u64) -> (Vec<Value>, Vec<CanonicalEvent>) {
+    let body = |p: u64| {
+        json!({"kind": "record_ingested", "type": "t", "key": format!("k{p}"),
+               "version": 1, "patch": {"f": 1}})
+    };
+    append_of(v, first, prev, (first..first + n).map(body).collect())
+}
+
+/// [`append`]'s events with the bodies named, one an event.
+fn append_of(
+    v: u64,
+    first: u64,
+    prev: &str,
+    bodies: Vec<Value>,
+) -> (Vec<Value>, Vec<CanonicalEvent>) {
     let mut prev = Digest(prev.to_owned());
     let (mut values, mut events) = (Vec::new(), Vec::new());
-    for p in first..first + n {
+    for (p, body) in (first..).zip(bodies) {
         let mut event = json!({
             "v": v, "lake": "l", "position": p, "id": format!("{p:032x}"),
             "prev": prev.0, "known_at": "2026-01-01T00:00:00.000000Z",
             "writer": "agent:a", "origin": "direct", "fence": 1,
-            "body": {"kind": "record_ingested", "type": "t", "key": format!("k{p}"),
-                     "version": 1, "patch": {"f": 1}},
+            "body": body,
         });
         let hash = Digest(crate::engines::hash_of(event.clone()));
         event["hash"] = hash.0.clone().into();
@@ -519,6 +532,30 @@ fn a_single_event_and_an_older_format_are_kept_whole() {
         lines
     );
     assert_eq!(restore(&older[1]).map(|(_, whole)| whole), Ok(true));
+}
+
+#[test]
+fn an_append_that_begins_the_lakes_format_is_kept_whole() {
+    let lease = json!({"kind": "lease_taken", "fence": 1, "holder": "h"});
+    let created = json!({"kind": "lake_created", "format": FRAMED_FROM});
+    let upgraded = json!({"kind": "lake_upgraded", "from": FRAMED_FROM - 1, "to": FRAMED_FROM});
+    let made = append_of(
+        FRAMED_FROM,
+        0,
+        &"0".repeat(64),
+        vec![created, lease.clone()],
+    );
+    let upgrade = append_of(FRAMED_FROM, 7, &"1".repeat(64), vec![lease, upgraded]);
+    for (what, (values, mut events)) in [("created", made), ("upgraded", upgrade)] {
+        frame_append(&mut events);
+        let lines: Vec<_> = values.iter().map(canonical::to_vec).collect();
+        assert!(events.iter().all(|e| e.frame.is_none()), "{what}");
+        assert_eq!(
+            events.iter().map(|e| e.bytes.clone()).collect::<Vec<_>>(),
+            lines,
+            "{what}: every line is its event's canonical bytes"
+        );
+    }
 }
 
 #[test]
