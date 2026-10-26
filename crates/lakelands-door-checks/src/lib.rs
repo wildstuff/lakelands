@@ -20,5 +20,6 @@
 #![forbid(unsafe_code)]
 
 pub mod checks;
+pub mod search_field;
 pub mod statements;
 pub mod stream;

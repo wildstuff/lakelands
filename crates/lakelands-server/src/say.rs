@@ -66,7 +66,7 @@ fn advice(case: &Case) -> Option<String> {
         Case::NoMember { .. } => {
             "remove the member or correct its name, then call again; nothing was declared or written"
         }
-        Case::MemberMissing { .. } | Case::ArgumentsUnfit { .. } => {
+        Case::MemberMissing { .. } | Case::ModeNeedsMember { .. } | Case::ArgumentsUnfit { .. } => {
             "correct them against the tool's input schema (over REST, the route's in docs/rest.md) and call it again"
         }
         Case::NoSessionToPin { .. } => "name `as_of` on each read instead",

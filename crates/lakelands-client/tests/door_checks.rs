@@ -126,3 +126,10 @@ fn remote_with_tools() -> (Arc<dyn LakeStore>, Arc<dyn Statements>, Arc<dyn Tool
 lakelands_door_checks::door_checks!(remote, block_on, remote);
 lakelands_door_checks::statement_checks!(remote_with_statements, block_on);
 lakelands_door_checks::cypher_tool_checks!(remote_with_tools, block_on);
+
+fn remote_with_search_tool() -> (Arc<dyn LakeStore>, Arc<dyn Tools>) {
+    let (lake, _, tools) = remote_with_tools();
+    (lake, tools)
+}
+
+lakelands_door_checks::search_field_checks!(remote_with_search_tool, block_on);

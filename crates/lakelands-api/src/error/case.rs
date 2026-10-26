@@ -2027,6 +2027,8 @@ catalog! {
         LineTooLong { line: usize, max: usize } => "line {line} is longer than {max} bytes",
         /// A member the arguments need and do not give.
         MemberMissing { member: String } => "the member `{member}` is missing",
+        /// A member the arguments' mode needs and they do not give.
+        ModeNeedsMember { mode: String, member: String } => "the `{mode}` mode needs the member `{member}`, and it is missing",
         /// A migration naming both a type and a value type.
         MigrationBoth => "a migration names a type (`to`) or a value type (`value_type`), not both",
         /// A migration naming neither a type nor a value type.

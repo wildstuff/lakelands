@@ -70,11 +70,30 @@ pub(crate) fn args<T: DeserializeOwned>(door: &str, a: &Map<String, Value>) -> R
             (at, Case::ArgumentsUnfit { fault }.into())
         });
         let said = match at {
+            None if needs_mode(&v, &said) => needed_by_mode(&v),
             Some(path) => said.within(Place::Member { path }),
             None => said,
         };
         Fault::arguments(said.within(Place::Arguments { tool: door.into() }))
     })
+}
+
+/// Whether `said` is the `field` of a vector or hybrid search missing
+/// at the root of `v`.
+fn needs_mode(v: &Value, said: &Said) -> bool {
+    let missing = matches!(&said.case, Case::MemberMissing { member } if member == "field");
+    missing
+        && matches!(
+            v.get("mode").and_then(Value::as_str),
+            Some("vector" | "hybrid")
+        )
+}
+
+/// `field` missing, said with the mode that needs it.
+fn needed_by_mode(v: &Value) -> Said {
+    let mode = v.get("mode").and_then(Value::as_str).unwrap_or_default();
+    let (mode, member) = (mode.to_owned(), "field".to_owned());
+    Case::ModeNeedsMember { mode, member }.into()
 }
 
 /// Where a read failed, as its path says it; `None` at the root.
