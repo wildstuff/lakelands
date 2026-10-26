@@ -97,10 +97,9 @@ lake meets the refusal only when it declares that set again.
 
 A set declares when it is decided, `decided_at`: `write`, which it is
 unless it says otherwise and which keeps its members as this record
-says, or `read`. It is proposed for 0.20.0 (lakelands#1412) and comes in
-force with the issue that builds it. A host asked which of the records
-it shows a condition reading `today()` rules out, by a name a model can
-carry, and a kept set could not hold it.
+says, or `read`. It is accepted for 0.20.0 (lakelands#1412). A host
+asked which of the records it shows a condition reading `today()` rules
+out, by a name a model can carry, and a kept set could not hold it.
 
 - **It keeps no membership.** No write decides it, the fold holds no
   member of it, and no `object_set_changed` is appended for it, so
@@ -113,10 +112,14 @@ carry, and a kept set could not hold it.
   `now()` and `today()` and may name a field computed at the read.
 - **It steps through no reference.** A read evaluates no path through a
   reference (055), so a `where` that steps across one, or calls
-  `exists`, is refused, naming the set and the path.
-- **Nothing decided at a write names it.** A kept set's `where`, a kept
-  view's `where`, a trigger's `when` and a verb's `requires` that name
-  it by `in_set` are refused, naming the set and what names it: what a
+  `exists`, is refused, naming the set and the path. A kept set it
+  names by `in_set` answers by its kept membership, whatever that set's
+  `where` reads; the set decided at the read steps through nothing by
+  naming it.
+- **Nothing decided at a write names it.** A kept set's `where`, every
+  view's `where` and its merged sources' `where`s, kept or not, a
+  trigger's `when` and a verb's `requires` that name it by `in_set` are
+  refused, naming the set and what names it: what a
   write decides by it would drift from what a read of it answers, the
   reason a kept set does not read the clock.
 - **Declared again, it changes how it is decided.** A kept set declared
@@ -271,4 +274,9 @@ them would mean running a migration twice.
 - A set may be decided at the read, keeping no membership, and the
   refusal of a `where` that reads the clock became a refusal of a kept
   set's (lakelands#1412): a host asked which of the records it shows a
-  condition reading `today()` rules out, by a name.
+  condition reading `today()` rules out, by a name. The operator
+  accepted it on 2026-10-25.
+- What names a set decided at the read is refused for every view's
+  `where` and its merged sources', kept or not (lakelands#1441), and a
+  kept set a read names by `in_set` answers by its kept membership,
+  whatever its `where` reads (lakelands#1437).

@@ -229,7 +229,9 @@ The refusals:
   path come by depth, type and key, and an aggregate's groups by their
   key". The statement has no `order_by`; the refusal is the pattern's,
   in the pattern's words (lakelands#1446). Both next calls dropped
-  `ORDER BY`.
+  `ORDER BY`. Fixed by lakelands#1451: the subset itself now refuses
+  `ORDER BY` beside an aggregate, as `order_by_aggregate`, at `ORDER`'s
+  character offset.
 - **C1 20:** the cursor alone, as in T (lakelands#1445).
 - **C1 13:** a check after task 4 was already answered: `order_find`
   with `product in ['P-20', 'P-21']`, "does not parse: expected `(`".
@@ -272,7 +274,7 @@ of the walk was understood: each next call changed the right thing.
   - **C:** two, task 5 in both runs. The `cypher` description, written
     for this walk, says "`ORDER BY` names fields" and nothing of an
     aggregate, beside which `ORDER BY` is refused (its refusal's wording
-    is lakelands#1446).
+    was lakelands#1446, fixed by lakelands#1451).
   - With every such sentence written, T would have stood at 6 and 4 of
     6, 10 of 12, and C at 6 and 6, 12 of 12. T's two remaining losses
     are both T2's: the inverse name on task 4, and task 5, which began
@@ -319,7 +321,7 @@ of the walk was understood: each next call changed the right thing.
 | T1 13, T2 15 | `query`'s `project` schema shows `fields` but not an aggregate's `group_by` and `measures` | lakelands#1443 |
 | T1 22, T2 24 | A step's `depth` needs `min` and `max`, and `query`'s schema requires neither | lakelands#1444 |
 | T1 19, T2 21, C1 20 | A find's `cursor` has no description; three of four runs sent it without its `order_by` | lakelands#1445 |
-| C1 15, C2 12 | Cypher's `ORDER BY` beside an aggregate is refused in the pattern's words, as `order_by`, with no offset | lakelands#1446 |
+| C1 15, C2 12 | Cypher's `ORDER BY` beside an aggregate is refused in the pattern's words, as `order_by`, with no offset | lakelands#1446, fixed by lakelands#1451 |
 
 **Observations, with no issue:**
 

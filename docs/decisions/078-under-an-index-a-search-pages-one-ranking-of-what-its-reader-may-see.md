@@ -923,7 +923,7 @@ today and 138.98 in the build. What the graphs cost, in the same runs:
 ## How it came to be
 
 - A field grant that holds only on the records a condition selects was
-  proposed (lakelands#1412): the premise that a field is shown on every
+  accepted (lakelands#1412): the premise that a field is shown on every
   record of a type its reader reads, or on none, now holds of a
   type-wide grant, and a reader such a grant narrows has no class. The
   text statistics of a lexical ranking are kept by class, as the graphs
