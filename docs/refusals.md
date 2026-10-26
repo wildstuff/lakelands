@@ -360,6 +360,7 @@ What a refusal is about.
 | `verb_key` | — | a key's field is written by every create, and a verb writes only a record that stands | A key field only verbs write. |
 | `expr_no_expression` | — | it is backed by `expr` and has no expression | An `expr` function with no expression. |
 | `expr_risk` | — | it is backed by `expr`, which reaches nothing outside the lake, so its risk is `low` | An `expr` function declared above `low` risk. |
+| `expr_too_deep` | `max` (usize), `offset` (usize) | an expression nests at most {max} levels deep: a parenthesis, a call argument, a list item, `not` and a unary `-` each go one deeper (at character {offset}) | An expression nested deeper than the parser reads. |
 | `expression_not_expr` | `backing` (String) | it has an expression but is backed by `{backing}` | An expression on a function another backing computes. |
 | `function_input_kind` | `function` (String), `input` (FieldName), `kind` (StorageKind), `type` (TypeName), `held` (StorageKind) | the function `{function}` takes `{input}` as a {kind}, and `{type}` holds it as a {held} | A function's input the type holds as another kind. |
 | `function_not_derived` | — | a field computed by a function has the authority `derived` | A field computed by a function whose authority is not `derived`. |

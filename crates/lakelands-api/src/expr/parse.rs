@@ -51,6 +51,7 @@ pub fn parse(text: &str) -> Result<Expr> {
     let mut p = Parser {
         chars: text.chars().collect(),
         pos: 0,
+        depth: 0,
     };
     let e = p.or()?;
     p.ws();
@@ -149,9 +150,16 @@ fn takes_field(f: Func) -> bool {
 
 const KEYWORDS: [&str; 8] = ["and", "or", "not", "in", "is", "null", "true", "false"];
 
+/// How deep an expression nests: every way back into `or` (a
+/// parenthesis, a call argument, a list item) and every `not` and unary
+/// `-` goes one deeper. A deeper expression is refused before the parser
+/// recurses further, so no text runs it out of stack.
+const NESTING: usize = 32;
+
 struct Parser {
     chars: Vec<char>,
     pos: usize,
+    depth: usize,
 }
 
 impl Parser {
@@ -203,6 +211,22 @@ impl Parser {
         }
     }
 
+    /// `f`, one level deeper; a level too many is refused at `begins`,
+    /// the character where it starts.
+    fn nested(&mut self, begins: usize, f: fn(&mut Self) -> Result<Expr>) -> Result<Expr> {
+        if self.depth == NESTING {
+            let case = Case::ExprTooDeep {
+                max: NESTING,
+                offset: begins,
+            };
+            return Err(ParseError { at: begins, case });
+        }
+        self.depth += 1;
+        let e = f(self);
+        self.depth -= 1;
+        e
+    }
+
     fn or(&mut self) -> Result<Expr> {
         let mut args = vec![self.and()?];
         while self.keyword("or") {
@@ -229,8 +253,11 @@ impl Parser {
 
     fn not(&mut self) -> Result<Expr> {
         if self.keyword("not") {
-            return Ok(Expr::Not {
-                arg: Box::new(self.not()?),
+            let begins = self.pos - "not".len();
+            return self.nested(begins, |p| {
+                Ok(Expr::Not {
+                    arg: Box::new(p.not()?),
+                })
             });
         }
         self.cmp()
@@ -312,8 +339,11 @@ impl Parser {
 
     fn unary(&mut self) -> Result<Expr> {
         if self.eat("-") {
-            return Ok(Expr::Neg {
-                arg: Box::new(self.unary()?),
+            let begins = self.pos - 1;
+            return self.nested(begins, |p| {
+                Ok(Expr::Neg {
+                    arg: Box::new(p.unary()?),
+                })
             });
         }
         self.atom()
@@ -323,10 +353,13 @@ impl Parser {
         self.ws();
         match self.peek() {
             Some('(') => {
+                let begins = self.pos;
                 self.pos += 1;
-                let e = self.or()?;
-                self.expect(")")?;
-                Ok(e)
+                self.nested(begins, |p| {
+                    let e = p.or()?;
+                    p.expect(")")?;
+                    Ok(e)
+                })
             }
             Some('\'') => self.string(),
             Some(c) if c.is_ascii_digit() => self.number(),
@@ -496,7 +529,8 @@ impl Parser {
             return Ok(out);
         }
         loop {
-            out.push(self.or()?);
+            self.ws();
+            out.push(self.nested(self.pos, Self::or)?);
             if self.eat(close) {
                 return Ok(out);
             }

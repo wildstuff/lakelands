@@ -974,6 +974,8 @@ catalog! {
         ExprNoExpression => "it is backed by `expr` and has no expression",
         /// An `expr` function declared above `low` risk.
         ExprRisk => "it is backed by `expr`, which reaches nothing outside the lake, so its risk is `low`",
+        /// An expression nested deeper than the parser reads.
+        ExprTooDeep { max: usize, offset: usize } => "an expression nests at most {max} levels deep: a parenthesis, a call argument, a list item, `not` and a unary `-` each go one deeper (at character {offset})",
         /// An expression on a function another backing computes.
         ExpressionNotExpr { backing: String } => "it has an expression but is backed by `{backing}`",
         /// A function's input the type holds as another kind.
