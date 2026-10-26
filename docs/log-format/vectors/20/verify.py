@@ -362,10 +362,23 @@ def derived(e):
 
 
 def ingest_id(e):
-    """An ingest event's id from its members, `upstream` not among them (log-format §3)."""
-    b = e["body"]
-    return content_id(b"lakelands:ingest:v1", e["source"].encode(), b["type"].encode(), b["key"].encode(),
-                      str(b["version"] - 1).encode(), canonical(b["patch"]))
+    """An ingest event's id from its members, `upstream` not among them, and,
+    from format 20, its box under `v2` (log-format §3)."""
+    b, boxed = e["body"], e.get("sealed", {}).get("box")
+    parts = [e["source"].encode(), b["type"].encode(), b["key"].encode(), str(b["version"] - 1).encode(), canonical(b["patch"])]
+    if boxed is None:
+        return content_id(b"lakelands:ingest:v1", *parts)
+    return content_id(b"lakelands:ingest:v2", *parts, boxed.encode())
+
+
+def box_form(e):
+    """Whether a box holds the members `sealed` names, as a verifier without
+    the key tells (log-format §1.4): none of them in the patch, and the box
+    padded base64 of at least the 16 bytes of the tag."""
+    s, patch = e.get("sealed", {}), e["body"].get("patch", {})
+    boxed = s.get("box")
+    return (isinstance(boxed, str) and BASE64.fullmatch(boxed) is not None and len(boxed) >= 24
+            and bool(s.get("fields")) and not any(f in patch for f in s["fields"]))
 
 
 # The base64 a sealed value is written in (058), and the kinds that carry one.
@@ -644,6 +657,10 @@ def verify_dir(root):
             named = event.get("sealed", {}).get("source")
             need(event["body"].get("kind") != "record_ingested" or named in (None, event.get("source")),
                  f"a `record_ingested` of `{event.get('source')}` carries `sealed` naming `{named}`, which is not its own source")
+            boxed = "box" in event.get("sealed", {})
+            need(not boxed or (event["body"].get("kind") == "record_ingested" and v >= 20),
+                 f"a `{event['body'].get('kind')}` event of format {v} carries `sealed.box`, which only a `record_ingested` of format 20 on carries")
+            need(not boxed or box_form(event), "its box holds the members `sealed` names, none of them in the patch")
             need("delivery" not in event or (event["body"].get("kind") == "record_ingested" and v >= 17),
                  f"a `{event['body'].get('kind')}` event of format {v} carries `delivery`, which only a `record_ingested` of format 17 on carries")
             need(event["body"].get("kind") != "source_forgotten" or v >= 16,
@@ -788,6 +805,17 @@ def stamp(n):
         for name in ("frame", "v") if flaw["code"] == "frame_other" else ():
             flaw[name] += n - FORMAT
     path.write_text(json.dumps(framed, indent=2, ensure_ascii=False) + "\n", "utf-8")
+
+    # The ingest whose members are in one box follows the framed append.
+    path = HERE / "boxed.json"
+    boxed = json.loads(path.read_text("utf-8"))
+    other = set(boxed) - {"about", "after", "line", "hash"}
+    if other:
+        sys.exit(f"FAIL boxed.json: --stamp does not know the members {sorted(other)}")
+    boxed["after"] = {"position": appended[-1]["position"], "hash": appended[-1]["hash"]}
+    event = restamp(json.loads(boxed["line"]), n, appended[-1]["hash"])
+    boxed["line"], boxed["hash"] = canonical(event).decode("utf-8"), event["hash"]
+    path.write_text(json.dumps(boxed, indent=2, ensure_ascii=False) + "\n", "utf-8")
 
     expected = json.loads((HERE / "expected.json").read_text("utf-8"))
     for want in expected["events"]:
@@ -951,6 +979,22 @@ def main():
               f"framed.json: the break `{shows}` is refused at line {want['at']}: {said and said[1]}")
     check(sorted(entry["shows"] for entry in framed["breaks"]) == sorted(BREAKS),
           "framed.json: every break this verifier checks is shown once")
+
+    # An ingest whose sealed members are in one box (§1.4), after the
+    # framed append: its hash, its place in the chain, its id under `v2`
+    # and the box's form, which a verifier without the key tells.
+    boxed = json.loads((HERE / "boxed.json").read_text("utf-8"))
+    event, after = json.loads(boxed["line"]), boxed["after"]
+    check(after == {"position": before["position"], "hash": before["hash"]}
+          and event["position"] == before["position"] + 1 and event["prev"] == before["hash"],
+          f"boxed.json: it follows position {before['position']}")
+    check(canon(event, lambda why: check(False, f"boxed.json: {why}")) == boxed["line"].encode("utf-8")
+          and event["v"] == FORMAT, f"boxed.json: the event is canonical, in format {FORMAT}")
+    body = {k: v for k, v in event.items() if k != "hash"}
+    check(sha(canonical(body)) == event["hash"] == boxed["hash"], f"boxed.json: hash {boxed['hash'][:12]}…")
+    check(event["body"]["kind"] == "record_ingested" and box_form(event),
+          "boxed.json: its box holds the members `sealed` names, none of them in the patch")
+    check(ingest_id(event) == event["id"], f"boxed.json: ingest id {event['id']}, under `lakelands:ingest:v2`")
 
     for n, want in [(1e21, "1e+21"), (1e-7, "1e-7"), (0.000001, "0.000001"), (333333333.3333333, "333333333.3333333"),
                     (-0.0, "0"), (9007199254740992.0, "9007199254740992"), (5e-324, "5e-324")]:

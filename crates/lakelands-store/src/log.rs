@@ -81,7 +81,7 @@ impl Draft {
 }
 
 pub use lakelands_core::log::{
-    accepted_id, aging_id, authored_id, ingest_id, output_id, positional_id,
+    accepted_id, aging_id, authored_id, boxed_ingest_id, ingest_id, output_id, positional_id,
 };
 
 /// The hash of an event's line as it was written, without its `hash`.

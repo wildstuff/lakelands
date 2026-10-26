@@ -123,8 +123,9 @@ pub struct Event {
 
 /// The members of an event a source's key seals: the patch members it
 /// names, or the recorded output where `fields` is empty. Each holds the
-/// base64 of AES-256-GCM-SIV's output over the value's canonical bytes
-/// (`docs/log-format.md` §1.4).
+/// base64 of AES-256-GCM-SIV's output over the value's canonical bytes,
+/// or, from format 20, a record's members are left out of the patch and
+/// sealed together in `boxed` (`docs/log-format.md` §1.4).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sealed {
@@ -143,6 +144,11 @@ pub struct Sealed {
     /// on (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub apart: Vec<crate::id::KeyId>,
+    /// From format 20, on a `record_ingested`: the base64 of the cipher's
+    /// output over the canonical bytes of the object of the members
+    /// `fields` names, which the patch leaves out.
+    #[serde(rename = "box", default, skip_serializing_if = "Option::is_none")]
+    pub boxed: Option<String>,
 }
 
 /// Every kind of event, and its payload. The set is closed per format

@@ -195,7 +195,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 649, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 654, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -1060,6 +1060,62 @@ fn a_framed_append_is_stored_as_the_writer_frames_it_and_every_break_is_refused(
             "`{shows}`: {flaw}"
         );
     }
+}
+
+/// `boxed.json`, an ingest whose sealed members are in one box (§1.4),
+/// after the framed append: its hash and place in the chain, its id made
+/// under `lakelands:ingest:v2` with the box, a patch that holds none of
+/// the members `sealed` names, and no flaw a reader refuses it for.
+#[test]
+fn an_ingest_whose_members_are_in_one_box_follows_the_framed_append() {
+    let boxed = read_json("boxed.json");
+    let framed = read_json("framed.json");
+    let events = framed["events"].as_array().unwrap();
+    let last: Event = serde_json::from_str(str_of(events.last().unwrap(), "line")).unwrap();
+    let line = str_of(&boxed, "line");
+    let event: Event = serde_json::from_str(line).unwrap();
+    let value: Value = serde_json::from_str(line).unwrap();
+    assert_eq!(canonical::to_vec(&value), line.as_bytes(), "canonical");
+    assert_eq!(boxed["after"]["position"], last.position.0, "it follows");
+    assert_eq!(str_of(&boxed["after"], "hash"), last.hash.0, "it follows");
+    assert_eq!(
+        (event.position, &event.prev),
+        (last.position.next(), &last.hash)
+    );
+    assert_eq!(hash_of(line), event.hash.0, "its hash");
+    assert_eq!(str_of(&boxed, "hash"), event.hash.0, "its hash repeated");
+    assert_eq!(event.v, LOG_FORMAT_VERSION, "its format");
+    assert_eq!(log::misplaced(&event), None);
+    let EventBody::RecordIngested {
+        ty,
+        key,
+        version,
+        patch,
+        ..
+    } = &event.body
+    else {
+        panic!("an ingest");
+    };
+    let sealed = event.sealed.as_ref().unwrap();
+    let boxed = sealed.boxed.as_deref().unwrap();
+    assert!(!sealed.fields.is_empty() && sealed.fields.iter().all(|f| !patch.contains_key(f)));
+    let source = event.source.as_ref().unwrap();
+    let id = log::boxed_ingest_id(source, ty, key, version.0 - 1, patch, boxed);
+    assert_eq!(id, event.id, "its ingest id");
+    assert_ne!(
+        log::ingest_id(source, ty, key, version.0 - 1, patch),
+        event.id
+    );
+    let mut before = event.clone();
+    before.v = 19;
+    assert_eq!(
+        log::misplaced(&before),
+        Some(Flaw::BoxedOn {
+            kind: "record_ingested".into(),
+            v: 19
+        }),
+        "a box before format 20"
+    );
 }
 
 /// The breaks of `framed.json`, by the code of the flaw each is refused for.

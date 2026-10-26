@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
-use lakelands_api::event::{Event, EventBody};
+use base64::engine::general_purpose::STANDARD;
+use lakelands_api::event::{Event, EventBody, Sealed};
 use lakelands_api::seam::DataKey;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -26,10 +27,11 @@ fn key() -> DataKey {
     DataKey(Sha256::digest(b"lakelands:vectors:key").into())
 }
 
-/// The vectors' sealed ingest opens under their key to its plaintext,
-/// and sealing the plaintext again gives the bytes the log holds.
+/// The vectors' ingest of each member sealed alone opens under their key
+/// to its plaintext, and sealed again its member goes into a box the
+/// patch leaves out, which opens to the same plaintext (083).
 #[test]
-fn the_vectors_sealed_ingest_opens_and_seals_to_the_same_bytes() {
+fn the_vectors_sealed_ingest_opens_and_seals_again_in_a_box() {
     let stored = line("sealed_ingest");
     let mut plain = stored.clone();
     open(&mut plain, &key()).unwrap();
@@ -37,9 +39,108 @@ fn the_vectors_sealed_ingest_opens_and_seals_to_the_same_bytes() {
         panic!("an ingest")
     };
     assert_eq!(patch["email"], json!("ada@example.org"));
-    let (sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
-    seal(&mut plain.body, &sealed, &source, &key());
-    assert_eq!(plain.body, stored.body);
+    let opened = plain.clone();
+    let (mut sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
+    seal(&mut plain.body, &mut sealed, &source, &key());
+    assert_eq!(patch_of(&plain).get("email"), None);
+    assert!(sealed.boxed.is_some());
+    plain.sealed = Some(sealed);
+    open(&mut plain, &key()).unwrap();
+    assert_eq!(plain.body, opened.body);
+}
+
+/// The patch of an ingest.
+fn patch_of(e: &Event) -> &lakelands_api::Patch {
+    match &e.body {
+        EventBody::RecordIngested { patch, .. } => patch,
+        _ => panic!("an ingest"),
+    }
+}
+
+/// `boxed.json`'s ingest, its members sealed in one box.
+fn boxed() -> Event {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/log-format/vectors/20/boxed.json");
+    let boxed: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    serde_json::from_str(boxed["line"].as_str().unwrap()).unwrap()
+}
+
+/// The vectors' box opens under their key to the members `sealed` names,
+/// and sealing them again gives the box the log holds (083).
+#[test]
+fn the_vectors_box_opens_and_seals_to_the_same_bytes() {
+    let stored = boxed();
+    let mut plain = stored.clone();
+    open(&mut plain, &key()).unwrap();
+    assert_eq!(patch_of(&plain)["email"], json!("cleo@example.org"));
+    let (mut sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
+    seal(&mut plain.body, &mut sealed, &source, &key());
+    assert_eq!((plain.body, Some(sealed)), (stored.body, stored.sealed));
+}
+
+/// An ingest of `name` and `city`, both sealed, and `id` plain, at
+/// `version`.
+fn two_sealed(version: u64) -> (Event, Sealed) {
+    let mut e = boxed();
+    if let EventBody::RecordIngested {
+        patch, version: v, ..
+    } = &mut e.body
+    {
+        *patch =
+            serde_json::from_value(json!({"id": "c6", "name": "Cleo", "city": "Oslo"})).unwrap();
+        *v = lakelands_api::Version(version);
+    }
+    let mut sealed = e.sealed.clone().unwrap();
+    sealed.fields = vec!["city".into(), "name".into()];
+    sealed.boxed = None;
+    (e, sealed)
+}
+
+/// A record's sealed members go into one box, of one tag: the patch keeps
+/// only what is plain, the box opens back to the whole patch, and the same
+/// values at the same version seal to the same box, at another version
+/// to another; a box moved to another record, or beside a member it holds,
+/// does not open; erased, every member it holds is null.
+#[test]
+fn a_records_sealed_members_are_sealed_in_one_box() {
+    let (plain, sealed) = two_sealed(1);
+    let source = plain.source.clone().unwrap();
+    let sealing = |(mut e, mut s): (Event, Sealed)| {
+        seal(&mut e.body, &mut s, &source, &key());
+        e.sealed = Some(s);
+        e
+    };
+    let e = sealing((plain.clone(), sealed.clone()));
+    assert_eq!(
+        serde_json::to_value(patch_of(&e)).unwrap(),
+        json!({"id": "c6"})
+    );
+    let boxed = e.sealed.as_ref().and_then(|s| s.boxed.clone()).unwrap();
+    let members = br#"{"city":"Oslo","name":"Cleo"}"#;
+    assert_eq!(
+        base64::Engine::decode(&STANDARD, &boxed).unwrap().len(),
+        members.len() + 16
+    );
+    let mut opened = e.clone();
+    open(&mut opened, &key()).unwrap();
+    assert_eq!(opened.body, plain.body);
+    assert_eq!(sealing((plain.clone(), sealed.clone())), e);
+    let later = sealing(two_sealed(2));
+    assert_ne!(later.sealed.and_then(|s| s.boxed), Some(boxed));
+    let mut moved = e.clone();
+    if let EventBody::RecordIngested { key, .. } = &mut moved.body {
+        *key = "c7".into();
+    }
+    assert!(open(&mut moved, &key()).is_err());
+    let mut beside = e.clone();
+    if let EventBody::RecordIngested { patch, .. } = &mut beside.body {
+        patch.insert("name".into(), json!("Cleo"));
+    }
+    assert!(open(&mut beside, &key()).is_err());
+    let mut erased = e.clone();
+    assert_eq!(super::erase(&mut erased), sealed.fields);
+    let want = json!({"id": "c6", "city": null, "name": null});
+    assert_eq!(serde_json::to_value(patch_of(&erased)).unwrap(), want);
 }
 
 /// The vectors' sealed output opens under their key, and its input is
@@ -66,7 +167,8 @@ fn apart() -> DataKey {
 }
 
 /// The vectors' ingest sealed apart opens under its version composed
-/// with the delivery's key, to its plaintext, and under neither alone;
+/// with the delivery's key, to its plaintext, and under neither alone,
+/// and sealed again in a box opens only under both too;
 /// its output's input is the HMAC of the call under the composed key
 /// (065, lakelands#1214).
 #[test]
@@ -82,9 +184,13 @@ fn the_vectors_ingest_sealed_apart_opens_only_under_both_keys() {
         panic!("an ingest")
     };
     assert_eq!(patch["email"], json!("bea@example.org"));
-    let (sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
-    seal(&mut plain.body, &sealed, &source, &both);
-    assert_eq!(plain.body, stored.body);
+    let opened = plain.clone();
+    let (mut sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
+    seal(&mut plain.body, &mut sealed, &source, &both);
+    plain.sealed = Some(sealed);
+    assert!(open(&mut plain.clone(), &key()).is_err());
+    open(&mut plain, &both).unwrap();
+    assert_eq!(plain.body, opened.body);
     let mut e = line("sealed_apart_output");
     let call = json!({"function": "shout", "inputs": {"email": "bea@example.org"}, "config": {}});
     let EventBody::OutputRecorded { input, .. } = &e.body else {

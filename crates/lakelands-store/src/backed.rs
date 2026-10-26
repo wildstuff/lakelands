@@ -498,6 +498,7 @@ fn input_of(
         source: None,
         fields: Vec::new(),
         apart,
+        boxed: None,
     };
     let k = keys.sealed(&source, &sealed)?;
     sealed.source = Some(source);

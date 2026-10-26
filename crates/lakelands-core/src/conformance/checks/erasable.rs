@@ -17,7 +17,13 @@ use crate::conformance::prelude::*;
 
 check!(
     SEALED_IN_THE_LOG = a_sources_value_of_an_erasable_field_is_sealed_in_the_log_and_read_plain,
-    "058: a source's value of an erasable field enters the log as `record_ingested` with `sealed` naming the key's version and the field, and the value base64 that is not the plaintext, while a field that is not erasable stays plaintext; the record reads the plaintext, at the head and after a rebuild; the same value sent again against the same state appends nothing, the same value on another record seals to other bytes, and a value that returns after another (A, B, A) appends again; with no key store bound such a value is refused as unbound and nothing is appended",
+    "058, 083: a source's value of an erasable field enters the log as `record_ingested` with `sealed` naming the key's version and the field, the patch leaving the value out and `sealed.box` holding it as base64 that is not the plaintext, while a field that is not erasable stays plaintext in the patch; the record reads the plaintext, at the head and after a rebuild; the same value sent again against the same state appends nothing, the same value on another record seals to another box, and a value that returns after another (A, B, A) appends again; with no key store bound such a value is refused as unbound and nothing is appended",
+    reopens
+);
+
+check!(
+    ONE_BOX = a_records_sealed_members_are_sealed_in_one_box,
+    "083: a source's ingest of a record with two erasable members seals both in one `sealed.box`, the patch leaving both out and `sealed.fields` naming both, and its id is made with the box (`lakelands:ingest:v2`); the record reads back each value, after a rebuild too; the same values against the same state append nothing; the same values written again at a later version seal to another box; and once the source is forgotten, neither value reads",
     reopens
 );
 
@@ -266,6 +272,11 @@ fn stored(e: &Event, f: &str) -> Value {
     }
 }
 
+/// The box an ingested event seals its members in, if it has one.
+fn boxed(e: &Event) -> Option<&str> {
+    e.sealed.as_ref()?.boxed.as_deref()
+}
+
 /// The value of `f` in `person` `key` at the head.
 pub(super) async fn read(l: &Lake, key: &str, f: &str) -> Result<Value, Failure> {
     let r = l.read("person", key).await?;
@@ -317,13 +328,10 @@ async fn a_sources_value_of_an_erasable_field_is_sealed_in_the_log_and_read_plai
         "the event's `sealed` names key `{k}` and the field `name`; it is {:?}",
         e.sealed
     );
-    let name = stored(e, "name");
-    let base64 = name
-        .as_str()
-        .is_some_and(|s| !s.is_empty() && s.len() % 4 == 0 && !s.contains("Ada"));
+    let base64 = boxed(e).is_some_and(|s| !s.is_empty() && s.len() % 4 == 0 && !s.contains("Ada"));
     ensure!(
-        base64,
-        "the log holds `name` as base64 that is not the plaintext; it holds {name}"
+        base64 && stored(e, "name").is_null(),
+        "the log holds `name` in `sealed.box` as base64 that is not the plaintext, and not in the patch; it holds {e:?}"
     );
     ensure!(
         stored(e, "city") == json!("Oslo"),
@@ -354,10 +362,14 @@ async fn a_sources_value_of_an_erasable_field_is_sealed_in_the_log_and_read_plai
         .await
         .must("ingesting Ada into p1 again")?;
     let events = ingested(store.as_ref(), before).await?;
-    let names: Vec<Value> = events.iter().map(|e| stored(e, "name")).collect();
+    let names: Vec<Option<&str>> = events.iter().map(boxed).collect();
     ensure!(
-        names.len() == 4 && names[0] != names[1] && names[0] != names[3] && names[2] != names[3],
-        "p1, p2, Bob into p1 and Ada into p1 again append four events whose sealed `name`s all differ; the log holds {names:?}"
+        names.len() == 4
+            && names.iter().all(Option::is_some)
+            && names[0] != names[1]
+            && names[0] != names[3]
+            && names[2] != names[3],
+        "p1, p2, Bob into p1 and Ada into p1 again append four events whose boxes all differ; the log holds {names:?}"
     );
     store.rebuild().await.must("rebuilding the lake")?;
     for (key, want) in [("p1", "Ada"), ("p2", "Ada")] {
@@ -365,6 +377,104 @@ async fn a_sources_value_of_an_erasable_field_is_sealed_in_the_log_and_read_plai
         ensure!(
             v == json!(want),
             "after a rebuild `{key}` reads `name` {want}; it reads {v}"
+        );
+    }
+    Ok(())
+}
+
+async fn a_records_sealed_members_are_sealed_in_one_box(store: Store, reopen: Reopen) -> Held {
+    let (_, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    let mut t = person();
+    t.fields.push(FieldDecl {
+        erasable: true,
+        ..sourced("email", StorageKind::Text)
+    });
+    l.declare(t).await?;
+    let ada = || {
+        let ada = json!({"id": "p1", "name": "Ada", "email": "ada@example.org", "city": "Oslo"});
+        source_record("person", "p1", ada)
+    };
+    let before = store.head().await.must("reading the head")?;
+    l.ingest("crm", vec![ada()]).await.must("ingesting p1")?;
+    let events = ingested(store.as_ref(), before).await?;
+    let [e] = events.as_slice() else {
+        return Err(Failure::new(format!(
+            "one `record_ingested` was expected, the log holds {events:?}"
+        )));
+    };
+    let mut fields = e
+        .sealed
+        .as_ref()
+        .map(|s| s.fields.clone())
+        .unwrap_or_default();
+    fields.sort();
+    ensure!(
+        fields == ["email", "name"],
+        "`sealed.fields` names `email` and `name`; it is {:?}",
+        e.sealed
+    );
+    let one = boxed(e).is_some_and(|b| !b.contains("Ada") && !b.contains("ada@"));
+    let out = stored(e, "name").is_null() && stored(e, "email").is_null();
+    ensure!(
+        one && out && stored(e, "city") == json!("Oslo"),
+        "one `sealed.box` holds `name` and `email`, which the patch leaves out, and `city` stays in the patch; the event is {e:?}"
+    );
+    if let (EventBody::RecordIngested { patch, .. }, Some(b)) = (&e.body, boxed(e)) {
+        let id =
+            crate::log::boxed_ingest_id(&"crm".into(), &"person".into(), &"p1".into(), 0, patch, b);
+        ensure!(
+            e.id == id,
+            "the ingest's id is made under `lakelands:ingest:v2` with its box: {}; it is {}",
+            id.0,
+            e.id.0
+        );
+    }
+    let back = async || -> Held {
+        for (f, want) in [("name", "Ada"), ("email", "ada@example.org")] {
+            let v = read(&l, "p1", f).await?;
+            ensure!(v == json!(want), "`p1` reads `{f}` {want}; it reads {v}");
+        }
+        Ok(())
+    };
+    back().await?;
+    let head = store.head().await.must("reading the head")?;
+    l.ingest("crm", vec![ada()])
+        .await
+        .must("ingesting p1 again")?;
+    let again_head = store.head().await.must("reading the head")?;
+    ensure!(
+        again_head == head,
+        "the same values against the same state append nothing; the head moved from {head} to {again_head}"
+    );
+    let bob = source_record("person", "p1", json!({"name": "Bob"}));
+    l.ingest("crm", vec![bob])
+        .await
+        .must("ingesting Bob into p1")?;
+    l.ingest("crm", vec![ada()])
+        .await
+        .must("ingesting Ada into p1 again")?;
+    let events = ingested(store.as_ref(), before).await?;
+    let boxes: Vec<Option<&str>> = events.iter().map(boxed).collect();
+    ensure!(
+        boxes.len() == 3 && boxes.iter().all(Option::is_some) && boxes[0] != boxes[2],
+        "the same values at a later version seal to another box; the log holds {boxes:?}"
+    );
+    store.rebuild().await.must("rebuilding the lake")?;
+    back().await?;
+    // An author's note keeps `p1` when crm, which brought it, is forgotten.
+    l.upsert("person", "p1", json!({"note": "kept"})).await?;
+    let crm: SourceId = "crm".into();
+    let report = store.forget_preflight(&crm).await.must("the preflight")?;
+    store
+        .forget_source(&crm, Some(&report.report_id))
+        .await
+        .must("forgetting crm")?;
+    for f in ["name", "email"] {
+        let v = read(&l, "p1", f).await?;
+        ensure!(
+            v.is_null(),
+            "once crm is forgotten `p1` reads no `{f}`; it reads {v}"
         );
     }
     Ok(())

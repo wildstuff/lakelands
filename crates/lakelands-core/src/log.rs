@@ -58,6 +58,30 @@ pub fn ingest_id(
     ])
 }
 
+/// The id of an ingested record whose sealed members are in one box, from
+/// format 20 (`docs/log-format.md` §3): [`ingest_id`]'s parts under
+/// `lakelands:ingest:v2`, and the box as stored. The same values against
+/// the same state seal to the same box, so a redelivery keeps its id.
+#[doc(hidden)]
+pub fn boxed_ingest_id(
+    source: &SourceId,
+    ty: &TypeName,
+    key: &RecordKey,
+    version_before: u64,
+    patch: &Patch,
+    boxed: &str,
+) -> EventId {
+    id_of(&[
+        b"lakelands:ingest:v2",
+        source.as_str().as_bytes(),
+        ty.as_str().as_bytes(),
+        key.as_str().as_bytes(),
+        version_before.to_string().as_bytes(),
+        &canonical::of(patch),
+        boxed.as_bytes(),
+    ])
+}
+
 /// The id of an authored write with an idempotency key: one key from one
 /// writer is one write in the whole lake.
 #[doc(hidden)]
@@ -138,6 +162,9 @@ const SEALED_FROM: u32 = 16;
 /// source's versions, and a selection by `seen_before` or by `deliveries`
 /// (065).
 const APART_FROM: u32 = 18;
+
+/// The log format that first seals a record's members in one box (083).
+const BOXED_FROM: u32 = 20;
 
 /// An event as log format `v` wrote it, its members as the format this
 /// release writes says them, for the release's own structs to read. Its
@@ -342,6 +369,12 @@ pub fn misplaced(event: &Event) -> Option<Flaw> {
     if apart && event.v < APART_FROM {
         let v = event.v;
         return Some(Flaw::ApartBefore { v });
+    }
+    let boxed = event.sealed.as_ref().is_some_and(|s| s.boxed.is_some());
+    let ingest = matches!(event.body, EventBody::RecordIngested { .. });
+    if boxed && (!ingest || event.v < BOXED_FROM) {
+        let (kind, v) = (kind.clone(), event.v);
+        return Some(Flaw::BoxedOn { kind, v });
     }
     if let EventBody::ValuesRemoved { selection, .. } = &event.body
         && event.v < APART_FROM
