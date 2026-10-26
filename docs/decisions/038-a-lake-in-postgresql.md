@@ -42,8 +42,7 @@ configured. With `disable` the connection is plaintext.
 - A segment's digest is the SHA-256 of its events' bytes, each followed
   by one line feed: the digest of the file the format describes
   (`docs/log-format.md` §4.2).
-- Proposed for 0.20.0 (lakelands#1413), in force with the issue that
-  builds it
+- Accepted for 0.20.0 (lakelands#1413)
   (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`):
   a row holds its event's line of the stored form, a frame is a row of
   its own in a table of frames beside them, and a segment's digest is
@@ -266,4 +265,4 @@ file answers on disk: it dies with its holder.
   row of `bases` their states name; a base fewer share stays in the
   state (lakelands#1432).
 - A row holding the stored form, a table of frames, and a digest over
-  the restored bytes, proposed with 083 (lakelands#1413).
+  the restored bytes, accepted with 083 (lakelands#1413).

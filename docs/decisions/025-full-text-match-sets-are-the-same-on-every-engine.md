@@ -181,9 +181,9 @@ so a weight changes no projection.
 A search that asks for `matches` is answered, on each hit, the searched
 fields its text matched, by name, and in each the spans of the tokens
 that matched, in text order, with the count of every matched token in
-the field. It is proposed for 0.20.0 (lakelands#1412) and comes in
-force with the issue that builds it. A host that wanted to show why a
-hit is a hit ran one more search a hit, field by field.
+the field. It is accepted for 0.20.0 (lakelands#1412). A host that
+wanted to show why a hit is a hit ran one more search a hit, field by
+field.
 
 - **A span is counted in characters,** Unicode scalar values of the
   field's text, its end exclusive, the unit refusals already count
@@ -1080,7 +1080,7 @@ Of an index asked for:
   reader in place of one partial index per field and its mark, at a
   fixed `ef_search`; under the seam the engine judges its vector
   candidates.
-- Proposed (lakelands#1412): a hit says where its text matched, in
+- Accepted (lakelands#1412): a hit says where its text matched, in
   characters of the fields its reader is shown, computed by the store
   after the page is cut. Decided by the operator on lakelands#1400: the
   lexical score is BM25F in its combined-field form, which replaces the

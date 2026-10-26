@@ -93,9 +93,11 @@ whether a hidden record is there or not.
   not matched.
 - **Refusal before a record is read.** Each step's `from` and `join`,
   the members a projection takes, and an optional branch's closure are
-  judged before any step's relation, in the order of the steps, and the
-  first fault is the answer, so a refusal never depends on what the
-  lake holds.
+  judged in the order of the steps, each step's in its turn: after the
+  relations, types and conditions of the steps before it, before its
+  own relation. The first fault is the answer, so which of two faults is
+  named first depends on the list alone, and a refusal never depends on
+  what the lake holds.
 - **Ceilings refused, never cut.** Each step's depth is held to
   `max_depth` as today. Branches multiply rows, never what a walk holds:
   each step's records are held once and rows made from them in order.
@@ -148,4 +150,10 @@ and costs the engine seam nothing.
 - A step's `where` reads every name a step listed before it binds, a
   sibling branch's included (lakelands#1412): the record left open
   whether a condition could read across branches, and a query language
-  translated into the pattern writes such conditions.
+  translated into the pattern writes such conditions. The operator
+  accepted it on 2026-10-25.
+- The order of judging is the step loop's: a step's `from` and `join`
+  are judged in the step's turn, after the earlier steps' relations,
+  not all before the first (lakelands#1417). It changes only which of
+  two faults is named first; every refusal still comes before a record
+  is read.

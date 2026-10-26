@@ -280,6 +280,10 @@ The walk's page lists every call and the answer it must give.
 - [`docs/walks/walk-5.md`](docs/walks/walk-5.md): the fifth walk, by a
   blind LLM agent that sees only the MCP door: a clerk's tasks, and the
   common refusals, each with what the agent changed after it.
+- [`docs/walks/walk-6.md`](docs/walks/walk-6.md): the sixth walk, by the
+  same blind agent: graph tasks through the typed `query` tool and
+  through a statement of the openCypher subset, measured on the same
+  tasks and the same lake.
 
 ## What it is not
 
@@ -320,7 +324,11 @@ The walk's page lists every call and the answer it must give.
 format, per-field provenance, positions on every answer, the engine
 contract and the seams. Each later release built on them; what it adds
 is in its notes on the releases page, and what comes next is on the
-milestones.
+milestones. `0.20.0` built the openCypher subset as an MCP read tool
+beside `query`, PageRank and the cheapest walk, patterns that branch
+and join, a change planned before it acts, sets decided at the read, a
+field hidden on the records a condition selects, where a lexical hit
+matched, BM25F ranking, and the compact log format 20.
 
 ## Licence
 

@@ -46,8 +46,7 @@ after that line to the last file, and every later file as a
 never rewritten. The lines before the last are not read again: a byte
 changed in them is the restore's to find.
 
-Proposed for 0.20.0 (lakelands#1413), in force with the issue that
-builds it
+Accepted for 0.20.0 (lakelands#1413)
 (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`):
 a run writes the form a copy of the log writes (`docs/log-format.md`
 §4.2), every line holding its `position`, rather than each event's
@@ -155,4 +154,4 @@ always at hand.
 ## How it came to be
 
 - A run writing the form a copy of the log writes, and continuing after
-  its last whole frame, proposed with 083 (lakelands#1413).
+  its last whole frame, accepted with 083 (lakelands#1413).
