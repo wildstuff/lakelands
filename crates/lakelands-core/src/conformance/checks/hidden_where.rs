@@ -95,7 +95,7 @@ check!(
 
 check!(
     HIDDEN_NOT_REACTED = a_write_or_call_on_a_selected_record_tells_nothing_of_a_field_hidden_there,
-    "006 and 024: a write's answer to the holder of a hiding names no trigger fired, nor object set joined or left, whose condition reads a field the hiding lowers; and a verb that reads such a field is refused not granted on a selected record, its `requires` holding or not, appending nothing"
+    "006 and 024: a write's answer to the holder of a hiding names no trigger fired, nor object set joined or left, whose condition reads a field the hiding lowers; and a verb that reads such a field is refused not granted where it reads it on a selected record, its own or one across a reference, its `requires` holding or not, appending nothing"
 );
 
 /// `chunk` with the condition field `doc`, the text `body`, the derived
@@ -1172,6 +1172,46 @@ async fn a_write_or_call_on_a_selected_record_tells_nothing_of_a_field_hidden_th
         ensure!(
             said == Error::refused(None, Refusal::NotGranted),
             "ann's call of `seal` on k2, its `requires` {what}, must be refused not granted: {said:?}"
+        );
+        head_unmoved(store.as_ref(), head, "a refused call").await?;
+    }
+    // Across a reference: k4 holds what `mark` requires and k2 no longer
+    // does, both secret; k1 is open and does not.
+    l.declare(type_decl(
+        "note",
+        vec![field("tag", Text), reference("of", "chunk")],
+    ))
+    .await?;
+    let mut mark = write_verb("mark", "note", "tag", "'seen'");
+    if let Declaration::Verb(v) = &mut mark {
+        v.requires = Some("of.body = 'taxi paris'".into());
+    }
+    l.declare_as(mark, "a verb across").await?;
+    for (n, of) in [("n1", "k1"), ("n2", "k2"), ("n4", "k4")] {
+        l.upsert("note", n, json!({"tag": "new", "of": of})).await?;
+    }
+    let hide = json!({"field": "doc", "values": ["secret"], "fields": {"body": "none"}});
+    let types =
+        json!({"chunk": {"default": "read", "hide_where": [hide]}, "note": {"default": "write"}});
+    let grants = json!({"default": "read", "restricted": true, "types": types});
+    let ann = holder(store.as_ref(), "ann", grants);
+    let mark = lakelands_api::VerbName::from("mark");
+    for (n, held) in [("n1", false), ("n2", true), ("n4", true)] {
+        let head = store.head().await.must("reading the head")?;
+        let key = RecordKey::from(n);
+        let called = l.cat.call(
+            &ann,
+            &mark,
+            Some(&key),
+            Default::default(),
+            Default::default(),
+        );
+        let said = called
+            .await
+            .must_fail(&format!("ann's call of `mark` on {n}"))?;
+        ensure!(
+            (said == Error::refused(None, Refusal::NotGranted)) == held,
+            "ann's call of `mark` on {n}, reading `of.body`, must be refused not granted only where `of` is secret: {said:?}"
         );
         head_unmoved(store.as_ref(), head, "a refused call").await?;
     }
