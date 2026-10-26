@@ -63,7 +63,7 @@ check!(
 check!(
     HIDDEN_SEARCH_AS_OF =
         a_search_as_of_a_position_matches_no_field_hidden_on_a_record_selected_then,
-    "006 and 025: a search as of a position matches a record its condition field selects then through no field hidden there, names none in its matches and answers none, before the record was selected and after; every other record is matched and answered as at any position"
+    "006 and 025: a search as of a position, lexical or by vector, reaches no field on a record its condition field selects there or at the head: it is neither matched nor ranked by one, named in its matches or answered it, before the record was selected and after, its fields and its link type renamed since; every other record is found and answered as at any position"
 );
 
 check!(
@@ -611,7 +611,8 @@ async fn a_read_as_of_a_position_judges_a_hiding_by_the_condition_then(store: St
 }
 
 /// `note` with the condition field `doc`, the searchable `title` and
-/// `body` and a vector `v`, each of `rows` written by its key; and `bea`, who reads no `body` of a secret note.
+/// `body` and a vector `v`, each of `rows` written by its key; and
+/// `bea`, who reads no `body` of a secret note.
 async fn notes(
     l: &Lake,
     store: &dyn LakeStore,
@@ -632,11 +633,15 @@ async fn notes(
     Ok(holder(store, "bea", grants))
 }
 
-/// `who`'s search of `note`, `asked` its JSON, matches asked for: each
-/// hit by key, `key:fields/matched fields`, and its score.
+/// `who`'s search, `asked` its JSON, of `note` where it names no type,
+/// matches asked for where it has text: each hit by key,
+/// `key:fields/matched fields`, and its score.
 async fn noted(l: &Lake, who: &Principal, asked: Value) -> Result<Vec<(String, f64)>, Failure> {
     let mut s = asked;
-    (s["type"], s["matches"]) = (json!("note"), json!(true));
+    s["matches"] = json!(s.get("text").is_some());
+    if s.get("type").is_none() {
+        s["type"] = json!("note");
+    }
     let what = format!("{}'s search {s}", who.id);
     let hits = l.cat.search(who, de(s)).await.must(&what)?.data.hits;
     let mut said: Vec<(String, f64)> = (hits.iter())
@@ -661,21 +666,56 @@ async fn a_search_as_of_a_position_matches_no_field_hidden_on_a_record_selected_
     store: Store,
 ) -> Held {
     let l = Lake::of(store.as_ref());
+    let v = || json!([1.0, 0.0]);
     let rows = [
         (
             "n1",
-            json!({"doc": "open", "title": "taxi", "body": "rome"}),
+            json!({"doc": "open", "title": "taxi", "body": "rome", "v": v()}),
         ),
-        ("n2", json!({"doc": "open", "title": "taxi"})),
+        ("n2", json!({"doc": "open", "title": "taxi", "v": v()})),
         (
             "n3",
-            json!({"doc": "secret", "title": "bus", "body": "rome"}),
+            json!({"doc": "secret", "title": "bus", "body": "rome", "v": v()}),
         ),
     ];
-    let bea = notes(&l, store.as_ref(), &rows).await?;
+    notes(&l, store.as_ref(), &rows).await?;
+    // The same notes as links of `seen`, whose link type is renamed.
+    l.declare(type_decl("partner", vec![field("name", Text)]))
+        .await?;
+    let seen = |name: &str| {
+        let mut r = super::links::dated();
+        (r.name, r.inverse) = (name.into(), None);
+        r.fields = vec![field("doc", Text), searchable("body"), vector("v", 2)];
+        super::links::invoice(vec![r])
+    };
+    l.declare(seen("seen")).await?;
+    l.upsert("partner", "p1", json!({"name": "p1"})).await?;
+    let link = |from: &'static str, fields: Value| {
+        let (ty, rel, to) = ("invoice".into(), "seen".into(), "p1".into());
+        let (cat, own, from) = (l.cat.clone(), l.own.clone(), from.into());
+        async move {
+            let opts = Default::default();
+            let linked = cat.link(&own, &ty, &from, &rel, &to, patch(fields), opts);
+            linked.await.must("linking").map(drop)
+        }
+    };
+    for (key, doc) in [("i1", "open"), ("i2", "open"), ("i3", "secret")] {
+        l.upsert("invoice", key, json!({"amount": "1"})).await?;
+        link(key, json!({"doc": doc, "body": "rome", "v": v()})).await?;
+    }
+    let hidden = json!({"body": "none", "v": "none"});
+    let hide = json!({"hide_where": [{"field": "doc", "values": ["secret"], "fields": hidden}]});
+    let types = json!({"note": hide, "sys.link.invoice.seen": hide});
+    let bea = holder(
+        store.as_ref(),
+        "bea",
+        json!({"default": "read", "types": types}),
+    );
     let before = store.head().await.must("reading the head")?;
     let after = l.upsert("note", "n1", json!({"doc": "secret"})).await?;
     l.upsert("note", "n3", json!({"doc": "open"})).await?;
+    link("i1", json!({"doc": "secret"})).await?;
+    link("i3", json!({"doc": "open"})).await?;
     // `body` is `text` at the head, and the hiding follows it there.
     let text = vec![
         field("doc", Text),
@@ -685,40 +725,70 @@ async fn a_search_as_of_a_position_matches_no_field_hidden_on_a_record_selected_
     ];
     let mut m = crate::conformance::fixture::migration(type_decl("note", text));
     m.renames = vec![("body".into(), "text".into())];
-    let id = l.cat.migrate(&l.own, m.clone()).await.must("previewing")?;
-    let id = id.data.report_id;
-    l.cat
-        .migrate_apply(&l.own, m, &id)
-        .await
-        .must("renaming `body`")?;
-    // n3 is secret before, n1 at the head, and both at `after`.
+    let mut seen_saw = crate::conformance::fixture::migration(seen("saw"));
+    seen_saw.relation_renames = vec![("seen".into(), "saw".into())];
+    // And `seen` is `saw`, its link type with it.
+    for m in [m, seen_saw] {
+        let id = l.cat.migrate(&l.own, m.clone()).await.must("previewing")?;
+        let id = id.data.report_id;
+        let applied = l.cat.migrate_apply(&l.own, m, &id).await;
+        applied.must("renaming")?;
+    }
+    // n3 and i3 are secret before, n1 and i1 at the head, n1 and n3 both
+    // at `after`; i2 is never.
+    let lexical = json!({"mode": "lexical", "text": "taxi rome"});
+    let vector = json!({"mode": "vector", "field": "v", "vector": v()});
+    let ty = |asked: &Value, ty: &str| {
+        let mut asked = asked.clone();
+        asked["type"] = json!(format!("sys.link.invoice.{ty}"));
+        asked
+    };
+    let (at, now) = (Some(before), Some(after.position()));
     let mut wrong = Vec::new();
-    for (at, want) in [
+    for (at, asked, want) in [
         (
-            Some(before),
-            "n1:body doc title/body title n2:doc title/title",
+            at,
+            lexical.clone(),
+            "n1:body doc title v/body title n2:doc title v/title",
         ),
+        (at, vector.clone(), "n2:doc title v/"),
         (
-            Some(after.position()),
-            "n1:doc title/title n2:doc title/title",
+            now,
+            lexical.clone(),
+            "n1:doc title/title n2:doc title v/title",
+        ),
+        (now, vector.clone(), "n2:doc title v/"),
+        (
+            None,
+            lexical.clone(),
+            "n1:doc title/title n2:doc title v/title n3:doc text title v/text",
+        ),
+        (None, vector.clone(), "n2:doc title v/ n3:doc text title v/"),
+        (at, ty(&lexical, "seen"), "i2:p1:body doc from to v/body"),
+        (at, ty(&vector, "seen"), "i2:p1:body doc from to v/"),
+        (
+            None,
+            ty(&lexical, "saw"),
+            "i2:p1:body doc from to v/body i3:p1:body doc from to v/body",
         ),
         (
             None,
-            "n1:doc title/title n2:doc title/title n3:doc text title/text",
+            ty(&vector, "saw"),
+            "i2:p1:body doc from to v/ i3:p1:body doc from to v/",
         ),
     ] {
-        let mut asked = json!({"mode": "lexical", "text": "taxi rome"});
+        let mut asked = asked;
         if let Some(at) = at {
             asked["as_of"] = json!(at.0);
         }
-        let said = told_hits(&noted(&l, &bea, asked).await?);
+        let said = told_hits(&noted(&l, &bea, asked.clone()).await?);
         if said != want {
-            wrong.push(format!("as of {at:?}: `{said}`, not `{want}`"));
+            wrong.push(format!("{asked}: `{said}`, not `{want}`"));
         }
     }
     ensure!(
         wrong.is_empty(),
-        "a note's body must bring bea no match where it is secret: {wrong:?}"
+        "a body and a vector must bring bea no hit where they are secret: {wrong:?}"
     );
     Ok(())
 }

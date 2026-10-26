@@ -118,22 +118,11 @@ impl<'a> Reader<'a> {
                 return Ok(Ranks { ty, decl, fields });
             }
         };
-        let mut ty = decl.name.clone();
-        let mut names: Vec<(FieldName, FieldName)> =
-            named.map(|n| (n.clone(), n.clone())).collect();
-        for r in shape.renames.iter().filter(|r| r.at > self.position) {
-            if r.ty != ty {
-                continue;
-            }
-            for (_, now) in &mut names {
-                if let Some((_, to)) = r.renames.iter().find(|(from, _)| from == now) {
-                    *now = to.clone();
-                }
-            }
-            if let Some(to) = &r.to {
-                ty = to.clone();
-            }
-        }
+        let asked: Vec<FieldName> = named.cloned().collect();
+        let mut now = asked.clone();
+        let since = shape.renames.iter().filter(|r| r.at > self.position);
+        let ty = followed(since, &decl.name, &mut now);
+        let names: Vec<(FieldName, FieldName)> = asked.into_iter().zip(now).collect();
         let decl = shape.ontology.ty(&ty).ok().cloned();
         let sees = Sight::held(who, shape.as_ref());
         let shown = |now: &FieldName| {
@@ -533,14 +522,10 @@ impl<'a> Reader<'a> {
         });
         let then = then.filter(|(_, named)| self.sight.hides(named));
         let ahead = |f: &FieldName, named: &TypeName| {
-            let step = |(named, f): (TypeName, FieldName), r: &Renamed| match r.ty == named {
-                true => {
-                    let to = r.renames.iter().find(|(from, _)| *from == f);
-                    (r.to.clone().unwrap_or(named), to.map_or(f, |t| t.1.clone()))
-                }
-                false => (named, f),
-            };
-            since.clone().fold((named.clone(), f.clone()), step).1
+            let mut f = [f.clone()];
+            followed(since.clone(), named, &mut f);
+            let [f] = f;
+            f
         };
         let hides = sees.hides(ty) || then.is_some();
         let Some(decl) = shape.ontology.ty(ty).ok().filter(|_| hides) else {
@@ -877,4 +862,28 @@ impl Marks {
             h.matches = core_engines::matched(&self.decl, &h.record, fields, query, &self.tag);
         }
     }
+}
+
+/// `ty` as `renames`, in their order, name it after them, and each of its
+/// `fields` renamed to the name it bears there.
+fn followed<'r>(
+    renames: impl Iterator<Item = &'r Renamed>,
+    ty: &TypeName,
+    fields: &mut [FieldName],
+) -> TypeName {
+    let mut ty = ty.clone();
+    for r in renames {
+        if r.ty != ty {
+            continue;
+        }
+        for now in fields.iter_mut() {
+            if let Some((_, to)) = r.renames.iter().find(|(from, _)| from == now) {
+                *now = to.clone();
+            }
+        }
+        if let Some(to) = &r.to {
+            ty = to.clone();
+        }
+    }
+    ty
 }

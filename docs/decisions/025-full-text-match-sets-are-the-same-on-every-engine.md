@@ -784,7 +784,13 @@ candidate and a hybrid search without a vector over it is refused as
 needing one. Following a name never lets a ranking reach a field its
 caller is not shown at the head: one shown at the earlier position and
 hidden at the head answers as one the head does not declare, and one
-hidden at the earlier position is refused as it is there. A field the
+hidden at the earlier position is refused as it is there. A field
+hidden on only the records a condition selects (006) is judged per
+record the same way: a ranking reaches it on a record only where its
+reader is shown it there both at the earlier position and at the head,
+the record taken back to its key and its type and fields to their names
+at that position, so a record selected at either is neither matched nor
+ranked by it, in text or by vector. A field the
 head declares and the earlier position does not is unknown, as every
 name is read there. For the head's indexes to hold the head's names, a
 migration re-indexes each record of its type by the declaration it puts
@@ -1089,3 +1095,6 @@ Of an index asked for:
   kept no statistics; that reason now decides what is kept: `df` counted
   over the candidates, `n_f` and `L_f` kept per class. `N` is the sum of
   the `n_f`, so that no token weighs less than nothing.
+- Extended: a field hidden on only the records a condition selects is
+  judged at the earlier position and at the head, per record, as a
+  field hidden on the whole type is (lakelands#1456).

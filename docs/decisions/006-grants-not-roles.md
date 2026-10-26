@@ -2190,7 +2190,7 @@ it is in force from 0.20.0 (lakelands#1354).
 | the change feed | refused: a principal with a hiding does not read everything. |
 | an export, a backup | unchanged: they take no principal and are the host's. |
 | a write | `F` on a record selected before or after the write is not writable: the write is refused whole, not granted, naming `F` (012), also to a writer that may write `F` on every other record. |
-| a read as of a position | a record is selected by its `G` at that position; a search ranks by the head and is judged there (025). |
+| a read as of a position | a record is selected by its `G` at that position; a search ranks by the head's indexes, and a ranking reaches `F` on a record only where its reader is shown `F` there both at that position and at the head: a record selected at either, by its key and names there, is neither matched nor ranked by `F` (025). |
 | `describe` | `F` keeps its type-wide access, and its description tells the holder where it is lowered, `G` and the values, as `may.only` tells a holder its pairs; the schema hash follows what is described. |
 
 What it costs and what it tells, accepted with it:
@@ -2941,3 +2941,7 @@ Of a field hidden on the records a condition selects:
   lakelands#1400: a grant had given a field one access on every record
   of its type, so a host hid on every record a field it had to hide on
   some.
+- Extended: a search as of a position reaches a field a condition hides
+  on a record only where its reader is shown it there at that position
+  and at the head; it had been judged at the head alone
+  (lakelands#1456).
