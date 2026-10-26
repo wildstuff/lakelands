@@ -4,7 +4,7 @@
 //! few checks use, is imported by that check.
 
 pub use super::fixture::{
-    Caller, Lake, Must, agg, aggregate, alike_renamed, all, all_found, at_one_set_change,
+    Caller, Lake, Must, agg, aggregate, alike_renamed, all, all_found, at_one_set_change, bm25f,
     computed_by, count_view, dec, decimal, declare, describe_type, embedding, events_after,
     events_from, field, field_access, field_writer, find_at, find_where, followed, head_unmoved,
     invalid_case, invalid_like, invalid_said, is_invalid, join_all, limits, log_events, migration,
