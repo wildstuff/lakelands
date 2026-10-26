@@ -190,7 +190,14 @@ impl Root {
                     .expect("the declaration's line");
                 lines[at] = lines[at].replacen(NOTE, &NOTE.replacen('A', "B", 1), 1);
                 fs::write(&segment, lines.join("\n")).unwrap();
-                at as u64
+                // The first segment begins at position 0, and each event
+                // line before the declaration's holds one position; a
+                // frame line holds none.
+                let frame = |l: &String| {
+                    let line: serde_json::Value = serde_json::from_str(l).unwrap();
+                    lakelands_core::log::is_frame(&line)
+                };
+                lines[..at].iter().filter(|l| !frame(l)).count() as u64
             }
             Some((url, schema)) => {
                 let (url, schema) = (url.clone(), schema.clone());
