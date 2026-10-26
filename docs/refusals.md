@@ -833,6 +833,7 @@ What a refusal is about.
 | `line_not_record` | `line` (usize), `fault` (JsonFault), `column` (usize) | line {line} is not a record `ingest` takes: {fault}, at column {column} | An ingest line that is not a record. |
 | `line_too_long` | `line` (usize), `max` (usize) | line {line} is longer than {max} bytes | An ingest line over the length one may have. |
 | `member_missing` | `member` (String) | the member `{member}` is missing | A member the arguments need and do not give. |
+| `mode_needs_member` | `mode` (String), `member` (String) | a `{mode}` search needs the member `{member}`, and it is missing | A member the arguments' mode needs and do not give. |
 | `migration_both` | — | a migration names a type (`to`) or a value type (`value_type`), not both | A migration naming both a type and a value type. |
 | `migration_neither` | — | a migration names a type (`to`) or a value type (`value_type`) | A migration naming neither a type nor a value type. |
 | `no_argument` | `tool` (String), `argument` (String) | `{tool}` takes no argument `{argument}`; nothing was done | An argument a tool's input schema does not list. |

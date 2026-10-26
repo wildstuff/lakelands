@@ -213,6 +213,18 @@ fn reads() -> Vec<Read> {
             &["zzz"],
         ),
         (
+            Some("search"),
+            Some("search"),
+            json!({"type": "invoice", "mode": "hybrid", "text": "seawater pump", "k": 8}),
+            &["field", "hybrid"],
+        ),
+        (
+            Some("search"),
+            Some("search"),
+            json!({"type": "invoice", "mode": "vector", "vector": [1.0, 0.0]}),
+            &["field", "vector"],
+        ),
+        (
             None,
             Some("invoice_find"),
             json!({"aggregate": {"measures": [{"name": "n", "func": "count", "zzz": 1}]}}),

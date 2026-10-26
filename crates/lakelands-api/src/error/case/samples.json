@@ -2402,6 +2402,11 @@
    "member": "s"
   },
   {
+   "code": "mode_needs_member",
+   "member": "s",
+   "mode": "s"
+  },
+  {
    "code": "migration_both"
   },
   {

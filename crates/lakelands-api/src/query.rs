@@ -788,10 +788,18 @@ impl<'de> Deserialize<'de> for Search {
         let members = [
             "mode", "text", "fields", "field", "vector", "weight", "also", "model",
         ];
-        let mode = (members.iter().chain(&["text_weight", "text_fields"]))
-            .filter_map(|m| own.remove_entry(*m));
-        let mode =
-            serde_json::from_value(Value::Object(mode.collect())).map_err(D::Error::custom)?;
+        let mode: serde_json::Map<String, Value> = (members.iter())
+            .chain(&["text_weight", "text_fields"])
+            .filter_map(|m| own.remove_entry(*m))
+            .collect();
+        // A vector or hybrid search ranks over a vector field: say so
+        // as a member missing, which the door words with the mode.
+        let ranks =
+            matches!(mode.get("mode"), Some(Value::String(m)) if m == "vector" || m == "hybrid");
+        if ranks && !mode.contains_key("field") {
+            return Err(D::Error::missing_field("field"));
+        }
+        let mode = serde_json::from_value(Value::Object(mode)).map_err(D::Error::custom)?;
         let w: SearchWire = serde_json::from_value(Value::Object(own)).map_err(D::Error::custom)?;
         let (ty, k, cursor, filter, rerank, with_meta, matches, at) = (
             w.ty,
