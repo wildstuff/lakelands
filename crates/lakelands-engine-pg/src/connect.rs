@@ -227,7 +227,8 @@ impl Db {
 
     /// The records a query's rows hold, each from its first column on as
     /// [`crate::projection::record_at`] reads it, joined to the rows of
-    /// the vectors their states keep apart in `names`' lake.
+    /// the vectors their states keep apart and of the bases they name in
+    /// `names`' lake.
     pub(crate) fn records(
         &mut self,
         names: &crate::projection::Names,

@@ -450,6 +450,7 @@ async fn each_purged_record_reacts_as_a_retire_does_in_the_same_append(store: St
             of: "partner".into(),
             filter: Condition::from("name is not null"),
             description: None,
+            decided_at: Default::default(),
         }),
     );
     fut.await.must("declaring the object set")?;

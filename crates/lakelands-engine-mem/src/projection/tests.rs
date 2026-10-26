@@ -196,16 +196,24 @@ fn wide() -> StoredRecord {
 
 #[test]
 fn a_held_record_reads_back_whole() {
-    let r = wide();
-    assert_eq!(Held::of(&r).record(), r);
+    let (r, mut bases) = (wide(), Bases::default());
+    assert_eq!(Held::of(&r, &mut bases).record(&bases), r, "inline");
+    let base = engines::base_of(&r).unwrap();
+    bases.2.insert(base);
+    let held = Held::of(&r, &mut bases);
+    assert!(held.base.is_some());
+    assert_eq!(held.record(&bases), r, "its base a row");
     let ended = StoredRecord::ended("t".into(), "k".into(), Position(9));
-    assert_eq!(Held::of(&ended).record(), ended);
+    assert_eq!(Held::of(&ended, &mut bases).record(&bases), ended);
 }
 
 #[test]
 fn a_held_record_shares_its_provenance_and_keeps_vectors_as_elements() {
-    let held = Held::of(&wide());
-    assert_eq!(held.state.matches("long-writer-name").count(), 1);
+    let mut bases = Bases::default();
+    let held = Held::of(&wide(), &mut bases);
+    let blocks = bases.0.values().map(String::as_str);
+    let kept = blocks.chain([&*held.state]).collect::<String>();
+    assert_eq!(kept.matches("long-writer-name").count(), 1);
     assert_eq!(
         held.state.matches("0.1").count(),
         0,
@@ -213,4 +221,61 @@ fn a_held_record_shares_its_provenance_and_keeps_vectors_as_elements() {
     );
     let apart: Vec<&str> = held.apart.iter().map(|(f, _)| f.as_str()).collect();
     assert_eq!(apart, ["double", "single"]);
+}
+
+/// `key`'s record at `at`, its one field written by `source` then.
+fn sourced(key: &str, source: &str, at: u64) -> StoredRecord {
+    let mut r = record(key, 1, at);
+    let mut m = meta("human:owner", at);
+    (m.source, m.known_at) = (
+        Some(source.into()),
+        lakelands_api::time::Timestamp(at as i64),
+    );
+    r.meta.insert("n".into(), m);
+    r
+}
+
+#[test]
+fn a_base_is_a_row_where_a_write_shares_it_and_goes_once_no_state_names_it() {
+    use lakelands_core::engines::SHARED;
+    let write = |n: usize, source: &str, at: u64| -> Vec<Put> {
+        (0..n)
+            .map(|i| Put::Record(sourced(&format!("{source}{at}.{i}"), source, at)))
+            .collect()
+    };
+    let mut p = Projection::default();
+    p.commit(write(SHARED, "crm", 1), Position(1)).unwrap();
+    p.commit(write(SHARED - 1, "erp", 2), Position(2)).unwrap();
+    p.commit(write(1, "crm", 3), Position(3)).unwrap();
+    let named = |p: &Projection| {
+        let states = p.records.values().flat_map(|h| &h.0);
+        states.filter(|(_, held)| held.base.is_some()).count()
+    };
+    assert_eq!(p.bases.0.len(), 1, "a row for the shared write's base");
+    assert_eq!(named(&p), SHARED, "the others keep theirs inline");
+    let ty = TypeName::from("t");
+    let read = |p: &Projection| {
+        let records = p.records_at(&ty, Some(Position(3)));
+        let sources = records.map(|r| r.meta["n"].source.clone().unwrap().to_string());
+        sources.collect::<Vec<_>>()
+    };
+    let crm = |n| std::iter::repeat_n("crm", n);
+    let mut sources: Vec<_> = (crm(SHARED).chain(std::iter::repeat_n("erp", SHARED - 1)))
+        .chain(crm(1))
+        .collect();
+    sources.sort();
+    let mut all = read(&p);
+    all.sort();
+    assert_eq!(all, sources, "every record reads its base");
+    let dropped = |keys: std::ops::Range<usize>| -> Vec<Put> {
+        let mut puts: Vec<_> =
+            (keys.map(|i| Put::DroppedRecord(ty.clone(), format!("crm1.{i}").into()))).collect();
+        puts.push(Put::DroppedBases);
+        puts
+    };
+    p.commit(dropped(0..SHARED - 1), Position(3)).unwrap();
+    assert_eq!(p.bases.0.len(), 1, "a base a state names stays");
+    p.commit(dropped(SHARED - 1..SHARED), Position(3)).unwrap();
+    assert!(p.bases.0.is_empty(), "a base no state names goes");
+    assert_eq!(read(&p).len(), SHARED, "the inline ones read theirs");
 }

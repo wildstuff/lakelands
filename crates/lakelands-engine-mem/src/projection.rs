@@ -16,7 +16,7 @@
 //! a position inside a multi-event append sees each state from the event
 //! that made it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use lakelands_api::engine::{About, Applied, Choose, Chosen, Declared};
 use lakelands_api::error::Result;
@@ -73,8 +73,9 @@ impl<T> History<T> {
 
 /// A record as the projection keeps it: in the state form the other
 /// engines keep, which shares one provenance block among the fields that
-/// have it, with every field that is a vector of numbers apart as its
-/// elements, not as a value each.
+/// have it, inline or, where the write shares it, kept once among the
+/// [`Bases`], with every field that is a
+/// vector of numbers apart as its elements, not as a value each.
 #[derive(Clone, Debug)]
 pub(crate) struct Held {
     ty: TypeName,
@@ -82,15 +83,22 @@ pub(crate) struct Held {
     since: Position,
     state: Box<str>,
     apart: Vec<(FieldName, Elements)>,
+    /// The id of the base its state names.
+    base: Option<i64>,
 }
 
 impl Held {
-    fn of(r: &StoredRecord) -> Held {
+    fn of(r: &StoredRecord, bases: &mut Bases) -> Held {
         let apart: Vec<_> = (r.fields.iter())
             .filter_map(|(f, v)| Some((f.clone(), Elements::of(v)?)))
             .collect();
         let named = apart.iter().map(|(f, _)| (f.clone(), r.position)).collect();
-        let state = engines::record_state(r, &named).into();
+        let mut base = None;
+        let state = engines::record_state(r, &named, &mut |b| {
+            let shared = bases.2.contains(b);
+            Ok(shared.then(|| *base.insert(bases.id(b))))
+        });
+        let state = state.expect("a base is kept").into();
         let (ty, key, since) = (r.ty.clone(), r.key.clone(), r.position);
         Held {
             ty,
@@ -98,17 +106,44 @@ impl Held {
             since,
             state,
             apart,
+            base,
         }
     }
 
-    pub(crate) fn record(&self) -> StoredRecord {
+    pub(crate) fn record(&self, bases: &Bases) -> StoredRecord {
         let state =
             engines::decode_record(self.ty.as_str(), self.key.as_str(), self.since, &self.state);
-        let (mut r, _) = state.expect("a state this projection wrote reads");
+        let (mut r, apart) = state.expect("a state this projection wrote reads");
+        if let Some(based) = apart.base {
+            let block = bases.0.get(&based.id).map(String::as_str);
+            engines::rebase(&mut r, based, block).expect("a base this projection kept reads");
+        }
         for (field, e) in &self.apart {
             r.fields.insert(field.clone(), e.value());
         }
         r
+    }
+}
+
+/// The bases the records' states name, each kept once by its id, and
+/// those the transaction being applied shares ([`engines::shared_bases`]).
+#[derive(Debug, Default)]
+pub(crate) struct Bases(
+    BTreeMap<i64, String>,
+    BTreeMap<String, i64>,
+    HashSet<String>,
+);
+
+impl Bases {
+    /// The id `b` is kept under, kept now if it was not.
+    fn id(&mut self, b: &str) -> i64 {
+        if let Some(id) = self.1.get(b) {
+            return *id;
+        }
+        let id = self.0.last_key_value().map_or(1, |(id, _)| id + 1);
+        self.0.insert(id, b.to_owned());
+        self.1.insert(b.to_owned(), id);
+        id
     }
 }
 
@@ -124,6 +159,8 @@ pub(crate) enum Put {
     Head(StoredRecord),
     /// Every key of a head-only name ended at once, at `at`.
     HeadsEnded { ty: TypeName, at: Position },
+    /// The bases no record's state names.
+    DroppedBases,
     /// A proposal's state from `at`.
     Proposal { proposal: Proposal, at: Position },
     /// Membership of a record in an object set from `at`.
@@ -156,7 +193,9 @@ impl Put {
             Put::Declaration(d) => d.since,
             Put::Record(r) | Put::Head(r) => r.position,
             Put::Applied(a) => a.at,
-            Put::DroppedRecord(..) | Put::DroppedOutput(..) => Position::GENESIS,
+            Put::DroppedRecord(..) | Put::DroppedOutput(..) | Put::DroppedBases => {
+                Position::GENESIS
+            }
             Put::Membership { at, .. }
             | Put::HeadsEnded { at, .. }
             | Put::Proposal { at, .. }
@@ -171,6 +210,7 @@ impl Put {
 pub(crate) struct Projection {
     pub(crate) declarations: BTreeMap<String, History<Declared>>,
     pub(crate) records: BTreeMap<(TypeName, RecordKey), History<Held>>,
+    pub(crate) bases: Bases,
     pub(crate) proposals: BTreeMap<ProposalId, History<Proposal>>,
     /// Each proposal's id by its position, newest last (lakelands#1063).
     pub(crate) by_position: BTreeMap<Position, ProposalId>,
@@ -259,6 +299,11 @@ impl Projection {
         if let Some(refused) = engines::commit_refusal(self.folded, late, through) {
             return Err(refused);
         }
+        let states = puts.iter().filter_map(|put| match put {
+            Put::Record(r) | Put::Head(r) => Some(r),
+            _ => None,
+        });
+        self.bases.2 = engines::shared_bases(states);
         let mut records = BTreeSet::new();
         let mut types = BTreeSet::new();
         for put in puts {
@@ -303,6 +348,7 @@ impl Projection {
                 after = Some(last);
             }
         }
+        self.bases.2.clear();
         self.folded = Some(through);
         Ok(())
     }
@@ -350,7 +396,7 @@ impl Projection {
                 RecordKey::from(lakelands_core::engines::sort_index_key(ty)),
             ))
             .and_then(History::latest)
-            .map(Held::record);
+            .map(|h| h.record(&self.bases));
         lakelands_core::engines::sorted_fields(
             ty,
             decl,
@@ -609,7 +655,7 @@ impl Projection {
                     .put(since, d);
             }
             Put::Record(r) => {
-                let from = r.position;
+                let (from, held) = (r.position, Held::of(&r, &mut self.bases));
                 self.changes
                     .entry(r.ty.clone())
                     .or_default()
@@ -617,7 +663,7 @@ impl Projection {
                 self.records
                     .entry((r.ty.clone(), r.key.clone()))
                     .or_default()
-                    .put(from, Held::of(&r));
+                    .put(from, held);
             }
             Put::Proposal { proposal, at } => {
                 (self.by_position).insert(proposal.position, proposal.id.clone());
@@ -655,10 +701,10 @@ impl Projection {
                 let id = (r.ty.clone(), r.key.clone());
                 match r.is_ended() {
                     true => drop(self.records.remove(&id)),
-                    false => drop(
-                        self.records
-                            .insert(id, History(vec![(r.position, Held::of(&r))])),
-                    ),
+                    false => {
+                        let held = Held::of(&r, &mut self.bases);
+                        drop(self.records.insert(id, History(vec![(r.position, held)])))
+                    }
                 }
             }
             Put::DroppedRecord(ty, key) => {
@@ -673,6 +719,18 @@ impl Projection {
                     .retain(|(_, ty, key), _| (ty, key) != (&id.0, &id.1));
             }
             Put::DroppedOutput(seam, input) => drop(self.outputs.remove(&(seam, input))),
+            Put::DroppedBases => {
+                let states = self.records.values().flat_map(|h| &h.0);
+                let named: BTreeSet<i64> = states.filter_map(|(_, held)| held.base).collect();
+                let Bases(by_id, ids, _) = &mut self.bases;
+                by_id.retain(|id, b| {
+                    let kept = named.contains(id);
+                    if !kept {
+                        ids.remove(b);
+                    }
+                    kept
+                });
+            }
             Put::HeadsEnded { ty, .. } => {
                 let from = (ty.clone(), RecordKey::from(""));
                 let of = self.records.range(from..).map(|(id, _)| id);
@@ -732,7 +790,7 @@ impl Projection {
         at: Option<Position>,
     ) -> Option<StoredRecord> {
         let h = self.records.get(&(ty.clone(), key.clone()))?;
-        h.at(at).map(Held::record)
+        h.at(at).map(|h| h.record(&self.bases))
     }
 
     /// Every record of `ty` in its state at `at`, in key order, whatever
@@ -746,7 +804,7 @@ impl Projection {
             .range((ty.clone(), RecordKey::from(""))..)
             .take_while(move |((t, _), _)| t == ty)
             .filter_map(move |(_, h)| h.at(at))
-            .map(Held::record)
+            .map(|h| h.record(&self.bases))
     }
 
     /// At most `n` records of `ty` in their state at `at` after the key
@@ -769,7 +827,7 @@ impl Projection {
             .take_while(|((t, _), _)| t == ty)
             .filter_map(|(_, h)| h.at(at))
             .take(n as usize)
-            .map(Held::record)
+            .map(|h| h.record(&self.bases))
             .collect()
     }
 }

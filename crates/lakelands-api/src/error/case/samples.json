@@ -232,6 +232,11 @@
    "code": "expr_risk"
   },
   {
+   "code": "expr_too_deep",
+   "max": 1,
+   "offset": 1
+  },
+  {
    "backing": "s",
    "code": "expression_not_expr"
   },
@@ -430,6 +435,22 @@
    "call": "s",
    "code": "set_reads_clock",
    "set": "s"
+  },
+  {
+   "code": "set_at_read_steps",
+   "path": "s",
+   "set": "s"
+  },
+  {
+   "code": "set_at_read_named",
+   "kind": "type",
+   "name": "s",
+   "set": "s"
+  },
+  {
+   "code": "set_at_read_of_view",
+   "set": "s",
+   "view": "t"
   },
   {
    "code": "set_reads_computed",
@@ -689,6 +710,11 @@
   },
   {
    "code": "cypher_start_type",
+   "offset": 1
+  },
+  {
+   "code": "cypher_too_deep",
+   "max": 1,
    "offset": 1
   },
   {

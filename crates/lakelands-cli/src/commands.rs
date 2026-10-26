@@ -1,4 +1,4 @@
-//! The commands that open a lake: `apply`, `ingest`, `feed`, `age`,
+//! The commands that open a lake: `apply`, `query`, `ingest`, `feed`, `age`,
 //! `purge`, `forget`, `values remove`, `rebuild`, `compact`, `export` and
 //! `serve`. Each calls the library in-process and prints the position of
 //! every answer that has one.
@@ -398,6 +398,58 @@ pub async fn change(
         }
     };
     put(out, answer)
+}
+
+/// `query`: the openCypher statement `statement` with the `params` given
+/// as `NAME=JSON`, run by [`lakelands_cypher::run`] at `--as-of` and
+/// `--valid-at` and from `--cursor`; the answer is printed as one JSON
+/// document. A statement that begins with `EXPLAIN` prints
+/// `{"pattern": …}` instead and reads nothing.
+pub async fn query(
+    out: Out<'_>,
+    catalog: &dyn Catalog,
+    who: &Principal,
+    (statement, pairs): (&str, Vec<String>),
+    (as_of, valid_at, cursor): (Option<Position>, Option<String>, Option<String>),
+) -> Result<(), Failure> {
+    let mut params = lakelands_api::Params::new();
+    for pair in pairs {
+        let bad = |what: &str| {
+            Failure::new(
+                format!("--param `{pair}`: {what}"),
+                "give each as NAME=JSON, such as status='\"open\"'",
+            )
+        };
+        let (name, raw) = pair.split_once('=').ok_or_else(|| bad("no `=`"))?;
+        let value = serde_json::from_str(raw).map_err(|e| bad(&e.to_string()))?;
+        params.insert(name.into(), value);
+    }
+    let valid_at = flag("valid-at", valid_at)?;
+    let at = ReadAt {
+        as_of,
+        valid_at,
+        clock: None,
+    };
+    let cursor = flag("cursor", cursor)?;
+    let answer = lakelands_cypher::run(catalog, who, statement, &params, at, cursor).await;
+    let json = |e: serde_json::Error| Failure::new(e.to_string(), "report it as a bug");
+    put(
+        out,
+        serde_json::to_value(answer.map_err(Failure::from)?).map_err(json)?,
+    )
+}
+
+/// The value of `--<name>`, read as its JSON string reads.
+fn flag<T: serde::de::DeserializeOwned>(
+    name: &str,
+    given: Option<String>,
+) -> Result<Option<T>, Failure> {
+    let Some(given) = given else { return Ok(None) };
+    let read = serde_json::from_value(serde_json::Value::String(given.clone()));
+    read.map(Some).map_err(|e| {
+        let todo = "give an instant as RFC 3339, and a cursor as a page printed it";
+        Failure::new(format!("--{name} `{given}`: {e}"), todo)
+    })
 }
 
 /// Write a bundle's aging rules after its declarations, each as its

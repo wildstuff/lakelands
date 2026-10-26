@@ -974,6 +974,8 @@ catalog! {
         ExprNoExpression => "it is backed by `expr` and has no expression",
         /// An `expr` function declared above `low` risk.
         ExprRisk => "it is backed by `expr`, which reaches nothing outside the lake, so its risk is `low`",
+        /// An expression nested deeper than the parser reads.
+        ExprTooDeep { max: usize, offset: usize } => "an expression nests at most {max} levels deep: a parenthesis, a call argument, a list item, `not` and a unary `-` each go one deeper (at character {offset})",
         /// An expression on a function another backing computes.
         ExpressionNotExpr { backing: String } => "it has an expression but is backed by `{backing}`",
         /// A function's input the type holds as another kind.
@@ -1062,7 +1064,14 @@ catalog! {
         /// A declaration reading as stored a field computed at the read.
         ReadsAtRead { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "it reads `{field}`, which `{ty}` computes at the read; it is evaluated over the record as stored, which never holds it",
         /// A set's `where` reading the clock.
-        SetReadsClock { set: String, call: String } => "the set `{set}` reads `{call}` in its `where`; a set is decided at the write and keeps what it decided, so a read of `in_set` would drift from it; keep a time window in a view's `where` or a computed field",
+        SetReadsClock { set: String, call: String } => "the set `{set}` reads `{call}` in its `where`; a kept set is decided at the write and keeps what it decided, so a read of `in_set` would drift from it; declare it decided at the read, or keep a time window in a view's `where` or a computed field",
+        /// A set decided at the read whose `where` steps across a
+        /// reference or a relation.
+        SetAtReadSteps { set: String, path: String } => "the set `{set}` is decided at the read, which steps through no reference, and its `where` reads `{path}`",
+        /// A set decided at the read named by what a write decides.
+        SetAtReadNamed { set: String, kind: Naming, name: String } => "the set `{set}` is decided at the read and the {kind} `{name}` names it, which is decided at a write: what a write decides by it would drift from what a read of it answers",
+        /// A set decided at the read of a view.
+        SetAtReadOfView { set: String, view: TypeName } => "the set `{set}` is decided at the read and holds `{view}`, a view: in this release a set of a view is decided at the write; declare it kept, or of the view's source",
         /// A set's `where` or a trigger's `when` reading across an edge a
         /// field computed outside the lake.
         SetReadsComputed { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "it reads `{field}` of `{ty}` across an edge, which is computed outside the lake: its value lands with no write that would decide this again",
@@ -1181,6 +1190,8 @@ catalog! {
         CypherSkip { skip: u64 } => "`SKIP {skip}`: a pattern continues by the cursor its answer hands out (`next_cursor`), passed beside the statement",
         /// A first node with no label.
         CypherStartType { offset: usize } => "the first node names its type, as in `(a:invoice)` (at character {offset})",
+        /// A condition nested deeper than the subset reads.
+        CypherTooDeep { max: usize, offset: usize } => "a condition nests at most {max} levels deep: parentheses, `NOT` and a unary `-` each go one deeper (at character {offset})",
         /// A part that begins at a name nothing bound.
         CypherUnbound { name: String, offset: usize } => "`{name}` is bound by nothing before it: a part begins at a name an earlier part bound (at character {offset})",
         /// A `SKIP` or `LIMIT` given what is no whole number.

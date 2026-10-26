@@ -360,6 +360,7 @@ What a refusal is about.
 | `verb_key` | — | a key's field is written by every create, and a verb writes only a record that stands | A key field only verbs write. |
 | `expr_no_expression` | — | it is backed by `expr` and has no expression | An `expr` function with no expression. |
 | `expr_risk` | — | it is backed by `expr`, which reaches nothing outside the lake, so its risk is `low` | An `expr` function declared above `low` risk. |
+| `expr_too_deep` | `max` (usize), `offset` (usize) | an expression nests at most {max} levels deep: a parenthesis, a call argument, a list item, `not` and a unary `-` each go one deeper (at character {offset}) | An expression nested deeper than the parser reads. |
 | `expression_not_expr` | `backing` (String) | it has an expression but is backed by `{backing}` | An expression on a function another backing computes. |
 | `function_input_kind` | `function` (String), `input` (FieldName), `kind` (StorageKind), `type` (TypeName), `held` (StorageKind) | the function `{function}` takes `{input}` as a {kind}, and `{type}` holds it as a {held} | A function's input the type holds as another kind. |
 | `function_not_derived` | — | a field computed by a function has the authority `derived` | A field computed by a function whose authority is not `derived`. |
@@ -403,7 +404,10 @@ What a refusal is about.
 | `payload_no_member` | `member` (FieldName) | it reads `payload.{member}`, which the payload does not have | A verb's assignment reading a payload member the payload does not have. |
 | `read_as_stored` | — | a trigger, a verb, an object set or another type's derived relation in force reads it as stored, so it is not computed at the read | A field taken to the read that something reads as stored. |
 | `reads_at_read` | `field` (FieldName), `type` (TypeName) | it reads `{field}`, which `{type}` computes at the read; it is evaluated over the record as stored, which never holds it | A declaration reading as stored a field computed at the read. |
-| `set_reads_clock` | `set` (String), `call` (String) | the set `{set}` reads `{call}` in its `where`; a set is decided at the write and keeps what it decided, so a read of `in_set` would drift from it; keep a time window in a view's `where` or a computed field | A set's `where` reading the clock. |
+| `set_reads_clock` | `set` (String), `call` (String) | the set `{set}` reads `{call}` in its `where`; a kept set is decided at the write and keeps what it decided, so a read of `in_set` would drift from it; declare it decided at the read, or keep a time window in a view's `where` or a computed field | A set's `where` reading the clock. |
+| `set_at_read_steps` | `set` (String), `path` (String) | the set `{set}` is decided at the read, which steps through no reference, and its `where` reads `{path}` | A set decided at the read whose `where` steps across a reference or a relation. |
+| `set_at_read_named` | `set` (String), `kind` (Naming), `name` (String) | the set `{set}` is decided at the read and the {kind} `{name}` names it, which is decided at a write: what a write decides by it would drift from what a read of it answers | A set decided at the read named by what a write decides. |
+| `set_at_read_of_view` | `set` (String), `view` (TypeName) | the set `{set}` is decided at the read and holds `{view}`, a view: in this release a set of a view is decided at the write; declare it kept, or of the view's source | A set decided at the read of a view. |
 | `set_reads_computed` | `field` (FieldName), `type` (TypeName) | it reads `{field}` of `{type}` across an edge, which is computed outside the lake: its value lands with no write that would decide this again | A set's `where` or a trigger's `when` reading across an edge a field computed outside the lake. |
 | `reads_no_input` | `field` (FieldName) | it reads `{field}`, which is not one of its inputs | A function's expression reading what is not one of its inputs. |
 | `reads_param_view` | `source` (TypeName), `param` (ParamName) | its view reads `{source}`, a view with the parameter `{param}`; only a read that names a view binds its parameters, so no view reads one | A view reading a view with parameters. |
@@ -460,6 +464,7 @@ What a refusal is about.
 | `cypher_row_item` | `item` (String) | a row holds paths (`a.amount`) or every bound name (`RETURN *`); `{item}` is neither | A row item that is neither a path nor every bound name. |
 | `cypher_skip` | `skip` (u64) | `SKIP {skip}`: a pattern continues by the cursor its answer hands out (`next_cursor`), passed beside the statement | A `SKIP` other than 0. |
 | `cypher_start_type` | `offset` (usize) | the first node names its type, as in `(a:invoice)` (at character {offset}) | A first node with no label. |
+| `cypher_too_deep` | `max` (usize), `offset` (usize) | a condition nests at most {max} levels deep: parentheses, `NOT` and a unary `-` each go one deeper (at character {offset}) | A condition nested deeper than the subset reads. |
 | `cypher_unbound` | `name` (String), `offset` (usize) | `{name}` is bound by nothing before it: a part begins at a name an earlier part bound (at character {offset}) | A part that begins at a name nothing bound. |
 | `cypher_whole` | `clause` (String), `offset` (usize) | `{clause}` takes a whole number, written or a parameter (at character {offset}) | A `SKIP` or `LIMIT` given what is no whole number. |
 | `division_by_zero` | — | division by zero | A division by zero. |

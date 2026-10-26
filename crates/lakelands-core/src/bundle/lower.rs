@@ -586,6 +586,7 @@ pub(super) fn object_set(l: &mut Lower<'_>, doc: ObjectSetDoc) -> ObjectSetDecl 
         of,
         filter,
         description: doc.description,
+        decided_at: Default::default(),
     };
     l.annotated(&Declaration::ObjectSet(s.clone()));
     s

@@ -317,6 +317,15 @@ fn command() -> Command {
                 .arg(Arg::new("plan").long("plan").value_name("ID").help("Make the change only if its plan is still this one (the `report_id` the plan printed); without it, print the plan and change nothing")),
         )
         .subcommand(
+            Command::new("query")
+                .about("Read the lake with an openCypher statement; with EXPLAIN, print the pattern it translates to and read nothing")
+                .arg(Arg::new("cypher").long("cypher").value_name("STATEMENT").required(true).help("The statement, in the openCypher subset the lake reads"))
+                .arg(Arg::new("param").long("param").value_name("NAME=JSON").action(ArgAction::Append).help("A value for the statement's `$NAME`; repeated for more parameters"))
+                .arg(Arg::new("as-of").long("as-of").value_name("POSITION").value_parser(clap::value_parser!(u64)).help("Read the lake as it was at this position"))
+                .arg(Arg::new("valid-at").long("valid-at").value_name("INSTANT").help("Read what was true in the world at this instant, as `2026-06-30T00:00:00Z`"))
+                .arg(Arg::new("cursor").long("cursor").value_name("CURSOR").help("Continue a page: the `next_cursor` the last page printed")),
+        )
+        .subcommand(
             Command::new("recompute")
                 .about("Compute again what a function or a type in force computes: retry a failed call, make a field that waits")
                 .arg(Arg::new("function").long("function").value_name("NAME").conflicts_with("type").help("A function: every type that names it"))
@@ -819,6 +828,19 @@ async fn dispatch(
             let plan = text(sub, "plan");
             let to = (set, plan.as_deref());
             commands::change(out, catalog.as_ref(), &who, (&at.0, &at.1), to).await
+        }
+        "query" => {
+            let pairs = sub
+                .get_many::<String>("param")
+                .map(|v| v.cloned().collect());
+            let statement = text(sub, "cypher").unwrap_or_default();
+            let at = (
+                sub.get_one::<u64>("as-of").map(|p| Position(*p)),
+                text(sub, "valid-at"),
+                text(sub, "cursor"),
+            );
+            let given = (statement.as_str(), pairs.unwrap_or_default());
+            commands::query(out, catalog.as_ref(), &who, given, at).await
         }
         "recompute" => {
             let (function, ty) = (text(sub, "function"), text(sub, "type"));

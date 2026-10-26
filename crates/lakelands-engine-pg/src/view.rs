@@ -660,7 +660,7 @@ impl Read<'_> {
         Ok(engines::order_fields(
             ty,
             decl,
-            setting.as_ref().and_then(engines::setting_value),
+            setting.as_ref(),
             &chosen,
             false,
         ))

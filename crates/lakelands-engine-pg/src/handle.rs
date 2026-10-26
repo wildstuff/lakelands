@@ -1137,6 +1137,7 @@ impl ProjectionStore for PgLake {
         self.stage(Position::GENESIS, |b| match of {
             StatesOf::Record(ty, key) => b.drop_record(ty.as_str(), key.as_str()),
             StatesOf::Output(seam, input) => b.drop_output(seam, input.0.as_str()),
+            StatesOf::Bases => b.drop_bases(),
         })
     }
 

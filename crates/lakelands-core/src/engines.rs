@@ -33,7 +33,7 @@
 //!   vectors ([`lakelands_api::query::cosine`]). Best first, ties by key.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 
 use lakelands_api::engine::{After, CanonicalEvent, Choose, Chosen, Scan};
 use lakelands_api::error::{Case, Detail, Error, Flaw, Part, Place as At, Refusal, Result, Said};
@@ -1936,9 +1936,13 @@ fn unreadable(what: &str, e: &serde_json::Error) -> Error {
 /// A record as an engine keeps it: its provenance once, where its fields
 /// share it, and per field only where a field's differs (lakelands#1018).
 /// Every field a source or an author wrote in one event carries the same
-/// block, so a record keeps it once, not once a field. What the row holds
-/// beside the state is not kept in it: its type, its key and its position,
-/// the row's `since`; nor is a flag that is false, nor `base`'s position
+/// block, so a record keeps it once, not once a field; and every record
+/// of one append carries the same block but its position, so where
+/// [`SHARED`] records of one write name a block the projection keeps it
+/// once among its bases, and the state names it by the id it is kept
+/// under; else the state keeps it inline. What the row holds beside the
+/// state is not kept in it: its type, its key and its position, the
+/// row's `since`; nor is a flag that is false, nor `base`'s position
 /// where it is the row's (lakelands#1318); nor a vector's elements, which
 /// a row of their own holds ([`Elements`]), the state naming its position.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1949,10 +1953,13 @@ struct State {
     vectors: BTreeMap<FieldName, Position>,
     version: lakelands_api::id::Version,
     fields: BTreeMap<FieldName, Value>,
-    /// The provenance most of the fields share, its position left out
-    /// where it is the row's.
+    /// The provenance most of the fields share: inline, its position left
+    /// out where it is the row's, or the id of the base it is kept as.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    base: Option<serde_json::Map<String, Value>>,
+    base: Option<Block>,
+    /// A kept base's position, where it is not the row's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_at: Option<Position>,
     /// Each field's whose differs from `base`, or that holds no value.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     meta: BTreeMap<FieldName, FieldMeta>,
@@ -1966,11 +1973,28 @@ struct State {
     restricted: bool,
 }
 
-/// The state an engine keeps for a record: [`State`]'s form, kept in a
-/// row that holds its type, its key and its position as `since`, the
-/// fields `apart` names left to their rows ([`put_vectors`]).
-pub fn record_state(r: &StoredRecord, apart: &BTreeMap<FieldName, Position>) -> String {
-    // The block most fields with a value share; ties to the first field's.
+/// A state's base: the id it is kept under, or the block inline.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum Block {
+    Kept(i64),
+    Inline(serde_json::Map<String, Value>),
+}
+
+/// The fewest records of one write naming a base for the projection to
+/// keep it once, as a row their states name by its id; a base fewer name
+/// stays inline in each state. A write is what the engine puts in one
+/// transaction, so a rebuild, which folds many appends in one, may keep
+/// rows a fresh projection kept inline; both read the same. A row costs
+/// more than the block it saves until enough states share it: on SQLite,
+/// records written two an append took 917.5 bytes each with their base a
+/// row and 903.2 with it inline, three an append 876.5 and 903.2
+/// (lakelands#1432; PostgreSQL was not measured).
+pub const SHARED: usize = 3;
+
+/// The provenance most of `r`'s fields with a value share; ties to the
+/// first field's.
+fn shared(r: &StoredRecord) -> Option<&FieldMeta> {
     let mut shared: Vec<(&FieldMeta, usize)> = Vec::new();
     for m in r.fields.keys().filter_map(|f| r.meta.get(f)) {
         match shared.iter_mut().find(|(b, _)| *b == m) {
@@ -1978,47 +2002,174 @@ pub fn record_state(r: &StoredRecord, apart: &BTreeMap<FieldName, Position>) -> 
             None => shared.push((m, 1)),
         }
     }
-    let base = (shared.iter().rev().max_by_key(|(_, n)| *n)).map(|(b, _)| *b);
+    (shared.iter().rev().max_by_key(|(_, n)| *n)).map(|(b, _)| *b)
+}
+
+/// A provenance block as JSON, its position left out where it is `at`.
+fn block(m: &FieldMeta, at: Option<Position>) -> serde_json::Map<String, Value> {
+    let Ok(Value::Object(mut block)) = serde_json::to_value(m) else {
+        unreachable!("a field's provenance serialises as an object")
+    };
+    if at.is_none_or(|at| at == m.position) {
+        block.remove("position");
+    }
+    block
+}
+
+/// The base of `r`: the block most of its fields with a value share,
+/// without its position, as the projection keeps it, if any has one.
+pub fn base_of(r: &StoredRecord) -> Option<String> {
+    let block = block(shared(r)?, None);
+    Some(serde_json::to_string(&block).expect("a block serialises"))
+}
+
+/// The bases [`SHARED`] or more of `records` of one write name: those
+/// the projection keeps as rows. The records of an append each have a
+/// position of their own and share their base whole, its time included.
+pub fn shared_bases<'a>(records: impl IntoIterator<Item = &'a StoredRecord>) -> HashSet<String> {
+    let mut named: HashMap<String, HashSet<(&TypeName, &RecordKey)>> = HashMap::new();
+    for r in records {
+        if let Some(base) = base_of(r) {
+            named.entry(base).or_default().insert((&r.ty, &r.key));
+        }
+    }
+    (named.into_iter())
+        .filter(|(_, names)| names.len() >= SHARED)
+        .map(|(base, _)| base)
+        .collect()
+}
+
+/// The bases of the write an engine puts record by record, which knows a
+/// base is shared only at the [`SHARED`]th record of the write naming it:
+/// the states put before it keep it inline until then.
+#[derive(Debug, Default)]
+pub struct Sharing {
+    named: HashMap<String, Named>,
+}
+
+#[derive(Debug)]
+enum Named {
+    Inline(Vec<(TypeName, RecordKey, Position)>),
+    Kept(i64),
+}
+
+impl Sharing {
+    /// The id the state of `r` names `base` by, `None` to keep it inline:
+    /// at the [`SHARED`]th record of the write naming it, `keep` keeps it
+    /// and answers its id, and `name` has the states the write put before
+    /// it, by type, key and position, name that id ([`name_base`]). A
+    /// write is what one `Sharing` sees.
+    pub fn id(
+        &mut self,
+        r: &StoredRecord,
+        base: &str,
+        keep: &mut dyn FnMut(&str) -> Result<i64>,
+        name: &mut dyn FnMut(&TypeName, &RecordKey, Position, i64) -> Result<()>,
+    ) -> Result<Option<i64>> {
+        let named = (self.named.entry(base.to_owned())).or_insert(Named::Inline(Vec::new()));
+        let before = match named {
+            Named::Kept(id) => return Ok(Some(*id)),
+            Named::Inline(before) => before,
+        };
+        let this = |(ty, key, _): &&(TypeName, RecordKey, Position)| (ty, key) == (&r.ty, &r.key);
+        before.retain(|held| !this(&held));
+        before.push((r.ty.clone(), r.key.clone(), r.position));
+        if before.len() < SHARED {
+            return Ok(None);
+        }
+        let id = keep(base)?;
+        for (ty, key, at) in before.iter().filter(|held| !this(held)) {
+            name(ty, key, *at, id)?;
+        }
+        *named = Named::Kept(id);
+        Ok(Some(id))
+    }
+}
+
+/// The state an engine keeps for a record: [`State`]'s form, kept in a
+/// row that holds its type, its key and its position as `since`, the
+/// fields `apart` names left to their rows ([`put_vectors`]), and its
+/// base inline, or by the id `base` answers for it where the engine keeps
+/// it once.
+pub fn record_state(
+    r: &StoredRecord,
+    apart: &BTreeMap<FieldName, Position>,
+    base: &mut dyn FnMut(&str) -> Result<Option<i64>>,
+) -> Result<String> {
+    let shared = shared(r);
     let meta = (r.meta.iter())
-        .filter(|(f, m)| !r.fields.contains_key(*f) || base != Some(*m))
+        .filter(|(f, m)| !r.fields.contains_key(*f) || shared != Some(*m))
         .map(|(f, m)| (f.clone(), m.clone()));
     let bare = r
         .fields
         .keys()
-        .filter(|f| base.is_some() && !r.meta.contains_key(*f));
-    let block = |b: &FieldMeta| {
-        let Ok(Value::Object(mut block)) = serde_json::to_value(b) else {
-            unreachable!("a field's provenance serialises as an object")
-        };
-        if b.position == r.position {
-            block.remove("position");
-        }
-        block
-    };
+        .filter(|f| shared.is_some() && !r.meta.contains_key(*f));
     let fields = r.fields.iter().filter(|(f, _)| !apart.contains_key(*f));
+    let (kept, at) = match (shared, base_of(r)) {
+        (Some(m), Some(b)) => match base(&b)? {
+            Some(id) => (Some(Block::Kept(id)), Some(m.position)),
+            None => (Some(Block::Inline(block(m, Some(r.position)))), None),
+        },
+        _ => (None, None),
+    };
     let state = State {
         vectors: apart.clone(),
         version: r.version,
         fields: fields.map(|(f, v)| (f.clone(), v.clone())).collect(),
         meta: meta.collect(),
         bare: bare.cloned().collect(),
-        base: base.map(block),
+        base: kept,
+        base_at: at.filter(|at| *at != r.position),
         made: r.made,
         retired: r.retired,
         restricted: r.restricted,
     };
-    serde_json::to_string(&state).expect("a record serialises")
+    Ok(serde_json::to_string(&state).expect("a record serialises"))
 }
 
-/// The fields a state keeps apart, each with the position of the row
-/// holding its elements.
-pub type Apart = Vec<(FieldName, Position)>;
+/// `state` naming the base kept as `id` where it holds `base` inline;
+/// `None` where it holds another.
+pub fn name_base(state: &str, base: &str, id: i64) -> Result<Option<String>> {
+    let mut s: State = decode(state, "a record")?;
+    let Some(Block::Inline(mut inline)) = s.base.take() else {
+        return Ok(None);
+    };
+    let at = inline.remove("position");
+    if serde_json::to_string(&inline).expect("a block serialises") != base {
+        return Ok(None);
+    }
+    s.base = Some(Block::Kept(id));
+    s.base_at = at
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| unreadable("a record", &e))?;
+    Ok(Some(
+        serde_json::to_string(&s).expect("a record serialises"),
+    ))
+}
+
+/// What a state keeps apart, which the caller reads from their rows: each
+/// field kept apart with the position of the row holding its elements
+/// ([`rejoin`]), and the base it names by its id ([`rebase`]).
+#[derive(Debug, Default)]
+pub struct Apart {
+    pub vectors: Vec<(FieldName, Position)>,
+    pub base: Option<Based>,
+}
+
+/// The base a state names: its id, and what the record takes of it.
+#[derive(Debug)]
+pub struct Based {
+    pub id: i64,
+    at: Position,
+    fields: Vec<FieldName>,
+}
 
 /// A record from the state [`record_state`] kept in the row of `ty`'s
-/// `key` put at `since`, and the fields it keeps apart, whose elements
-/// the caller reads from their rows: each field with a value and no
-/// provenance of its own takes `base`, but a bare one, and `base` takes
-/// `since` where it holds no position.
+/// `key` put at `since`, and what it keeps apart, which the caller reads
+/// from their rows: each field with a value and no provenance of its own
+/// takes the base, but a bare one, and the base takes `since` where the
+/// state holds no position for it.
 pub fn decode_record(
     ty: &str,
     key: &str,
@@ -2026,17 +2177,28 @@ pub fn decode_record(
     state: &str,
 ) -> Result<(StoredRecord, Apart)> {
     let s: State = decode(state, "a record")?;
+    let valued = s.fields.keys().chain(s.vectors.keys());
+    let takes: Vec<FieldName> = (valued
+        .filter(|f| !s.bare.contains(f) && !s.meta.contains_key(*f)))
+    .cloned()
+    .collect();
     let mut meta = s.meta;
-    if let Some(mut base) = s.base {
-        let at = || Value::from(since.0);
-        base.entry("position").or_insert_with(at);
-        let base: FieldMeta =
-            serde_json::from_value(Value::Object(base)).map_err(|e| unreadable("a record", &e))?;
-        let valued = s.fields.keys().chain(s.vectors.keys());
-        for f in valued.filter(|f| !s.bare.contains(f)) {
-            meta.entry(f.clone()).or_insert_with(|| base.clone());
+    let base = match s.base {
+        Some(Block::Kept(id)) => Some(Based {
+            id,
+            at: s.base_at.unwrap_or(since),
+            fields: takes,
+        }),
+        Some(Block::Inline(mut base)) => {
+            let at = || Value::from(since.0);
+            base.entry("position").or_insert_with(at);
+            let base: FieldMeta = serde_json::from_value(Value::Object(base))
+                .map_err(|e| unreadable("a record", &e))?;
+            meta.extend(takes.into_iter().map(|f| (f, base.clone())));
+            None
         }
-    }
+        None => None,
+    };
     let r = StoredRecord {
         ty: TypeName::from(ty),
         key: RecordKey::from(key),
@@ -2048,7 +2210,29 @@ pub fn decode_record(
         retired: s.retired,
         restricted: s.restricted,
     };
-    Ok((r, s.vectors.into_iter().collect()))
+    let vectors = s.vectors.into_iter().collect();
+    Ok((r, Apart { vectors, base }))
+}
+
+/// Give the fields of `r` that take its base the block its row holds,
+/// `block`: a state naming a base the projection does not hold is one it
+/// cannot read.
+pub fn rebase(r: &mut StoredRecord, based: Based, block: Option<&str>) -> Result<()> {
+    let block = block.ok_or_else(|| base_missing("its row is missing"))?;
+    let mut block: serde_json::Map<String, Value> = decode(block, "a record's base")?;
+    block.insert("position".to_owned(), Value::from(based.at.0));
+    let meta: FieldMeta = serde_json::from_value(Value::Object(block))
+        .map_err(|e| unreadable("a record's base", &e))?;
+    for f in based.fields {
+        r.meta.insert(f, meta.clone());
+    }
+    Ok(())
+}
+
+/// The fault of a base whose row the projection lacks, `why`.
+pub fn base_missing(why: &str) -> Error {
+    let missing = <serde_json::Error as serde::de::Error>::custom(why);
+    unreadable("a record's base", &missing)
 }
 
 /// A vector's elements as the projection keeps them apart from its

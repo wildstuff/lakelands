@@ -51,6 +51,8 @@ use crate::sql;
 /// record with full-text tokens. `vectors` finds a record's rows by its
 /// key and a field's rows in force by `vectors_head`, which a ranking
 /// scans; `since` -1 marks a vector put by the index alone ([`put_vector`]).
+/// `bases` keeps a base [`engines::SHARED`] records of one write share
+/// once, which their states name by id.
 pub(crate) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (
     k TEXT PRIMARY KEY,
@@ -96,6 +98,9 @@ CREATE TABLE IF NOT EXISTS routes (
 CREATE TABLE IF NOT EXISTS names (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE
 );
+CREATE TABLE IF NOT EXISTS bases (
+    id INTEGER PRIMARY KEY, block TEXT NOT NULL UNIQUE
+);
 CREATE INDEX IF NOT EXISTS routes_kind ON routes (kind, at);
 CREATE INDEX IF NOT EXISTS routes_ty ON routes (ty, at);
 CREATE INDEX IF NOT EXISTS routes_key ON routes (key, at);
@@ -137,7 +142,7 @@ CREATE INDEX IF NOT EXISTS vectors_head ON vectors (ty, field, key) WHERE until 
 ";
 
 /// Every table the projection holds, cleared by a rebuild.
-pub(crate) const TABLES: [&str; 16] = [
+pub(crate) const TABLES: [&str; 17] = [
     "meta",
     "declarations",
     "records",
@@ -147,6 +152,7 @@ pub(crate) const TABLES: [&str; 16] = [
     "applied",
     "routes",
     "names",
+    "bases",
     "text_index",
     "lookup_fields",
     "edges",
@@ -366,7 +372,7 @@ pub(crate) fn routes(
 /// raised whenever a table changes so that a projection made before
 /// would answer wrongly, not fail: one made with another layout is never
 /// read, and is rebuilt from the log.
-pub(crate) const LAYOUT: u64 = 6;
+pub(crate) const LAYOUT: u64 = 7;
 
 /// The layout `conn`'s projection was made with: none where it holds no
 /// `meta`, or was made before projections were marked.
@@ -842,7 +848,11 @@ pub(crate) fn decode_record(
     (ty, key, since, state): &Kept4,
 ) -> Result<StoredRecord> {
     let (mut r, apart) = engines::decode_record(ty, key, Position(*since as u64), state)?;
-    for (field, at) in apart {
+    if let Some(based) = apart.base {
+        let block: Option<String> = one(conn, "SELECT block FROM bases WHERE id = ?1", [based.id])?;
+        engines::rebase(&mut r, based, block.as_deref())?;
+    }
+    for (field, at) in apart.vectors {
         let row = (conn.prepare_cached(
             "SELECT single, data FROM vectors WHERE ty = ?1 AND key = ?2 AND field = ?3 \
              AND since = ?4",
@@ -999,10 +1009,14 @@ pub(crate) type Indexed = (
 /// (lakelands#575). A `sort_index.<type>` setting forgets them all, since
 /// the type it names may be the settings' own; the caller forgets them at
 /// a declaration.
-pub(crate) fn put_record(conn: &Connection, kept: &mut Kept, r: &StoredRecord) -> Result<()> {
+pub(crate) fn put_record(
+    conn: &Connection,
+    (kept, sharing): (&mut Kept, &mut engines::Sharing),
+    r: &StoredRecord,
+) -> Result<()> {
     // A head-only name keeps one state for each key and no row beside it.
     if lakelands_api::seam::is_head_only(&r.ty) {
-        let state = engines::record_state(r, &BTreeMap::new());
+        let state = state(conn, sharing, r, &BTreeMap::new())?;
         let key = [r.ty.as_str(), r.key.as_str()];
         (conn.prepare_cached("DELETE FROM records WHERE ty = ?1 AND key = ?2"))
             .and_then(|mut s| s.execute(key))
@@ -1026,7 +1040,7 @@ pub(crate) fn put_record(conn: &Connection, kept: &mut Kept, r: &StoredRecord) -
         kept.insert(r.ty.clone(), indexed(conn, &r.ty)?);
     }
     let apart = put_vectors(conn, r, later.is_some(), &kept[&r.ty].3)?;
-    let state = engines::record_state(r, &apart);
+    let state = state(conn, sharing, r, &apart)?;
     let held = RECORDS.put(conn, &[&r.ty.as_str(), &r.key.as_str()], r.position, &state)?;
     if later.is_none() {
         let (decl, sorted, looked, _) = &kept[&r.ty];
@@ -1041,6 +1055,47 @@ pub(crate) fn put_record(conn: &Connection, kept: &mut Kept, r: &StoredRecord) -
         }
     }
     Ok(())
+}
+
+/// The state of `r` ([`engines::record_state`]), its base kept in `bases`
+/// once where its write shares it ([`engines::Sharing`]): the states of
+/// the write put before that keep it inline until then, and are named
+/// again.
+fn state(
+    conn: &Connection,
+    sharing: &mut engines::Sharing,
+    r: &StoredRecord,
+    apart: &BTreeMap<FieldName, Position>,
+) -> Result<String> {
+    let mut keep = |base: &str| {
+        if let Some(id) = one(conn, "SELECT id FROM bases WHERE block = ?1", [base])? {
+            return Ok(id);
+        }
+        (conn.prepare_cached("INSERT INTO bases (block) VALUES (?1) RETURNING id"))
+            .and_then(|mut s| s.query_row([base], |r| r.get(0)))
+            .map_err(sql)
+    };
+    engines::record_state(r, apart, &mut |base| {
+        let mut name = |ty: &TypeName, key: &RecordKey, at: Position, id| {
+            let at = at.0 as i64;
+            let ident = params![ty.as_str(), key.as_str(), at];
+            let held: Option<String> = one(
+                conn,
+                "SELECT state FROM records WHERE ty = ?1 AND key = ?2 AND since = ?3",
+                ident,
+            )?;
+            let Some(named) = held.map(|s| engines::name_base(&s, base, id)) else {
+                return Ok(());
+            };
+            let Some(named) = named? else { return Ok(()) };
+            run(
+                conn,
+                "UPDATE records SET state = ?4 WHERE ty = ?1 AND key = ?2 AND since = ?3",
+                params![ty.as_str(), key.as_str(), at, named],
+            )
+        };
+        sharing.id(r, base, &mut keep, &mut name)
+    })
 }
 
 /// Write the vector rows of `r`'s state ([`engines::put_vectors`]), `later`
@@ -1165,6 +1220,16 @@ pub(crate) fn drop_record(conn: &Connection, ty: &TypeName, key: &RecordKey) -> 
             .map_err(sql)?;
     }
     Ok(())
+}
+
+/// Delete the bases no record's state names.
+pub(crate) fn drop_bases(conn: &Connection) -> Result<()> {
+    run(
+        conn,
+        "DELETE FROM bases WHERE id NOT IN (SELECT json_extract(state, '$.base') \
+         FROM records WHERE json_type(state, '$.base') = 'integer')",
+        [],
+    )
 }
 
 /// Delete every state of a seam's output for one input.

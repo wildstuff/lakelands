@@ -128,6 +128,7 @@ mod set_migrated;
 mod set_names;
 mod set_rewritten;
 mod sets_across;
+mod sets_at_read;
 mod settings;
 mod shown_hash;
 mod sized;
@@ -308,6 +309,7 @@ pub const ALL: &[Check] = &[
     provenance::TWO_TIME_AXES,
     provenance::VALID_TIME_IS_A_DATE_TIME,
     provenance::FIELD_PROVENANCE,
+    provenance::BASE_PER_RECORD,
     masking::MASKED_AND_ABSENT,
     masking::BUILT_FROM_HIDDEN,
     computed_inputs::COMPUTED_AS_ITS_INPUTS,
@@ -513,6 +515,12 @@ pub const ALL: &[Check] = &[
     sets_across::SET_CLOCK_REPLAYS,
     sets_across::SET_ACROSS_READ,
     sets_across::SET_ACROSS_HELD,
+    sets_at_read::SET_AT_READ,
+    sets_at_read::SET_AT_READ_STEPS,
+    sets_at_read::SET_AT_READ_NAMED,
+    sets_at_read::SET_AT_READ_AGAIN,
+    sets_at_read::SET_AT_READ_MERGED,
+    sets_at_read::SET_AT_READ_RIGHTS,
     kept_sets::KEPT_SET,
     kept_sets::KEPT_SET_REFUSED,
     kept_sets::KEPT_SET_REMADE,

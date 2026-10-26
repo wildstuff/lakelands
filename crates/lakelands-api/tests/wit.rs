@@ -43,7 +43,7 @@ use lakelands_api::query::{
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy};
 use lakelands_api::seam::{FeedBatch, FeedFilter};
 use lakelands_api::write::{
-    AgeReport, Breach, Carried, Carrier, CompactReport, Declaration, DeclarationKind,
+    AgeReport, Breach, Carried, Carrier, CompactReport, DecidedAt, Declaration, DeclarationKind,
     FieldConversion, FieldFill, FunctionDecl, InForce, Migration, MigrationReport, Misfit,
     ObjectSetDecl, Proposal, ProposalFilter, ProposalKind, ProposalState, ProposedWrite,
     PurgeReport, RecordRef, ReferenceRewrite, Rekeyed, RelationRename, Restated, RuleRun,
@@ -607,6 +607,7 @@ fn object_set_decl() -> ObjectSetDecl {
         of: "invoice".into(),
         filter: cond(),
         description: Some("d".into()),
+        decided_at: DecidedAt::Read,
     }
 }
 
@@ -1725,6 +1726,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     checks.push(("retired_by", case_names(&RetiredBy::ALL, None)));
     units!("on_input_change", OnInputChange, [Keep, Clear]);
     units!("computed_at", ComputedAt, [Write, Read]);
+    units!("decided_at", DecidedAt, [Write, Read]);
     units!(
         "cardinality",
         Cardinality,
@@ -2242,6 +2244,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     of: "t".into(),
                     filter: cond(),
                     description: None,
+                    decided_at: DecidedAt::Write,
                 }),
                 Declaration::Function(FunctionDecl {
                     name: "g".into(),

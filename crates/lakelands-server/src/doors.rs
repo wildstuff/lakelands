@@ -10,7 +10,7 @@ use std::fmt;
 
 use lakelands_api::error::{Case, Error, Naming, Place, Refusal, Said};
 use lakelands_api::expr::Condition;
-use lakelands_api::id::{ProposalId, RecordKey, RelationName, TypeName};
+use lakelands_api::id::{Cursor, Position, ProposalId, RecordKey, RelationName, TypeName};
 use lakelands_api::ontology::{FieldDecl, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl};
 use lakelands_api::query::{Pattern, Search};
 use lakelands_api::read::{Find, Get, ReadAt};
@@ -20,7 +20,7 @@ use lakelands_api::write::{
     Change, ChangeTo, Declaration, FunctionDecl, Migration, ObjectSetDecl, ProposalFilter,
     ProposedWrite, SettingDecl, ValueTypeMigration, Withdrawal, WriteOpts,
 };
-use lakelands_api::{Catalog, Principal, Timestamp};
+use lakelands_api::{Catalog, Params, Principal, Timestamp};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde::de::value::StringDeserializer;
@@ -639,6 +639,32 @@ pub(crate) async fn run(
             let mut p: Pattern = args(label, &a)?;
             p.at.clock = clock;
             to_json(&c.query(who, p).await?)
+        }
+        Door::Cypher => {
+            // The axes are members of their own: a flattened `ReadAt`
+            // would hide which member a refusal names.
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct S {
+                statement: String,
+                #[serde(default)]
+                params: Params,
+                #[serde(default)]
+                cursor: Option<Cursor>,
+                #[serde(default)]
+                as_of: Option<Position>,
+                #[serde(default)]
+                valid_at: Option<Timestamp>,
+            }
+            let s: S = args(label, &a)?;
+            let (as_of, valid_at) = (s.as_of, s.valid_at);
+            let at = ReadAt {
+                as_of,
+                valid_at,
+                clock,
+            };
+            let answer = lakelands_cypher::run(c, who, &s.statement, &s.params, at, s.cursor);
+            to_json(&answer.await?)
         }
         Door::Search => {
             let mut s: Search = args(label, &a)?;

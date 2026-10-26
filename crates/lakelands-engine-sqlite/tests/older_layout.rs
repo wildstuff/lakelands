@@ -3,8 +3,8 @@
 //! computed field's metadata names (lakelands#1191), its states holding
 //! their rows' type, key and position and their false flags, a rowid
 //! beside every row of the tables whose primary key is the whole row, and
-//! a search row for every record (lakelands#1318), and its mark one
-//! layout back. A reader's open is refused naming the layouts; the
+//! a search row for every record (lakelands#1318), no table `bases`
+//! (lakelands#1432), and its mark one layout back. A reader's open is refused naming the layouts; the
 //! writer's open rebuilds it from the log under its lease, saying why,
 //! and the next writer's open rebuilds nothing.
 
@@ -91,7 +91,7 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
     .unwrap();
     assert_eq!(rowid_free(), 0, "the older tables keep a rowid");
     db().execute_batch(&format!(
-        "DROP TABLE routes; DROP TABLE names;
+        "DROP TABLE routes; DROP TABLE names; DROP TABLE bases;
          CREATE TABLE routes (at INTEGER NOT NULL, kind TEXT NOT NULL, ty TEXT, key TEXT, source TEXT);
          CREATE INDEX routes_source ON routes (source, at);
          INSERT INTO routes VALUES (1, 'lake_created', NULL, NULL, 'crm');
@@ -113,6 +113,9 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
     );
     let note = Lake::of(store.as_ref()).read("note", "a").await.unwrap();
     assert_eq!(note.fields["text"], "kept");
+    let tables = "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'bases'";
+    let bases: i64 = db().query_row(tables, [], |r| r.get(0)).unwrap();
+    assert_eq!(bases, 1, "the rebuild lays out `bases`");
     let procedure = note.meta["double"].procedure.as_deref();
     assert_eq!(procedure, Some("twice"), "the rebuild names the function");
     let sourced: i64 = (db().query_row(

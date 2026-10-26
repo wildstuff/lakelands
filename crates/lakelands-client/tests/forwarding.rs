@@ -1,7 +1,8 @@
-//! The forwarding handle: the door checks through one on SQLite and on
-//! PostgreSQL, and what they do not reach — a door that passes the call
-//! on, a writer lost after the call was sent, the write context crossing
-//! the link, and a read that waits for the handle's own write.
+//! The forwarding handle: the door checks and the statement checks
+//! through one on SQLite and on PostgreSQL, and what they do not reach —
+//! a door that passes the call on, a writer lost after the call was sent,
+//! the write context crossing the link, and a read that waits for the
+//! handle's own write.
 //!
 //! Each check's lake is opened twice on one engine: once for writing,
 //! served by `serve_http` on loopback with the forwarder among its
@@ -35,6 +36,7 @@ use lakelands_api::write::{Outcome, WriteOpts};
 use lakelands_api::{LakeStore, Location, SourceRecord, WriteContext};
 use lakelands_client::{ForwardConfig, ForwardingLake};
 use lakelands_door_checks::checks::{patch, setup};
+use lakelands_door_checks::statements::{InProcess, Statements};
 use lakelands_door_checks::stream;
 use lakelands_server::HostEntry;
 use serde_json::json;
@@ -219,6 +221,7 @@ mod on_sqlite {
     }
 
     lakelands_door_checks::door_checks!(sqlite, block_on, forward);
+    lakelands_door_checks::statement_checks!(|| in_process(sqlite()), block_on);
 }
 
 mod on_pg {
@@ -243,6 +246,14 @@ mod on_pg {
     }
 
     lakelands_door_checks::door_checks!(pg, run, forward);
+    lakelands_door_checks::statement_checks!(|| in_process(pg()), run);
+}
+
+/// A forwarding handle and the statement door of a host that holds it,
+/// translating the statement itself.
+fn in_process(lake: Arc<dyn LakeStore>) -> (Arc<dyn LakeStore>, Arc<dyn Statements>) {
+    let door = InProcess(lake.catalog(WriteContext::default()));
+    (lake, Arc::new(door))
 }
 
 fn get(k: &str) -> Get {

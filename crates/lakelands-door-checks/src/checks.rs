@@ -127,6 +127,7 @@ macro_rules! door_checks {
             a_declaration_reads_only_what_its_type_has,
             a_function_over_null_is_null_on_every_lake,
             a_duration_by_a_unit_is_a_number_and_what_never_lands_is_refused,
+            a_where_nested_past_the_limit_is_refused_and_the_host_keeps_answering,
             recompute_appends_the_function_in_force_again,
             a_set_names_a_set_and_tells_no_more_than_its_filter,
             a_renamed_relation_keeps_its_edges,
@@ -1116,6 +1117,7 @@ pub async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) {
         of: INVOICE.into(),
         filter: Condition::from(filter),
         description: Some(filter.into()),
+        decided_at: Default::default(),
     };
     let (shout, hush) = (
         function("shout", "status", "upper(status)"),
@@ -2274,6 +2276,7 @@ pub async fn nothing_that_never_acts_is_declared_on_a_view(store: Arc<dyn LakeSt
         of: "partner_totals".into(),
         filter: "count > 0".into(),
         description: None,
+        decided_at: Default::default(),
     });
     let totals = || ty("partner_totals");
     let on = |name: &str| Place::Trigger { name: name.into() };
@@ -4306,6 +4309,36 @@ pub async fn a_duration_by_a_unit_is_a_number_and_what_never_lands_is_refused(
         right: Kind::Number,
     };
     assert_eq!(e, invalid(None, said_at(&[Place::Where], case)));
+}
+
+/// A `where` nests at most 32 levels deep: 32 parentheses are read, one
+/// more is refused as invalid at the character where it begins, however
+/// far the text goes on, and the host that read it keeps answering.
+pub async fn a_where_nested_past_the_limit_is_refused_and_the_host_keeps_answering(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let (c, owner, invoice) = (&f.catalog, &f.cast.owner, ty(INVOICE));
+    let asked = |filter: &str| Find {
+        filter: Some(filter.into()),
+        ..Find::default()
+    };
+    let nested = |n: usize| format!("{}status = 'open'{}", "(".repeat(n), ")".repeat(n));
+    for n in [33, 1_000] {
+        let text = nested(n);
+        let e = c.find(owner, &invoice, asked(&text)).await;
+        let case = Case::NotParsed {
+            text: text.clone(),
+            why: Box::new(Case::ExprTooDeep {
+                max: 32,
+                offset: 32,
+            }),
+        };
+        let e = e.expect_err("too deep");
+        assert_eq!(e, invalid(None, said_at(&[Place::Where], case)), "{n}");
+    }
+    let found = c.find(owner, &invoice, asked(&nested(32))).await;
+    found.expect("32 levels are answered");
 }
 
 /// A set names a set with `in_set('name')`, in a set's `where` and in a

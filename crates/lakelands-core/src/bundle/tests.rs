@@ -361,6 +361,7 @@ fn complete_declarations() -> Vec<Declaration> {
             of: TypeName::new("invoice"),
             filter: text("status = 'open'"),
             description: None,
+            decided_at: Default::default(),
         }),
     ]
 }

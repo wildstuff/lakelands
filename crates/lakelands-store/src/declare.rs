@@ -1323,6 +1323,84 @@ fn derived(o: &Ontology, t: &TypeDecl, r: &RelationDecl, d: &Derived, on: &[Plac
     Ok(())
 }
 
+/// What a write decides by, of `d`, as a refusal names it: a kept set's
+/// `where`, a view's `where`s, a trigger's `when` and a verb's
+/// conditions. A set decided at the read decides nothing at a write.
+fn decided_at_write(d: &Declaration) -> Option<(Naming, String, Vec<&Condition>)> {
+    match d {
+        Declaration::ObjectSet(s) if !s.at_read() => {
+            Some((Naming::ObjectSet, s.name.clone(), vec![&s.filter]))
+        }
+        Declaration::Trigger(t) => {
+            Some((Naming::Trigger, t.name.to_string(), t.when.iter().collect()))
+        }
+        Declaration::Verb(v) => {
+            let holds = v.preconditions.iter().map(|p| &p.holds);
+            Some((
+                Naming::Verb,
+                v.name.to_string(),
+                v.requires.iter().chain(holds).collect(),
+            ))
+        }
+        Declaration::Type(t) => t.view.as_ref().map(|v| {
+            let merged = v.merge.iter().filter_map(|m| m.r#where.as_ref());
+            (
+                Naming::Type,
+                t.name.to_string(),
+                v.r#where.iter().chain(merged).collect(),
+            )
+        }),
+        _ => None,
+    }
+}
+
+/// The sets a condition names by `in_set`, as it names them.
+fn sets_named(c: &Condition) -> Vec<String> {
+    let mut named = Vec::new();
+    if let Ok(e) = c.typed() {
+        lakelands_core::describe::in_sets(&e, &mut named);
+    }
+    named
+}
+
+/// Nothing decided at a write names a set decided at the read: what it
+/// decided by the set would drift from what a read of the set answers at
+/// its own clock, as a kept set's clock would (066). Refused naming the
+/// set and what names it, whichever of the two is declared.
+fn names_no_set_at_read(o: &Ontology, d: &Declaration) -> Result<()> {
+    let refused = |set: String, (kind, name): (Naming, String)| {
+        Err(Error::invalid(at(
+            &[d.place()],
+            Case::SetAtReadNamed { set, kind, name },
+        )))
+    };
+    if let Some((kind, name, conditions)) = decided_at_write(d) {
+        let at_read = |n: &String| o.set(n).is_some_and(ObjectSetDecl::at_read);
+        if let Some(set) = conditions.into_iter().flat_map(sets_named).find(at_read) {
+            return refused(set, (kind, name));
+        }
+    }
+    if let Declaration::ObjectSet(s) = d
+        && s.at_read()
+    {
+        for other in o.declared().iter().map(|e| &e.declaration) {
+            let Some((kind, name, conditions)) = decided_at_write(other) else {
+                continue;
+            };
+            let own = matches!(other, Declaration::ObjectSet(k) if k.name == s.name);
+            if !own
+                && conditions
+                    .into_iter()
+                    .flat_map(sets_named)
+                    .any(|n| n == s.name)
+            {
+                return refused(s.name.clone(), (kind, name));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// What a declaration reads of its type, the type has (028, extended): the
 /// reads the migration preflight keeps a field by.
 pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
@@ -1333,9 +1411,12 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
         Declaration::ObjectSet(s) => o.ty(&s.of).ok(),
         _ => None,
     };
-    // A set is decided at the write and keeps what it decided: a clock in
-    // its `where` would drift from the clock a read of `in_set` evaluates.
+    // A kept set is decided at the write and keeps what it decided: a
+    // clock in its `where` would drift from the clock a read of `in_set`
+    // evaluates. One decided at the read keeps nothing to drift from.
+    let at_read = matches!(d, Declaration::ObjectSet(s) if s.at_read());
     if let Declaration::ObjectSet(s) = d
+        && !s.at_read()
         && let Ok(e) = s.filter.typed()
         && e.reads_clock()
     {
@@ -1376,6 +1457,27 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
         }
         _ => Default::default(),
     };
+    // A read evaluates no path through a reference (055), so a set decided
+    // at the read steps through none: not by a relation, a reference field
+    // or `exists`. A path into a `json` field's members stays its record's.
+    if let (Declaration::ObjectSet(s), Some(on)) = (d, on.filter(|_| at_read)) {
+        let steps = |p: &&Vec<FieldName>| {
+            let reference = on
+                .fields
+                .iter()
+                .any(|f| f.name == p[0] && f.ty.target.is_some());
+            p.len() > 1 && (reference || related(on, &p[0]).is_some())
+        };
+        let path = (exists.first().map(|n| n.to_string()))
+            .or_else(|| paths.iter().find(steps).map(|p| p.join(".")));
+        if let Some(path) = path {
+            let set = s.name.clone();
+            return Err(Error::invalid(at(
+                &[d.place()],
+                Case::SetAtReadSteps { set, path },
+            )));
+        }
+    }
     // A relation's name alone, beside the `exists` that names it, stays
     // a field the type does not have.
     let bare = |n: &FieldName| {
@@ -1416,8 +1518,9 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
             Case::UnknownField { ty, field },
         )));
     }
-    // A verb, a trigger and a set read a record as stored, at a write.
-    if let Some(on) = on.filter(|_| !matches!(d, Declaration::Type(_)))
+    // A verb, a trigger and a kept set read a record as stored, at a write;
+    // a set decided at the read reads it as the read computes it.
+    if let Some(on) = on.filter(|_| !matches!(d, Declaration::Type(_)) && !at_read)
         && let reads = lakelands_core::describe::declaration_reads(d, &on.name, &|_| None)
         && let Some(n) =
             (reads.iter()).find(|n| on.fields.iter().any(|f| &f.name == *n && f.at_read()))
@@ -1581,7 +1684,7 @@ pub fn reads_of(o: &Ontology, d: &Declaration, ty: &TypeName) -> BTreeSet<FieldN
     reads
 }
 
-/// Refuse taking to the read a field that a trigger, a verb, an object set
+/// Refuse taking to the read a field that a trigger, a verb, a kept set
 /// or another type's derived relation in force reads: each reads the
 /// record as stored. The refusal names the field alone, not what reads it,
 /// which its declarer may not be shown.
@@ -1591,7 +1694,10 @@ fn read_as_stored(o: &Ontology, t: &TypeDecl) -> Result<()> {
     }
     let mut read = BTreeSet::new();
     for d in o.declared().iter().map(|d| &d.declaration) {
-        if let Declaration::Verb(_) | Declaration::Trigger(_) | Declaration::ObjectSet(_) = d {
+        let stored = !matches!(d, Declaration::ObjectSet(s) if s.at_read());
+        if let Declaration::Verb(_) | Declaration::Trigger(_) | Declaration::ObjectSet(_) = d
+            && stored
+        {
             read.extend(reads_of(o, d, &t.name));
         }
     }
@@ -1734,6 +1840,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
     if let Some(said) = d.integer_fault() {
         return Err(Error::invalid(said));
     }
+    names_no_set_at_read(o, d)?;
     match d {
         Declaration::Type(t) => {
             if is_system(&t.name) && !who_is_system {
@@ -1981,6 +2088,12 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 name: s.name.clone(),
             }];
             declared(o, &s.of, &on)?;
+            // A set of a view holds the groups a write decides (066); one
+            // decided at the read of a view is not taken in 0.20.0.
+            if s.at_read() && o.ty(&s.of).is_ok_and(|t| t.view.is_some()) {
+                let (set, view) = (s.name.clone(), s.of.clone());
+                return Err(Error::invalid(at(&on, Case::SetAtReadOfView { set, view })));
+            }
             let ty = s.of.clone();
             // A set is of one type: declared again, it holds that type.
             if let Some(was) = o.object_sets.get(&s.name).filter(|e| e.decl.of != s.of) {

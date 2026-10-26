@@ -4,12 +4,12 @@
 //!
 //! [`translate`] parses a statement of `MATCH`, `OPTIONAL MATCH`,
 //! `WHERE` and `RETURN` and produces the pattern a host runs like any
-//! other: a host that holds the store in-process calls [`translate`]
-//! and then [`Catalog::query`] with the pattern, and a door does the
-//! same behind its route. Nothing here reads the store, and the store
-//! knows nothing of Cypher. Every construct outside the subset is
-//! refused at its offset with the construct named, never approximated,
-//! and the same statement and parameters always give the same pattern.
+//! other: [`run`] translates it and reads the pattern through
+//! [`Catalog::query`], in process and behind a door alike. Nothing else
+//! here reads the store, and the store knows nothing of Cypher. Every
+//! construct outside the subset is refused at its offset with the
+//! construct named, never approximated, and the same statement and
+//! parameters always give the same pattern.
 //!
 //! What differs from openCypher:
 //!
@@ -30,9 +30,10 @@
 //!
 //! [`Catalog::query`]: lakelands_api::catalog::Catalog::query
 
-use lakelands_api::Params;
 use lakelands_api::error::{Case, Error, Result};
-use lakelands_api::query::Pattern;
+use lakelands_api::id::Cursor;
+use lakelands_api::query::{Pattern, StatementAnswer};
+use lakelands_api::{Catalog, Params, Principal, ReadAt};
 
 mod expr;
 mod lex;
@@ -77,6 +78,7 @@ pub fn translate(statement: &str, params: &Params) -> Result<Translated> {
         | Case::CypherRowItem { .. }
         | Case::CypherSkip { .. }
         | Case::CypherStartType { .. }
+        | Case::CypherTooDeep { .. }
         | Case::CypherUnbound { .. }
         | Case::CypherWhole { .. } => Error::invalid(case),
         why => Error::invalid(Case::StatementNotParsed { why: Box::new(why) }),
@@ -94,6 +96,28 @@ pub fn translate(statement: &str, params: &Params) -> Result<Translated> {
         explain,
         statement: Statement::Read(pattern),
     })
+}
+
+/// The statement `statement` with `params`, translated and read through
+/// `catalog` as `who`, at `at` and from `cursor`: every door that takes
+/// a statement runs it here.
+pub async fn run(
+    catalog: &dyn Catalog,
+    who: &Principal,
+    statement: &str,
+    params: &Params,
+    at: ReadAt,
+    cursor: Option<Cursor>,
+) -> Result<StatementAnswer> {
+    let t = translate(statement, params)?;
+    let Statement::Read(mut pattern) = t.statement;
+    (pattern.at, pattern.cursor) = (at, cursor);
+    if t.explain {
+        return Ok(StatementAnswer::Explained {
+            pattern: Box::new(pattern),
+        });
+    }
+    Ok(StatementAnswer::Read(catalog.query(who, pattern).await?))
 }
 
 #[cfg(test)]

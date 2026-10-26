@@ -756,6 +756,7 @@ pub fn object_set_on(name: &str, of: &str, filter: &str) -> Declaration {
         of: of.into(),
         filter: filter.into(),
         description: None,
+        decided_at: Default::default(),
     })
 }
 

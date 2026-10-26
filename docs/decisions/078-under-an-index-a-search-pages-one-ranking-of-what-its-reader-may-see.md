@@ -635,7 +635,8 @@ its acceptance:
 - `006`, where an engine's vector candidates include restricted records:
   under an index they are its reader's class's, and a held record is no
   candidate of a reader without `restricted`.
-- `038 § The layout is 7`, which was "The layout is 6", names the graph
+- `038 § The layout is 9` (here "The layout is 7", which was "The
+  layout is 6"; raised since by lakelands#1432) names the graph
   tables and their rows, and `vectors` without a unit vector.
 - `072` keeps a vector's elements once in `vectors`; the unit vectors
   moved to the graphs, and its "The layout is raised" names 7 too.
