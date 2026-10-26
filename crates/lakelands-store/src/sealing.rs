@@ -668,8 +668,8 @@ fn nonce(parts: &[&[u8]]) -> [u8; 12] {
 /// The nonce of what a source's key seals in `body`, by its place: a
 /// record's box, from its source, type, key and version before, or, up to
 /// format 19, its member `field` alone; or a recorded output, from its
-/// source, seam and input.
-fn place(source: &SourceId, body: &EventBody, field: Option<&str>) -> [u8; 12] {
+/// source, seam and input. No other event holds a sealed value.
+fn place(source: &SourceId, body: &EventBody, field: Option<&str>) -> Option<[u8; 12]> {
     let source = source.as_str().as_bytes();
     match body {
         EventBody::RecordIngested {
@@ -678,15 +678,15 @@ fn place(source: &SourceId, body: &EventBody, field: Option<&str>) -> [u8; 12] {
             let before = version.0.saturating_sub(1).to_string();
             let parts = [source, ty.as_str().as_bytes(), key.as_str().as_bytes()];
             let parts = [&parts[..], &[before.as_bytes()]].concat();
-            match field {
+            Some(match field {
                 Some(f) => nonce(&[&parts[..], &[f.as_bytes()]].concat()),
                 None => nonce(&parts),
-            }
+            })
         }
         EventBody::OutputRecorded { seam, input, .. } => {
-            nonce(&[source, seam.as_bytes(), input.0.as_bytes()])
+            Some(nonce(&[source, seam.as_bytes(), input.0.as_bytes()]))
         }
-        _ => [0; 12],
+        _ => None,
     }
 }
 
@@ -702,7 +702,9 @@ pub fn seal(body: &mut EventBody, sealed: &mut Sealed, source: &SourceId, key: &
             .expect("AES-256-GCM-SIV seals any value");
         STANDARD.encode(sealed)
     };
-    let n = place(source, body, None);
+    let Some(n) = place(source, body, None) else {
+        return;
+    };
     match body {
         EventBody::RecordIngested { patch, .. } => {
             let fields = sealed.fields.iter();
@@ -737,10 +739,12 @@ pub fn open(event: &mut Event, key: &DataKey) -> Result<()> {
         serde_json::from_slice(&plain).ok()
     };
     let at = |f: Option<&str>| place(&source, &event.body, f);
-    let each: Vec<_> = (sealed.fields.iter())
+    let each: Option<Vec<_>> = (sealed.fields.iter())
         .map(|f| at(Some(f.as_str())))
         .collect();
-    let whole = at(None);
+    let (Some(whole), Some(each)) = (at(None), each) else {
+        return Ok(());
+    };
     match (&mut event.body, &sealed.boxed) {
         (EventBody::RecordIngested { patch, .. }, Some(boxed)) => {
             let members = opened(&Value::String(boxed.clone()), whole);
