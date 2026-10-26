@@ -64,7 +64,16 @@ network and user-space mounts) no longer opens, even to be read.
 
 On PostgreSQL the swap is one transaction: it drops the projection's
 tables, moves the scratch's into the lake's schema, replaces the
-projection's rows of `meta` with the scratch's, and drops the scratch's
+projection's rows of `meta` with the scratch's, drops the scratch's
+schema, and makes the log's tables this build has and the lake lacks
+(`frames`, in a lake 0.19.0 made), in the log's tablespace. They are
+made there and not when the rebuild opens the lake, because a release
+refuses a schema holding a table it does not know: an upgrade that
+fails before its swap leaves the lake's schema as the older release
+opens it, and the upgrade the open appends after the swap finds every
+table the log needs (lakelands#1467). Once the swap has run, the older
+release refuses the schema; the way back is to open it again with this
+release, which finishes the upgrade, or to restore an export into a new
 schema. The log shares the lake's schema, so the tables move and the
 schema does not: every reader goes on naming the same schema, and each
 statement sees the old projection or the new one, never neither. A

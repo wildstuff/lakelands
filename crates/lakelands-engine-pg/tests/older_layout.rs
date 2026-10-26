@@ -8,7 +8,10 @@
 //! and the next writer's open rebuilds nothing. A projection layout 6
 //! kept under a vector index (unit vectors in `vectors`, a partial HNSW
 //! index per field there, the field's mark in `meta`, no graph) is
-//! rebuilt with its graphs, and its pages are what they were.
+//! rebuilt with its graphs, and its pages are what they were. A lake of
+//! format 19, its log without `frames` and its projection one layout
+//! back, as 0.19.0 left it, is upgraded by the first writer's open
+//! (lakelands#1467).
 
 mod common;
 
@@ -16,6 +19,7 @@ use std::sync::Arc;
 
 use lakelands_api::engine::OpenMode;
 use lakelands_api::error::Situation;
+use lakelands_api::event::{EventBody, LOG_FORMAT_VERSION};
 use lakelands_api::id::TypeName;
 use lakelands_api::ontology::{
     Authority, FieldDecl,
@@ -27,7 +31,7 @@ use lakelands_api::read::ReadAt;
 use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::fixture::{
-    Lake, computed_by, reads_all, restrict, source_record, sourced, type_decl, vector,
+    Lake, computed_by, log_events, reads_all, restrict, source_record, sourced, type_decl, vector,
 };
 use lakelands_core::engines::Elements;
 use lakelands_engine_pg::PgOpener;
@@ -131,6 +135,118 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
     );
     let bases = tokio::task::block_in_place(|| one(&url, &tables));
     assert_eq!(bases, 1, "the rebuild lays out `bases`");
+    store.close().await.unwrap();
+    let store = open(&location, OpenMode::Write).await.unwrap();
+    assert_eq!(
+        store.rebuilt_at_open(),
+        None,
+        "the next writer's open rebuilds nothing"
+    );
+    store.close().await.unwrap();
+    common::drop_schema(&url, &schema);
+}
+
+/// The tables of a lake 0.19.0 made, which opens no schema holding others.
+const V0_19_TABLES: &str = "applied declarations declarations_head edges full_text graph_keys \
+    graphs lease log lookup_fields members meta outputs proposals records records_head routes \
+    segments sort_index text_index vectors";
+
+/// The first writer's open of a lake as 0.19.0 left it: a log of format
+/// 19 with no `frames` table, under a projection one layout back. It
+/// rebuilds the projection, makes the log's tables this build adds and
+/// appends the upgrade, in one try (lakelands#1467).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_format_19_lake_an_older_build_laid_out_upgrades_on_the_first_writers_open() {
+    let Some(url) = common::url_or_skip("format 19 upgrade") else {
+        return;
+    };
+    let schema = common::fresh_schema();
+    let location = common::location(&url, "vectors", &schema);
+    let seams = Seams {
+        engines: vec![Arc::new(PgOpener)],
+        ..Seams::default()
+    };
+    let vectors =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/19");
+    lakelands_store::import(location.clone(), seams, vectors)
+        .await
+        .unwrap();
+    // The import upgraded the log: its events after the vectors' eight,
+    // and every table and the layout 0.19.0 did not have, are taken back.
+    let s = format!("\"{schema}\"");
+    let older = format!(
+        "DELETE FROM {s}.log WHERE position > 7; \
+         DO $$ DECLARE t TEXT; BEGIN FOR t IN SELECT tablename FROM pg_tables \
+         WHERE schemaname = '{schema}' AND tablename <> ALL (string_to_array('{V0_19_TABLES}', ' ')) \
+         LOOP EXECUTE format('DROP TABLE {s}.%I', t); END LOOP; END $$; \
+         DROP TABLE {s}.routes; \
+         CREATE TABLE {s}.routes (at BIGINT NOT NULL, kind TEXT NOT NULL, ty TEXT, \
+         key TEXT, source TEXT); \
+         UPDATE {s}.meta SET n = 7 WHERE k IN ('folded', 'layout')"
+    );
+    let tables = format!(
+        "SELECT string_agg(tablename, ' ' ORDER BY tablename COLLATE \"C\") FROM pg_tables \
+         WHERE schemaname = '{schema}'"
+    );
+    let as_left = tokio::task::block_in_place(|| {
+        let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        client.batch_execute(&older).unwrap();
+        client.query_one(&tables, &[]).unwrap().get::<_, String>(0)
+    });
+    assert_eq!(as_left, V0_19_TABLES, "the lake holds 0.19.0's tables");
+    // A rebuild refused before its swap leaves the lake as 0.19.0 opens
+    // it: here, while another session holds the builder's lock.
+    let (locked, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+    let holder = {
+        let (url, schema, locked) = (url.clone(), schema.clone(), locked.0);
+        std::thread::spawn(move || {
+            let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+            let builder =
+                "SELECT pg_advisory_lock(hashtextextended('lakelands rebuild ' || $1, 0))";
+            client.query_one(builder, &[&schema]).unwrap();
+            locked.send(()).unwrap();
+            let _ = release.1.recv();
+        })
+    };
+    tokio::task::block_in_place(|| locked.1.recv()).unwrap();
+    let refused = open(&location, OpenMode::Write).await.err();
+    assert!(
+        matches!(
+            refused.as_ref().and_then(|e| e.situation()),
+            Some(Situation::Rebuilding { .. })
+        ),
+        "the writer's open is refused while the builder's lock is held: {refused:?}"
+    );
+    let unchanged = tokio::task::block_in_place(|| {
+        let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        client.query_one(&tables, &[]).unwrap().get::<_, String>(0)
+    });
+    assert_eq!(
+        unchanged, V0_19_TABLES,
+        "a refused upgrade leaves 0.19.0's tables and no other"
+    );
+    drop(release.0);
+    tokio::task::block_in_place(|| holder.join()).unwrap();
+    let store = open(&location, OpenMode::Write).await.unwrap();
+    let why = store.rebuilt_at_open();
+    assert!(
+        why.as_ref().is_some_and(|w| w.contains("layout 7")),
+        "the writer's open says why it rebuilt: {why:?}"
+    );
+    let log = log_events(store.as_ref()).await.unwrap();
+    let marked = log.iter().filter(
+        |e| matches!(e.body, EventBody::LakeUpgraded { from: 19, to } if to == LOG_FORMAT_VERSION),
+    );
+    assert_eq!(marked.count(), 1, "one `lake_upgraded` from 19: {log:?}");
+    let frames = format!(
+        "SELECT count(*) FROM pg_tables WHERE schemaname = '{schema}' AND tablename = 'frames'"
+    );
+    assert_eq!(
+        tokio::task::block_in_place(|| one(&url, &frames)),
+        1,
+        "the upgrade makes `frames`"
+    );
+    store.verify(None, None).await.unwrap();
     store.close().await.unwrap();
     let store = open(&location, OpenMode::Write).await.unwrap();
     assert_eq!(

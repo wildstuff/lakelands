@@ -19,6 +19,11 @@
 //! projection's rows of `meta` replaced with the scratch's, and the
 //! scratch's schema dropped. The log shares the lake's schema, so the
 //! tables move, not the schema: every reader goes on naming the same one.
+//! The swap also makes the log's tables this build has and the lake does
+//! not (`frames`, for a lake an older build made): a rebuild's open does
+//! not make them, so a lake the swap fails to change is left as the
+//! older build can open it, and the upgrade the open then appends finds
+//! them (071, lakelands#1467).
 
 use lakelands_api::error::Result;
 use lakelands_api::id::{LakeId, Position};
@@ -138,8 +143,9 @@ pub(crate) fn swap_sql(live: &Names, scratch: &Names) -> String {
     sql += &format!(
         "DELETE FROM {m} WHERE k NOT IN ({LOG_KEYS}); \
          INSERT INTO {m} (k, n, t) SELECT k, n, t FROM {sm} WHERE k NOT IN ({LOG_KEYS}, 'built'); \
-         {};",
-        remove_sql(scratch)
+         {}; {}",
+        remove_sql(scratch),
+        live.log_sql()
     );
     sql
 }
