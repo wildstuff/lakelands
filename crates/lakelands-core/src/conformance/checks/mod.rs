@@ -506,6 +506,8 @@ pub const ALL: &[Check] = &[
     hidden_where::HIDDEN_NO_EDGE,
     hidden_where::HIDDEN_PROPOSED,
     hidden_where::HIDDEN_CHANGED,
+    hidden_where::HIDDEN_QUERY_ORDER,
+    hidden_where::HIDDEN_NOT_REACTED,
     only_proposals::ONLY_PROPOSES,
     only_proposals::ONLY_DECIDES,
     reactions::VERB_WRITE_REACTS,

@@ -88,6 +88,16 @@ check!(
     "006 and 081: a change to records whose condition reads a field hidden on the selected records reads it there as null, so their value of it neither selects them nor moves the plan's id; one that sets a field hidden on a record it selects is told refused not granted for that record and refuses its `enact` whole, appending nothing"
 );
 
+check!(
+    HIDDEN_QUERY_ORDER = a_query_orders_records_by_a_field_hidden_where_a_condition_holds_as_told,
+    "006: a pattern query ordered by a field hidden or masked on the selected records orders them by it as told, as `find` orders them, and never by the value they hold"
+);
+
+check!(
+    HIDDEN_NOT_REACTED = a_write_or_call_on_a_selected_record_tells_nothing_of_a_field_hidden_there,
+    "006 and 024: a write's answer to the holder of a hiding names no trigger fired, nor object set joined or left, whose condition reads a field the hiding lowers; and a verb that reads such a field is refused not granted on a selected record, its `requires` holding or not, appending nothing"
+);
+
 /// `chunk` with the condition field `doc`, the text `body`, the derived
 /// `echo` of it, a number `n` and a vector `v`: k1 (open, taxi rome, 1),
 /// k2 (secret, taxi paris, 2), k3 (open, hotel, 3). Answers the head.
@@ -1053,4 +1063,117 @@ async fn a_change_to_records_over_a_field_hidden_where_a_condition_holds_tells_n
         "the change must be refused whole: {enacted:?}"
     );
     head_unmoved(s, head, "a refused change").await
+}
+
+/// `who`'s pattern query of `chunk` ordered by `order`, its keys in order.
+async fn query_keys(l: &Lake, who: &Principal, order: Value) -> Result<String, Failure> {
+    let p = de(json!({"start": {"type": "chunk"}, "order_by": [order],
+                      "project": {"as": "rows", "fields": ["chunk.key"]}}));
+    let what = format!("{}'s query ordered by {order}", who.id);
+    let QueryResult::Rows { rows, .. } = l.cat.query(who, p).await.must(&what)?.data else {
+        return Err(Failure::new(format!("{what} answers rows")));
+    };
+    let key = |r: &BTreeMap<String, Value>| r["chunk.key"].as_str().unwrap_or("?").to_owned();
+    Ok(rows.iter().map(key).collect::<Vec<_>>().join(" "))
+}
+
+async fn a_query_orders_records_by_a_field_hidden_where_a_condition_holds_as_told(
+    store: Store,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    chunks(&l).await?;
+    let ann = ann(store.as_ref(), "read", json!({}));
+    let mut wrong = Vec::new();
+    // k2's body sorts between k3's and k1's, and its `n` between theirs:
+    // an order by what it holds would put it in the middle.
+    for (field, dir) in [("body", "asc"), ("echo", "asc"), ("n", "desc")] {
+        let order = json!({"field": format!("chunk.{field}"), "dir": dir});
+        let queried = query_keys(&l, &ann, order).await?;
+        let find = de(json!({"order_by": [{"field": field, "dir": dir}]}));
+        let found = l.cat.find(&ann, &"chunk".into(), find).await;
+        let found = found.must(&format!("ann's find ordered by {field}"))?.data;
+        let Found::Records { rows, .. } = found else {
+            return Err(Failure::new(format!("a find by {field} answers records")));
+        };
+        let found: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
+        if queried != found.join(" ") || found[1] == "k2" {
+            wrong.push(format!(
+                "by {field} {dir}: queried `{queried}`, found `{found:?}`"
+            ));
+        }
+    }
+    ensure!(
+        wrong.is_empty(),
+        "ann's query must order a secret chunk by its fields as told: {wrong:?}"
+    );
+    Ok(())
+}
+
+async fn a_write_or_call_on_a_selected_record_tells_nothing_of_a_field_hidden_there(
+    store: Store,
+) -> Held {
+    let l = Lake::of(store.as_ref());
+    chunks(&l).await?;
+    let mut verb = write_verb("seal", "chunk", "doc", "'secret'");
+    if let Declaration::Verb(v) = &mut verb {
+        v.requires = Some("body = 'taxi paris'".into());
+    }
+    for d in [
+        trigger_on("paris", "chunk", Some("body = 'taxi paris'")),
+        object_set_on(
+            "secret_paris",
+            "chunk",
+            "doc = 'secret' and body = 'taxi paris'",
+        ),
+        object_set_on("secret", "chunk", "doc = 'secret'"),
+        verb,
+    ] {
+        l.declare_as(d, "a reaction").await?;
+    }
+    l.upsert("chunk", "k4", json!({"doc": "open", "body": "taxi paris"}))
+        .await?;
+    let ann = ann(store.as_ref(), "write", json!({}));
+    let (ty, k4) = (TypeName::from("chunk"), RecordKey::from("k4"));
+    let wrote = l.cat.upsert(
+        &ann,
+        &ty,
+        &k4,
+        de(json!({"doc": "secret"})),
+        Default::default(),
+    );
+    let Outcome::Applied { set_off, .. } = wrote.await.must("ann's write of k4's `doc`")? else {
+        return Err(Failure::new(
+            "ann's write of k4's `doc` is applied".to_owned(),
+        ));
+    };
+    let named = (set_off.fired.len(), set_off.joined);
+    ensure!(
+        named == (0, vec!["secret".to_owned()]),
+        "ann's write making k4 secret must name only the set over `doc`, (fired, joined): {named:?}"
+    );
+    // k2 holds what `seal` requires; once its body is another, it does not.
+    let seal = lakelands_api::VerbName::from("seal");
+    for (what, body) in [("held", None), ("unmet", Some("hotel"))] {
+        if let Some(body) = body {
+            l.upsert("chunk", "k2", json!({"body": body})).await?;
+        }
+        let head = store.head().await.must("reading the head")?;
+        let k2 = RecordKey::from("k2");
+        let called = l.cat.call(
+            &ann,
+            &seal,
+            Some(&k2),
+            Default::default(),
+            Default::default(),
+        );
+        let said = called
+            .await
+            .must_fail(&format!("ann's call of `seal` on k2, {what}"))?;
+        ensure!(
+            said == Error::refused(None, Refusal::NotGranted),
+            "ann's call of `seal` on k2, its `requires` {what}, must be refused not granted: {said:?}"
+        );
+        head_unmoved(store.as_ref(), head, "a refused call").await?;
+    }
+    Ok(())
 }
