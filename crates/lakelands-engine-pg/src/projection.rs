@@ -150,30 +150,9 @@ impl Names {
     /// its keys and indexes by `default_tablespace`, set for the transaction.
     pub(crate) fn schema_sql(&self) -> String {
         let (s, pt, a) = (&self.schema, Names::space(&self.at.projection), &self.at);
-        let [ix, lg, vs] = [&a.indexes, &a.log, &a.vectors].map(Names::default_space);
+        let [ix, vs] = [&a.indexes, &a.vectors].map(Names::default_space);
         let heads = heads_sql(s, &pt);
-        // A scratch reads the log's tables in the lake's schema.
-        let log = match self.log {
-            Some(_) => String::new(),
-            None => format!(
-                "
-{lg}CREATE TABLE IF NOT EXISTS {s}.lease (
-    one INTEGER PRIMARY KEY CHECK (one = 1),
-    fence BIGINT NOT NULL, holder TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS {s}.segments (
-    first BIGINT PRIMARY KEY, digest TEXT
-);
-CREATE TABLE IF NOT EXISTS {s}.log (
-    position BIGINT PRIMARY KEY, segment BIGINT NOT NULL, fence BIGINT NOT NULL,
-    id TEXT NOT NULL, prev TEXT NOT NULL, hash TEXT NOT NULL, bytes BYTEA NOT NULL
-);
-CREATE INDEX IF NOT EXISTS log_segment ON {s}.log (segment, position);
-CREATE TABLE IF NOT EXISTS {s}.frames (
-    first BIGINT PRIMARY KEY, events INT NOT NULL, bytes BYTEA NOT NULL
-);"
-            ),
-        };
+        let log = self.log_sql();
         format!(
             "
 CREATE SCHEMA IF NOT EXISTS {s};
@@ -265,6 +244,36 @@ CREATE TABLE IF NOT EXISTS {s}.graph_keys (
 );
 CREATE INDEX IF NOT EXISTS vectors_head ON {s}.vectors (ty, field, key) WHERE until IS NULL;
 "
+        )
+    }
+
+    /// The statements that create the log's tables and the lease's, if
+    /// absent, in the lake's schema; none for a scratch, which reads them
+    /// there. A table a later build adds to the log (`frames`) is made by
+    /// the first writer's open of this build, by `clear`, and by the swap
+    /// of a rebuild (`scratch.rs`).
+    pub(crate) fn log_sql(&self) -> String {
+        if self.log.is_some() {
+            return String::new();
+        }
+        let (s, lg) = (&self.schema, Names::default_space(&self.at.log));
+        format!(
+            "
+{lg}CREATE TABLE IF NOT EXISTS {s}.lease (
+    one INTEGER PRIMARY KEY CHECK (one = 1),
+    fence BIGINT NOT NULL, holder TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS {s}.segments (
+    first BIGINT PRIMARY KEY, digest TEXT
+);
+CREATE TABLE IF NOT EXISTS {s}.log (
+    position BIGINT PRIMARY KEY, segment BIGINT NOT NULL, fence BIGINT NOT NULL,
+    id TEXT NOT NULL, prev TEXT NOT NULL, hash TEXT NOT NULL, bytes BYTEA NOT NULL
+);
+CREATE INDEX IF NOT EXISTS log_segment ON {s}.log (segment, position);
+CREATE TABLE IF NOT EXISTS {s}.frames (
+    first BIGINT PRIMARY KEY, events INT NOT NULL, bytes BYTEA NOT NULL
+);"
         )
     }
 }
