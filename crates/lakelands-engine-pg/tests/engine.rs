@@ -109,13 +109,28 @@ async fn an_exported_lake_verifies_from_its_segment_files_alone() {
             "{} ends with a line feed",
             file.display()
         );
+        // The stored form (log-format §1.2): each event restored from its
+        // line, its frame and the event before it, and digested so.
+        let (mut lines, mut restored) = (lakelands_core::log::Lines::default(), Vec::new());
         for line in raw[..raw.len() - 1].split(|b| *b == b'\n') {
-            let event: Value = serde_json::from_slice(line).unwrap();
+            let read: Value = serde_json::from_slice(line).unwrap();
             assert_eq!(
-                lakelands_core::canonical::to_vec(&event),
+                lakelands_core::canonical::to_vec(&read),
                 line,
                 "the stored line is canonical"
             );
+            let before = (next != first).then(|| {
+                (
+                    lakelands_api::Position(next - 1),
+                    lakelands_api::event::Digest(prev.clone()),
+                )
+            });
+            let before = before.as_ref().map(|(p, h)| (*p, h));
+            let Some(event) = lines.line(read, before).unwrap() else {
+                continue;
+            };
+            restored.extend(lakelands_core::canonical::to_vec(&event));
+            restored.push(b'\n');
             assert_eq!(event["position"], json!(next));
             assert_eq!(event["prev"], json!(prev));
             let mut body = event.clone();
@@ -133,12 +148,14 @@ async fn an_exported_lake_verifies_from_its_segment_files_alone() {
         digests.push(json!({
             "first": first,
             "last": next - 1,
-            "digest": hex(&Sha256::digest(&raw)),
+            "digest": hex(&Sha256::digest(&restored)),
         }));
     }
 
     // The store's export, over the feed of the same lake opened to read,
-    // writes the same files byte for byte.
+    // writes the same files in a copy's form (log-format §4.2), where the
+    // engine's writes its lines as the writer stored them (§1.2): the two
+    // hold the same events, with the same digests, and verify alike.
     let seams = Seams {
         engines: vec![Arc::new(PgOpener)],
         ..Seams::default()
@@ -157,14 +174,17 @@ async fn an_exported_lake_verifies_from_its_segment_files_alone() {
         .map(|f| format!("log/{}", f.file_name().unwrap().to_string_lossy()))
         .collect();
     assert_eq!(names, engine_names, "the same files");
-    for name in &names {
-        assert_eq!(
-            std::fs::read(via.join(name)).unwrap(),
-            std::fs::read(dir.join(name)).unwrap(),
-            "{name}: the store's export and the engine's agree byte for byte"
-        );
-    }
-    lakelands_core::export::verify(&dir).unwrap();
+    let held: Vec<Value> = manifest
+        .segments
+        .iter()
+        .map(|s| json!({"first": s.first.0, "last": s.last.0, "digest": s.digest.0}))
+        .collect();
+    assert_eq!(held, digests, "the same events, digested alike");
+    assert_eq!(
+        lakelands_core::export::verify(&dir).unwrap(),
+        lakelands_core::export::verify(&via).unwrap(),
+        "the two verify alike"
+    );
     drop(reader);
 
     // The engine's export reads the log alone: a projection of another

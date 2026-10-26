@@ -261,8 +261,11 @@ and every statement names it; no connection's `search_path` is set.
   its next writer's open), and an append is one transaction that checks the fence
   against the lease row. `lakelands_engine_pg::export` writes the
   segments as the §4.2 files, which verify without the engine, for a
-  lake whose store cannot be opened; they are the bytes the store's
-  export writes. It is a raw copy of the log's lines and judges none of
+  lake whose store cannot be opened, each line as the writer stored it
+  and each frame's line before its events'; they hold the events the
+  store's export writes, with the same digests, in the writer's form
+  where the store's export writes a copy's (`docs/log-format.md` §4.2).
+  It is a raw copy of the log's lines and judges none of
   them, not their format either: what it writes is judged by whoever
   verifies or imports it.
 - **The connection.** It comes from `EngineConfig::Postgres`: the URL,
@@ -2579,7 +2582,8 @@ precondition naming it, and nothing is written. The suite's `export`
 checks hold the files, the verifier and the refusal on every engine;
 the client's tests hold that an export over the REST door is the
 served store's own, byte for byte, and the PostgreSQL engine's tests
-that `lakelands_engine_pg::export` writes the same bytes.
+that `lakelands_engine_pg::export` writes the same events, with the same
+digests.
 
 `Catalog::apply` declares a set of declarations as one: validated
 together, so a reference may point forward within the set, and appended
