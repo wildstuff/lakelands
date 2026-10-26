@@ -494,6 +494,9 @@ pub struct Pending {
     /// The versions of a source's key the append's own events use first,
     /// as the fold will keep them ([`crate::sealing::first_use`]).
     sealed: crate::backed::Recorded,
+    /// The keys sealed apart its own ingests name, and those read from the
+    /// log ([`crate::sealing::Apart`]).
+    apart: crate::sealing::Apart,
     /// The pending proposals of records' calls, read once at the first
     /// retirement, which closes its record's (064).
     calls: Option<BTreeMap<(TypeName, RecordKey), Vec<ProposalId>>>,
@@ -546,6 +549,7 @@ impl Pending {
             records: self.records.clone(),
             members: self.members.clone(),
             sealed: self.sealed.clone(),
+            apart: self.apart.clone(),
             calls: self.calls.clone(),
             viewed: self.viewed.is_some(),
         }
@@ -561,7 +565,7 @@ impl Pending {
     /// Put back what the job marked by `m` changed.
     pub(crate) fn undo(&mut self, m: Mark) {
         (self.records, self.members) = (m.records, m.members);
-        (self.sealed, self.calls) = (m.sealed, m.calls);
+        (self.sealed, self.apart, self.calls) = (m.sealed, m.apart, m.calls);
         match (&mut self.viewed, m.viewed) {
             (Some(v), true) => v.close(false),
             (viewed, _) => *viewed = None,
@@ -589,6 +593,7 @@ pub(crate) struct Mark {
     records: BTreeMap<(TypeName, RecordKey), StoredRecord>,
     members: BTreeMap<(String, TypeName, RecordKey), bool>,
     sealed: crate::backed::Recorded,
+    apart: crate::sealing::Apart,
     calls: Option<BTreeMap<(TypeName, RecordKey), Vec<ProposalId>>>,
     /// Whether it held what the views read, then opened to be put back.
     viewed: bool,

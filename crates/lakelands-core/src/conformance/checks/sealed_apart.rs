@@ -27,6 +27,12 @@ check!(
 );
 
 check!(
+    APART_READ = an_output_reads_the_keys_apart_of_the_events_that_wrote_its_values,
+    "065 (lakelands#1423): `pair` computes `both` from `nick` and `city` by the suite's backing, answering the nick; `crm` writes `c2` with the nick Countess and the city Rome, its output sealed under `crm`'s version alone, then the delivery `nicks`, sealed apart, writes `c1`'s nick and then, in the same call, its city, which is not erasable, and an ordinary delivery writes its city again; only the two nicks' ingests are sealed, so each output over the nick takes `nicks`'s key from the event that wrote the nick: each is sealed under `crm`'s version and that key, the one over Rome not `c2`'s, so a set over `both` being Countess takes `c1` in only after `c1`'s own output is recorded, and `both` reads Countess; a writer opened again and a rebuild read the same and make no call again; taking `nicks` back destroys that key alone, and `c1` holds no `both` and no nick while its city reads Oslo, at the head, after a reopen and after a rebuild, no call made again",
+    reopens
+);
+
+check!(
     APART_CUT = a_cut_by_time_takes_a_delivery_sealed_apart_with_its_version,
     "065 (lakelands#1214): `crm` writes `p1`, then the delivery `late`, sealed apart, writes `p2`, both under its first version; after a second version `p3` is sealed under it alone; the preflight of taking back what `crm` wrote before `p3` names the first version and `late`'s key, and counts `name` 2 redacted, 2 shredded and none redacted only; with `require_shredded` the act appends a `values_removed` naming both, and the key store holds the second version alone and no key apart; `p1` and `p2` read their names erased and keep their notes, at the head and before the act, while `p3` reads Cy; a writer opened again and a rebuild each answer the same",
     reopens
@@ -443,6 +449,141 @@ async fn an_output_over_an_apart_value_dies_with_either_key(store: Store, reopen
     store.rebuild().await.must("rebuilding")?;
     gone(&store, "after a rebuild").await?;
     Ok(())
+}
+
+async fn an_output_reads_the_keys_apart_of_the_events_that_wrote_its_values(
+    store: Store,
+    reopen: Reopen,
+) -> Held {
+    use crate::conformance::fixture::{computed_by, sourced};
+    use lakelands_api::ontology::{FieldDecl, StorageKind};
+    const TOKEN: &str = "apart_read";
+    let (keys, store) = reopen_with_keys(&reopen, store, "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    let text = json!({"kind": "text"});
+    l.declare_json(
+        json!({"declare": "function", "name": "pair", "backing": backing::KIND,
+        "inputs": [{"name": "nick", "type": text}, {"name": "city", "type": text}],
+        "config": {"token": TOKEN, "echo": "nick"}}),
+    )
+    .await?;
+    let mut t = person();
+    t.fields.push(FieldDecl {
+        erasable: true,
+        ..sourced("nick", StorageKind::Text)
+    });
+    t.fields.push(computed_by(
+        "both",
+        StorageKind::Text,
+        "pair",
+        &["nick", "city"],
+    ));
+    l.declare(t).await?;
+    let crm: SourceId = "crm".into();
+    let c1 = |fields: Value| source_record("person", "c1", fields);
+    let mark = store.head().await.must("reading the head")?;
+    let c2 = source_record(
+        "person",
+        "c2",
+        json!({"id": "c2", "nick": "Countess", "city": "Rome"}),
+    );
+    let set = crate::conformance::fixture::object_set_on("countess", "person", "both = 'Countess'");
+    l.declare_as(set, "declaring the set `countess`").await?;
+    l.ingest("crm", vec![c2]).await.must("ingesting c2")?;
+    let before = store.head().await.must("reading the head")?;
+    let nicks = vec![
+        c1(json!({"id": "c1", "nick": "Countess"})),
+        c1(json!({"id": "c1", "city": "Rome"})),
+    ];
+    apart(&l, "nicks", nicks).await?;
+    // The plan of the city's ingest reads the nick under the key the event
+    // before it names: it does not take the output recorded for `c2`'s
+    // equal inputs, so `c1` joins only once its own is.
+    let (mut output, mut joined) = (None, None);
+    for e in events_after(store.as_ref(), before).await? {
+        match &e.body {
+            EventBody::OutputRecorded { seam, .. } if seam.ends_with(":pair") => {
+                output = output.or(Some(e.position));
+            }
+            EventBody::ObjectSetChanged {
+                set,
+                key,
+                joined: true,
+                ..
+            } if set == "countess" && key == "c1" => {
+                joined = joined.or(Some(e.position));
+            }
+            _ => {}
+        }
+    }
+    ensure!(
+        output.is_some() && joined > output,
+        "`c1` joins `countess` after its own output is recorded; the output is at {output:?}, \
+         the join at {joined:?}"
+    );
+    l.ingest("crm", vec![c1(json!({"id": "c1", "city": "Oslo"}))])
+        .await
+        .must("ingesting c1's city")?;
+    let v1 = first(&keys, store.as_ref(), "crm")?;
+    let made = keys.apart(store.lake(), &crm);
+    let [a] = made.as_slice() else {
+        return Err(Failure::new(format!(
+            "the delivery makes one key apart; the key store holds {made:?}"
+        )));
+    };
+    let sealed = seals(store.as_ref(), mark).await?;
+    let nick = |apart: &[KeyId]| Sealed {
+        fields: vec!["nick".into()],
+        ..under(&v1, apart, false)
+    };
+    let ingests: Vec<_> = (sealed.iter())
+        .filter(|(w, _)| w.starts_with("ingest"))
+        .collect();
+    let want = under(&v1, std::slice::from_ref(a), true);
+    let over = (sealed.iter()).filter(|(w, s)| w.ends_with(":pair") && *s == want);
+    ensure!(
+        ingests
+            == [
+                &("ingest c2".into(), nick(&[])),
+                &("ingest c1".into(), nick(std::slice::from_ref(a)))
+            ]
+            && over.count() == 2,
+        "the nicks' ingests alone are sealed, and the outputs over Rome and over Oslo are \
+         each sealed under {v1} and {a}: {sealed:?}"
+    );
+    let calls = backing::made(TOKEN);
+    let read = async |store: &Store, by: &str, nick: Option<Value>| {
+        let c1 = at(&Lake::of(store.as_ref()), "person", "c1", None).await?;
+        let field = |f: &str| c1.as_ref().and_then(|r| r.fields.get(f).cloned());
+        ensure!(
+            (field("both"), field("nick")) == (nick.clone(), nick.clone())
+                && field("city") == Some(json!("Oslo"))
+                && backing::made(TOKEN) == calls,
+            "{by}, `c1` reads `both` and its nick as {nick:?} and its city Oslo, and no call is \
+             made again: {c1:?}, {} calls after {calls}",
+            backing::made(TOKEN)
+        );
+        Ok::<_, Failure>(())
+    };
+    let countess = Some(json!("Countess"));
+    read(&store, "before the act", countess.clone()).await?;
+    let store = again(&reopen, store, with(&keys), "before the act").await?;
+    read(&store, "after a reopen", countess.clone()).await?;
+    store.rebuild().await.must("rebuilding")?;
+    read(&store, "after a rebuild", countess).await?;
+    let done = store
+        .remove_values(&crm, &Selection::Delivery("nicks".into()), true, None)
+        .await
+        .must("taking `nicks` back")?;
+    ensure!(
+        done.keys.is_empty() && done.apart == [a.clone()],
+        "taking `nicks` back destroys {a} alone: {done:?}"
+    );
+    read(&store, "after the act", None).await?;
+    let store = again(&reopen, store, with(&keys), "after the act").await?;
+    read(&store, "after the act and a reopen", None).await?;
+    store.rebuild().await.must("rebuilding")?;
+    read(&store, "after the act and a rebuild", None).await
 }
 
 async fn a_cut_by_time_takes_a_delivery_sealed_apart_with_its_version(

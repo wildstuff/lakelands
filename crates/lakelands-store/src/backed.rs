@@ -146,6 +146,9 @@ pub struct Outputs<'a> {
     /// The sources' keys, where the reader has the writer's: a call that
     /// reads a source's erasable values is digested under its key (058).
     pub keys: Option<&'a crate::sealing::Keys>,
+    /// The keys apart read from the log so far, and those a plan staged
+    /// for its own events: none where each call reads its own.
+    pub apart: Option<&'a crate::sealing::Apart>,
 }
 
 /// The outputs one transaction recorded, by seam and input: every
@@ -168,6 +171,7 @@ impl Outputs<'_> {
             waiting,
             plans,
             keys: Some(keys),
+            apart: None,
         }
     }
 
@@ -480,14 +484,14 @@ fn input_of(
     else {
         return Ok(Input::Plain(digest(call)));
     };
+    let Some(keys) = outputs.keys else {
+        return Ok(Input::Keyless);
+    };
     // With every key of a delivery sealed apart that sealed a value it
     // reads, so the output dies with any of them (065).
     let apart = match version {
         Some(s) => s.apart.clone(),
-        None => apart_of((outputs, event), (&source, list.as_deref()), &read)?,
-    };
-    let Some(keys) = outputs.keys else {
-        return Ok(Input::Keyless);
+        None => apart_of((outputs, event, keys), (&source, list.as_deref()), &read)?,
     };
     let mut sealed = lakelands_api::event::Sealed {
         key,
@@ -502,15 +506,18 @@ fn input_of(
 
 /// The keys of deliveries sealed apart that sealed `source`'s values
 /// written at `read`, in id order: `event`'s own where it wrote one, else
-/// as the fold keeps them ([`crate::sealing::APART`]), looked up only at
-/// a value whose version `list` marks as sealing one, so a source that
-/// never sealed apart costs no read.
+/// as the event at the value's position names them in the log
+/// ([`crate::sealing::Keys::apart_named`]), read only at a value whose version
+/// `list` marks as sealing one, so a source that never sealed apart costs
+/// no read.
 fn apart_of(
-    (outputs, event): (&Outputs<'_>, &Event),
+    (outputs, event, keys): (&Outputs<'_>, &Event, &crate::sealing::Keys),
     (source, list): (&lakelands_api::SourceId, Option<&crate::sealing::List>),
     read: &[Position],
 ) -> Result<Vec<lakelands_api::id::KeyId>> {
     let mut apart = BTreeSet::new();
+    let own = crate::sealing::Apart::default();
+    let known = outputs.apart.unwrap_or(&own);
     let (firsts, marked) = list.map_or((&[][..], &[][..]), |l| (&l.firsts[..], &l.apart[..]));
     let marks =
         |p: Position| crate::sealing::sealed_at(firsts, p).is_some_and(|k| marked.contains(k));
@@ -520,11 +527,7 @@ fn apart_of(
             .filter(|_| matches!(event.body, EventBody::RecordIngested { .. }));
         match own {
             Some(s) => apart.extend(s.apart.iter().cloned()),
-            None if marks(*p) => {
-                let at = crate::sealing::apart_at(source, *p);
-                let kept = outputs.recorded(crate::sealing::APART, &at)?;
-                apart.extend(kept.iter().flat_map(crate::sealing::apart_of));
-            }
+            None if marks(*p) => apart.extend(keys.apart_named(known, source, *p)?),
             None => {}
         }
     }
@@ -1041,6 +1044,7 @@ pub(crate) fn call_now(
         waiting: true,
         plans: &w.plans,
         keys: Some(&lake.keys),
+        apart: None,
     };
     let (o, lake_id) = (&w.ontology, &lake.id);
     let (key, before) = ((&r.key, r.made), Some(&r.fields));
@@ -1140,6 +1144,7 @@ pub fn page(
                 waiting: true,
                 plans: &w.plans,
                 keys: Some(&lake.keys),
+                apart: None,
             };
             let sweep = matches!(
                 o.of,
@@ -2041,6 +2046,7 @@ fn record(lake: &Turn<'_>, d: Due, output: Value, known: bool) -> Result<Option<
                 waiting: false,
                 plans: &w.plans,
                 keys: Some(&lake.keys),
+                apart: None,
             },
         )?;
         if let Some(after) = after {

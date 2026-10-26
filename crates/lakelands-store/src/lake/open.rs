@@ -257,7 +257,7 @@ impl Lake {
         engine: Arc<dyn LakeEngine>,
         lease: Option<Lease>,
     ) -> Lake {
-        let seams_keys = seams.keys.clone();
+        let (seams_keys, log) = (seams.keys.clone(), Some(engine.clone()));
         Lake {
             id: location.lake.clone(),
             scoped: scrub::Scoped::new(engine.clone()),
@@ -293,7 +293,11 @@ impl Lake {
                 zone: None,
                 sized: None,
             }),
-            keys: Arc::new(crate::sealing::Keys::new(location.lake.clone(), seams_keys)),
+            keys: Arc::new(crate::sealing::Keys::new(
+                location.lake.clone(),
+                seams_keys,
+                log,
+            )),
             head: AtomicU64::new(0),
             heads: tokio::sync::watch::Sender::new(0),
             holds_lease: AtomicBool::new(false),

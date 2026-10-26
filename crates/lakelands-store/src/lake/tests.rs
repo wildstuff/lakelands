@@ -273,6 +273,7 @@ fn the_entries_of_a_recomputation_mirror_the_writers_ontology() {
             waiting: false,
             plans: &record::Plans::default(),
             keys: None,
+            apart: None,
         };
         record::rederive(o, &r, &event, &BTreeMap::new(), &mut outputs).unwrap()
     };
@@ -356,6 +357,7 @@ fn a_plan_stands_until_what_it_was_made_from_is_declared_again() {
             waiting: false,
             plans: &plans,
             keys: None,
+            apart: None,
         };
         let r = record::rederive(o, &r, &event, &BTreeMap::new(), &mut outputs).unwrap();
         r.unwrap().fields["twice"].clone()
@@ -412,6 +414,7 @@ fn a_type_that_cannot_be_ordered_fails_only_at_a_live_record() {
             waiting: false,
             plans: &record::Plans::default(),
             keys: None,
+            apart: None,
         };
         let r = StoredRecord {
             retired,

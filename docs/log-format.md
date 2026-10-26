@@ -327,8 +327,7 @@ version, which the key store answers by.
   sealed one of them, which its `sealed.apart` lists in id order. The
   apart keys that sealed a value are read from the `sealed.apart` of the
   event that wrote it, at the value's position, so a rebuild composes
-  the same keys (proposed with 083; until it is built, the fold keeps a
-  copy of them for each event a delivery sealed apart). With no
+  the same keys. With no
   `apart` the composed key is the version itself, so every value of an
   earlier format opens as it was sealed. Destroying any one key of a
   composition, an apart key alone or a version with those before it,

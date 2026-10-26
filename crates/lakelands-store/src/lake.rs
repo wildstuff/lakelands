@@ -1744,6 +1744,8 @@ pub struct Staged {
     pub(crate) orders: BTreeMap<TypeName, crate::kept::Orders>,
     /// The lake's keys, which a recomputation it keeps computes with.
     keys: Option<Arc<crate::sealing::Keys>>,
+    /// The keys apart this fold read from the log (065).
+    pub(crate) apart: crate::sealing::Apart,
     /// What the write path's run of the hooks overwrote, where it keeps
     /// that ([`crate::kept::Undo`]).
     pub(crate) undo: Option<crate::kept::Undo>,
