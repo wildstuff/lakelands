@@ -1,0 +1,8 @@
+name: customer
+description: A customer of the trading house.
+key: id
+fields:
+  id: { type: text, authority: source }
+  name: { type: text, authority: source, searchable: true }
+  country: { type: text, authority: source, description: "The customer's country, as an ISO 3166 country code." }
+  segment: { type: text, authority: source }

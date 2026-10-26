@@ -738,7 +738,7 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
             (
                 "where",
                 json!({"type": "string",
-                       "description": "A condition in the expression grammar, e.g. status = 'open' and amount > 100; a list is written in parentheses, status in ('open', 'paid'), not in brackets as a `cypher` statement writes it."}),
+                       "description": "A condition in the expression grammar, e.g. status = 'open' and amount > 100; a list is written in parentheses, status in ('open', 'paid'), not in brackets as a `cypher` statement writes it; a text is matched by a function, contains(name, 'Kest') or starts_with(name, 'Kest'), not by a word between its operands."}),
             ),
             (
                 "order_by",
@@ -1315,8 +1315,16 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
 
         let mut p = props([
             ("type", names(|t| t.may.find)),
-            ("mode", json!({"enum": ["lexical", "vector", "hybrid"]})),
-            ("text", json!({"type": "string"})),
+            (
+                "mode",
+                json!({"enum": ["lexical", "vector", "hybrid"],
+                "description": "lexical ranks `text` in the searchable fields; vector ranks `vector` against `field`; hybrid fuses both and needs `text` and `field`, its `vector` optional."}),
+            ),
+            (
+                "text",
+                json!({"type": "string",
+                "description": "lexical and hybrid: the words ranked; a word matches a field's word as written, its case and accents aside and stemmed where the type declares a `language`, so a misspelled word matches nothing: for a name half known, a find's `where` with starts_with or contains."}),
+            ),
             (
                 "fields",
                 json!({"type": "array", "items": {"type": "string"}, "minItems": 1,
@@ -1328,10 +1336,15 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 "additionalProperties": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000000},
                 "description": "lexical and hybrid: a weight for a match of the text in each searchable field named, over the type's `search_weights` setting; a field it leaves out takes the setting's, else 1."}),
             ),
-            ("field", json!({"type": "string"})),
+            (
+                "field",
+                json!({"type": "string",
+                "description": "vector and hybrid, which both need it: the vector field searched, one the type declares."}),
+            ),
             (
                 "vector",
-                json!({"type": "array", "items": {"type": "number"}}),
+                json!({"type": "array", "items": {"type": "number"},
+                "description": "vector, and hybrid where the caller has one: the query vector."}),
             ),
             (
                 "model",

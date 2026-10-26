@@ -692,3 +692,45 @@ fn a_cursor_a_list_and_a_depth_say_what_their_refusals_ask() {
         assert!(depth.contains(words), "the depth says {words}: {depth}");
     }
 }
+
+/// Walk 8's texts: a find's `where` says a text is matched by a function,
+/// not by a word between its operands, and a search's `mode` and `field`
+/// say which members each mode needs, so a hybrid search names its field.
+#[test]
+fn a_where_and_a_search_mode_say_what_their_refusals_ask() {
+    let t = tools_ok(&lake_of(vec![invoice()]));
+    let door = |d: Door| t.iter().find(|t| t.door == d).expect("the door is offered");
+    let said = |v: &Value| v["description"].as_str().unwrap_or_default().to_owned();
+    let find = &door(Door::Find {
+        ty: "invoice".into(),
+    })
+    .input_schema["properties"];
+    let condition = said(&find["where"]);
+    for words in ["contains(name, 'Kest')", "starts_with(name, 'Kest')"] {
+        assert!(
+            condition.contains(words),
+            "the where says {words}: {condition}"
+        );
+    }
+    let search = &door(Door::Search).input_schema["properties"];
+    let mode = said(&search["mode"]);
+    for words in ["`text`", "`field`", "`vector`", "hybrid"] {
+        assert!(mode.contains(words), "the mode says {words}: {mode}");
+    }
+    let field = said(&search["field"]);
+    assert!(
+        field.contains("hybrid"),
+        "the field says hybrid needs it: {field}"
+    );
+}
+
+#[test]
+fn a_search_text_says_a_word_matches_only_as_written() {
+    let t = tools_ok(&lake_of(vec![invoice()]));
+    let search = t.iter().find(|t| t.door == Door::Search).expect("search");
+    let text = &search.input_schema["properties"]["text"]["description"];
+    let text = text.as_str().unwrap_or_default();
+    for words in ["misspelled", "starts_with"] {
+        assert!(text.contains(words), "the text says {words}: {text}");
+    }
+}

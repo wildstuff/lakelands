@@ -1,0 +1,8 @@
+name: supplier
+description: A maker the trading house buys its products from.
+key: id
+fields:
+  id: { type: text, authority: source }
+  name: { type: text, authority: source, searchable: true }
+  country: { type: text, authority: source, description: "Where the supplier makes its goods, as an ISO 3166 country code." }
+  notes: { type: text, authority: source, searchable: true, description: "The buyers' notes on the supplier: where and how it ships, its lead time, what else it does." }
