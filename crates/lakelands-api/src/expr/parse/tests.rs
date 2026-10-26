@@ -193,3 +193,39 @@ fn a_function_is_parsed_by_the_name_it_is_printed_and_serialized_with() {
         }
     }
 }
+
+fn too_deep(max: usize, offset: usize) -> ParseError {
+    ParseError {
+        at: offset,
+        case: Case::ExprTooDeep { max, offset },
+    }
+}
+
+#[test]
+fn nesting_at_the_limit_parses_and_one_more_is_refused_where_it_begins() {
+    // What opens a level, what closes it, and how far into the text the
+    // level begins: a parenthesis, `not` and `-` at their own character, a
+    // call argument and a list item after the call or the list opens.
+    for (what, open, close, begins) in [
+        ("parenthesis", "(", ")", 0),
+        ("call argument", "coalesce(", ")", "coalesce(".len()),
+        ("list item", "a in (", ")", "a in (".len()),
+        ("not", "not ", "", 0),
+        ("unary minus", "-", "", 0),
+    ] {
+        let wrap = |n: usize| format!("{}a{}", open.repeat(n), close.repeat(n));
+        assert!(parse(&wrap(32)).is_ok(), "{what} at the limit");
+        let offset = 32 * open.len() + begins;
+        assert_eq!(
+            parse(&wrap(33)),
+            Err(too_deep(32, offset)),
+            "{what} past the limit"
+        );
+    }
+}
+
+#[test]
+fn a_hundred_thousand_open_parentheses_are_refused_without_overflow() {
+    let text = "(".repeat(100_000);
+    assert_eq!(parse(&text), Err(too_deep(32, 32)));
+}

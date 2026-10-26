@@ -232,6 +232,11 @@
    "code": "expr_risk"
   },
   {
+   "code": "expr_too_deep",
+   "max": 1,
+   "offset": 1
+  },
+  {
    "backing": "s",
    "code": "expression_not_expr"
   },
