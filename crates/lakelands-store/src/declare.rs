@@ -1684,7 +1684,7 @@ pub fn reads_of(o: &Ontology, d: &Declaration, ty: &TypeName) -> BTreeSet<FieldN
     reads
 }
 
-/// Refuse taking to the read a field that a trigger, a verb, an object set
+/// Refuse taking to the read a field that a trigger, a verb, a kept set
 /// or another type's derived relation in force reads: each reads the
 /// record as stored. The refusal names the field alone, not what reads it,
 /// which its declarer may not be shown.

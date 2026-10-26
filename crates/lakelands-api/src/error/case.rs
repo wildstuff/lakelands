@@ -1069,7 +1069,7 @@ catalog! {
         /// A set decided at the read named by what a write decides.
         SetAtReadNamed { set: String, kind: Naming, name: String } => "the set `{set}` is decided at the read and the {kind} `{name}` names it, which is decided at a write: what a write decides by it would drift from what a read of it answers",
         /// A set decided at the read of a view.
-        SetAtReadOfView { set: String, view: TypeName } => "the set `{set}` is decided at the read and holds `{view}`, a view: a set of a view is kept",
+        SetAtReadOfView { set: String, view: TypeName } => "the set `{set}` is decided at the read and holds `{view}`, a view: in this release a set of a view is decided at the write; declare it kept, or of the view's source",
         /// A set's `where` or a trigger's `when` reading across an edge a
         /// field computed outside the lake.
         SetReadsComputed { field: FieldName, #[serde(rename = "type")] ty: TypeName } => "it reads `{field}` of `{ty}` across an edge, which is computed outside the lake: its value lands with no write that would decide this again",

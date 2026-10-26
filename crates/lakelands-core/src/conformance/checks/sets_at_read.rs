@@ -4,6 +4,7 @@
 //! is its `where` at the read's clock, and nothing a write decides names
 //! it.
 
+use lakelands_api::ontology::Precondition;
 use lakelands_api::write::{DecidedAt, ObjectSetDecl};
 
 use crate::conformance::prelude::*;
@@ -15,17 +16,17 @@ check!(
 
 check!(
     SET_AT_READ_STEPS = a_set_decided_at_the_read_steps_across_no_reference,
-    "066 and 055, lakelands#1412: a set decided at the read whose `where` steps across a reference or calls `exists` is refused `set_at_read_steps` naming the set and the path, one of a view is refused `set_at_read_of_view` naming the set and the view, and one reading a `json` field's member declares"
+    "066 and 055, lakelands#1412: a set decided at the read whose `where` steps across a reference or calls `exists` is refused `set_at_read_steps` naming the set and the path, by a reference field, a relation or `exists`; one naming a kept set whose `where` reads across a reference declares, and its `in_set` answers by that set's kept membership what a `find` with its `where` answers, before and after a far write; one of a view is refused `set_at_read_of_view` naming the set and the view, and one reading a `json` field's member declares"
 );
 
 check!(
     SET_AT_READ_NAMED = what_a_write_decides_names_no_set_decided_at_the_read,
-    "066, lakelands#1412: a kept set's `where`, a view's `where`, a trigger's `when` and a verb's `requires` that name a set decided at the read by `in_set` are refused `set_at_read_named`, naming the set and what names it, and so is a kept set declared again as decided at the read while a kept set names it; a set decided at the read may name one, and nothing refused is appended"
+    "066, lakelands#1412: a kept set's `where`, a view's `where`, a trigger's `when`, a verb's `requires` and its precondition that name a set decided at the read by `in_set` are refused `set_at_read_named`, naming the set and what names it, and so is a kept set declared again as decided at the read while a kept set or a trigger names it; a set decided at the read may name one, and nothing refused is appended"
 );
 
 check!(
     SET_AT_READ_AGAIN = a_set_declared_again_between_kept_and_decided_at_the_read,
-    "066, lakelands#1412: a kept set declared again as decided at the read ends each of its members in that append, caused by its `declared`, and a later write moves none; declared again as kept it decides the records already there; a rebuild keeps what each left, so a later write decides against it; and one reading `today()` declared again as kept is refused `set_reads_clock`"
+    "066, lakelands#1412: a kept set declared again as decided at the read ends each of its members in that append, caused by its `declared`, and a later write moves none; declared again as kept it decides the records already there; a rebuild keeps what each left, so a later write decides against it; and one reading `today()` declared again as kept is refused `set_reads_clock`, one reading a field computed at the read `reads_at_read`"
 );
 
 /// The instant a read names `valid_at`: after `b2` falls due.
@@ -167,6 +168,11 @@ async fn a_set_decided_at_the_read_steps_across_no_reference(store: Store) -> He
     bill.fields.push(field("owner", StorageKind::Text));
     bill.fields
         .push(crate::conformance::fixture::reference("partner", "partner"));
+    bill.relations = vec![RelationDecl {
+        cardinality: Cardinality::ManyToOne,
+        fields: vec![field("note", StorageKind::Text)],
+        ..RelationDecl::to("with", "partner")
+    }];
     l.declare(bill).await?;
     l.declare(count_view("load", "bill", "owner")).await?;
     l.set("view_kept.load", json!(true)).await?;
@@ -185,6 +191,11 @@ async fn a_set_decided_at_the_read_steps_across_no_reference(store: Store) -> He
                                           "path": "partner"}),
         ),
         (
+            "bill",
+            "with.note = 'x'",
+            json!({"code": "set_at_read_steps", "set": "s", "path": "with.note"}),
+        ),
+        (
             "load",
             "n > 1",
             json!({"code": "set_at_read_of_view", "set": "s",
@@ -197,6 +208,31 @@ async fn a_set_decided_at_the_read_steps_across_no_reference(store: Store) -> He
     head_unmoved(s, before, "each refused set").await?;
     l.declare_as(at_read("tagged", "bill", "meta.a = 1"), "tagged")
         .await?;
+    // A kept set it names reads across by its own membership: the set
+    // decided at the read steps through nothing.
+    l.declare_as(object_set_on("near", "bill", "partner.name = 'x'"), "near")
+        .await?;
+    l.declare_as(at_read("a", "bill", "in_set('near') and owner = 'o'"), "a")
+        .await?;
+    for (key, name) in [("p1", "x"), ("p2", "y")] {
+        l.upsert("partner", key, json!({"name": name})).await?;
+    }
+    for (key, partner) in [("b1", "p1"), ("b2", "p2")] {
+        let fields = json!({"owner": "o", "partner": partner});
+        l.upsert("bill", key, fields).await?;
+    }
+    for (far, want) in [("y", "b1"), ("x", "b1 b2")] {
+        l.upsert("partner", "p2", json!({"name": far})).await?;
+        let (named, find) = (
+            keys_at(&l, "in_set('a')", None).await?,
+            keys_at(&l, "in_set('near') and owner = 'o'", None).await?,
+        );
+        ensure!(
+            named == want && find == want,
+            "with `p2` named `{far}`, `in_set('a')` over the kept set `near` answers what its \
+             `where` does, {want}: it answered {named}, and the `find` {find}"
+        );
+    }
     Ok(())
 }
 
@@ -212,8 +248,13 @@ async fn what_a_write_decides_names_no_set_decided_at_the_read(store: Store) -> 
     let before = s.head().await.must("the head")?;
     let named = |kind: &str, name: &str| json!({"code": "set_at_read_named", "set": "overdue", "kind": kind, "name": name});
     let mut verb = write_verb("close", "bill", "status", "'closed'");
-    if let Declaration::Verb(v) = &mut verb {
+    let mut held = write_verb("hold", "bill", "status", "'held'");
+    if let (Declaration::Verb(v), Declaration::Verb(h)) = (&mut verb, &mut held) {
         v.requires = Some("in_set('overdue')".into());
+        h.preconditions = vec![Precondition {
+            name: "late".into(),
+            holds: "in_set('overdue')".into(),
+        }];
     }
     let view = json!({"declare": "type", "name": "late_load",
         "fields": [{"name": "n", "type": {"kind": "number"}}],
@@ -231,6 +272,7 @@ async fn what_a_write_decides_names_no_set_decided_at_the_read(store: Store) -> 
             named("trigger", "t"),
         ),
         ("a verb", verb, named("verb", "close")),
+        ("a verb's precondition", held, named("verb", "hold")),
     ] {
         refused_like(what, l.cat.declare(&l.own, d).await, &case)?;
     }
@@ -245,6 +287,18 @@ async fn what_a_write_decides_names_no_set_decided_at_the_read(store: Store) -> 
                       "name": "wide"});
     refused_like("`open` declared again at the read", again.await, &case)?;
     head_unmoved(s, before, "each refused declaration").await?;
+    l.declare_as(object_set_on("shut", "bill", "status = 'closed'"), "shut")
+        .await?;
+    l.declare_as(trigger_on("t", "bill", Some("in_set('shut')")), "t")
+        .await?;
+    let before = s.head().await.must("the head")?;
+    let again = l
+        .cat
+        .declare(&l.own, at_read("shut", "bill", "status = 'closed'"));
+    let case = json!({"code": "set_at_read_named", "set": "shut", "kind": "trigger",
+                      "name": "t"});
+    refused_like("`shut` declared again at the read", again.await, &case)?;
+    head_unmoved(s, before, "`shut` refused").await?;
     l.declare_as(
         at_read("both", "bill", "in_set('overdue') and in_set('open')"),
         "both",
@@ -303,5 +357,12 @@ async fn a_set_declared_again_between_kept_and_decided_at_the_read(store: Store)
     let kept = l
         .cat
         .declare(&l.own, object_set_on("overdue", "bill", "due < today()"));
-    refused_like("`overdue` declared again as kept", kept.await, &case)
+    refused_like("`overdue` declared again as kept", kept.await, &case)?;
+    l.declare_as(at_read("lapsed", "bill", "late = true"), "lapsed")
+        .await?;
+    let case = json!({"code": "reads_at_read", "field": "late", "type": "bill"});
+    let kept = l
+        .cat
+        .declare(&l.own, object_set_on("lapsed", "bill", "late = true"));
+    refused_like("`lapsed` declared again as kept", kept.await, &case)
 }

@@ -1251,9 +1251,9 @@ key exists. `docs/rest.md`, "Editing a record", has the steps.
   `now()` or `today()` is refused `set_reads_clock`. A set declared with
   `decided_at: read` keeps no membership and is judged at each read, at
   the read's clock, so its `where` may read the clock and a field computed
-  at the read; it steps through no reference, is of a type and not of a
-  view, and nothing decided at a write (a kept set, a view, a trigger's
-  `when`, a verb's `requires`) names it. A host may also keep a time
+  at the read; it steps through no reference, is of a type and, in 0.20.0, not
+  of a view, and nothing decided at a write (a kept set, a view, a
+  trigger's `when`, a verb's `requires`) names it. A host may also keep a time
   window in a view's `where` or in a computed field.
 - **A whole-graph measure is read in one page.** `degree` and
   `components` are computed whole for every page read, so a walk through
