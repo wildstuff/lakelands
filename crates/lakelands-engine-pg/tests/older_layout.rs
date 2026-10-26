@@ -172,11 +172,14 @@ async fn a_format_19_lake_an_older_build_laid_out_upgrades_on_the_first_writers_
         .await
         .unwrap();
     // The import upgraded the log: its events after the vectors' eight,
-    // its `frames` and the projection's layout are taken back to 0.19.0's.
+    // and every table and the layout 0.19.0 did not have, are taken back.
     let s = format!("\"{schema}\"");
     let older = format!(
         "DELETE FROM {s}.log WHERE position > 7; \
-         DROP TABLE {s}.frames, {s}.routes, {s}.names, {s}.bases; \
+         DO $$ DECLARE t TEXT; BEGIN FOR t IN SELECT tablename FROM pg_tables \
+         WHERE schemaname = '{schema}' AND tablename <> ALL (string_to_array('{V0_19_TABLES}', ' ')) \
+         LOOP EXECUTE format('DROP TABLE {s}.%I', t); END LOOP; END $$; \
+         DROP TABLE {s}.routes; \
          CREATE TABLE {s}.routes (at BIGINT NOT NULL, kind TEXT NOT NULL, ty TEXT, \
          key TEXT, source TEXT); \
          UPDATE {s}.meta SET n = 7 WHERE k IN ('folded', 'layout')"
@@ -185,20 +188,27 @@ async fn a_format_19_lake_an_older_build_laid_out_upgrades_on_the_first_writers_
         "SELECT string_agg(tablename, ' ' ORDER BY tablename COLLATE \"C\") FROM pg_tables \
          WHERE schemaname = '{schema}'"
     );
-    let laid = || {
-        let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-        client.query_one(&tables, &[]).unwrap().get::<_, String>(0)
-    };
-    let (mut client, as_left) = tokio::task::block_in_place(|| {
+    let as_left = tokio::task::block_in_place(|| {
         let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
         client.batch_execute(&older).unwrap();
-        (client, laid())
+        client.query_one(&tables, &[]).unwrap().get::<_, String>(0)
     });
     assert_eq!(as_left, V0_19_TABLES, "the lake holds 0.19.0's tables");
     // A rebuild refused before its swap leaves the lake as 0.19.0 opens
     // it: here, while another session holds the builder's lock.
-    let builder = "SELECT pg_advisory_lock(hashtextextended('lakelands rebuild ' || $1, 0))";
-    tokio::task::block_in_place(|| client.query_one(builder, &[&schema]).unwrap());
+    let (locked, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+    let holder = {
+        let (url, schema, locked) = (url.clone(), schema.clone(), locked.0);
+        std::thread::spawn(move || {
+            let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+            let builder =
+                "SELECT pg_advisory_lock(hashtextextended('lakelands rebuild ' || $1, 0))";
+            client.query_one(builder, &[&schema]).unwrap();
+            locked.send(()).unwrap();
+            let _ = release.1.recv();
+        })
+    };
+    tokio::task::block_in_place(|| locked.1.recv()).unwrap();
     let refused = open(&location, OpenMode::Write).await.err();
     assert!(
         matches!(
@@ -207,12 +217,16 @@ async fn a_format_19_lake_an_older_build_laid_out_upgrades_on_the_first_writers_
         ),
         "the writer's open is refused while the builder's lock is held: {refused:?}"
     );
+    let unchanged = tokio::task::block_in_place(|| {
+        let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        client.query_one(&tables, &[]).unwrap().get::<_, String>(0)
+    });
     assert_eq!(
-        tokio::task::block_in_place(laid),
-        V0_19_TABLES,
+        unchanged, V0_19_TABLES,
         "a refused upgrade leaves 0.19.0's tables and no other"
     );
-    tokio::task::block_in_place(|| drop(client));
+    drop(release.0);
+    tokio::task::block_in_place(|| holder.join()).unwrap();
     let store = open(&location, OpenMode::Write).await.unwrap();
     let why = store.rebuilt_at_open();
     assert!(
