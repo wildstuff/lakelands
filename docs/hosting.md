@@ -275,13 +275,15 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   asks first: `LakeStore::purge_preflight(source, None)`
   (`lakelands purge --source <id> --preflight`) appends nothing and
   answers the same report under an id, and `purge_source(source, None,
-  Some(id))` (`--report <id>`) purges only if the lake has not moved
-  since. Both take one type in place of `None` (`--type <type>`): the
-  purge is then of what the source brought into that type and the links
-  of its relations, a co-owned record elsewhere does not hold it, the
-  report names the source's records in other types that still refer
-  into what went, and the id is of that purge alone. A view, and a type
-  that keeps no per-field provenance, are refused there.
+  Some(id))` (`--report <id>`) purges only if nothing but a
+  `lease_taken` or a `checkpoint` was appended since, as each command's
+  process appends one. Both take one type in place of `None` (`--type
+  <type>`): the purge is then of what the source brought into that type
+  and the links of its relations, a co-owned record elsewhere does not
+  hold it, the report names the source's records in other types that
+  still refer into what went, and the id is of that purge alone. A
+  view, and a type that keeps no per-field provenance, are refused
+  there.
   A purge retires and does not erase: `as_of` still reads what the
   source wrote. **Example rows** a host writes into a type the operator
   modelled, so that one act removes them again, come from a source the
@@ -314,8 +316,8 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     long it expects to hold the lock (the log's events at the engine's
     measured rate: about 2 500 a second on PostgreSQL, 17 000 on
     SQLite). The CLI acts only with `--report <id>`, the preflight's,
-    and only if the lake has not moved since; without it, it answers the
-    preflight.
+    and only if nothing but a `lease_taken` or a `checkpoint` was
+    appended since; without it, it answers the preflight.
     Choose a moment when waiting writes can wait.
   - **The way it takes** (lakelands#1120): the preflight and the act's
     report each carry `way`. With `scoped: true` the act refolds only

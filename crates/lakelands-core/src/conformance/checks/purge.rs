@@ -10,7 +10,8 @@ use lakelands_api::error::RecordName;
 use lakelands_api::seam::AGING_RULE_TYPE;
 use lakelands_api::write::{ObjectSetDecl, PurgeReference, PurgeReport};
 
-use crate::conformance::fixture::{derived, get_at, ingest, source_record, step};
+use super::erasable::{again, person, with};
+use crate::conformance::fixture::{derived, get_at, ingest, source_record, step, type_of};
 use crate::conformance::prelude::*;
 
 check!(
@@ -734,7 +735,13 @@ async fn a_field_declared_shared_since_is_ingested_and_purged_with_its_source(
 check!(
     PREFLIGHT =
         a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_once_the_lake_moved,
-    "039, extended: `purge_preflight` appends nothing and answers the report the purge then answers, under an id; it is refused as the purge is for a co-owned record; a purge that repeats the id is refused as invalid, appending nothing, once the lake has moved or when the id is another source's, and otherwise purges"
+    "039, extended: `purge_preflight` appends nothing and answers the report the purge then answers, under an id; it is refused as the purge is for a co-owned record; a purge that repeats the id is refused as invalid, appending nothing, once the lake has moved by an append other than a lease or a checkpoint, or when the id is another source's, and otherwise purges"
+);
+
+check!(
+    REPORT_HEAD = a_preflights_id_holds_across_an_open_and_not_across_a_write,
+    "039, 058 and 065, extended (lakelands#1469): the head a preflight's id names is the log's last event that is neither a `lease_taken` nor a `checkpoint`; the lake opened again between `forget_preflight`, `remove_values_preflight` or `purge_preflight` and its act appends a lease, and opened at a bound of 1 MiB on an engine that weighs its segment a checkpoint after it, and the act goes through under the id; a record written after such an open moves the head, and the act under the id is refused as invalid, appending nothing",
+    given
 );
 
 check!(
@@ -795,6 +802,105 @@ async fn a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_on
         "the preflight of a co-owned source must be refused as invalid, naming `i1`; it was \
          refused as {e:?}"
     );
+    Ok(())
+}
+
+/// The acts a preflight's id is for, the purge last: forgetting `crm`,
+/// taking back what `web` wrote and purging `erp`.
+const ACTS: [&str; 3] = ["forget", "remove", "purge"];
+
+/// Everything `web` wrote.
+fn everything() -> Selection {
+    Selection::WrittenBefore(Timestamp::from_date(9999, 1, 1).expect("a date"))
+}
+
+/// The id `act`'s preflight answers.
+async fn preflight_of(store: &dyn LakeStore, act: &str) -> Result<String, Failure> {
+    let id = match act {
+        "forget" => store
+            .forget_preflight(&"crm".into())
+            .await
+            .map(|r| r.report_id),
+        "remove" => (store
+            .remove_values_preflight(&"web".into(), &everything())
+            .await)
+            .map(|r| r.report_id),
+        _ => (store.purge_preflight(&"erp".into(), None).await).map(|r| r.report_id),
+    };
+    id.must(&format!("the {act} preflight"))
+}
+
+/// `act` under the id `id`.
+async fn act_under(store: &dyn LakeStore, act: &str, id: &str) -> lakelands_api::Result<()> {
+    match act {
+        "forget" => store.forget_source(&"crm".into(), Some(id)).await.map(drop),
+        "remove" => (store
+            .remove_values(&"web".into(), &everything(), false, Some(id))
+            .await)
+            .map(drop),
+        _ => (store.purge_source(&"erp".into(), None, Some(id)).await).map(drop),
+    }
+}
+
+async fn a_preflights_id_holds_across_an_open_and_not_across_a_write(
+    store: Store,
+    given: Given,
+) -> Held {
+    let (keys, store) = reopen_with_keys(&given.reopen, store, "with a key store").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(person()).await?;
+    l.declare(type_of("note", &[("text", StorageKind::Text)]))
+        .await?;
+    // Four notes of 300 KiB, past the 1 MiB floor of a seal's bound.
+    for i in 0..4 {
+        let text = format!("{i}").repeat(300 << 10);
+        l.upsert("note", &format!("n{i}"), json!({ "text": text }))
+            .await?;
+    }
+    for (source, k) in [("crm", "p1"), ("web", "p2"), ("erp", "p3")] {
+        let ada = source_record("person", k, json!({"id": k, "name": "Ada", "city": "Oslo"}));
+        l.ingest(source, vec![ada]).await.must("an ingest")?;
+    }
+    let mut store = store;
+    for act in ACTS {
+        let id = preflight_of(store.as_ref(), act).await?;
+        store = again(&given.reopen, store, with(&keys), "after a preflight").await?;
+        let l = Lake::of(store.as_ref());
+        l.upsert("note", "moved", json!({ "text": act })).await?;
+        let moved = store.head().await.must("reading the head")?;
+        refused_like(
+            &format!("a {act} under the id of a preflight before an open and a write"),
+            act_under(store.as_ref(), act, &id).await,
+            &json!({ "code": format!("{act}_report_stale") }),
+        )?;
+        head_unmoved(store.as_ref(), moved, "an act under a stale id").await?;
+    }
+    for act in ACTS {
+        let id = preflight_of(store.as_ref(), act).await?;
+        let read = store.head().await.must("reading the head")?;
+        store = if act == "purge" {
+            let low = Limits {
+                seal_after_bytes: 1,
+                ..limits()
+            };
+            let opened = (given.relimit)(store, with(&keys), low).await;
+            opened.map_err(|e| Failure::new(format!("opening the lake at 1 MiB failed: {e}")))?
+        } else {
+            again(&given.reopen, store, with(&keys), "after a preflight").await?
+        };
+        let between = events_after(store.as_ref(), read).await?;
+        let kinds: Vec<&str> = between.iter().map(|e| e.body.kind()).collect();
+        ensure!(
+            kinds.contains(&"lease_taken")
+                && (kinds.iter()).all(|k| ["lease_taken", "checkpoint"].contains(k)),
+            "opening the lake again appends a lease, and at most a checkpoint beside it; it \
+             appended {kinds:?}"
+        );
+        let done = act_under(store.as_ref(), act, &id).await;
+        done.must(&format!(
+            "a {act} under its preflight's id, the lake opened between"
+        ))?;
+    }
     Ok(())
 }
 
