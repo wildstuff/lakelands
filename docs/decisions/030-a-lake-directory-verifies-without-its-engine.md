@@ -20,10 +20,13 @@ The SQLite engine keeps a lake as a directory whose log anyone can read:
   line, and syncs both files at once; every open checks the last group
   a crash may have left ahead of its bytes
   (`docs/decisions/060-an-append-syncs-its-two-files-at-once.md`). As
-  083 accepts for 0.20.0, an event's index line no longer holds
-  `prev`, the hash of the line before it, and each frame has an index
-  line of its own giving its offset; the index is the engine's own and
-  no part of the format. Only
+  083 accepts for 0.20.0, an event's index line after a segment's
+  first names `prev` empty, as it is the hash of the line before, and
+  a frame has no index line: its line is the gap before the first
+  event it covers, and the lines that name `prev` empty after it are
+  the events it covers, so the index keeps the shapes 0.19.0 reads
+  (lakelands#1468); the index is the engine's own and no part of the
+  format. Only
   events before the last commit line exist, so an append is whole after
   a crash or not there at all. The next writer
   cuts off what an interrupted append left. A writer that goes on after
@@ -209,6 +212,9 @@ file's contents; the operating system's lock does not.
 - The segment files holding the stored form, the index line of an event
   without `prev` and a frame's own, and the export holding a run of
   events for its frame, accepted with 083 (lakelands#1413).
+- The index in the two line shapes 0.19.0 reads, `prev` named empty and
+  a frame found by its gap, so that release refuses a lake of 20 by its
+  format and does not call it damaged (lakelands#1468).
 - A writer that goes on after a failed append cuts off what it left;
   the cut takes the index first and never a whole commit line
   (lakelands#618).
