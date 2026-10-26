@@ -122,9 +122,14 @@ They could then answer any task from what they had read, and called
 the graph tool 3 to 8 times a run: the walk would have measured the
 agent's memory as much as the doors. The lake was grown to what no page
 holds, and the tasks and their reference answers were fixed again
-before any run of this walk. The pilot's four transcripts, stripped as these are, were
-committed with the grown lake and are replaced by the runs below; they
-stay in the history at cd43558e. Two things it showed recur
+before any run of this walk. Two tasks changed: the pilot's task 5
+asked for the orders and their total per customer, and now asks per
+country; task 10 is new. The
+others are the pilot's, word for word. The grown lake, its tasks and
+their answers were committed at cd43558e (07:19:39 UTC), before the
+first run began (07:19:57 UTC). The pilot's four transcripts, stripped
+as these are, were committed with them and are replaced by the runs
+below; they stay in the history at cd43558e. Two things it showed recur
 below: the Cypher door's refusal of `ORDER BY` beside an aggregate, and
 the agent reading the small types whole.
 
@@ -141,7 +146,7 @@ the agent reading the small types whole.
 | 7 | Rank all order lines by quantity, highest first, and give me ranks 6 to 10: each line's id, its order, its product and its quantity. Read the ranking from the store at most five lines at a time. | ordering, and paging past the first page | 6. L-1012-2, O-1012, P-12, 300; 7. L-1006-2, O-1006, P-11, 250; 8. L-1006-1, O-1006, P-10, 200; 9. L-1004-4, O-1004, P-10, 150; 10. L-1012-1, O-1012, P-10, 90 |
 | 8 | Kestrel Farms and Ostrava Machining: how are they connected in the data? Give the shortest chain of records that links them. | a path, which the subset cannot spell | the one chain of 6 links: C-4 ← O-1012 ← L-1012-2 → P-12 (Washer M8) ← L-1008-1 → O-1008 → C-5; both bought washers |
 | 9 | Which products have never been ordered? | a step that must not match | P-13 Threaded rod M8, P-42 Shaft seal 30mm, P-167, P-168, P-169 |
-| 10 | Which customers in Germany have bought at least one product made in Italy? | four hops, a filter at each end, the same customer on many rows | C-1 Delta Metals, C-8, C-20, C-39, C-40, C-53, C-55, C-59 (135 rows before they are told apart) |
+| 10 | Which customers in Germany have bought at least one product made in Italy? | four hops, the same customer on many rows. Only the filter on Germany is tested: all 8 German customers bought something Italian, so an answer that left out the filter on Italy would be the same | C-1 Delta Metals, C-8, C-20, C-39, C-40, C-53, C-55, C-59 (135 rows before they are told apart) |
 
 The reference answers were fixed before any run: `lake/make_data.py`
 prints them from the lists it writes the data from, not from the lake.
@@ -257,14 +262,23 @@ of the walk was understood: each next call changed the right thing.
 
 ## What the runs show
 
-- **T's first-try losses are mostly two schema gaps.** T lost five
-  first tries on the graph tasks. Three are lakelands#1443 or
-  lakelands#1444 alone (T1's tasks 5 and 8, T2's task 8): the agent
-  wrote what the schema showed, and the refusal told it the rest. T2's
-  task 5 met lakelands#1443 after a refusal of its own (T2 14), and
-  T2's task 4 is the inverse name. With those two schemas fixed, T
-  would have been right on the first try 6 and 4 times of 6, 10 of 12,
-  as C was; C's one loss in each run is lakelands#1446.
+- **Counted the same way on both doors, C stays ahead.** As the
+  doors stood, T was right on the first try 7 times of 12 on the graph
+  tasks and C 10 times. Some losses on each door come from a sentence
+  its own tool's text lacks:
+  - **T:** three, lakelands#1443 or lakelands#1444 alone (T1's tasks 5
+    and 8, T2's task 8). The agent wrote what the schema showed, and
+    the refusal told it the rest.
+  - **C:** two, task 5 in both runs. The `cypher` description, written
+    for this walk, says "`ORDER BY` names fields" and nothing of an
+    aggregate, beside which `ORDER BY` is refused (its refusal's wording
+    is lakelands#1446).
+  - With every such sentence written, T would have stood at 6 and 4 of
+    6, 10 of 12, and C at 6 and 6, 12 of 12. T's two remaining losses
+    are both T2's: the inverse name on task 4, and task 5, which began
+    with a find's group key through a reference (T2 14) before it met
+    lakelands#1443. These counts are inferred from which refusal cost
+    which try; no run was made with the texts fixed.
 - **The path is the store's in T and the agent's in C.** In T, both
   runs asked for the shortest walk with `to`, and the store found it.
   The subset cannot spell a path. In C, both runs wrote the one chain
@@ -283,6 +297,16 @@ of the walk was understood: each next call changed the right thing.
 - **Two expression spellings.** On door C the agent meets the
   statement's `IN [...]` and the find tools' `in (...)` in one session
   (C1 13).
+- **Paging through `cypher` was not measured.** Task 7, the paging
+  task, was answered with `order_line_find` in all four runs, so no run
+  sent a statement's `next_cursor` back. Neither was a door with both
+  `query` and `cypher`: C had `cypher` in `query`'s place.
+- **Task 10 tests one of its two filters.** Every German customer
+  bought something made in Italy, so a reading that left out the
+  filter on Italy would have been counted right. All four runs wrote
+  both filters (T1 27, T2 28, C1 26, C2 23), so no count above is
+  flattered by it; the 135 rows C read are the rows both filters
+  keep.
 - **The rest is the same on both doors.** Every run read the
   customers, suppliers and products whole in its set-up, and answered
   tasks 1, 2, 3 and 7 with the find tools. The condition reaches six
@@ -311,28 +335,38 @@ of the walk was understood: each next call changed the right thing.
 
 ## Recommendation
 
-**No, not now: the subset should not become an MCP tool on what this
-walk measured.** This is a recommendation; the decision is the
-project's.
+**Yes, as a read tool beside `query`, not in its place.** This is a
+recommendation; the decision is the project's.
 
-- **C's measured advantage is T's two schema gaps.** On the graph
-  tasks C was right on the first try 3 more times of 12 and was
-  refused 3 times fewer. Those three tries are the ones T lost to
-  lakelands#1443 and lakelands#1444 alone, each fixed by a schema and
-  its descriptions. Fixed, the two doors stand at 10 of 12 each on
-  this walk, and right at all they already stood level.
-- **C answers the path task with the agent's argument, not the
-  store's.** The one task the subset cannot spell was answered right
-  in C because this schema leaves one shortest shape; T computed it.
-- **C adds a second way to say every read.** A second expression
-  spelling, a second paging rule, and a refusal that speaks the
-  pattern's words (lakelands#1446), for statements a half to two thirds as long
-  and answers that, without `DISTINCT`, may be many times longer.
+- **The measured reason.** On the six graph tasks, the agent on `cypher`
+  was right on the first try 10 times of 12 against 7 on `query`, and
+  was refused 2 times in 16 graph calls against 5 in 22. Counted the
+  same way on both doors, with each tool's missing sentences written,
+  the lead is 12 of 12 against 10 of 12. Right at all, the doors stood
+  level, 12 of 12 each, so the lead is in tries and calls, not in
+  answers. A statement was a half to two thirds as long as the pattern
+  for the same task.
+- **Not in `query`'s place, measured.** The subset cannot ask for the
+  shortest walk. On task 8, both C runs answered with the chain they
+  guessed and argued that nothing shorter could exist; both T runs had
+  the store find it with `to`. The argument held on this schema only.
+- **With the description's sentence.** The `cypher` description should
+  say that `ORDER BY` beside an aggregate is refused, and
+  lakelands#1446 should word the refusal in the statement's terms;
+  both C losses were there.
+- **Argued, not measured.**
+  - Paging through `cypher` and a door listing both tools: no run used
+    either.
+  - The cost of a second expression spelling: one refusal in two runs
+    (C1 13) measures it only once.
+  - Two runs per door is a small sample. The lead after the fixes is
+    T2's two losses alone; T1 would have matched C.
 
-What would change it: fix lakelands#1443 and lakelands#1444 and walk
-T again on these tasks. If T still loses first tries that C wins, the
-case for the tool is the language, and this walk's C runs are its
-measure.
+What would change it: the same tasks on a door with both tools, with
+lakelands#1443, lakelands#1444 and the `cypher` sentence fixed, and a
+paging task the agent must answer through `cypher`. If `query` then
+wins the first tries that `cypher` wins here, the lead was the texts,
+not the language.
 
 ## Recording the walk
 
