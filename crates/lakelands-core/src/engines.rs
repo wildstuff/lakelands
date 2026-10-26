@@ -1630,6 +1630,41 @@ pub fn layout(lake: &LakeId, found: Option<u64>, wanted: u64) -> Result<()> {
     Err(Error::unavailable(situation))
 }
 
+/// The number a projection stores for each event kind of the format, in
+/// the order the format lists them. A code is never reused or moved: a
+/// kind a later format adds takes the next number.
+pub const KIND_CODES: [(&str, i64); 22] = [
+    ("lake_created", 1),
+    ("lake_upgraded", 2),
+    ("lease_taken", 3),
+    ("declared", 4),
+    ("migrated", 5),
+    ("value_type_migrated", 6),
+    ("record_upserted", 7),
+    ("record_ingested", 8),
+    ("source_forgotten", 9),
+    ("values_removed", 10),
+    ("record_retired", 11),
+    ("record_restricted", 12),
+    ("record_unrestricted", 13),
+    ("verb_called", 14),
+    ("write_proposed", 15),
+    ("write_accepted", 16),
+    ("write_rejected", 17),
+    ("trigger_fired", 18),
+    ("trigger_dropped", 19),
+    ("object_set_changed", 20),
+    ("output_recorded", 21),
+    ("checkpoint", 22),
+];
+
+/// The code of the event kind `kind`, or none for one the format does not
+/// list: a filter may name a kind a newer format adds, which no event of
+/// this one is of.
+pub fn kind_code(kind: &str) -> Option<i64> {
+    KIND_CODES.iter().find(|(k, _)| *k == kind).map(|(_, c)| *c)
+}
+
 /// The refusal of a query vector of `query` dimensions where `ty.field`
 /// holds vectors of `held`. It names no record: the store refuses it
 /// by the declaration before any engine reads a vector, and an engine's

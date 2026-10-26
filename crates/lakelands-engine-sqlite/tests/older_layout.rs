@@ -1,5 +1,5 @@
 //! A projection an older build laid out (lakelands#1151): its `routes`
-//! without the `source` column, its states without the `procedure` a
+//! naming kinds, types and sources in text, its states without the `procedure` a
 //! computed field's metadata names (lakelands#1191), its states holding
 //! their rows' type, key and position and their false flags, a rowid
 //! beside every row of the tables whose primary key is the whole row, and
@@ -91,7 +91,10 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
     .unwrap();
     assert_eq!(rowid_free(), 0, "the older tables keep a rowid");
     db().execute_batch(&format!(
-        "DROP INDEX routes_source; ALTER TABLE routes DROP COLUMN source;
+        "DROP TABLE routes; DROP TABLE names;
+         CREATE TABLE routes (at INTEGER NOT NULL, kind TEXT NOT NULL, ty TEXT, key TEXT, source TEXT);
+         CREATE INDEX routes_source ON routes (source, at);
+         INSERT INTO routes VALUES (1, 'lake_created', NULL, NULL, 'crm');
          UPDATE meta SET v = {} WHERE k = 'layout';",
         wanted - 1
     ))
@@ -113,7 +116,8 @@ async fn a_writers_open_rebuilds_a_projection_an_older_build_laid_out() {
     let procedure = note.meta["double"].procedure.as_deref();
     assert_eq!(procedure, Some("twice"), "the rebuild names the function");
     let sourced: i64 = (db().query_row(
-        "SELECT count(*) FROM routes WHERE source = 'crm'",
+        "SELECT count(*) FROM routes JOIN names ON names.id = routes.source \
+         WHERE names.name = 'crm' AND typeof(routes.kind) = 'integer'",
         [],
         |r| r.get(0),
     ))
