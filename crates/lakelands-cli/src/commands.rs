@@ -1171,6 +1171,10 @@ async fn room(
     ))
 }
 
+fn spoke(out: Out<'_>, line: impl std::fmt::Display) -> Result<u8, Failure> {
+    put(out, line).map(|()| 0)
+}
+
 /// `upgrade`: say which log format the lake is written in, as a
 /// read-only open finds it, and, where it is older than the one this
 /// release writes, open it for writing once: that open appends
@@ -1178,13 +1182,16 @@ async fn room(
 /// before stay as they were written. A lake in this release's format
 /// whose projection an older build laid out is opened for writing once
 /// too, which rebuilds the projection. `check` stops before that open.
+/// A declared lake no command has written is no lake yet, as `verify`
+/// says it, and exits 3 as `verify` does; the rest exit 0.
 pub async fn upgrade(
     out: Out<'_>,
+    err: Out<'_>,
     location: lakelands_api::Location,
     seams: lakelands_api::seam::Seams,
     check: bool,
     open: &crate::Opener<'_>,
-) -> Result<(), Failure> {
+) -> Result<u8, Failure> {
     use lakelands_api::engine::OpenMode;
     use lakelands_api::error::Situation;
     use lakelands_api::event::{EventBody, LOG_FORMAT_VERSION as TO};
@@ -1194,7 +1201,7 @@ pub async fn upgrade(
     // by its layout, which the refusal names.
     let from = match open(location.clone(), OpenMode::Read, seams.clone()).await {
         Ok(_) => {
-            return put(
+            return spoke(
                 out,
                 format!("{lake} is written in log format {TO}: nothing to upgrade"),
             );
@@ -1212,7 +1219,7 @@ pub async fn upgrade(
                         "{lake} is written in log format {TO}, its projection in layout \
                          {found}: an open for writing rebuilds it; nothing was opened for writing"
                     );
-                    return put(out, said);
+                    return spoke(out, said);
                 }
                 let started = std::time::Instant::now();
                 let store = open(location, OpenMode::Write, seams).await?;
@@ -1247,13 +1254,20 @@ pub async fn upgrade(
                         "{lake}'s projection: another writer rebuilt it from layout {found}"
                     ),
                 };
-                return put(out, said);
+                return spoke(out, said);
+            }
+            Some(Situation::NoLake { .. }) => {
+                let what = format!("there is no lake `{lake}` to upgrade yet");
+                let todo = "a lake is made by the first command that writes to it, and is written \
+                            in this release's format from the start; there is nothing to upgrade";
+                let _ = write!(err, "{}", Failure::new(what, todo));
+                return Ok(3);
             }
             _ => return Err(e.into()),
         },
     };
     if check {
-        return put(
+        return spoke(
             out,
             format!(
                 "{lake} is written in log format {from}: an open for writing appends \
@@ -1282,13 +1296,13 @@ pub async fn upgrade(
             _ => None,
         });
     match marked {
-        Some((from, to)) => put(
+        Some((from, to)) => spoke(
             out,
             format!(
                 "upgraded {lake} from log format {from} to {to} through position {head} in {secs:.1} s"
             ),
         ),
-        None => put(
+        None => spoke(
             out,
             format!("{lake} is written in log format {TO}: another writer upgraded it from {from}"),
         ),
