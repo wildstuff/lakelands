@@ -46,6 +46,7 @@ async fn deliver(l: &Lake, delivery: &str, apart: bool, records: Vec<SourceRecor
     let opts = IngestOpts {
         delivery: Some(delivery.into()),
         sealed_apart: apart,
+        ..IngestOpts::default()
     };
     let crm = SourceId::from("crm");
     let said = lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &crm, opts, records);

@@ -435,9 +435,9 @@ async fn a_holder_is_read_from_the_order_through_a_migration_of_the_same_page() 
 /// after it in the same transaction: a group whose members all leave and
 /// a new one that arrives, the last leaving and the arrival in
 /// one transaction, in two, and in one page of a rebuild, leave the same
-/// record and the same state. An ingest commits a window of 32 events at
-/// a time, and a stream in hand fills each: 8 194 events are 256 windows
-/// and a last one of two, the last leaving and the arrival.
+/// record and the same state. The ingest asks a window of 32 events, and
+/// a stream in hand fills each: 8 194 events are 256 windows and a last
+/// one of two, the last leaving and the arrival.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_group_that_ends_and_returns_starts_from_nothing_on_every_path() {
     let t = Peaks::new("kept-ends").await;
@@ -463,7 +463,13 @@ async fn a_group_that_ends_and_returns_starts_from_nothing_on_every_path() {
             fed = Vec::new();
         }
         fed.push(new);
-        let windows = t.l.ingest("meter", fed).await.expect("feeding");
+        let opts = lakelands_api::IngestOpts {
+            commit_window: Some(32),
+            ..Default::default()
+        };
+        let meter = "meter".into();
+        let windows = lakelands_api::ingest_all_with(t.l.cat.as_ref(), &t.l.own, &meter, opts, fed);
+        let windows = windows.await.expect("feeding");
         let last = if site == "one" { 257 } else { 1 };
         assert_eq!(windows.len(), last, "`{site}`: the arrival's transaction");
     }

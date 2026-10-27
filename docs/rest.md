@@ -292,7 +292,10 @@ event, and a window before any event of the call names none
 (`docs/log-format.md` §1.1). `?sealed_apart` seals the call's values
 of erasable fields under a key of their own too, so that taking back
 the delivery shreds it alone
-(`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). Where a window is cut is
+(`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). `?commit_window=`
+is the most records one of the call's windows holds, between 1 and the
+lake's `limits.commit_window_max`; without it the lake's
+`commit_window_events` applies. Where a window is cut is
 the store's, and no answer turns on it: a record is judged over the
 lake and the records before it, and a refused one is refused alike
 wherever the cut fell. What the cut decides is only the refusal's

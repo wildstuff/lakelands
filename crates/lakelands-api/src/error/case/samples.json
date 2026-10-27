@@ -1671,6 +1671,9 @@
    "code": "sealed_apart_not_carried"
   },
   {
+   "code": "commit_window_not_carried"
+  },
+  {
    "code": "trigger_too_deep",
    "depth": 1,
    "max": 1

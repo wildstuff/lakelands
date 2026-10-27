@@ -121,6 +121,7 @@ async fn main() {
                     let opts = lakelands_api::write::IngestOpts {
                         delivery: (mode == "apart").then(|| format!("batch-{done}").into()),
                         sealed_apart: mode == "apart",
+                        ..Default::default()
                     };
                     lakelands_api::catalog::ingest_all_with(
                         &*cat,
