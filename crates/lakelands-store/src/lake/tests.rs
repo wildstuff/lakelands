@@ -663,12 +663,9 @@ async fn a_read_before_a_range_ends_keeps_its_own_shape() {
     declare(text_type("t", &["a"])).await;
     let old = upserted(&lake, cat.as_ref(), &owner, "k0").await;
     let fields = |at: u64| {
-        let t = shape_at(&lake, at).ontology.types[&TypeName::from("t")].clone();
-        t.decl
-            .fields
-            .iter()
-            .map(|f| f.name.to_string())
-            .collect::<Vec<_>>()
+        let t = &shape_at(&lake, at).ontology.types[&TypeName::from("t")];
+        let names = t.decl.fields.iter().map(|f| f.name.to_string());
+        names.collect::<Vec<_>>()
     };
     declare(text_type("t", &["a", "b"])).await;
     let new = upserted(&lake, cat.as_ref(), &owner, "k1").await;
@@ -711,9 +708,8 @@ async fn the_last_range_ending_is_read_from_the_projection() {
     let setting = (TypeName::from("sys.setting"), "floor".into());
     let set = cat.upsert(&owner, &setting.0, &setting.1, floor, Default::default());
     set.await.unwrap();
-    cat.retire(&owner, &setting.0, &setting.1, Default::default())
-        .await
-        .unwrap();
+    let retire = cat.retire(&owner, &setting.0, &setting.1, Default::default());
+    retire.await.unwrap();
     let retired = lake.head().0;
     assert_eq!(learnt("k1").await, Some((retired, retired + 1)));
 }
