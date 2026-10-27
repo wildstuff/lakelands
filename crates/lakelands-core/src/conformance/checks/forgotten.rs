@@ -660,7 +660,7 @@ check!(
 
 check!(
     FORGET_EXPECTED_TIME = the_expected_time_follows_the_lakes_last_rebuild,
-    "058, extended (lakelands#1152): the time a preflight expects the act to hold the writer's lock is an estimate: before the handle has rebuilt, the log's events at the engine's stated rate and the preflight's own walk of the log, which the act walks again; after a rebuild, the events at that rebuild's measured rate, with the last reclaim's time and the walk, for a forgetting and a removal alike: after an open that rebuilds a projection an older build laid out, at most that open's time and the walk's; after `rebuild()` and a `compact()`, the act's rebuild and its reclaim, at most their measured time and the walk's and at least two thirds of the two less 10 ms, the engine's stated rate set aside",
+    "058, extended (lakelands#1152, lakelands#1486): the time a preflight expects the act to hold the writer's lock is an estimate: before the handle has rebuilt, the log's events at the engine's stated rate and the preflight's own walk of the log, which the act walks again; after a rebuild, the events at that rebuild's measured rate, with the last reclaim's time and the walk, for a forgetting and a removal alike: after an open that rebuilds a projection an older build laid out, at most that open's time and the walk's; after `rebuild()` and a `compact()` that outlasts it, the act's rebuild and its reclaim, at most their measured time and the walk's and at least two thirds of the two less 10 ms, the engine's stated rate set aside, and so on a handle opened after them, from the rate and the time the projection keeps",
     given
 );
 
@@ -672,7 +672,7 @@ check!(
 
 check!(
     FORGET_SET_OWED = a_set_beside_a_forgotten_source_forgets_what_it_owes,
-    "058, extended (lakelands#1183): a set holding a source forgotten already and one not appends a `source_forgotten` for the new one only, its preflight's id accepted, and judges retirement over the whole set: a record only the two wrote is retired, where the new one's own preflight keeps it co-owned by the source forgotten before; a set act whose rebuild fails after its append answers the failure and owes the rebuild, and the set's repeat runs it, appending nothing, after which crm's values, and what is computed from them, read as erased at the head and as of before; once it ran, a repeat rebuilds nothing",
+    "058, extended (lakelands#1183): a set holding a source forgotten already and one not appends a `source_forgotten` for the new one only, its preflight's id accepted, and judges retirement over the whole set: a record only the two wrote is retired, where the new one's own preflight keeps it co-owned by the source forgotten before; a set act whose rebuild fails after its append answers `act_unfinished` at the head it appended to and owes the rebuild (lakelands#1485), and the set's repeat runs it, appending nothing, after which crm's values, and what is computed from them, read as erased at the head and as of before; once it ran, a repeat rebuilds nothing",
     given
 );
 
@@ -686,8 +686,9 @@ check!(
 /// how many times the engine reported its active segment's bytes
 /// (lakelands#1309); how many of the next appends find the lease another
 /// writer took, and whether that writer gives it up at the next take of
-/// the lease (lakelands#1385).
-pub type Fails = Arc<[AtomicU32; 10]>;
+/// the lease (lakelands#1385); how many milliseconds each reclaim waits
+/// before it runs (lakelands#1486).
+pub type Fails = Arc<[AtomicU32; 11]>;
 
 /// The harness's engine with a projection whose next reclaims and
 /// clears fail as [`Fails`] says (lakelands#1161).
@@ -961,11 +962,20 @@ impl ProjectionStore for Reclaims {
         Ok(())
     }
     fn compact(&self) -> lakelands_api::Result<lakelands_api::engine::Reclaimed> {
+        let waits = self.fails[10].load(Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(u64::from(waits)));
         match fails(&self.fails, 0) {
             true => Err(crashed()),
             false => self.inner.projection().compact(),
         }
     }
+}
+
+/// Whether an act answered that it is in the log through `head` and
+/// unfinished (lakelands#1485).
+pub(crate) fn unfinished<T>(answer: &Result<T, Error>, head: Position) -> bool {
+    matches!(answer, Err(Error::Unavailable { situation })
+        if matches!(**situation, lakelands_api::error::Situation::ActUnfinished { at, .. } if at == head))
 }
 
 /// Whether a report answered, naming the cause of the reclaim the lake
@@ -1146,9 +1156,14 @@ async fn the_expected_time_follows_the_lakes_last_rebuild(
     let began = std::time::Instant::now();
     store.rebuild().await.must("rebuilding")?;
     let rebuilt = ms(began);
+    // The reclaim outlasts the rebuild, so an estimate without it falls
+    // short of two thirds of the two.
+    let waits = u32::try_from(rebuilt + 100).unwrap_or(u32::MAX);
+    fails[10].store(waits, Ordering::SeqCst);
     let began = std::time::Instant::now();
     store.compact().await.must("compacting")?;
     let took = rebuilt + ms(began);
+    fails[10].store(0, Ordering::SeqCst);
     let began = std::time::Instant::now();
     let pre = store.forget_preflight(&crm).await.must("the preflight")?;
     let walked = ms(began);
@@ -1169,6 +1184,16 @@ async fn the_expected_time_follows_the_lakes_last_rebuild(
             pre.events
         );
     }
+    // Another process's preflight: its handle has run neither.
+    let store = fault(store).await.map_err(opened)?;
+    let began = std::time::Instant::now();
+    let pre = store.forget_preflight(&crm).await.must("the preflight")?;
+    let (walked, ms) = (ms(began), pre.expected_ms);
+    ensure!(
+        ms <= took + walked + 3 && took * 2 <= ms * 3 + 30,
+        "a handle opened after a rebuild and a reclaim of {took} ms expects them as the handle \
+         that ran them does, with its walk of {walked} ms; it expects {ms} ms"
+    );
     Ok(())
 }
 
@@ -1443,15 +1468,16 @@ async fn a_set_beside_a_forgotten_source_forgets_what_it_owes(
     let failed = store.forget_sources(&set, None).await;
     let forgot = forgettings(store.as_ref(), at).await?;
     let named: Vec<&EventBody> = forgot.iter().map(|e| &e.body).collect();
+    let head = store.head().await.must("reading the head")?;
     ensure!(
-        matches!(failed, Err(Error::Unavailable { .. }))
+        unfinished(&failed, head)
             && fails[1].load(Ordering::SeqCst) == 0
             && matches!(named.as_slice(), [EventBody::SourceForgotten { source, .. }]
                 if *source == crm),
         "a set act whose rebuild fails answers the failure, having appended crm's \
-         `source_forgotten` alone; it answered {failed:?}, the log holding {named:?}"
+         `source_forgotten` alone, unfinished at the head {head}; it answered {failed:?}, the \
+         log holding {named:?}"
     );
-    let head = store.head().await.must("reading the head")?;
     let cleared = fails[4].load(Ordering::SeqCst);
     let again = (store.forget_sources(&set, None).await).must("forgetting the set again")?;
     let rebuilds = fails[4].load(Ordering::SeqCst) - cleared;

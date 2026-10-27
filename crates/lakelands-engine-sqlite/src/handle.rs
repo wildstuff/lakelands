@@ -157,7 +157,7 @@ impl SqliteLake {
         // A log that is there is judged before anything is made beside
         // it, and a directory with no segment file holds no lake: only an
         // open to create makes anything in it.
-        let mut log = if crate::log::kept(&dir)? {
+        let log = if crate::log::kept(&dir)? {
             let log = Log::open(&dir, false)?;
             check_name(&dir, &lake, create)?;
             log
@@ -172,11 +172,6 @@ impl SqliteLake {
         let path = projection.join("projection.db");
         if mode != OpenMode::Read || path.is_file() {
             check_name(&projection, &lake, mode != OpenMode::Read)?;
-        }
-        // A scratch an earlier builder left unfit to swap in is removed by
-        // the next writer, before it opens the projection.
-        if mode != OpenMode::Read {
-            scratch::sweep(&projection, &lake, &mut log)?;
         }
         let opened = hold(&dir)?;
         let no_projection = || {
@@ -363,19 +358,21 @@ impl SqliteLake {
             drop(live);
             building.set(None)
         })();
+        // The writer puts the file back in its write-ahead journal while the
+        // hold is still exclusive: a handle that waits on the hold, a
+        // writer's open the lease then refuses among them, would otherwise
+        // change the journal or write beside it, and SQLite answers one of
+        // two such connections busy without waiting (lakelands#1485).
         // Taking the hold exclusively may have given up the shared one,
-        // whether it was taken or not: it is taken again. The writer puts
-        // the file back in its write-ahead journal before a read opens it,
-        // and the reads are let in whether that failed or not.
-        let back = self.opened.as_ref().map_or(Ok(()), |opened| {
+        // whether it was taken or not: it is taken again, and the reads are
+        // let in whether either failed or not.
+        let back = connect(&self.path, &self.tuning, true).map(|c| *lock(&self.writer) = Some(c));
+        let shared = self.opened.as_ref().map_or(Ok(()), |opened| {
             FileExt::lock_shared(opened).map_err(|e| io_error(Doing::Lock, Part::Projection, e))
-        });
-        let back = back.and_then(|()| {
-            *lock(&self.writer) = Some(connect(&self.path, &self.tuning, true)?);
-            Ok(())
         });
         self.readers.open();
         back?;
+        shared?;
         replaced?;
         drop(building);
         projection::folded(&*self.reader()?)
@@ -554,6 +551,11 @@ impl LakeEngine for SqliteLake {
         log.recover()?;
         log.settle()?;
         log.sweep()?;
+        // A scratch an earlier builder left unfit to swap in is removed by
+        // the next writer once it holds the lease: an open the lease then
+        // refuses never locks the scratch the holder is about to swap in
+        // (lakelands#1485).
+        scratch::sweep(&self.dir, &self.lake, &mut log)?;
         let lease = taken.lease.clone();
         *held = Some(taken);
         Ok(lease)

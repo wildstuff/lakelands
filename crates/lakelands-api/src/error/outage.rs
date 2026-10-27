@@ -932,6 +932,8 @@ catalog! {
         DecidedBehind => "this write was decided while the lake's projection was behind its log; nothing was appended",
         /// What was appended from a position is in the log and not folded yet.
         NotFolded { from: Position, cause: Box<Error> } => "what was appended is in the log from position {from} and is not folded yet; the next write folds it, and a write is sent again only under its idempotency key ({cause})",
+        /// An act of erasure is in the log through a position, and destroying its keys or restating the projection after it failed.
+        ActUnfinished { at: Position, cause: Box<Error> } => "the act is in the log through position {at}, and finishing it failed: {cause}; until it is finished its keys may be kept and the projection may hold what it erased, so repeat the act as it was, which appends nothing again, or open the lake for writing: either finishes it",
         /// The lake's names moved while the write waited; send it again.
         Moved => "the lake's names moved while this write waited; send it again",
         /// The types a write reads, or what its principal is shown of them, moved while the write waited; send it again.
