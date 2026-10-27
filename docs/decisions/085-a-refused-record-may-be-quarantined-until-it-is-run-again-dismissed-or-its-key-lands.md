@@ -2,8 +2,9 @@
 
 ## What is decided
 
-**Proposed** on lakelands#1502, for 0.21.0, in format 21; the operator
-reviews it on the issue, and merging does not accept it. It extends
+Decided on lakelands#1502 by the operator (2026-10-27), for 0.21.0, in
+format 21, with the budget raise its build measures up to the sizes
+below. It extends
 `docs/decisions/016-two-write-doors-by-origin.md`, whose stream ends at
 a refusal unless the delivery asks to quarantine it, and whose
 redelivery appends nothing but where a resubmission closes a
