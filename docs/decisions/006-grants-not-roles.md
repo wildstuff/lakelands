@@ -2183,13 +2183,14 @@ pair (lakelands#1490).
   the holder's, and a type without them names no record as its own. A
   link with no end held is refused, not opened, so a holder of
   `writes_only` on the link type alone makes no link. Both ends must be
-  its own where the link would change what the other end answers: where
-  a derived or computed field of the other end's type reads across the
-  relation, judged against the declarations in force, and where the
-  relation is to-one at the other end, since the link then takes that
-  end's one place. The link record itself must hold the pairs the
-  holder's `writes_only` on the link type names, at its create, at an
-  `unlink` and at any other write to it. A holder of `writes_only` on an
+  its own where the relation is to-one at the other end, since the link
+  then takes that end's one place. Where the relation is to-many at the
+  other end, the holder's one end suffices: no declaration accepted can
+  name a relation in a computed field's expression or `depends_on`, so a
+  link changes no answer of the other end but through its one place. The
+  link record itself must hold the pairs the holder's `writes_only` on
+  the link type names, at its create, at an `unlink` and at any other
+  write to it. A holder of `writes_only` on an
   end type who holds none on the link type makes no link of it: the
   case is not covered, so it is refused, not opened.
 - **Proposals.** A proposal is judged as the direct write is, and its
@@ -3038,3 +3039,6 @@ Of a field hidden on the records a condition selects:
 - A grant may admit every record to read and only some to write
   (lakelands#1490): `only` had been the one way to keep a principal to
   some records, and it kept the reads to them too.
+- Dropped: the clause that a holder owns both ends where a computed
+  field of the other end's type reads across the relation (lakelands#1506);
+  the declaration checks refuse every such field, so it could not be shown.
