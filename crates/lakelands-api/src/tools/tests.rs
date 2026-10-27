@@ -736,3 +736,48 @@ fn a_search_text_says_a_word_matches_only_as_written() {
         assert!(text.contains(words), "the text says {words}: {text}");
     }
 }
+
+/// Walk 6's gaps: `query`'s `project` shows an aggregate's members, a
+/// step's `depth` requires both its members, and a cursor says it goes
+/// back with the request of its first page.
+#[test]
+fn a_query_schema_shows_an_aggregate_a_depth_and_a_cursor() {
+    let t = tools_ok(&lake_of(vec![invoice()]));
+    let door = |d: Door| t.iter().find(|t| t.door == d).expect("the door is offered");
+    let said = |v: &Value| v["description"].as_str().unwrap_or_default().to_owned();
+    let query = &door(Door::Query).input_schema["properties"];
+    let project = &query["project"]["properties"];
+    for member in ["group_by", "measures"] {
+        assert!(said(&project[member]).contains("aggregate"), "{project}");
+    }
+    let measure = &project["measures"]["items"];
+    assert_eq!(measure["required"], serde_json::json!(["name", "func"]));
+    assert!(measure["properties"]["field"].is_object(), "{measure}");
+    assert!(said(&project["fields"]).contains("rows"), "{project}");
+    let depth = &query["steps"]["items"]["properties"]["depth"];
+    assert_eq!(depth["required"], serde_json::json!(["min", "max"]));
+    assert!(
+        said(&depth["properties"]["min"]).contains("0 keeps"),
+        "{depth}"
+    );
+    assert!(
+        said(&depth["properties"]["max"]).contains("`max_depth`"),
+        "{depth}"
+    );
+    assert!(said(depth).contains("one hop when left out"), "{depth}");
+    let find = &door(Door::Find {
+        ty: "invoice".into(),
+    })
+    .input_schema["properties"];
+    for (cursor, same) in [
+        (&find["cursor"], "the same `where` and `order_by`"),
+        (&query["cursor"], "the same pattern"),
+    ] {
+        let text = said(cursor);
+        assert!(
+            text.contains("`next_cursor` of an earlier answer"),
+            "{text}"
+        );
+        assert!(text.contains(same), "{text}");
+    }
+}
