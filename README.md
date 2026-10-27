@@ -170,7 +170,7 @@ terrain Lakelands is built for, and where it is not the right tool.
 > engine seam), with 84 decision records and the event log at format
 > version 20, installable from the release. Its budgets: the store
 > facade and engine traits hold 91 of 110 methods, the core crates'
-> product code 91 318 of 92 500 lines and their specification 169 364 of
+> product code 91 294 of 92 500 lines and their specification 169 327 of
 > 169 500, and 6 of 20 `cfg(feature)` sites. A ceiling rises only by a
 > recorded rule (decision 047): the ceilings stand at 92 500 and 169 500,
 > and the ratchet bases at 91 500 and 169 500.
