@@ -127,10 +127,15 @@ fn a_builder_killed_halfway_leaves_the_projection_answering() {
     drop(reader);
     drop(writer);
     let again = open(&dir, OpenMode::Write).unwrap();
+    assert!(
+        left(&dir).contains(&"projection.db.rebuild".to_owned()),
+        "an open the lease may yet refuse leaves it (lakelands#1485)"
+    );
+    again.take_lease("next").unwrap();
     assert_eq!(
         left(&dir),
         Vec::<String>::new(),
-        "the next writer's open removes it"
+        "the next writer removes it once it holds the lease"
     );
     assert_eq!(folded(again.as_ref()), Some(Position(1)));
 }
