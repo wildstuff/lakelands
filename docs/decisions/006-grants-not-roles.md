@@ -2183,11 +2183,17 @@ pair (lakelands#1490).
   the holder's, and a type without them names no record as its own. A
   link with no end held is refused, not opened, so a holder of
   `writes_only` on the link type alone makes no link. Both ends must be
-  its own where the link would change what the other end answers: where
-  a derived or computed field of the other end's type reads across the
-  relation, judged against the declarations in force, and where the
-  relation is to-one at the other end, since the link then takes that
-  end's one place. The link record itself must hold the pairs the
+  its own where the relation is to-one at the other end, since the link
+  then takes that end's one place. The rule is wider in intent: a link
+  changes what the other end answers too where a derived or computed
+  field of the other end's type reads across the relation. No
+  declaration accepted today can name a relation in a computed field's
+  expression or `depends_on` (055 steps through a reference field, never
+  a relation; lakelands#1506 lists the refusals), so that case cannot
+  arise. The store still judges it against the declarations in force,
+  fails closed on an expression it cannot parse, and the unit test of
+  `reads_relation` holds it; the conformance suite holds the to-one case,
+  which a lake can show. The link record itself must hold the pairs the
   holder's `writes_only` on the link type names, at its create, at an
   `unlink` and at any other write to it. A holder of `writes_only` on an
   end type who holds none on the link type makes no link of it: the
@@ -3038,3 +3044,5 @@ Of a field hidden on the records a condition selects:
 - A grant may admit every record to read and only some to write
   (lakelands#1490): `only` had been the one way to keep a principal to
   some records, and it kept the reads to them too.
+- The drill of round 3 (lakelands#1462) found the link claim about a
+  computed field unreachable; 006 now says so (lakelands#1506).
