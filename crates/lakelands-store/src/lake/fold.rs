@@ -83,6 +83,7 @@ impl Lake {
             .iter()
             .any(|e| matches!(e.body, EventBody::Migrated { .. }));
         let mut kept = carries.then(|| w.owed.clone());
+        let mut ciphers = crate::sealing::Ciphers::default();
         let mut staged = Staged {
             reads,
             keys: Some(self.keys.clone()),
@@ -124,7 +125,7 @@ impl Lake {
                     view = self.scoped.view(self.engine.view(None)?);
                 }
                 let owes = owed.is_some_and(|p| e.position >= p);
-                self.fold(w, view.as_ref(), &mut staged, e, owes)?;
+                self.fold(w, (view.as_ref(), &mut ciphers), &mut staged, e, owes)?;
             }
             self.scoped.reads_at(last.position);
             self.flush(w, view.as_ref(), &mut staged, events, owed)?;
@@ -559,12 +560,13 @@ impl Lake {
         Ok(())
     }
 
-    /// What one event does to the projection; the calls it makes due are
-    /// handed out when it `owes` them.
+    /// What one event does to the projection, opened with the ciphers its
+    /// pass has built; the calls it makes due are handed out when it
+    /// `owes` them.
     fn fold(
         &self,
         w: &mut Writer,
-        view: &dyn ProjectionView,
+        (view, ciphers): (&dyn ProjectionView, &mut crate::sealing::Ciphers),
         staged: &mut Staged,
         e: &Event,
         owes: bool,
@@ -591,7 +593,7 @@ impl Lake {
                 // A seal of a delivery sealed apart needs its version and
                 // its apart keys: it is erased where an act destroyed any
                 // of those missing, and fails closed on the first (065).
-                let (key, missing) = match self.keys.opened_cipher(source, sealed) {
+                let (key, missing) = match ciphers.opened(&self.keys, source, sealed) {
                     Ok(Ok(key)) => (Ok(key), Vec::new()),
                     Ok(Err(missing)) => {
                         let (source, key) = (source.clone(), missing[0].clone());
@@ -605,7 +607,7 @@ impl Lake {
                     Err(e) => return Err(e),
                 };
                 match key {
-                    Ok(cipher) => crate::sealing::open(&mut plain, &cipher)?,
+                    Ok(cipher) => crate::sealing::open(&mut plain, cipher)?,
                     Err(_)
                         if self.erased_any(
                             w,

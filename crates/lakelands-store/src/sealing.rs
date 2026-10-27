@@ -17,6 +17,7 @@
 //! makes the nonce again from the event, so a sealed value moved to
 //! another place does not open.
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -52,10 +53,6 @@ pub struct Keys {
 struct Held {
     /// Each key, by source and version.
     by: BTreeMap<(SourceId, KeyId), DataKey>,
-    /// The cipher of each key a seal names, by source and the versions
-    /// and keys apart it is composed of ([`Keys::opened_cipher`]): its key
-    /// schedule run once, not at each value. Dropped with any of them.
-    ciphers: BTreeMap<(SourceId, Vec<KeyId>), Arc<Aes256GcmSiv>>,
     /// The version of each source's key its new values are sealed with,
     /// and the newest the log had used when it was chosen.
     sealing: BTreeMap<SourceId, (KeyId, Option<KeyId>)>,
@@ -229,38 +226,6 @@ impl Keys {
         present(source, self.opened_sealed(source, sealed)?)
     }
 
-    /// The cipher of the key `sealed` names of `source`, failing closed
-    /// as [`Self::sealed`] does.
-    pub fn cipher(&self, source: &SourceId, sealed: &Sealed) -> Result<Arc<Aes256GcmSiv>> {
-        present(source, self.opened_cipher(source, sealed)?)
-    }
-
-    /// The cipher of [`Self::opened_sealed`]'s key, built once and kept
-    /// while every key it is composed of is held, so a batch or an act
-    /// sealing or opening many values under one key runs its key schedule
-    /// once. It is dropped when any of them is, never kept beyond them.
-    pub fn opened_cipher(
-        &self,
-        source: &SourceId,
-        sealed: &Sealed,
-    ) -> Result<std::result::Result<Arc<Aes256GcmSiv>, Vec<KeyId>>> {
-        let ids = std::iter::once(&sealed.key).chain(&sealed.apart);
-        let at = (source.clone(), ids.cloned().collect::<Vec<_>>());
-        if let Some(c) = lock(&self.held).ciphers.get(&at) {
-            return Ok(Ok(c.clone()));
-        }
-        let cipher = match self.opened_sealed(source, sealed)? {
-            Ok(key) => Arc::new(cipher(&key)),
-            Err(missing) => return Ok(Err(missing)),
-        };
-        // One of its keys dropped meanwhile is not kept again by it.
-        let mut held = lock(&self.held);
-        if (at.1.iter()).all(|id| held.by.contains_key(&(source.clone(), id.clone()))) {
-            held.ciphers.insert(at, cipher.clone());
-        }
-        Ok(Ok(cipher))
-    }
-
     /// [`Self::sealed`], or those of its keys the key store does not
     /// give, in its order: destroyed, which only an act in the log makes
     /// an erasure.
@@ -385,7 +350,6 @@ impl Keys {
         {
             let mut held = lock(&self.held);
             held.by.retain(|(s, _), _| s != source);
-            held.ciphers.retain(|(s, _), _| s != source);
             held.sealing.remove(source);
             held.lists.remove(source);
             held.generation += 1;
@@ -409,8 +373,6 @@ impl Keys {
             let mut held = lock(&self.held);
             held.by
                 .retain(|(s, id), _| s != source || !keys.contains(id));
-            (held.ciphers)
-                .retain(|(s, ids), _| s != source || !ids.iter().any(|k| keys.contains(k)));
             if held
                 .sealing
                 .get(source)
@@ -448,8 +410,6 @@ impl Keys {
             let mut held = lock(&self.held);
             held.by
                 .retain(|(s, id), _| s != source || !keys.contains(id));
-            (held.ciphers)
-                .retain(|(s, ids), _| s != source || !ids.iter().any(|k| keys.contains(k)));
             let doomed = keys.iter().map(|k| (source.clone(), k.clone()));
             held.doomed.extend(doomed);
         }
@@ -473,6 +433,47 @@ impl Keys {
     }
 }
 
+/// The ciphers one pass that seals or opens many values builds (an
+/// append, an ingest's window, a fold of a page or of an append): each
+/// key a seal names built into its [`cipher`] at its first value, not at
+/// each, by source and the versions and keys apart it is composed of.
+/// They live only as long as the pass, so none outlives a key an act
+/// drops after it, and the lake keeps none.
+#[derive(Default)]
+pub struct Ciphers(BTreeMap<(SourceId, Vec<KeyId>), Aes256GcmSiv>);
+
+impl Ciphers {
+    /// The cipher of the key `sealed` names of `source`, failing closed
+    /// as [`Keys::sealed`] does.
+    pub fn sealed(
+        &mut self,
+        keys: &Keys,
+        source: &SourceId,
+        sealed: &Sealed,
+    ) -> Result<&Aes256GcmSiv> {
+        present(source, self.opened(keys, source, sealed)?)
+    }
+
+    /// The cipher of [`Keys::opened_sealed`]'s key, or those of its keys
+    /// the key store does not give, as it answers them.
+    pub fn opened(
+        &mut self,
+        keys: &Keys,
+        source: &SourceId,
+        sealed: &Sealed,
+    ) -> Result<std::result::Result<&Aes256GcmSiv, Vec<KeyId>>> {
+        let ids = std::iter::once(&sealed.key).chain(&sealed.apart);
+        let at = (source.clone(), ids.cloned().collect());
+        Ok(Ok(match self.0.entry(at) {
+            Entry::Occupied(c) => c.into_mut(),
+            Entry::Vacant(v) => match keys.opened_sealed(source, sealed)? {
+                Ok(key) => v.insert(cipher(&key)),
+                Err(missing) => return Ok(Err(missing)),
+            },
+        }))
+    }
+}
+
 /// What `opened` gives of `source`'s keys, or a refusal naming the first
 /// of them missing.
 fn present<T>(source: &SourceId, opened: std::result::Result<T, Vec<KeyId>>) -> Result<T> {
@@ -482,7 +483,11 @@ fn present<T>(source: &SourceId, opened: std::result::Result<T, Vec<KeyId>>) -> 
     })
 }
 
-/// The cipher of `key`, its key schedule wiped when it is dropped.
+/// The cipher of `key`: the AES schedule of `key` as AES-GCM-SIV's
+/// key-generating key, wiped when the cipher is dropped. Only that is
+/// saved where a cipher is kept: each value sealed or opened still
+/// derives its own authentication and encryption keys from its nonce,
+/// and expands the encryption key's schedule.
 pub fn cipher(key: &DataKey) -> Aes256GcmSiv {
     Aes256GcmSiv::new((&key.0).into())
 }

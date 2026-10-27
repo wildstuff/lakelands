@@ -216,6 +216,7 @@ fn judge(
     }
     // The keys of an insert-only type this window writes, each once.
     let mut once = BTreeSet::new();
+    let mut ciphers = crate::sealing::Ciphers::default();
     for (i, r) in records.iter().enumerate() {
         let judged = (|| {
             let decl = d.at.sight.ty(&r.ty)?;
@@ -287,8 +288,8 @@ fn judge(
                         made: false,
                     };
                     let mut boxed = s.clone();
-                    let cipher = lake.keys.cipher(source, s)?;
-                    crate::sealing::seal(&mut body, &mut boxed, source, &cipher);
+                    let cipher = ciphers.sealed(&lake.keys, source, s)?;
+                    crate::sealing::seal(&mut body, &mut boxed, source, cipher);
                     let EventBody::RecordIngested { patch: stored, .. } = &body else {
                         unreachable!("the body sealed is a record_ingested")
                     };

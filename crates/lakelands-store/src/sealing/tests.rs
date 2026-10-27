@@ -10,7 +10,7 @@ use lakelands_api::id::KeyId;
 use lakelands_api::seam::KeyStore;
 use lakelands_api::{LakeId, Result, SourceId, Timestamp};
 
-use super::{Apart, Keys, List, cipher, digest, open, rotates, seal, turns};
+use super::{Apart, Ciphers, Keys, List, cipher, digest, open, rotates, seal, turns};
 
 /// The lines of `vectors/20/further.json` that show `shows`.
 fn line(shows: &str) -> Event {
@@ -253,26 +253,29 @@ impl KeyStore for Two {
     }
 }
 
-/// A key's cipher, built once and kept while the key is held, seals each
-/// value to the bytes a cipher built for that value alone does, and is
-/// dropped with the key.
+/// A key's cipher, built once in a pass and kept for its every value,
+/// seals each value to the bytes a cipher built for that value alone
+/// does.
 #[test]
 fn a_kept_cipher_seals_to_the_bytes_of_one_built_a_value() {
     use std::sync::Arc;
     let keys = Keys::new(LakeId::from("l"), Some(Arc::new(Two::default())), None);
     let (e, sealed) = two_sealed(1);
     let source = e.source.clone().unwrap();
-    let kept = keys.cipher(&source, &sealed).unwrap();
-    assert!(Arc::ptr_eq(&kept, &keys.cipher(&source, &sealed).unwrap()));
+    let mut ciphers = Ciphers::default();
+    let kept: *const _ = ciphers.sealed(&keys, &source, &sealed).unwrap();
+    assert!(std::ptr::eq(
+        kept,
+        ciphers.sealed(&keys, &source, &sealed).unwrap()
+    ));
     for version in 1..4 {
         let (e, mut each) = two_sealed(version);
         let (mut alone, mut body, mut once) = (e.body.clone(), e.body, each.clone());
         seal(&mut alone, &mut each, &source, &cipher(&key()));
-        seal(&mut body, &mut once, &source, &kept);
+        let kept = ciphers.sealed(&keys, &source, &once).unwrap();
+        seal(&mut body, &mut once, &source, kept);
         assert_eq!((alone, each), (body, once));
     }
-    keys.destroy(&source).unwrap();
-    assert_eq!(Arc::strong_count(&kept), 1);
 }
 
 /// A version the log has moved past since a writer chose its own, as

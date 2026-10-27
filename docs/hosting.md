@@ -1918,7 +1918,6 @@ them:
   `crates/lakelands-api/tests/host_builds.rs` is the host's view, kept
   compiling.
 
-
 ## Building on aarch64
 
 On `x86_64` the crates Lakelands seals and hashes with find AES-NI,
@@ -1932,8 +1931,12 @@ digests) in portable software:
 - `aes` 0.8 and `polyval` 0.6, which `aes-gcm-siv` 0.11 seals with, use
   AES and PMULL only under
   `RUSTFLAGS="--cfg aes_armv8 --cfg polyval_armv8"`;
-- `sha2` 0.10 uses its SHA2 instructions only with its `asm` feature,
-  which brings in `sha2-asm`.
+- `sha2` 0.10.9 uses the SHA2 instructions only with its `asm` feature:
+  on `aarch64` the feature selects `sha2`'s own backend for SHA-256,
+  written in Rust with `core::arch` intrinsics and inline assembly, in
+  place of the portable one.
+  It also makes `sha2-asm` a dependency, whose assembly the host's C
+  toolchain then builds, though nothing calls it on `aarch64`.
 
 With them, each still checks the CPU at run time and falls back to
 software where the instructions are missing. A flag set in Lakelands'
