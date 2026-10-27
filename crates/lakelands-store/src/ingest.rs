@@ -416,11 +416,12 @@ fn stated(r: &SourceRecord) -> Result<()> {
     }
 }
 
-/// The key `source`'s values of the call are sealed apart under, by id:
-/// the one `apart` keeps, else a new one the key store makes, kept there. One an
-/// act of removal named since, which a writer knows from the act it met
-/// or made, is not sealed under again: what the call writes after the act
-/// is not the act's, so it takes a key of its own (065).
+/// The key `source`'s values of the call are sealed apart under, by
+/// id: the one `apart` keeps, else a new one the key store makes, kept
+/// there. One an act of removal named since, which a writer knows from
+/// the act it met or made, is not sealed under again: what the call
+/// writes after the act is not the act's, so it takes a key of its own
+/// (065).
 fn apart_key((lake, w): (&Lake, &Writer), apart: &Apart, source: &SourceId) -> Result<KeyId> {
     let kept = lakelands_core::lock(apart).get(source).cloned();
     let taken = |id: &KeyId| {

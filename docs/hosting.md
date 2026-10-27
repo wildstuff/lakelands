@@ -1954,6 +1954,12 @@ rustflags = ["--cfg", "aes_armv8", "--cfg", "polyval_armv8"]
 sha2 = { version = "0.10", features = ["asm"] }
 ```
 
+Cargo takes a build's flags from one place only: a `RUSTFLAGS` or
+`CARGO_ENCODED_RUSTFLAGS` set in the environment replaces every
+`rustflags` of `.cargo/config.toml`, the `target` table's above
+included, so a build that sets either has to add the two `--cfg` flags
+to it as well.
+
 The values sealed and the hashes are the same bytes either way. A later
 release takes the versions of these crates that detect the instructions
 at run time with no flag (lakelands#1498).

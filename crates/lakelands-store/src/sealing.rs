@@ -770,9 +770,9 @@ pub fn seal(body: &mut EventBody, sealed: &mut Sealed, source: &SourceId, cipher
     }
 }
 
-/// Open in place what `event`'s `sealed` names under `cipher`'s key: a record's box
-/// back into its patch, each member sealed alone up to format 19, or a
-/// recorded output. A value that does not open under it, or a box that
+/// Open in place what `event`'s `sealed` names under `cipher`'s key: a
+/// record's box back into its patch, each member sealed alone up to
+/// format 19, or a recorded output. A value that does not open under it, or a box that
 /// does not hold exactly the members `sealed` names, none of them in the
 /// patch, is answered as such, at the event's position.
 pub fn open(event: &mut Event, cipher: &Aes256GcmSiv) -> Result<()> {

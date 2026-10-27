@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use base64::engine::general_purpose::STANDARD;
+use lakelands_api::error::Situation;
 use lakelands_api::event::{Event, EventBody, Sealed};
 use lakelands_api::seam::DataKey;
 use serde_json::{Value, json};
@@ -253,29 +254,75 @@ impl KeyStore for Two {
     }
 }
 
+/// A key store whose every key is the hash of its id, so each version
+/// and each key apart seals to bytes of its own; it gives none for `gone`.
+struct Hashed;
+impl KeyStore for Hashed {
+    fn create(&self, _: &LakeId, _: &SourceId) -> Result<KeyId> {
+        unreachable!("the test names its keys")
+    }
+    fn key(&self, _: &LakeId, _: &SourceId, id: &KeyId) -> Result<Option<DataKey>> {
+        Ok((id.as_str() != "gone").then(|| hashed(id)))
+    }
+    fn destroy(&self, _: &LakeId, _: &SourceId) -> Result<()> {
+        Ok(())
+    }
+    fn ids(&self, _: &LakeId, _: &SourceId) -> Result<Vec<KeyId>> {
+        Ok(Vec::new())
+    }
+}
+
+/// [`Hashed`]'s key of `id`.
+fn hashed(id: &KeyId) -> DataKey {
+    DataKey(Sha256::digest(id.as_str()).into())
+}
+
 /// A key's cipher, built once in a pass and kept for its every value,
 /// seals each value to the bytes a cipher built for that value alone
-/// does.
+/// does, under each version and each composition with keys apart the
+/// pass meets in turn; a key the store does not give fails closed,
+/// naming it.
 #[test]
 fn a_kept_cipher_seals_to_the_bytes_of_one_built_a_value() {
-    use std::sync::Arc;
-    let keys = Keys::new(LakeId::from("l"), Some(Arc::new(Two::default())), None);
-    let (e, sealed) = two_sealed(1);
+    let keys = Keys::new(LakeId::from("l"), Some(std::sync::Arc::new(Hashed)), None);
+    let (e, _) = two_sealed(1);
     let source = e.source.clone().unwrap();
     let mut ciphers = Ciphers::default();
-    let kept: *const _ = ciphers.sealed(&keys, &source, &sealed).unwrap();
-    assert!(std::ptr::eq(
-        kept,
-        ciphers.sealed(&keys, &source, &sealed).unwrap()
-    ));
-    for version in 1..4 {
-        let (e, mut each) = two_sealed(version);
-        let (mut alone, mut body, mut once) = (e.body.clone(), e.body, each.clone());
-        seal(&mut alone, &mut each, &source, &cipher(&key()));
-        let kept = ciphers.sealed(&keys, &source, &once).unwrap();
-        seal(&mut body, &mut once, &source, kept);
-        assert_eq!((alone, each), (body, once));
+    let seals = [
+        ("k1", None),
+        ("k2", None),
+        ("k1", Some("a1")),
+        ("k2", Some("a1")),
+    ];
+    let mut sealed = Vec::new();
+    for round in 0..2 {
+        for (i, (version, apart)) in seals.iter().enumerate() {
+            let (e, mut each) = two_sealed(1 + i as u64);
+            each.key = KeyId::from(*version);
+            each.apart = apart.iter().map(|a| KeyId::from(*a)).collect();
+            let apart: Vec<_> = each.apart.iter().map(hashed).collect();
+            let alone = cipher(&super::compose(&hashed(&each.key), &apart));
+            let (mut by_alone, mut body, mut once) = (e.body.clone(), e.body, each.clone());
+            seal(&mut by_alone, &mut each, &source, &alone);
+            let kept = ciphers.sealed(&keys, &source, &once).unwrap();
+            seal(&mut body, &mut once, &source, kept);
+            assert_eq!((&by_alone, &each), (&body, &once));
+            match round {
+                0 => sealed.push(each.boxed),
+                _ => assert_eq!(sealed[i], each.boxed),
+            }
+        }
+        // One cipher a key the pass met, built at its first value.
+        assert_eq!(ciphers.0.len(), seals.len());
     }
+    let (_, mut lost) = two_sealed(1);
+    lost.apart = vec![KeyId::from("gone")];
+    let failed = ciphers.sealed(&keys, &source, &lost).map(drop);
+    let missing = failed.as_ref().err().and_then(|e| e.situation());
+    assert!(
+        matches!(missing, Some(Situation::KeyMissing { key, .. }) if key == "gone"),
+        "{failed:?}"
+    );
 }
 
 /// A version the log has moved past since a writer chose its own, as
