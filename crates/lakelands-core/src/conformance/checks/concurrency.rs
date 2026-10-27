@@ -56,8 +56,12 @@ const EACH: usize = 25;
 /// on a runtime it does not size. A pool larger than this would leave the
 /// check blind, never red.
 const POOL: usize = 512;
-/// The writes [`READS_AT_A_POSITION`] sends at once, past the [`POOL`].
-const WAITING: usize = 800;
+/// The writes [`READS_AT_A_POSITION`] sends at once: past the [`POOL`], the
+/// [`FIRST`] that land before the read, and one batch's bound, since a
+/// batch lands whole.
+fn waiting() -> usize {
+    POOL + 2 * FIRST + fixture::limits().commit_window_events.max(1) as usize
+}
 /// The writes of those that land before the read is made.
 const FIRST: usize = 64;
 
@@ -464,31 +468,33 @@ async fn a_read_at_a_position_answers_the_same_during_writes_and_after(store: St
     // late to tell is sent again.
     for _ in 0..3 {
         let (before, during) = read_beside_waiting(cat, own).await?;
-        let beyond = (WAITING - before).saturating_sub(POOL);
+        let beyond = (waiting() - before).saturating_sub(POOL);
         if beyond >= FIRST {
             ensure!(
                 during < beyond / 2,
-                "{during} of {WAITING} writes sent at once landed while a read was made after \
+                "{during} of {} writes sent at once landed while a read was made after \
                  the first {before}: a read waits for none of the {beyond} queued beyond the \
-                 blocking pool"
+                 blocking pool",
+                waiting()
             );
             return Ok(());
         }
     }
     Err(Failure::new(format!(
-        "the reader of {WAITING} writes sent at once woke after too many had landed, \
-         three times; the check could not tell"
+        "the reader of {} writes sent at once woke after too many had landed, \
+         three times; the check could not tell",
+        waiting()
     )))
 }
 
-/// Sends [`WAITING`] writes at once and, once [`FIRST`] of them landed,
+/// Sends [`waiting`] writes at once and, once [`FIRST`] of them landed,
 /// one read: how many had landed as it was made, and how many during it.
 async fn read_beside_waiting(
     cat: &Arc<dyn Catalog>,
     own: &Principal,
 ) -> Result<(usize, usize), Failure> {
     let landed = Arc::new(AtomicUsize::new(0));
-    let mut callers: Vec<Caller<'static, Result<(usize, usize), Failure>>> = (0..WAITING)
+    let mut callers: Vec<Caller<'static, Result<(usize, usize), Failure>>> = (0..waiting())
         .map(|w| {
             let (write, landed) = (
                 writer(cat.clone(), own.clone(), 100 + w, 1, 1),

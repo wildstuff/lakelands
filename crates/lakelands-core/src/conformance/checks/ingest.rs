@@ -823,13 +823,14 @@ async fn an_ingests_delivery_is_the_callers_or_the_stores_own(store: Store) -> H
     // A call of many windows, the first of them all duplicates: one id,
     // from the first event the call appended, and none before it.
     let bulk = |n: usize| (0..n).map(|i| r(&format!("b{i}"), "e")).collect::<Vec<_>>();
-    call(Some("bulk"), bulk(32)).await?;
-    let (before, windows, ingested) = call(None, bulk(100)).await?;
+    let window = limits().commit_window_events.max(1) as usize;
+    call(Some("bulk"), bulk(window)).await?;
+    let (before, windows, ingested) = call(None, bulk(3 * window + 4)).await?;
     let own = Some(DeliveryId::from(format!("d{}", before.next())));
     let (empty, appended): (Vec<_>, Vec<_>) = windows.iter().partition(|w| w.records == 0);
     ensure!(
         appended.len() >= 2
-            && ingested.len() == 68
+            && ingested.len() == 2 * window + 4
             && ingested.iter().all(|(_, d)| *d == own)
             && appended.iter().all(|w| w.delivery == own)
             && empty.iter().all(|w| w.delivery.is_none()),

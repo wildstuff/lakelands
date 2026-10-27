@@ -364,7 +364,7 @@ impl Default for Limits {
             max_limit: 1000,
             max_depth: 16,
             max_reactive_depth: 8,
-            commit_window_events: 32,
+            commit_window_events: 256,
             max_graph_nodes: 100_000,
             max_offset: 100_000,
             max_set_changes: 20_000,

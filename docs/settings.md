@@ -94,10 +94,11 @@ The deepest a chain of reactive writes may go.
 
 ### `limits.commit_window_events`
 
-The most records one group-commit window of an ingest holds, or events one batch of record writes holds; a batch closes after the write that reaches it.
+The most records one group-commit window of an ingest holds, or events one batch of record writes holds; a batch closes after the write that reaches it. A host with bulk deliveries of hundreds or thousands of records may raise it to 1024.
 
 - **Takes:** a count, 1 at least.
-- **Default:** `32`.
+- **Default:** `256`.
+- **Cost:** each window pays one log append and one projection commit, about 8 ms on Apple Silicon, so a delivery of 500 records takes 200 ms at 32 and 72 ms at 1024, and one of 1000 records 390 ms and 130 ms (SQLite, through a host's write door, `ingest_with`, sealed apart); a refused record rolls back its whole window, up to 255 records before it at the default and up to 1023 at 1024, and the crash check on open reads the last group, about 14 µs an event (decision 060): about 3.5 ms at the default, 14 ms at 1000.
 
 ### `limits.max_graph_nodes`
 

@@ -794,19 +794,19 @@ fn ingest_prints_one_line_per_commit_window_and_skips_what_it_has() {
         let sh = Shell::on("ingest", backend);
         sh.lake();
         sh.run(&["apply", &sh.fixture()]);
-        let rows: String = (1..=40)
+        let rows: String = (1..=300)
         .map(|i| format!("{{\"type\": \"invoice\", \"key\": \"INV-{i}\", \"fields\": {{\"amount\": \"{i}.00\"}}}}\n"))
         .collect();
         let file = sh.file("bank.ndjson", &rows);
         ok(
             &sh.run(&["ingest", &file, "--source", "bank"]),
-            "committed 32 record(s), 0 already in the lake, through position 39\n\
-         committed 8 record(s), 0 already in the lake, through position 47\n",
+            "committed 256 record(s), 0 already in the lake, through position 263\n\
+         committed 44 record(s), 0 already in the lake, through position 307\n",
         );
         ok(
             &sh.run(&["ingest", &file, "--source", "bank"]),
-            "committed 0 record(s), 32 already in the lake, through position 47\n\
-         committed 0 record(s), 8 already in the lake, through position 47\n",
+            "committed 0 record(s), 256 already in the lake, through position 307\n\
+         committed 0 record(s), 44 already in the lake, through position 307\n",
         );
         let broken = sh.file(
             "broken.ndjson",
@@ -3042,7 +3042,7 @@ limits.default_limit                    location  50 (default)
 limits.max_limit                        location  1000 (default)
 limits.max_depth                        location  16 (default)
 limits.max_reactive_depth               location  8 (default)
-limits.commit_window_events             location  32 (default)
+limits.commit_window_events             location  256 (default)
 limits.max_graph_nodes                  location  100000 (default)
 limits.max_offset                       location  100000 (default)
 limits.max_set_changes                  location  20000 (default)
