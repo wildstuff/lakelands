@@ -436,22 +436,6 @@ impl Sight<'_> {
     }
 }
 
-/// Whether a computed field of `decl` reads across the relation `rel`: it
-/// depends on it, or its expression reads it or does not parse.
-fn reads_relation(decl: &TypeDecl, rel: Option<&lakelands_api::RelationName>) -> bool {
-    let Some(rel) = rel else {
-        return false;
-    };
-    let names = |n: &FieldName| n.as_str() == rel.as_str();
-    let reads = |d: &FieldDecl| {
-        let expr = d.derived.as_ref().map(crate::describe::parsed);
-        d.depends_on.iter().any(names)
-            || expr.is_some_and(|e| e.is_none_or(|e| crate::derive::reads(&e).iter().any(names)))
-    };
-    let computed = |d: &&FieldDecl| d.authority == Authority::Derived || d.function.is_some();
-    decl.fields.iter().filter(computed).any(reads)
-}
-
 /// Whether a stored record holds every pair.
 pub(crate) fn admitted(pairs: &[(FieldName, Value)], fields: &BTreeMap<FieldName, Value>) -> bool {
     pairs.iter().all(|(f, v)| fields.get(f) == Some(v))
@@ -808,20 +792,13 @@ impl Sight<'_> {
                 Some(owner),
                 from,
                 matches!(r.cardinality, ManyToOne | OneToOne),
-                Some(&r.name),
             ),
-            (
-                target,
-                to,
-                matches!(r.cardinality, OneToMany | OneToOne),
-                r.inverse.as_ref(),
-            ),
+            (target, to, matches!(r.cardinality, OneToMany | OneToOne)),
         ];
         type End<'e> = (
             Option<&'e TypeDecl>,
             Option<&'e BTreeMap<FieldName, Value>>,
             bool,
-            Option<&'e lakelands_api::RelationName>,
         );
         let held = |(d, fields, ..): &End<'_>| {
             d.is_some_and(|d| match self.writes(d) {
@@ -829,8 +806,7 @@ impl Sight<'_> {
                 _ => false,
             })
         };
-        let freed =
-            |(d, _, one, rel): &End<'_>| !one && d.is_some_and(|d| !reads_relation(d, *rel));
+        let freed = |(d, _, one): &End<'_>| !one && d.is_some();
         match ends.iter().map(held).collect::<Vec<_>>()[..] {
             [true, true] => true,
             [true, false] => freed(&ends[1]),
