@@ -160,7 +160,7 @@ interface types {
         dimensions: option<u32>,
     }
 
-    enum authority { authored, source, shared, derived, verb }
+    enum authority { authored, source, shared, derived, verb, writer }
 
     /// Who retires a type's records: its authors through `retire`, or
     /// only its verbs whose effect is `retire`.

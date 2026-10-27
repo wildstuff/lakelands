@@ -597,18 +597,29 @@ pub(crate) fn holds_nothing_across<'d>(
     who.grants.restricted && bare(&decl.name) && paths.iter().all(first) && far.iter().all(unheld)
 }
 
-/// Whether `who` can make a record of `decl` that its grant admits: it
-/// writes every field its `only` names at the authored door (051), or the
-/// field is one only verbs write whose `initial` a create gives it is the
-/// value its `only` names.
+/// Whether `who` can make a record of `decl` that its grant admits: a
+/// create of `who` holds every pair its `only` names ([`create_holds`]).
 pub(crate) fn creates(who: &Principal, decl: &TypeDecl) -> bool {
-    own_only(who, &decl.name).iter().all(|(f, v)| {
-        let field = decl.field(f);
-        field.is_some_and(|d| match d.authority {
-            Authority::Authored | Authority::Shared => field_access(who, decl, d).writes(),
-            Authority::Verb => d.initial.as_ref() == Some(v),
-            _ => false,
-        })
+    own_only(who, &decl.name)
+        .iter()
+        .all(|(f, v)| create_holds(who, decl, f, v))
+}
+
+/// Whether a create of `decl` by `who` can hold `field` at `value`: it
+/// writes the field at the authored door (051); or the field is one only
+/// verbs write whose `initial` is `value`; or the store fills it with the
+/// creating writer (084) and `value` is `who`'s.
+pub(crate) fn create_holds(
+    who: &Principal,
+    decl: &TypeDecl,
+    field: &FieldName,
+    value: &Value,
+) -> bool {
+    decl.field(field).is_some_and(|d| match d.authority {
+        Authority::Authored | Authority::Shared => field_access(who, decl, d).writes(),
+        Authority::Verb => d.initial.as_ref() == Some(value),
+        Authority::Writer => value.as_str() == Some(who.writer().as_str()),
+        _ => false,
     })
 }
 

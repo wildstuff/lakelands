@@ -11,7 +11,8 @@
 //! The rule:
 //!
 //! - **Declared** — nothing stored has to change: a change of meaning
-//!   only (descriptions, labels, authority, indexing marks); a new
+//!   only (descriptions, labels, authority other than to `writer`,
+//!   indexing marks); a new
 //!   optional field; a required field made optional; a new relation; a
 //!   relation whose cardinality only widens; any change to a view, which
 //!   stores nothing, a view becoming a stored type included.
@@ -20,8 +21,10 @@
 //!   reference target or vector length); an optional field made
 //!   required; a required field added; the key changed, in its fields or
 //!   their order; a relation retargeted or its cardinality narrowed; a
-//!   stored type turned into a view. The same rules hold for the fields
-//!   a relation carries on its links.
+//!   stored type turned into a view; a field added as `authority: writer`
+//!   or changed to it, since every live record must then take the writer
+//!   that made it (decision 084). The same rules hold for the fields a
+//!   relation carries on its links.
 //!
 //! A rename is not visible here: comparing two declarations, a renamed
 //! field reads as one field removed and another added, which needs a
@@ -30,7 +33,7 @@
 
 use std::collections::BTreeMap;
 
-use lakelands_api::ontology::{Cardinality, FieldDecl, RelationDecl, TypeDecl};
+use lakelands_api::ontology::{Authority, Cardinality, FieldDecl, RelationDecl, TypeDecl};
 use lakelands_api::shape::view_shape;
 use lakelands_api::{FieldName, RelationName};
 use serde::Serialize;
@@ -75,6 +78,7 @@ pub fn reshapes(reason: &Reason) -> bool {
         | Reason::KeyChanged { .. }
         | Reason::RelationRemoved { .. }
         | Reason::RelationRetargeted { .. }
+        | Reason::FieldWriter { .. }
         | Reason::BecameView => true,
         _ => false,
     }
@@ -172,6 +176,14 @@ fn diff_fields(
             }),
             _ => {}
         }
+        if relation().is_none()
+            && o.authority != Authority::Writer
+            && n.authority == Authority::Writer
+        {
+            out.push(Reason::FieldWriter {
+                field: (*name).clone(),
+            });
+        }
     }
     for (name, n) in &new {
         if !old.contains_key(name) {
@@ -180,6 +192,11 @@ fn diff_fields(
                 relation: relation(),
                 required: n.required,
             });
+            if relation().is_none() && n.authority == Authority::Writer {
+                out.push(Reason::FieldWriter {
+                    field: (*name).clone(),
+                });
+            }
         }
     }
 }

@@ -28,7 +28,7 @@ use crate::canonical;
 use crate::error::{Place, Said};
 use crate::expr::{Condition, ParseError};
 use crate::id::{FieldName, TypeName};
-use crate::ontology::{FieldDecl, Measure, RelationDecl, TypeDecl, ViewDecl};
+use crate::ontology::{Authority, FieldDecl, Measure, RelationDecl, TypeDecl, ViewDecl};
 
 /// A condition inside a view that does not parse, so its typed form (the
 /// form the schema hash covers) does not exist.
@@ -149,7 +149,15 @@ fn fields(list: &[FieldDecl]) -> Vec<Value> {
     sorted.sort_by(|a, b| a.name.cmp(&b.name));
     sorted
         .into_iter()
-        .map(|f| json!({ "name": f.name, "type": f.ty, "required": f.required }))
+        .map(|f| {
+            let mut v = json!({ "name": f.name, "type": f.ty, "required": f.required });
+            // Only a field the store fills names its authority, so every
+            // other type keeps the hash it had (decision 084).
+            if f.authority == Authority::Writer {
+                v["authority"] = json!("writer");
+            }
+            v
+        })
         .collect()
 }
 

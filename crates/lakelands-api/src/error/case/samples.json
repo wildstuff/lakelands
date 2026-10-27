@@ -226,6 +226,18 @@
    "code": "verb_key"
   },
   {
+   "code": "writer_not_of_type"
+  },
+  {
+   "code": "writer_not_text"
+  },
+  {
+   "code": "writer_key"
+  },
+  {
+   "code": "writer_computed"
+  },
+  {
    "code": "expr_no_expression"
   },
   {

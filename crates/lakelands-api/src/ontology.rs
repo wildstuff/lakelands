@@ -199,16 +199,20 @@ pub enum Authority {
     /// Written only by the type's verbs' `set`, its `initial` and an aging
     /// rule; `upsert` and `ingest` are refused it (lakelands#1130).
     Verb,
+    /// Filled by the store at a create with the writer of the event that
+    /// makes the record, `<kind>:<id>`; no door writes it (lakelands#1488).
+    Writer,
 }
 
 impl Authority {
     /// Every authority, in declaration order.
-    pub const ALL: [Authority; 5] = [
+    pub const ALL: [Authority; 6] = [
         Authority::Authored,
         Authority::Source,
         Authority::Shared,
         Authority::Derived,
         Authority::Verb,
+        Authority::Writer,
     ];
 
     /// Whether this is the default, `authored`.

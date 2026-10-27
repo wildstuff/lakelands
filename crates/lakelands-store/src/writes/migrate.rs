@@ -519,6 +519,11 @@ impl Call<'_> {
                     fields.extend(record::initial_of(&after, f).map(|v| (f.name.clone(), v)));
                 }
             }
+            // And what it makes the writer's takes the record's maker (084).
+            let writers = shape::becoming_writer(decl, m).map_err(Error::invalid)?;
+            for name in writers.into_iter().filter(|_| !r.retired) {
+                fields.insert(name, Value::from(record::maker(r)));
+            }
             Ok::<_, Error>(fields)
         };
         // Applied, the migration decides again every record whose fields it

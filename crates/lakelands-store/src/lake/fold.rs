@@ -1857,6 +1857,9 @@ pub(crate) struct Migrated {
     /// What the migration fills (`Migration::fill`): each field's
     /// `initial` and its provenance at the step, worked out once.
     fills: Vec<(FieldName, Value, lakelands_api::record::FieldMeta)>,
+    /// The fields it makes ones the store fills with the writer that made
+    /// the record (084), and their provenance at the step but the writer.
+    writers: Vec<(FieldName, lakelands_api::record::FieldMeta)>,
 }
 
 impl Migrated {
@@ -1895,6 +1898,7 @@ impl Migrated {
             types,
             decls,
             fills: Vec::new(),
+            writers: Vec::new(),
         }
     }
 
@@ -1908,6 +1912,9 @@ impl Migrated {
             .map(|(name, v)| (name, v, record::initial_meta(event)))
             .collect();
         self.fills = fills;
+        let writers = shape::becoming_writer(&self.before, &self.migration).unwrap_or_default();
+        let meta = record::writer_meta(event, "");
+        self.writers = writers.into_iter().map(|n| (n, meta.clone())).collect();
         self
     }
 
@@ -1931,6 +1938,7 @@ impl Migrated {
                 Some((_, to)) => to.clone(),
                 None => old,
             };
+            let maker = record::maker(&r);
             // An erased value's provenance stays with its field (058).
             let declared = |f: &FieldName| self.migration.to.has_field(f);
             r.meta = (std::mem::take(&mut r.meta).into_iter())
@@ -1947,6 +1955,17 @@ impl Migrated {
                     r.fields.insert(name.clone(), v.clone());
                     r.meta.insert(name.clone(), meta.clone());
                 }
+            }
+            // And each field it makes the writer's takes the writer that
+            // made the record, as far as the record tells (084).
+            for (name, meta) in self.writers.iter().filter(|_| !r.retired) {
+                r.fields.insert(name.clone(), Value::from(maker.clone()));
+                let writer = maker.clone();
+                let meta = lakelands_api::record::FieldMeta {
+                    writer,
+                    ..meta.clone()
+                };
+                r.meta.insert(name.clone(), meta);
             }
         }
         if let Some(decl) = self.decls.get(&r.ty) {
