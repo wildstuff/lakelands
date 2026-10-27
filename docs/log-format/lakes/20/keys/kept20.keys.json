@@ -1,0 +1,16 @@
+{
+  "sources": {
+    "crm": {
+      "keys": [
+        [
+          "b946eb1918092eb7613bfb19b3505ef4",
+          "aca6bc47b18193a352b78188bd6ff696fbbc319971f09b24585bf64fb41a5229"
+        ]
+      ]
+    },
+    "web": {
+      "keys": [],
+      "destroyed": true
+    }
+  }
+}

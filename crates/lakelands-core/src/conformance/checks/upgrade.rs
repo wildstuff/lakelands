@@ -191,6 +191,12 @@ check!(
 );
 
 check!(
+    LAKE_20_READ = the_lake_of_format_20_is_read_as_it_answered,
+    "054 (lakelands#962): the lake v0.20.0 made through its doors (`docs/log-format/lakes/20/`), in format 20, imported on this engine, is read as that release answered it, as `answers.json` keeps the answers: every live record of each type it names with its fields, the link records of its relation and the counts of its view among them, and a person of a source whose values are sealed in one box; the members of its object set; the walk over its relation; and its sealed values read whole with the file keyring's file it ships, each with its provenance, while a forgotten source's read as erased; the lake's file holds the form the writer stores (083): the append that creates the lake whole, with no frame (lakelands#1477, lakelands#1479), a frame over the events of the appends after it, and a record's erasable values in one `sealed.box`; imported with no key store bound, it is refused as unbound (the key store) before anything is written; the lake verifies; and it answers so again rebuilt, and built ahead beside its writer and swapped in by the writer's open of the layout before, which goes on from the build (071, lakelands#1322); on an engine that keeps no scratch the build ahead is refused as unbound",
+    given
+);
+
+check!(
     BOXES_BESIDE_19 = a_lake_of_format_19_takes_boxes_beside_the_members_it_sealed_alone,
     "083: the lake of format 19 (`docs/log-format/lakes/19/`), imported with its file keyring's file and upgraded by a writer's open, takes a source's ingests after its own events: each seals its erasable value in a `sealed.box` of format 20, while the lake's events of 19 seal each member alone in the patch; the lake verifies, a value of either form reads whole, and so it does rebuilt",
     given
@@ -266,6 +272,29 @@ async fn the_lake_of_format_18_is_read_as_it_answered(store: Store, given: Given
 
 async fn the_lake_of_format_19_is_read_as_it_answered(store: Store, given: Given) -> Held {
     kept_lake_answers(store, given, 19).await
+}
+
+async fn the_lake_of_format_20_is_read_as_it_answered(store: Store, given: Given) -> Held {
+    let file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/log-format/lakes/20/log/00000000000000000000.jsonl");
+    let text = std::fs::read_to_string(&file)
+        .map_err(|e| Failure::new(format!("reading the log of lake 20: {e}")))?;
+    let lines: Vec<serde_json::Value> = (text.lines())
+        .map(|l| {
+            serde_json::from_str(l).map_err(|e| Failure::new(format!("a line of lake 20: {e}")))
+        })
+        .collect::<Result<_, _>>()?;
+    let is_frame = |l: &serde_json::Value| l.get("frame").is_some();
+    let created = lines.iter().take_while(|l| !is_frame(l)).count();
+    ensure!(
+        lines[0]["body"]["kind"] == "lake_created"
+            && lines[1]["body"]["kind"] == "lease_taken"
+            && created > 2
+            && lines.iter().skip(created).any(is_frame)
+            && lines.iter().any(|l| l["sealed"]["box"].is_string()),
+        "the lake's file holds the append that creates it whole, a frame after it, and a sealed box"
+    );
+    kept_lake_answers(store, given, 20).await
 }
 
 /// The kept lake of `format` (`docs/log-format/lakes/<format>/`), imported

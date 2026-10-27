@@ -104,6 +104,15 @@ accepted as 083
 (`docs/decisions/083-a-log-stores-what-an-append-shares-once-and-seals-a-records-values-in-one-box.md`,
 lakelands#1413), and a lake of 19 is read without a rewrite.
 
+**0.19.0 on a lake that 0.20.0 upgraded.** On PostgreSQL, 0.19.0 does
+not name format 20 for such a lake: it refuses the schema as one that
+holds tables that are not a lake's (it names `bases`, `frames`, …), and
+it writes nothing. On SQLite it names format 20 (lakelands#1473,
+lakelands#1479). Neither is a way back: do not restore a backup over
+the upgraded lake, and open it with 0.20.0, which finishes the upgrade.
+The way back to 0.19.0 is a backup taken before the upgrade, restored
+into a lake of its own.
+
 **How a lake is upgraded** (`docs/log-format.md` §6):
 
 - **The log is never rewritten.** Each format step from 14 on ships a
@@ -138,7 +147,8 @@ lakelands#1413), and a lake of 19 is read without a rewrite.
   `docs/log-format/lakes/16/`, the lake v0.15.0 made, from that release
   on, `docs/log-format/lakes/17/`, the lake v0.16.0 made, from that one
   on, `docs/log-format/lakes/18/`, the lake v0.17.0 made, from that one on,
-  and `docs/log-format/lakes/19/`, the lake v0.18.0 made, from that one
+  `docs/log-format/lakes/19/`, the lake v0.18.0 made, from that one on,
+  and `docs/log-format/lakes/20/`, the lake v0.20.0 made, from that one
   on. The vectors of each older format are imported and upgraded on
   every engine too.
 
