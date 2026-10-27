@@ -1818,7 +1818,7 @@ pub(crate) fn reached(
             o,
             (view, settings, now),
             before.as_ref(),
-            (ty, key),
+            (ty, key, crate::record::STORE_WRITER),
             &refs,
         )? {
             let sent: Vec<FieldName> = refs.keys().cloned().collect();
@@ -1840,14 +1840,15 @@ pub(crate) fn reached(
 }
 
 /// The record `before` at `key` of `ty` as the fold would leave it after a
-/// write of `patch`, with these settings at `now`: its derived values, an
-/// initial value and a field waiting for its backing too.
+/// write of `patch` by `writer`, with these settings at `now`: its derived
+/// values, an initial value, a field the store fills with the writer, and a
+/// field waiting for its backing too.
 pub(crate) fn planned(
     lake: &Lake,
     o: &Ontology,
     (view, settings, now): (&dyn ProjectionView, &BTreeMap<String, Value>, Timestamp),
     before: Option<&StoredRecord>,
-    (ty, key): (&TypeName, &RecordKey),
+    (ty, key, writer): (&TypeName, &RecordKey, &str),
     patch: &Patch,
 ) -> Result<Option<StoredRecord>> {
     let made = before.is_none_or(|b| b.retired);
@@ -1860,7 +1861,11 @@ pub(crate) fn planned(
         patch,
         made,
     };
-    let event = provisional(lake, Position::GENESIS, &Draft::system(now, body));
+    let draft = Draft {
+        writer: writer.to_owned(),
+        ..Draft::system(now, body)
+    };
+    let event = provisional(lake, Position::GENESIS, &draft);
     let plans = crate::record::Plans::default();
     let outputs = &mut Outputs::planning(view, &plans, &lake.keys);
     crate::record::apply(o, before, &event, settings, outputs)

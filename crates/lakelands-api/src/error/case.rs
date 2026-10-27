@@ -1428,6 +1428,11 @@ catalog! {
             #[serde(rename = "type")]
             ty: TypeName,
         } => "the grant's `only` on `{ty}` cannot be applied here; the host's grants need fixing",
+        /// A grant's `writes_only` that cannot be applied to the write.
+        WritesOnlyUnappliable {
+            #[serde(rename = "type")]
+            ty: TypeName,
+        } => "the grant's `writes_only` on `{ty}` cannot be applied here; the host's grants need fixing",
         /// A grant's hiding of a field on some records that cannot be
         /// applied to the read.
         HidingUnappliable {

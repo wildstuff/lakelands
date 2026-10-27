@@ -314,6 +314,12 @@ pub struct TypeRights {
     /// Left out where it admits every record.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub only: BTreeMap<FieldName, crate::Value>,
+    /// The principal's grant admits to write only the records whose
+    /// fields hold these values; it reads what `only` admits, and is
+    /// offered no write of a record that would not hold them. Left out
+    /// where it may write every record it reads.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub writes_only: BTreeMap<FieldName, crate::Value>,
 }
 
 /// Where a type's records come from.

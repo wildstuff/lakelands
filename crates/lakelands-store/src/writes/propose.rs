@@ -262,6 +262,13 @@ impl Call<'_> {
                 if let Some(r) = section.and_then(|r| r.refused.first()) {
                     return Err((*r.refusal).clone());
                 }
+                // Its `writes_only` pairs are held beside them too, so the
+                // accept writes no record its proposer could not (006).
+                let writes = d.at.sight.writes(d.at.sight.ty(ty)?);
+                for (f, v) in writes.pairs().ok_or_else(Error::not_granted)? {
+                    granted(only.get(f).is_none_or(|held| held == v))?;
+                    only.insert(f.clone(), v.clone());
+                }
                 **plan = planned.plan;
             }
             // A call of a function above `low` is the store's to propose,
@@ -308,9 +315,10 @@ impl Call<'_> {
     }
 
     /// Whether a proposal by the principal of `sees` on `decl`, or of a
-    /// call of `verb`, is pinned, refusing one that may not be (051).
+    /// call of `verb`, is pinned, refusing one that may not be: one by a
+    /// holder of `only` or `writes_only` there (051, 006).
     pub(super) fn pin(sees: &Sight<'_>, decl: &TypeDecl, verb: Option<&VerbDecl>) -> Result<bool> {
-        let pinned = sees.only_holder(decl);
+        let pinned = sees.only_holder(decl) || sees.write_holder(decl);
         granted(!pinned || sees.pinnable(decl, verb))?;
         Ok(pinned)
     }
@@ -344,7 +352,8 @@ impl Call<'_> {
         let read = crate::reads::Reader::open(self.lake, &sight, (at, None), view, shape.clone())?;
         let missing = Missing::Proposal { id: p.id.clone() };
         let once = (&Default::default(), &Default::default());
-        let listed = read.entry(asked, write, (p.position, p.proposed_at), once)?;
+        let at = (p.position, p.proposed_at, p.proposer.as_str());
+        let listed = read.entry(asked, write, at, once)?;
         listed.ok_or(Error::NotFound { missing })
     }
 
@@ -362,7 +371,8 @@ impl Call<'_> {
         listed: &(Option<ProposedWrite>, bool),
     ) -> Result<()> {
         let (o, sees) = (&w.ontology, Sight::held(self.who, &w.ontology));
-        let Some(write) = p.write.as_ref().filter(|_| sees.holds_only()) else {
+        let held = sees.holds_only() || sees.holds_writes_only();
+        let Some(write) = p.write.as_ref().filter(|_| held) else {
             return Ok(());
         };
         let ty = match write {
@@ -374,18 +384,68 @@ impl Call<'_> {
             // A change to records its reviewer would select only part of
             // is not its to accept: its `only` on the type is the
             // proposal's pairs or within them (081).
+            // So with its `writes_only` (006).
             ProposedWrite::Records { ty, only, .. } => {
                 let admit = sees.admit(ty);
                 let within =
                     |p: &[(FieldName, Value)]| p.iter().all(|(f, v)| only.get(f) == Some(v));
-                return granted(admit.pairs().is_some_and(within));
+                let writes = |t: &TypeDecl| sees.writes(t).pairs().is_some_and(within);
+                let writes = !sees.holds_writes_only() || o.ty(ty).is_ok_and(writes);
+                return granted(admit.pairs().is_some_and(within) && writes);
             }
             _ => return granted(false),
         };
-        if o.ty(ty).is_ok_and(|t| !sees.only_holder(t)) {
-            return Ok(());
+        if sees.holds_only() && !o.ty(ty).is_ok_and(|t| !sees.only_holder(t)) {
+            granted(listed.0.is_some() && !listed.1)?;
         }
-        granted(listed.0.is_some() && !listed.1)
+        match o.ty(ty) {
+            Ok(t) if sees.write_holder(t) => granted(self.writes_proposed(w, p, write, &sees, t)?),
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether a reviewer holding `writes_only` on `decl` could make the
+    /// proposed write itself, as the head plans it: the record at its key,
+    /// live or retired, and the one it leaves hold its pairs (006). Its
+    /// accept judges the record the write leaves again, as it is made.
+    fn writes_proposed(
+        &self,
+        w: &Writer,
+        p: &lakelands_api::write::Proposal,
+        write: &ProposedWrite,
+        sees: &Sight<'_>,
+        decl: &TypeDecl,
+    ) -> Result<bool> {
+        let (o, view) = (&w.ontology, self.lake.engine.view(None)?);
+        let settings = crate::lake::settings_in(view.as_ref(), o)?;
+        let at = (view.as_ref(), &settings, clock(w));
+        let (key, patch) = match write {
+            ProposedWrite::Upsert { key, patch, .. } => (Some(key), Some(patch.clone())),
+            ProposedWrite::Retire { key, .. } => (Some(key), None),
+            ProposedWrite::Call {
+                verb, key, payload, ..
+            } => {
+                let v = o.verb(verb)?;
+                let sets = matches!(v.effect, VerbEffect::Write { .. });
+                let patch = sets.then(|| call_reads(o, at, v, key.as_ref(), payload));
+                (key.as_ref(), patch.transpose()?.map(|(patch, _)| patch))
+            }
+            _ => return Ok(false),
+        };
+        let Some(key) = key else {
+            return Ok(sees.writes_record(decl, None, None));
+        };
+        let before = view.get(&decl.name, key)?;
+        let after = match &patch {
+            Some(patch) => {
+                let made = (&decl.name, key, p.proposer.as_str());
+                planned(self.lake, o, at, before.as_ref(), made, patch)?
+            }
+            None => None,
+        };
+        let fields = |r: &Option<StoredRecord>| r.as_ref().map(|r| &r.fields).cloned();
+        let (before, after) = (fields(&before), fields(&after));
+        Ok(sees.writes_record(decl, before.as_ref(), after.as_ref()))
     }
 
     /// Refuse the accept of a pinned proposal, the one logged at `at`,
@@ -415,10 +475,7 @@ impl Call<'_> {
                 // The records it read across then and those it reads now: a
                 // condition a setting or the clock decides may come to a
                 // record at one and not at the other.
-                let (v, now) = (
-                    o.verb(verb)?,
-                    crate::lake::wall_clock().max(w.last_known_at),
-                );
+                let (v, now) = (o.verb(verb)?, clock(w));
                 far = call_reads(o, (view, &w.settings, now), v, key.as_ref(), payload)?.1;
                 far.extend(read_then(
                     self.lake,
@@ -620,14 +677,31 @@ impl Call<'_> {
         // holder of `only` accepts no write that takes a record out of its
         // reach, as it writes none (051). A refusal of the plan is told as
         // the reviewer's listing shows the write, whatever the op.
+        // A holder of `writes_only` accepts one only where the record at
+        // the key and the one it leaves hold its pairs (006).
         let mut run = |op: Op<'_>, opts: &WriteOpts| -> Result<Vec<Draft>> {
             let told = |e| self.told(&w.ontology, write, listed.0.as_ref(), e);
+            let (o, sees) = (&w.ontology, Sight::held(self.who, &w.ontology));
+            let at = match op {
+                Op::Upsert(ty, key, _) | Op::Retire(ty, key) => Some((ty, Some(key))),
+                Op::Call(v, key, _) => Some((&v.on, key)),
+                _ => None,
+            };
+            let held = at.and_then(|(ty, key)| Some((o.ty(ty).ok()?, key)));
+            let held = held.filter(|(decl, _)| sees.write_holder(decl));
+            let before = match held {
+                Some((decl, Some(key))) => d.pending.record(view.as_ref(), &decl.name, key)?,
+                _ => None,
+            };
             let plan = d.plan(op, opts.expected_version).map_err(told)?;
             if let Some(after) = &plan.after {
-                let (o, decl) = (&w.ontology, w.ontology.ty(&after.ty)?);
-                let sees = Sight::held(self.who, o);
+                let decl = o.ty(&after.ty)?;
                 let reach = owns(view.as_ref(), &d.pending, &sees, decl, &after.fields)?;
                 granted(reach)?;
+            }
+            if let Some((decl, _)) = held {
+                let after = plan.after.as_ref().map(|r| &r.fields);
+                granted(sees.writes_record(decl, before.as_ref().map(|r| &r.fields), after))?;
             }
             Ok(plan.drafts)
         };
@@ -1125,4 +1199,9 @@ impl Call<'_> {
         self.enacting()?;
         self.declare_granted(declaration)
     }
+}
+
+/// A write's clock, never before the last `known_at`.
+fn clock(w: &Writer) -> Timestamp {
+    crate::lake::wall_clock().max(w.last_known_at)
 }

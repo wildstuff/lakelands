@@ -53,7 +53,7 @@ impl<'a> Reader<'a> {
                     continue;
                 }
                 if let Some(logged) = p.write.take() {
-                    let at = (p.position, p.proposed_at);
+                    let at = (p.position, p.proposed_at, p.proposer.as_str());
                     let Some(shown) = self.entry(asked, &logged, at, (&lake, &seen))? else {
                         continue;
                     };
@@ -139,7 +139,7 @@ impl<'a> Reader<'a> {
         &self,
         asked: &Principal,
         logged: &ProposedWrite,
-        (at, proposed_at): (Position, Timestamp),
+        (at, proposed_at, proposer): (Position, Timestamp, &str),
         (lake, seen): (&OnceCell<LakeDescription>, &OnceCell<Ontology>),
     ) -> Result<Option<(Option<ProposedWrite>, bool)>> {
         if matches!(
@@ -422,7 +422,7 @@ impl<'a> Reader<'a> {
         }
         // `more` is what the trim left out, not what the completion added.
         let mut shown = logged.clone();
-        let known = self.known_shape(asked, &mut shown, lake, at, (left, then))?;
+        let known = self.known_shape(asked, &mut shown, (lake, proposer), at, (left, then))?;
         // A bundle's plan is its proposer's, its counts made over the
         // lake as it stood then: to a reader kept from a field a count may
         // rest on one it may not read, there or in any lake since, and to a
@@ -494,7 +494,7 @@ impl<'a> Reader<'a> {
         &self,
         asked: &Principal,
         write: &mut ProposedWrite,
-        lake: &OnceCell<LakeDescription>,
+        (lake, proposer): (&OnceCell<LakeDescription>, &str),
         at: Position,
         (left, then): (Under<'_>, Under<'_>),
     ) -> Result<bool> {
@@ -507,7 +507,8 @@ impl<'a> Reader<'a> {
             self.sight.ty(ty).is_ok() && self.sight.admit(ty).holds(f)
         };
         // To a holder of `only` on the type, the record as the accept
-        // plans it: its derived values computed (lakelands#914).
+        // plans it: its derived values computed (lakelands#914), and a
+        // field the store fills with the writer holding its proposer (084).
         let o = &self.shape.ontology;
         let view = self.view.as_ref();
         let holder = |ty: &TypeName| o.ty(ty).is_ok_and(|t| self.sight.only_holder(t));
@@ -528,7 +529,7 @@ impl<'a> Reader<'a> {
                     o,
                     at,
                     stored.as_ref(),
-                    (ty, key),
+                    (ty, key, proposer),
                     patch,
                 ) {
                     Ok(planned) => Ok(planned.is_some_and(|r| only(ty, &r.fields))),
