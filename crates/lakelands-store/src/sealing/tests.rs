@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use base64::engine::general_purpose::STANDARD;
+use lakelands_api::error::Situation;
 use lakelands_api::event::{Event, EventBody, Sealed};
 use lakelands_api::seam::DataKey;
 use serde_json::{Value, json};
@@ -10,7 +11,7 @@ use lakelands_api::id::KeyId;
 use lakelands_api::seam::KeyStore;
 use lakelands_api::{LakeId, Result, SourceId, Timestamp};
 
-use super::{Apart, Keys, List, digest, open, rotates, seal, turns};
+use super::{Apart, Ciphers, Keys, List, cipher, digest, open, rotates, seal, turns};
 
 /// The lines of `vectors/20/further.json` that show `shows`.
 fn line(shows: &str) -> Event {
@@ -34,18 +35,18 @@ fn key() -> DataKey {
 fn the_vectors_sealed_ingest_opens_and_seals_again_in_a_box() {
     let stored = line("sealed_ingest");
     let mut plain = stored.clone();
-    open(&mut plain, &key()).unwrap();
+    open(&mut plain, &cipher(&key())).unwrap();
     let EventBody::RecordIngested { patch, .. } = &plain.body else {
         panic!("an ingest")
     };
     assert_eq!(patch["email"], json!("ada@example.org"));
     let opened = plain.clone();
     let (mut sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
-    seal(&mut plain.body, &mut sealed, &source, &key());
+    seal(&mut plain.body, &mut sealed, &source, &cipher(&key()));
     assert_eq!(patch_of(&plain).get("email"), None);
     assert!(sealed.boxed.is_some());
     plain.sealed = Some(sealed);
-    open(&mut plain, &key()).unwrap();
+    open(&mut plain, &cipher(&key())).unwrap();
     assert_eq!(plain.body, opened.body);
 }
 
@@ -71,10 +72,10 @@ fn boxed() -> Event {
 fn the_vectors_box_opens_and_seals_to_the_same_bytes() {
     let stored = boxed();
     let mut plain = stored.clone();
-    open(&mut plain, &key()).unwrap();
+    open(&mut plain, &cipher(&key())).unwrap();
     assert_eq!(patch_of(&plain)["email"], json!("cleo@example.org"));
     let (mut sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
-    seal(&mut plain.body, &mut sealed, &source, &key());
+    seal(&mut plain.body, &mut sealed, &source, &cipher(&key()));
     assert_eq!((plain.body, Some(sealed)), (stored.body, stored.sealed));
 }
 
@@ -106,7 +107,7 @@ fn a_records_sealed_members_are_sealed_in_one_box() {
     let (plain, sealed) = two_sealed(1);
     let source = plain.source.clone().unwrap();
     let sealing = |(mut e, mut s): (Event, Sealed)| {
-        seal(&mut e.body, &mut s, &source, &key());
+        seal(&mut e.body, &mut s, &source, &cipher(&key()));
         e.sealed = Some(s);
         e
     };
@@ -122,7 +123,7 @@ fn a_records_sealed_members_are_sealed_in_one_box() {
         members.len() + 16
     );
     let mut opened = e.clone();
-    open(&mut opened, &key()).unwrap();
+    open(&mut opened, &cipher(&key())).unwrap();
     assert_eq!(opened.body, plain.body);
     assert_eq!(sealing((plain.clone(), sealed.clone())), e);
     let later = sealing(two_sealed(2));
@@ -131,12 +132,12 @@ fn a_records_sealed_members_are_sealed_in_one_box() {
     if let EventBody::RecordIngested { key, .. } = &mut moved.body {
         *key = "c7".into();
     }
-    assert!(open(&mut moved, &key()).is_err());
+    assert!(open(&mut moved, &cipher(&key())).is_err());
     let mut beside = e.clone();
     if let EventBody::RecordIngested { patch, .. } = &mut beside.body {
         patch.insert("name".into(), json!("Cleo"));
     }
-    assert!(open(&mut beside, &key()).is_err());
+    assert!(open(&mut beside, &cipher(&key())).is_err());
     let mut erased = e.clone();
     assert_eq!(super::erase(&mut erased), sealed.fields);
     let want = json!({"id": "c6", "city": null, "name": null});
@@ -153,7 +154,7 @@ fn the_vectors_sealed_output_opens_and_its_input_is_the_hmac_of_the_call() {
         panic!("an output")
     };
     assert_eq!(*input, digest(&key(), &call));
-    open(&mut e, &key()).unwrap();
+    open(&mut e, &cipher(&key())).unwrap();
     let EventBody::OutputRecorded { output, .. } = &e.body else {
         panic!("an output")
     };
@@ -176,20 +177,20 @@ fn the_vectors_ingest_sealed_apart_opens_only_under_both_keys() {
     let both = super::compose(&key(), &[apart()]);
     let stored = line("sealed_apart");
     for alone in [key(), apart()] {
-        assert!(open(&mut stored.clone(), &alone).is_err());
+        assert!(open(&mut stored.clone(), &cipher(&alone)).is_err());
     }
     let mut plain = stored.clone();
-    open(&mut plain, &both).unwrap();
+    open(&mut plain, &cipher(&both)).unwrap();
     let EventBody::RecordIngested { patch, .. } = &plain.body else {
         panic!("an ingest")
     };
     assert_eq!(patch["email"], json!("bea@example.org"));
     let opened = plain.clone();
     let (mut sealed, source) = (plain.sealed.clone().unwrap(), plain.source.clone().unwrap());
-    seal(&mut plain.body, &mut sealed, &source, &both);
+    seal(&mut plain.body, &mut sealed, &source, &cipher(&both));
     plain.sealed = Some(sealed);
-    assert!(open(&mut plain.clone(), &key()).is_err());
-    open(&mut plain, &both).unwrap();
+    assert!(open(&mut plain.clone(), &cipher(&key())).is_err());
+    open(&mut plain, &cipher(&both)).unwrap();
     assert_eq!(plain.body, opened.body);
     let mut e = line("sealed_apart_output");
     let call = json!({"function": "shout", "inputs": {"email": "bea@example.org"}, "config": {}});
@@ -198,7 +199,7 @@ fn the_vectors_ingest_sealed_apart_opens_only_under_both_keys() {
     };
     assert_eq!(*input, digest(&both, &call));
     assert_ne!(*input, digest(&key(), &call));
-    open(&mut e, &both).unwrap();
+    open(&mut e, &cipher(&both)).unwrap();
     let EventBody::OutputRecorded { output, .. } = &e.body else {
         panic!("an output")
     };
@@ -229,7 +230,7 @@ fn a_sealed_value_moved_to_another_record_does_not_open() {
     if let EventBody::RecordIngested { key, .. } = &mut e.body {
         *key = "c2".into();
     }
-    assert!(open(&mut e, &key()).is_err());
+    assert!(open(&mut e, &cipher(&key())).is_err());
 }
 
 /// A key store of counted versions, each with the vectors' key.
@@ -251,6 +252,77 @@ impl KeyStore for Two {
     fn ids(&self, _: &LakeId, _: &SourceId) -> Result<Vec<KeyId>> {
         Ok(self.0.lock().unwrap().clone())
     }
+}
+
+/// A key store whose every key is the hash of its id, so each version
+/// and each key apart seals to bytes of its own; it gives none for `gone`.
+struct Hashed;
+impl KeyStore for Hashed {
+    fn create(&self, _: &LakeId, _: &SourceId) -> Result<KeyId> {
+        unreachable!("the test names its keys")
+    }
+    fn key(&self, _: &LakeId, _: &SourceId, id: &KeyId) -> Result<Option<DataKey>> {
+        Ok((id.as_str() != "gone").then(|| hashed(id)))
+    }
+    fn destroy(&self, _: &LakeId, _: &SourceId) -> Result<()> {
+        Ok(())
+    }
+    fn ids(&self, _: &LakeId, _: &SourceId) -> Result<Vec<KeyId>> {
+        Ok(Vec::new())
+    }
+}
+
+/// [`Hashed`]'s key of `id`.
+fn hashed(id: &KeyId) -> DataKey {
+    DataKey(Sha256::digest(id.as_str()).into())
+}
+
+/// A key's cipher, built once in a pass and kept for its every value,
+/// seals each value to the bytes a cipher built for that value alone
+/// does, under each version and each composition with keys apart the
+/// pass meets in turn; a key the store does not give fails closed,
+/// naming it.
+#[test]
+fn a_kept_cipher_seals_to_the_bytes_of_one_built_a_value() {
+    let keys = Keys::new(LakeId::from("l"), Some(std::sync::Arc::new(Hashed)), None);
+    let (e, _) = two_sealed(1);
+    let source = e.source.clone().unwrap();
+    let mut ciphers = Ciphers::default();
+    let seals = [
+        ("k1", None),
+        ("k2", None),
+        ("k1", Some("a1")),
+        ("k2", Some("a1")),
+    ];
+    let mut sealed = Vec::new();
+    for round in 0..2 {
+        for (i, (version, apart)) in seals.iter().enumerate() {
+            let (e, mut each) = two_sealed(1 + i as u64);
+            each.key = KeyId::from(*version);
+            each.apart = apart.iter().map(|a| KeyId::from(*a)).collect();
+            let apart: Vec<_> = each.apart.iter().map(hashed).collect();
+            let alone = cipher(&super::compose(&hashed(&each.key), &apart));
+            let (mut by_alone, mut body, mut once) = (e.body.clone(), e.body, each.clone());
+            seal(&mut by_alone, &mut each, &source, &alone);
+            let kept = ciphers.sealed(&keys, &source, &once).unwrap();
+            seal(&mut body, &mut once, &source, kept);
+            assert_eq!((&by_alone, &each), (&body, &once));
+            match round {
+                0 => sealed.push(each.boxed),
+                _ => assert_eq!(sealed[i], each.boxed),
+            }
+        }
+        // One cipher a key the pass met, built at its first value.
+        assert_eq!(ciphers.0.len(), seals.len());
+    }
+    let (_, mut lost) = two_sealed(1);
+    lost.apart = vec![KeyId::from("gone")];
+    let failed = ciphers.sealed(&keys, &source, &lost).map(drop);
+    let missing = failed.as_ref().err().and_then(|e| e.situation());
+    assert!(
+        matches!(missing, Some(Situation::KeyMissing { key, .. }) if key == "gone"),
+        "{failed:?}"
+    );
 }
 
 /// A version the log has moved past since a writer chose its own, as

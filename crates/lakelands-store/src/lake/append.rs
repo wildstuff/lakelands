@@ -102,6 +102,7 @@ impl Lake {
         let after = w.staged.as_ref().or(w.tip.as_ref());
         let mut prev_pos = after.map(|(p, _)| *p);
         let mut prev_hash = after.map_or_else(Digest::zero, |(_, h)| h.clone());
+        let mut ciphers = crate::sealing::Ciphers::default();
         for d in drafts {
             let position = prev_pos.map_or(Position::GENESIS, Position::next);
             // Position 0 is written before any lease exists in the lake.
@@ -114,8 +115,8 @@ impl Lake {
             if let Some(sealed) = d.sealed.as_mut()
                 && let Some(source) = sealed.source.clone().or_else(|| d.source.clone())
             {
-                let key = self.keys.sealed(&source, sealed)?;
-                crate::sealing::seal(&mut d.body, sealed, &source, &key);
+                let cipher = ciphers.sealed(&self.keys, &source, sealed)?;
+                crate::sealing::seal(&mut d.body, sealed, &source, cipher);
             }
             let (event, canon, fault) = log::seal_judged(&self.id, position, &prev_hash, fence, d);
             if let Some(case) = fault {

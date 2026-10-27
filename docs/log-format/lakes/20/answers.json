@@ -1,0 +1,263 @@
+{
+ "erasable": [
+  {
+   "fields": {
+    "city": "Oslo",
+    "email": "ada@example.org",
+    "id": "p1",
+    "name": "Ada"
+   },
+   "key": "p1",
+   "meta": {
+    "city": {
+     "known_at": "2026-10-27T00:56:26.117426Z",
+     "origin": "source",
+     "position": 24,
+     "source": "crm",
+     "writer": "human:owner"
+    },
+    "email": {
+     "known_at": "2026-10-27T00:56:26.117426Z",
+     "origin": "source",
+     "position": 24,
+     "source": "crm",
+     "writer": "human:owner"
+    },
+    "id": {
+     "known_at": "2026-10-27T00:56:26.117426Z",
+     "origin": "source",
+     "position": 24,
+     "source": "crm",
+     "writer": "human:owner"
+    },
+    "name": {
+     "known_at": "2026-10-27T00:56:26.117426Z",
+     "origin": "source",
+     "position": 24,
+     "source": "crm",
+     "writer": "human:owner"
+    }
+   },
+   "type": "person"
+  },
+  {
+   "fields": {
+    "city": "Rome",
+    "id": "p2",
+    "note": "kept"
+   },
+   "key": "p2",
+   "meta": {
+    "city": {
+     "known_at": "2026-10-27T00:56:26.117426Z",
+     "origin": "source",
+     "position": 25,
+     "source": "crm",
+     "writer": "human:owner"
+    },
+    "email": {
+     "erased": true,
+     "known_at": "2026-10-27T00:56:26.146672Z",
+     "origin": "source",
+     "position": 27,
+     "source": "web",
+     "writer": "human:owner"
+    },
+    "id": {
+     "known_at": "2026-10-27T00:56:26.146672Z",
+     "origin": "source",
+     "position": 27,
+     "source": "web",
+     "writer": "human:owner"
+    },
+    "name": {
+     "erased": true,
+     "known_at": "2026-10-27T00:56:26.146672Z",
+     "origin": "source",
+     "position": 27,
+     "source": "web",
+     "writer": "human:owner"
+    },
+    "note": {
+     "known_at": "2026-10-27T00:56:26.174629Z",
+     "origin": "authored",
+     "position": 28,
+     "writer": "human:owner"
+    }
+   },
+   "type": "person"
+  },
+  {
+   "fields": {
+    "email": "bo@example.org",
+    "id": "p3",
+    "name": "Bo"
+   },
+   "key": "p3",
+   "meta": {
+    "email": {
+     "known_at": "2026-10-27T00:56:26.117426Z",
+     "origin": "source",
+     "position": 26,
+     "source": "crm",
+     "writer": "human:owner"
+    },
+    "id": {
+     "known_at": "2026-10-27T00:56:26.117426Z",
+     "origin": "source",
+     "position": 26,
+     "source": "crm",
+     "writer": "human:owner"
+    },
+    "name": {
+     "known_at": "2026-10-27T00:56:26.117426Z",
+     "origin": "source",
+     "position": 26,
+     "source": "crm",
+     "writer": "human:owner"
+    }
+   },
+   "type": "person"
+  }
+ ],
+ "head": 29,
+ "made_by": "v0.20.0",
+ "open": {
+  "rows": [
+   {
+    "fields": {
+     "amount": "10.50",
+     "payer": "p1",
+     "state": "open"
+    },
+    "key": "i1",
+    "type": "invoice",
+    "version": 1
+   },
+   {
+    "fields": {
+     "amount": "7",
+     "payer": "p2",
+     "state": "open"
+    },
+    "key": "i2",
+    "type": "invoice",
+    "version": 2
+   }
+  ],
+  "shape": "records"
+ },
+ "records": [
+  {
+   "fields": {
+    "name": "Acme"
+   },
+   "key": "p1",
+   "type": "partner"
+  },
+  {
+   "fields": {
+    "name": "Börse & Co"
+   },
+   "key": "p2",
+   "type": "partner"
+  },
+  {
+   "fields": {
+    "amount": "10.50",
+    "payer": "p1",
+    "state": "open"
+   },
+   "key": "i1",
+   "type": "invoice"
+  },
+  {
+   "fields": {
+    "amount": "7",
+    "payer": "p2",
+    "state": "open"
+   },
+   "key": "i2",
+   "type": "invoice"
+  },
+  {
+   "fields": {
+    "from": "i1",
+    "since": "2026-09-01",
+    "to": "p1"
+   },
+   "key": "i1:p1",
+   "type": "sys.link.invoice.approved_by"
+  },
+  {
+   "fields": {
+    "from": "i2",
+    "since": "2026-09-02",
+    "to": "p2"
+   },
+   "key": "i2:p2",
+   "type": "sys.link.invoice.approved_by"
+  },
+  {
+   "fields": {
+    "from": "i3",
+    "since": "2026-09-03",
+    "to": "p2"
+   },
+   "key": "i3:p2",
+   "type": "sys.link.invoice.approved_by"
+  },
+  {
+   "fields": {
+    "n": 2,
+    "state": "open"
+   },
+   "key": "open",
+   "type": "by_state"
+  },
+  {
+   "fields": {
+    "city": "Oslo",
+    "email": "ada@example.org",
+    "id": "p1",
+    "name": "Ada"
+   },
+   "key": "p1",
+   "type": "person"
+  },
+  {
+   "fields": {
+    "city": "Rome",
+    "id": "p2",
+    "note": "kept"
+   },
+   "key": "p2",
+   "type": "person"
+  },
+  {
+   "fields": {
+    "email": "bo@example.org",
+    "id": "p3",
+    "name": "Bo"
+   },
+   "key": "p3",
+   "type": "person"
+  }
+ ],
+ "types": [
+  "partner",
+  "invoice",
+  "sys.link.invoice.approved_by",
+  "by_state",
+  "person"
+ ],
+ "walk_from_i1": [
+  {
+   "fields": {
+    "since": "2026-09-01"
+   },
+   "from": "i1",
+   "to": "p1"
+  }
+ ]
+}
