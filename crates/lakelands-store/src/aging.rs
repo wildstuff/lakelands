@@ -164,8 +164,9 @@ pub fn check(
 /// Refused as not granted, naming the field of `on`.
 pub fn check_authority(sees: &Sight, ontology: &Ontology, rule: &Rule) -> Result<()> {
     let decl = ontology.ty(&rule.on)?;
-    // A rule moves every owner's records: never one a holder of `only` writes (051).
-    crate::writes::granted(!sees.only_holder(decl))?;
+    // A rule moves every owner's records: never one a holder of `only` or
+    // `writes_only` writes (051, 006).
+    crate::writes::granted(!sees.only_holder(decl) && !sees.write_holder(decl))?;
     let patch: Patch = [(rule.field.clone(), rule.to.clone())].into();
     sees.check_write(decl, (Door::Verb, None), &patch)?;
     sees.check_probe(decl, derive::reads(&rule.when).iter())

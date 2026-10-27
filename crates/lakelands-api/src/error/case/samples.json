@@ -1232,6 +1232,10 @@
    "type": "t"
   },
   {
+   "code": "writes_only_unappliable",
+   "type": "t"
+  },
+  {
    "code": "hiding_unappliable",
    "type": "t"
   },

@@ -965,6 +965,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                         default: Some(Access::Read),
                         fields: [("f".into(), Access::Write)].into(),
                         only: [("o".into(), json!("a"))].into(),
+                        writes_only: [("w".into(), json!("a"))].into(),
                         verbs: ["v".into()].into(),
                         hide_where: vec![hidden_where()],
                     },
@@ -983,6 +984,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     default: Some(Access::Read),
                     fields: [("f".into(), Access::Write)].into(),
                     only: [("o".into(), json!("a"))].into(),
+                    writes_only: [("w".into(), json!("a"))].into(),
                     verbs: ["v".into()].into(),
                     hide_where: vec![hidden_where()],
                 }),
@@ -1411,6 +1413,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 create_why: Some("w".into()),
                 link: vec!["r".into()],
                 only: [("o".into(), json!("a"))].into(),
+                writes_only: [("w".into(), json!("a"))].into(),
                 ..TypeRights::default()
             }),
         ),
