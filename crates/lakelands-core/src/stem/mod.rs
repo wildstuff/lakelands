@@ -32,7 +32,7 @@
 
 mod snowball;
 
-pub use snowball::{stem_text, stem_tokens};
+pub use snowball::stem_tokens;
 
 /// The one token loop of the pipeline: each run of alphanumeric
 /// characters (Unicode-aware) of `text`, its first char and the char

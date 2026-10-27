@@ -3,6 +3,12 @@ use rust_stemmers::Algorithm;
 use super::snowball::algorithm;
 use super::*;
 
+/// The terms of [`stem_tokens`] joined by single spaces.
+pub(super) fn stem_text(text: &str, tag: &str) -> String {
+    let terms: Vec<String> = stem_tokens(text, tag).map(|(_, _, term)| term).collect();
+    terms.join(" ")
+}
+
 #[test]
 fn the_primary_subtag_selects_the_language() {
     assert_eq!(algorithm("de"), Some(Algorithm::German));

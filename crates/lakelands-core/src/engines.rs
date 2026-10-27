@@ -1395,17 +1395,14 @@ pub fn order_edges(edges: &mut Vec<Edge>) {
 
 /// The distinct tokens of `text` under the language `tag`.
 pub fn tokens(text: &str, tag: &str) -> BTreeSet<String> {
-    token_list(text, tag).into_iter().collect()
+    token_list(text, tag).collect()
 }
 
 /// The tokens of `text` under the language `tag`, in text order, repeats
 /// kept: a field's length and a token's frequency in it count these.
-fn token_list(text: &str, tag: &str) -> Vec<String> {
-    crate::stem::stem_text(text, tag)
-        .split(' ')
-        .filter(|t| !t.is_empty())
-        .map(str::to_owned)
-        .collect()
+fn token_list(text: &str, tag: &str) -> impl Iterator<Item = String> {
+    let terms = crate::stem::stem_tokens(text, tag).map(|(_, _, term)| term);
+    terms.filter(|t| !t.is_empty())
 }
 
 /// The distinct tokens a record's searchable text fields hold under its
@@ -1477,20 +1474,24 @@ pub fn matched(
 
 /// Each field of a record that a search of `fields` reads and that holds
 /// a token, in its declaration's order: its length and how often it
-/// holds each token, repeats counted.
+/// holds each token of `query`, repeats counted. No score reads how often
+/// a field holds a token the query does not ask for, so none is counted.
 fn field_counts<'d>(
     decl: &'d TypeDecl,
     record: &StoredRecord,
     fields: Option<&'d [FieldName]>,
+    query: &BTreeSet<String>,
 ) -> impl Iterator<Item = (&'d FieldName, u64, BTreeMap<String, u64>)> {
     let tag = decl.language.as_deref().unwrap_or("");
     searched_texts(decl, &record.fields, fields).filter_map(move |(f, text)| {
-        let list = token_list(text, tag);
-        let mut tf = BTreeMap::new();
-        for t in &list {
-            *tf.entry(t.clone()).or_insert(0u64) += 1;
+        let (mut len, mut tf) = (0, BTreeMap::new());
+        for t in token_list(text, tag) {
+            len += 1;
+            if query.contains(&t) {
+                *tf.entry(t).or_insert(0u64) += 1;
+            }
         }
-        (!list.is_empty()).then_some((f, list.len() as u64, tf))
+        (len > 0).then_some((f, len, tf))
     })
 }
 
@@ -1498,7 +1499,8 @@ fn field_counts<'d>(
 /// for the fields that hold any: what an engine keeps of a head's text and
 /// adds into its counts of the type's field.
 pub fn text_lengths(decl: &TypeDecl, record: &StoredRecord) -> Vec<(FieldName, u64)> {
-    let lengths = field_counts(decl, record, None).map(|(f, len, _)| (f.clone(), len));
+    let none = BTreeSet::new();
+    let lengths = field_counts(decl, record, None, &none).map(|(f, len, _)| (f.clone(), len));
     lengths.collect()
 }
 
@@ -1516,7 +1518,7 @@ pub fn text_stats(
     let query = tokens(text, decl.language.as_deref().unwrap_or(""));
     for r in heads {
         let mut held = BTreeSet::new();
-        for (f, len, tf) in field_counts(decl, r.borrow(), fields) {
+        for (f, len, tf) in field_counts(decl, r.borrow(), fields, &query) {
             let (n, l) = out.fields.entry(f.clone()).or_insert((0, 0));
             (*n, *l) = (*n + 1, *l + len);
             held.extend(query.iter().filter(|t| tf.contains_key(*t)));
@@ -1606,7 +1608,7 @@ pub fn lexical(
         .filter(|r| !r.borrow().retired)
         .filter_map(|r| {
             let r = r.borrow();
-            let held: Vec<_> = field_counts(decl, r, fields).collect();
+            let held: Vec<_> = field_counts(decl, r, fields, &query).collect();
             let holds = |t: &String| held.iter().any(|(_, _, tf)| tf.contains_key(t));
             query.iter().any(holds).then(|| (r.key.clone(), held))
         })
