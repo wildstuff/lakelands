@@ -57,9 +57,11 @@ const EACH: usize = 25;
 /// check blind, never red.
 const POOL: usize = 512;
 /// The writes [`READS_AT_A_POSITION`] sends at once: past the [`POOL`], the
-/// [`FIRST`] that land before the read, and four batches' bound. A batch
-/// lands whole, and a read may be made beside the one in flight and the
-/// next: two, which must stay under half of those beyond the pool.
+/// [`FIRST`] that land before the read, and four times the batch bound. A
+/// batch lands whole and holds at most `commit_window_events` events, so
+/// no more writes than that; a read may be made beside the one in flight
+/// and the next, two batches, which stay under half of those beyond the
+/// pool.
 fn waiting() -> usize {
     POOL + 2 * FIRST + 4 * fixture::limits().commit_window_events.max(1) as usize
 }

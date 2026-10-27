@@ -31,7 +31,7 @@ What one writing process takes, measured on 2026-10-24 at develop
 `401b952ad`, release build, on one machine of 16 cores that other work
 kept at a load average of 11 to 15, SQLite lakes on its local disk. Each
 caller writes one record of a plain type at a time, waiting for its
-answer before the next, with group commit at its default bound of 32
+answer before the next, with group commit at its then default bound of 32
 events. SQLite is the store's own harness (`throughput` in
 `crates/lakelands-store/tests/batched/mod.rs`, run from the SQLite
 engine's `tests/batch.rs`). The memory engine ran the same harness from
