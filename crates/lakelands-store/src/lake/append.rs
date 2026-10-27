@@ -168,11 +168,11 @@ impl Lake {
             let ended = ending.clone().last().map(|e| e.position.0);
             held.appended(first, last.position.0, ended);
             if ending.peek().is_none() {
-                for (range, _) in held.iter_mut().filter(|(r, _)| r.end() + 1 == first) {
+                for (range, _) in held.held.iter_mut().filter(|(r, _)| r.end() + 1 == first) {
                     *range = *range.start()..=last.position.0;
                 }
             } else if ending.all(|e| declares(&e)) {
-                let before = held.iter().find(|(r, _)| r.end() + 1 == first);
+                let before = held.held.iter().find(|(r, _)| r.end() + 1 == first);
                 let links = |before: &HeldShape| match before {
                     HeldShape::Built(_) => 1,
                     HeldShape::Left(left) => left.links + 1,
@@ -200,12 +200,7 @@ impl Lake {
                         declared,
                         links: links(before),
                     };
-                    held.sort_by_key(|(range, _)| *range.end());
-                    if held.len() > 1 {
-                        held.remove(0);
-                    }
-                    let at = last.position.0..=last.position.0;
-                    held.push((at, HeldShape::Left(Arc::new(left))));
+                    held.keep(last.position.0, None, HeldShape::Left(Arc::new(left)));
                 }
             }
         }

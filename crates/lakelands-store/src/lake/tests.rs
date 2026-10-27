@@ -538,6 +538,7 @@ async fn a_left_shape_is_the_one_the_projection_makes() {
     declare(text_type("t", &["a", "c"])).await;
     let at = lake.head().0;
     let left = lakelands_core::lock(&lake.shapes)
+        .held
         .iter()
         .any(|(range, held)| range.contains(&at) && matches!(held, HeldShape::Left(_)));
     assert!(left, "the last append left the shape");
@@ -578,7 +579,7 @@ async fn a_chain_of_left_shapes_is_bounded_and_unlinked_in_a_loop() {
             HeldShape::Left(left) if range.contains(&at) => Some(left.links),
             _ => None,
         };
-        held.iter().find_map(left)
+        held.held.iter().find_map(left)
     };
     let head = lake.head().0;
     assert_eq!((held(head - 1), held(head)), (Some(LEFT_LINKS), None));
@@ -625,9 +626,9 @@ fn shape_at(lake: &Lake, at: u64) -> Arc<Shape> {
     lake.shape(view.as_ref()).unwrap()
 }
 
-/// A read at each record's own position, behind the head and past the
-/// declaration, is answered with the head's shape: it is built once, and
-/// still held for the head after them all (lakelands#1501).
+/// A read at the head, then at each record's own position behind it and
+/// past the declaration, is answered with one shape, still held for the
+/// head after them all (lakelands#1501).
 #[tokio::test]
 async fn reads_behind_the_head_share_the_heads_shape() {
     let (lake, cat, owner) = owned("behind");
@@ -639,8 +640,8 @@ async fn reads_behind_the_head_share_the_heads_shape() {
         written.push(upserted(&lake, cat.as_ref(), &owner, &format!("k{i}")).await);
     }
     let head = lake.head().0;
-    let first = shape_at(&lake, written[0]);
-    for &at in written.iter().chain([&head]) {
+    let first = shape_at(&lake, head);
+    for &at in &written {
         assert!(
             Arc::ptr_eq(&shape_at(&lake, at), &first),
             "built again at {at}"
@@ -650,7 +651,7 @@ async fn reads_behind_the_head_share_the_heads_shape() {
     let at_head = |(range, held): &(RangeInclusive<u64>, HeldShape)| {
         range.contains(&head) && matches!(held, HeldShape::Built(s) if Arc::ptr_eq(s, &first))
     };
-    assert!(held.iter().any(at_head), "the head's shape is held");
+    assert!(held.held.iter().any(at_head), "the head's shape is held");
 }
 
 /// A read before a redeclaration, or a setting, is answered with the
@@ -686,6 +687,35 @@ async fn a_read_before_a_range_ends_keeps_its_own_shape() {
         Some(&json!(3))
     );
     assert_eq!(shape_at(&lake, new).settings.get("floor"), None);
+}
+
+/// Where the last event that ends a range stands is learnt from the
+/// projection at a build: a withdrawal, then a retired setting, each held
+/// at its own position (lakelands#1501).
+#[tokio::test]
+async fn the_last_range_ending_is_read_from_the_projection() {
+    let (lake, cat, owner) = owned("ending");
+    let declare = async |d: serde_json::Value| cat.declare(&owner, declaration(d)).await.unwrap();
+    declare(text_type("t", &["a"])).await;
+    declare(text_type("u", &["a"])).await;
+    declare(json!({"declare": "withdraw", "kind": "type", "name": "u"})).await;
+    let withdrawn = lake.head().0;
+    let learnt = async |key: &str| {
+        let head = upserted(&lake, cat.as_ref(), &owner, key).await;
+        lakelands_core::lock(&lake.shapes).clear();
+        shape_at(&lake, head);
+        lakelands_core::lock(&lake.shapes).ended
+    };
+    assert_eq!(learnt("k0").await, Some((withdrawn, withdrawn + 1)));
+    let floor = serde_json::from_value(json!({"key": "floor", "value": 3})).unwrap();
+    let setting = (TypeName::from("sys.setting"), "floor".into());
+    let set = cat.upsert(&owner, &setting.0, &setting.1, floor, Default::default());
+    set.await.unwrap();
+    cat.retire(&owner, &setting.0, &setting.1, Default::default())
+        .await
+        .unwrap();
+    let retired = lake.head().0;
+    assert_eq!(learnt("k1").await, Some((retired, retired + 1)));
 }
 
 /// A `declared` event of the type `t`, at `at`.

@@ -394,15 +394,29 @@ pub fn settings_in(
     view: &dyn ProjectionView,
     ontology: &Ontology,
 ) -> Result<BTreeMap<String, Value>> {
+    Ok(settings_of(&setting_records(view, ontology, false)?))
+}
+
+/// The `sys.setting` records `view` holds, the retired ones too where
+/// `retired`.
+fn setting_records(
+    view: &dyn ProjectionView,
+    ontology: &Ontology,
+    retired: bool,
+) -> Result<Vec<StoredRecord>> {
     let ty = TypeName::from(SETTING_TYPE);
-    if !ontology.types.contains_key(&ty) {
-        return Ok(BTreeMap::new());
+    match ontology.types.contains_key(&ty) {
+        true => view.scan(&ty, &every(retired)),
+        false => Ok(Vec::new()),
     }
-    Ok(view
-        .scan(&ty, &every(false))?
-        .into_iter()
+}
+
+/// The settings `records` hold: each live one's `value`, by key.
+fn settings_of(records: &[StoredRecord]) -> BTreeMap<String, Value> {
+    (records.iter())
+        .filter(|r| !r.retired)
         .filter_map(|r| Some((r.key.to_string(), r.fields.get("value")?.clone())))
-        .collect())
+        .collect()
 }
 
 /// A shape the lake holds for a range: built, or left by an append whose
@@ -414,29 +428,16 @@ enum HeldShape {
     Left(Arc<Left>),
 }
 
-/// The shapes a lake holds, and where this handle's appends last ended a
-/// range: `ended` is `(from, through)`, the last event that ends a range
-/// and the last position the handle's own appends carried it to, with no
-/// event between them that ends one. A read anywhere in it has the shape
-/// held for `through`, the head's (lakelands#1501). The ranges and
-/// `ended` move together, under one lock.
+/// The shapes a lake holds, and where the last event that ends a range
+/// stands: `ended` is `(from, through)`, that event and a position at or
+/// after it with no event between them that ends one, learnt from the
+/// projection at a build and carried on by this handle's own appends. A
+/// read anywhere in it has the shape held for `through`, the head's
+/// (lakelands#1501). The ranges and `ended` move together, under one lock.
 #[derive(Default)]
 struct Shapes {
     held: Vec<(RangeInclusive<u64>, HeldShape)>,
     ended: Option<(u64, u64)>,
-}
-
-impl std::ops::Deref for Shapes {
-    type Target = Vec<(RangeInclusive<u64>, HeldShape)>;
-    fn deref(&self) -> &Self::Target {
-        &self.held
-    }
-}
-
-impl std::ops::DerefMut for Shapes {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.held
-    }
 }
 
 impl Shapes {
@@ -451,13 +452,26 @@ impl Shapes {
             .map(|(_, shape)| shape)
     }
 
-    /// The range a shape built at `at` is kept for: through the head's
-    /// position where no event since `at` ends a range, else `at`'s own.
-    fn kept_for(&self, at: u64) -> RangeInclusive<u64> {
-        match self.ended {
+    /// Keep `shape`, built at `at` with `from` the last event at or before
+    /// it that ends a range, in place of the one that ends first: for
+    /// `at` to the head's position where no event since `at` ends a range,
+    /// else for `at`. `ended` takes `(from, at)` where it knew no later
+    /// position.
+    fn keep(&mut self, at: u64, from: Option<u64>, shape: HeldShape) {
+        let range = match self.ended {
             Some((from, to)) if (from..=to).contains(&at) => at..=to,
             _ => at..=at,
+        };
+        if let Some(from) = from
+            && self.ended.is_none_or(|(_, to)| to < at)
+        {
+            self.ended = Some((from, at));
         }
+        self.held.sort_by_key(|(range, _)| *range.end());
+        if self.held.len() > 1 {
+            self.held.remove(0);
+        }
+        self.held.push((range, shape));
     }
 
     /// Drop every shape, and where a range was last ended: a rebuild or a
@@ -475,6 +489,27 @@ impl Shapes {
             (None, ended) => ended,
         };
     }
+}
+
+/// The last event at or before a view's position that ends a range, as
+/// its projection holds it: the latest position a declaration in force,
+/// or a withdrawal, is held since, a setting of `settings`, the retired
+/// ones too, was written or retired at, or a rename made at. None where
+/// `sys.setting` computes a field, whose outputs end a range at no
+/// record's position.
+fn last_ending(
+    ontology: &Ontology,
+    declared: &[lakelands_api::engine::Declared],
+    settings: &[StoredRecord],
+    renames: &[Renamed],
+) -> Option<u64> {
+    if computes(ontology, &TypeName::from(SETTING_TYPE)) {
+        return None;
+    }
+    let since = (declared.iter().map(|d| d.since))
+        .chain(settings.iter().map(|r| r.position))
+        .chain(renames.iter().map(|r| r.at));
+    Some(since.map(|p| p.0).max().unwrap_or(0))
 }
 
 /// The appends a chain of left shapes holds at most. Past them an append
@@ -826,6 +861,12 @@ impl Lake {
             self.set_head(folded.map_or(0, |p| p.0));
             self.unleased();
         }
+        // The head's shape, and where the last event that ends a range
+        // stands, so that a read behind the head finds it; one that cannot
+        // be built is left to the first read, which answers why.
+        if let Ok(view) = self.engine.view(None) {
+            let _ = self.shape(view.as_ref());
+        }
         Ok(())
     }
 
@@ -852,7 +893,7 @@ impl Lake {
         if let Some(left) = left {
             let shape = Arc::new(left.build());
             let mut held = lakelands_core::lock(&self.shapes);
-            for (_, kept) in held.iter_mut() {
+            for (_, kept) in held.held.iter_mut() {
                 if matches!(kept, HeldShape::Left(l) if Arc::ptr_eq(l, &left)) {
                     *kept = HeldShape::Built(shape.clone());
                 }
@@ -860,11 +901,15 @@ impl Lake {
             return Ok(shape);
         }
         let rebuilds = self.rebuilds.load(Ordering::SeqCst);
-        let ontology = Ontology::from_declared(&view.declarations()?);
+        let declared = view.declarations()?;
+        let ontology = Ontology::from_declared(&declared);
+        let renames = self.renames(Some(view))?;
+        let settings = setting_records(view, &ontology, true)?;
+        let from = last_ending(&ontology, &declared, &settings, &renames);
         let shape = Arc::new(Shape {
             declared: ontology.declared(),
-            settings: settings_in(view, &ontology)?,
-            renames: self.renames(Some(view))?,
+            settings: settings_of(&settings),
+            renames,
             ontology,
         });
         let folded = self.engine.projection().folded_through()?;
@@ -875,12 +920,7 @@ impl Lake {
         if self.rebuilds.load(Ordering::SeqCst) != rebuilds || folded.is_none_or(|f| f.0 < at) {
             return Ok(shape);
         }
-        held.sort_by_key(|(range, _)| *range.end());
-        if held.len() > 1 {
-            held.remove(0);
-        }
-        let range = held.kept_for(at);
-        held.push((range, HeldShape::Built(shape.clone())));
+        held.keep(at, from, HeldShape::Built(shape.clone()));
         Ok(shape)
     }
 
