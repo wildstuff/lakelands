@@ -846,11 +846,14 @@ nothing the hash would.
 
 #### A report's id is made over what its reader is shown
 
-A report's id names the report and the head it was made at, and it is
-computed over the report as its reader is shown it, so the reader can
-compute it from what it holds and learns nothing from it.
-`migrate_apply` compares the caller's own id; an accept compares no id,
-and a listed proposal's id is made at the head before the proposal.
+A report's id names the report and the head it was made at, the one
+039 names: the log's last event that is neither a `lease_taken` nor a
+`checkpoint`. It is computed over the report as its reader is shown it,
+so the reader can compute it from what it holds and learns nothing from
+it; the reply's `position` is that head unless a lease or a seal stands
+after it. `migrate_apply` compares the caller's own id; an accept
+compares no id, and a listed proposal's id is made at the head 039
+names before the proposal (lakelands#1476).
 
 #### The stored report, the log and the feed hold the whole hash
 

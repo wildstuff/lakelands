@@ -86,22 +86,25 @@ pub(crate) fn others_shown(
     })
 }
 
-/// A plan of `types` and `value_types`, at the head of `w`, its id made.
+/// A plan of `types` and `value_types`, at the head of `w` as a report
+/// names it ([`Lake::report_head`]), its id made: the lease the act's own
+/// process takes after the plan leaves its id as it was (lakelands#1476).
 pub(crate) fn plan_of(
+    lake: &Lake,
     w: &Writer,
     (types, value_types): (Vec<MigrationReport>, Vec<ValueTypeReport>),
-) -> Plan {
+) -> Result<Plan> {
     let lossless = types.iter().all(|t| t.lossless) && value_types.iter().all(|v| v.fits);
     let mut plan = Plan {
         report_id: String::new(),
-        at: head(w),
+        at: (lake.report_head(Some(head(w)))?).unwrap_or(Position::GENESIS),
         types,
         value_types,
         lossless,
         records: None,
     };
     plan.report_id = plan_id(&plan);
-    plan
+    Ok(plan)
 }
 
 impl Call<'_> {
@@ -315,7 +318,7 @@ impl Call<'_> {
                 self.bundle_drafts(w, changed, (now, 0, judging))?
             }
         };
-        let plan = plan_of(w, (bundled.types, Vec::new()));
+        let plan = plan_of(self.lake, w, (bundled.types, Vec::new()))?;
         stale(&plan, against)?;
         Ok(Planned {
             plan,
@@ -358,7 +361,7 @@ impl Call<'_> {
         let sight = Sight::held(self.who, &w.ontology);
         let mut types = vec![report];
         types.extend(others_shown(&sight, preflight.others.clone()));
-        let plan = plan_of(w, (types, Vec::new()));
+        let plan = plan_of(self.lake, w, (types, Vec::new()))?;
         stale(&plan, against)?;
         let renamed = Self::known_renames(&sight, &w.ontology, &m);
         let nothing = unchanged(&w.ontology, &m, &preflight);
@@ -403,7 +406,7 @@ impl Call<'_> {
         }
         self.renames_shown(&w.ontology, &m, &preflight.report)?;
         let report = self.shown_value_type(&w.ontology, preflight.report.clone());
-        let plan = plan_of(w, (Vec::new(), vec![report.clone()]));
+        let plan = plan_of(self.lake, w, (Vec::new(), vec![report.clone()]))?;
         stale(&plan, against)?;
         let drafts = match (when, report.fits) {
             (When::Plan, false) => Vec::new(),

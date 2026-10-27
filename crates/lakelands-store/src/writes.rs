@@ -1913,9 +1913,9 @@ fn head(w: &Writer) -> Position {
 }
 
 /// A migration report's id: named by what it says to its reader and where
-/// the lake stood, so that an apply after the lake moved is refused, and
-/// computed by its reader from what it holds, which names nothing hidden
-/// (024, extended).
+/// the lake stood, its head as [`Lake::report_head`] names it, so that an
+/// apply after the lake moved is refused, and computed by its reader from
+/// what it holds, which names nothing hidden (024, extended).
 pub(crate) fn report_id(report: &MigrationReport, head: Option<Position>) -> String {
     let report = MigrationReport {
         report_id: String::new(),

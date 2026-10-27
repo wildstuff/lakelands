@@ -563,6 +563,7 @@ pub const ALL: &[Check] = &[
     plan::PLAN_SHOWN,
     plan::PLAN_ACCEPTED,
     plan::PLAN_TOLD,
+    plan::PLAN_REOPENED,
     change::CHANGE_PLANNED,
     change::CHANGE_REFUSED,
     change::CHANGE_READ,

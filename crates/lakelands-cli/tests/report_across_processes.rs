@@ -1,6 +1,7 @@
 //! A preflight and its act as two processes of the binary
 //! (lakelands#1469): `purge`, `forget` and `values remove` act under the
-//! `--report` id their preflight printed in a process of its own, though
+//! `--report` id their preflight printed in a process of its own, and
+//! `apply --plan` under the id `plan` printed (lakelands#1476), though
 //! each process that opens the lake for writing appends its own
 //! `lease_taken` between the two; a record written between them still
 //! refuses the act. On SQLite, and on PostgreSQL when
@@ -253,5 +254,43 @@ fn a_write_between_the_preflight_and_the_act_still_refuses_it() {
                 done.err
             );
         }
+    }
+}
+
+/// `plan` and `apply --plan` as two processes (lakelands#1476): a record
+/// written between them refuses the apply as stale; another process's
+/// lease between them does not, and the bundle is applied under the id.
+#[test]
+fn a_bundle_is_applied_under_a_plan_another_process_printed() {
+    for (engine, url) in engines() {
+        let root = Root::new(&format!("plan_{engine}"), url.as_deref());
+        root.ingest("bank", "bank-1");
+        let bundle = root.dir.join("bundle");
+        let note = "name: note\nfields:\n  text: { type: text }\n";
+        fs::write(bundle.join("types").join("note.yaml"), note).unwrap();
+        let at = bundle.display().to_string();
+        let plan = || {
+            let out = root.ok(&["plan", &at], true);
+            let id = out
+                .rsplit("--plan ")
+                .next()
+                .map(|id| id.trim().trim_end_matches('`'));
+            let id = id.filter(|id| out.contains("--plan ") && !id.is_empty());
+            id.unwrap_or_else(|| panic!("no plan id in:\n{out}"))
+                .to_owned()
+        };
+        let id = plan();
+        root.ingest("crm", "crm-1");
+        let stale = root.run(&["apply", &at, "--plan", &id], true);
+        assert!(
+            !stale.ok && stale.err.contains("the lake moved since that plan"),
+            "{engine}: an apply after a write: {}{}",
+            stale.out,
+            stale.err
+        );
+        let id = plan();
+        root.ok(&["plan", &at], true);
+        let done = root.run(&["apply", &at, "--plan", &id], true);
+        assert!(done.ok, "{engine}: apply --plan: {}{}", done.out, done.err);
     }
 }

@@ -1084,8 +1084,9 @@ the first release with real installations
   every `migrate` it proposes
   (`docs/decisions/062-a-change-plans-before-it-acts.md`): a reader
   completes a report of 16 as `recomputed: 0`, and makes its
-  `report_id` again over the completed report and the position before
-  the proposal; a `values_removed`
+  `report_id` again over the completed report and the head before the
+  proposal, the last event before it that is neither a `lease_taken`
+  nor a `checkpoint`; a `values_removed`
   (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`); and a
   recorded output's `input` digested under the oldest version that
   sealed the values it reads (§1.4), where 16 took the source's first
@@ -1272,7 +1273,8 @@ the live records it would leave naming no live record
 `migrate` door answers it). A writer of format 17 writes `recomputed`
 on every migration's report; a report written without it, as format 16
 wrote each, is read as `recomputed: 0`, its `report_id` made again over
-the report so completed and the position before the proposal.
+the report so completed and the last event before the proposal that
+is neither a `lease_taken` nor a `checkpoint`.
 `migrate_value_type` carries `to`, the value type's new declaration
 as `declared` carries one, and `report`, its preflight's report when it was proposed
 (`value_type`, `from_version`, `records_scanned`, `fields`, `misfits`,

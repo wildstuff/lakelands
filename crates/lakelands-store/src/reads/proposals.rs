@@ -418,8 +418,7 @@ impl<'a> Reader<'a> {
             && report.recomputed.is_none()
         {
             report.recomputed = Some(0);
-            let before = Position(at.0.saturating_sub(1));
-            report.report_id = crate::writes::report_id(report, Some(before));
+            report.report_id = crate::writes::report_id(report, self.id_head(at)?);
         }
         // `more` is what the trim left out, not what the completion added.
         let mut shown = logged.clone();
@@ -447,7 +446,7 @@ impl<'a> Reader<'a> {
         if matches!(whole, ProposedWrite::MigrateValueType { .. }) {
             let mut all = asked.clone();
             all.grants = lakelands_api::Grants::owner();
-            self.value_type_shown(&all, &|_, _| true, &mut whole, at);
+            self.value_type_shown(&all, &|_, _| true, &mut whole, at)?;
         }
         // A plan is compared on neither side: what its trim leaves out is
         // what its reader may not be told, and counting it would tell twins
@@ -675,8 +674,7 @@ impl<'a> Reader<'a> {
                 // One listing: its `to` hash is that of the `to` it lists.
                 let find = |n: &TypeName| listing.ty(n).ok();
                 judge.shown_hashes(made, migration, report, &find);
-                let before = Position(at.0.saturating_sub(1));
-                report.report_id = crate::writes::report_id(report, Some(before));
+                report.report_id = crate::writes::report_id(report, self.id_head(at)?);
                 judge.known_migration(made, migration, &find);
                 Ok(true)
             }
@@ -710,7 +708,7 @@ impl<'a> Reader<'a> {
                 if !self.sight.lists(&vt) {
                     return Ok(false);
                 }
-                self.value_type_shown(asked, &read, write, at);
+                self.value_type_shown(asked, &read, write, at)?;
                 Ok(true)
             }
             // A change to records to a reader who reads every field its
@@ -861,14 +859,14 @@ impl<'a> Reader<'a> {
         read: &dyn Fn(&TypeName, &FieldName) -> bool,
         write: &mut ProposedWrite,
         at: Position,
-    ) {
+    ) -> Result<()> {
         let ProposedWrite::MigrateValueType {
             to,
             renames,
             report,
         } = write
         else {
-            return;
+            return Ok(());
         };
         report.fields.retain(|u| read(&u.ty, &u.field));
         let before = Position(at.0.saturating_sub(1));
@@ -890,7 +888,16 @@ impl<'a> Reader<'a> {
             }
         }
         report.report_id = String::new();
-        report.report_id = crate::writes::value_report_id(report, to, renames, before.0);
+        let head = self.id_head(at)?.map_or(0, |p| p.0);
+        report.report_id = crate::writes::value_report_id(report, to, renames, head);
+        Ok(())
+    }
+
+    /// The head a proposal's report id is made again at: the one 039 names
+    /// before the proposal, as the preflight it was proposed from named it.
+    fn id_head(&self, at: Position) -> Result<Option<Position>> {
+        self.lake
+            .report_head(Some(Position(at.0.saturating_sub(1))))
     }
 }
 
