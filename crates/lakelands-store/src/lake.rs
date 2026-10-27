@@ -280,7 +280,7 @@ pub struct Lake {
     /// ends a range ([`ends_a_range`]). One a declaring append left is
     /// built at the first read of its position. The lock is held to find
     /// or put one, never across a build or a read.
-    shapes: Mutex<Vec<(RangeInclusive<u64>, HeldShape)>>,
+    shapes: Mutex<Shapes>,
     /// Moved when a rebuild begins and when it ends: a shape built across
     /// either read a projection cleared or half folded, and is not kept.
     rebuilds: AtomicU64,
@@ -412,6 +412,69 @@ pub fn settings_in(
 enum HeldShape {
     Built(Arc<Shape>),
     Left(Arc<Left>),
+}
+
+/// The shapes a lake holds, and where this handle's appends last ended a
+/// range: `ended` is `(from, through)`, the last event that ends a range
+/// and the last position the handle's own appends carried it to, with no
+/// event between them that ends one. A read anywhere in it has the shape
+/// held for `through`, the head's (lakelands#1501). The ranges and
+/// `ended` move together, under one lock.
+#[derive(Default)]
+struct Shapes {
+    held: Vec<(RangeInclusive<u64>, HeldShape)>,
+    ended: Option<(u64, u64)>,
+}
+
+impl std::ops::Deref for Shapes {
+    type Target = Vec<(RangeInclusive<u64>, HeldShape)>;
+    fn deref(&self) -> &Self::Target {
+        &self.held
+    }
+}
+
+impl std::ops::DerefMut for Shapes {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.held
+    }
+}
+
+impl Shapes {
+    /// The shape for `at`: the one held for a range that holds it, or, at
+    /// or past the last event that ends a range, the head's.
+    fn holding(&self, at: u64) -> Option<&HeldShape> {
+        let through = self.ended.filter(|(from, to)| (*from..=*to).contains(&at));
+        let to = through.map(|(_, to)| to);
+        let held = |at: u64| self.held.iter().find(|(r, _)| r.contains(&at));
+        held(at)
+            .or_else(|| to.and_then(held))
+            .map(|(_, shape)| shape)
+    }
+
+    /// The range a shape built at `at` is kept for: through the head's
+    /// position where no event since `at` ends a range, else `at`'s own.
+    fn kept_for(&self, at: u64) -> RangeInclusive<u64> {
+        match self.ended {
+            Some((from, to)) if (from..=to).contains(&at) => at..=to,
+            _ => at..=at,
+        }
+    }
+
+    /// Drop every shape, and where a range was last ended: a rebuild or a
+    /// scrub folds the projection again.
+    fn clear(&mut self) {
+        (self.held, self.ended) = (Vec::new(), None);
+    }
+
+    /// Carry `ended` over an append of `first..=last`: from its last event
+    /// that ends a range, `ending`, or on from where it stands.
+    fn appended(&mut self, first: u64, last: u64, ending: Option<u64>) {
+        self.ended = match (ending, self.ended) {
+            (Some(from), _) => Some((from, last)),
+            (None, Some((from, to))) if to + 1 == first => Some((from, last)),
+            (None, ended) => ended,
+        };
+    }
 }
 
 /// The appends a chain of left shapes holds at most. Past them an append
@@ -767,7 +830,8 @@ impl Lake {
     }
 
     /// The shape at `view`'s position: the one known for a range that
-    /// holds it, built there first if a declaring append left it, or one
+    /// holds it, or the head's where no event since the position ends a
+    /// range, built there first if a declaring append left it, or one
     /// built from the view, kept in place of the known one that ends
     /// first. A shape built from the view is kept only if no rebuild began
     /// or ended while it was read and the projection is folded through its
@@ -777,8 +841,7 @@ impl Lake {
     pub(crate) fn shape(&self, view: &dyn ProjectionView) -> Result<Arc<Shape>> {
         let at = view.position().map_or(0, |p| p.0);
         let held = lakelands_core::lock(&self.shapes);
-        let found = held.iter().find(|(range, _)| range.contains(&at));
-        let left = match found.map(|(_, shape)| shape.clone()) {
+        let left = match held.holding(at).cloned() {
             Some(HeldShape::Built(shape)) => return Ok(shape),
             Some(HeldShape::Left(left)) => Some(left),
             None => None,
@@ -816,7 +879,8 @@ impl Lake {
         if held.len() > 1 {
             held.remove(0);
         }
-        held.push((at..=at, HeldShape::Built(shape.clone())));
+        let range = held.kept_for(at);
+        held.push((range, HeldShape::Built(shape.clone())));
         Ok(shape)
     }
 

@@ -605,6 +605,89 @@ async fn a_chain_of_left_shapes_is_bounded_and_unlinked_in_a_loop() {
         .expect("read and dropped in 64 KiB");
 }
 
+/// Upsert a `t` of text `a` keyed `key`, and answer the head after it.
+async fn upserted(
+    lake: &Lake,
+    cat: &dyn lakelands_api::Catalog,
+    owner: &Principal,
+    key: &str,
+) -> u64 {
+    let fields = serde_json::from_value(json!({"a": key})).unwrap();
+    let (ty, key) = (TypeName::from("t"), key.into());
+    let up = cat.upsert(owner, &ty, &key, fields, Default::default());
+    up.await.unwrap();
+    lake.head().0
+}
+
+/// The shape at `at`.
+fn shape_at(lake: &Lake, at: u64) -> Arc<Shape> {
+    let view = lake.engine.view(Some(Position(at))).unwrap();
+    lake.shape(view.as_ref()).unwrap()
+}
+
+/// A read at each record's own position, behind the head and past the
+/// declaration, is answered with the head's shape: it is built once, and
+/// still held for the head after them all (lakelands#1501).
+#[tokio::test]
+async fn reads_behind_the_head_share_the_heads_shape() {
+    let (lake, cat, owner) = owned("behind");
+    cat.declare(&owner, declaration(text_type("t", &["a"])))
+        .await
+        .unwrap();
+    let mut written = Vec::new();
+    for i in 0..16 {
+        written.push(upserted(&lake, cat.as_ref(), &owner, &format!("k{i}")).await);
+    }
+    let head = lake.head().0;
+    let first = shape_at(&lake, written[0]);
+    for &at in written.iter().chain([&head]) {
+        assert!(
+            Arc::ptr_eq(&shape_at(&lake, at), &first),
+            "built again at {at}"
+        );
+    }
+    let held = lakelands_core::lock(&lake.shapes);
+    let at_head = |(range, held): &(RangeInclusive<u64>, HeldShape)| {
+        range.contains(&head) && matches!(held, HeldShape::Built(s) if Arc::ptr_eq(s, &first))
+    };
+    assert!(held.iter().any(at_head), "the head's shape is held");
+}
+
+/// A read before a redeclaration, or a setting, is answered with the
+/// shape of its own position, not the head's (lakelands#1501).
+#[tokio::test]
+async fn a_read_before_a_range_ends_keeps_its_own_shape() {
+    let (lake, cat, owner) = owned("before");
+    let declare = async |d: serde_json::Value| cat.declare(&owner, declaration(d)).await.unwrap();
+    declare(text_type("t", &["a"])).await;
+    let old = upserted(&lake, cat.as_ref(), &owner, "k0").await;
+    let fields = |at: u64| {
+        let t = shape_at(&lake, at).ontology.types[&TypeName::from("t")].clone();
+        t.decl
+            .fields
+            .iter()
+            .map(|f| f.name.to_string())
+            .collect::<Vec<_>>()
+    };
+    declare(text_type("t", &["a", "b"])).await;
+    let new = upserted(&lake, cat.as_ref(), &owner, "k1").await;
+    assert_eq!(fields(lake.head().0), ["a", "b"]);
+    assert_eq!(
+        (fields(old), fields(new)),
+        (vec!["a".to_string()], vec!["a".into(), "b".into()])
+    );
+    let floor = serde_json::from_value(json!({"key": "floor", "value": 3})).unwrap();
+    let setting = (TypeName::from("sys.setting"), "floor".into());
+    let set = cat.upsert(&owner, &setting.0, &setting.1, floor, Default::default());
+    set.await.unwrap();
+    let after = upserted(&lake, cat.as_ref(), &owner, "k2").await;
+    assert_eq!(
+        shape_at(&lake, after).settings.get("floor"),
+        Some(&json!(3))
+    );
+    assert_eq!(shape_at(&lake, new).settings.get("floor"), None);
+}
+
 /// A `declared` event of the type `t`, at `at`.
 fn declared_type(t: serde_json::Value, at: u64) -> Event {
     let body = EventBody::Declared {

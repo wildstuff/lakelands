@@ -156,7 +156,8 @@ impl Lake {
         // A shape holds over what is committed now unless an event ends a
         // range; it is carried only from where it stands, so a fold that
         // began after its range's end (another handle wrote, or a fold failed
-        // and was caught up) leaves it to its own range.
+        // and was caught up) leaves it to its own range. Where the last
+        // event that ends a range stands is carried with it, the same way.
         // An append whose only such events declare leaves what makes the
         // shape after it, the shape before and its declarations, for the
         // first read of its position to build (lakelands#1056).
@@ -164,6 +165,8 @@ impl Lake {
         if let (Some(first), Some(last)) = (events.first(), events.last()) {
             let (first, mut held) = (first.position.0, lakelands_core::lock(&self.shapes));
             let mut ending = events.iter().filter(|e| ends_a_range(&e.body)).peekable();
+            let ended = ending.clone().last().map(|e| e.position.0);
+            held.appended(first, last.position.0, ended);
             if ending.peek().is_none() {
                 for (range, _) in held.iter_mut().filter(|(r, _)| r.end() + 1 == first) {
                     *range = *range.start()..=last.position.0;

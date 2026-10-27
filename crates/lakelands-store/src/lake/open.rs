@@ -313,7 +313,7 @@ impl Lake {
             head: AtomicU64::new(0),
             heads: tokio::sync::watch::Sender::new(0),
             holds_lease: AtomicBool::new(false),
-            shapes: Mutex::new(Vec::new()),
+            shapes: Mutex::default(),
             rebuilds: AtomicU64::new(0),
             rebuilt_rate: AtomicU64::new(0),
             reclaim_ms: AtomicU64::new(0),
