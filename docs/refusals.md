@@ -359,6 +359,10 @@ What a refusal is about.
 | `initial_breaks` | `constraint` (ConstraintName), `field` (FieldName) | the `initial` of `{field}`, which only the type's verbs write, breaks the constraint `{constraint}`: no record of the type could be made | An `initial` of fields only verbs write that a type's constraint refuses: no create could hold it. |
 | `no_initial_breaks` | `constraint` (ConstraintName), `field` (FieldName) | `{field}`, which only the type's verbs write, has no `initial`, and a create leaves it null, which the constraint `{constraint}` refuses: no record of the type could be made | A field only verbs write with no `initial`, which a create leaves null, where a constraint reading only such fields refuses that. |
 | `verb_key` | — | a key's field is written by every create, and a verb writes only a record that stands | A key field only verbs write. |
+| `writer_not_of_type` | — | the store fills it when a record is made, so it is a field of a stored type's own records, not a view's, a relation's, a verb's payload or a function's input | A field of `authority: writer` that is not a stored type's own. |
+| `writer_not_text` | — | it holds a writer as `<kind>:<id>`, so it is a `text` field with no value type | A field of `authority: writer` of another kind than plain `text`. |
+| `writer_key` | — | a key's field is given by the record's key, and this one by the store | A key field of `authority: writer`. |
+| `writer_computed` | — | the store fills it with the writer that made its record, so nothing computes or clears it | A field of `authority: writer` that is computed or cleared. |
 | `expr_no_expression` | — | it is backed by `expr` and has no expression | An `expr` function with no expression. |
 | `expr_risk` | — | it is backed by `expr`, which reaches nothing outside the lake, so its risk is `low` | An `expr` function declared above `low` risk. |
 | `expr_too_deep` | `max` (usize), `offset` (usize) | an expression nests at most {max} levels deep: a parenthesis, a call argument, a list item, `not` and a unary `-` each go one deeper (at character {offset}) | An expression nested deeper than the parser reads. |
@@ -913,6 +917,7 @@ One difference between two declarations of a type; a field's names the relation 
 | `field_removed` | `field` (FieldName), `relation` (RelationName, optional) | field `{field}`[ of relation `{relation}`] removed | A field removed; it reshapes. |
 | `field_retyped` | `field` (FieldName), `relation` (RelationName, optional), `from` (FieldType), `to` (FieldType) | field `{field}`[ of relation `{relation}`] changes type from {from} to {to} | A field's type changed; it reshapes. |
 | `field_required` | `field` (FieldName), `relation` (RelationName, optional) | field `{field}`[ of relation `{relation}`] becomes required | An optional field made required; it reshapes. |
+| `field_writer` | `field` (FieldName) | field `{field}` becomes filled by the store with its record's writer | A field made `authority: writer`, added so or changed to it; it reshapes, as every live record takes a writer. |
 | `field_optional` | `field` (FieldName), `relation` (RelationName, optional) | field `{field}`[ of relation `{relation}`] becomes optional | A required field made optional. |
 | `key_changed` | `from` (Names), `to` (Names) | the key changes from {from} to {to} | The key's fields or their order changed; it reshapes. |
 | `relation_added` | `relation` (RelationName) | relation `{relation}` added | A relation added. |
@@ -1239,7 +1244,7 @@ These types are said by a name of a closed list:
 
 Which authority writes a field. It decides which door may carry the field: a source feed through `ingest`, an author through `upsert` or a verb, the store itself through the fold. Grants then decide which principals of that authority may.
 
-`authored`, `source`, `shared`, `derived`, `verb`
+`authored`, `source`, `shared`, `derived`, `verb`, `writer`
 
 ### `Cardinality`
 

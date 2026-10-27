@@ -541,6 +541,28 @@ fn verb_written(owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) -> Result
     Err(Error::invalid_at(&f.name, at(&on, why)))
 }
 
+/// A field the store fills with the writer that made its record (084) is
+/// a stored type's own, plain `text`, no key, and neither computed nor
+/// cleared: nothing but the store's fill ever gives it a value.
+fn writer_filled(owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) -> Result<()> {
+    let ty = &f.ty;
+    let computed = f.derived.is_some() || f.function.is_some() || f.embed.is_some();
+    let why = match of {
+        _ if f.authority != Authority::Writer => return Ok(()),
+        None => Case::WriterNotOfType,
+        Some(t) if t.view.is_some() || lakelands_core::links::is_link_type(&t.name) => {
+            Case::WriterNotOfType
+        }
+        _ if ty.kind != StorageKind::Text || ty.value_type.is_some() => Case::WriterNotText,
+        Some(t) if t.key.contains(&f.name) => Case::WriterKey,
+        _ if computed || !f.depends_on.is_empty() => Case::WriterComputed,
+        _ if f.on_input_change == OnInputChange::Clear => Case::WriterComputed,
+        _ => return Ok(()),
+    };
+    let on = [owner, &[of_field(&f.name), Place::Authority]].concat();
+    Err(Error::invalid_at(&f.name, at(&on, why)))
+}
+
 /// `admits` stands on an authored field of a type's own records that keeps
 /// per-field provenance, naming each source once, in its form (069).
 fn admitted(owner: &[Place], f: &FieldDecl, of: Option<&TypeDecl>) -> Result<()> {
@@ -594,6 +616,7 @@ fn field_type(
     initial(o, owner, f, of)?;
     erasable(o, owner, f, of)?;
     verb_written(owner, f, of)?;
+    writer_filled(owner, f, of)?;
     admitted(owner, f, of)?;
     let ty = &f.ty;
     let on = [owner, &[of_field(&f.name)]].concat();

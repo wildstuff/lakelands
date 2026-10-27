@@ -168,6 +168,10 @@ fn every_shape_change_changes_the_hash() {
             }),
         ),
         ("a relation removed", with(|t| t.relations.clear())),
+        (
+            "a field the store fills with its writer",
+            with(|t| t.fields[0].authority = Authority::Writer),
+        ),
     ];
     for (what, ty) in changes {
         assert_ne!(bare, hash(&ty), "{what} must change the hash");

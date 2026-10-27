@@ -163,6 +163,7 @@ mod views;
 mod vocabulary;
 mod walks;
 mod withdraw;
+mod writer_filled;
 
 /// Every check, in the order the suite runs them.
 pub const ALL: &[Check] = &[
@@ -917,6 +918,9 @@ pub const ALL: &[Check] = &[
     ahead::BUILT_AHEAD,
     verb_written::VERB_ONLY,
     verb_written::VERB_ONLY_TOLD,
+    writer_filled::WRITER_FILLED,
+    writer_filled::WRITER_REFUSED,
+    writer_filled::WRITER_MIGRATED,
     admitted::ADMITTED,
     admitted::ADMITS_DECLARED,
     admitted::OWN_VALUE,

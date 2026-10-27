@@ -394,7 +394,7 @@ the writer chose.
 |---|---|---|
 | `declared` | `declaration`, `version` (integer), `schema_hash` (string, types only), `with_the_set` (`true`, or absent) | A declaration enters the ontology, or replaces its earlier version, from this position on. `declaration.declare` is `type`, `value_type`, `verb`, `trigger`, `object_set`, `function` or, from format 17, `setting` or `withdraw`, with the declaration's members beside it. A `withdraw` names the `kind` (`trigger`, `verb`, `object_set` or `function`) and `name` of a declaration in force and takes it out of force from this position on; a fold at a position before it still holds it. The members of an object set withdrawn are members no more from this position on, with no `object_set_changed` for each; a later declaration of the set decides its membership as a new set's. `version` is 1 for the first declaration of that `declare` and `name`, one more for each later one; a withdrawal counts as a declaration of the kind and name it withdraws, so its version is one more than the one it withdraws, and a later declaration of that name one more again. A new version here never reshapes stored records. `with_the_set: true` says that another `declared` of the same set follows in this append: a set that holds a function, or a type the lake held before it, carries it on every `declared` but its last, the link types the system declares among them. The records the set's declarations compute again are computed once, at the set's last `declared`, with the ontology as the whole set leaves it; at a position inside the set they read as before it. A log never ends inside a set, where its last `declared` carries it (the memberships an object set of the set changed come after their `declared` and carry no mark), and a fold refuses one that does. |
 | `value_type_migrated` | `declaration`, `version`, `renames`, `report_id`, `types` | A value type's new declaration enters the ontology at `version`, as a `declared` of it would, and every stored record of the `types` that holds an old value of `renames` (a list of `[old, new]` text pairs) in a field of the value type holds the new one, retired and restricted records included, by the fold: a field computed by a function with a backing keeps what its backing answered. A record it changes stands at this position, with its version, its flags and each field's provenance as they were; one it does not change is as it was. The pairs map each value as it stood before the event, so a chain (`a → b`, `b → c`) and a swap read the same in any order. `types` names, in name order, every type, not a view, with a field of the value type; a fold refuses an event whose `types` differs. After it, the derived fields and the fields computed by a function of those types are computed again, as of this event, as a `declared` that revises them computes them (§2.3), and their calls are owed with this event as their cause. The system's `declared` of each type whose field's `initial` named an old value follows in the same append, one set; then the set memberships the renamed records change, each caused by this event (§2.5). |
-| `migrated` | `migration` (`to`, `renames`; `relation_renames` and `fill`, each left out when empty), `schema_hash`, `version`, `report_id`, `rekeyed` (`[]`) | A type's shape changes and every stored record of it is converted by the fold, by the lossless conversions the preflight report `report_id` checked. Each live record that then holds no value for a field `fill` names takes that field's `initial` from `to`, with the provenance of origin `initial` at this position (050); a retired record is left as it was. When `rekeyed` lists keys, the fold also moves those records to their new keys (§2.3). When `relation_renames` lists pairs of an old and a new name, each renamed relation keeps its edges, and the fold moves the link records of one carried by them to the link type of its new name (§2.3, "Link records"). From format 15 on, where `to` computes otherwise than the type did (its derived expressions, the functions its fields name, what its embeddings are made from, or which are computed at the read), or where `fill` is not empty and the type computes, the derived fields and the fields computed by a function of the type are computed again, as of this event, as a `declared` that revises them computes them (§2.3), and the set memberships that moves follow in the same append, each caused by this event (§2.5); a field computed by a function with a backing keeps what its backing answered until its call answers. A `migrated` of format 14 is folded as that format wrote it. |
+| `migrated` | `migration` (`to`, `renames`; `relation_renames` and `fill`, each left out when empty), `schema_hash`, `version`, `report_id`, `rekeyed` (`[]`) | A type's shape changes and every stored record of it is converted by the fold, by the lossless conversions the preflight report `report_id` checked. Each live record that then holds no value for a field `fill` names takes that field's `initial` from `to`, with the provenance of origin `initial` at this position (050); a retired record is left as it was. From format 20, each live record takes, in each field `to` makes one of `authority: writer` (added so, or changed to it), the `writer` of the provenance of a field it held written at the position that made it, else `system:lakelands`, with, where `to` keeps per-field provenance, the provenance of origin `system` at this position naming that writer; what the field held before is dropped (084). When `rekeyed` lists keys, the fold also moves those records to their new keys (§2.3). When `relation_renames` lists pairs of an old and a new name, each renamed relation keeps its edges, and the fold moves the link records of one carried by them to the link type of its new name (§2.3, "Link records"). From format 15 on, where `to` computes otherwise than the type did (its derived expressions, the functions its fields name, what its embeddings are made from, or which are computed at the read), or where `fill` is not empty and the type computes, the derived fields and the fields computed by a function of the type are computed again, as of this event, as a `declared` that revises them computes them (§2.3), and the set memberships that moves follow in the same append, each caused by this event (§2.5); a field computed by a function with a backing keeps what its backing answered until its call answers. A `migrated` of format 14 is folded as that format wrote it. |
 
 The schema hash covers shape only (`docs/decisions/007-schema-hash-covers-shape.md`).
 It is the SHA-256, as 64 lower-case hex digits, of the canonical bytes of
@@ -409,7 +409,8 @@ this object:
 }
 ```
 
-- A field is exactly `{ "name", "type", "required" }`. `type` is the
+- A field is exactly `{ "name", "type", "required" }`, and `authority`
+  on a field of `authority: writer` alone (below). `type` is the
   field's whole `FieldType` object: `kind`, and `value_type`, `target`
   and `dimensions` only where the declaration sets them (absent, never
   `null`). `required` is always written, `false` when the declaration
@@ -417,6 +418,11 @@ this object:
   record is made, and changes neither how a stored record is stored nor
   how it is validated, so declaring or changing one leaves the hash as it
   was (`docs/decisions/050-a-field-declares-its-initial-value.md`).
+  A field of `authority: writer` (from format 20) has a fourth member,
+  `"authority": "writer"`: what it holds is the store's, so a type that
+  comes to have one is migrated. No other field writes its authority, so
+  every other type's hash is the one it had
+  (`docs/decisions/084-a-field-holds-the-writer-that-made-its-record.md`).
   Nor is `erasable` (from format 16): it says how a source's values are
   kept in the log (§1.4), not what a record holds. It is refused on a key
   field, on a field that names a record, on a field only authors or the
@@ -453,7 +459,7 @@ this object:
   and `a and (b and c)` is not `a and b and c`.
 - Excluded, because they do not change how a record is stored or
   validated: descriptions, labels, `sensitive`, `searchable`, field
-  `authority` and `admits`, `derived`, `computed_at`, `depends_on`, `on_input_change`, a relation's
+  `authority` but `writer` (above) and `admits`, `derived`, `computed_at`, `depends_on`, `on_input_change`, a relation's
   `authority`, `via`, `inverse` and description, `valid_from` /
   `valid_to`, `language`, and `field_meta`. A relation's own `fields`
   are shape, above; so is its link type's, which has a schema hash of
@@ -633,6 +639,14 @@ the event's `known_at`, `position` and `writer`, and no `seen_at`,
 patch stays as written, so a reader that folds the raw feed fills the
 same fields itself
 (`docs/decisions/050-a-field-declares-its-initial-value.md`).
+
+At the same make, from format 20, the fold fills each field of
+`authority: writer` with the event's `writer`, whatever the patch holds
+(no door lets a patch carry one). Its provenance is `origin: system`
+with the event's `known_at` and `position`, the writer it holds as
+`writer`, and no `seen_at`, `source`, `procedure`, `procedure_version`
+or `upstream`. A later write keeps it, and a re-key moves it with its
+record (`docs/decisions/084-a-field-holds-the-writer-that-made-its-record.md`).
 
 ### 2.4 Verbs and proposals
 
@@ -1116,7 +1130,9 @@ the first release with real installations
   (`docs/decisions/081-a-change-to-the-records-a-condition-selects-is-planned-before-it-acts.md`);
   and, with 083 (lakelands#1413, lakelands#1433, lakelands#1452), a frame and an event line without its `position` or
   `prev` (§1.2), a digest over a segment that holds them (§4.2), a
-  `sealed.box`, and an ingest id under `lakelands:ingest:v2` (§1.4, §3).
+  `sealed.box`, and an ingest id under `lakelands:ingest:v2` (§1.4, §3);
+  and a field's `authority: writer`, filled by the fold (§2.3,
+  lakelands#1488).
   No other step changes a fold, so the projection stays. A step that
   changes how an event folds says so here, and a writer's open then
   rebuilds the projection.
@@ -1197,7 +1213,7 @@ below; no other spelling is read.
 | a field's provenance `origin` (§2.3) | an event's, and `initial`, which an event's own `origin` never is: a log whose event carries it is refused at that event |
 | `context.origin` | `direct`, `reactive`, `scheduled` |
 | the kind in `writer` | `human`, `agent`, `service`, `system` |
-| a field's `authority` | `authored`, `source`, `shared`, `derived`, `verb` (from format 17) |
+| a field's `authority` | `authored`, `source`, `shared`, `derived`, `verb` (from format 17), `writer` (from format 20) |
 | a field's `on_input_change` | `keep`, `clear` |
 | a field's `computed_at` | `write`, `read` |
 | a relation's `cardinality` | `one_to_one`, `one_to_many`, `many_to_one`, `many_to_many` |

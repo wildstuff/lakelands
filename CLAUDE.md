@@ -32,7 +32,7 @@ importing the shape of the platform the organs come from.
   the core crates' (api, core, store and the three engines) product
   code ≤ 92.5k lines and their specification (the conformance suite, unit
   tests, which live in `tests.rs` files, never inline, and every
-  `tests/` beside `src/`) ≤ 168k. Each goes down by itself, its base
+  `tests/` beside `src/`) ≤ 168.5k. Each goes down by itself, its base
   is lowered to its count at the release, and it is raised only by the
   rule in `docs/budgets.md`: a decisive reason, cutting first, a
   measured size, and a recorded row. The gates refuse a raise without

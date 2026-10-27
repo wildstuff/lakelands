@@ -32,7 +32,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::error::{Case, Said};
-use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl, is_vector_component};
+use lakelands_api::ontology::{
+    Authority, FieldDecl, FieldType, StorageKind, TypeDecl, is_vector_component,
+};
 use lakelands_api::write::{FieldConversion, Migration, MigrationReport};
 use lakelands_api::{FieldName, RecordKey, Timestamp};
 use serde_json::Value;
@@ -249,6 +251,16 @@ pub fn migrate_record(
     Ok(Some(out))
 }
 
+/// The fields a migration makes ones the store fills with the writer that
+/// made each record (084): added so, or changed to it from another
+/// authority, under its new name. The fold fills each in every live record
+/// with the writer that made it and drops what it held before.
+pub fn becoming_writer(before: &TypeDecl, migration: &Migration) -> Result<Vec<FieldName>, Said> {
+    let plan = Plan::new(before, migration)?;
+    let steps = plan.steps.iter().filter(|s| s.writer);
+    Ok(steps.map(|s| s.to.name.clone()).collect())
+}
+
 /// Per field of the new declaration: where its values come from and
 /// whether they must pass a check.
 struct Plan<'a> {
@@ -267,6 +279,10 @@ struct Step<'a> {
     /// holds no value for it takes its `initial` in the fold, or, retired,
     /// is left as it was.
     fill: bool,
+    /// Whether it becomes a field the store fills with the writer that made
+    /// its record (084): it takes over no value, and the fold fills every
+    /// live record, so a required one is no record's loss.
+    writer: bool,
 }
 
 impl<'a> Plan<'a> {
@@ -294,6 +310,9 @@ impl<'a> Plan<'a> {
                     None => None,
                 };
                 let from = source.and_then(|name| old.get(name).copied());
+                let writer = to.authority == Authority::Writer
+                    && from.is_none_or(|f| f.authority != Authority::Writer);
+                let from = from.filter(|_| !writer);
                 let retyped = from.is_some_and(|f| f.ty != to.ty);
                 let tightened = to.required && !from.is_some_and(|f| f.required);
                 Step {
@@ -301,6 +320,7 @@ impl<'a> Plan<'a> {
                     from,
                     checked: retyped || tightened,
                     fill: migration.fill.contains(&to.name),
+                    writer,
                 }
             })
             .collect();
@@ -329,7 +349,7 @@ impl Step<'_> {
                 Conversion::Exact(v) => Some(Some(v)),
                 Conversion::Lossy => None,
             },
-            _ if self.to.required && !self.fill => None,
+            _ if self.to.required && !self.fill && !self.writer => None,
             _ => Some(None),
         }
     }

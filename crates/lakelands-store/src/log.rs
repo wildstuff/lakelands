@@ -64,7 +64,7 @@ impl Draft {
         Draft {
             upstream: None,
             known_at,
-            writer: "system:lakelands".into(),
+            writer: crate::record::STORE_WRITER.into(),
             origin: Origin::System,
             source: None,
             seen_at: None,

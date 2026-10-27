@@ -930,7 +930,10 @@ fn create_closed(
         let e = c.holds.typed().ok();
         e.is_some_and(|e| derive::reads(&e).iter().any(unreadable))
     });
-    let computed = |f: &FieldDecl| f.derived.is_some() || f.function.is_some();
+    // A field the store fills with the creating writer is never sent (084).
+    let computed = |f: &FieldDecl| {
+        f.derived.is_some() || f.function.is_some() || f.authority == Authority::Writer
+    };
     let needed = |f: &&FieldDecl| f.required && f.initial.is_none() && !computed(f);
     let unsent = t.fields.iter().filter(needed).any(|f| !sends(f));
     // A create fills the key's fields from its key, as a write of them.

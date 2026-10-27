@@ -24,6 +24,9 @@ source's content id and the duplicate test read the patch and never see
 the fill. The filled field is not counted among those the event changed:
 at a make every derived field is computed anyway, and no field holds a
 value an input change could clear, so nothing would read that count.
+The same function fills, at the same make, each field of
+`authority: writer` with the event's writer
+(`docs/decisions/084-a-field-holds-the-writer-that-made-its-record.md`).
 
 ### A record is filled once
 
@@ -174,3 +177,5 @@ changes, as `docs/decisions/007-schema-hash-covers-shape.md` has it, and
 - A migration may fill a field's `initial` into the live records that
   hold none (`fill`, lakelands#1023), where nothing could: an aging rule
   never moved a record a type held before its field had an `initial`.
+- The fill at a make fills a field of `authority: writer` too, with the
+  writer of the event that makes the record (lakelands#1488).
