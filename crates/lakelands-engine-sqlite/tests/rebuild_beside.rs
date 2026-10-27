@@ -5,11 +5,13 @@
 //! holds the projection it would replace, as the question asked before
 //! it answers, and a handle that opens during one reads the projection put
 //! in place; a mark the log does not reach
-//! keeps no scratch.
+//! keeps no scratch; writers' opens the lease refuses fail no build and
+//! no swap (lakelands#1485).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use fs4::FileExt;
@@ -257,4 +259,38 @@ fn a_mark_past_the_logs_end_keeps_no_scratch() {
     )));
     assert_eq!(folded(writer.as_ref()), Some(Position(1)));
     assert_eq!(folded(scratch(&dir).unwrap().as_ref()), None);
+}
+
+/// Two threads opening the lake for writing, each refused the lease,
+/// fail none of its holder's builds beside and swaps.
+#[test]
+fn writers_the_lease_refuses_fail_no_build_and_no_swap() {
+    let dir = dir("refused");
+    let (writer, lease) = lake(&dir);
+    let done = Arc::new(AtomicBool::new(false));
+    let probes: Vec<_> = (0..2)
+        .map(|_| (dir.clone(), done.clone()))
+        .map(|(dir, done)| {
+            std::thread::spawn(move || {
+                let mut refused = 0;
+                while !done.load(Ordering::SeqCst) {
+                    let probe = open(&dir, OpenMode::Write);
+                    refused += u32::from(probe.is_ok_and(|p| p.take_lease("probe").is_err()));
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                refused
+            })
+        })
+        .collect();
+    let busy = |s: &Situation| matches!(s, Situation::SwapBusy { .. });
+    for _ in 0..150 {
+        built(&dir);
+        let swapped = std::iter::repeat_with(|| writer.swap(&lease));
+        let mut swapped = swapped
+            .skip_while(|a| matches!(a, Err(Error::Unavailable { situation }) if busy(situation)));
+        swapped.next().unwrap().unwrap();
+    }
+    done.store(true, Ordering::SeqCst);
+    let refused: u32 = probes.into_iter().map(|p| p.join().unwrap()).sum();
+    assert!(refused > 0, "no writer was refused the lease");
 }

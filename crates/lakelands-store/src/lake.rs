@@ -1132,15 +1132,7 @@ impl Lake {
             }
             *lakelands_core::lock(&self.way) = Some(way);
         }
-        // The projection is restated: what is left is owed, never an error,
-        // the reading and writing of the lists' states too (lakelands#1485).
-        match self.reclaim() {
-            Ok(reclaimed) => Ok(reclaimed.ok()),
-            Err(e) => {
-                *lakelands_core::lock(&self.reclaim_owed) = Some(e.said());
-                Ok(None)
-            }
-        }
+        Ok(self.reclaim()?.ok())
     }
 
     /// [`Self::finish_forgetting`] after an act appended through `at`: a

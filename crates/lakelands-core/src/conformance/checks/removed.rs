@@ -29,7 +29,7 @@ check!(
 
 check!(
     REMOVE_CRASH = a_removal_a_crash_stopped_is_finished_by_the_next_writers_open,
-    "065: a removal stopped after its event, before its rebuild, is finished by the writer's next open, which rebuilds knowing the act and reclaims, and by the act's repeat on the same handle, each appending no second event; the values read as erased at every position after either",
+    "065, extended (lakelands#1485): a removal stopped after its event, before its rebuild, is finished by the writer's next open, which rebuilds knowing the act and reclaims, and by the act's repeat on the same handle, each appending no second event; the values read as erased at every position after either; the act stopped so answers `act_unfinished` at the head it appended to",
     given
 );
 
@@ -668,9 +668,11 @@ async fn a_removal_a_crash_stopped_is_finished_by_the_next_writers_open(
     let again = Selection::WrittenBefore(Timestamp::from_date(9998, 1, 1).expect("a date"));
     fails[1].store(1, Ordering::SeqCst);
     let stopped = store.remove_values(&tracker, &again, false, None).await;
+    let head = store.head().await.must("reading the head")?;
     ensure!(
-        stopped.is_err(),
-        "the second removal whose rebuild fails answers {stopped:?}"
+        super::forgotten::unfinished(&stopped, head),
+        "the second removal whose rebuild fails answers that it is in the log through the \
+         head, {head}, and unfinished: {stopped:?}"
     );
     let repeat = store.remove_values(&tracker, &again, false, None).await;
     repeat.must("repeating the act")?;
