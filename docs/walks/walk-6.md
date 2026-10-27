@@ -318,9 +318,9 @@ of the walk was understood: each next call changed the right thing.
 
 | Runs and calls | Finding | Issue |
 |---|---|---|
-| T1 13, T2 15 | `query`'s `project` schema shows `fields` but not an aggregate's `group_by` and `measures` | lakelands#1443 |
-| T1 22, T2 24 | A step's `depth` needs `min` and `max`, and `query`'s schema requires neither | lakelands#1444 |
-| T1 19, T2 21, C1 20 | A find's `cursor` has no description; three of four runs sent it without its `order_by` | lakelands#1445 |
+| T1 13, T2 15 | `query`'s `project` schema shows `fields` but not an aggregate's `group_by` and `measures` | lakelands#1443, fixed by lakelands#1505 |
+| T1 22, T2 24 | A step's `depth` needs `min` and `max`, and `query`'s schema requires neither | lakelands#1444, fixed by lakelands#1505 |
+| T1 19, T2 21, C1 20 | A find's `cursor` has no description; three of four runs sent it without its `order_by` | lakelands#1445, fixed by lakelands#1505 |
 | C1 15, C2 12 | Cypher's `ORDER BY` beside an aggregate is refused in the pattern's words, as `order_by`, with no offset | lakelands#1446, fixed by lakelands#1451 |
 
 **Observations, with no issue:**
@@ -365,7 +365,8 @@ recommendation; the decision is the project's.
     T2's two losses alone; T1 would have matched C.
 
 What would change it: the same tasks on a door with both tools, with
-lakelands#1443, lakelands#1444 and the `cypher` sentence fixed, and a
+the `cypher` sentence fixed (lakelands#1443, lakelands#1444 and
+lakelands#1445 are, by lakelands#1505), and a
 paging task the agent must answer through `cypher`. If `query` then
 wins the first tries that `cypher` wins here, the lead was the texts,
 not the language.
