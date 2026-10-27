@@ -2,15 +2,16 @@
 //! own, in group-commit windows.
 //!
 //! Records are taken from the stream into a window until it holds the
-//! lake's `commit_window_events` records or 2 ms have passed since its first
-//! record; the window is then decided whole and appended durably, and
-//! answers one [`Committed`] with the position its last event took and
-//! the call's delivery: the caller's, else `d<first position>`, the
-//! position of the first event the call appended. Every
-//! `record_ingested` of the call carries it in its envelope. A
-//! window is all or nothing: if one of its records is refused, nothing of
-//! the window is appended, the refusal is the stream's next item and the
-//! stream ends — the caller's own offset says where to resume
+//! call's `commit_window` records, else the lake's
+//! `commit_window_events`, or 2 ms have passed since its first record;
+//! the window is then decided whole and appended durably, and answers one
+//! [`Committed`] with the position its last event took and the call's
+//! delivery: the caller's, else `d<first position>`, the position of the
+//! first event the call appended. Every `record_ingested` of the call
+//! carries it in its envelope. A window is all or nothing: if one of its
+//! records is refused, nothing of the window is appended, the refusal is
+//! the stream's next item and the stream ends — the caller's own offset
+//! says where to resume
 //! (`docs/decisions/016-two-write-doors-by-origin.md`).
 //!
 //! **Idempotency by content.** A record's event id is derived from its
@@ -41,7 +42,7 @@ use lakelands_api::id::KeyId;
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::Origin;
 use lakelands_api::seam::DataKey;
-use lakelands_api::write::Committed;
+use lakelands_api::write::{Committed, IngestOpts};
 use lakelands_api::{
     DeliveryId, Error, Principal, RecordKey, Result, SourceId, SourceRecord, Timestamp,
 };
@@ -462,12 +463,14 @@ pub fn run(
     who: Principal,
     context: WriteContext,
     source: SourceId,
-    (mut delivery, sealed_apart): (Option<DeliveryId>, bool),
+    opts: IngestOpts,
     mut records: SourceStream,
 ) -> CommitStream {
-    let apart = sealed_apart.then(|| Arc::new(Apart::default()));
+    let mut delivery = opts.delivery;
+    let apart = opts.sealed_apart.then(|| Arc::new(Apart::default()));
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Committed>>(4);
-    let size = lake.limits.commit_window_events.max(1) as usize;
+    let lakes = lake.limits.commit_window_events;
+    let size = opts.commit_window.unwrap_or(lakes).max(1) as usize;
     tokio::spawn(async move {
         let (mut ended, mut next) = (false, 0u64);
         while !ended {

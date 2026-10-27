@@ -293,6 +293,10 @@ pub struct Limits {
     pub max_reactive_depth: u32,
     /// The most events one group-commit window holds.
     pub commit_window_events: u32,
+    /// The largest commit window an ingest may ask for its own delivery,
+    /// and the most `commit_window_events` may be; a lake whose location
+    /// sets more is not opened.
+    pub commit_window_max: u32,
     /// The most records a whole-graph measure may reach; past it the
     /// measure is refused `too_large`, never cut. Also the largest
     /// `limit` a measure may ask for, where it is above `max_limit`.
@@ -364,7 +368,8 @@ impl Default for Limits {
             max_limit: 1000,
             max_depth: 16,
             max_reactive_depth: 8,
-            commit_window_events: 32,
+            commit_window_events: 256,
+            commit_window_max: 4096,
             max_graph_nodes: 100_000,
             max_offset: 100_000,
             max_set_changes: 20_000,

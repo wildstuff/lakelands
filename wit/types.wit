@@ -799,6 +799,9 @@ interface types {
         /// Seal the delivery under a key of its own too, so that taking
         /// it back shreds it alone.
         sealed-apart: bool,
+        /// The most records one of the call's commit windows holds; none
+        /// for the lake's `commit-window-events`.
+        commit-window: option<u32>,
     }
 
     record applied {
@@ -1861,6 +1864,7 @@ interface types {
         max-depth: u32,
         max-reactive-depth: u32,
         commit-window-events: u32,
+        commit-window-max: u32,
         max-graph-nodes: u32,
         max-offset: u32,
         max-set-changes: u32,

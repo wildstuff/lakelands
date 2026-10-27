@@ -139,6 +139,7 @@ async fn apart(l: &Lake, delivery: &str, records: Vec<SourceRecord>) -> Held {
     let opts = IngestOpts {
         delivery: Some(delivery.into()),
         sealed_apart: true,
+        ..IngestOpts::default()
     };
     let crm = SourceId::from("crm");
     let said = lakelands_api::ingest_all_with(l.cat.as_ref(), &l.own, &crm, opts, records);
@@ -805,6 +806,7 @@ async fn a_set_of_deliveries_shreds_what_it_takes_whole(store: Store, reopen: Re
         let opts = IngestOpts {
             delivery: Some(id.into()),
             sealed_apart: false,
+            ..IngestOpts::default()
         };
         let said = lakelands_api::ingest_all_with(&*l.cat, &l.own, &crm, opts, vec![record]);
         said.await.must("ingesting a delivery")?;
@@ -874,6 +876,7 @@ async fn a_call_writing_past_an_act_takes_a_new_key_apart(store: Store, reopen: 
     let opts = IngestOpts {
         delivery: Some("late".into()),
         sealed_apart: true,
+        ..IngestOpts::default()
     };
     let gated = Box::pin(Gate(gate.clone()));
     let mut commits = match l.cat.ingest_with(&l.own, &crm, opts, gated).await {

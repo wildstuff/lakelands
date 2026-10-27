@@ -123,7 +123,9 @@ exceptions are where a shared step fails: a failure of a step the
 writes share is the failure of every write that shares it.
 
 The bound of an ingest window is reused because it says the same thing:
-how much one durable step holds.
+how much one durable step holds. It is the lake's `commit_window_events`:
+an ingest may ask a window of its own, a batch of writes may not
+(`docs/decisions/016-two-write-doors-by-origin.md`).
 
 ## What it is not
 

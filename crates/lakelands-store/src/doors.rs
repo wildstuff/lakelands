@@ -1016,12 +1016,17 @@ impl Catalog for Doors {
         if let Some(d) = &opts.delivery {
             writes::check_delivery(d)?;
         }
+        let max = self.lake.limits.commit_window_max;
+        if opts.commit_window.is_some_and(|w| w == 0 || w > max) {
+            let case = lakelands_api::error::Case::LimitRange { max };
+            return Err(Error::invalid_at(&"commit_window".into(), case));
+        }
         Ok(ingest::run(
             self.lake.clone(),
             who.clone(),
             self.context,
             source.clone(),
-            (opts.delivery, opts.sealed_apart),
+            opts,
             records,
         ))
     }

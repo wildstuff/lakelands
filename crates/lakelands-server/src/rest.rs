@@ -1086,13 +1086,21 @@ async fn ingest(
 ) -> Result<Answer, Stop> {
     let args = query_args(
         req.uri().query(),
-        &[("delivery", Kind::Text), ("sealed_apart", Kind::Flag)],
+        &[
+            ("delivery", Kind::Text),
+            ("sealed_apart", Kind::Flag),
+            ("commit_window", Kind::Int),
+        ],
         "POST …/ingest/<source>",
     )?;
     let delivery = args.get("delivery").and_then(Value::as_str);
     let opts = lakelands_api::IngestOpts {
         delivery: delivery.map(Into::into),
         sealed_apart: args.get("sealed_apart").and_then(Value::as_bool) == Some(true),
+        commit_window: args
+            .get("commit_window")
+            .and_then(Value::as_u64)
+            .map(|w| u32::try_from(w).unwrap_or(u32::MAX)),
     };
     if let Some(ct) = header(req.headers(), CONTENT_TYPE.as_str())
         && ![
