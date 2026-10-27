@@ -975,41 +975,6 @@ fn restore_check(sub: &ArgMatches, out: &mut dyn Write, err: &mut dyn Write) -> 
 /// `serve` that holds the writer. A lake whose open finds it damaged is
 /// answered as one `verify` finds damaged. Its exit status is its own: 0
 /// the log holds, 1 it is damaged, 3 it could not be checked.
-/// `upgrade` reads the log's ends first, to say what it does; with
-/// `--check` it opens nothing (`docs/log-format.md` §6). Exit 0 it said,
-/// 3 there is no lake yet (as `verify` exits), 1 it failed.
-async fn upgrade(
-    m: &ArgMatches,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
-    open: &Opener<'_>,
-) -> u8 {
-    let sub = m
-        .subcommand_matches("upgrade")
-        .expect("the upgrade command");
-    let root_dir = PathBuf::from(m.get_one::<String>("root").map_or(".", String::as_str));
-    let run = async {
-        let root = root::Root::open(&root_dir)?;
-        let location = root.location(sub.get_one::<String>("lake").map(String::as_str))?;
-        commands::upgrade(
-            out,
-            err,
-            location,
-            root.seams(),
-            sub.get_flag("check"),
-            open,
-        )
-        .await
-    };
-    match run.await {
-        Ok(code) => code,
-        Err(f) => {
-            let _ = write!(err, "{f}");
-            1
-        }
-    }
-}
-
 async fn verify(m: &ArgMatches, out: &mut dyn Write, err: &mut dyn Write, open: &Opener<'_>) -> u8 {
     use lakelands_api::error::Situation;
     // A failure on `err` and its exit status: 2 for what the command line
@@ -1109,6 +1074,41 @@ async fn verify(m: &ArgMatches, out: &mut dyn Write, err: &mut dyn Write, open: 
         }
     }
     0
+}
+
+/// `upgrade` reads the log's ends first, to say what it does; with
+/// `--check` it opens nothing (`docs/log-format.md` §6). Exit 0 it said,
+/// 3 there is no lake yet (as `verify` exits), 1 it failed.
+async fn upgrade(
+    m: &ArgMatches,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    open: &Opener<'_>,
+) -> u8 {
+    let sub = m
+        .subcommand_matches("upgrade")
+        .expect("the upgrade command");
+    let root_dir = PathBuf::from(m.get_one::<String>("root").map_or(".", String::as_str));
+    let run = async {
+        let root = root::Root::open(&root_dir)?;
+        let location = root.location(sub.get_one::<String>("lake").map(String::as_str))?;
+        commands::upgrade(
+            out,
+            err,
+            location,
+            root.seams(),
+            sub.get_flag("check"),
+            open,
+        )
+        .await
+    };
+    match run.await {
+        Ok(code) => code,
+        Err(f) => {
+            let _ = write!(err, "{f}");
+            1
+        }
+    }
 }
 
 /// Whether `e` says the place holds no lake yet, or one whose making
