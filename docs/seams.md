@@ -776,7 +776,7 @@ the hits, as for `find` and `get`); an engine is not required to keep a
 full-text index of earlier states. A record is a hit when one of its
 searchable fields' text at the head holds at least one token of the
 text. Tokens are what the store's one pipeline makes of the text
-(`lakelands_core::stem::stem_text`, stemmed by the type's `language`, or only
+(`lakelands_core::stem::stem_tokens`, stemmed by the type's `language`, or only
 lower-cased and folded when it has none or the pipeline has no stemmer
 for it), applied the same way to the query and to the
 fields (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).

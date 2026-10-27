@@ -381,15 +381,12 @@ pub(crate) fn lexical(
         "SELECT DISTINCT key FROM {} WHERE ty = $1 AND token = ANY($2::text[])",
         names.t("full_text")
     );
-    let keys: BTreeSet<String> = db.column(&sql, &[&ty.as_str(), &query])?;
+    let keys: Vec<String> = db.column(&sql, &[&ty.as_str(), &query])?;
+    // A page of keys at a time, so that no candidate costs a statement of
+    // its own; the ranking does not depend on the order they are read in.
     let mut head = Vec::with_capacity(keys.len());
-    for key in keys {
-        head.extend(projection::head_record(
-            db,
-            names,
-            ty,
-            &RecordKey::from(key),
-        )?);
+    for page in keys.chunks(projection::PAGE) {
+        head.extend(projection::head_records(db, names, ty, page)?);
     }
     let kept = |held| projection::text_counts(db, names, (ty, &decl), held);
     engines::ranked_text(&decl, &head, asked, k, kept)
