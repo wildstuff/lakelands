@@ -40,7 +40,6 @@ use lakelands_api::event::{EventBody, EventId, Sealed};
 use lakelands_api::id::KeyId;
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::Origin;
-use lakelands_api::seam::DataKey;
 use lakelands_api::write::Committed;
 use lakelands_api::{
     DeliveryId, Error, Principal, RecordKey, Result, SourceId, SourceRecord, Timestamp,
@@ -259,32 +258,27 @@ fn judge(
                 .map(|f| f.name.clone())
                 .collect();
             fields.sort();
-            let sealing = match fields.is_empty() {
+            let sealed = match fields.is_empty() {
                 true => None,
                 false => {
                     let list = lake.keys.listed(view, source)?;
                     let rotate = turns(&w.settings, list.as_deref(), source, now);
                     let newest = list.as_ref().and_then(|l| l.firsts.last());
-                    let (id, key) = lake.keys.sealing(source, newest.map(|(k, _)| k), rotate)?;
+                    let (key, _) = lake.keys.sealing(source, newest.map(|(k, _)| k), rotate)?;
                     // A delivery sealed apart seals under its version and
                     // its own key, composed (065).
                     let apart = apart.map(|a| apart_key((lake, w), a, source)).transpose()?;
-                    let key = match &apart {
-                        Some((_, a)) => crate::sealing::compose(&key, std::slice::from_ref(a)),
-                        None => key,
-                    };
-                    Some((id, key, apart.map(|(id, _)| id)))
+                    Some(Sealed {
+                        key,
+                        source: None,
+                        fields,
+                        apart: apart.into_iter().collect(),
+                        boxed: None,
+                    })
                 }
             };
-            let sealed = (sealing.as_ref()).map(|(key, _, apart)| Sealed {
-                key: key.clone(),
-                source: None,
-                fields,
-                apart: apart.iter().cloned().collect(),
-                boxed: None,
-            });
-            let id = match (&sealed, &sealing) {
-                (Some(s), Some((_, k, _))) => {
+            let id = match &sealed {
+                Some(s) => {
                     let mut body = EventBody::RecordIngested {
                         ty: r.ty.clone(),
                         key: r.key.clone(),
@@ -293,14 +287,15 @@ fn judge(
                         made: false,
                     };
                     let mut boxed = s.clone();
-                    crate::sealing::seal(&mut body, &mut boxed, source, k);
+                    let cipher = lake.keys.cipher(source, s)?;
+                    crate::sealing::seal(&mut body, &mut boxed, source, &cipher);
                     let EventBody::RecordIngested { patch: stored, .. } = &body else {
                         unreachable!("the body sealed is a record_ingested")
                     };
                     let boxed = boxed.boxed.unwrap_or_default();
                     log::boxed_ingest_id(source, &r.ty, &r.key, version_before, stored, &boxed)
                 }
-                _ => log::ingest_id(source, &r.ty, &r.key, version_before, &patch),
+                None => log::ingest_id(source, &r.ty, &r.key, version_before, &patch),
             };
             let unchanged = t.live().is_some_and(|b| {
                 patch.iter().all(|(f, v)| match b.fields.get(f) {
@@ -419,26 +414,22 @@ fn stated(r: &SourceRecord) -> Result<()> {
     }
 }
 
-/// The key `source`'s values of the call are sealed apart under: the one
-/// `apart` keeps, else a new one the key store makes, kept there. One an
+/// The key `source`'s values of the call are sealed apart under, by id:
+/// the one `apart` keeps, else a new one the key store makes, kept there. One an
 /// act of removal named since, which a writer knows from the act it met
 /// or made, is not sealed under again: what the call writes after the act
 /// is not the act's, so it takes a key of its own (065).
-fn apart_key(
-    (lake, w): (&Lake, &Writer),
-    apart: &Apart,
-    source: &SourceId,
-) -> Result<(KeyId, DataKey)> {
+fn apart_key((lake, w): (&Lake, &Writer), apart: &Apart, source: &SourceId) -> Result<KeyId> {
     let kept = lakelands_core::lock(apart).get(source).cloned();
     let taken = |id: &KeyId| {
         lake.keys.doomed(source, id) || w.removals.iter().any(|r| r.destroyed(source, id))
     };
     match kept.filter(|id| !taken(id)) {
-        Some(id) => Ok((id.clone(), lake.keys.key(source, &id)?)),
+        Some(id) => Ok(id),
         None => {
-            let (id, key) = lake.keys.apart(source)?;
+            let (id, _) = lake.keys.apart(source)?;
             lakelands_core::lock(apart).insert(source.clone(), id.clone());
-            Ok((id, key))
+            Ok(id)
         }
     }
 }

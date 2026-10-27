@@ -1918,3 +1918,39 @@ them:
   `crates/lakelands-api/tests/host_builds.rs` is the host's view, kept
   compiling.
 
+
+## Building on aarch64
+
+On `x86_64` the crates Lakelands seals and hashes with find AES-NI,
+CLMUL and SHA-NI at run time, and a host builds nothing differently. On
+`aarch64` (Apple Silicon, ARM servers) the versions this release pins
+use the CPU's instructions only when the build asks for them, and
+otherwise seal every erasable value (AES-256-GCM-SIV and its POLYVAL)
+and compute every SHA-256 (event ids, the log's hashes, canonical
+digests) in portable software:
+
+- `aes` 0.8 and `polyval` 0.6, which `aes-gcm-siv` 0.11 seals with, use
+  AES and PMULL only under
+  `RUSTFLAGS="--cfg aes_armv8 --cfg polyval_armv8"`;
+- `sha2` 0.10 uses its SHA2 instructions only with its `asm` feature,
+  which brings in `sha2-asm`.
+
+With them, each still checks the CPU at run time and falls back to
+software where the instructions are missing. A flag set in Lakelands'
+own repository does not reach a build that takes Lakelands as a
+dependency, so a host building on `aarch64` sets them itself, in its own
+`.cargo/config.toml` and `Cargo.toml`:
+
+```toml
+# .cargo/config.toml
+[target.'cfg(target_arch = "aarch64")']
+rustflags = ["--cfg", "aes_armv8", "--cfg", "polyval_armv8"]
+
+# Cargo.toml: the feature is unified into Lakelands' own `sha2`
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+sha2 = { version = "0.10", features = ["asm"] }
+```
+
+The values sealed and the hashes are the same bytes either way. A later
+release takes the versions of these crates that detect the instructions
+at run time with no flag (lakelands#1498).

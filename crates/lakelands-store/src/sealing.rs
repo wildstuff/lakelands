@@ -52,6 +52,10 @@ pub struct Keys {
 struct Held {
     /// Each key, by source and version.
     by: BTreeMap<(SourceId, KeyId), DataKey>,
+    /// The cipher of each key a seal names, by source and the versions
+    /// and keys apart it is composed of ([`Keys::opened_cipher`]): its key
+    /// schedule run once, not at each value. Dropped with any of them.
+    ciphers: BTreeMap<(SourceId, Vec<KeyId>), Arc<Aes256GcmSiv>>,
     /// The version of each source's key its new values are sealed with,
     /// and the newest the log had used when it was chosen.
     sealing: BTreeMap<SourceId, (KeyId, Option<KeyId>)>,
@@ -222,13 +226,39 @@ impl Keys {
     /// keys of deliveries sealed apart it names ([`compose`]). One the key
     /// store does not give fails closed, naming it.
     pub fn sealed(&self, source: &SourceId, sealed: &Sealed) -> Result<DataKey> {
-        match self.opened_sealed(source, sealed)? {
-            Ok(key) => Ok(key),
-            Err(mut missing) => {
-                let (source, key) = (source.clone(), missing.remove(0));
-                Err(Error::unavailable(Situation::KeyMissing { source, key }))
-            }
+        present(source, self.opened_sealed(source, sealed)?)
+    }
+
+    /// The cipher of the key `sealed` names of `source`, failing closed
+    /// as [`Self::sealed`] does.
+    pub fn cipher(&self, source: &SourceId, sealed: &Sealed) -> Result<Arc<Aes256GcmSiv>> {
+        present(source, self.opened_cipher(source, sealed)?)
+    }
+
+    /// The cipher of [`Self::opened_sealed`]'s key, built once and kept
+    /// while every key it is composed of is held, so a batch or an act
+    /// sealing or opening many values under one key runs its key schedule
+    /// once. It is dropped when any of them is, never kept beyond them.
+    pub fn opened_cipher(
+        &self,
+        source: &SourceId,
+        sealed: &Sealed,
+    ) -> Result<std::result::Result<Arc<Aes256GcmSiv>, Vec<KeyId>>> {
+        let ids = std::iter::once(&sealed.key).chain(&sealed.apart);
+        let at = (source.clone(), ids.cloned().collect::<Vec<_>>());
+        if let Some(c) = lock(&self.held).ciphers.get(&at) {
+            return Ok(Ok(c.clone()));
         }
+        let cipher = match self.opened_sealed(source, sealed)? {
+            Ok(key) => Arc::new(cipher(&key)),
+            Err(missing) => return Ok(Err(missing)),
+        };
+        // One of its keys dropped meanwhile is not kept again by it.
+        let mut held = lock(&self.held);
+        if (at.1.iter()).all(|id| held.by.contains_key(&(source.clone(), id.clone()))) {
+            held.ciphers.insert(at, cipher.clone());
+        }
+        Ok(Ok(cipher))
     }
 
     /// [`Self::sealed`], or those of its keys the key store does not
@@ -355,6 +385,7 @@ impl Keys {
         {
             let mut held = lock(&self.held);
             held.by.retain(|(s, _), _| s != source);
+            held.ciphers.retain(|(s, _), _| s != source);
             held.sealing.remove(source);
             held.lists.remove(source);
             held.generation += 1;
@@ -378,6 +409,8 @@ impl Keys {
             let mut held = lock(&self.held);
             held.by
                 .retain(|(s, id), _| s != source || !keys.contains(id));
+            (held.ciphers)
+                .retain(|(s, ids), _| s != source || !ids.iter().any(|k| keys.contains(k)));
             if held
                 .sealing
                 .get(source)
@@ -415,6 +448,8 @@ impl Keys {
             let mut held = lock(&self.held);
             held.by
                 .retain(|(s, id), _| s != source || !keys.contains(id));
+            (held.ciphers)
+                .retain(|(s, ids), _| s != source || !ids.iter().any(|k| keys.contains(k)));
             let doomed = keys.iter().map(|k| (source.clone(), k.clone()));
             held.doomed.extend(doomed);
         }
@@ -436,6 +471,20 @@ impl Keys {
             .doomed
             .contains(&(source.clone(), id.clone()))
     }
+}
+
+/// What `opened` gives of `source`'s keys, or a refusal naming the first
+/// of them missing.
+fn present<T>(source: &SourceId, opened: std::result::Result<T, Vec<KeyId>>) -> Result<T> {
+    opened.map_err(|mut missing| {
+        let (source, key) = (source.clone(), missing.remove(0));
+        Error::unavailable(Situation::KeyMissing { source, key })
+    })
+}
+
+/// The cipher of `key`, its key schedule wiped when it is dropped.
+pub fn cipher(key: &DataKey) -> Aes256GcmSiv {
+    Aes256GcmSiv::new((&key.0).into())
 }
 
 /// One key from a version of a source's key and the keys of deliveries
@@ -692,8 +741,7 @@ fn place(source: &SourceId, body: &EventBody, field: Option<&str>) -> Option<[u8
 /// Seal in place what `sealed` names of `body`, a source's plaintext: a
 /// record's members, taken out of its patch, together in `sealed`'s box,
 /// the canonical bytes of their object (083); or a recorded output.
-pub fn seal(body: &mut EventBody, sealed: &mut Sealed, source: &SourceId, key: &DataKey) {
-    let cipher = Aes256GcmSiv::new((&key.0).into());
+pub fn seal(body: &mut EventBody, sealed: &mut Sealed, source: &SourceId, cipher: &Aes256GcmSiv) {
     let close = |v: &Value, n: [u8; 12]| {
         let plain = canonical::to_vec(v);
         let sealed = cipher
@@ -717,19 +765,18 @@ pub fn seal(body: &mut EventBody, sealed: &mut Sealed, source: &SourceId, key: &
     }
 }
 
-/// Open in place what `event`'s `sealed` names under `key`: a record's box
+/// Open in place what `event`'s `sealed` names under `cipher`'s key: a record's box
 /// back into its patch, each member sealed alone up to format 19, or a
 /// recorded output. A value that does not open under it, or a box that
 /// does not hold exactly the members `sealed` names, none of them in the
 /// patch, is answered as such, at the event's position.
-pub fn open(event: &mut Event, key: &DataKey) -> Result<()> {
+pub fn open(event: &mut Event, cipher: &Aes256GcmSiv) -> Result<()> {
     let Some(sealed) = event.sealed.clone() else {
         return Ok(());
     };
     let Some(source) = sealed.source.clone().or(event.source.clone()) else {
         return Ok(());
     };
-    let cipher = Aes256GcmSiv::new((&key.0).into());
     let position = event.position;
     let unsealable = || Error::unavailable(Situation::Unsealable { position });
     let opened = |v: &Value, n: [u8; 12]| -> Option<Value> {

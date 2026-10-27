@@ -114,8 +114,8 @@ impl Lake {
             if let Some(sealed) = d.sealed.as_mut()
                 && let Some(source) = sealed.source.clone().or_else(|| d.source.clone())
             {
-                let key = self.keys.sealed(&source, sealed)?;
-                crate::sealing::seal(&mut d.body, sealed, &source, &key);
+                let cipher = self.keys.cipher(&source, sealed)?;
+                crate::sealing::seal(&mut d.body, sealed, &source, &cipher);
             }
             let (event, canon, fault) = log::seal_judged(&self.id, position, &prev_hash, fence, d);
             if let Some(case) = fault {

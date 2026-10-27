@@ -591,7 +591,7 @@ impl Lake {
                 // A seal of a delivery sealed apart needs its version and
                 // its apart keys: it is erased where an act destroyed any
                 // of those missing, and fails closed on the first (065).
-                let (key, missing) = match self.keys.opened_sealed(source, sealed) {
+                let (key, missing) = match self.keys.opened_cipher(source, sealed) {
                     Ok(Ok(key)) => (Ok(key), Vec::new()),
                     Ok(Err(missing)) => {
                         let (source, key) = (source.clone(), missing[0].clone());
@@ -605,7 +605,7 @@ impl Lake {
                     Err(e) => return Err(e),
                 };
                 match key {
-                    Ok(key) => crate::sealing::open(&mut plain, &key)?,
+                    Ok(cipher) => crate::sealing::open(&mut plain, &cipher)?,
                     Err(_)
                         if self.erased_any(
                             w,
