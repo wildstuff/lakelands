@@ -965,6 +965,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                         default: Some(Access::Read),
                         fields: [("f".into(), Access::Write)].into(),
                         only: [("o".into(), json!("a"))].into(),
+                        writes_only: [("w".into(), json!("a"))].into(),
                         verbs: ["v".into()].into(),
                         hide_where: vec![hidden_where()],
                     },
@@ -983,6 +984,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     default: Some(Access::Read),
                     fields: [("f".into(), Access::Write)].into(),
                     only: [("o".into(), json!("a"))].into(),
+                    writes_only: [("w".into(), json!("a"))].into(),
                     verbs: ["v".into()].into(),
                     hide_where: vec![hidden_where()],
                 }),
@@ -1153,6 +1155,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             members(&IngestOpts {
                 delivery: Some("batch-7".into()),
                 sealed_apart: true,
+                commit_window: Some(1024),
             }),
         ),
         // The `applied` record is the variant's members beside its tag.
@@ -1411,6 +1414,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 create_why: Some("w".into()),
                 link: vec!["r".into()],
                 only: [("o".into(), json!("a"))].into(),
+                writes_only: [("w".into(), json!("a"))].into(),
                 ..TypeRights::default()
             }),
         ),
@@ -1649,6 +1653,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 max_depth: 3,
                 max_reactive_depth: 4,
                 commit_window_events: 5,
+                commit_window_max: 18,
                 max_graph_nodes: 6,
                 max_offset: 7,
                 max_set_changes: 8,

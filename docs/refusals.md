@@ -576,6 +576,7 @@ What a refusal is about.
 | `not_searchable` | `field` (FieldName), `type` (TypeName) | `{field}` of `{type}` is not searchable | A field a search, or a `search_weights` setting's `text_fields`, names that is not searchable. |
 | `offset_beside` | `other` (String) | `offset` and `{other}` both say where the answer starts; give one | An `offset` beside another start of the answer. |
 | `only_unappliable` | `type` (TypeName) | the grant's `only` on `{type}` cannot be applied here; the host's grants need fixing | A grant's `only` that cannot be applied to the read. |
+| `writes_only_unappliable` | `type` (TypeName) | the grant's `writes_only` on `{type}` cannot be applied here; the host's grants need fixing | A grant's `writes_only` that cannot be applied to the write. |
 | `hiding_unappliable` | `type` (TypeName) | the grant's `hide_where` on `{type}` cannot be applied here; the host's grants need fixing | A grant's hiding of a field on some records that cannot be applied to the read. |
 | `order_at_read` | `field` (FieldName), `type` (TypeName) | `order_by` names `{field}` of `{type}`, which is computed at the read; order by a stored field it is computed from | An order by a field computed at the read. |
 | `order_names_no_field` | — | an order by a value, `known_at` or `seen_at` names its field | An order by a value or a time that names no field. |
@@ -668,6 +669,7 @@ What a refusal is about.
 | `delivery_id_form` | — | a delivery id is not empty, holds no NUL character, and is not `d` followed by digits, the form of the store's own | A delivery id that is empty, holds a NUL, or takes the form of the store's own. |
 | `delivery_not_carried` | — | this catalog does not carry a delivery id to the store | A delivery id given to a catalog that does not carry it. |
 | `sealed_apart_not_carried` | — | this catalog does not carry a delivery sealed apart to the store | An ingest asked to seal its delivery apart through a catalog that does not carry it. |
+| `commit_window_not_carried` | — | this catalog does not carry an ingest's own commit window to the store | An ingest asked for a commit window of its own through a catalog that does not carry it. |
 | `trigger_too_deep` | `depth` (u32), `max` (u32) | its `max_depth` {depth} is above the lake's `max_reactive_depth` {max} | A trigger's ceiling above the lake's. |
 | `unanswered` | `position` (Position), `accepted` (bool) | [{?accepted}the acceptance\|the call] is in the log at position {position}, and no answer of the verb's executor is recorded for it, so this retry runs nothing; if the call is still running, or its answer is held, its answer will be recorded and a retry then answers it, unless the handle that ran it is dropped or loses its lease first; if its first answer said that the verb's executor was not handed the call, [{?accepted}propose the call again\|call the verb again under another key or with none] | A retry that finds no answer of the verb's executor recorded. |
 | `unclaimed_link_type` | `type` (TypeName) | `{type}` is the link type of no relation: its relation was renamed or removed | A link type no relation carries. |

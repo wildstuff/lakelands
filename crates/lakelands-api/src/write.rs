@@ -55,6 +55,13 @@ pub struct IngestOpts {
     /// default.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sealed_apart: bool,
+    /// The most records one of the call's commit windows holds, for this
+    /// delivery alone; else the lake's `limits.commit_window_events`.
+    /// Between 1 and the lake's `limits.commit_window_max`, else refused
+    /// as invalid
+    /// (`docs/decisions/016-two-write-doors-by-origin.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_window: Option<u32>,
 }
 
 /// What a write did. A writer never has to know in advance whether its

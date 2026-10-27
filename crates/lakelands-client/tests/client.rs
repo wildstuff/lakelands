@@ -1200,6 +1200,42 @@ async fn an_ingests_sealed_apart_goes_over_the_wire() {
     assert_eq!(apart, [Some(0), Some(1)], "{events:?}");
 }
 
+/// An ingest's `commit_window` goes over the wire: four records asked in
+/// windows of 2 answer two windows, and a window of 0 is refused on the
+/// option, naming the lake's ceiling (lakelands#1496).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ingests_commit_window_goes_over_the_wire() {
+    use lakelands_api::ontology::StorageKind;
+    use lakelands_api::write::IngestOpts;
+    use lakelands_core::conformance::fixture::{self as fx, Lake};
+    let store = common::memory_lake("window", Limits::default()).await;
+    let feed = fx::type_decl("feed", vec![fx::sourced("body", StorageKind::Text)]);
+    Lake::of(store.as_ref()).declare(feed).await.unwrap();
+    let (addr, keys) = common::serve(store.clone()).await;
+    let remote = common::remote(addr, store.lake(), keys);
+    let remote = remote.catalog(WriteContext::default());
+    let own = owner(store.lake());
+    let ingest = async |window: u32| {
+        let opts = IngestOpts {
+            commit_window: Some(window),
+            ..IngestOpts::default()
+        };
+        let records = (0..4)
+            .map(|i| fx::source_record("feed", &format!("k{i}"), json!({"body": "x"})))
+            .collect();
+        lakelands_api::ingest_all_with(remote.as_ref(), &own, &"wire".into(), opts, records).await
+    };
+    let windows = ingest(2).await.expect("the ingest is committed");
+    assert_eq!(windows.len(), 2, "{windows:?}");
+    let max = Limits::default().commit_window_max;
+    let err = ingest(0).await.expect_err("a window of 0 is refused");
+    assert!(
+        matches!(&err, Error::Refused { field: Some(f), .. } if f == "commit_window")
+            && matches!(err.case(), Some(Said { case: Case::LimitRange { max: m }, .. }) if *m == max),
+        "{err:?}"
+    );
+}
+
 /// A change to records goes over `schema/plan`, `schema/enact`, `proposals`
 /// and `proposals/{id}/accept_planned` as the server reads it: the plan the
 /// client returns is the plan the served store makes, the change enacted

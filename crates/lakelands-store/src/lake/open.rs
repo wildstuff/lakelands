@@ -38,6 +38,18 @@ pub(crate) fn opener(
         let case = lakelands_api::error::Case::RerankNoWindow;
         return Err(Error::invalid_at(&"limits.max_rerank_top".into(), case));
     }
+    // The lake's own window is one a delivery could not ask for: refused
+    // before anything is made, as above (016).
+    let limits = &location.limits;
+    if limits.commit_window_events > limits.commit_window_max {
+        let case = lakelands_api::error::Case::LimitRange {
+            max: limits.commit_window_max,
+        };
+        return Err(Error::invalid_at(
+            &"limits.commit_window_events".into(),
+            case,
+        ));
+    }
     let name: String = match &location.engine {
         EngineConfig::Sqlite { .. } => "sqlite".into(),
         EngineConfig::Memory => "memory".into(),

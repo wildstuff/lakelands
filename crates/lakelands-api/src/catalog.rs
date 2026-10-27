@@ -310,9 +310,10 @@ pub trait Catalog: Send + Sync {
 
     /// [`Catalog::ingest`] under `opts`: its records in the delivery
     /// `opts` names, which every `record_ingested` of the call and every
-    /// [`Committed`] carries, sealed apart where `opts` asks it. A catalog
-    /// that does not carry a delivery or the seal to the store refuses
-    /// either, rather than drop it.
+    /// [`Committed`] carries, sealed apart where `opts` asks it, in
+    /// windows of the size it asks. A catalog that does not carry a
+    /// delivery, the seal or the window to the store refuses each, rather
+    /// than drop it.
     async fn ingest_with(
         &self,
         who: &Principal,
@@ -320,14 +321,12 @@ pub trait Catalog: Send + Sync {
         opts: IngestOpts,
         records: SourceStream,
     ) -> Result<CommitStream> {
-        match (opts.delivery, opts.sealed_apart) {
-            (Some(_), _) => Err(crate::Error::invalid(
-                crate::error::Case::DeliveryNotCarried,
-            )),
-            (None, true) => Err(crate::Error::invalid(
-                crate::error::Case::SealedApartNotCarried,
-            )),
-            (None, false) => self.ingest(who, source, records).await,
+        use crate::error::Case;
+        match (opts.delivery, opts.sealed_apart, opts.commit_window) {
+            (Some(_), _, _) => Err(crate::Error::invalid(Case::DeliveryNotCarried)),
+            (None, true, _) => Err(crate::Error::invalid(Case::SealedApartNotCarried)),
+            (None, false, Some(_)) => Err(crate::Error::invalid(Case::CommitWindowNotCarried)),
+            (None, false, None) => self.ingest(who, source, records).await,
         }
     }
 }

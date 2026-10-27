@@ -409,9 +409,10 @@ impl<'o> Sight<'o> {
     }
 
     /// Whether its principal may change a shape: it holds `schema`, and no
-    /// `only` on any type, since a shape changes every record of its type.
+    /// `only` or `writes_only` on any type, since a shape changes every
+    /// record of its type. A `writes_only` holder proposes one instead.
     pub fn authors(&self) -> bool {
-        self.who.grants.schema && !self.holds_only()
+        self.who.grants.schema && !self.holds_only() && !self.holds_writes_only()
     }
 
     /// Whether its principal sees every record: it holds `restricted`, and

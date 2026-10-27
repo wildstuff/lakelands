@@ -674,6 +674,7 @@ async fn an_output_over_an_ingest_sealed_apart_does_not_read_a_leftover_row() {
     let late = IngestOpts {
         delivery: Some("late".into()),
         sealed_apart: true,
+        ..IngestOpts::default()
     };
     ingest("p1", json!({"id": "p1", "name": "Ada"}), late).await;
     let row = crate::backed::digest(&json!([crm, at]));

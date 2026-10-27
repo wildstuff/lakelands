@@ -646,6 +646,91 @@ async fn an_ingest_refusal_names_its_record_and_where_its_window_began(store: St
 }
 
 check!(
+    OWN_WINDOW = a_delivery_may_ask_its_own_commit_window_up_to_the_lakes_ceiling,
+    "016, extended (lakelands#1496): an ingest that asks its own `commit_window` is committed in windows of that many records: at 2 a refused record takes back only its own window, `from` its start, and at twice the lake's `commit_window_events` the lake's two windows are one; a window of 0 or above `limits.commit_window_max` is refused as `limit_range` on `commit_window`, naming the ceiling, and nothing is appended; a location whose `commit_window_events` is above its ceiling is refused at open, naming the setting",
+    given
+);
+
+async fn a_delivery_may_ask_its_own_commit_window_up_to_the_lakes_ceiling(
+    store: Store,
+    given: Given,
+) -> Held {
+    use crate::conformance::fixture::limits;
+    use lakelands_api::{IngestOpts, ingest_all_with};
+    let l = Lake::of(store.as_ref());
+    l.declare(feed()).await?;
+    let (src, rec) = (SourceId::from("wire"), |k: String| {
+        source_record("feed", &k, json!({"body": "x"}))
+    });
+    let at = |w: u32, records| {
+        let opts = IngestOpts {
+            commit_window: Some(w),
+            ..IngestOpts::default()
+        };
+        ingest_all_with(l.cat.as_ref(), &l.own, &src, opts, records)
+    };
+    // At 2 the sixth record is refused: `s0`..`s3` are written, its own
+    // window, from `s4`, is not.
+    let mut small: Vec<_> = (0..5).map(|i| rec(format!("s{i}"))).collect();
+    small.push(source_record("feed", "s5", json!({"verdict": "no"})));
+    let fed = at(2, small).await;
+    let (s3, s4) = (l.read("feed", "s3").await, l.read("feed", "s4").await);
+    ensure!(
+        matches!(
+            fed,
+            Err(Error::Ingested {
+                index: 5,
+                from: 4,
+                ..
+            })
+        ) && s3.is_ok()
+            && s4.is_err(),
+        "at a window of 2 the refused sixth record takes back only its own window, from 4, \
+         `s3` written and `s4` not; it answered {fed:?}, {s3:?}, {s4:?}"
+    );
+    let lake = limits().commit_window_events;
+    let bulk = |p: &str| (0..2 * lake).map(|i| rec(format!("{p}{i}"))).collect();
+    let own = at(2 * lake, bulk("b"))
+        .await
+        .must("ingesting at twice the lake's window")?;
+    let theirs = l
+        .ingest("wire", bulk("c"))
+        .await
+        .must("ingesting at the lake's window")?;
+    ensure!(
+        own.len() == 1 && theirs.len() == 2,
+        "{} records commit in one window at twice the lake's window and in two at its own; \
+         they answered {own:?} and {theirs:?}",
+        2 * lake
+    );
+    let max = limits().commit_window_max;
+    let head = store.head().await.must("reading the head")?;
+    for w in [0, max + 1] {
+        let what = format!("an ingest asking a window of {w}");
+        let said = at(w, vec![rec("r".into())]).await;
+        let e = refused_unmoved(store.as_ref(), head, &what, said).await?;
+        ensure!(
+            matches!(&e, Error::Refused { field: Some(f), .. } if f == "commit_window")
+                && invalid_case(&e) == Some(&Case::LimitRange { max }),
+            "{what} is refused on `commit_window` as `limit_range` naming {max}: {e:?}"
+        );
+    }
+    let over = lakelands_api::location::Limits {
+        commit_window_max: lake - 1,
+        ..limits()
+    };
+    let err = (given.relimit)(store, Seams::default(), over).await.err();
+    ensure!(
+        matches!(&err, Some(e @ Error::Refused { field: Some(f), .. })
+            if f == "limits.commit_window_events"
+                && invalid_case(e) == Some(&Case::LimitRange { max: lake - 1 })),
+        "a location whose `commit_window_events` is above its ceiling is refused at open, \
+         naming the setting; it answered {err:?}"
+    );
+    Ok(())
+}
+
+check!(
     INSERT_ONLY = an_insert_only_type_is_written_once_by_its_source,
     "016 and 027, extended (lakelands#1044): a type marked `insert_only` takes a record from its source once: the same record again is a duplicate, other values for a key that holds a record, live or retired, or that the window wrote already, are refused as `written_once`, naming the record and appending nothing, and the pair cut after its first record on a signal is refused alike at its second, the first written and `from` 1 (lakelands#886), while an author still writes its authored fields; a key held from its writer answers as on an unmarked type; `describe_type` says the mark; declared on a type that holds records it is taken with no migration, its version moving and its schema hash not, and taken off, a key moves its version again"
 );
@@ -823,13 +908,14 @@ async fn an_ingests_delivery_is_the_callers_or_the_stores_own(store: Store) -> H
     // A call of many windows, the first of them all duplicates: one id,
     // from the first event the call appended, and none before it.
     let bulk = |n: usize| (0..n).map(|i| r(&format!("b{i}"), "e")).collect::<Vec<_>>();
-    call(Some("bulk"), bulk(32)).await?;
-    let (before, windows, ingested) = call(None, bulk(100)).await?;
+    let window = limits().commit_window_events.max(1) as usize;
+    call(Some("bulk"), bulk(window)).await?;
+    let (before, windows, ingested) = call(None, bulk(3 * window + 4)).await?;
     let own = Some(DeliveryId::from(format!("d{}", before.next())));
     let (empty, appended): (Vec<_>, Vec<_>) = windows.iter().partition(|w| w.records == 0);
     ensure!(
         appended.len() >= 2
-            && ingested.len() == 68
+            && ingested.len() == 2 * window + 4
             && ingested.iter().all(|(_, d)| *d == own)
             && appended.iter().all(|w| w.delivery == own)
             && empty.iter().all(|w| w.delivery.is_none()),

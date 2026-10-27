@@ -2660,6 +2660,7 @@ async fn ingest_rate(plan: &Plan, dir: &Path, report: &mut Report) -> Result<(),
             }
         };
         location.limits.commit_window_events = window;
+        location.limits.commit_window_max = location.limits.commit_window_max.max(window);
         let seams = lakelands_api::seam::Seams {
             engines: lakelands_cli::engines(),
             ..Default::default()
