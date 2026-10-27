@@ -967,7 +967,7 @@ async fn a_lake_of_the_format_before_is_upgraded_by_a_writer_and_refused_to_a_re
     let said = format!(
         "lake `{lake}` is written in log format {OLD}, and this release writes format {NEW}: \
          a writer's open upgrades it, so open it once for writing or run `lakelands upgrade \
-         {lake}`, and it is read; nothing was read from it"
+         --lake {lake}`, and it is read; nothing was read from it"
     );
     assert!(e.to_string().contains(&said), "{e}");
     let store = open(&lake, OpenMode::Write).await.unwrap();
