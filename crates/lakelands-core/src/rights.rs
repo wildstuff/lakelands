@@ -780,10 +780,14 @@ impl Sight<'_> {
 
     /// Whether its principal may create a link record of `decl` between
     /// the end records `from` and `to` (absent where none is found): one
-    /// end it may write is enough, unless the other is to-one by the
-    /// relation's cardinality or a computed field of the other's type reads
-    /// across the relation, judged against the declarations in force; then
-    /// it must write both. A type that is no link type is not judged.
+    /// held end is enough, unless the other is to-one by the relation's
+    /// cardinality or a computed field of the other's type reads across the
+    /// relation, judged against the declarations in force; then both must
+    /// be held. An end is held where its type carries its principal's
+    /// `writes_only` and the record holds those pairs; an end of a type
+    /// carrying none is held by no grant, so a link with no end held is
+    /// refused, never defaulted open (006). A type that is no link type is
+    /// not judged.
     pub fn links(
         &self,
         decl: &TypeDecl,
@@ -821,8 +825,8 @@ impl Sight<'_> {
         );
         let held = |(d, fields, ..): &End<'_>| {
             d.is_some_and(|d| match self.writes(d) {
-                Admit::All => true,
-                admit => fields.is_some_and(|f| admit.holds(f)),
+                admit @ Admit::Only(_) => fields.is_some_and(|f| admit.holds(f)),
+                _ => false,
             })
         };
         let freed =

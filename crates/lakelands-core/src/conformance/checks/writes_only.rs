@@ -4,8 +4,9 @@
 //! `writes_only` on a type leaves its holder's reads as its other grants
 //! give them and admits to its writes only the records whose fields hold
 //! its values: the record at the key, live or retired, and the record the
-//! write leaves. A link is its holder's to make by one end it may write,
-//! by both where the link reaches the other end's own answers.
+//! write leaves. A link is its holder's to make by one end its pairs
+//! hold, by both where the link reaches the other end's own answers; an
+//! end of a type carrying no `writes_only` is held by none.
 
 use lakelands_api::write::{Change, ChangeTo};
 use lakelands_api::{RelationName, VerbName};
@@ -22,7 +23,7 @@ check!(
 
 check!(
     WRITES_ONLY_LINKS = a_link_is_made_by_one_held_end,
-    "006 (lakelands#1490): a holder of `writes_only` on a link's end types links a record it may write to one it may not, and not two it may not; where the relation is to-one at the end it may not write, both ends must be its own; a link record must hold the pairs its `writes_only` on the link type names, at its create and at an `unlink`; with `writes_only` on an end type and none on the link type every link of that relation is refused; each refused `not_granted`, appending nothing"
+    "006 (lakelands#1490): a holder of `writes_only` on a link's end types links a record its pairs hold to one they do not, and not two they do not; an end of a type carrying no `writes_only` is held by none, so a holder of it on the link type alone, or on one end and not the other, links nothing by that end and is offered no relation where no end can be held; where the relation is to-one at the end it may not write, both ends must be its own; a link record must hold the pairs its `writes_only` on the link type names, at its create and at an `unlink`; with `writes_only` on an end type and none on the link type every link of that relation is refused; each refused `not_granted`, appending nothing"
 );
 
 check!(
@@ -317,6 +318,15 @@ async fn a_link_is_made_by_one_held_end(store: Store) -> Held {
     let wes = wes(s, json!({}));
     let types = json!({"job": {"writes_only": {"team": "a"}}});
     let vic = holder(s, "vic", json!({"default": "write", "types": types}));
+    // `pia` holds `writes_only` on `job` and its link types, none on
+    // `site`; `lin` on the link types alone.
+    let (fs, ats) = link_types();
+    let team = json!({"writes_only": {"team": "a"}});
+    let types = json!({"job": team, "site": {"default": "read"},
+                       fs.as_str(): team, ats.as_str(): team});
+    let pia = holder(s, "pia", json!({"default": "write", "types": types}));
+    let types = json!({fs.as_str(): team, ats.as_str(): team});
+    let lin = holder(s, "lin", json!({"default": "write", "types": types}));
     let link = async |who: &Principal, from: &str, rel: &RelationName, to: &str, fields: Value| {
         let (from, to) = (k(from), k(to));
         said(
@@ -358,17 +368,33 @@ async fn a_link_is_made_by_one_held_end(store: Store) -> Held {
             link(&vic, "j1", &for_site, "s1", a()).await,
         ),
         ("an `unlink` of team b's", unlink("j3").await),
+        (
+            "a write to team b's link of j3 to s1",
+            link(&wes, "j3", &for_site, "s1", a()).await,
+        ),
+        (
+            "pia's j2 to s2, a site of no `writes_only`",
+            link(&pia, "j2", &for_site, "s2", a()).await,
+        ),
+        (
+            "lin's j1 to s1, no end held",
+            link(&lin, "j1", &for_site, "s1", a()).await,
+        ),
     ];
     let wrong: Vec<_> = refused.iter().filter(|(_, said)| *said != ng).collect();
     ensure!(
         wrong.is_empty(),
-        "every link `wes` may not make or unmake is refused `not_granted`: {wrong:?}"
+        "every link its holder may not make or unmake is refused `not_granted`: {wrong:?}"
     );
     head_unmoved(s, head, "every refused link by `wes`").await?;
     let applied = [
         (
             "her j1 to another's s2",
             link(&wes, "j1", &for_site, "s2", a()).await,
+        ),
+        (
+            "a write to her link of j1 to s2",
+            link(&wes, "j1", &for_site, "s2", json!({"team": "a"})).await,
         ),
         (
             "another's j2 to her s1",
@@ -379,11 +405,21 @@ async fn a_link_is_made_by_one_held_end(store: Store) -> Held {
             link(&wes, "j1", &at_site, "s2", a()).await,
         ),
         ("an `unlink` of her own", unlink("j1").await),
+        (
+            "pia's j1 to s1, a site of no `writes_only`",
+            link(&pia, "j1", &for_site, "s1", a()).await,
+        ),
     ];
     let wrong: Vec<_> = applied.iter().filter(|(_, said)| *said != ok).collect();
     ensure!(
         wrong.is_empty(),
         "a link with one end `wes` may write, its record holding team a, is hers: {wrong:?}"
+    );
+    let told = describe_type(cat, &lin, "job").await?;
+    ensure!(
+        told.may.link.is_empty(),
+        "`describe_type` offers lin, who holds no end, no relation: {:?}",
+        told.may
     );
     Ok(())
 }
@@ -393,15 +429,15 @@ async fn a_change_or_a_proposal_is_judged_as_the_write_is(store: Store) -> Held 
     let cat = l.cat.as_ref();
     jobs(&l).await?;
     let wes = wes(s, json!({"schema": true}));
-    let change = |filter: &str| Change::Records {
+    let change = |filter: &str, to: Value| Change::Records {
         ty: "job".into(),
         filter: Box::new(filter.into()),
-        to: ChangeTo::Set(de(json!({"n": 3}))),
+        to: ChangeTo::Set(de(to)),
         only: BTreeMap::new(),
         skip_restricted: false,
     };
     let head = s.head().await.must("the head")?;
-    let mixed = change("state = 'open'");
+    let mixed = change("state = 'open'", json!({"n": 3}));
     let planned = cat
         .plan(&wes, mixed.clone())
         .await
@@ -415,7 +451,7 @@ async fn a_change_or_a_proposal_is_judged_as_the_write_is(store: Store) -> Held 
     let enacted = cat.enact(&wes, mixed, &planned.report_id).await;
     not_granted("`enact` of a change one record refuses", enacted)?;
     head_unmoved(s, head, "a refused `enact`").await?;
-    let hers = change("team = 'a'");
+    let hers = change("team = 'a'", json!({"n": 3}));
     let planned = cat
         .plan(&wes, hers.clone())
         .await
@@ -423,6 +459,17 @@ async fn a_change_or_a_proposal_is_judged_as_the_write_is(store: Store) -> Held 
         .data;
     let enacted = cat.enact(&wes, hers, &planned.report_id).await;
     enacted.must("`enact` of a change to her own")?;
+    let off = change("team = 'a'", json!({"team": "b"}));
+    let planned = cat.plan(&wes, off.clone()).await.must("`wes`'s plan")?.data;
+    let told = line(&planned);
+    ensure!(
+        told.ends_with("refused NotGranted 2 [j1,j3]"),
+        "the plan tells her records moved off her pairs refused `not_granted`: {told}"
+    );
+    let head = s.head().await.must("the head")?;
+    let enacted = cat.enact(&wes, off, &planned.report_id).await;
+    not_granted("`enact` of a change off her pairs", enacted)?;
+    head_unmoved(s, head, "a refused `enact` off her pairs").await?;
     // Her proposals.
     let proposed = async |who: &Principal, key: &str, n: u32| {
         let write = json!({"write": "upsert", "type": "job", "key": key, "patch": {"n": n}});
@@ -454,6 +501,50 @@ async fn a_change_or_a_proposal_is_judged_as_the_write_is(store: Store) -> Held 
         "her pinned proposal on j3, moved since, is refused `write_changed_since_proposed`: \
          {accepted:?}"
     );
+    // Her change to records holds her pairs beside it: its accept writes
+    // hers alone. One whose `only` contradicts them is refused.
+    let records = |filter: &str| ProposedWrite::Records {
+        ty: "job".into(),
+        filter: filter.into(),
+        to: ChangeTo::Set(de(json!({"n": 4}))),
+        only: BTreeMap::new(),
+        skip_restricted: false,
+        plan: Box::default(),
+    };
+    let filed = id(cat
+        .propose(&wes, records("state = 'shut'"), "her shut".into())
+        .await)?;
+    l.upsert("job", "j4", json!({"team": "b", "state": "shut"}))
+        .await?;
+    let listed = cat.proposals(&l.own, ProposalFilter::default()).await;
+    let listed = listed.must("the owner's listing")?.data;
+    let found = listed.iter().find(|p| p.id == filed);
+    let Some(change) = found.and_then(|p| p.write.as_ref()?.change()) else {
+        return Err(Failure::new("the owner must be listed her change"));
+    };
+    let planned = cat.plan(&l.own, change).await.must("the owner's plan")?;
+    let head = s.head().await.must("the head")?;
+    let accepted = cat.accept_planned(&l.own, &filed, &planned.data.report_id);
+    accepted.await.must("the owner's accept of her change")?;
+    let events = events_after(s, head).await?;
+    let wrote: Vec<_> = super::change::writes(&events)
+        .into_iter()
+        .map(|w| w.0)
+        .collect();
+    ensure!(
+        wrote == ["j3"],
+        "the accept of her change writes her shut j3 alone, never b's j4: {wrote:?}"
+    );
+    let both = json!({"job": {"only": {"team": "b"}, "writes_only": {"team": "a"}}});
+    let cam = holder(s, "cam", json!({"default": "write", "types": both}));
+    let none = records("state = 'gone'");
+    let head = s.head().await.must("the head")?;
+    let contradicted = cat.propose(&cam, none, "none".into()).await;
+    not_granted(
+        "a change whose `only` contradicts `writes_only`",
+        contradicted,
+    )?;
+    head_unmoved(s, head, "a refused change by cam").await?;
     // A reviewer of `writes_only` decides what its pairs admit.
     let bob = holder(s, "bob", json!({"default": "write"}));
     let (mine, others) = (
@@ -474,6 +565,9 @@ async fn a_change_or_a_proposal_is_judged_as_the_write_is(store: Store) -> Held 
     not_granted("rae's accept of b's j6", cat.accept(&rae, &made).await)?;
     head_unmoved(s, head, "rae's refused decisions").await?;
     cat.accept(&rae, &mine).await.must("rae's accept on j1")?;
+    let again = id(proposed(&bob, "j1", 10).await)?;
+    let rejected = cat.reject(&rae, &again, "no".into()).await;
+    rejected.must("rae's reject on j1")?;
     // With `schema` she proposes a shape and changes none.
     let other = json!({"declare": "type", "name": "other",
                        "fields": [{"name": "n", "type": {"kind": "text"}}]});
@@ -492,6 +586,8 @@ async fn a_change_or_a_proposal_is_judged_as_the_write_is(store: Store) -> Held 
     let migrated = json!({"write": "migrate", "migration": {"to": wider}});
     id(cat.propose(&wes, de(migrated), "a field".into()).await)?;
     let head = s.head().await.must("the head")?;
+    let applied = cat.apply(&wes, vec![de(other.clone())]).await;
+    not_granted("`apply`", applied)?;
     not_granted("`declare`", cat.declare(&wes, de(other)).await)?;
     let m = crate::conformance::fixture::migration(wider);
     not_granted("`migrate`", cat.migrate(&wes, m).await)?;
@@ -549,6 +645,12 @@ async fn describe_tells_writes_only_and_offers_no_refused_write(store: Store) ->
         if told.may.upsert != creates {
             wrong.push(format!("{} on memo: {:?}", who.id, told.may));
         }
+    }
+    let types = json!({"job": {"writes_only": {"n": "1"}}});
+    let una = holder(s, "una", json!({"default": "write", "types": types}));
+    let told = describe_type(cat, &una, "job").await?;
+    if told.may.upsert || told.may.retire || !told.may.link.is_empty() {
+        wrong.push(format!("una, her grant unappliable: {:?}", told.may));
     }
     ensure!(
         wrong.is_empty(),

@@ -1039,6 +1039,13 @@ impl Sight<'_> {
                         .all(|f| field_access(who, &lt, f).writes())
                         && self.writes(&lt) != crate::rights::Admit::Nothing
                         && (pairs.iter()).all(|(f, v)| crate::rights::create_holds(who, &lt, f, v))
+                        // A link of a holder of `writes_only` is made by an
+                        // end its pairs hold, which only such a type has.
+                        && (!self.write_holder(&lt)
+                            || [Some(t), self.force.ty(&r.target)]
+                                .into_iter()
+                                .flatten()
+                                .any(|d| matches!(self.writes(d), crate::rights::Admit::Only(_))))
                 })
                 .map(|r| r.name.clone())
                 .collect(),

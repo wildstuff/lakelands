@@ -2175,8 +2175,14 @@ pair (lakelands#1490).
   that write the type, naming the type, as `writes_only_unappliable`.
   It changes no read: a grant that says nothing about reading is no
   reason to hide what the other grants show.
-- **Links.** A link is its holder's to make by one end it may write: a
-  holder links its own record to one it may only read. Both ends must be
+- **Links.** A link is its holder's to make by one end it holds: a
+  record of an end type that carries the holder's `writes_only` and
+  holds its pairs. A holder links its own record to one it may only read.
+  An end of a type carrying no `writes_only` is held by no grant, not
+  even by a grant that writes the type: the pairs are what make a record
+  the holder's, and a type without them names no record as its own. A
+  link with no end held is refused, not opened, so a holder of
+  `writes_only` on the link type alone makes no link. Both ends must be
   its own where the link would change what the other end answers: where
   a derived or computed field of the other end's type reads across the
   relation, judged against the declarations in force, and where the
