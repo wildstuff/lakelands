@@ -354,8 +354,9 @@ recommendation; the decision is the project's.
   the store find it with `to`. The argument held on this schema only.
 - **With the description's sentence.** The `cypher` description should
   say that `ORDER BY` beside an aggregate is refused, and
-  lakelands#1446 should word the refusal in the statement's terms;
-  both C losses were there.
+  lakelands#1446 should word the refusal in the statement's terms
+  (fixed by lakelands#1451: the subset refuses `ORDER BY` beside an
+  aggregate at `ORDER`'s offset); both C losses were there.
 - **Argued, not measured.**
   - Paging through `cypher` and a door listing both tools: no run used
     either.

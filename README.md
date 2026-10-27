@@ -163,43 +163,29 @@ terrain Lakelands is built for, and where it is not the right tool.
   map first. An agent can draw it over MCP (`declare_type`, `add_field`),
   but there is always a map.
 
-> **Status: `0.19.0`.** Lakelands `0.19.0` is the `lakelands` CLI, its
+> **Status: `0.20.0`.** Lakelands `0.20.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (806 checks through the doors and 78 through the
-> engine seam), with 79 decision records and the event log at format
-> version 19, installable from the release. Its budgets: the store
-> facade and engine traits hold 89 of 110 methods, the core crates'
-> product code 84 511 of 85 000 lines and their specification 156 395 of
-> 157 000, and 6 of 20 `cfg(feature)` sites. A ceiling rises only by a
-> recorded rule (decision 047): the operator set the round's ceilings at
-> 85 000 and 157 000, and the ratchet bases stand at 85 000 and 156 500.
-> Beside what `0.18.0` held, `lakelands serve` runs on a multi-thread
-> runtime whose threads the server section sets (lakelands#1388), and
-> answers health and readiness (lakelands#1379). A lake is backed up and
-> restored by commands (lakelands#1386). A SQLite lake's projection may
-> live in a directory of its own, a PostgreSQL lake's parts in
-> tablespaces, and a root names the directories of its lakes, exports and
-> backups (lakelands#1390). A host binds a meter through which a lake is
-> measured, and `lakelands serve` can expose the metrics
-> (lakelands#1396). A handle whose lease another writer took is no
-> writer, and a server that holds it answers not ready (lakelands#1393).
-> The build bundles SQLite 3.54.1 with rusqlite 0.41, and the minimum
-> Rust version is 1.89 (lakelands#1397). Rights go through the `Sight`
-> on every door, and are private to the core (lakelands#1365,
-> lakelands#1384, lakelands#1387, lakelands#1391); PostgreSQL carries the
-> log's tip into the append and the memory engine shares provenance
-> (lakelands#1380, lakelands#1381). Under a vector index a search pages
-> one ranking of what its reader may see, where on PostgreSQL a record
-> kept from the reader could shift the pages it was shown
-> (lakelands#1254, decision 078); the security advisory is published
-> with this release. Decisions 075 and 076, a read across lakes and a
-> lake with one writer that many processes write through, are accepted
-> and not yet built (lakelands#1383, lakelands#1389). A writer's open
-> upgrades a lake of format 14, 15, 16, 17 or 18 to 19 by appending;
-> the first writer's open of 0.19.0 also rebuilds each PostgreSQL lake's
-> projection (its layout is 7) beside the one it replaces, the log
-> untouched, and the lake of format 19 is kept beside those of the
+> conformance suite (891 checks through the doors and 84 through the
+> engine seam), with 83 decision records and the event log at format
+> version 20, installable from the release. Its budgets: the store
+> facade and engine traits hold 91 of 110 methods, the core crates'
+> product code 90 621 of 92 500 lines and their specification 167 799 of
+> 168 000, and 6 of 20 `cfg(feature)` sites. A ceiling rises only by a
+> recorded rule (decision 047): the ceilings stand at 92 500 and 168 000,
+> and the ratchet bases at 91 000 and 168 000.
+> Beside what `0.19.0` held, a lexical score is BM25F on every engine
+> (lakelands#1459), the log stores what an append shares once and seals a
+> record's erasable values in one box (lakelands#1440, lakelands#1455),
+> an object set may be decided at the read (lakelands#1437), a field may
+> be hidden by a condition (lakelands#1454), and the openCypher subset is
+> a `cypher` tool beside `query` over MCP and a statement over REST, the
+> CLI and the client (lakelands#1434, lakelands#1451). A condition nests
+> at most 32 levels (lakelands#1439). A writer's open upgrades a lake of
+> format 14, 15, 16, 17, 18 or 19 to 20 by appending; the first writer's
+> open of 0.20.0 also rebuilds each SQLite and PostgreSQL lake's
+> projection (its layout is 9) beside the one it replaces, the log
+> untouched, and the lake of format 20 is kept beside those of the
 > releases before.
 
 ## Try it
@@ -328,7 +314,9 @@ milestones. `0.20.0` built the openCypher subset as an MCP read tool
 beside `query`, PageRank and the cheapest walk, patterns that branch
 and join, a change planned before it acts, sets decided at the read, a
 field hidden on the records a condition selects, where a lexical hit
-matched, and the compact log format 20.
+matched, BM25F as the lexical score on every engine (lakelands#1459),
+the compact log format 20, and the sealing of a record's erasable values
+in one box.
 
 ## Licence
 

@@ -84,13 +84,29 @@ fn kept_lake_sealed(format: u32) -> (FileKeyring, LakeId, Vec<(String, bool)>) {
     let ring = FileKeyring::new(lake.join("keys"));
     let id = LakeId::from(format!("kept{format}").as_str());
     let mut sealed = Vec::new();
+    // From format 20 a frame holds what the events it covers share.
+    let (mut frame, mut covered) = (serde_json::Value::Null, 0);
     for line in log.lines() {
         let event: serde_json::Value = serde_json::from_str(line).unwrap();
-        let (Some(source), Some(key)) = (event["source"].as_str(), event["sealed"]["key"].as_str())
+        if event.get("frame").is_some() {
+            (covered, frame) = (event["events"].as_u64().unwrap(), event["frame"].clone());
+            continue;
+        }
+        let shared = covered > 0;
+        covered = covered.saturating_sub(1);
+        let held = |path: &dyn Fn(&serde_json::Value) -> &serde_json::Value| {
+            let own = path(&event).as_str();
+            let own = own.or_else(|| path(&frame).as_str().filter(|_| shared));
+            own.map(str::to_owned)
+        };
+        let (Some(source), Some(key)) = (held(&|e| &e["source"]), held(&|e| &e["sealed"]["key"]))
         else {
             continue;
         };
-        let (source, key) = (SourceId::from(source), lakelands_api::id::KeyId::from(key));
+        let (source, key) = (
+            SourceId::from(source.as_str()),
+            lakelands_api::id::KeyId::from(key.as_str()),
+        );
         let given = ring.key(&id, &source, &key).unwrap();
         sealed.push((source.to_string(), given.is_some()));
     }
@@ -171,6 +187,25 @@ fn the_kept_lake_of_format_19s_key_file_is_read_as_written() {
     let ids = |s: &str| ring.ids(&kept19, &SourceId::from(s)).unwrap();
     assert_eq!(ids("ledger").len(), 1);
     assert!(ids("web").is_empty());
+}
+
+/// The key file of the kept lake of format 20 is read as written too:
+/// `crm`'s key is given, the forgotten `web`'s is not, though the three
+/// records `crm` ingested in one append are sealed in boxes under it.
+#[test]
+fn the_kept_lake_of_format_20s_key_file_is_read_as_written() {
+    let (ring, kept20, sealed) = kept_lake_sealed(20);
+    let given = |s: &str, g: bool| (s.to_owned(), g);
+    assert_eq!(
+        sealed,
+        [given("crm", true), given("crm", true), given("web", false)]
+    );
+    assert_eq!(ring.ids(&kept20, &SourceId::from("crm")).unwrap().len(), 1);
+    assert!(
+        ring.ids(&kept20, &SourceId::from("web"))
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// A version destroyed goes with every older one, from another keyring
