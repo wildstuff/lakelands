@@ -227,6 +227,15 @@ impl From<Error> for Failure {
                  where it says the executor was not handed the call"
                     .to_owned()
             }
+            // An act of erasure that is in the log: sent again as it was,
+            // it appends nothing and finishes what is left.
+            Error::Unavailable { situation }
+                if matches!(**situation, Situation::ActUnfinished { .. }) =>
+            {
+                "the act is done in the log: repeat it as it was, or open the lake for writing, \
+                 to finish it"
+                    .to_owned()
+            }
             // A line no writer writes came in by an edited export; the
             // log holds it, so a rebuild meets it again.
             Error::Unavailable { situation }

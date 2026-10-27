@@ -660,7 +660,7 @@ check!(
 
 check!(
     FORGET_EXPECTED_TIME = the_expected_time_follows_the_lakes_last_rebuild,
-    "058, extended (lakelands#1152): the time a preflight expects the act to hold the writer's lock is an estimate: before the handle has rebuilt, the log's events at the engine's stated rate and the preflight's own walk of the log, which the act walks again; after a rebuild, the events at that rebuild's measured rate, with the last reclaim's time and the walk, for a forgetting and a removal alike: after an open that rebuilds a projection an older build laid out, at most that open's time and the walk's; after `rebuild()` and a `compact()`, the act's rebuild and its reclaim, at most their measured time and the walk's and at least two thirds of the two less 10 ms, the engine's stated rate set aside",
+    "058, extended (lakelands#1152, lakelands#1486): the time a preflight expects the act to hold the writer's lock is an estimate: before the handle has rebuilt, the log's events at the engine's stated rate and the preflight's own walk of the log, which the act walks again; after a rebuild, the events at that rebuild's measured rate, with the last reclaim's time and the walk, for a forgetting and a removal alike: after an open that rebuilds a projection an older build laid out, at most that open's time and the walk's; after `rebuild()` and a `compact()`, the act's rebuild and its reclaim, at most their measured time and the walk's and at least two thirds of the two less 10 ms, the engine's stated rate set aside, and so on a handle opened after them, from the rate and the time the projection keeps",
     given
 );
 
@@ -1169,6 +1169,16 @@ async fn the_expected_time_follows_the_lakes_last_rebuild(
             pre.events
         );
     }
+    // Another process's preflight: its handle has run neither.
+    let store = fault(store).await.map_err(opened)?;
+    let began = std::time::Instant::now();
+    let pre = store.forget_preflight(&crm).await.must("the preflight")?;
+    let (walked, ms) = (ms(began), pre.expected_ms);
+    ensure!(
+        ms <= took + walked + 3 && took * 2 <= ms * 3 + 30,
+        "a handle opened after a rebuild and a reclaim of {took} ms expects them as the handle \
+         that ran them does, with its walk of {walked} ms; it expects {ms} ms"
+    );
     Ok(())
 }
 

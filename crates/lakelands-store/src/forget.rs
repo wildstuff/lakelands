@@ -627,10 +627,11 @@ fn run_of(
     let mut report = of_set(reports, view.as_ref(), lake, way);
     drop(view);
     lake.append(&mut w, drafts)?;
-    report.reclaimed = lake.finish_forgetting(&mut w)?;
+    let at = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
+    report.reclaimed = lake.finish_act(&mut w, at)?;
     report.way = lake.forget_way().unwrap_or(report.way);
     report.reclaim_owed = lake.reclaim_owed();
-    report.position = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
+    report.position = at;
     settle(&mut report);
     Ok(report)
 }
