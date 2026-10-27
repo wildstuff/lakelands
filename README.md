@@ -166,14 +166,14 @@ terrain Lakelands is built for, and where it is not the right tool.
 > **Status: `0.20.0`.** Lakelands `0.20.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (891 checks through the doors and 84 through the
-> engine seam), with 83 decision records and the event log at format
+> conformance suite (900 checks through the doors and 84 through the
+> engine seam), with 84 decision records and the event log at format
 > version 20, installable from the release. Its budgets: the store
 > facade and engine traits hold 91 of 110 methods, the core crates'
-> product code 90 621 of 92 500 lines and their specification 167 799 of
-> 168 000, and 6 of 20 `cfg(feature)` sites. A ceiling rises only by a
-> recorded rule (decision 047): the ceilings stand at 92 500 and 168 000,
-> and the ratchet bases at 91 000 and 168 000.
+> product code 91 318 of 92 500 lines and their specification 169 364 of
+> 169 500, and 6 of 20 `cfg(feature)` sites. A ceiling rises only by a
+> recorded rule (decision 047): the ceilings stand at 92 500 and 169 500,
+> and the ratchet bases at 91 500 and 169 500.
 > Beside what `0.19.0` held, a lexical score is BM25F on every engine
 > (lakelands#1459), the log stores what an append shares once and seals a
 > record's erasable values in one box (lakelands#1440, lakelands#1455),
