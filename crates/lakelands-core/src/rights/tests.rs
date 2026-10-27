@@ -617,3 +617,40 @@ fn one_reads_all_whom_no_grant_holds_below_read_and_no_only_bounds() {
         "a type's default, an `only`"
     );
 }
+
+#[test]
+fn a_computed_field_reads_across_a_relation_by_its_dependency_or_its_expression() {
+    let rel = lakelands_api::RelationName::from("for_site");
+    let computed = |derived: Option<&str>, depends: &[&str], function: bool| TypeDecl {
+        fields: vec![FieldDecl {
+            authority: Authority::Derived,
+            derived: derived.map(lakelands_api::expr::Condition::from),
+            depends_on: depends.iter().map(|d| FieldName::from(*d)).collect(),
+            function: function.then(|| "f".to_owned()),
+            ..FieldDecl::of("score", StorageKind::Text)
+        }],
+        ..TypeDecl::named("site")
+    };
+    let reads = |d: &TypeDecl| reads_relation(d, Some(&rel));
+    assert!(!reads_relation(&computed(None, &["for_site"], false), None));
+    assert!(reads(&computed(None, &["for_site"], false)), "a dependency");
+    assert!(reads(&computed(Some("for_site = 'x'"), &[], false)));
+    assert!(
+        reads(&computed(Some("(("), &[], false)),
+        "an expression that does not parse"
+    );
+    assert!(reads(&computed(None, &["for_site"], true)), "a function's");
+    assert!(!reads(&computed(Some("zone = 'x'"), &["zone"], false)));
+    let mut authored = computed(None, &["for_site"], false);
+    authored.fields[0].authority = Authority::Authored;
+    assert!(
+        !reads(&authored),
+        "a field computed by nothing reads nothing"
+    );
+    let mut called = computed(None, &["for_site"], true);
+    called.fields[0].authority = Authority::Authored;
+    assert!(
+        reads(&called),
+        "a function's field is computed whatever its authority"
+    );
+}

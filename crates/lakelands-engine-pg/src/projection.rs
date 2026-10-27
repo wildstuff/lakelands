@@ -1315,6 +1315,25 @@ pub(crate) fn head_record(
     Ok(records_at(db, names, &Vec::from_iter(row), 0)?.pop())
 }
 
+/// The latest states of the records of `ty` that `keys` names, in no
+/// order: one statement, and one more each for the bases and the vectors
+/// they keep apart ([`joined`]).
+pub(crate) fn head_records(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    keys: &[String],
+) -> Result<Vec<StoredRecord>> {
+    db.records(
+        names,
+        &format!(
+            "SELECT {RECORD} FROM {} WHERE h.ty = $1 AND h.key = ANY($2::text[])",
+            RECORDS.at_head(names)
+        ),
+        &[&ty.as_str(), &keys],
+    )
+}
+
 /// The head index rows of records, as arrays for one statement each.
 #[derive(Default)]
 struct IndexRows<'r> {

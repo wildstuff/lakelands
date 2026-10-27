@@ -68,6 +68,13 @@ It takes the creating event's `known_at`, `position` and `writer`, and
 nothing of a source: no `source`, `seen_at`, `upstream`,
 `procedure` or `procedure_version`, since the value came from the declaration.
 
+A field the store fills with the writer that made its record
+(`authority: writer`,
+`docs/decisions/084-a-field-holds-the-writer-that-made-its-record.md`)
+is the store's own hand: `origin: system`, at the event that filled it,
+naming as its `writer` the writer the field holds, and nothing of a
+source.
+
 ### A record that is judged is judged with its provenance
 
 `seen_at(f)` and `known_at(f)` read a field's provenance wherever a
@@ -150,3 +157,5 @@ the fold is pure, so the metadata is as reproducible as the value.
   everywhere else, are read wherever a record is judged, and a field
   the fold changes is stamped as it changes, inside the pass
   (lakelands#852).
+- A field the store fills with its record's maker names that writer in
+  its provenance (lakelands#1488).

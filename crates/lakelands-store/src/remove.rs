@@ -681,8 +681,9 @@ pub fn run(
     }
     drop(view);
     lake.append(&mut w, drafts)?;
-    report.reclaimed = lake.finish_forgetting(&mut w)?;
+    let at = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
+    report.reclaimed = lake.finish_act(&mut w, at)?;
     report.reclaim_owed = lake.reclaim_owed();
-    report.position = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0);
+    report.position = at;
     Ok(report)
 }

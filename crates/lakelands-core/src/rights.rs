@@ -286,6 +286,17 @@ pub(crate) fn own_only(who: &Principal, ty: &TypeName) -> Vec<(FieldName, Value)
         .collect()
 }
 
+/// The pairs `who`'s grant on `ty` admits records to write by: its
+/// `writes_only`, empty where it may write every record it reads.
+pub(crate) fn own_writes_only(who: &Principal, ty: &TypeName) -> Vec<(FieldName, Value)> {
+    let pairs = who.grants.types.get(ty).map(|t| &t.writes_only);
+    pairs
+        .into_iter()
+        .flatten()
+        .map(|(f, v)| (f.clone(), v.clone()))
+        .collect()
+}
+
 /// The one effective `only` of a type for `who`, and whether its records are
 /// computed for it; [`Sight::admit`] is made of it. A stored type's is its own
 /// pairs. A view's are its own plus, where it has one stored source, no merge,
@@ -425,6 +436,22 @@ impl Sight<'_> {
     }
 }
 
+/// Whether a computed field of `decl` reads across the relation `rel`: it
+/// depends on it, or its expression reads it or does not parse.
+fn reads_relation(decl: &TypeDecl, rel: Option<&lakelands_api::RelationName>) -> bool {
+    let Some(rel) = rel else {
+        return false;
+    };
+    let names = |n: &FieldName| n.as_str() == rel.as_str();
+    let reads = |d: &FieldDecl| {
+        let expr = d.derived.as_ref().map(crate::describe::parsed);
+        d.depends_on.iter().any(names)
+            || expr.is_some_and(|e| e.is_none_or(|e| crate::derive::reads(&e).iter().any(names)))
+    };
+    let computed = |d: &&FieldDecl| d.authority == Authority::Derived || d.function.is_some();
+    decl.fields.iter().filter(computed).any(reads)
+}
+
 /// Whether a stored record holds every pair.
 pub(crate) fn admitted(pairs: &[(FieldName, Value)], fields: &BTreeMap<FieldName, Value>) -> bool {
     pairs.iter().all(|(f, v)| fields.get(f) == Some(v))
@@ -440,6 +467,26 @@ pub(crate) fn held_ends<'d, 'a>(
     decl: &'d TypeDecl,
     find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
 ) -> Vec<(&'d FieldName, &'d TypeName)> {
+    ends_held_by(who, decl, find, own_only)
+}
+
+/// [`held_ends`] of `writes_only`: the end types of a link type whose
+/// records `who` may write only some of, as deep as they go.
+pub(crate) fn write_held_ends<'d, 'a>(
+    who: &Principal,
+    decl: &'d TypeDecl,
+    find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
+) -> Vec<(&'d FieldName, &'d TypeName)> {
+    ends_held_by(who, decl, find, own_writes_only)
+}
+
+/// The end types of `decl` that hold pairs of `own`, or whose own ends do.
+fn ends_held_by<'d, 'a>(
+    who: &Principal,
+    decl: &'d TypeDecl,
+    find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
+    own: fn(&Principal, &TypeName) -> Vec<(FieldName, Value)>,
+) -> Vec<(&'d FieldName, &'d TypeName)> {
     if !crate::links::is_link_type(&decl.name) {
         return Vec::new();
     }
@@ -449,8 +496,8 @@ pub(crate) fn held_ends<'d, 'a>(
         .filter(|f| f.name.as_str() == crate::links::FROM || f.name.as_str() == crate::links::TO);
     let ends = ends.filter_map(|f| Some((&f.name, f.ty.target.as_ref()?)));
     let find = |n: &TypeName| find(n).filter(|d| d.name != decl.name);
-    let held = |t: &TypeName| find(t).is_some_and(|d| !held_ends(who, d, &find).is_empty());
-    ends.filter(|(_, t)| !own_only(who, t).is_empty() || held(t))
+    let held = |t: &TypeName| find(t).is_some_and(|d| !ends_held_by(who, d, &find, own).is_empty());
+    ends.filter(|(_, t)| !own(who, t).is_empty() || held(t))
         .collect()
 }
 
@@ -464,9 +511,9 @@ impl Sight<'_> {
         !own_only(who, &decl.name).is_empty() || !held_ends(who, decl, find).is_empty()
     }
 
-    /// Whether its principal, holding `only` on `decl`, may propose a write
-    /// there, or a call of `verb`: no field its `only` names is computed,
-    /// and the verb assigns none. Its accept applies the write as it was
+    /// Whether its principal, holding `only` or `writes_only` on `decl`, may
+    /// propose a write there, or a call of `verb`: no field their pairs
+    /// name is computed, and the verb assigns none. Its accept applies the write as it was
     /// proposed, so only such a write leaves the pairs where the proposer
     /// was judged to leave them (051).
     pub fn pinnable(&self, decl: &TypeDecl, verb: Option<&VerbDecl>) -> bool {
@@ -477,9 +524,11 @@ impl Sight<'_> {
             Some(VerbEffect::Write { set }) => set.iter().any(|a| &a.field == f),
             _ => false,
         };
-        own_only(self.who(), &decl.name)
-            .iter()
-            .all(|(f, _)| !assigned(f) && !decl.fields.iter().any(|d| &d.name == f && computed(d)))
+        let who = self.who();
+        let pairs = own_only(who, &decl.name).into_iter();
+        pairs
+            .chain(own_writes_only(who, &decl.name))
+            .all(|(f, _)| !assigned(&f) && !decl.fields.iter().any(|d| d.name == f && computed(d)))
     }
 
     /// Whether its principal holds the grant `verb` asks of its own: none
@@ -597,18 +646,31 @@ pub(crate) fn holds_nothing_across<'d>(
     who.grants.restricted && bare(&decl.name) && paths.iter().all(first) && far.iter().all(unheld)
 }
 
-/// Whether `who` can make a record of `decl` that its grant admits: it
-/// writes every field its `only` names at the authored door (051), or the
-/// field is one only verbs write whose `initial` a create gives it is the
-/// value its `only` names.
+/// Whether `who` can make a record of `decl` that its grant admits: a
+/// create of `who` holds every pair its `only` and its `writes_only` name
+/// ([`create_holds`]).
 pub(crate) fn creates(who: &Principal, decl: &TypeDecl) -> bool {
-    own_only(who, &decl.name).iter().all(|(f, v)| {
-        let field = decl.field(f);
-        field.is_some_and(|d| match d.authority {
-            Authority::Authored | Authority::Shared => field_access(who, decl, d).writes(),
-            Authority::Verb => d.initial.as_ref() == Some(v),
-            _ => false,
-        })
+    let pairs = own_only(who, &decl.name).into_iter();
+    pairs
+        .chain(own_writes_only(who, &decl.name))
+        .all(|(f, v)| create_holds(who, decl, &f, &v))
+}
+
+/// Whether a create of `decl` by `who` can hold `field` at `value`: it
+/// writes the field at the authored door (051); or the field is one only
+/// verbs write whose `initial` is `value`; or the store fills it with the
+/// creating writer (084) and `value` is `who`'s.
+pub(crate) fn create_holds(
+    who: &Principal,
+    decl: &TypeDecl,
+    field: &FieldName,
+    value: &Value,
+) -> bool {
+    decl.field(field).is_some_and(|d| match d.authority {
+        Authority::Authored | Authority::Shared => field_access(who, decl, d).writes(),
+        Authority::Verb => d.initial.as_ref() == Some(value),
+        Authority::Writer => value.as_str() == Some(who.writer().as_str()),
+        _ => false,
     })
 }
 
@@ -626,21 +688,155 @@ impl Sight<'_> {
     /// it). The refusal names the type, never the field, so an unknown
     /// field is not told.
     pub fn check_only(&self, decl: &TypeDecl) -> Result<(), Error> {
-        use lakelands_api::ontology::StorageKind;
-        let applies = |(f, v): &(FieldName, Value)| {
-            let field = decl.field(f);
-            field.is_some_and(|d| {
-                matches!(d.ty.kind, StorageKind::Text | StorageKind::Reference)
-                    && v.is_string()
-                    && field_access(self.who(), decl, d).reads()
-                    && !d.at_read()
-            })
-        };
-        if own_only(self.who(), &decl.name).iter().all(applies) {
+        if own_only(self.who(), &decl.name)
+            .iter()
+            .all(|p| self.applies(decl, p))
+        {
             return Ok(());
         }
         let ty = decl.name.clone();
         Err(Error::invalid(Case::OnlyUnappliable { ty }))
+    }
+
+    /// Refuse a write of `decl` where its principal's `writes_only` on it
+    /// cannot be applied, each pair judged as one of `only` is
+    /// ([`Self::check_only`]), naming the type and never the field.
+    pub fn check_writes_only(&self, decl: &TypeDecl) -> Result<(), Error> {
+        let pairs = own_writes_only(self.who(), &decl.name);
+        if pairs.iter().all(|p| self.applies(decl, p)) {
+            return Ok(());
+        }
+        let ty = decl.name.clone();
+        Err(Error::invalid(Case::WritesOnlyUnappliable { ty }))
+    }
+
+    /// Whether a pair of a grant on `decl` can be applied: a declared field
+    /// of kind `text` or `reference` its holder reads, not computed at the
+    /// read, with a text value.
+    fn applies(&self, decl: &TypeDecl, (f, v): &(FieldName, Value)) -> bool {
+        use lakelands_api::ontology::StorageKind;
+        decl.field(f).is_some_and(|d| {
+            matches!(d.ty.kind, StorageKind::Text | StorageKind::Reference)
+                && v.is_string()
+                && field_access(self.who(), decl, d).reads()
+                && !d.at_read()
+        })
+    }
+
+    /// Whether its principal's grant admits only some records of any type
+    /// to write: such a principal changes no shape but by a proposal.
+    pub fn holds_writes_only(&self) -> bool {
+        let mut types = self.who().grants.types.values();
+        types.any(|t| !t.writes_only.is_empty())
+    }
+
+    /// What its principal's grants admit of the records of `decl` to write
+    /// (`writes_only`), the one answer every write door reads: every record
+    /// where neither the type nor an end of a link type holds pairs; none
+    /// where the type's pairs cannot be applied, or where an end holds some
+    /// and the link type none, which no grant covers; else those holding
+    /// the type's pairs (006).
+    pub fn writes(&self, decl: &TypeDecl) -> Admit {
+        let (who, find) = (self.who(), &|n: &TypeName| self.force.ty(n));
+        let pairs = own_writes_only(who, &decl.name);
+        if pairs.is_empty() && write_held_ends(who, decl, find).is_empty() {
+            return Admit::All;
+        }
+        match pairs.is_empty() || self.check_writes_only(decl).is_err() {
+            true => Admit::Nothing,
+            false => Admit::Only(pairs),
+        }
+    }
+
+    /// Whether its principal may write only some records of `decl`
+    /// ([`Self::writes`]).
+    pub fn write_holder(&self, decl: &TypeDecl) -> bool {
+        self.writes(decl) != Admit::All
+    }
+
+    /// Whether a call of `verb` on `decl` can be its principal's write: on
+    /// every record where it holds no `writes_only` there; else where its
+    /// pairs apply and the verb moves none of them ([`Self::pinnable`]).
+    pub fn writes_by(&self, decl: &TypeDecl, verb: &VerbDecl) -> bool {
+        match self.writes(decl) {
+            Admit::All => true,
+            Admit::Nothing => false,
+            _ => self.pinnable(decl, Some(verb)),
+        }
+    }
+
+    /// Whether a write of `decl` that finds `before` at its key, live or
+    /// retired, and leaves `after` is its principal's to make: both hold
+    /// its pairs ([`Self::writes`]).
+    pub fn writes_record(
+        &self,
+        decl: &TypeDecl,
+        before: Option<&BTreeMap<FieldName, Value>>,
+        after: Option<&BTreeMap<FieldName, Value>>,
+    ) -> bool {
+        let admit = self.writes(decl);
+        admit != Admit::Nothing && before.into_iter().chain(after).all(|f| admit.holds(f))
+    }
+
+    /// Whether its principal may create a link record of `decl` between
+    /// the end records `from` and `to` (absent where none is found): one
+    /// held end is enough, unless the other is to-one by the relation's
+    /// cardinality or a computed field of the other's type reads across the
+    /// relation, judged against the declarations in force; then both must
+    /// be held. An end is held where its type carries its principal's
+    /// `writes_only` and the record holds those pairs; an end of a type
+    /// carrying none is held by no grant, so a link with no end held is
+    /// refused, never defaulted open (006). A type that is no link type is
+    /// not judged.
+    pub fn links(
+        &self,
+        decl: &TypeDecl,
+        from: Option<&BTreeMap<FieldName, Value>>,
+        to: Option<&BTreeMap<FieldName, Value>>,
+    ) -> bool {
+        use lakelands_api::ontology::Cardinality::*;
+        let Some((owner, rel)) = crate::links::link_type_parts(&decl.name) else {
+            return true;
+        };
+        let owner = self.force.ty(&owner);
+        let Some((owner, r)) = owner.and_then(|o| Some((o, o.relation(&rel)?))) else {
+            return false;
+        };
+        let target = self.force.ty(&r.target);
+        let ends = [
+            (
+                Some(owner),
+                from,
+                matches!(r.cardinality, ManyToOne | OneToOne),
+                Some(&r.name),
+            ),
+            (
+                target,
+                to,
+                matches!(r.cardinality, OneToMany | OneToOne),
+                r.inverse.as_ref(),
+            ),
+        ];
+        type End<'e> = (
+            Option<&'e TypeDecl>,
+            Option<&'e BTreeMap<FieldName, Value>>,
+            bool,
+            Option<&'e lakelands_api::RelationName>,
+        );
+        let held = |(d, fields, ..): &End<'_>| {
+            d.is_some_and(|d| match self.writes(d) {
+                admit @ Admit::Only(_) => fields.is_some_and(|f| admit.holds(f)),
+                _ => false,
+            })
+        };
+        let freed =
+            |(d, _, one, rel): &End<'_>| !one && d.is_some_and(|d| !reads_relation(d, *rel));
+        match ends.iter().map(held).collect::<Vec<_>>()[..] {
+            [true, true] => true,
+            [true, false] => freed(&ends[1]),
+            [false, true] => freed(&ends[0]),
+            _ => false,
+        }
     }
 
     /// Refuse a read that names `decl` where a hiding its principal's grant

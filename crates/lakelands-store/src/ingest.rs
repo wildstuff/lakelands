@@ -2,15 +2,16 @@
 //! own, in group-commit windows.
 //!
 //! Records are taken from the stream into a window until it holds the
-//! lake's `commit_window_events` records or 2 ms have passed since its first
-//! record; the window is then decided whole and appended durably, and
-//! answers one [`Committed`] with the position its last event took and
-//! the call's delivery: the caller's, else `d<first position>`, the
-//! position of the first event the call appended. Every
-//! `record_ingested` of the call carries it in its envelope. A
-//! window is all or nothing: if one of its records is refused, nothing of
-//! the window is appended, the refusal is the stream's next item and the
-//! stream ends — the caller's own offset says where to resume
+//! call's `commit_window` records, else the lake's
+//! `commit_window_events`, or 2 ms have passed since its first record;
+//! the window is then decided whole and appended durably, and answers one
+//! [`Committed`] with the position its last event took and the call's
+//! delivery: the caller's, else `d<first position>`, the position of the
+//! first event the call appended. Every `record_ingested` of the call
+//! carries it in its envelope. A window is all or nothing: if one of its
+//! records is refused, nothing of the window is appended, the refusal is
+//! the stream's next item and the stream ends — the caller's own offset
+//! says where to resume
 //! (`docs/decisions/016-two-write-doors-by-origin.md`).
 //!
 //! **Idempotency by content.** A record's event id is derived from its
@@ -40,8 +41,7 @@ use lakelands_api::event::{EventBody, EventId, Sealed};
 use lakelands_api::id::KeyId;
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::Origin;
-use lakelands_api::seam::DataKey;
-use lakelands_api::write::Committed;
+use lakelands_api::write::{Committed, IngestOpts};
 use lakelands_api::{
     DeliveryId, Error, Principal, RecordKey, Result, SourceId, SourceRecord, Timestamp,
 };
@@ -217,6 +217,7 @@ fn judge(
     }
     // The keys of an insert-only type this window writes, each once.
     let mut once = BTreeSet::new();
+    let mut ciphers = crate::sealing::Ciphers::default();
     for (i, r) in records.iter().enumerate() {
         let judged = (|| {
             let decl = d.at.sight.ty(&r.ty)?;
@@ -259,32 +260,27 @@ fn judge(
                 .map(|f| f.name.clone())
                 .collect();
             fields.sort();
-            let sealing = match fields.is_empty() {
+            let sealed = match fields.is_empty() {
                 true => None,
                 false => {
                     let list = lake.keys.listed(view, source)?;
                     let rotate = turns(&w.settings, list.as_deref(), source, now);
                     let newest = list.as_ref().and_then(|l| l.firsts.last());
-                    let (id, key) = lake.keys.sealing(source, newest.map(|(k, _)| k), rotate)?;
+                    let (key, _) = lake.keys.sealing(source, newest.map(|(k, _)| k), rotate)?;
                     // A delivery sealed apart seals under its version and
                     // its own key, composed (065).
                     let apart = apart.map(|a| apart_key((lake, w), a, source)).transpose()?;
-                    let key = match &apart {
-                        Some((_, a)) => crate::sealing::compose(&key, std::slice::from_ref(a)),
-                        None => key,
-                    };
-                    Some((id, key, apart.map(|(id, _)| id)))
+                    Some(Sealed {
+                        key,
+                        source: None,
+                        fields,
+                        apart: apart.into_iter().collect(),
+                        boxed: None,
+                    })
                 }
             };
-            let sealed = (sealing.as_ref()).map(|(key, _, apart)| Sealed {
-                key: key.clone(),
-                source: None,
-                fields,
-                apart: apart.iter().cloned().collect(),
-                boxed: None,
-            });
-            let id = match (&sealed, &sealing) {
-                (Some(s), Some((_, k, _))) => {
+            let id = match &sealed {
+                Some(s) => {
                     let mut body = EventBody::RecordIngested {
                         ty: r.ty.clone(),
                         key: r.key.clone(),
@@ -293,14 +289,15 @@ fn judge(
                         made: false,
                     };
                     let mut boxed = s.clone();
-                    crate::sealing::seal(&mut body, &mut boxed, source, k);
+                    let cipher = ciphers.sealed(&lake.keys, source, s)?;
+                    crate::sealing::seal(&mut body, &mut boxed, source, cipher);
                     let EventBody::RecordIngested { patch: stored, .. } = &body else {
                         unreachable!("the body sealed is a record_ingested")
                     };
                     let boxed = boxed.boxed.unwrap_or_default();
                     log::boxed_ingest_id(source, &r.ty, &r.key, version_before, stored, &boxed)
                 }
-                _ => log::ingest_id(source, &r.ty, &r.key, version_before, &patch),
+                None => log::ingest_id(source, &r.ty, &r.key, version_before, &patch),
             };
             let unchanged = t.live().is_some_and(|b| {
                 patch.iter().all(|(f, v)| match b.fields.get(f) {
@@ -419,26 +416,23 @@ fn stated(r: &SourceRecord) -> Result<()> {
     }
 }
 
-/// The key `source`'s values of the call are sealed apart under: the one
-/// `apart` keeps, else a new one the key store makes, kept there. One an
-/// act of removal named since, which a writer knows from the act it met
-/// or made, is not sealed under again: what the call writes after the act
-/// is not the act's, so it takes a key of its own (065).
-fn apart_key(
-    (lake, w): (&Lake, &Writer),
-    apart: &Apart,
-    source: &SourceId,
-) -> Result<(KeyId, DataKey)> {
+/// The key `source`'s values of the call are sealed apart under, by
+/// id: the one `apart` keeps, else a new one the key store makes, kept
+/// there. One an act of removal named since, which a writer knows from
+/// the act it met or made, is not sealed under again: what the call
+/// writes after the act is not the act's, so it takes a key of its own
+/// (065).
+fn apart_key((lake, w): (&Lake, &Writer), apart: &Apart, source: &SourceId) -> Result<KeyId> {
     let kept = lakelands_core::lock(apart).get(source).cloned();
     let taken = |id: &KeyId| {
         lake.keys.doomed(source, id) || w.removals.iter().any(|r| r.destroyed(source, id))
     };
     match kept.filter(|id| !taken(id)) {
-        Some(id) => Ok((id.clone(), lake.keys.key(source, &id)?)),
+        Some(id) => Ok(id),
         None => {
-            let (id, key) = lake.keys.apart(source)?;
+            let (id, _) = lake.keys.apart(source)?;
             lakelands_core::lock(apart).insert(source.clone(), id.clone());
-            Ok((id, key))
+            Ok(id)
         }
     }
 }
@@ -462,12 +456,14 @@ pub fn run(
     who: Principal,
     context: WriteContext,
     source: SourceId,
-    (mut delivery, sealed_apart): (Option<DeliveryId>, bool),
+    opts: IngestOpts,
     mut records: SourceStream,
 ) -> CommitStream {
-    let apart = sealed_apart.then(|| Arc::new(Apart::default()));
+    let mut delivery = opts.delivery;
+    let apart = opts.sealed_apart.then(|| Arc::new(Apart::default()));
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Committed>>(4);
-    let size = lake.limits.commit_window_events.max(1) as usize;
+    let lakes = lake.limits.commit_window_events;
+    let size = opts.commit_window.unwrap_or(lakes).max(1) as usize;
     tokio::spawn(async move {
         let (mut ended, mut next) = (false, 0u64);
         while !ended {

@@ -143,7 +143,8 @@ impl From<Error> for Failure {
                         .to_owned()
                 }
                 Refusal::WrongDoor => {
-                    "source fields arrive through `lakelands ingest`; authored fields through writes and verbs, or from a source they admit"
+                    "source fields arrive through `lakelands ingest`; authored fields through writes and verbs, or from a source they admit; \
+                     derived fields and those holding the writer that made the record are filled by the lake alone"
                         .to_owned()
                 }
                 Refusal::VerbsOnly { .. } => {
@@ -227,6 +228,15 @@ impl From<Error> for Failure {
                  where it says the executor was not handed the call"
                     .to_owned()
             }
+            // An act of erasure that is in the log: sent again as it was,
+            // it appends nothing and finishes what is left.
+            Error::Unavailable { situation }
+                if matches!(**situation, Situation::ActUnfinished { .. }) =>
+            {
+                "the act is done in the log: repeat it as it was, or open the lake for writing, \
+                 to finish it"
+                    .to_owned()
+            }
             // A line no writer writes came in by an edited export; the
             // log holds it, so a rebuild meets it again.
             Error::Unavailable { situation }
@@ -248,6 +258,22 @@ impl From<Error> for Failure {
                 "restore the lake from a backup; where the projection alone is damaged, \
                  `lakelands rebuild` makes it anew from the log"
                     .to_owned()
+            }
+            // Waiting changes neither format refusal: the first needs an
+            // upgrade, the second a release that reads the lake's format.
+            Error::Unavailable { situation }
+                if matches!(**situation, Situation::LogUpgradeOwed { .. }) =>
+            {
+                "run `lakelands upgrade` (or open the lake once for writing); nothing was read or written"
+                    .to_owned()
+            }
+            Error::Unavailable { situation } if matches!(**situation, Situation::LogFormat { .. }) => {
+                let Situation::LogFormat { found, .. } = &**situation else {
+                    unreachable!("matched as a log format")
+                };
+                format!(
+                    "open it with a release that reads log format {found}; restoring it would not help, it is not damaged"
+                )
             }
             Error::Unavailable { .. } => {
                 "wait and retry, or check that no other process holds the lake".to_owned()
@@ -439,6 +465,29 @@ mod tests {
         }
         let other = Failure::from(Error::unavailable(Situation::Moved));
         assert!(other.todo.starts_with("wait and retry"), "{}", other.todo);
+    }
+
+    /// A lake in another log format is not mended by waiting either.
+    #[test]
+    fn a_lake_in_another_log_format_is_advised_an_upgrade_or_a_release() {
+        let owed = Situation::LogUpgradeOwed {
+            lake: "x".into(),
+            found: 19,
+            reads: 20,
+        };
+        let todo = Failure::from(Error::unavailable(owed)).todo;
+        assert!(todo.starts_with("run `lakelands upgrade`"), "{todo}");
+        let format = Situation::LogFormat {
+            lake: "x".into(),
+            found: 21,
+            reads: 20,
+            oldest: Some(14),
+        };
+        let todo = Failure::from(Error::unavailable(format)).todo;
+        assert!(
+            todo.contains("reads log format 21") && !todo.contains("retry"),
+            "{todo}"
+        );
     }
 
     /// A damaged lake is not mended by waiting: the hint names a restore.

@@ -359,6 +359,10 @@ What a refusal is about.
 | `initial_breaks` | `constraint` (ConstraintName), `field` (FieldName) | the `initial` of `{field}`, which only the type's verbs write, breaks the constraint `{constraint}`: no record of the type could be made | An `initial` of fields only verbs write that a type's constraint refuses: no create could hold it. |
 | `no_initial_breaks` | `constraint` (ConstraintName), `field` (FieldName) | `{field}`, which only the type's verbs write, has no `initial`, and a create leaves it null, which the constraint `{constraint}` refuses: no record of the type could be made | A field only verbs write with no `initial`, which a create leaves null, where a constraint reading only such fields refuses that. |
 | `verb_key` | — | a key's field is written by every create, and a verb writes only a record that stands | A key field only verbs write. |
+| `writer_not_of_type` | — | the store fills it when a record is made, so it is a field of a stored type's own records, not a view's, a relation's, a verb's payload or a function's input | A field of `authority: writer` that is not a stored type's own. |
+| `writer_not_text` | — | it holds a writer as `<kind>:<id>`, so it is a `text` field with no value type | A field of `authority: writer` of another kind than plain `text`. |
+| `writer_key` | — | a key's field is given by the record's key, and this one by the store | A key field of `authority: writer`. |
+| `writer_computed` | — | the store fills it with the writer that made its record, so nothing computes or clears it | A field of `authority: writer` that is computed or cleared. |
 | `expr_no_expression` | — | it is backed by `expr` and has no expression | An `expr` function with no expression. |
 | `expr_risk` | — | it is backed by `expr`, which reaches nothing outside the lake, so its risk is `low` | An `expr` function declared above `low` risk. |
 | `expr_too_deep` | `max` (usize), `offset` (usize) | an expression nests at most {max} levels deep: a parenthesis, a call argument, a list item, `not` and a unary `-` each go one deeper (at character {offset}) | An expression nested deeper than the parser reads. |
@@ -572,6 +576,7 @@ What a refusal is about.
 | `not_searchable` | `field` (FieldName), `type` (TypeName) | `{field}` of `{type}` is not searchable | A field a search, or a `search_weights` setting's `text_fields`, names that is not searchable. |
 | `offset_beside` | `other` (String) | `offset` and `{other}` both say where the answer starts; give one | An `offset` beside another start of the answer. |
 | `only_unappliable` | `type` (TypeName) | the grant's `only` on `{type}` cannot be applied here; the host's grants need fixing | A grant's `only` that cannot be applied to the read. |
+| `writes_only_unappliable` | `type` (TypeName) | the grant's `writes_only` on `{type}` cannot be applied here; the host's grants need fixing | A grant's `writes_only` that cannot be applied to the write. |
 | `hiding_unappliable` | `type` (TypeName) | the grant's `hide_where` on `{type}` cannot be applied here; the host's grants need fixing | A grant's hiding of a field on some records that cannot be applied to the read. |
 | `order_at_read` | `field` (FieldName), `type` (TypeName) | `order_by` names `{field}` of `{type}`, which is computed at the read; order by a stored field it is computed from | An order by a field computed at the read. |
 | `order_names_no_field` | — | an order by a value, `known_at` or `seen_at` names its field | An order by a value or a time that names no field. |
@@ -664,6 +669,7 @@ What a refusal is about.
 | `delivery_id_form` | — | a delivery id is not empty, holds no NUL character, and is not `d` followed by digits, the form of the store's own | A delivery id that is empty, holds a NUL, or takes the form of the store's own. |
 | `delivery_not_carried` | — | this catalog does not carry a delivery id to the store | A delivery id given to a catalog that does not carry it. |
 | `sealed_apart_not_carried` | — | this catalog does not carry a delivery sealed apart to the store | An ingest asked to seal its delivery apart through a catalog that does not carry it. |
+| `commit_window_not_carried` | — | this catalog does not carry an ingest's own commit window to the store | An ingest asked for a commit window of its own through a catalog that does not carry it. |
 | `trigger_too_deep` | `depth` (u32), `max` (u32) | its `max_depth` {depth} is above the lake's `max_reactive_depth` {max} | A trigger's ceiling above the lake's. |
 | `unanswered` | `position` (Position), `accepted` (bool) | [{?accepted}the acceptance\|the call] is in the log at position {position}, and no answer of the verb's executor is recorded for it, so this retry runs nothing; if the call is still running, or its answer is held, its answer will be recorded and a retry then answers it, unless the handle that ran it is dropped or loses its lease first; if its first answer said that the verb's executor was not handed the call, [{?accepted}propose the call again\|call the verb again under another key or with none] | A retry that finds no answer of the verb's executor recorded. |
 | `unclaimed_link_type` | `type` (TypeName) | `{type}` is the link type of no relation: its relation was renamed or removed | A link type no relation carries. |
@@ -913,6 +919,7 @@ One difference between two declarations of a type; a field's names the relation 
 | `field_removed` | `field` (FieldName), `relation` (RelationName, optional) | field `{field}`[ of relation `{relation}`] removed | A field removed; it reshapes. |
 | `field_retyped` | `field` (FieldName), `relation` (RelationName, optional), `from` (FieldType), `to` (FieldType) | field `{field}`[ of relation `{relation}`] changes type from {from} to {to} | A field's type changed; it reshapes. |
 | `field_required` | `field` (FieldName), `relation` (RelationName, optional) | field `{field}`[ of relation `{relation}`] becomes required | An optional field made required; it reshapes. |
+| `field_writer` | `field` (FieldName) | field `{field}` becomes filled by the store with its record's writer | A field made `authority: writer`, added so or changed to it; it reshapes, as every live record takes a writer. |
 | `field_optional` | `field` (FieldName), `relation` (RelationName, optional) | field `{field}`[ of relation `{relation}`] becomes optional | A required field made optional. |
 | `key_changed` | `from` (Names), `to` (Names) | the key changes from {from} to {to} | The key's fields or their order changed; it reshapes. |
 | `relation_added` | `relation` (RelationName) | relation `{relation}` added | A relation added. |
@@ -1103,7 +1110,7 @@ Why the lake cannot answer now. Retrying may help; the sentence says what the op
 | `no_projection` | `lake` (String) | lake `{lake}` has no projection yet; open it for writing first | The lake has no projection yet. |
 | `projection_layout` | `lake` (String), `found` (u64, optional), `wanted` (u64) | lake `{lake}`'s projection [has layout {found}\|has no layout number], and this build reads layout {wanted}; nothing was read from it: rebuild it from the log with `lakelands rebuild` | The lake's projection was laid out by another build: nothing reads it, and a rebuild makes it anew from the log. |
 | `log_format` | `lake` (String), `found` (u64), `reads` (u64), `oldest` (u64, optional) | lake `{lake}` is written in log format {found}, and this release reads log format[s {oldest} to] {reads} and writes {reads}; nothing was read from it and nothing appended | The lake's log is written in the format of another release: nothing reads it and nothing is appended. |
-| `log_upgrade_owed` | `lake` (String), `found` (u64), `reads` (u64) | lake `{lake}` is written in log format {found}, and this release writes format {reads}: a writer's open upgrades it, so open it once for writing or run `lakelands upgrade {lake}`, and it is read; nothing was read from it | The lake's log is written in an older format this release reads, and only a writer's open upgrades it. |
+| `log_upgrade_owed` | `lake` (String), `found` (u64), `reads` (u64) | lake `{lake}` is written in log format {found}, and this release writes format {reads}: a writer's open upgrades it, so open it once for writing or run `lakelands upgrade --lake {lake}`, and it is read; nothing was read from it | The lake's log is written in an older format this release reads, and only a writer's open upgrades it. |
 | `vocabulary_upgrade_owed` | `lake` (String), `type` (TypeName) | lake `{lake}` holds `{type}` without fields the host vocabulary has since added to it: a writer's open declares it again, so open it once for writing, and it is read; nothing was read from it | The lake holds a type of the host's vocabulary in an older form, one without fields the vocabulary has since added, and only a writer's open declares it again. |
 | `busy` | `lake` (String) | lake `{lake}` could not be compacted: a reader holds a snapshot of its projection; nothing a read answers has changed, so compact again when the reader is done | The lake could not be compacted while a reader holds a snapshot. |
 | `behind` | `cause` (Error, optional) | the lake's projection is behind its log and could not catch up; nothing was appended[ ({cause})] | The projection is behind the log and could not catch up; nothing was appended. |
@@ -1111,6 +1118,7 @@ Why the lake cannot answer now. Retrying may help; the sentence says what the op
 | `unsealable` | `position` (Position) | a sealed value of the event at position {position} does not open under the key it names: the key store gives another key under that id, or the event was changed | A sealed value that does not open under the key its event names. |
 | `decided_behind` | — | this write was decided while the lake's projection was behind its log; nothing was appended | The write was decided while the projection was behind the log; nothing was appended. |
 | `not_folded` | `from` (Position), `cause` (Error) | what was appended is in the log from position {from} and is not folded yet; the next write folds it, and a write is sent again only under its idempotency key ({cause}) | What was appended from a position is in the log and not folded yet. |
+| `act_unfinished` | `at` (Position), `cause` (Error) | the act is in the log through position {at}, and finishing it failed: {cause}; until it is finished its keys may be kept and the projection may hold what it erased, so repeat the act as it was, which appends nothing again, or open the lake for writing: either finishes it | An act of erasure is in the log through a position, and destroying its keys or restating the projection after it failed. |
 | `moved` | — | the lake's names moved while this write waited; send it again | The lake's names moved while the write waited; send it again. |
 | `types_moved` | — | the lake's types moved while this write waited; send it again | The types a write reads, or what its principal is shown of them, moved while the write waited; send it again. |
 | `executor` | `retry` (Retry), `cause` (Error) | the verb's executor was not handed this call ({cause}); {retry} | A call of a verb that reaches outside the lake failed before its executor was handed it. |
@@ -1239,7 +1247,7 @@ These types are said by a name of a closed list:
 
 Which authority writes a field. It decides which door may carry the field: a source feed through `ingest`, an author through `upsert` or a verb, the store itself through the fold. Grants then decide which principals of that authority may.
 
-`authored`, `source`, `shared`, `derived`, `verb`
+`authored`, `source`, `shared`, `derived`, `verb`, `writer`
 
 ### `Cardinality`
 

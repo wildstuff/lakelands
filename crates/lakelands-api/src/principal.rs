@@ -184,6 +184,12 @@ pub struct TypeGrants {
     /// within a lake (`docs/decisions/051-a-grant-may-admit-only-some-records.md`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub only: BTreeMap<FieldName, crate::Value>,
+    /// Only the records whose fields hold all these text values are this
+    /// principal's to write, each pair valid as one of `only` is; it reads
+    /// what its other grants give; empty, every record it may read
+    /// (`006 § A grant may admit every record to read and only some to write`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub writes_only: BTreeMap<FieldName, crate::Value>,
     /// The verbs of this type declared `granted` this principal may call,
     /// its field rights permitting. A name no such verb bears grants
     /// nothing. It stays with the type's name it is given under: it
@@ -259,7 +265,10 @@ impl Grants {
         self.follow_names(list, at);
         let lake = self.default;
         let named = |t: &(&TypeName, &mut TypeGrants)| {
-            !t.1.fields.is_empty() || !t.1.only.is_empty() || !t.1.hide_where.is_empty()
+            !t.1.fields.is_empty()
+                || !t.1.only.is_empty()
+                || !t.1.writes_only.is_empty()
+                || !t.1.hide_where.is_empty()
         };
         for (ty, held) in self.types.iter_mut().filter(named) {
             let mut chains: Vec<Vec<(&FieldName, Position)>> = Vec::new();
@@ -298,9 +307,11 @@ impl Grants {
                     borne
                 }
             };
-            for (name, value) in std::mem::take(&mut held.only) {
-                for to in borne(&name) {
-                    unite(&mut held.only, to, &value);
+            for pairs in [&mut held.only, &mut held.writes_only] {
+                for (name, value) in std::mem::take(pairs) {
+                    for to in borne(&name) {
+                        unite(pairs, to, &value);
+                    }
                 }
             }
             for h in std::mem::take(&mut held.hide_where) {
@@ -387,6 +398,9 @@ impl Grants {
             for (f, v) in others.iter().flat_map(|t| &t.only) {
                 unite(&mut own.only, f.clone(), v);
             }
+            for (f, v) in others.iter().flat_map(|t| &t.writes_only) {
+                unite(&mut own.writes_only, f.clone(), v);
+            }
             (own.hide_where).extend(others.iter().flat_map(|t| t.hide_where.iter().cloned()));
             own
         };
@@ -426,8 +440,8 @@ impl Grants {
     }
 }
 
-/// Adds a pair of `only`: two names that become one with differing values
-/// hold null, which no grant may hold, so the type is refused to the
+/// Adds a pair of `only` or `writes_only`: two names that become one
+/// with differing values hold null, which no grant may hold, so the type is refused to the
 /// holder until the host's grants are fixed: never the wider of the two.
 fn unite(only: &mut BTreeMap<FieldName, crate::Value>, f: FieldName, v: &crate::Value) {
     let held = only.entry(f).or_insert_with(|| v.clone());

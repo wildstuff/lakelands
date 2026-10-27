@@ -111,7 +111,8 @@ marking a type, or taking the mark off, is a change of meaning (027).
 ### A window is decided whole, and a record that changes nothing is a duplicate
 
 `ingest` takes its stream in group-commit windows: a window closes when it
-holds the lake's `commit_window_events` records or 2 ms after its first,
+holds the call's `commit_window` records, else the lake's
+`commit_window_events`, or 2 ms after its first,
 and is decided whole. A record whose content id is already in the log, or
 earlier in its window, appends nothing; so does a record that would change
 no field — a re-import of unchanged data appends nothing — and both count
@@ -135,6 +136,25 @@ is only `from`: whether the records of the refused record's window
 before it were written. The host's move is the same either way: resume
 at `from` without the refused record. A record sent again lands with the
 id it would have had, or counts as a duplicate where it was written.
+
+**A delivery may ask the size of its windows, and the lake bounds it**
+(lakelands#1496). Each window pays one durable append and one projection
+commit, a cost that barely moves with the window's size, and a refused
+record takes back its whole window. Which of the two matters more is a
+property of the delivery, not of the lake: a supplier handing over a
+thousand records it can send again whole wants them in one append, while
+a feed of records arriving one by one wants a refusal to take back
+little. Only the supplier knows which it is sending, so an ingest may
+name `commit_window`, for that call alone; without it the lake's
+`commit_window_events` applies, and a batch of record writes (073)
+keeps the lake's value whatever an ingest asked. The lake bounds the
+request with `limits.commit_window_max`, because a window is held in
+memory whole while it is decided and a crash check on open reads the
+last append whole: the host, not a supplier, decides what those may
+cost. A window of 0 or above the bound is refused as `limit_range` on
+`commit_window`, naming the bound, before anything is read, and a lake
+whose own `commit_window_events` is above its bound is not opened. The
+size changes only where the store cuts, which no answer turns on.
 
 ### A type may be written once by its source
 
@@ -374,3 +394,4 @@ is just another caller later, not a change to the contract.
 - A field may be written by its type's verbs alone, `authority: verb`; the other doors are refused it as `verbs_only`, naming the verbs its writer is shown, or `wrong_door` (lakelands#1130).
 - An authored field may admit named sources, `admits`, which `ingest` writes it under where no other hand's value stands (069, lakelands#1264).
 - A type's records may be retired by its verbs alone, `retired_by: verbs`; `retire`, a proposed `retire` and its accept are refused as `verbs_only`, naming the retire verbs its writer is shown, or `wrong_door`, and the system's retirements stay (lakelands#1148).
+- An ingest may ask its own commit window, `commit_window`, up to the lake's `limits.commit_window_max`; record writes sharing one append keep the lake's `commit_window_events` (lakelands#1496).

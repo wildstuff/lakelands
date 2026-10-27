@@ -98,9 +98,10 @@ fn every_authority_is_listed() {
         Authority::Shared => 2,
         Authority::Derived => 3,
         Authority::Verb => 4,
+        Authority::Writer => 5,
     };
     let places: Vec<usize> = Authority::ALL.into_iter().map(place).collect();
-    assert_eq!(places, (0..5).collect::<Vec<_>>());
+    assert_eq!(places, (0..6).collect::<Vec<_>>());
 }
 
 #[test]

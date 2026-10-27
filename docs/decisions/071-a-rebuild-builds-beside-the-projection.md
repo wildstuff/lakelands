@@ -14,7 +14,9 @@ A rebuild folds into a scratch beside the projection the lake answers
 from, never into that projection. Until the swap, every handle reads the
 projection as it was. A rebuild that fails, is stopped or is killed
 leaves it answering, and the scratch is removed: by its own handle when
-it ends, else by the next writer's open of the lake.
+it ends, else by the next writer of the lake once its open holds the
+lease: an open the lease refuses leaves it, since the holder may be
+about to swap it in (lakelands#1485).
 
 On SQLite the scratch is `projection.db.rebuild`, beside
 `projection.db` in the projection's directory (the lake's, unless its

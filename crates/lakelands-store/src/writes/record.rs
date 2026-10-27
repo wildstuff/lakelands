@@ -171,6 +171,13 @@ impl Decide<'_> {
         self.retires(decl)?;
         untold_setting(&self.at.sight, decl, key)?;
         let before = self.reached(decl, key, expected)?;
+        // A holder of `writes_only` retires only a record holding its pairs,
+        // a link's own record on its link type for an unlink (006).
+        granted(
+            self.at
+                .sight
+                .writes_record(decl, Some(&before.fields), None),
+        )?;
         let own = self.draft(retirement(ty, key, before.version));
         let (drafts, after) = (self.retiring(&before, own)?, None);
         Ok(Plan { drafts, after })
@@ -180,6 +187,7 @@ impl Decide<'_> {
     /// whether this door retires it, before a record is read.
     fn retires(&self, decl: &TypeDecl) -> Result<()> {
         not_a_view(decl)?;
+        self.at.sight.check_writes_only(decl)?;
         granted(self.at.sight.may_retire(decl))?;
         match self.door.admits_retirement(decl.retired_by) {
             true => Ok(()),
@@ -315,6 +323,7 @@ impl Decide<'_> {
     /// The door and the grant of every field `patch` carries, then its
     /// values, each in its written form.
     fn values(&self, decl: &TypeDecl, patch: &Patch) -> Result<Patch> {
+        self.at.sight.check_writes_only(decl)?;
         let door = (self.door, self.envelope.source.as_ref());
         let checked = self.at.sight.check_write(decl, door, patch);
         checked.map_err(|e| self.verbs_only(decl, e))?;
@@ -554,11 +563,41 @@ impl Decide<'_> {
             judged => judged?,
         }
         granted(!other && owns(view, &self.pending, sees, decl, &after.fields)?)?;
+        // A holder of `writes_only` writes a record holding its pairs and
+        // leaves it holding them; the record at the key, live or retired,
+        // is judged, so another's retired record is no free key. A link it
+        // makes is judged by its ends (006).
+        let at_key = t.before.as_ref().map(|b| &b.fields);
+        granted(sees.writes_record(decl, at_key, Some(&after.fields)))?;
+        granted(live.is_some() || !sees.write_holder(decl) || self.links(decl, &after.fields)?)?;
         Ok(RecordPlan {
             draft,
             after,
             before: t.before,
         })
+    }
+
+    /// Whether the judged principal may make the link record `fields` of
+    /// `decl` holds, its ends as the drafts so far leave them
+    /// ([`Sight::links`]).
+    fn links(&self, decl: &TypeDecl, fields: &BTreeMap<FieldName, Value>) -> Result<bool> {
+        let Some((owner, relation)) = links::link_type_parts(&decl.name) else {
+            return Ok(true);
+        };
+        let target = self.ontology.ty(&owner)?.relation(&relation);
+        let target = target.map(|r| r.target.clone());
+        let end = |end: &str, ty: Option<TypeName>| -> Result<Option<StoredRecord>> {
+            let (Some(ty), Some(Value::String(k))) = (ty, fields.get(end)) else {
+                return Ok(None);
+            };
+            let found = self
+                .pending
+                .record(self.at.view, &ty, &RecordKey::from(&**k))?;
+            Ok(found.filter(|r| !r.retired))
+        };
+        let (from, to) = (end(links::FROM, Some(owner))?, end(links::TO, target)?);
+        let ends = [&from, &to].map(|r| r.as_ref().map(|r| &r.fields));
+        Ok(self.at.sight.links(decl, ends[0], ends[1]))
     }
 
     /// The record `d`, which lands next, makes of `before`: computed with

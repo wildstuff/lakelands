@@ -914,7 +914,7 @@ catalog! {
         /// The lake's log is written in the format of another release: nothing reads it and nothing is appended.
         LogFormat { lake: String, found: u64, reads: u64, oldest: Option<u64> } => "lake `{lake}` is written in log format {found}, and this release reads log format[s {oldest} to] {reads} and writes {reads}; nothing was read from it and nothing appended",
         /// The lake's log is written in an older format this release reads, and only a writer's open upgrades it.
-        LogUpgradeOwed { lake: String, found: u64, reads: u64 } => "lake `{lake}` is written in log format {found}, and this release writes format {reads}: a writer's open upgrades it, so open it once for writing or run `lakelands upgrade {lake}`, and it is read; nothing was read from it",
+        LogUpgradeOwed { lake: String, found: u64, reads: u64 } => "lake `{lake}` is written in log format {found}, and this release writes format {reads}: a writer's open upgrades it, so open it once for writing or run `lakelands upgrade --lake {lake}`, and it is read; nothing was read from it",
         /// The lake holds a type of the host's vocabulary in an older form, one without fields the vocabulary has since added, and only a writer's open declares it again.
         VocabularyUpgradeOwed { lake: String, #[serde(rename = "type")] ty: TypeName } => "lake `{lake}` holds `{ty}` without fields the host vocabulary has since added to it: a writer's open declares it again, so open it once for writing, and it is read; nothing was read from it",
         /// The lake could not be compacted while a reader holds a snapshot.
@@ -932,6 +932,8 @@ catalog! {
         DecidedBehind => "this write was decided while the lake's projection was behind its log; nothing was appended",
         /// What was appended from a position is in the log and not folded yet.
         NotFolded { from: Position, cause: Box<Error> } => "what was appended is in the log from position {from} and is not folded yet; the next write folds it, and a write is sent again only under its idempotency key ({cause})",
+        /// An act of erasure is in the log through a position, and destroying its keys or restating the projection after it failed.
+        ActUnfinished { at: Position, cause: Box<Error> } => "the act is in the log through position {at}, and finishing it failed: {cause}; until it is finished its keys may be kept and the projection may hold what it erased, so repeat the act as it was, which appends nothing again, or open the lake for writing: either finishes it",
         /// The lake's names moved while the write waited; send it again.
         Moved => "the lake's names moved while this write waited; send it again",
         /// The types a write reads, or what its principal is shown of them, moved while the write waited; send it again.

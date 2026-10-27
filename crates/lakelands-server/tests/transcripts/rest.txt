@@ -490,7 +490,7 @@
 < content-type: application/x-ndjson
 < lakelands-position: 28
 < {"duplicates":1,"position":28,"records":0}
-< {"error":"refused","field":"status","from":1,"index":1,"message":"refused on `status`: another authority does this, through another door","reason":{"refusal":"wrong_door"},"record":{"code":"of","key":"INV-21","message":"`invoice` `INV-21`","type":"invoice"},"todo":"source fields arrive through `lakelands ingest`; authored fields through writes and verbs, or from a source they admit; then send the stream again from record 1","what":"record 1 of the stream (`invoice` `INV-21`): refused on `status`: another authority does this, through another door; nothing from record 1 on was written"}
+< {"error":"refused","field":"status","from":1,"index":1,"message":"refused on `status`: another authority does this, through another door","reason":{"refusal":"wrong_door"},"record":{"code":"of","key":"INV-21","message":"`invoice` `INV-21`","type":"invoice"},"todo":"source fields arrive through `lakelands ingest`; authored fields through writes and verbs, or from a source they admit; derived fields and those holding the writer that made the record are filled by the lake alone; then send the stream again from record 1","what":"record 1 of the stream (`invoice` `INV-21`): refused on `status`: another authority does this, through another door; nothing from record 1 on was written"}
 
 > POST /lakes/finance/ingest/bank
 > authorization: Bearer k-owner
@@ -755,6 +755,33 @@
 < content-type: application/x-ndjson
 < lakelands-position: 41
 < {"delivery":"d42","duplicates":0,"position":42,"records":1}
+
+# A delivery's own commit window is a whole number, at most the lake's
+# ceiling: a negative one, one not a number and one past a u32 are
+# refused, and nothing is appended.
+> POST /lakes/finance/ingest/bank?commit_window=-1
+> authorization: Bearer k-owner
+> {"type":"invoice","key":"INV-23","fields":{"amount":"4"}}
+< 400
+< content-type: application/json
+< lakelands-position: 42
+< {"error":"refused","message":"refused: `commit_window` cannot be `-1`: it takes a whole number","reason":{"code":"parameter_form","form":"whole","message":"`commit_window` cannot be `-1`: it takes a whole number","parameter":"commit_window","refusal":"invalid","value":"-1"},"todo":"give the parameter in the form it takes","what":"`commit_window` cannot be `-1`: it takes a whole number"}
+
+> POST /lakes/finance/ingest/bank?commit_window=two
+> authorization: Bearer k-owner
+> {"type":"invoice","key":"INV-23","fields":{"amount":"4"}}
+< 400
+< content-type: application/json
+< lakelands-position: 42
+< {"error":"refused","message":"refused: `commit_window` cannot be `two`: it takes a whole number","reason":{"code":"parameter_form","form":"whole","message":"`commit_window` cannot be `two`: it takes a whole number","parameter":"commit_window","refusal":"invalid","value":"two"},"todo":"give the parameter in the form it takes","what":"`commit_window` cannot be `two`: it takes a whole number"}
+
+> POST /lakes/finance/ingest/bank?commit_window=4294967296
+> authorization: Bearer k-owner
+> {"type":"invoice","key":"INV-23","fields":{"amount":"4"}}
+< 422
+< content-type: application/json
+< lakelands-position: 42
+< {"error":"refused","field":"commit_window","message":"refused on `commit_window`: a limit is between 1 and 4096","reason":{"code":"limit_range","max":4096,"message":"a limit is between 1 and 4096","refusal":"invalid"},"todo":"correct the input and run the command again; nothing was written","what":"refused on `commit_window`: a limit is between 1 and 4096"}
 
 # A link its relation's cardinality does not allow is a constraint on
 # `to`.

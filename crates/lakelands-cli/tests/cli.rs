@@ -794,19 +794,19 @@ fn ingest_prints_one_line_per_commit_window_and_skips_what_it_has() {
         let sh = Shell::on("ingest", backend);
         sh.lake();
         sh.run(&["apply", &sh.fixture()]);
-        let rows: String = (1..=40)
+        let rows: String = (1..=300)
         .map(|i| format!("{{\"type\": \"invoice\", \"key\": \"INV-{i}\", \"fields\": {{\"amount\": \"{i}.00\"}}}}\n"))
         .collect();
         let file = sh.file("bank.ndjson", &rows);
         ok(
             &sh.run(&["ingest", &file, "--source", "bank"]),
-            "committed 32 record(s), 0 already in the lake, through position 39\n\
-         committed 8 record(s), 0 already in the lake, through position 47\n",
+            "committed 256 record(s), 0 already in the lake, through position 263\n\
+         committed 44 record(s), 0 already in the lake, through position 307\n",
         );
         ok(
             &sh.run(&["ingest", &file, "--source", "bank"]),
-            "committed 0 record(s), 32 already in the lake, through position 47\n\
-         committed 0 record(s), 8 already in the lake, through position 47\n",
+            "committed 0 record(s), 256 already in the lake, through position 307\n\
+         committed 0 record(s), 44 already in the lake, through position 307\n",
         );
         let broken = sh.file(
             "broken.ndjson",
@@ -1259,6 +1259,15 @@ fn upgrade_takes_a_lake_of_the_format_before_one_step_once() {
     engine.append(&lease, &[made, older(taken, false)]).unwrap();
     engine.release_lease(&lease).unwrap();
     drop(engine);
+    // The refusal names a command that runs, and advises it.
+    let owed = sh.run(&["verify"]);
+    let named = "lakelands upgrade --lake finance";
+    assert!(owed.err.contains(&format!("`{named}`")), "{}", owed.err);
+    assert!(
+        owed.err.contains("what to do: run `lakelands upgrade`"),
+        "{}",
+        owed.err
+    );
     ok(
         &sh.run(&["upgrade", "--check"]),
         &format!(
@@ -1267,7 +1276,7 @@ fn upgrade_takes_a_lake_of_the_format_before_one_step_once() {
              out; nothing was opened for writing\n"
         ),
     );
-    let run = sh.run(&["upgrade"]);
+    let run = sh.run(&named.split_whitespace().skip(1).collect::<Vec<_>>());
     let said = format!("upgraded finance from log format {OLD} to {NEW} through position ");
     assert!(
         run.code == 0 && run.out.starts_with(&said),
@@ -1280,6 +1289,31 @@ fn upgrade_takes_a_lake_of_the_format_before_one_step_once() {
         &sh.run(&["upgrade"]),
         &format!("finance is written in log format {NEW}: nothing to upgrade\n"),
     );
+}
+
+/// `upgrade` on a lake declared and not yet written says what `verify`
+/// says, and exits as it does.
+#[test]
+fn upgrade_says_a_lake_no_command_has_written_is_not_there_yet() {
+    let sh = Shell::on("upgrade-unwritten", Backend::Store);
+    sh.lake();
+    for args in [&["upgrade", "--check"][..], &["upgrade"]] {
+        let run = sh.run(args);
+        assert_eq!((run.code, run.out.as_str()), (3, ""));
+        assert!(
+            run.err
+                .starts_with("error: there is no lake `finance` to upgrade yet\n"),
+            "{}",
+            run.err
+        );
+        assert!(
+            run.err
+                .contains("what to do: a lake is made by the first command that writes"),
+            "{}",
+            run.err
+        );
+    }
+    assert_eq!(sh.run(&["verify"]).code, 3);
 }
 
 /// `upgrade` on a lake of this release's format whose projection an
@@ -3008,7 +3042,8 @@ limits.default_limit                    location  50 (default)
 limits.max_limit                        location  1000 (default)
 limits.max_depth                        location  16 (default)
 limits.max_reactive_depth               location  8 (default)
-limits.commit_window_events             location  32 (default)
+limits.commit_window_events             location  256 (default)
+limits.commit_window_max                location  4096 (default)
 limits.max_graph_nodes                  location  100000 (default)
 limits.max_offset                       location  100000 (default)
 limits.max_set_changes                  location  20000 (default)

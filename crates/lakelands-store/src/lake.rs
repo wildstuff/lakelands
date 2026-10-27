@@ -213,6 +213,13 @@ pub(crate) const RENAMES: &str = "sys:renames";
 /// name holds a `:`.
 pub(crate) const OWN_SEAM: &str = "sys:";
 
+/// The store's own seam under which the projection keeps the rate of the
+/// last rebuild and the time of the last reclaim a handle ran, as one
+/// output put at each reclaim: a preflight in another process reckons the
+/// act with them (lakelands#1486). No event holds it, so a rebuild forgets
+/// it until the reclaim after it.
+const TIMED: &str = "sys:timed";
+
 /// The lake's list of renames as its output holds it; empty where none is
 /// recorded.
 fn renames_in(recorded: Option<Value>) -> Result<Vec<Renamed>> {
@@ -280,7 +287,8 @@ pub struct Lake {
     /// The events a second the last rebuild this handle ran folded, its
     /// own or its open's, 0 where none has run, and the milliseconds the
     /// last reclaim it ran took: the fold's cost is the ontology's, so a
-    /// preflight reads these before the engine's constant
+    /// preflight reads these, or where this handle ran none those the
+    /// projection keeps ([`TIMED`]), before the engine's constant
     /// ([`Self::expected_ms`], lakelands#1152).
     rebuilt_rate: AtomicU64,
     reclaim_ms: AtomicU64,
@@ -1030,12 +1038,30 @@ impl Lake {
     /// time of the last reclaim it ran, where it ran one. An estimate
     /// either way.
     pub(crate) fn expected_ms(&self, events: u64) -> u64 {
-        let rate = match self.rebuilt_rate.load(Ordering::SeqCst) {
+        let (rate, reclaim) = self.timed();
+        let rate = match rate {
             0 => self.engine.rebuild_rate().max(1),
             rate => rate,
         };
         let folded = events.saturating_mul(1000) / rate;
-        folded.saturating_add(self.reclaim_ms.load(Ordering::SeqCst))
+        folded.saturating_add(reclaim)
+    }
+
+    /// The rate of the last rebuild and the time of the last reclaim, each
+    /// this handle's own where it ran one, or else the projection's
+    /// ([`TIMED`]); 0 for one neither knows.
+    fn timed(&self) -> (u64, u64) {
+        let own = [&self.rebuilt_rate, &self.reclaim_ms].map(|a| a.load(Ordering::SeqCst));
+        if own.iter().all(|n| *n > 0) {
+            return (own[0], own[1]);
+        }
+        let view = self.engine.view(None).ok();
+        let kept = view.and_then(|v| v.output(TIMED, &Digest::zero()).ok().flatten());
+        let [rate, ms] = [("rebuilt_rate", own[0]), ("reclaim_ms", own[1])].map(|(k, n)| match n {
+            0 => kept.as_ref().and_then(|(_, v)| v[k].as_u64()).unwrap_or(0),
+            n => n,
+        });
+        (rate, ms)
     }
 
     /// How long a scoped refold of `events` and the reclaim after it are
@@ -1045,8 +1071,7 @@ impl Lake {
     pub(crate) fn scoped_ms(&self, events: u64) -> u64 {
         match self.scoped_rate.load(Ordering::SeqCst) {
             0 => self.expected_ms(events),
-            rate => (events.saturating_mul(1000) / rate)
-                .saturating_add(self.reclaim_ms.load(Ordering::SeqCst)),
+            rate => (events.saturating_mul(1000) / rate).saturating_add(self.timed().1),
         }
     }
 
@@ -1110,6 +1135,22 @@ impl Lake {
         Ok(self.reclaim()?.ok())
     }
 
+    /// [`Self::finish_forgetting`] after an act appended through `at`: a
+    /// failure says the act is done in the log, and how what is left of
+    /// it is finished (lakelands#1485).
+    pub(crate) fn finish_act(
+        &self,
+        w: &mut Writer,
+        at: Position,
+    ) -> Result<Option<lakelands_api::write::CompactReport>> {
+        (self.finish_forgetting(w)).map_err(|cause| {
+            Error::unavailable(Situation::ActUnfinished {
+                at,
+                cause: Box::new(cause),
+            })
+        })
+    }
+
     /// The forgotten sources and the acts of removal the projection
     /// lists, each with its state.
     fn acts_listed(&self) -> Result<(BTreeMap<SourceId, String>, BTreeMap<Position, String>)> {
@@ -1123,9 +1164,9 @@ impl Lake {
     /// writer's lock its caller holds: the last step of an act and a
     /// manual compact alike. The engine's answer is the inner result. One
     /// that fails while an act waits on it is owed, its cause kept for
-    /// [`Self::reclaim_owed`]; one that runs owes nothing, and each act
-    /// whose rebuild waited on it is done. The outer error is the lists'
-    /// own read or write failing.
+    /// [`Self::reclaim_owed`]; one that runs owes nothing, each act whose
+    /// rebuild waited on it is done, and its time is kept ([`TIMED`]). The
+    /// outer error is the lists' own read or write failing.
     fn reclaim(&self) -> Result<Result<lakelands_api::write::CompactReport>> {
         let (mut list, mut acts) = self.acts_listed()?;
         let waiting = list.values().chain(acts.values()).any(|s| s == "rebuilt");
@@ -1151,11 +1192,29 @@ impl Lake {
             }
             self.put_lists(&list, &acts, false, head)?;
         }
+        // An estimate's input: one not kept fails nothing.
+        let _ = self.keep_timed(head);
         Ok(Ok(lakelands_api::write::CompactReport {
             before: reclaimed.before,
             after: reclaimed.after,
             head,
         }))
+    }
+
+    /// Keep this handle's rate of the last rebuild and time of the last
+    /// reclaim in the projection ([`TIMED`]), at `head`, in a transaction
+    /// of its own.
+    fn keep_timed(&self, head: Position) -> Result<()> {
+        let (rate, ms) = self.timed();
+        let timed = serde_json::json!({"rebuilt_rate": rate, "reclaim_ms": ms});
+        let projection = self.engine.projection();
+        projection.begin()?;
+        let kept = (projection.put_output(TIMED, &Digest::zero(), &timed, head))
+            .and_then(|()| projection.commit(head));
+        if kept.is_err() {
+            projection.rollback();
+        }
+        kept
     }
 
     /// Put the forgotten sources and the acts of removal, each with its

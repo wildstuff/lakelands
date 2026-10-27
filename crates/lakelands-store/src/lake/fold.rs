@@ -83,6 +83,7 @@ impl Lake {
             .iter()
             .any(|e| matches!(e.body, EventBody::Migrated { .. }));
         let mut kept = carries.then(|| w.owed.clone());
+        let mut ciphers = crate::sealing::Ciphers::default();
         let mut staged = Staged {
             reads,
             keys: Some(self.keys.clone()),
@@ -124,7 +125,7 @@ impl Lake {
                     view = self.scoped.view(self.engine.view(None)?);
                 }
                 let owes = owed.is_some_and(|p| e.position >= p);
-                self.fold(w, view.as_ref(), &mut staged, e, owes)?;
+                self.fold(w, (view.as_ref(), &mut ciphers), &mut staged, e, owes)?;
             }
             self.scoped.reads_at(last.position);
             self.flush(w, view.as_ref(), &mut staged, events, owed)?;
@@ -559,12 +560,13 @@ impl Lake {
         Ok(())
     }
 
-    /// What one event does to the projection; the calls it makes due are
-    /// handed out when it `owes` them.
+    /// What one event does to the projection, opened with the ciphers its
+    /// pass has built; the calls it makes due are handed out when it
+    /// `owes` them.
     fn fold(
         &self,
         w: &mut Writer,
-        view: &dyn ProjectionView,
+        (view, ciphers): (&dyn ProjectionView, &mut crate::sealing::Ciphers),
         staged: &mut Staged,
         e: &Event,
         owes: bool,
@@ -591,8 +593,8 @@ impl Lake {
                 // A seal of a delivery sealed apart needs its version and
                 // its apart keys: it is erased where an act destroyed any
                 // of those missing, and fails closed on the first (065).
-                let (key, missing) = match self.keys.opened_sealed(source, sealed) {
-                    Ok(Ok(key)) => (Ok(key), Vec::new()),
+                let (cipher, missing) = match ciphers.opened(&self.keys, source, sealed) {
+                    Ok(Ok(cipher)) => (Ok(cipher), Vec::new()),
                     Ok(Err(missing)) => {
                         let (source, key) = (source.clone(), missing[0].clone());
                         let lost = Error::unavailable(Situation::KeyMissing { source, key });
@@ -604,8 +606,8 @@ impl Lake {
                     }
                     Err(e) => return Err(e),
                 };
-                match key {
-                    Ok(key) => crate::sealing::open(&mut plain, &key)?,
+                match cipher {
+                    Ok(cipher) => crate::sealing::open(&mut plain, cipher)?,
                     Err(_)
                         if self.erased_any(
                             w,
@@ -1857,6 +1859,9 @@ pub(crate) struct Migrated {
     /// What the migration fills (`Migration::fill`): each field's
     /// `initial` and its provenance at the step, worked out once.
     fills: Vec<(FieldName, Value, lakelands_api::record::FieldMeta)>,
+    /// The fields it makes ones the store fills with the writer that made
+    /// the record (084), and their provenance at the step but the writer.
+    writers: Vec<(FieldName, lakelands_api::record::FieldMeta)>,
 }
 
 impl Migrated {
@@ -1895,6 +1900,7 @@ impl Migrated {
             types,
             decls,
             fills: Vec::new(),
+            writers: Vec::new(),
         }
     }
 
@@ -1908,6 +1914,12 @@ impl Migrated {
             .map(|(name, v)| (name, v, record::initial_meta(event)))
             .collect();
         self.fills = fills;
+        // A plan that cannot be made is a record that cannot be converted:
+        // `apply` answers it as damage for each record of the type, so with
+        // none of them there is nothing to fill either.
+        let writers = shape::becoming_writer(&self.before, &self.migration).unwrap_or_default();
+        let meta = record::writer_meta(event, "");
+        self.writers = writers.into_iter().map(|n| (n, meta.clone())).collect();
         self
     }
 
@@ -1931,6 +1943,7 @@ impl Migrated {
                 Some((_, to)) => to.clone(),
                 None => old,
             };
+            let maker = record::maker(&r);
             // An erased value's provenance stays with its field (058).
             let declared = |f: &FieldName| self.migration.to.has_field(f);
             r.meta = (std::mem::take(&mut r.meta).into_iter())
@@ -1946,6 +1959,20 @@ impl Migrated {
                 if !r.fields.contains_key(name) {
                     r.fields.insert(name.clone(), v.clone());
                     r.meta.insert(name.clone(), meta.clone());
+                }
+            }
+            // And each field it makes the writer's takes the writer that
+            // made the record, as far as the record tells (084), with its
+            // provenance where the type keeps one, as a create leaves it.
+            for (name, meta) in self.writers.iter().filter(|_| !r.retired) {
+                r.fields.insert(name.clone(), Value::from(maker.clone()));
+                if self.migration.to.field_meta {
+                    let writer = maker.clone();
+                    let meta = lakelands_api::record::FieldMeta {
+                        writer,
+                        ..meta.clone()
+                    };
+                    r.meta.insert(name.clone(), meta);
                 }
             }
         }

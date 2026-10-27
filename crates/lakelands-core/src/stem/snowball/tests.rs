@@ -1,4 +1,5 @@
 use super::*;
+use crate::stem::tests::stem_text;
 
 #[test]
 fn the_pipeline_folds_accents_so_no_engine_has_to() {

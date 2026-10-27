@@ -972,6 +972,14 @@ catalog! {
         NoInitialBreaks { constraint: ConstraintName, field: FieldName } => "`{field}`, which only the type's verbs write, has no `initial`, and a create leaves it null, which the constraint `{constraint}` refuses: no record of the type could be made",
         /// A key field only verbs write.
         VerbKey => "a key's field is written by every create, and a verb writes only a record that stands",
+        /// A field of `authority: writer` that is not a stored type's own.
+        WriterNotOfType => "the store fills it when a record is made, so it is a field of a stored type's own records, not a view's, a relation's, a verb's payload or a function's input",
+        /// A field of `authority: writer` of another kind than plain `text`.
+        WriterNotText => "it holds a writer as `<kind>:<id>`, so it is a `text` field with no value type",
+        /// A key field of `authority: writer`.
+        WriterKey => "a key's field is given by the record's key, and this one by the store",
+        /// A field of `authority: writer` that is computed or cleared.
+        WriterComputed => "the store fills it with the writer that made its record, so nothing computes or clears it",
         /// An `expr` function with no expression.
         ExprNoExpression => "it is backed by `expr` and has no expression",
         /// An `expr` function declared above `low` risk.
@@ -1420,6 +1428,11 @@ catalog! {
             #[serde(rename = "type")]
             ty: TypeName,
         } => "the grant's `only` on `{ty}` cannot be applied here; the host's grants need fixing",
+        /// A grant's `writes_only` that cannot be applied to the write.
+        WritesOnlyUnappliable {
+            #[serde(rename = "type")]
+            ty: TypeName,
+        } => "the grant's `writes_only` on `{ty}` cannot be applied here; the host's grants need fixing",
         /// A grant's hiding of a field on some records that cannot be
         /// applied to the read.
         HidingUnappliable {
@@ -1653,6 +1666,8 @@ catalog! {
         DeliveryNotCarried => "this catalog does not carry a delivery id to the store",
         /// An ingest asked to seal its delivery apart through a catalog that does not carry it.
         SealedApartNotCarried => "this catalog does not carry a delivery sealed apart to the store",
+        /// An ingest asked for a commit window of its own through a catalog that does not carry it.
+        CommitWindowNotCarried => "this catalog does not carry an ingest's own commit window to the store",
         /// A trigger's ceiling above the lake's.
         TriggerTooDeep { depth: u32, max: u32 } => "its `max_depth` {depth} is above the lake's `max_reactive_depth` {max}",
         /// A retry that finds no answer of the verb's executor recorded.
@@ -2159,6 +2174,8 @@ catalog! {
         FieldRetyped { field: FieldName, relation: Option<RelationName>, from: FieldType, to: FieldType } => "field `{field}`[ of relation `{relation}`] changes type from {from} to {to}",
         /// An optional field made required; it reshapes.
         FieldRequired { field: FieldName, relation: Option<RelationName> } => "field `{field}`[ of relation `{relation}`] becomes required",
+        /// A field made `authority: writer`, added so or changed to it; it reshapes, as every live record takes a writer.
+        FieldWriter { field: FieldName } => "field `{field}` becomes filled by the store with its record's writer",
         /// A required field made optional.
         FieldOptional { field: FieldName, relation: Option<RelationName> } => "field `{field}`[ of relation `{relation}`] becomes optional",
         /// The key's fields or their order changed; it reshapes.

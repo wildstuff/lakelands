@@ -131,7 +131,7 @@ async fn found(
 
 /// The record writes among `events`: type, key, version, and whether a
 /// retirement.
-fn writes(events: &[Event]) -> Vec<(String, Version, bool)> {
+pub(super) fn writes(events: &[Event]) -> Vec<(String, Version, bool)> {
     (events.iter())
         .filter_map(|e| match &e.body {
             EventBody::RecordUpserted { key, version, .. } => {

@@ -45,6 +45,7 @@ const ALL: TypeRights = TypeRights {
     retire: true,
     link: Vec::new(),
     only: BTreeMap::new(),
+    writes_only: BTreeMap::new(),
 };
 const READ: TypeRights = TypeRights {
     find: true,
@@ -55,6 +56,7 @@ const READ: TypeRights = TypeRights {
     retire: false,
     link: Vec::new(),
     only: BTreeMap::new(),
+    writes_only: BTreeMap::new(),
 };
 
 fn lake(

@@ -89,6 +89,9 @@ interface types {
         /// Only the records whose fields hold these values are the
         /// principal's to read; it writes nothing that reaches the type.
         only: list<field-value>,
+        /// Only the records whose fields hold these values are the
+        /// principal's to write; it reads what its other grants give.
+        writes-only: list<field-value>,
         /// The verbs declared `granted` the principal may call, its field
         /// rights permitting.
         verbs: list<verb-name>,
@@ -160,7 +163,7 @@ interface types {
         dimensions: option<u32>,
     }
 
-    enum authority { authored, source, shared, derived, verb }
+    enum authority { authored, source, shared, derived, verb, writer }
 
     /// Who retires a type's records: its authors through `retire`, or
     /// only its verbs whose effect is `retire`.
@@ -796,6 +799,9 @@ interface types {
         /// Seal the delivery under a key of its own too, so that taking
         /// it back shreds it alone.
         sealed-apart: bool,
+        /// The most records one of the call's commit windows holds; none
+        /// for the lake's `commit-window-events`.
+        commit-window: option<u32>,
     }
 
     record applied {
@@ -1211,6 +1217,9 @@ interface types {
         /// The values the principal's grant admits records by; empty
         /// where it admits every record.
         only: list<field-value>,
+        /// The values the principal's grant admits records to write by;
+        /// empty where it may write every record it reads.
+        writes-only: list<field-value>,
     }
 
     record type-access {
@@ -1855,6 +1864,7 @@ interface types {
         max-depth: u32,
         max-reactive-depth: u32,
         commit-window-events: u32,
+        commit-window-max: u32,
         max-graph-nodes: u32,
         max-offset: u32,
         max-set-changes: u32,

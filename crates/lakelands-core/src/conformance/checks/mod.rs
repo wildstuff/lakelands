@@ -163,6 +163,8 @@ mod views;
 mod vocabulary;
 mod walks;
 mod withdraw;
+mod writer_filled;
+mod writes_only;
 
 /// Every check, in the order the suite runs them.
 pub const ALL: &[Check] = &[
@@ -756,6 +758,7 @@ pub const ALL: &[Check] = &[
     rebuild::ONE_JSON_FORM,
     ingest::DUPLICATE_ACROSS_WINDOWS,
     ingest::REFUSAL_NAMES,
+    ingest::OWN_WINDOW,
     ingest::INSERT_ONLY,
     ingest::REFERENCE_WITH_NUL,
     aging::MOVES_WHAT_HOLDS_FROM,
@@ -917,6 +920,14 @@ pub const ALL: &[Check] = &[
     ahead::BUILT_AHEAD,
     verb_written::VERB_ONLY,
     verb_written::VERB_ONLY_TOLD,
+    writer_filled::WRITER_FILLED,
+    writer_filled::WRITER_REFUSED,
+    writer_filled::WRITER_MIGRATED,
+    writer_filled::WRITER_CARRIED,
+    writes_only::WRITES_ONLY_DOORS,
+    writes_only::WRITES_ONLY_LINKS,
+    writes_only::WRITES_ONLY_REVIEWED,
+    writes_only::WRITES_ONLY_DESCRIBED,
     admitted::ADMITTED,
     admitted::ADMITS_DECLARED,
     admitted::OWN_VALUE,

@@ -34,6 +34,10 @@
 //!   that declares `initial` and holds no value after the patch, with
 //!   `origin: initial`
 //!   (`docs/decisions/050-a-field-declares-its-initial-value.md`).
+//! - **The writer.** The event that makes a record fills each field of
+//!   `authority: writer` with the event's writer, with `origin: system`
+//!   naming that writer; no patch writes one, and a later write keeps it
+//!   (`docs/decisions/084-a-field-holds-the-writer-that-made-its-record.md`).
 //!
 //! A record written again after it was retired starts from no fields, and
 //! its version continues from the retired one.
@@ -45,7 +49,7 @@ use std::sync::{Arc, Mutex};
 use lakelands_api::error::{Case, Flaw, Part, Said};
 use lakelands_api::event::{Event, EventBody, Procedure};
 use lakelands_api::expr::Expr;
-use lakelands_api::ontology::{OnInputChange, TypeDecl, ValueTypeDecl};
+use lakelands_api::ontology::{Authority, OnInputChange, TypeDecl, ValueTypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
 use lakelands_api::{Error, FieldName, Position, Result, TypeName, Value};
 use lakelands_core::sight::Door;
@@ -219,6 +223,41 @@ pub(crate) fn initial_meta(event: &Event) -> FieldMeta {
     }
 }
 
+/// The store's own writer, `system:lakelands`.
+pub(crate) const STORE_WRITER: &str = "system:lakelands";
+
+/// The fields of `ty` the store fills with the writer that makes a record
+/// (`authority: writer`, 084): a create fills each with its event's writer,
+/// in this function's caller that the door and the fold share, and a
+/// migration that brings one fills each live record with its maker
+/// ([`maker`]). No door writes them.
+pub(crate) fn writer_fields(ty: &TypeDecl) -> impl Iterator<Item = &FieldName> {
+    (ty.fields.iter())
+        .filter(|f| f.authority == Authority::Writer)
+        .map(|f| &f.name)
+}
+
+/// The provenance of a field filled at `event` with `writer`, the writer
+/// that made its record: the store's own hand, naming that writer (084).
+pub(crate) fn writer_meta(event: &Event, writer: &str) -> FieldMeta {
+    FieldMeta {
+        writer: writer.to_owned(),
+        origin: Origin::System,
+        ..initial_meta(event)
+    }
+}
+
+/// The writer that made a live record, as far as the record itself tells:
+/// the writer its provenance names for a field written at the position
+/// that made it. A record whose every field was written again since, or
+/// whose type keeps no provenance, tells none, and takes the store's own
+/// writer, never a migration author's (084).
+pub(crate) fn maker(r: &StoredRecord) -> String {
+    (r.meta.values())
+        .find(|m| m.position == r.made)
+        .map_or_else(|| STORE_WRITER.into(), |m| m.writer.clone())
+}
+
 pub(crate) fn meta_of(event: &Event, origin: Origin) -> FieldMeta {
     FieldMeta {
         upstream: event.upstream.clone(),
@@ -313,6 +352,10 @@ pub fn apply(
                 fields.insert(f.name.clone(), v);
                 meta.insert(f.name.clone(), initial_meta(event));
             }
+        }
+        for name in writer_fields(raw) {
+            fields.insert(name.clone(), Value::from(event.writer.clone()));
+            meta.insert(name.clone(), writer_meta(event, &event.writer));
         }
     }
 
