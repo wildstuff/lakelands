@@ -89,6 +89,9 @@ interface types {
         /// Only the records whose fields hold these values are the
         /// principal's to read; it writes nothing that reaches the type.
         only: list<field-value>,
+        /// Only the records whose fields hold these values are the
+        /// principal's to write; it reads what its other grants give.
+        writes-only: list<field-value>,
         /// The verbs declared `granted` the principal may call, its field
         /// rights permitting.
         verbs: list<verb-name>,
@@ -1211,6 +1214,9 @@ interface types {
         /// The values the principal's grant admits records by; empty
         /// where it admits every record.
         only: list<field-value>,
+        /// The values the principal's grant admits records to write by;
+        /// empty where it may write every record it reads.
+        writes-only: list<field-value>,
     }
 
     record type-access {

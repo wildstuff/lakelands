@@ -418,3 +418,74 @@ async fn a_migration_fills_the_writer_of_each_live_record(store: Store) -> Held 
     );
     Ok(())
 }
+
+check!(
+    WRITER_CARRIED = a_reaction_import_and_catch_up_hold_the_writer_a_rebuild_does,
+    "084 (lakelands#1488, lakelands#1490): a host's reaction to a trigger's firing, its write naming that firing as its cause, makes a record holding the writer its event records; an import of the lake's export, and a standby following its writer, answer each record's writer and its provenance as the lake does after a rebuild",
+    given
+);
+
+async fn a_reaction_import_and_catch_up_hold_the_writer_a_rebuild_does(
+    store: Store,
+    given: Given,
+) -> Held {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let ann = holder(s, "ann", json!({"default": "write"}));
+    l.declare_json(note()).await?;
+    l.declare_as(trigger_on("noted", "note", None), "a trigger on `note`")
+        .await?;
+    let before = s.head().await.must("the head")?;
+    upsert(l.cat.as_ref(), &ann, "note", "n1", json!({"code": "n1"})).await?;
+    let fired = events_after(s, before).await?.into_iter();
+    let fired = fired
+        .filter(|e| matches!(e.body, EventBody::TriggerFired { .. }))
+        .map(|e| e.position)
+        .next()
+        .ok_or_else(|| Failure::new("writing `n1` fires `noted`"))?;
+    let bob = holder(s, "bob", json!({"default": "write"}));
+    let reaction = store.catalog(reactive(1, Some(fired)));
+    upsert(reaction.as_ref(), &bob, "note", "n2", json!({"code": "n2"})).await?;
+    let made = events_after(s, fired).await?.into_iter();
+    let made = made.filter(
+        |e| matches!(&e.body, EventBody::RecordUpserted { key, .. } if key.as_str() == "n2"),
+    );
+    let writer = made.map(|e| (e.writer, e.cause)).next();
+    let n2 = l.read("note", "n2").await?;
+    ensure!(
+        writer
+            .as_ref()
+            .is_some_and(|(w, c)| json!(w) == by(&n2) && *c == Some(fired)),
+        "the reaction's create of n2 holds the writer its event records, the event naming the \
+         firing as its cause: {writer:?}, {n2:?}"
+    );
+    // An import and a standby fold the log as a rebuild does.
+    let scratch = super::export::Scratch::new(given.scratch.clone());
+    let from = scratch.dir("from");
+    crate::export::write(s, &from)
+        .await
+        .must("exporting the lake")?;
+    let imported = (given.import)(from, store.lake().clone(), None, Seams::default()).await;
+    let imported = imported.map_err(|e| Failure::new(format!("importing the export: {e}")))?;
+    let of_import = every(&Lake::of(imported.store.as_ref()), "note", None).await?;
+    let as_is: crate::conformance::Wrap = Arc::new(|inner| inner);
+    let try_every = Duration::from_millis(20);
+    let standby = (given.standby)(store.lake().clone(), Seams::default(), try_every, as_is);
+    let (standby, _standing) = standby
+        .await
+        .map_err(|e| Failure::new(format!("opening a standby beside the writer: {e}")))?;
+    let head = s.head().await.must("the head")?;
+    standby
+        .reaches(head, Duration::from_secs(30))
+        .await
+        .must("the standby reaching the writer's head")?;
+    let of_standby = every(&Lake::of(standby.as_ref()), "note", None).await?;
+    standby.close().await.must("closing the standby")?;
+    store.rebuild().await.must("rebuilding the lake")?;
+    let rebuilt = every(&l, "note", None).await?;
+    ensure!(
+        of_import == rebuilt && of_standby == rebuilt,
+        "an import ({of_import}) and a standby's catch-up ({of_standby}) answer the notes and \
+         their writers as a rebuild does ({rebuilt})"
+    );
+    Ok(())
+}

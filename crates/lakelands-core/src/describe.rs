@@ -1000,7 +1000,13 @@ impl Sight<'_> {
         // A holder of `only` writes its own records, and makes one only where
         // it writes every field its `only` names (051).
         let held = self.only_holder(t);
+        // A holder of `writes_only` is offered only the writes its pairs
+        // admit: none where they cannot be applied, and no verb that could
+        // move a record off them (006).
+        let writes = self.writes(t);
+        let unwritable = writes == crate::rights::Admit::Nothing;
         let upsert = crate::rights::creates(who, t)
+            && !unwritable
             && !is_view
             && !is_link
             && fields.iter().any(FieldDescription::authored_writable);
@@ -1012,7 +1018,7 @@ impl Sight<'_> {
             create: upsert && !closed,
             create_why: (upsert && closed).then(|| CREATE_CLOSED.to_owned()),
             // A type only its verbs retire is retired by calling one.
-            retire: !is_link && t.retired_by.is_authors() && self.may_retire(t),
+            retire: !is_link && !unwritable && t.retired_by.is_authors() && self.may_retire(t),
             link: t
                 .relations
                 .iter()
@@ -1023,6 +1029,7 @@ impl Sight<'_> {
                 })
                 .filter(|r| {
                     let lt = crate::links::link_type(&t.name, r);
+                    let pairs = crate::rights::own_writes_only(who, &lt.name);
                     lt.fields
                         .iter()
                         .filter(|f| {
@@ -1030,6 +1037,8 @@ impl Sight<'_> {
                                 || f.name.as_str() == crate::links::TO
                         })
                         .all(|f| field_access(who, &lt, f).writes())
+                        && self.writes(&lt) != crate::rights::Admit::Nothing
+                        && (pairs.iter()).all(|(f, v)| crate::rights::create_holds(who, &lt, f, v))
                 })
                 .map(|r| r.name.clone())
                 .collect(),
@@ -1039,12 +1048,19 @@ impl Sight<'_> {
                 Ok(()) => crate::rights::own_only(who, &t.name).into_iter().collect(),
                 Err(_) => Default::default(),
             },
+            writes_only: match self.check_writes_only(t) {
+                Ok(()) => crate::rights::own_writes_only(who, &t.name)
+                    .into_iter()
+                    .collect(),
+                Err(_) => Default::default(),
+            },
         };
         let verbs = each(declared, |d| match &d.declaration {
             Declaration::Verb(v)
                 if v.on == t.name
                     && self.callable(t, v)
-                    && (!held || v.risk == Risk::Low || self.pinnable(t, Some(v))) =>
+                    && (!held || v.risk == Risk::Low || self.pinnable(t, Some(v)))
+                    && self.writes_by(t, v) =>
             {
                 Some(v.name.clone())
             }
@@ -1140,7 +1156,8 @@ impl Sight<'_> {
         // proposes none that could move its pairs (051). One on a type not
         // shown would name it.
         let held = self.only_holder(t) && !self.pinnable(t, Some(v));
-        if self.ty(&v.on).is_err() || !self.callable(t, v) || (held && v.risk != Risk::Low) {
+        let refused = (held && v.risk != Risk::Low) || !self.writes_by(t, v);
+        if self.ty(&v.on).is_err() || !self.callable(t, v) || refused {
             return None;
         }
         Some(VerbDescription {

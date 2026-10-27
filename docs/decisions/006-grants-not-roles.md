@@ -2149,6 +2149,77 @@ of the three doors was a copy with a part missing. An answer that fails
 closed cannot be skipped: a site that asks nothing has no pairs to
 filter by, and so no record to hand out.
 
+### A grant may admit every record to read and only some to write
+
+A principal's grant on a type may hold `writes_only`: pairs of a field
+and a value, valid as those of `only` are, a field the type declares, of
+kind `text` or `reference`, that the holder reads, with a text value.
+Its holder reads what its other grants give it, every record where they
+give every record, and writes only the records whose fields hold every
+pair (lakelands#1490).
+
+- **Judged before and after.** A write is judged against the record at
+  its key, live or retired, and against the record it leaves: both must
+  hold the pairs. A change, a handover to other values and a retirement
+  of another's record are refused, and so is a create that does not
+  leave the pairs: a value the write gives, a field's `initial` or an
+  `authority: writer` field that names the holder's own writer counts.
+  A retired record of another blocks a create at its key, so a holder
+  cannot take another's key over by its retirement. Every write door is
+  judged so: `upsert`, `retire`, a verb, `ingest`, a proposed write and
+  its accept, and a change to records, whose plan names each record the
+  holder may not write as refused and whose `enact` is then refused
+  whole. The refusal is `not_granted` and names no field: the holder
+  reads the record, so the refusal tells it nothing it could not read.
+- **A grant that cannot be applied** is refused as invalid at the doors
+  that write the type, naming the type, as `writes_only_unappliable`.
+  It changes no read: a grant that says nothing about reading is no
+  reason to hide what the other grants show.
+- **Links.** A link is its holder's to make by one end it may write: a
+  holder links its own record to one it may only read. Both ends must be
+  its own where the link would change what the other end answers: where
+  a derived or computed field of the other end's type reads across the
+  relation, judged against the declarations in force, and where the
+  relation is to-one at the other end, since the link then takes that
+  end's one place. The link record itself must hold the pairs the
+  holder's `writes_only` on the link type names, at its create, at an
+  `unlink` and at any other write to it. A holder of `writes_only` on an
+  end type who holds none on the link type makes no link of it: the
+  case is not covered, so it is refused, not opened.
+- **Proposals.** A proposal is judged as the direct write is, and its
+  pairs pin it as those of `only` do: a write that may move them, a verb
+  that assigns a field they name, is not proposed, and the accept is
+  refused once the record moved since. A records proposal carries the
+  proposer's `writes_only` pairs into its `only`, so a change accepted
+  later writes only the records its proposer could; a pair that would
+  contradict one of `only` is refused. A reviewer holding `writes_only`
+  accepts only what its pairs admit, at the record at the key and in the
+  write it leaves, and rejects only that too: deciding is writing the
+  outcome, and a reviewer is no wider when it says no. It decides no
+  schema proposal, as a holder of `only` decides none.
+- **Schema.** With `schema` a holder may propose a declaration or a
+  migration; `declare`, `apply`, `migrate` and the other direct schema
+  doors stay refused, as does an aging rule on the type: a shape is the
+  whole type's, and a change to it moves records the holder may not
+  write.
+- **`describe`** tells the holder its pairs as `may.writes_only`, offers
+  `upsert` only where a create can hold them, a relation only where its
+  link type's grant can be held, and no write, link or verb that would
+  be refused.
+- **With `only`.** A grant may hold both: its holder reads what `only`
+  admits and writes only what both admit.
+
+**Why.** A team often reads the whole lake and is answerable for a part
+of it. Before, the host had two choices, each wrong: give `only` and
+hide the rest from a reader who needs it, or give the type and let the
+reader write records that are not its own. Judging the record before and
+after is what makes the pairs a boundary: a check of the after alone
+lets a write take another's record over by giving it the holder's
+values, and one of the before alone lets the holder hand its record out
+of its own reach. Where a rule does not cover a case, the case is
+refused, so a host never learns of a gap by a write it did not mean to
+allow.
+
 ### A field may be hidden on only the records a condition selects
 
 A principal's grant on a type may hold `hide_where`: hidings, each a
@@ -2517,6 +2588,16 @@ Of `only`:
 - It does not change `restricted`: a record must pass both rules.
 - A reference value naming another's key is shown as a key; the record
   behind it is not found, as for a restricted record.
+
+Of `writes_only`:
+
+- It is not taken from `Principal.id` implicitly: a host that means a
+  principal's own records writes the pair, or names an
+  `authority: writer` field with that principal's writer.
+- It does not change `only`: `only` still decides what is read, and a
+  grant holding both writes only what both admit.
+- It does not change a read, nor counts as one: a grant whose reads
+  cover every record still does with it.
 
 Of a field hidden on the records a condition selects:
 
@@ -2948,3 +3029,6 @@ Of a field hidden on the records a condition selects:
   on a record only where its reader is shown it there at that position
   and at the head; it had been judged at the head alone
   (lakelands#1456).
+- A grant may admit every record to read and only some to write
+  (lakelands#1490): `only` had been the one way to keep a principal to
+  some records, and it kept the reads to them too.

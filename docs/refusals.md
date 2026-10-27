@@ -576,6 +576,7 @@ What a refusal is about.
 | `not_searchable` | `field` (FieldName), `type` (TypeName) | `{field}` of `{type}` is not searchable | A field a search, or a `search_weights` setting's `text_fields`, names that is not searchable. |
 | `offset_beside` | `other` (String) | `offset` and `{other}` both say where the answer starts; give one | An `offset` beside another start of the answer. |
 | `only_unappliable` | `type` (TypeName) | the grant's `only` on `{type}` cannot be applied here; the host's grants need fixing | A grant's `only` that cannot be applied to the read. |
+| `writes_only_unappliable` | `type` (TypeName) | the grant's `writes_only` on `{type}` cannot be applied here; the host's grants need fixing | A grant's `writes_only` that cannot be applied to the write. |
 | `hiding_unappliable` | `type` (TypeName) | the grant's `hide_where` on `{type}` cannot be applied here; the host's grants need fixing | A grant's hiding of a field on some records that cannot be applied to the read. |
 | `order_at_read` | `field` (FieldName), `type` (TypeName) | `order_by` names `{field}` of `{type}`, which is computed at the read; order by a stored field it is computed from | An order by a field computed at the read. |
 | `order_names_no_field` | — | an order by a value, `known_at` or `seen_at` names its field | An order by a value or a time that names no field. |
