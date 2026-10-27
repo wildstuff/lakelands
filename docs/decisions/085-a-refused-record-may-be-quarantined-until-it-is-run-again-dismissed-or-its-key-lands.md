@@ -55,7 +55,7 @@ same change.
 | a type written once | `written_once` | yes |
 | a link's cardinality | `linked_already_from`, `linked_already_to` | yes |
 | an outage | `unavailable` | no |
-| the quarantine is full (below) | `quarantine_full` | no |
+| the quarantine is full (below) | the record's own refusal, `quarantine_full` beside it | no |
 
 **A key holding NUL** is not quarantined. Every id the log makes joins
 its parts with `0x00` and is unambiguous because no key holds one, and
@@ -160,9 +160,14 @@ selected. So a cell is never shown to a reader from whom a hiding on
 either side keeps it.
 
 **The refusal** is shown whole to a reader who is shown every name it
-holds, and to any other as its kind alone, with `more`, so that a
-refusal phrased to its writer's sight tells no other reader what is
-hidden from it.
+holds, and to any other as its kind alone, so that a refusal phrased to
+its writer's sight tells no other reader what is hidden from it. Its
+kind alone is its `error` and, for a refusal, its `reason` code, with
+`more: true`, as a listed proposal says it holds more (006): no
+`field`, no case, no place, no parameter and no record name; a
+`not_found` is `not_found` alone, with no `missing`. The listing keeps
+the one shape, `refusal`, either way, and `more` tells a reader which
+it holds.
 
 ### A quarantined record is worked by a holder of `ingest`, under the sight of its type
 
@@ -279,17 +284,44 @@ place, and quietly. **A time limit** was weighed and not taken: a host
 that wants one lists the records older than its own limit and dismisses
 them, and the log says who did.
 
-What a lake bounds is how many it keeps: `limits.quarantined_max`, the
-open quarantined records of one source, 10 000 by default, the host's to
-raise. One costs a row of the projection while it is open, and a feed
-gone wrong would otherwise fill the lake with rows it refused. A
-refusal past the bound is not quarantined. It ends the stream as
-without the option, and the stream's last item is the record's own
-refusal, its kind and its names as without the option, with the reason
-`quarantine_full` and the bound beside them; nothing of its window is
-appended, as at any refusal that ends a stream. A new version of an id
-already quarantined is not counted against the bound, nor is an open id
-it reopens where the bound has room.
+What a lake bounds is how many it keeps open: `limits.quarantined_max`,
+the open quarantined records of one source, 10 000 by default, the
+host's to raise. An open one carries its cells in the projection, and a
+feed gone wrong that no one works would otherwise fill the lake with
+rows it refused, unattended.
+
+**What the bound does not cover** is the closed ones. A closed
+quarantined record keeps a row with no cell: its id, its last version,
+its close and why, which the listing answers from and the next
+version counts on. That row grows the projection without a bound of
+its own, as a retired record's row does: each stands for at least two
+events of the log, its last `record_quarantined` and its
+`quarantine_closed`, and a source's closed rows never outnumber the
+records it had quarantined. Only a
+write, a dismiss or an act on the source frees room under the bound,
+each an event someone appended, so a feed that goes wrong and is
+dismissed row by row grows the lake by what its host chose to append,
+as any host's writes do; a host that will not keep that history forgets
+or purges the source. **Bounding the closed ones too** was weighed and
+not taken: a source would be refused quarantine forever after it had
+worked 10 000 rows, or its closed rows would need dropping, and a row
+dismissed and run again would then be shown again.
+
+**A refusal past the bound** is not quarantined. It ends the stream as
+without the option: the stream's last item is the record's own
+refusal, unchanged in kind, code and data, as without the option, in the wrapper 016 gives a refused record of a stream, which
+carries `index`, `from` and `record` beside it and now
+`quarantine_full: { max }` too, the bound that was full. A Place or a
+case code was weighed and not taken: only `invalid`, `constraint`,
+`precondition`, `declined` and `unanswered` say a case, and a
+quarantinable `not_granted` or `not_found` says none, and a case put in
+place of the record's own would hide why the record was refused. A host
+that reads `quarantine_full` knows the record was eligible and the
+bound was the cause; one that does not reads the refusal as before.
+Nothing of the window is appended, as at any refusal that ends a
+stream. A new version of an id already quarantined is not counted
+against the bound, nor is an open id it reopens where the bound has
+room.
 
 **A redeclared type** keeps its quarantined records, and no declaration
 withdraws a type (027 withdraws triggers, verbs, sets and functions), so
@@ -322,7 +354,8 @@ own, sealing in a new nonce domain, the closes in every caller's record
 door and in three acts, and two catalog methods with their REST doors:
 
 - **Product:** about +1 600 to +2 100 lines. `IngestOpts::quarantine_refused`,
-  `SourceRecord::resubmits`, `Committed::quarantined`, the quarantined
+  `SourceRecord::resubmits`, `Committed::quarantined`,
+  `Error::Ingested`'s `quarantine_full`, the quarantined
   record, its filter and its id in `lakelands-api`; the cells' sight,
   hidings included, in `lakelands-core` (`rights.rs`, beside a
   proposal's); the window, versions, the closes, the acts' reach and
@@ -339,10 +372,17 @@ door and in three acts, and two catalog methods with their REST doors:
   `docs/log-format.md` (two kinds in §2.3, the nonce domain in §1.4,
   the content id in §3, the step to 21 in §6), `docs/rest.md`,
   `docs/settings.md` (`limits.quarantined_max`), `docs/refusals.md`
-  (`quarantine_full`, `quarantine_refused_not_carried`) and
-  `docs/hosting.md`: name the delivery, and what a dismiss does not
-  erase.
-- **The log:** format 21, 0.21.0's one step. `record_quarantined`:
+  (the case `quarantine_refused_not_carried`, an `invalid`'s;
+  `quarantine_full` is no case, it stands beside the refusal in 016's
+  stream) and `docs/hosting.md`: name the delivery, and what a dismiss
+  does not erase. `docs/log-format/vectors/21/`, the vectors of the new
+  format, with a `record_quarantined`, a duplicate of it, a next
+  version under another delivery, a sealed one, and each
+  `quarantine_closed` reason the vectors' lake can reach.
+- **The log:** format 21, 0.21.0's one step, shared with lakelands#1489
+  (the principal a write was made for, on the envelope): one release
+  steps the format once, and whichever of the two builds first takes
+  the step and the other adds to it. `record_quarantined`:
   envelope `source` and the call's `delivery`; payload the type, the key
   as sent, the id, `version`, the cells, `sealed`, `seen_at`, `upstream`
   and the refusal; content-addressed like an ingest, its id made over
@@ -350,10 +390,13 @@ door and in three acts, and two catalog methods with their REST doors:
   cells as stored and the refusal, so that a version refused the same
   way appends nothing. `quarantine_closed`: the id and why. A log of 20
   holds neither; no converter changes an event.
-- **WIT:** `quarantine-refused` on the ingest options and `resubmits` on
-  a source record of `types.wit`. The listing and the dismiss stay off
-  the guest door in 0.21.0: they are a person's, worked through the
-  host.
+- **WIT:** in `types.wit`, `quarantine-refused` on `ingest-opts`,
+  `resubmits` on `source-record`, `quarantined` (the stream indexes) on
+  `committed`, `quarantined-max` on `limits`, and `quarantine-full` on
+  `ingest-error` beside `index`, `from` and `record`. The case
+  `quarantine_refused_not_carried` comes in by the case catalog, as
+  every case does. The listing and the dismiss stay off the guest door
+  in 0.21.0: they are a person's, worked through the host.
 
 The checks that would pin it, on every engine:
 1. A delivery of three records, the second refused, with
@@ -363,14 +406,18 @@ The checks that would pin it, on every engine:
    answer at a `commit_window` of 1 and of 256.
 2. The table: one refusal of each row marked yes is quarantined, and
    one of each row marked no ends the stream as without the option,
-   `quarantine_full` past `limits.quarantined_max` among them. An empty
+   `quarantine_full` past `limits.quarantined_max` among them, its
+   stream's last item the record's own refusal unchanged, a
+   `not_granted` and a `constraint` each, with `quarantine_full` and the
+   bound beside it; a dismiss frees a place under the bound. An empty
    key is quarantined and lists as the empty string; a key holding NUL
    ends the stream.
 3. Sight: a sensitive cell is masked to a reader without the field's
    right and shown with it; a `none` cell is not there; a quarantined
    record of a type not shown, or at a restricted key, is not listed
    without `restricted`; without `ingest` the listing is `not_granted`;
-   a refusal naming a hidden field is shown as its kind alone. A hiding
+   a refusal naming a hidden field is shown as its kind alone, with
+   `more`, and no field, case or name. A hiding
    lowers a cell where the `G` cell selects, where the live record
    selects though the `G` cell does not, and where the `G` cell is a
    number; it lowers nothing where the `G` cell is absent and no record
