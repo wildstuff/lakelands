@@ -1912,6 +1912,9 @@ impl Migrated {
             .map(|(name, v)| (name, v, record::initial_meta(event)))
             .collect();
         self.fills = fills;
+        // A plan that cannot be made is a record that cannot be converted:
+        // `apply` answers it as damage for each record of the type, so with
+        // none of them there is nothing to fill either.
         let writers = shape::becoming_writer(&self.before, &self.migration).unwrap_or_default();
         let meta = record::writer_meta(event, "");
         self.writers = writers.into_iter().map(|n| (n, meta.clone())).collect();
@@ -1957,15 +1960,18 @@ impl Migrated {
                 }
             }
             // And each field it makes the writer's takes the writer that
-            // made the record, as far as the record tells (084).
+            // made the record, as far as the record tells (084), with its
+            // provenance where the type keeps one, as a create leaves it.
             for (name, meta) in self.writers.iter().filter(|_| !r.retired) {
                 r.fields.insert(name.clone(), Value::from(maker.clone()));
-                let writer = maker.clone();
-                let meta = lakelands_api::record::FieldMeta {
-                    writer,
-                    ..meta.clone()
-                };
-                r.meta.insert(name.clone(), meta);
+                if self.migration.to.field_meta {
+                    let writer = maker.clone();
+                    let meta = lakelands_api::record::FieldMeta {
+                        writer,
+                        ..meta.clone()
+                    };
+                    r.meta.insert(name.clone(), meta);
+                }
             }
         }
         if let Some(decl) = self.decls.get(&r.ty) {

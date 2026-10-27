@@ -64,9 +64,9 @@ that made it; what the field held before is dropped, as the preflight's
 `dropped` counts it. A record that tells no such writer — every field
 written again since, or a type that keeps no per-field provenance —
 takes the store's own writer, `system:lakelands`. A retired record is
-left as it is and takes a writer when it is written again. The filled
-value's provenance is the store's at the `migrated` event, naming the
-writer it holds. A field changed from this authority to another keeps
+left as it is and takes a writer when it is written again. Where the
+type keeps per-field provenance, the filled value's is the store's at
+the `migrated` event, naming the writer it holds. A field changed from this authority to another keeps
 its values and is declared.
 
 ### A create holds an `only` pair on it when the value is the creator's

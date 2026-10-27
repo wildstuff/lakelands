@@ -1292,6 +1292,37 @@ async fn a_target_type_the_source_does_not_own_whole_is_refused_at_start() {
     }
 }
 
+/// A target type may keep a field of `authority: writer` (084): the mirror
+/// starts, its copies hold the principal it writes as, and a source's own
+/// writer field does not cross.
+#[tokio::test]
+async fn a_writer_field_of_a_target_type_holds_the_mirrors_principal() {
+    for engine in engines() {
+        let by = json!({"name": "by", "type": {"kind": "text"}, "authority": "writer"});
+        let mut source = source_types();
+        let mut customer = serde_json::to_value(&source[1]).unwrap();
+        customer["fields"].as_array_mut().unwrap().push(by.clone());
+        source[1] = decl(customer);
+        let mut target = target_types();
+        let mut fields = copy_fields();
+        fields.push(by);
+        target[1] = customer_copy(fields);
+        let two = Two::with("writer", &engine, source, target).await;
+        two.upsert("customer", "c1", json!({"code": "c1", "name": "Ada"}))
+            .await;
+        let mut m = two.mirror().await.unwrap();
+        settle(&mut m).await;
+        let c = two.copy("customer", "c1").await.expect("the copy");
+        let mirror = writer(two.main.as_ref()).writer();
+        assert_eq!(c.fields["by"], json!(mirror), "{engine:?}: {c:?}");
+        assert_ne!(c.fields["by"], json!(owner(two.crm.as_ref()).writer()));
+        assert_eq!(
+            c.meta[&lakelands_api::FieldName::from("by")].origin,
+            Origin::System
+        );
+    }
+}
+
 /// A derived relation of a mirrored type stores nothing, so its source
 /// writes nothing for it (lakelands#902): the mirror starts whether the
 /// source derives the relation, carries one of that name by links or

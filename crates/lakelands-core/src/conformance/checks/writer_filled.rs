@@ -12,7 +12,7 @@ use crate::conformance::prelude::*;
 
 check!(
     WRITER_FILLED = a_record_holds_the_writer_that_made_it,
-    "084 (lakelands#1488): a field of `authority: writer` takes, at the event that makes its record, that event's writer as `<kind>:<id>`, by `upsert` and by `ingest`, a required one passing the door; its provenance is `origin: system` at that event, naming that writer, with no source; a later write by another writer keeps it, a record retired and made again by another takes the new writer, an accepted proposal's create its proposer, and a re-key moves it with its record; a rebuild and a read as of a position answer every record byte for byte as before"
+    "084 (lakelands#1488): a field of `authority: writer` takes, at the event that makes its record, that event's writer as `<kind>:<id>`, by `upsert` and by `ingest`, a required one passing the door; its provenance is `origin: system` at that event, naming that writer, with no source; a later write by another writer keeps it, a record retired and made again by another takes the new writer, an accepted proposal's create its proposer, and a re-key moves it with its record; a rebuild answers every record byte for byte as before, and a read as of a position before a record was made again and re-keyed answers it as read there, before the rebuild and after it"
 );
 
 check!(
@@ -22,7 +22,7 @@ check!(
 
 check!(
     WRITER_MIGRATED = a_migration_fills_the_writer_of_each_live_record,
-    "084 (lakelands#1488): declaring a field `authority: writer`, added so or changed to it, is refused `reshapes` naming `field_writer`, and the schema hash moves; a migration fills each live record with the writer its provenance names for the event that made it, dropping what the field held, a record that tells none (every field written again since) with `system:lakelands`, never the migration's author, and leaves a retired record as it was; a rebuild answers the records byte for byte as before"
+    "084 (lakelands#1488): declaring a field `authority: writer`, added so or changed to it, is refused `reshapes` naming `field_writer`, and the schema hash moves; a migration fills each live record with the writer its provenance names for the event that made it, dropping what the field held, a record that tells none (every field written again since) with `system:lakelands`, never the migration's author, and leaves a retired record as it was, which takes the writer that makes it again; the accept of an `upsert` proposed with the field before the migration is refused `wrong_door` naming it, appending nothing; a rebuild answers the records byte for byte as before"
 );
 
 /// `note`: `code`, `body`, and `by`, the writer that made it (required).
@@ -75,6 +75,9 @@ async fn a_record_holds_the_writer_that_made_it(store: Store) -> Held {
     // A later write keeps it; a re-made record takes its new maker.
     upsert(l.cat.as_ref(), &bob, "note", "n1", json!({"body": "x"})).await?;
     upsert(l.cat.as_ref(), &ann, "note", "n3", json!({"code": "n3"})).await?;
+    // As read here, before n3 is made again and the type re-keyed.
+    let early = s.head().await.must("the head")?;
+    let seen = every(&l, "note", None).await?;
     l.retire("note", "n3").await?;
     upsert(l.cat.as_ref(), &bob, "note", "n3", json!({"code": "n3"})).await?;
     // An accepted proposal's create is its proposer's.
@@ -113,17 +116,18 @@ async fn a_record_holds_the_writer_that_made_it(store: Store) -> Held {
         "n1, re-keyed to `x`, still holds `ann`: {moved:?}"
     );
     // A rebuild and a read as of a position answer the same.
-    let at = s.head().await.must("the head")?;
     let before = every(&l, "note", None).await?;
+    let was = every(&l, "note", Some(early)).await?;
     store.rebuild().await.must("rebuilding the lake")?;
     let (after, then) = (
         every(&l, "note", None).await?,
-        every(&l, "note", Some(at)).await?,
+        every(&l, "note", Some(early)).await?,
     );
     ensure!(
-        before == after && before == then,
-        "a rebuild and a read as of the head answer the records as before: {before} / {after} / \
-         {then}"
+        before == after && was == seen && then == seen,
+        "a rebuild answers the records as before ({before} / {after}), and a read as of the \
+         position before n3 was made again and the re-key, before the rebuild and after it, \
+         answers them as read there, n3 `ann`'s under `n3`: {seen} / {was} / {then}"
     );
     Ok(())
 }
@@ -331,6 +335,16 @@ async fn a_migration_fills_the_writer_of_each_live_record(store: Store) -> Held 
     )
     .await?;
     l.retire("memo", "m4").await?;
+    let write = ProposedWrite::Upsert {
+        ty: "memo".into(),
+        key: "m5".into(),
+        patch: patch(json!({"body": "g", "by": "agent:forged"})),
+        opts: WriteOpts::default(),
+    };
+    let proposed = l.cat.propose(&bob, write, "a memo".into()).await;
+    let Ok(Outcome::Proposed { proposal, .. }) = proposed else {
+        return Err(Failure::new(format!("`bob` proposes `m5`: {proposed:?}")));
+    };
     // Declared, it reshapes; migrated, each live record takes its maker.
     let was = l.describe_type("memo").await?.lifecycle.schema_hash;
     memo["fields"][1]["authority"] = json!("writer");
@@ -377,6 +391,18 @@ async fn a_migration_fills_the_writer_of_each_live_record(store: Store) -> Held 
          value, m2 with `bob`, and m3, all rewritten since, with the store's writer: {m1:?}, \
          {m2:?}, {m3:?}"
     );
+    let head = s.head().await.must("the head")?;
+    let accepted = accept(&l, &l.own, &proposal).await;
+    let wrong = Err(Error::Refused {
+        field: Some("by".into()),
+        reason: Refusal::WrongDoor,
+    });
+    ensure!(
+        accepted == wrong,
+        "the accept of `bob`'s `m5`, proposed with `by` before the migration, is refused \
+         `wrong_door` naming it: {accepted:?}"
+    );
+    head_unmoved(s, head, "an accept writing the writer of a record").await?;
     upsert(l.cat.as_ref(), &bob, "memo", "m4", json!({"body": "f"})).await?;
     let m4 = l.read("memo", "m4").await?;
     ensure!(
