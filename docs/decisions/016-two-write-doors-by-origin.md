@@ -6,6 +6,7 @@
 
 `ingest` is how a source feeds the lake. It takes a stream of records,
 each from the call's source or from the source the record names, and
+in the call's delivery or in the delivery the record names (087), and
 chunks it into group-commit windows, answering one
 acknowledgement per window with the position it is durable at. It writes
 only fields whose authority is `source` or `shared`. It is
@@ -168,12 +169,13 @@ quarantine, is kept as a quarantined record with its cells and its
 refusal, and the stream goes on. The window is decided without it, as
 the host would resume at `from` without it, and its `Committed` lists
 the stream `index` of each record it quarantined. A refusal of the
-call, of the source or of a type not declared, and one past
+call, of the source, of the delivery's form or of a type not declared,
+and one past
 `limits.quarantined_max`, ends the stream as without the option; the
 last carries `quarantine_full` beside `index`, `from` and `record`.
 
 A record may name what it `resubmits`, a quarantined record of its
-source by its first delivery and index. It is judged as any record; one
+source by its first delivery and its place there. It is judged as any record; one
 written or counted as a duplicate closes what it names, and a duplicate
 that does so appends that close and nothing else: the one case where a
 duplicate appends. A redelivery that names no open quarantined record
@@ -313,7 +315,9 @@ not a view (`invalid`), the principal may write every field of it
 (`not_granted`), when it is called, before it takes the stream; each
 window checks the context again. Then each record, in stream order: the
 type is declared (`not_found`); the key's form (`invalid`); the door and
-the grants, field by field (record check 4); every value fits (5); a
+the grants, field by field (record check 4); the form of a source and
+then of a delivery the record names in place of the call's (`invalid`,
+`source_id_form`, `delivery_id_form`); every value fits (5); a
 record of a link type no relation carries, its relation renamed or
 removed, is `invalid`, naming the type (lakelands#761); then the
 duplicate test, which counts a record and checks nothing further; then
@@ -422,3 +426,4 @@ is just another caller later, not a change to the contract.
 - An authored field may admit named sources, `admits`, which `ingest` writes it under where no other hand's value stands (069, lakelands#1264).
 - A type's records may be retired by its verbs alone, `retired_by: verbs`; `retire`, a proposed `retire` and its accept are refused as `verbs_only`, naming the retire verbs its writer is shown, or `wrong_door`, and the system's retirements stay (lakelands#1148).
 - An ingest may ask its own commit window, `commit_window`, up to the lake's `limits.commit_window_max`; record writes sharing one append keep the lake's `commit_window_events` (lakelands#1496).
+- One ingest may carry many deliveries: a record may name its own `delivery`, which its event takes in place of the call's, its form judged as the call's beside the record's source form (087, lakelands#1528).

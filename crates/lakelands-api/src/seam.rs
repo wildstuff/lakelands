@@ -384,11 +384,23 @@ pub trait KeyStore: Send + Sync {
     /// sealed apart, and answer its id: [`Self::key`] answers it, it is
     /// never among [`Self::ids`], and [`Self::destroy`] destroys it with
     /// the versions
-    /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). A key
-    /// store that makes none refuses as unbound, as this default does.
+    /// (`docs/decisions/065-part-of-a-source-may-be-taken-back.md`). It
+    /// answers once the key is kept as durably as any key. A key store
+    /// that makes none refuses as unbound, as this default does.
     fn create_apart(&self, lake: &LakeId, source: &SourceId) -> Result<KeyId> {
         let _ = (lake, source);
         Err(crate::Error::unbound(crate::error::Seam::KeyApart))
+    }
+
+    /// [`Self::create_apart`] for each entry, in order, a source named
+    /// once per key it needs: a window's new keys in one request. It
+    /// answers once they are all kept as durably as any key, so a key
+    /// store that keeps keys durably may keep them with one sync; this
+    /// default asks [`Self::create_apart`] for each.
+    fn create_apart_many(&self, lake: &LakeId, sources: &[SourceId]) -> Result<Vec<KeyId>> {
+        (sources.iter())
+            .map(|s| self.create_apart(lake, s))
+            .collect()
     }
 
     /// Destroy the key `id` [`Self::create_apart`] made, and no other. One

@@ -53,6 +53,114 @@ check!(
     "016 and 039: one ingest may name a source per record, the call's where a record names none: each record's provenance holds its own, a redelivery under it is a duplicate, the same record under another source is a duplicate unchanged and a new event under it changed, and `purge_source` of one takes only its records"
 );
 
+check!(
+    A_DELIVERY_PER_RECORD = one_ingest_carries_a_delivery_per_record,
+    "016 and 065, extended (lakelands#1528): one call in `page` carries `k0` naming `page`, `k1` naming no delivery, `k2` naming `item-2` and `k3` and `k4` naming `item-3`: their events name `page`, `page`, `item-2`, `item-3` and `item-3`, alike at a `commit_window` of 1 and of 256; taking back `item-3` selects `k3` and `k4` alone, `[item-2, item-3]` three, `page` two, and the act on `item-3` leaves `k1` and `k2` and retires `k3` and `k4`; the same record under `item-5` and then `item-6` in one call is one event in `item-5` and a duplicate; a record naming `d7` or the empty id is refused `delivery_id_form` with its `index` and `from`, nothing of its window appended"
+);
+
+async fn one_ingest_carries_a_delivery_per_record(store: Store) -> Held {
+    use lakelands_api::error::Case;
+    use lakelands_api::write::Selection;
+    use lakelands_api::{DeliveryId, IngestOpts, ingest_all_with};
+    let l = Lake::of(store.as_ref());
+    l.declare(feed()).await?;
+    let r = |key: &str, delivery: Option<&str>| SourceRecord {
+        delivery: delivery.map(DeliveryId::from),
+        ..source_record("feed", key, json!({"body": key}))
+    };
+    let page = |window: u32| IngestOpts {
+        delivery: Some("page".into()),
+        commit_window: Some(window),
+        ..IngestOpts::default()
+    };
+    let named = [
+        ("k0", Some("page")),
+        ("k1", None),
+        ("k2", Some("item-2")),
+        ("k3", Some("item-3")),
+        ("k4", Some("item-3")),
+    ];
+    // Each run under keys of its own, so `all`'s records are its alone.
+    for (window, source, of) in [(1, "one", "-1"), (256, "all", "")] {
+        let before = store.head().await.must("reading the head")?;
+        let key = |k: &str| format!("{k}{of}");
+        let batch = named.iter().map(|(k, d)| r(&key(k), *d)).collect();
+        let source = SourceId::from(source);
+        let said = ingest_all_with(l.cat.as_ref(), &l.own, &source, page(window), batch);
+        let what = format!("ingesting five records in three deliveries at a window of {window}");
+        said.await.must(&what)?;
+        let events = events_from(store.as_ref(), before.next()).await?;
+        let got: Vec<_> = (events.into_iter())
+            .filter_map(|e| match e.body {
+                EventBody::RecordIngested { key, .. } => Some((key.0, e.delivery?.to_string())),
+                _ => None,
+            })
+            .collect();
+        let want: Vec<_> = (named.iter())
+            .map(|(k, d)| (key(k), d.unwrap_or("page").to_owned()))
+            .collect();
+        ensure!(got == want, "{what}, the events name {got:?}, not {want:?}");
+    }
+    let all = SourceId::from("all");
+    for (selection, want) in [
+        (Selection::Delivery("item-3".into()), 2),
+        (
+            Selection::Deliveries(vec!["item-2".into(), "item-3".into()]),
+            3,
+        ),
+        (Selection::Delivery("page".into()), 2),
+    ] {
+        let report = store.remove_values_preflight(&all, &selection).await;
+        let report = report.must("the preflight")?;
+        ensure!(
+            report.events == want,
+            "taking back {selection:?} selects {want} events: {report:?}"
+        );
+    }
+    store
+        .remove_values(&all, &Selection::Delivery("item-3".into()), false, None)
+        .await
+        .must("taking `item-3` back")?;
+    for (key, live) in [("k1", true), ("k2", true), ("k3", false), ("k4", false)] {
+        let got = l.cat.get(&l.own, &"feed".into(), get_at(key, None)).await;
+        ensure!(
+            got.is_ok() == live,
+            "after taking `item-3` back, `{key}` read {got:?}"
+        );
+    }
+    let before = store.head().await.must("reading the head")?;
+    let twice = vec![r("k5", Some("item-5")), r("k5", Some("item-6"))];
+    let windows = delivered(store.as_ref(), &l, "all", twice, "one record in two").await?;
+    let events = events_from(store.as_ref(), before.next()).await?;
+    let in_five = (events.iter()).all(|e| e.delivery == Some("item-5".into()));
+    ensure!(
+        committed(&windows) == (1, 1) && events.len() == 1 && in_five,
+        "the same record under `item-5` then `item-6` is one event in `item-5` and a \
+         duplicate: {windows:?}, {events:?}"
+    );
+    for id in ["d7", ""] {
+        let before = store.head().await.must("reading the head")?;
+        let batch = vec![r("k6", None), r("k7", Some(id))];
+        let said = ingest_all_with(l.cat.as_ref(), &l.own, &all, page(256), batch).await;
+        let what = format!("a record naming the delivery {id:?}");
+        let e = refused_unmoved(store.as_ref(), before, &what, said).await?;
+        let formed = match &e {
+            Error::Ingested {
+                index: 1,
+                from: 0,
+                error,
+                ..
+            } => crate::conformance::fixture::invalid_case(&**error).cloned(),
+            _ => None,
+        };
+        ensure!(
+            formed == Some(Case::DeliveryIdForm),
+            "{what} is refused `delivery_id_form` at index 1 from 0: {e}"
+        );
+    }
+    Ok(())
+}
+
 /// `feed`: a source's `body` and an author's `verdict`.
 fn feed() -> TypeDecl {
     let body = sourced("body", StorageKind::Text);

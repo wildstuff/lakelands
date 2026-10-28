@@ -177,6 +177,10 @@ pub struct SourceRecord {
     /// ingest may carry many sources, each record stamped with its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceId>,
+    /// The delivery this record is in, where it is not the call's: one
+    /// ingest may carry many deliveries, each taken back alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<crate::id::DeliveryId>,
     /// The quarantined record of the same source this one runs again,
     /// which it closes once written or counted as a duplicate.
     #[serde(default, skip_serializing_if = "Option::is_none")]

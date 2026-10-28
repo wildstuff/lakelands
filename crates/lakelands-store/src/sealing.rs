@@ -220,6 +220,16 @@ impl Keys {
         Ok((id, key))
     }
 
+    /// [`Self::apart`] for each of `sources`, in order, asked of the key
+    /// store in one request (087).
+    pub fn apart_many(&self, sources: &[SourceId]) -> Result<Vec<KeyId>> {
+        let ids = self.store()?.create_apart_many(&self.lake, sources)?;
+        for (source, id) in sources.iter().zip(&ids) {
+            self.key(source, id)?;
+        }
+        Ok(ids)
+    }
+
     /// The key `sealed` names of `source`: its version, composed with the
     /// keys of deliveries sealed apart it names ([`compose`]). One the key
     /// store does not give fails closed, naming it.

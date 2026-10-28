@@ -137,9 +137,10 @@ interface store {
         accept-planned: func(who: principal, proposal: proposal-id, plan-id: string) -> result<outcome, error>;
         reject: func(who: principal, proposal: proposal-id, reason: string) -> result<outcome, error>;
         proposals: func(who: principal, filter: proposal-filter) -> result<proposals-reply, error>;
-        /// Feed the lake the records of one delivery from a source. The
-        /// crate takes a stream; here the delivery is a list, and the
-        /// answer lists every commit window it was written in.
+        /// Feed the lake the records of one delivery from a source, each
+        /// record in another where it names its own. The crate takes a
+        /// stream; here the delivery is a list, and the answer lists
+        /// every commit window it was written in.
         ingest: func(who: principal, source: source-id, records: list<source-record>) -> result<list<committed>, ingest-error>;
         /// `ingest` in the delivery `opts` names.
         ingest-with: func(who: principal, source: source-id, opts: ingest-opts, records: list<source-record>) -> result<list<committed>, ingest-error>;

@@ -1115,6 +1115,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 key: "k".into(),
                 fields: [("f".into(), json!(1))].into(),
                 seen_at: Some(t()),
+                delivery: Some("item-1".into()),
                 resubmits: Some(lakelands_api::quarantine::Resubmits {
                     delivery: "d1".into(),
                     index: 1,

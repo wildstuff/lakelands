@@ -271,3 +271,39 @@ fn a_key_apart_is_destroyed_alone_and_with_the_source() {
     assert!(destroyed, "{refused}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Keys made apart in one request are one for each entry, in order, each
+/// of its source and given back by another keyring over the same
+/// directory; a request naming a destroyed source makes none (087).
+#[test]
+fn keys_apart_made_in_one_request_are_kept_whole_or_not_at_all() {
+    let dir = scratch("apart-many");
+    let (lake, crm, erp) = (
+        LakeId::from("orders"),
+        SourceId::from("crm"),
+        SourceId::from("erp"),
+    );
+    let ring = FileKeyring::new(&dir);
+    let asked = [crm.clone(), erp.clone(), crm.clone()];
+    let made = ring.create_apart_many(&lake, &asked).unwrap();
+    assert_eq!(made.len(), 3);
+    assert!(made[0] != made[2], "{made:?}");
+    let again = FileKeyring::new(&dir);
+    for (source, id) in asked.iter().zip(&made) {
+        assert!(again.key(&lake, source, id).unwrap().is_some(), "{id}");
+    }
+    assert!(again.key(&lake, &crm, &made[1]).unwrap().is_none());
+    again.destroy(&lake, &erp).unwrap();
+    let refused = again
+        .create_apart_many(&lake, &[crm.clone(), erp])
+        .unwrap_err();
+    let destroyed = matches!(
+        refused.case().map(|s| &s.case),
+        Some(Case::KeyDestroyed { .. })
+    );
+    assert!(destroyed, "{refused}");
+    let ring = std::fs::read_to_string(dir.join("orders.keys.json")).unwrap();
+    let held: serde_json::Value = serde_json::from_str(&ring).unwrap();
+    assert_eq!(held["sources"]["crm"]["apart"].as_array().unwrap().len(), 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
