@@ -1356,8 +1356,8 @@ catalog! {
         AfterWithCursor => "`after` and `cursor` both name where a page starts; give one",
         /// A `cheapest` walk with no `to`.
         CheapestNeedsTo => "`cheapest` answers the walk that costs least from the start to one record; name that record with `to`",
-        /// A `components` step that does not walk both ways.
-        ComponentsBothWays { relation: RelationName } => "`components` takes every link both ways; the step over `{relation}` must walk `both`",
+        /// A `components` or `communities` step that does not walk both ways.
+        ComponentsBothWays { relation: RelationName } => "`components` and `communities` take every link both ways; the step over `{relation}` must walk `both`",
         /// A cursor the lake did not hand out.
         CursorForeign => "the cursor is not one this lake handed out",
         /// A cursor handed out for another door or type.

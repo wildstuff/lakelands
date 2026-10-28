@@ -2174,7 +2174,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Projection::Components
             | Projection::Reach
             | Projection::PageRank
-            | Projection::Cheapest { .. } => {}
+            | Projection::Cheapest { .. }
+            | Projection::Communities => {}
         }
     }
     let _ = projections;
@@ -2190,6 +2191,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 Projection::Reach,
                 Projection::PageRank,
                 Projection::Cheapest { weight: "w".into() },
+                Projection::Communities,
             ],
             Some("as"),
         ),

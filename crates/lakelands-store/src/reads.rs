@@ -419,6 +419,7 @@ fn projection_name(p: &Projection) -> String {
         Projection::Reach => "reach",
         Projection::PageRank => "page_rank",
         Projection::Cheapest { .. } => "cheapest",
+        Projection::Communities => "communities",
     }
     .into()
 }
