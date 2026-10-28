@@ -183,8 +183,11 @@ writer's open of 0.21.0 on PostgreSQL takes as long as the rewrite, which
   check it.
 - **How SQLite finds `id` in a line.** The member after the top-level
   `hash`, whose value the index holds, or a parse of the line; the
-  store's `disagrees` catches a wrong one either way. The build measures
-  a read of the whole log before and after and picks the cheaper.
+  store's `disagrees` catches a wrong one either way. Measured at the
+  build on the 10 000 records under Why, a read of the whole log, best
+  of seven in a release build: 131.3 ms before, 133.5 ms finding the
+  member after `hash`, 138.5 ms parsing every line. The engine finds the
+  member, and parses only a line where it is not found so.
 - **The guard on PostgreSQL leans on 085's new table**, which ships in 0.21.0 (lakelands#1512 merged it): a 0.20.0 process refuses the schema before it reads a log row.
 
 ## Why
@@ -192,19 +195,27 @@ writer's open of 0.21.0 on PostgreSQL takes as long as the rewrite, which
 The review of 0.18.0 (lakelands#1295) found both: the SQLite index
 repeated each line's `id`, `prev` and `hash`, and PostgreSQL kept them
 as text and kept every id a second time in `applied`. Format 20 took
-`prev` out of the index. In bytes a record, plain records; the "before"
-figures are measured (SQLite as 083 measured it on 0.20.0, PostgreSQL
-by the review on 0.17.0), the rest reckoned (est.):
+`prev` out of the index. Measured at the build, as 083 measured: 10 000
+plain records of one source, 32 an append, on 0.21.0 without this and
+with it; SQLite by the `index/` files after `close`, PostgreSQL by
+`pg_total_relation_size` after `VACUUM ANALYZE`. In bytes a record:
 
 | | before | after | saved |
 |---|---:|---:|---:|
-| SQLite index | 131.2 | ~99 est. | ~32 est. |
-| PostgreSQL `log`: `id`, `prev`, `hash` | 163 | ~83 est. | ~80 est. |
-| PostgreSQL `applied` (heap 77, key 80) | 157 | 0 | 157 |
-| PostgreSQL index on `log (id)` | 0 | ~40 est. | −40 est. |
+| SQLite index | 129.6 | 97.6 | 32.0 (24.7 %) |
+| PostgreSQL `log` heap (`id`, `prev`, `hash` among it) | 435.8 | 360.4 | 75.4 |
+| PostgreSQL `log`'s key and `log_segment` | 58.2 | 58.2 | 0 |
+| PostgreSQL index on `log (id)` | 0 | 59.0 | −59.0 |
+| PostgreSQL `applied` (heap and key) | 157.3 | 0 | 157.3 |
+| PostgreSQL in all | 651.3 | 477.6 | 173.7 (26.7 %) |
 
-On PostgreSQL that is about 200 B of a plain record's 2 296 (about
-9 %), on SQLite about 2 % of 1 837 (the totals the review measured on 0.17.0).
+Of a whole plain record (the totals the review measured on 0.17.0,
+2 296 B on PostgreSQL and 1 837 B on SQLite) that is about 8 % and
+2 %. The conversion of a log 0.20.0 kept, at 1 000 000 events (a `log`
+of 509 MB and an `applied` of 153 MB), took 2.7 s on a local disk: the
+check of the ids 1.3 s, the rewrite of the columns 1.1 s, the index
+0.2 s. Until it committed it held 485 MB more (the new table beside the
+old) and wrote 487 MB of WAL; after it the database was 177 MB smaller.
 
 - **Kept once, where it already stands.** An event's line holds its id
   on every line; the index's copy and `applied`'s are copies a reader

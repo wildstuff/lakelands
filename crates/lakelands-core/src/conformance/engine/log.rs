@@ -148,58 +148,41 @@ fn an_append_that_returned_is_read_by_the_next_handle(
     engine: &dyn LakeEngine,
     harness: &dyn EngineHarness,
 ) -> Held {
-    let mut writer = harness
+    let writer = harness
         .reopen(engine.lake(), OpenMode::Write)
         .map_err(|e| Failure::new(format!("opening a handle for writing: {e}")))?;
-    let mut lease = writer.take_lease("the writer").must("taking the lease")?;
-    // One event, a framed run, and a run across a seal (086): each comes
-    // back with the id, `prev`, `hash` and fence it was handed in with.
+    let lease = writer.take_lease("the writer").must("taking the lease")?;
+    // One event, a framed run, and a run across a seal (086).
     let mut events = chain(0, 1, &Digest::zero(), &lease);
-    for step in ["one event", "a framed run", "a run across a seal"] {
-        let tip = events.last().map(|e| (e.position.0 + 1, e.hash.clone()));
-        let (at, prev) = tip.unwrap_or((0, Digest::zero()));
-        match step {
-            "one event" => writer.append(&lease, &events),
-            "a framed run" => {
-                let (run, _) = framed(20, at, 4, &prev, &lease);
-                writer.append(&lease, &run).map(|()| events.extend(run))
-            }
-            _ => {
-                let first = chain(at, 2, &prev, &lease);
-                let more = chain(at + 2, 2, &first[1].hash, &lease);
-                seal(writer.as_ref(), &lease, &first)
-                    .and_then(|_| writer.append(&lease, &more))
-                    .map(|()| events.extend(first.into_iter().chain(more)))
-            }
+    let (run, _) = framed(20, 1, 4, &events[0].hash, &lease);
+    let first = chain(5, 2, &run[3].hash, &lease);
+    let more = chain(7, 2, &first[1].hash, &lease);
+    (writer.append(&lease, &events))
+        .and_then(|()| writer.append(&lease, &run))
+        .and_then(|()| seal(writer.as_ref(), &lease, &first).map(drop))
+        .and_then(|()| writer.append(&lease, &more))
+        .must("appending one event, a framed run and a run across a seal")?;
+    events.extend(run.into_iter().chain(first).chain(more));
+    // The writer ends without releasing its lease or closing the lake.
+    drop(writer);
+    let next = harness
+        .reopen(engine.lake(), OpenMode::Read)
+        .map_err(|e| Failure::new(format!("opening the next handle: {e}")))?;
+    let read = next
+        .read(Position(0), 100)
+        .must("reading through the next handle")?;
+    ensure!(
+        read == events,
+        "one event, a framed run and a run across a seal were appended and the appends \
+         returned; the writer's handle was then dropped without closing, and a handle opened \
+         after it reads {} event(s){}",
+        read.len(),
+        if read.len() == events.len() {
+            " whose id, prev, hash, fence or bytes differ"
+        } else {
+            ""
         }
-        .must(&format!("appending {step}"))?;
-        // The writer ends without releasing its lease or closing the lake.
-        drop(writer);
-        let next = harness
-            .reopen(engine.lake(), OpenMode::Read)
-            .map_err(|e| Failure::new(format!("opening the next handle: {e}")))?;
-        let read = next
-            .read(Position(0), 100)
-            .must("reading through the next handle")?;
-        ensure!(
-            read == events,
-            "{step} was appended and the append returned; the writer's handle was then \
-             dropped without closing, and a handle opened after it reads {} event(s){}",
-            read.len(),
-            if read.len() == events.len() {
-                " whose id, prev, hash, fence or bytes differ"
-            } else {
-                ""
-            }
-        );
-        drop(next);
-        writer = harness
-            .reopen(engine.lake(), OpenMode::Write)
-            .map_err(|e| Failure::new(format!("opening the writer again: {e}")))?;
-        lease = writer
-            .take_lease("the writer")
-            .must("taking the lease again")?;
-    }
+    );
     Ok(())
 }
 

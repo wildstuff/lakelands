@@ -1850,8 +1850,7 @@ fn id_at(p: u64) -> EventId {
     EventId(format!("{p:032x}"))
 }
 
-/// The log holding events 0 to `n - 1`, the one at `p` of the id `id(p)`,
-/// so an id marked applied is that of an event the log holds there.
+/// The log holding events 0 to `n - 1`, the one at `p` of the id `id(p)`.
 fn logged(engine: &dyn LakeEngine, n: u64, id: impl Fn(u64) -> EventId) -> Held {
     let lease = engine.take_lease("conformance").must("taking the lease")?;
     let mut prev = Digest::zero();
@@ -2113,14 +2112,8 @@ fn the_index_answers_a_sources_positions_in_order_to_its_through(engine: &dyn La
 
 fn the_first_applied_position_is_kept(engine: &dyn LakeEngine) -> Held {
     // The log holds two events of one id, at 2 and at 5.
-    let id = EventId("0123456789abcdef0123456789abcdef".into());
-    logged(engine, 6, |p| {
-        if p == 2 || p == 5 {
-            id.clone()
-        } else {
-            id_at(p)
-        }
-    })?;
+    let id = id_at(2);
+    logged(engine, 6, |p| id_at(if p == 5 { 2 } else { p }))?;
     fold(engine, 2, |p| p.mark_applied(&unrouted(&id, 2)))?;
     fold(engine, 5, |p| p.mark_applied(&unrouted(&id, 5)))?;
     let at = view(engine, None)?
@@ -2136,24 +2129,19 @@ fn the_first_applied_position_is_kept(engine: &dyn LakeEngine) -> Held {
 
 fn after_a_clear_an_id_answers_none_until_the_refold_reaches_it(engine: &dyn LakeEngine) -> Held {
     logged(engine, 4, id_at)?;
-    let marked = |p: &dyn ProjectionStore, at: std::ops::RangeInclusive<u64>| {
-        at.into_iter()
-            .try_for_each(|at| p.mark_applied(&unrouted(&id_at(at), at)))
+    let marked = |p: &dyn ProjectionStore, from: u64, to: u64| {
+        (from..=to).try_for_each(|at| p.mark_applied(&unrouted(&id_at(at), at)))
     };
-    fold(engine, 3, |p| marked(p, 1..=3))?;
+    fold(engine, 3, |p| marked(p, 1, 3))?;
     let ids = [id_at(1), id_at(3)];
-    let ask = |what: &str| {
-        let v = view(engine, None)?;
-        v.applied_many(&ids)
-            .must(&format!("reading the ids {what}"))
-    };
-    let folded = ask("folded")?;
+    let ask = |what: &str| view(engine, None)?.applied_many(&ids).must(what);
+    let folded = ask("reading the ids folded")?;
     (engine.projection().clear()).must("clearing the projection")?;
-    let cleared = ask("after the clear")?;
-    fold(engine, 2, |p| marked(p, 1..=2))?;
-    let partway = ask("refolded through 2")?;
-    fold(engine, 3, |p| marked(p, 3..=3))?;
-    let refolded = ask("refolded through 3")?;
+    let cleared = ask("reading the ids after the clear")?;
+    fold(engine, 2, |p| marked(p, 1, 2))?;
+    let partway = ask("reading the ids refolded through 2")?;
+    fold(engine, 3, |p| marked(p, 3, 3))?;
+    let refolded = ask("reading the ids refolded through 3")?;
     let (p1, p3) = (Some(Position(1)), Some(Position(3)));
     let got = [folded, cleared, partway, refolded];
     let want = [vec![p1, p3], vec![None, None], vec![p1, None], vec![p1, p3]];
