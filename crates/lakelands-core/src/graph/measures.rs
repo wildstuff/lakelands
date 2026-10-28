@@ -114,12 +114,8 @@ impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
     }
 
     /// The component `index` was joined into.
-    fn root(&mut self, mut index: usize) -> usize {
-        while self.joined[index] != index {
-            self.joined[index] = self.joined[self.joined[index]];
-            index = self.joined[index];
-        }
-        index
+    fn root(&mut self, index: usize) -> usize {
+        root(&mut self.joined, index)
     }
 
     /// Adds a page of seeds and everything linked to them, reading the
@@ -177,8 +173,7 @@ impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
                 };
                 match self.member_of.get(&other) {
                     Some(&there) => {
-                        let (a, b) = (self.root(here), self.root(there));
-                        self.joined[a.max(b)] = a.min(b);
+                        join(&mut self.joined, here, there);
                     }
                     None => {
                         self.reach(other.clone(), here)?;
@@ -202,11 +197,41 @@ impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
             let root = self.root(index);
             all[root].push(node);
         }
-        // A component joined into another holds nothing of its own.
-        all.retain(|c| !c.is_empty());
-        all.sort_by(|a, b| (b.len(), a.first()).cmp(&(a.len(), b.first())));
-        all
+        ordered(all)
     }
+}
+
+/// The set `index` was joined into, each step on the way pointed nearer.
+fn root(joined: &mut [usize], mut index: usize) -> usize {
+    while joined[index] != index {
+        joined[index] = joined[joined[index]];
+        index = joined[index];
+    }
+    index
+}
+
+/// Joins the sets of `a` and `b`, into the lesser root.
+pub(super) fn join(joined: &mut [usize], a: usize, b: usize) {
+    let (a, b) = (root(joined, a), root(joined, b));
+    joined[a.max(b)] = a.min(b);
+}
+
+/// The records grouped by the set each was joined into, in `nodes`' order
+/// within a group, then ordered as components are.
+pub(super) fn grouped(nodes: &[Node], joined: &mut [usize]) -> Vec<Component> {
+    let mut all: Vec<Component> = vec![Vec::new(); nodes.len()];
+    for (i, node) in nodes.iter().enumerate() {
+        all[root(joined, i)].push(node.clone());
+    }
+    ordered(all)
+}
+
+/// Components largest first, then by their least `(type, key)`; one
+/// joined into another holds nothing of its own and is dropped.
+fn ordered(mut all: Vec<Component>) -> Vec<Component> {
+    all.retain(|c| !c.is_empty());
+    all.sort_by(|a, b| (b.len(), a.first()).cmp(&(a.len(), b.first())));
+    all
 }
 
 /// The whole mass PageRank spreads, in units of 10^-12.

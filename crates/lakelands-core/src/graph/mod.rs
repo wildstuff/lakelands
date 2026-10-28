@@ -1,7 +1,7 @@
 //! The graph walks a pattern query runs: one step's multi-hop walk,
 //! a chain of steps, a bounded neighbourhood, a shortest path, the
 //! cheapest walk, and the whole-graph measures (degree centrality,
-//! connected components, PageRank).
+//! connected components, PageRank, communities).
 //!
 //! Every engine keeps a lake's links and answers one narrow question
 //! about them, [`ProjectionView::edges`]: the links of some records of
@@ -45,12 +45,14 @@
 //!   or whose range is empty, is refused as invalid rather than quietly
 //!   answered with less than it asked for.
 
+mod communities;
 mod held;
 mod measures;
 mod path;
 mod step;
 mod subgraph;
 
+pub use communities::communities;
 pub use held::{Held, Holding};
 pub use measures::{Component, Components, RANK_MASS, degrees, page_rank};
 pub use path::{Cheap, Path, WEIGHT_PLACES, cheapest, cost_text, shortest_path, units};
