@@ -1217,8 +1217,8 @@ fn clock(w: &Writer) -> Timestamp {
 /// (088).
 fn proposed_for(lake: &Lake, p: &lakelands_api::write::Proposal) -> Result<Option<String>> {
     let stored = lake.engine.read(p.position, 1)?;
-    match stored.first() {
-        Some(e) => Ok(log::open(e)?.on_behalf_of),
-        None => Ok(None),
+    match stored.first().map(log::open).transpose()? {
+        Some(e) if e.position == p.position => Ok(e.on_behalf_of),
+        _ => Ok(None),
     }
 }

@@ -109,7 +109,7 @@ async fn a_write_made_for_a_person_names_them_beside_its_writer(
         .all(|k| kinds.contains(k));
     ensure!(
         wrote && derived == (true, true),
-        "the mailer's writes append its upsert, its link, its `verb_called` and its ingest, \
+        "the mailer's writes append its upserts, the link among them, its `verb_called` and its ingest, \
          and set off a `trigger_fired` and an `object_set_changed`: {kinds:?}, {derived:?}"
     );
     for (ty, key, field) in [("partner", "p9", "name"), ("reading", "r1", "value")] {

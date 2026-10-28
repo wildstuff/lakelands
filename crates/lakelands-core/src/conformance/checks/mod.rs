@@ -230,6 +230,7 @@ pub const ALL: &[Check] = &[
     risky_calls::CALL_RUNS_BY_RISK,
     risky_calls::CALL_DECIDED_ONCE,
     risky_calls::CALL_PROPOSAL_HOLDS_NO_INPUTS,
+    risky_calls::CALL_PROPOSED_FOR,
     risky_calls::SWEEP_PROPOSED,
     risky_calls::SWEEP_LISTED_WHOLE,
     risky_calls::SWEEP_EXISTENCE_HIDES_NO_HOLD,

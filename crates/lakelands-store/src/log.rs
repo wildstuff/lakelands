@@ -180,8 +180,6 @@ pub(crate) fn unsealed(
         procedure: d.procedure,
         // The host's cause lands in the envelope of an event the store set
         // no cause for, and never in `context` (021).
-        // The host's cause lands in the envelope of an event the store set
-        // no cause for, and never in `context` (021).
         cause: d.cause.or(context.cause.take()),
         context,
         fence,

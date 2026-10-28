@@ -940,7 +940,10 @@ pub enum Of {
 impl Owed {
     /// What the event `e` leaves owed of the type `ty`.
     pub fn new(e: &Event, ty: TypeName, of: Of) -> Owed {
-        let (cause, context) = (e.cause.unwrap_or(e.position), e.context.clone());
+        let (cause, mut context) = (e.cause.unwrap_or(e.position), e.context.clone());
+        // The envelope holds whom the write was for; the deferred writes
+        // it leaves owed are made for the same principal.
+        context.on_behalf_of = e.on_behalf_of.clone();
         let by = By {
             at: e.position,
             writer: e.writer.clone(),
