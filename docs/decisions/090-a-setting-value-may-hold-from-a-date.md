@@ -247,15 +247,15 @@ appends nothing:
 |---|---|---|
 | `setting_period_undeclared` | — | only a setting a host declares holds a value from a date |
 | `setting_period_first` | — | a setting's first value holds from the start; write it without `from` |
-
-`setting_period_first` answers `from` on a key with no live record: one
-never written, or retired.
 | `setting_period_held` | `from` (String) | a value already holds from {from}; correct it with `period` |
 | `setting_period_unknown` | `period` (String) | no value of this setting holds from {period}; name `start` or a date one holds from |
 | `setting_periods_named` | — | it holds values from dates; name the one to correct with `period`, `start` for the first, or the date a new one holds from with `from` |
 | `setting_periods_stamped` | — | the store writes `periods` from `from` and `period`; leave it out |
 | `setting_from_or_period` | — | a write adds a value `from` a date or corrects one `period`, not both |
 | `setting_dated_kept` | `key` (String), `name` (String) | `{name}` is kept by the fold and reads `{key}` without a date, which holds values from dates, so it would drift at each period's start: read it as setting('{key}', <date>), or decide it at the read |
+
+`setting_period_first` answers `from` on a key with no live record: one
+never written, or retired.
 
 Two cases are not refusals of a write. They are the expression's
 (above):
