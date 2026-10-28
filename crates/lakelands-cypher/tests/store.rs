@@ -168,7 +168,7 @@ async fn a_translated_statement_reads_the_rows_it_means() {
         else {
             panic!("{statement} is a read");
         };
-        let read = cat.query(&who, pattern).await.expect(statement);
+        let read = cat.query(&who, *pattern).await.expect(statement);
         let data = serde_json::to_value(&read.data).expect("json");
         assert_eq!(data["rows"], rows, "{statement}");
     }

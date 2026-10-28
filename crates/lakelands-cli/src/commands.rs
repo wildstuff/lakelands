@@ -404,13 +404,20 @@ pub async fn change(
 /// as `NAME=JSON`, run by [`lakelands_cypher::run`] at `--as-of` and
 /// `--valid-at` and from `--cursor`; the answer is printed as one JSON
 /// document. A statement that begins with `EXPLAIN` prints
-/// `{"pattern": …}` instead and reads nothing.
+/// `{"pattern": …}` instead and reads nothing. A write prints its door's
+/// outcome; a `MATCH … SET`, `REMOVE` or `DELETE` prints its plan, as
+/// `change` does, and with `--plan` makes the change against it.
 pub async fn query(
     out: Out<'_>,
     catalog: &dyn Catalog,
     who: &Principal,
     (statement, pairs): (&str, Vec<String>),
-    (as_of, valid_at, cursor): (Option<Position>, Option<String>, Option<String>),
+    (as_of, valid_at, cursor, plan_id): (
+        Option<Position>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ),
 ) -> Result<(), Failure> {
     let mut params = lakelands_api::Params::new();
     for pair in pairs {
@@ -431,12 +438,19 @@ pub async fn query(
         clock: None,
     };
     let cursor = flag("cursor", cursor)?;
-    let answer = lakelands_cypher::run(catalog, who, statement, &params, at, cursor).await;
+    let beside = lakelands_cypher::Beside {
+        at,
+        cursor,
+        plan_id,
+    };
+    let answer = lakelands_cypher::run(catalog, who, statement, &params, beside).await;
+    let answer = answer.map_err(Failure::from)?;
     let json = |e: serde_json::Error| Failure::new(e.to_string(), "report it as a bug");
-    put(
-        out,
-        serde_json::to_value(answer.map_err(Failure::from)?).map_err(json)?,
-    )
+    let mut v = serde_json::to_value(&answer).map_err(json)?;
+    if let lakelands_api::query::StatementAnswer::Planned(plan) = &answer {
+        v["said"] = say::plan(&plan.data).into();
+    }
+    put(out, v)
 }
 
 /// The value of `--<name>`, read as its JSON string reads.

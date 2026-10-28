@@ -368,7 +368,9 @@ impl Pattern {
 
 /// What a statement of the openCypher subset answers: the read of the
 /// pattern it translates into, as [`Catalog::query`] answers it, or, for
-/// one that begins with `EXPLAIN`, `{"pattern": …}`, with no record read.
+/// one that begins with `EXPLAIN`, `{"pattern": …}`, with no record read;
+/// for a write, the outcome of the one door it calls, or the plan of a
+/// change to the records its `MATCH` selects, sent without a plan's id.
 ///
 /// [`Catalog::query`]: crate::Catalog::query
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -382,6 +384,11 @@ pub enum StatementAnswer {
     },
     /// The pattern's read.
     Read(Reply<QueryResult>),
+    /// A write's outcome.
+    Written(crate::write::Outcome),
+    /// The plan of a change, which the statement sent again with the
+    /// plan's id enacts.
+    Planned(Reply<crate::write::Plan>),
 }
 
 /// The answer to a pattern query.

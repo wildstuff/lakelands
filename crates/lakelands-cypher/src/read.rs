@@ -76,8 +76,13 @@ pub(crate) fn pattern(q: Query) -> Result<Pattern> {
     let mut project = None;
     for (c, clause) in q.clauses.into_iter().enumerate() {
         match clause.kind {
-            Kind::Match(m) => b.clause(c, clause.at, m)?,
+            Kind::Match(m) => {
+                let absent = m.filter.iter().flat_map(|w| &w.absent);
+                plain(m.parts.iter().chain(absent.map(|a| &a.part)))?;
+                b.clause(c, clause.at, m)?
+            }
             Kind::Return(r) => project = Some(b.returning(r)?),
+            _ => unreachable!("a statement that writes is the write translation's"),
         }
     }
     let (project, order_by, limit) = project.expect("a statement ends in RETURN");
@@ -91,6 +96,20 @@ pub(crate) fn pattern(q: Query) -> Result<Pattern> {
         cursor: None,
         at: ReadAt::default(),
     })
+}
+
+/// A read's relationships carry neither a variable nor a map: a link's
+/// fields are read through its link type.
+fn plain<'a>(parts: impl Iterator<Item = &'a Part>) -> Result<()> {
+    for rel in parts.flat_map(|p| &p.rels) {
+        if let Some(v) = &rel.var {
+            return Err(outside(Construct::RelationshipVariable, v.at));
+        }
+        if let Some((at, _)) = rel.props {
+            return Err(outside(Construct::RelationshipProperties, at));
+        }
+    }
+    Ok(())
 }
 
 fn path(segments: [&str; 2]) -> Expr {
@@ -120,7 +139,7 @@ fn dotted(path: &[FieldName]) -> FieldName {
 }
 
 /// Every path of `e` mapped by `f`.
-fn map_paths(e: Expr, f: &impl Fn(Vec<FieldName>) -> Vec<FieldName>) -> Expr {
+pub(crate) fn map_paths(e: Expr, f: &impl Fn(Vec<FieldName>) -> Vec<FieldName>) -> Expr {
     let boxed = |e: Box<Expr>| Box::new(map_paths(*e, f));
     let all = |args: Vec<Expr>| args.into_iter().map(|a| map_paths(a, f)).collect();
     match e {

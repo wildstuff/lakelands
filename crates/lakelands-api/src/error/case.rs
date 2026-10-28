@@ -725,25 +725,25 @@ named! {
 }
 
 named! {
-    /// An openCypher construct outside the subset Lakelands reads, spelt
+    /// An openCypher construct outside the subset Lakelands takes, spelt
     /// as the statement spells it.
     pub enum Construct {
         /// A `CREATE` clause.
-        Create = "create" => "`CREATE` (a write goes through the typed write doors)",
+        Create = "create" => "`CREATE`",
         /// A `MERGE` clause.
-        Merge = "merge" => "`MERGE` (a write goes through the typed write doors)",
+        Merge = "merge" => "`MERGE`",
         /// A `SET` clause.
-        Set = "set" => "`SET` (a write goes through the typed write doors)",
+        Set = "set" => "`SET`",
         /// A `DELETE` clause.
-        Delete = "delete" => "`DELETE` (a write goes through the typed write doors)",
+        Delete = "delete" => "`DELETE`",
         /// A `DETACH DELETE` clause.
-        DetachDelete = "detach_delete" => "`DETACH DELETE` (a write goes through the typed write doors)",
+        DetachDelete = "detach_delete" => "`DETACH DELETE` (a retirement that unlinks is two writes; the plan tells what still names the record)",
         /// A `REMOVE` clause.
-        Remove = "remove" => "`REMOVE` (a write goes through the typed write doors)",
+        Remove = "remove" => "`REMOVE`",
         /// A `FOREACH` clause.
-        Foreach = "foreach" => "`FOREACH` (a write goes through the typed write doors)",
+        Foreach = "foreach" => "`FOREACH`",
         /// A `LOAD CSV` clause.
-        LoadCsv = "load_csv" => "`LOAD CSV` (a write goes through the typed write doors)",
+        LoadCsv = "load_csv" => "`LOAD CSV`",
         /// A procedure call or a `CALL` subquery.
         Call = "call" => "`CALL` (a procedure or a subquery)",
         /// A `WITH` clause.
@@ -810,6 +810,26 @@ named! {
         AggregateInExpression = "aggregate_in_expression" => "an aggregate inside an expression (a measure is one function of one path)",
         /// A `USING` hint.
         Using = "using" => "`USING` (an index hint)",
+        /// `ON CREATE`.
+        OnCreate = "on_create" => "`ON CREATE` (a door writes one patch, whether the record is there or not)",
+        /// `ON MATCH`.
+        OnMatch = "on_match" => "`ON MATCH` (a door writes one patch, whether the record is there or not)",
+        /// A label set or removed.
+        Label = "label" => "a label set or removed (a record's type is declared, never written)",
+        /// An index, a constraint or a `DROP`.
+        Schema = "schema" => "an index or a constraint (the ontology is declared through its own doors)",
+        /// `RETURN` after a write.
+        ReturnBesideWrite = "return_beside_write" => "a `RETURN` beside a write (a write statement answers its door's outcome or its plan)",
+        /// A value written that is computed or read from a record.
+        ComputedValue = "computed_value" => "a value computed or read from a record (a write sets values: literals or parameters)",
+        /// A selection the change's condition cannot say.
+        WriteSelection = "write_selection" => "a `MATCH` the condition of a change to one type cannot say (a second name, an optional part, a part that must not match, or a link's end not named by its key)",
+        /// A relationship written without a direction.
+        UndirectedWrite = "undirected_write" => "a relationship written or changed without a direction",
+        /// `EXPLAIN` before a write.
+        ExplainWrite = "explain_write" => "`EXPLAIN` before a write (a `MATCH … SET` sent alone answers its plan)",
+        /// A map set on a name.
+        SetMap = "set_map" => "a map set on a name (`=` or `+=`; set each property by its path)",
         /// `ORDER BY` beside an aggregate.
         OrderByAggregate = "order_by_aggregate" => "`ORDER BY` beside an aggregate (its groups come in one fixed order, by the fields returned beside it: leave `ORDER BY` out)",
     }
@@ -1180,14 +1200,22 @@ catalog! {
         CallTakesQuoted { name: String } => "{name}() takes a quoted name",
         /// An aggregate or an expression returned with no name.
         CypherAlias { item: String } => "an aggregate or an expression is named with `AS`: `{item} AS <name>`",
+        /// A field a statement writes that the lake computes.
+        CypherComputed { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`{ty}`.`{field}` is computed by the lake; no statement writes it",
         /// A `count` of what is no row.
         CypherCount { item: String } => "`count` counts rows: `count(*)` or `count(<name>)` of a name no optional part binds, not `{item}`",
         /// A function the expression grammar does not have.
         CypherFunction { name: String, offset: usize } => "`{name}()` is no function of Lakelands' expression grammar (at character {offset})",
+        /// A key field a `CREATE` or `MERGE` does not give.
+        CypherKeyMissing { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "a record of `{ty}` is keyed by `{field}`, which the statement does not give",
+        /// A member a statement of its kind does not take.
+        CypherMember { member: String } => "the statement takes no `{member}`: a read takes the axes and a cursor, a `MATCH … SET`, `REMOVE` or `DELETE` the id of its plan, and every other write nothing beside its parameters",
+        /// A `MERGE` on a field that keys no record.
+        CypherMergeOn { #[serde(rename = "type")] ty: TypeName, field: FieldName } => "`MERGE` keys on what keys a record, and `{field}` keys no record of `{ty}`: give its key fields alone, or `MATCH` it and `SET`",
         /// A sort key that is no path.
         CypherOrderItem { item: String } => "`ORDER BY` names a path, as in `a.amount`, not `{item}`",
         /// A construct outside the openCypher subset.
-        CypherOutside { construct: Construct, offset: usize } => "{construct} is outside the openCypher subset Lakelands reads (at character {offset})",
+        CypherOutside { construct: Construct, offset: usize } => "{construct} is outside the openCypher subset Lakelands takes (at character {offset})",
         /// A parameter the statement reads that is not given.
         CypherParamMissing { name: ParamName } => "the statement reads `${name}`, which is not given",
         /// A parameter given that the statement does not read.
@@ -1196,12 +1224,16 @@ catalog! {
         CypherParamValue { name: ParamName } => "`${name}` cannot stand where it is read: an object, a list outside `IN`, a key that is not text, or a limit or skip that is no whole number",
         /// A row item that is neither a path nor every bound name.
         CypherRowItem { item: String } => "a row holds paths (`a.amount`) or every bound name (`RETURN *`); `{item}` is neither",
+        /// A write after the statement's first, which a second door call would make.
+        CypherSecondWrite { construct: Construct, offset: usize } => "{construct} is a second write: a statement is one call of one write door (at character {offset})",
         /// A `SKIP` other than 0.
         CypherSkip { skip: u64 } => "`SKIP {skip}`: a pattern continues by the cursor its answer hands out (`next_cursor`), passed beside the statement",
         /// A first node with no label.
         CypherStartType { offset: usize } => "the first node names its type, as in `(a:invoice)` (at character {offset})",
         /// A condition nested deeper than the subset reads.
         CypherTooDeep { max: usize, offset: usize } => "a condition nests at most {max} levels deep: parentheses, `NOT` and a unary `-` each go one deeper (at character {offset})",
+        /// A write statement sent to the `cypher` tool, which reads.
+        CypherToolWrites { construct: Construct, offset: usize } => "the `cypher` tool reads; {construct} writes, through the typed write tools (at character {offset})",
         /// A part that begins at a name nothing bound.
         CypherUnbound { name: String, offset: usize } => "`{name}` is bound by nothing before it: a part begins at a name an earlier part bound (at character {offset})",
         /// A `SKIP` or `LIMIT` given what is no whole number.
@@ -1305,7 +1337,7 @@ catalog! {
         /// A `setting` given what is no key.
         SettingTakesKey { #[serde(with = "closed")] value: Box<Operand> } => "setting() takes a key, not {value}",
         /// An openCypher statement that does not parse.
-        StatementNotParsed { #[serde(with = "closed")] why: Box<Case> } => "the statement does not parse as the openCypher subset Lakelands reads (`MATCH … RETURN …`): {why}",
+        StatementNotParsed { #[serde(with = "closed")] why: Box<Case> } => "the statement does not parse as the openCypher subset Lakelands takes (`MATCH … RETURN …`, or one write): {why}",
         /// A path into a reference's members.
         StepsIntoReference { expr: String, field: FieldName } => "`{expr}` steps into `{field}`, which is a reference: a condition reads the record's own fields. Compare the reference's key, or walk to the record it names in a pattern",
         /// A path into the members of what has none.

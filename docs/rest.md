@@ -122,7 +122,7 @@ key may hold any character.
 | `POST …/verbs/<verb>/<key>` | a verb declared on a record | body: its payload (none is `{}`); `If-Match`, `Idempotency-Key` |
 | `POST …/verbs/<verb>` | a verb declared on its type | body: its payload (none is `{}`); `Idempotency-Key` |
 | `POST …/query` | the pattern query | body: the query tool's arguments |
-| `POST …/cypher` | an openCypher statement, run as the pattern it translates to | body: `statement`, `params`, `cursor`, `as_of`, `valid_at` |
+| `POST …/cypher` | an openCypher statement, run as the pattern or the one write door call it translates to | body: `statement`, `params`, `cursor`, `as_of`, `valid_at`, `plan_id` |
 | `POST …/search` | search | body: the search tool's arguments |
 | `GET …/describe` | describe the lake | query: `as_of`, `valid_at` |
 | `GET …/describe/<type>` | describe one type | query: `as_of`, `valid_at` |
@@ -190,18 +190,49 @@ one in `sys.` or `lakelands.` as `reserved` (403), naming the key.
 
 `cypher` is served here, as the CLI's `lakelands query --cypher`, and
 at the MCP door as the `cypher` read tool, listed where `query` is,
-with the same members. The statement, in the openCypher subset
-`lakelands-cypher` reads, with the values of its `$name`s as `params`,
-is translated to a pattern and run as `POST …/query` runs it; its
-answer is that route's. How many rows a page holds is the statement's
-`LIMIT`, so the body takes no `limit`; `cursor` continues a page.
-A statement that begins with `EXPLAIN` answers `{"pattern": …}`, the
-pattern it translates to with `as_of`, `valid_at` and `cursor` set,
+with the same members but `plan_id`. The statement, in the openCypher
+subset `lakelands-cypher` takes, with the values of its `$name`s as
+`params`, is translated to a pattern and run as `POST …/query` runs it;
+its answer is that route's. How many rows a page holds is the
+statement's `LIMIT`, so the body takes no `limit`; `cursor` continues a
+page. A statement that begins with `EXPLAIN` answers `{"pattern": …}`,
+the pattern it translates to with `as_of`, `valid_at` and `cursor` set,
 and reads nothing. A statement that does not parse, a construct outside
 the subset, a condition nested more than 32 levels deep, and a parameter
 missing, unused or of a kind its place does not take are `invalid`
 (422), each by its own case, with the character offset where it has
 one. A member the route does not take is `invalid` (400), naming it.
+
+A statement that writes is one call of a typed write door
+(`docs/decisions/082-a-query-language-writes-only-through-the-typed-write-doors.md`),
+judged as that door judges it, and answers that door's outcome:
+
+- `CREATE (n:t {…})` or `MERGE (n:t {…})`, with `SET n.f = …`, is an
+  `upsert` of the record the map's key names: the type's declared key
+  fields, every one given, or `key` for a type keyed by its writer.
+  `MERGE`'s map holds the key alone, and `CREATE` expects no record
+  under it, refused `conflict` (412) as `If-None-Match: *` is.
+- `MATCH (a:t {…}), (b:u {…}) CREATE (a)-[:r {…}]->(b)`, or `MERGE`
+  without the map, is a `link` of the pair the two maps key, `CREATE`
+  expecting none.
+- `MATCH … SET`, `REMOVE` (set to null) or `DELETE` (retire, or unlink
+  a relationship's name) of one name is a change to the records the
+  `MATCH` selects. Sent without `plan_id` it answers the change's plan
+  and writes nothing; sent again with the plan's `report_id` as
+  `plan_id` it makes that change, refused `plan_stale` where the lake
+  moved.
+
+A write takes no `as_of`, `valid_at` or `cursor`, and a statement
+without a plan takes no `plan_id`: each is `invalid` (422),
+`cypher_member`, naming it. A statement that would need two door calls
+is refused `cypher_second_write`, naming its second updating clause; a
+`MERGE` on another field `cypher_merge_on`, a key field not given
+`cypher_key_missing`, and a field the lake computes `cypher_computed`;
+`ON CREATE`, a label, a schema change, `DETACH DELETE`, a computed
+value, `CALL`, `FOREACH` and a `RETURN` beside a write are
+`cypher_outside`, each named. Every one of them is refused before a
+record is read. The MCP `cypher` tool takes no write: it refuses one
+`cypher_tool_writes`, naming its clause.
 
 `schema/declare` and `schema/apply` are REST's alone: MCP offers
 `declare_type`, since an agent authors types, while a program may

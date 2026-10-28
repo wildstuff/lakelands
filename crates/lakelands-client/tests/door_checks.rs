@@ -72,6 +72,17 @@ impl Statements for OverRest {
         let answer = self.0.cypher(who, statement, params, at, cursor).await?;
         Ok(serde_json::to_value(answer).expect("an answer is JSON"))
     }
+
+    async fn enact(
+        &self,
+        who: &Principal,
+        statement: &str,
+        params: &Params,
+        plan_id: &str,
+    ) -> Result<Value, Error> {
+        let answer = self.0.cypher_enact(who, statement, params, plan_id).await?;
+        Ok(serde_json::to_value(answer).expect("an answer is JSON"))
+    }
 }
 
 fn remote_with_statements() -> (Arc<dyn LakeStore>, Arc<dyn Statements>) {

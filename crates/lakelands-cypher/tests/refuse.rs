@@ -21,15 +21,22 @@ fn offset(statement: &str, marker: &str) -> usize {
 
 /// A statement each construct is refused in, and the text it is refused
 /// at. The match is exhaustive, so a construct added to the set is given
-/// one here before this compiles.
+/// one here before this compiles. An updating clause is refused where it
+/// is a statement's second write.
 fn refused_at(construct: &Construct) -> (&'static str, &'static str) {
     match construct {
-        Construct::Create => ("MATCH (b:bill) CREATE (c:bill) RETURN b", "CREATE"),
-        Construct::Merge => ("MATCH (b:bill) MERGE (c:bill) RETURN b", "MERGE"),
-        Construct::Set => ("MATCH (b:bill) SET b.amount = 1 RETURN b", "SET"),
-        Construct::Delete => ("MATCH (b:bill) DELETE b", "DELETE"),
+        Construct::Create => (
+            "CREATE (b:bill {key: 'b1'}) CREATE (c:bill {key: 'b2'})",
+            "CREATE (c",
+        ),
+        Construct::Merge => (
+            "MERGE (b:bill {key: 'b1'}) MERGE (c:bill {key: 'b2'})",
+            "MERGE (c",
+        ),
+        Construct::Set => ("MATCH (b:bill) DELETE b SET b.amount = 1", "SET"),
+        Construct::Delete => ("MATCH (b:bill) SET b.amount = 1 DELETE b", "DELETE"),
         Construct::DetachDelete => ("MATCH (b:bill) DETACH DELETE b", "DETACH"),
-        Construct::Remove => ("MATCH (b:bill) REMOVE b.amount RETURN b", "REMOVE"),
+        Construct::Remove => ("MATCH (b:bill) DELETE b REMOVE b.amount", "REMOVE"),
         Construct::Foreach => (
             "MATCH (b:bill) FOREACH (x IN [1] | SET b.amount = x)",
             "FOREACH",
@@ -122,6 +129,28 @@ fn refused_at(construct: &Construct) -> (&'static str, &'static str) {
             "MATCH (b:bill) RETURN b.payee, count(*) AS n ORDER BY b.payee",
             "ORDER",
         ),
+        Construct::OnCreate => (
+            "MERGE (b:bill {key: 'b1'}) ON CREATE SET b.amount = 1",
+            "ON CREATE",
+        ),
+        Construct::OnMatch => (
+            "MERGE (b:bill {key: 'b1'}) ON MATCH SET b.amount = 1",
+            "ON MATCH",
+        ),
+        Construct::Label => ("MATCH (b:bill) SET b:paid", ":paid"),
+        Construct::Schema => ("CREATE INDEX FOR (b:bill) ON (b.amount)", "CREATE"),
+        Construct::ReturnBesideWrite => ("MATCH (b:bill) SET b.amount = 1 RETURN b", "RETURN"),
+        Construct::ComputedValue => ("MATCH (b:bill) SET b.amount = b.amount + 1", "b.amount +"),
+        Construct::WriteSelection => (
+            "MATCH (b:bill)-[:entered_by]->(p:person) SET b.amount = 1",
+            "b.amount = 1",
+        ),
+        Construct::UndirectedWrite => (
+            "MATCH (b:bill {key: 'b1'}), (p:person {key: 'p1'}) CREATE (b)-[:entered_by]-(p)",
+            "-[:entered_by]-(p)",
+        ),
+        Construct::ExplainWrite => ("EXPLAIN MATCH (b:bill) SET b.amount = 1", "EXPLAIN"),
+        Construct::SetMap => ("MATCH (b:bill) SET b = {amount: 1}", "b ="),
         Construct::Unknown(name) => panic!("`{name}` is no construct this build knows"),
     }
 }
@@ -171,10 +200,33 @@ fn every_construct_outside_the_subset_is_refused_at_its_offset() {
         Construct::AggregateInExpression,
         Construct::Using,
         Construct::OrderByAggregate,
+        Construct::OnCreate,
+        Construct::OnMatch,
+        Construct::Label,
+        Construct::Schema,
+        Construct::ReturnBesideWrite,
+        Construct::ComputedValue,
+        Construct::WriteSelection,
+        Construct::UndirectedWrite,
+        Construct::ExplainWrite,
+        Construct::SetMap,
     ];
     for construct in &all {
         let (statement, marker) = refused_at(construct);
-        let expected = json!({"code": "cypher_outside", "construct": construct.name(),
+        let second = matches!(
+            construct,
+            Construct::Create
+                | Construct::Merge
+                | Construct::Set
+                | Construct::Delete
+                | Construct::Remove
+        );
+        let code = if second {
+            "cypher_second_write"
+        } else {
+            "cypher_outside"
+        };
+        let expected = json!({"code": code, "construct": construct.name(),
                               "offset": offset(statement, marker)});
         let reason = refused(statement, json!({}));
         let got = json!({"code": reason["code"], "construct": reason["construct"], "offset": reason["offset"]});

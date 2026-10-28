@@ -322,12 +322,13 @@ fn command() -> Command {
         )
         .subcommand(
             Command::new("query")
-                .about("Read the lake with an openCypher statement; with EXPLAIN, print the pattern it translates to and read nothing")
-                .arg(Arg::new(CYPHER).long(CYPHER).value_name("STATEMENT").required(true).help("The statement, in the openCypher subset the lake reads"))
+                .about("Read the lake with an openCypher statement, or write through the typed write doors with one; with EXPLAIN, print the pattern a read translates to and read nothing")
+                .arg(Arg::new(CYPHER).long(CYPHER).value_name("STATEMENT").required(true).help("The statement, in the openCypher subset the lake takes: a read, or one write"))
                 .arg(Arg::new("param").long("param").value_name("NAME=JSON").action(ArgAction::Append).help("A value for the statement's `$NAME`; repeated for more parameters"))
                 .arg(Arg::new("as-of").long("as-of").value_name("POSITION").value_parser(clap::value_parser!(u64)).help("Read the lake as it was at this position"))
                 .arg(Arg::new("valid-at").long("valid-at").value_name("INSTANT").help("Read what was true in the world at this instant, as `2026-06-30T00:00:00Z`"))
-                .arg(Arg::new("cursor").long("cursor").value_name("CURSOR").help("Continue a page: the `next_cursor` the last page printed")),
+                .arg(Arg::new("cursor").long("cursor").value_name("CURSOR").help("Continue a page: the `next_cursor` the last page printed"))
+                .arg(Arg::new("plan").long("plan").value_name("ID").help("For a MATCH … SET, REMOVE or DELETE: make the change only if its plan is still this one (the `report_id` the plan printed); without it, print the plan and change nothing")),
         )
         .subcommand(
             Command::new("recompute")
@@ -839,6 +840,7 @@ async fn dispatch(
                 sub.get_one::<u64>("as-of").map(|p| Position(*p)),
                 text(sub, "valid-at"),
                 text(sub, "cursor"),
+                text(sub, "plan"),
             );
             let given = (statement.as_str(), pairs.unwrap_or_default());
             commands::query(out, catalog.as_ref(), &who, given, at).await
