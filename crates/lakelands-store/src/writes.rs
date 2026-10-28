@@ -428,16 +428,32 @@ pub(crate) fn granted(ok: bool) -> Result<()> {
 
 /// Refuse a write whose context is deeper than the lake's reactive
 /// ceiling, whatever the origin names
-/// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`). Every
-/// write door calls it first, before any other check and before it takes
-/// the writer, so every door refuses it alike. It reads nothing. A host's `cause` is checked
-/// where the write appends, under the writer: that it is at or below the
-/// head, then the ceiling of the trigger whose firing it names
-/// ([`crate::lake::Lake::append_after`]).
-pub fn check_context(lake: &Lake, context: &WriteContext) -> Result<()> {
+/// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`), or
+/// whose `on_behalf_of` is not a principal the write may be made for:
+/// `human`, `agent` or `service` with an id that is neither empty nor
+/// holds a NUL, and not `who` itself, since one fact is recorded one way
+/// (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`).
+/// Every write door calls it first, before any other check and before it
+/// takes the writer, so every door refuses it alike. It reads nothing. A
+/// host's `cause` is checked where the write appends, under the writer:
+/// that it is at or below the head, then the ceiling of the trigger whose
+/// firing it names ([`crate::lake::Lake::append_after`]).
+pub fn check_context(lake: &Lake, context: &WriteContext, who: &Principal) -> Result<()> {
     let max = lake.limits.max_reactive_depth;
     if context.depth > max {
         return Err(Error::refused(None, Refusal::TooDeep { max }));
+    }
+    let Some(value) = &context.on_behalf_of else {
+        return Ok(());
+    };
+    let id = ["human:", "agent:", "service:"]
+        .iter()
+        .find_map(|kind| value.strip_prefix(kind));
+    if id.is_none_or(|id| id.is_empty() || id.contains('\0')) || *value == who.writer() {
+        let case = Case::OnBehalfOfForm {
+            value: value.clone(),
+        };
+        return Err(Error::invalid_at(&"on_behalf_of".into(), case));
     }
     Ok(())
 }
@@ -646,7 +662,7 @@ pub(crate) struct Plan {
 pub(crate) struct Asked<'a> {
     pub lake: &'a Lake,
     pub who: &'a Principal,
-    pub context: WriteContext,
+    pub context: &'a WriteContext,
 }
 
 impl Asked<'_> {
@@ -654,7 +670,7 @@ impl Asked<'_> {
         Draft {
             writer: self.who.writer(),
             origin,
-            context: self.context,
+            context: self.context.clone(),
             ..Draft::system(now, body)
         }
     }
@@ -670,7 +686,7 @@ impl Asked<'_> {
         };
         Draft {
             cause: Some(cause),
-            context: self.context,
+            context: self.context.clone(),
             ..Draft::system(now, body)
         }
     }
@@ -682,7 +698,7 @@ impl Call<'_> {
         Asked {
             lake: self.lake,
             who: self.who,
-            context: self.context,
+            context: &self.context,
         }
     }
 

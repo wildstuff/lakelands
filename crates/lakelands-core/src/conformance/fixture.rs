@@ -958,6 +958,7 @@ pub fn reactive(depth: u32, cause: Option<Position>) -> WriteContext {
         origin: lakelands_api::principal::WriteOrigin::Reactive,
         depth,
         cause,
+        on_behalf_of: None,
     }
 }
 

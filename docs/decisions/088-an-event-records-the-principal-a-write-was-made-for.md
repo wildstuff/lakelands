@@ -129,8 +129,12 @@ The checks, on every engine:
    names `agent:a` for `human:alice`.
 4. `ingest::ON_BEHALF_OF_NOT_IN_ID`: the same record delivered for
    `human:alice` and then for `human:carol` is one event and a duplicate.
-5. `format::ON_BEHALF_OF_FROM_21`: a reader refuses the member on an
-   event of format 20, and a `context` that carries it, naming it.
+5. `export::ON_BEHALF_OF_FROM_21`: a reader refuses the member on an
+   event of format 20, and a `context` that carries it, naming it. (Named
+   `format::` when proposed; corrected at the build, as the suite's
+   readers of an exported log live in `export`.) The format-21 vector
+   carries the member on the write at position 61 and a context holding
+   it among its misplaced lines.
 
 ## Why
 

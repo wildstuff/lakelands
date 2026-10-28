@@ -397,7 +397,7 @@ impl Decide<'_> {
                         let body = self.firing(t, (&r.ty, &r.key), (change, false));
                         let fired = Draft {
                             cause: Some(self.next),
-                            context: self.call.context,
+                            context: self.call.context.clone(),
                             ..Draft::system(now, body)
                         };
                         out.push((fired, None));

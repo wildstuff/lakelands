@@ -623,6 +623,7 @@ What a refusal is about.
 | `weight_range` | `field` (FieldName) | the weight of `{field}` must be above 0 and at most 1000000 | A field's weight out of range. |
 | `call_declined` | `verb` (VerbName), `reason` (Detail, optional) | the host declined the call of `{verb}`[ ({reason})]: it did not run, and a retry under the same idempotency key answers the same | A call a verb's executor declined by the host's policy. |
 | `cause_past_head` | `cause` (Position), `head` (Position, optional) | the cause {cause} is past the lake's head [{head}\|(none)] | A host's cause past the head. |
+| `on_behalf_of_form` | `value` (String) | `on_behalf_of` holds `{value}`, which is not `human:`, `agent:` or `service:` followed by an id that is not empty and holds no NUL character, or which is the writer itself | A host's `on_behalf_of` that is not a principal the store may record a write as made for. |
 | `changed_since_proposed` | `type` (TypeName) | `{type}` changed since this migration was proposed; propose it again | A type declared again since its migration was proposed. |
 | `declared_since_proposed` | `what` (Naming), `name` (String) | the {what} `{name}` was declared since this bundle was proposed; propose it again | A bundle's declaration under a name declared again since it was proposed. |
 | `field_exists` | `type` (TypeName), `field` (FieldName) | `{type}` already has a field `{field}` | A field added that the type has. |
@@ -830,7 +831,7 @@ What a refusal is about.
 | `find_where_text` | — | over REST, `find` takes `where` in its text form only; give the condition as text | A typed condition sent where REST takes text. |
 | `host_header_from_caller` | `header` (String) | `{header}` is sent only over the link between hosts, with a host's key; a principal's key carries no write context and acts as no other principal | A header of the link between hosts sent with a principal's key. |
 | `no_forwarded_principal` | — | a host's key acts for the principal `Lakelands-Principal` names by its id, and the call names none | A host's key with no principal named. |
-| `forwarded_context_form` | — | `Lakelands-Context` is not a write context: give its `origin`, `depth` and `cause` as JSON | A forwarded write context that is not one. |
+| `forwarded_context_form` | — | `Lakelands-Context` is not a write context: give its `origin`, `depth`, `cause` and `on_behalf_of` as JSON | A forwarded write context that is not one. |
 | `idempotency_key_header` | — | the idempotency key holds a character a header cannot carry, such as a line break | An idempotency key a header cannot carry. |
 | `if_match_both` | — | `If-Match` and `If-None-Match` cannot both be given | Both compare-and-set headers. |
 | `if_match_no_version` | `value` (String) | `If-Match: {value}` names no version | An `If-Match` that names no version. |
@@ -1026,6 +1027,8 @@ What is wrong with stored or exported events, a checkpoint, or the files that ho
 | `fence_below` | `fence` (u64), `floor` (u64) | it carries fence {fence}, below the fence {floor} of the event before it: fences never fall | Its fence is below the fence of the event before it. |
 | `format_step` | `v` (u64), `before` (u64) | written in log format {v} after an event in format {before}: a lake's format rises only at a new writer's `lease_taken`, whose next event is the `lake_upgraded` from the one to the other | Its log format differs from the event's before it where no new writer upgraded the lake. |
 | `cause_in_context` | — | `context` carries `cause`, which the envelope carries | `context` carries `cause`, which the envelope carries. |
+| `on_behalf_of_in_context` | — | `context` carries `on_behalf_of`, which the envelope carries | `context` carries `on_behalf_of`, which the envelope carries. |
+| `on_behalf_of_before` | `v` (u32) | an event of format {v} carries `on_behalf_of`, which format 21 added | An event of a format before 21 carries `on_behalf_of`. |
 | `initial_origin` | — | the envelope carries the origin `initial`, a field's alone | The envelope carries the origin `initial`, a field's alone. |
 | `sealed_on` | `kind` (String) | a `{kind}` event carries `sealed`, which only a `record_ingested` or an `output_recorded` carries | An event other than `record_ingested` and `output_recorded` carries `sealed`. |
 | `seals_another` | `sealed` (SourceId) | a `record_ingested` carries `sealed` naming the source `{sealed}`, which is not its own: an ingest is sealed under its own source's key | A `record_ingested` whose `sealed` names another source than its envelope. |

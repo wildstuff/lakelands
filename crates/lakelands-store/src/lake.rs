@@ -1092,7 +1092,7 @@ impl Lake {
     /// Refuse a context deeper than the ceiling of the trigger whose firing
     /// its cause names, or whose firing was dropped there (lakelands#1216);
     /// any other cause binds nothing more.
-    fn check_trigger_ceiling(&self, w: &Writer, context: WriteContext) -> Result<()> {
+    fn check_trigger_ceiling(&self, w: &Writer, context: &WriteContext) -> Result<()> {
         let Some(cause) = context.cause else {
             return Ok(());
         };

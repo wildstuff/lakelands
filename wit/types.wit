@@ -133,6 +133,10 @@ interface types {
         /// The position the write follows from, as the host names it; it
         /// lands in the envelope's `cause` of the write's own events.
         cause: option<position>,
+        /// The principal the write is made for, `<kind>:<id>`; it lands
+        /// in the envelope's `on_behalf_of` of the events written as the
+        /// writer, and is recorded, never trusted.
+        on-behalf-of: option<string>,
     }
 
     // ------------------------------------------------------------------
@@ -632,6 +636,8 @@ interface types {
         seen-at: option<timestamp>,
         position: position,
         writer: string,
+        /// The principal the writer acted for, where its event names one.
+        on-behalf-of: option<string>,
         source: option<source-id>,
         /// For a value a procedure produced: its name (a verb's, a
         /// function's, an embedding's model).

@@ -27,6 +27,7 @@ fn at_depth(depth: u32) -> WriteContext {
             WriteOrigin::Reactive
         },
         depth,
+        on_behalf_of: None,
     }
 }
 
@@ -156,6 +157,7 @@ async fn a_chain_of_reactions_past_the_lakes_ceiling_is_refused_too_deep_and_app
             cause: None,
             origin,
             depth: max + 1,
+            on_behalf_of: None,
         };
         let written = store
             .catalog(context)

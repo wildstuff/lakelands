@@ -195,7 +195,7 @@ fn the_independent_verifier_passes_every_check_of_the_vectors() {
         said.lines().count(),
         "every line is a check that passed:\n{said}"
     );
-    assert_eq!(checks, 738, "the checks verify.py makes:\n{said}");
+    assert_eq!(checks, 743, "the checks verify.py makes:\n{said}");
 }
 
 /// An integer beyond ±(2^53 − 1) is one not every reader reads exactly
@@ -491,13 +491,14 @@ const LAST: u64 = 93;
 
 /// The members `further.json`'s misplaced lines misplace, in the file's
 /// order: every name the test of them has a check for, once.
-const MISPLACED: [&str; 6] = [
+const MISPLACED: [&str; 7] = [
     "upstream_on_another_kind",
     "cause_in_context",
     "output_twice",
     "sealed_on_another_kind",
     "delivery_on_another_kind",
     "sealed_for_another_source",
+    "on_behalf_of_in_context",
 ];
 
 /// Whether the event is what its entry of `further.json` says it shows,
@@ -738,6 +739,7 @@ fn shows(what: &str, event: &Event, line: &str) -> bool {
                 && t.when.as_ref().is_some_and(|w| matches!(w, lakelands_api::expr::Condition::Text(c) if c == "created()"))),
         "slip_write" => {
             matches!(&event.body, B::RecordUpserted { ty, made: true, .. } if ty.as_str() == "slip")
+                && event.on_behalf_of.as_deref() == Some("human:reader")
         }
         "fired_change" => {
             matches!(&event.body, B::TriggerFired { trigger, change: Some(ChangeKind::Upserted), created: Some(true), .. }
@@ -967,6 +969,7 @@ fn every_misplaced_line_is_refused_for_the_member_it_misplaces() {
         match entry.shows.as_str() {
             "upstream_on_another_kind" => assert!(why.contains("`record_retired`"), "{why}"),
             "cause_in_context" => assert!(why.contains("`context` carries `cause`"), "{why}"),
+            "on_behalf_of_in_context" => assert_eq!(flaw, Flaw::OnBehalfOfInContext),
             "output_twice" => assert_eq!(flaw, Flaw::OutputOnce),
             "sealed_on_another_kind" => assert!(why.contains("carries `sealed`"), "{why}"),
             "delivery_on_another_kind" => assert!(why.contains("carries `delivery`"), "{why}"),

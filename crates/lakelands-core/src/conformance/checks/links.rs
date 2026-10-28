@@ -173,7 +173,8 @@ pub(super) async fn lake(store: &dyn LakeStore) -> Result<Lake, Failure> {
     Ok(l)
 }
 
-async fn link(
+/// Links `from` to `to` over `approved_by` as `who`.
+pub(super) async fn link(
     cat: &dyn Catalog,
     who: &Principal,
     from: &str,

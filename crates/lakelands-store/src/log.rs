@@ -158,6 +158,12 @@ pub(crate) fn unsealed(
     d: Draft,
 ) -> Event {
     let id = d.id.unwrap_or_else(|| positional_id(lake, position));
+    let mut context = d.context;
+    // Whom the write is for goes with its writer, in the envelope: an
+    // event the store writes as itself names none, and `context` never
+    // carries it (088).
+    let on_behalf_of =
+        (context.on_behalf_of.take()).filter(|_| d.writer != crate::record::STORE_WRITER);
     Event {
         upstream: d.upstream,
         v: LOG_FORMAT_VERSION,
@@ -167,17 +173,17 @@ pub(crate) fn unsealed(
         prev: prev.clone(),
         known_at: d.known_at,
         writer: d.writer,
+        on_behalf_of,
         origin: d.origin,
         source: d.source,
         seen_at: d.seen_at,
         procedure: d.procedure,
         // The host's cause lands in the envelope of an event the store set
         // no cause for, and never in `context` (021).
-        context: WriteContext {
-            cause: None,
-            ..d.context
-        },
-        cause: d.cause.or(d.context.cause),
+        // The host's cause lands in the envelope of an event the store set
+        // no cause for, and never in `context` (021).
+        cause: d.cause.or(context.cause.take()),
+        context,
         fence,
         idempotency_key: d.idempotency_key,
         delivery: d.delivery,

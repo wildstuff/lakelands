@@ -356,7 +356,7 @@ impl Decide<'_> {
         for (t, body) in fired {
             let draft = Draft {
                 cause: Some(self.next),
-                context: self.call.context,
+                context: self.call.context.clone(),
                 ..Draft::system(self.at.now, body)
             };
             out.push((draft, None));

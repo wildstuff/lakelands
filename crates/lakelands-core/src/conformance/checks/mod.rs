@@ -32,6 +32,7 @@ mod concurrency;
 mod conditional_edges;
 mod conditional_verbs;
 mod constraints;
+mod context;
 mod cursors;
 mod date_bucket;
 mod dates;
@@ -287,6 +288,7 @@ pub const ALL: &[Check] = &[
     ingest::FOREIGN_FIELD_REFUSED,
     ingest::UPSTREAM_PER_FIELD,
     ingest::DELIVERY_NAMED,
+    ingest::ON_BEHALF_OF_NOT_IN_ID,
     ingest::UPSERT_REFUSES_SOURCE_FIELD,
     quarantine::QUARANTINED_GOES_ON,
     quarantine::QUARANTINED_BY_DELIVERY,
@@ -436,6 +438,7 @@ pub const ALL: &[Check] = &[
     proposals::NOT_PROPOSED_IF_IT_COULD_NOT_RUN,
     proposals::ACCEPT_AFTER_REDECLARE,
     proposals::ACCEPT_APPLIES,
+    proposals::ACCEPTED_FOR_THE_PROPOSER,
     proposals::REJECT_AND_DECIDED,
     proposals::WHO_DECIDES,
     proposals::NOT_SHOWN_NOT_DECIDED,
@@ -870,6 +873,7 @@ pub const ALL: &[Check] = &[
     export::IMPORT_UNKNOWN_MEMBER,
     export::IMPORTED_VIEW_CYCLE,
     export::IMPORT_CONTEXT_CAUSE,
+    export::ON_BEHALF_OF_FROM_21,
     export::IMPORT_ID_FORM,
     compact::ANSWERS_AS_BEFORE,
     compact::APPENDS_NOTHING,
@@ -1052,6 +1056,8 @@ pub const ALL: &[Check] = &[
     host_cause::DEPTH_ON_EVERY_DOOR,
     host_cause::CONTEXT_FIRST,
     host_cause::TRIGGER_CEILING_AT_APPEND,
+    context::ON_BEHALF_OF_RECORDED,
+    context::ON_BEHALF_OF_FORM,
     triggers::TRANSITION,
     triggers::RETIREMENT,
     triggers::REVIVAL,

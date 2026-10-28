@@ -22,7 +22,8 @@ consecutive from 0 and naming their files in 20 digits,
 the hash chain from 64 zeros, every checkpoint against the position,
 the hash and the digests of the files before it, over their restored
 events, every line in the one format, `cause`
-never inside `context`, `upstream` only on a `record_ingested` event,
+and `on_behalf_of` never inside `context`, `on_behalf_of` only from
+format 21 on, `upstream` only on a `record_ingested` event,
 `sealed` only on a `record_ingested` or an `output_recorded`, `apart`
 and a selection by `seen_before` or `deliveries` only from format 18 on,
 and every `known_at` in its one form and never before the `known_at`
@@ -622,8 +623,9 @@ SHOWS = {
     "trigger_change_guard": shows("a declared trigger whose guard reads `created()`, strict, naming the kinds of change that fire it")(
         lambda e: declaration(e).get("declare") == "trigger" and declaration(e).get("when") == "created()"
         and declaration(e).get("when_strict") is True and declaration(e).get("on_changes") == ["upserted", "ingested"]),
-    "slip_write": shows("an authored write that makes a slip")(
-        lambda e: e["body"]["kind"] == "record_upserted" and e["body"]["type"] == "slip" and e["body"]["made"] is True),
+    "slip_write": shows("an authored write that makes a slip, for the principal its envelope names beside its writer")(
+        lambda e: e["body"]["kind"] == "record_upserted" and e["body"]["type"] == "slip" and e["body"]["made"] is True
+        and e.get("on_behalf_of") == "human:reader" and "on_behalf_of" not in e["context"]),
     "fired_change": shows("a `trigger_fired` of a trigger whose guard reads `created()`, naming the kind of change at its cause, and that the change made the record")(
         lambda e: e["body"]["kind"] == "trigger_fired" and e["body"].get("change") == "upserted"
         and e["body"].get("created") is True and e["body"]["trigger"] == "slip_made" and e.get("cause") == 61),
@@ -641,6 +643,8 @@ MISPLACED = {
         lambda e: "upstream" in e and e["body"]["kind"] != "record_ingested"),
     "cause_in_context": shows("`cause` inside `context`, which a reader refuses")(
         lambda e: "cause" in e["context"]),
+    "on_behalf_of_in_context": shows("`on_behalf_of` inside `context`, which a reader refuses")(
+        lambda e: "on_behalf_of" in e["context"] and "on_behalf_of" not in e),
     "sealed_on_another_kind": shows("`sealed` on an event that is neither a `record_ingested` nor an `output_recorded`, which a reader refuses")(
         lambda e: "sealed" in e and e["body"]["kind"] not in SEALS),
     "delivery_on_another_kind": shows("`delivery` on an event that is not a `record_ingested`, which a reader refuses")(
@@ -706,6 +710,10 @@ def verify_dir(root):
             fence = f
             need("cause" not in event.get("context", {}),
                  "`context` carries `cause`, which the envelope carries")
+            need("on_behalf_of" not in event.get("context", {}),
+                 "`context` carries `on_behalf_of`, which the envelope carries")
+            need("on_behalf_of" not in event or v >= 21,
+                 f"an event of format {v} carries `on_behalf_of`, which format 21 added")
             need("upstream" not in event or event["body"].get("kind") == "record_ingested",
                  f"a `{event['body'].get('kind')}` event carries `upstream`, which only a `record_ingested` event carries")
             need("sealed" not in event or event["body"].get("kind") in SEALS,

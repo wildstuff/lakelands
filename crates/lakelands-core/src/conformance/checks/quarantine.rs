@@ -659,7 +659,7 @@ async fn each_refusal_of_a_rule_of_the_record_is_quarantined_as_it_is_refused(
 
 check!(
     QUARANTINED_ENDS = a_refusal_of_the_call_or_its_source_ends_the_stream_as_without_the_option,
-    "085: a context too deep, a `commit_window` out of range, a record's source id ill formed, a source forgotten, a `sys.setting` key its writer is not told, a `seen_at` outside the years 0000 to 9999, an upstream position or a cell beyond 2^53 - 1, a key store not bound, a key missing and an outage each end the stream as without the option, quarantining nothing; a refused record with an erasable cell and no key store ends it as `unbound`",
+    "085: a context too deep, a `commit_window` out of range, a record's source id ill formed, a record's delivery ill formed (`delivery_id_form`), a source forgotten, a `sys.setting` key its writer is not told, a `seen_at` outside the years 0000 to 9999, an upstream position or a cell beyond 2^53 - 1, a key store not bound, a key missing and an outage each end the stream as without the option, quarantining nothing; a refused record with an erasable cell and no key store ends it as `unbound`",
     given
 );
 
@@ -734,7 +734,7 @@ async fn a_refusal_of_the_call_or_its_source_ends_the_stream_as_without_the_opti
         &str,
         IngestOpts,
         SourceRecord,
-    ); 8] = [
+    ); 9] = [
         (
             "a context too deep",
             deep.as_ref(),
@@ -763,6 +763,17 @@ async fn a_refusal_of_the_call_or_its_source_ends_the_stream_as_without_the_opti
             SourceRecord {
                 source: Some("".into()),
                 ..refused("f1")
+            },
+        ),
+        (
+            "a record's delivery ill formed",
+            l.cat.as_ref(),
+            &l.own,
+            "erp",
+            n("named"),
+            SourceRecord {
+                delivery: Some("d7".into()),
+                ..refused("n1")
             },
         ),
         (

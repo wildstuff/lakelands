@@ -198,6 +198,7 @@ pub fn run(lake: &Turn<'_>, today: Timestamp) -> Result<AgeReport> {
             cause: None,
             origin: WriteOrigin::Scheduled,
             depth: 0,
+            on_behalf_of: None,
         },
         followed: None,
         shown: None,

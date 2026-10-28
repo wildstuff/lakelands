@@ -48,7 +48,14 @@ pub fn order(lake: &str) -> Vec<Asked> {
 /// `jobs`, queued in this order, which the queue takes them in.
 pub(crate) fn taken(jobs: &[Job]) {
     if RECORDED.load(Ordering::SeqCst) {
-        let asked = |j: &Job| (j.context, j.who.clone(), j.write.clone(), j.opts.clone());
+        let asked = |j: &Job| {
+            (
+                j.context.clone(),
+                j.who.clone(),
+                j.write.clone(),
+                j.opts.clone(),
+            )
+        };
         lakelands_core::lock(&ORDER).extend(jobs.iter().map(asked));
     }
 }

@@ -96,7 +96,7 @@ impl Lake {
         // It is read here, under the writer, so the firing the cause names
         // is the one this append follows, never one appended meanwhile.
         if let Some(d) = drafts.iter().find(|d| d.context.cause.is_some()) {
-            self.check_trigger_ceiling(w, d.context)?;
+            self.check_trigger_ceiling(w, &d.context)?;
         }
         let mut events = Vec::with_capacity(drafts.len());
         let mut stored: Vec<CanonicalEvent> = Vec::with_capacity(drafts.len());

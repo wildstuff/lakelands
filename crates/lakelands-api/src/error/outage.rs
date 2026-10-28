@@ -690,6 +690,10 @@ catalog! {
         FormatStep { v: u64, before: u64 } => "written in log format {v} after an event in format {before}: a lake's format rises only at a new writer's `lease_taken`, whose next event is the `lake_upgraded` from the one to the other",
         /// `context` carries `cause`, which the envelope carries.
         CauseInContext => "`context` carries `cause`, which the envelope carries",
+        /// `context` carries `on_behalf_of`, which the envelope carries.
+        OnBehalfOfInContext => "`context` carries `on_behalf_of`, which the envelope carries",
+        /// An event of a format before 21 carries `on_behalf_of`.
+        OnBehalfOfBefore { v: u32 } => "an event of format {v} carries `on_behalf_of`, which format 21 added",
         /// The envelope carries the origin `initial`, a field's alone.
         InitialOrigin => "the envelope carries the origin `initial`, a field's alone",
         /// An event other than `record_ingested` and `output_recorded` carries `sealed`.

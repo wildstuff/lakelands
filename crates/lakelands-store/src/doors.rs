@@ -381,7 +381,7 @@ impl Doors {
         F: FnOnce(&Call<'_>) -> Result<T> + Send + 'static,
     {
         same_lake(&self.lake, who)?;
-        let (who, context) = (who.clone(), self.context);
+        let (who, context) = (who.clone(), self.context.clone());
         exec::write(&self.lake, move |lake| {
             let (who, followed, shown) = seen(lake, who)?;
             f(&Call {
@@ -438,7 +438,7 @@ impl Doors {
         write: writes::Write,
         opts: WriteOpts,
     ) -> Result<Outcome> {
-        let asked = (self.context, who.clone(), write, opts);
+        let asked = (self.context.clone(), who.clone(), write, opts);
         let mut answers = self.records(vec![asked]).await;
         answers.remove(0)
     }
@@ -1031,7 +1031,7 @@ impl Catalog for Doors {
         same_lake(&self.lake, who)?;
         // The context first, as on every write door, and before the stream
         // is taken.
-        writes::check_context(&self.lake, &self.context)?;
+        writes::check_context(&self.lake, &self.context, who)?;
         writes::granted(who.grants.ingest)?;
         writes::check_source(source)?;
         if let Some(d) = &opts.delivery {
@@ -1045,7 +1045,7 @@ impl Catalog for Doors {
         Ok(ingest::run(
             self.lake.clone(),
             who.clone(),
-            self.context,
+            self.context.clone(),
             source.clone(),
             opts,
             records,
@@ -1207,7 +1207,7 @@ impl LakeStore for Store {
             let asked = writes::Asked {
                 lake: &lake,
                 who: &who,
-                context,
+                context: &context,
             };
             asked.upsert_preflight(&ty, &key, &patch, expected)
         })

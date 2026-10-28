@@ -8,7 +8,7 @@
 //! only source fields, an author only authored ones, and a record or
 //! patch that crosses the line is refused whole.
 
-use crate::conformance::fixture::{committed, delivered, get_at, read, source_record};
+use crate::conformance::fixture::{committed, delivered, get_at, ingest, read, source_record};
 use crate::conformance::prelude::*;
 
 check!(
@@ -46,6 +46,11 @@ check!(
 check!(
     DELIVERY_NAMED = an_ingests_delivery_is_the_callers_or_the_stores_own,
     "log-format §1.1 and §3: every `record_ingested` of a call carries its delivery, the caller's id or else the store's own `d` and the position of the call's first event, and each window answers it; the id is not in the event's id, so the same values delivered again under another id append nothing; a call of several windows carries one id, and a window before its first event names none; an empty id, one holding a NUL, or one of the store's own form, is refused and appends nothing"
+);
+
+check!(
+    ON_BEHALF_OF_NOT_IN_ID = whom_a_delivery_is_for_is_not_in_its_events_id,
+    "088 (lakelands#1489) and log-format §3: whom a write is for is not in a `record_ingested`'s id, so the same record delivered for `human:alice` and then for `human:carol` appends one event and answers the second as a duplicate"
 );
 
 check!(
@@ -1083,5 +1088,29 @@ async fn an_ingested_reference_holding_nul_is_refused_on_its_field(store: Store)
             "a reference holding NUL is refused on `r` as a text holding NUL; it answered {err:?}"
         );
     }
+    Ok(())
+}
+
+async fn whom_a_delivery_is_for_is_not_in_its_events_id(store: Store) -> Held {
+    let l = Lake::of(store.as_ref());
+    l.declare(feed()).await?;
+    let before = store.head().await.must("reading the head")?;
+    let mut answered = Vec::new();
+    for whom in ["human:alice", "human:carol"] {
+        let cat = store.catalog(super::context::made_for(whom));
+        let fed = vec![source_record("feed", "r1", json!({"body": "a"}))];
+        let windows = ingest(cat.as_ref(), &l.own, "sensor", fed).await;
+        answered.push(committed(&windows.must("ingesting `r1`")?));
+    }
+    let events = events_after(store.as_ref(), before).await?;
+    let ingested: Vec<_> = (events.iter())
+        .filter(|e| matches!(e.body, EventBody::RecordIngested { .. }))
+        .map(|e| e.on_behalf_of.as_deref())
+        .collect();
+    ensure!(
+        answered == [(1, 0), (0, 1)] && ingested == [Some("human:alice")],
+        "`r1` delivered for alice and then for carol appends one `record_ingested`, for \
+         alice, and answers the second as a duplicate: windows {answered:?}, events {ingested:?}"
+    );
     Ok(())
 }

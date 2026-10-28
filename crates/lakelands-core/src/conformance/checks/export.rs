@@ -145,6 +145,12 @@ check!(
 );
 
 check!(
+    ON_BEHALF_OF_FROM_21 = an_on_behalf_of_out_of_its_place_is_refused_naming_it,
+    "088 (lakelands#1489) and log-format §1.1: `on_behalf_of` sits in the envelope from format 21, never inside `context`; an export whose line carries it in `context`, or whose last line is of format 20 and carries it, its hash made right, is refused by its verification and its import at that position, naming the member",
+    given
+);
+
+check!(
     IMPORT_ID_FORM = an_import_refuses_an_id_not_of_its_form_naming_its_position,
     "086 and log-format §3: an export whose line carries an `id` that is not 32 lower-case hex digits, its hash made right, is refused on import naming the flaw and the line's position, on every engine, as PostgreSQL keeps an id as its bytes",
     given
@@ -1289,6 +1295,56 @@ async fn an_import_refuses_a_context_carrying_cause_naming_it(
             damaged(&why) == Some(&flaw),
             "an export whose line {said} must be refused naming it; it was refused with: {why:?}"
         );
+    }
+    Ok(())
+}
+
+async fn an_on_behalf_of_out_of_its_place_is_refused_naming_it(
+    store: Store,
+    given: crate::conformance::Given,
+) -> Held {
+    let scratch = Scratch::new(given.scratch.clone());
+    invoices(store.as_ref(), 0, 1).await?;
+    let head = store.head().await.must("reading the head")?;
+    let from = scratch.dir("from");
+    write(store.as_ref(), &from).await?;
+    let names = files(&from)?;
+    let active = names[names.len() - 1].clone();
+    let cases = [
+        (
+            "carries `on_behalf_of` in its `context`",
+            Flaw::OnBehalfOfInContext,
+        ),
+        (
+            "is of format 20 and carries `on_behalf_of`",
+            Flaw::OnBehalfOfBefore { v: 20 },
+        ),
+    ];
+    for (n, (said, flaw)) in cases.into_iter().enumerate() {
+        let dir = scratch.dir(&format!("misplaced-{n}"));
+        copied(&from, &dir)?;
+        let mut lines = lines_of(&dir, &active)?;
+        let last = lines.len() - 1;
+        lines[last] = rehashed(&lines[last], |e| match n {
+            0 => e["context"]["on_behalf_of"] = json!("human:alice"),
+            _ => {
+                e["v"] = json!(20);
+                e["on_behalf_of"] = json!("human:alice");
+            }
+        })?;
+        rewrite(&dir, &active, &lines)?;
+        let verified = export::verify(&dir);
+        let imported = (given.import)(dir, store.lake().clone(), None, import_seams()).await;
+        let imported = refused(imported, &format!("an export whose last line {said}"))?;
+        for (door, e) in [("verify", verified.err()), ("an import", Some(imported))] {
+            ensure!(
+                e.as_ref().and_then(damaged) == Some(&flaw)
+                    && matches!(e.as_ref().and_then(Error::situation),
+                        Some(Situation::Damaged { position: Some(p), .. }) if *p == head),
+                "{door} of an export whose last line {said} is refused at {head} as {flaw:?}; \
+                 it answered {e:?}"
+            );
+        }
     }
     Ok(())
 }

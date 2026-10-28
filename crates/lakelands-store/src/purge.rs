@@ -365,7 +365,7 @@ fn retirements(
     let asked = writes::Asked {
         lake,
         who: &system,
-        context: WriteContext::default(),
+        context: &WriteContext::default(),
     };
     let mut d = asked.decide(w, view, now, 0);
     d.bound = bound;

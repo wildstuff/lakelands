@@ -54,6 +54,7 @@ fn stamp(_: &FieldName) -> lakelands_api::FieldMeta {
         procedure_version: None,
         error: None,
         erased: false,
+        on_behalf_of: None,
     }
 }
 

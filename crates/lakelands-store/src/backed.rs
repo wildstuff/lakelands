@@ -801,7 +801,7 @@ pub fn settle_fields(
                 call,
                 retry,
                 cause: event.position,
-                context: event.context,
+                context: event.context.clone(),
             });
         }
     }
@@ -940,7 +940,7 @@ pub enum Of {
 impl Owed {
     /// What the event `e` leaves owed of the type `ty`.
     pub fn new(e: &Event, ty: TypeName, of: Of) -> Owed {
-        let (cause, context) = (e.cause.unwrap_or(e.position), e.context);
+        let (cause, context) = (e.cause.unwrap_or(e.position), e.context.clone());
         let by = By {
             at: e.position,
             writer: e.writer.clone(),
@@ -1128,7 +1128,7 @@ pub fn page(
         }
     };
     let draft = Draft {
-        context: o.context,
+        context: o.context.clone(),
         ..Draft::system(Timestamp(0), EventBody::LakeCreated { format: 0 })
     };
     let event = crate::writes::provisional(lake, o.cause, &draft);
@@ -1185,7 +1185,7 @@ pub fn page(
                     ty: d.ty.clone(),
                     key: d.key.clone(),
                     source: o.by.source.clone(),
-                    context: o.context,
+                    context: o.context.clone(),
                     accepted,
                 });
             }
@@ -1896,7 +1896,7 @@ fn proposed(lake: &Turn<'_>, took: Vec<(Owed, Vec<Proposing>)>) -> Result<()> {
             drafts.push(Draft {
                 writer: o.by.writer.clone(),
                 origin: lakelands_api::record::Origin::Authored,
-                context: o.context,
+                context: o.context.clone(),
                 cause: Some(o.by.at),
                 ..Draft::system(
                     now,
@@ -2008,7 +2008,7 @@ fn record(lake: &Turn<'_>, d: Due, output: Value, known: bool) -> Result<Option<
     let draft = Draft {
         cause: Some(d.cause),
         procedure: Some(d.procedure.clone()),
-        context,
+        context: context.clone(),
         sealed,
         ..Draft::system(
             now,
@@ -2056,7 +2056,7 @@ fn record(lake: &Turn<'_>, d: Due, output: Value, known: bool) -> Result<Option<
             let call = crate::writes::Call {
                 lake,
                 who: &host,
-                context,
+                context: context.clone(),
                 followed: None,
                 shown: None,
             };

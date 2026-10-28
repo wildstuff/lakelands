@@ -196,6 +196,9 @@ const BOXED_FROM: u32 = 20;
 /// The log format that first holds a quarantined record (085).
 const QUARANTINED_FROM: u32 = 21;
 
+/// The log format that first holds `on_behalf_of` (088).
+const ON_BEHALF_OF_FROM: u32 = 21;
+
 /// An event as log format `v` wrote it, its members as the format this
 /// release writes says them, for the release's own structs to read. Its
 /// `v` stays the one it was written in, and its bytes and hash are the
@@ -344,6 +347,8 @@ fn padded(b: &str) -> bool {
 /// Why an event carries a member where it never sits, if it does:
 /// `cause` inside `context`, since a host's cause is the envelope's
 /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`); and
+/// `on_behalf_of` inside `context`, or on an event of a format before 21
+/// (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`); and
 /// `upstream` on any kind but `record_ingested`, since only a source's
 /// record is read from another lake (`docs/log-format.md` §1.1); and the
 /// origin `initial`, a field's provenance alone, never an event's
@@ -369,6 +374,13 @@ fn padded(b: &str) -> bool {
 pub fn misplaced(event: &Event) -> Option<Flaw> {
     if event.context.cause.is_some() {
         return Some(Flaw::CauseInContext);
+    }
+    if event.context.on_behalf_of.is_some() {
+        return Some(Flaw::OnBehalfOfInContext);
+    }
+    if event.on_behalf_of.is_some() && event.v < ON_BEHALF_OF_FROM {
+        let v = event.v;
+        return Some(Flaw::OnBehalfOfBefore { v });
     }
     if let EventBody::OutputRecorded {
         output, output_at, ..

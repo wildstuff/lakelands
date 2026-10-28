@@ -14,6 +14,12 @@ Every field of every record carries its own provenance:
   source;
 - `position`: the exact log coordinate of that event;
 - `writer`: the principal that wrote it;
+- `on_behalf_of`: the principal the writer acted for, where the host's
+  context named one
+  (`docs/decisions/088-an-event-records-the-principal-a-write-was-made-for.md`).
+  The fold writes it from the event whenever it writes `writer`; a
+  field the store fills by its own hand (`initial`, the writer that made
+  its record, a migration's fill) names none;
 - `source`: where it came from;
 - `procedure` and `procedure_version`: for a value a procedure
   produced, which procedure produced it and which version of it. The
@@ -159,3 +165,5 @@ the fold is pure, so the metadata is as reproducible as the value.
   (lakelands#852).
 - A field the store fills with its record's maker names that writer in
   its provenance (lakelands#1488).
+- A field names the principal its writer acted for, `on_behalf_of`,
+  beside `writer`, from the event that wrote it (088, lakelands#1489).

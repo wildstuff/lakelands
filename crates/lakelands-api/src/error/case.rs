@@ -1556,6 +1556,9 @@ catalog! {
         } => "the host declined the call of `{verb}`[ ({reason})]: it did not run, and a retry under the same idempotency key answers the same",
         /// A host's cause past the head.
         CausePastHead { cause: Position, head: Option<Position> } => "the cause {cause} is past the lake's head [{head}|(none)]",
+        /// A host's `on_behalf_of` that is not a principal the store may
+        /// record a write as made for.
+        OnBehalfOfForm { value: String } => "`on_behalf_of` holds `{value}`, which is not `human:`, `agent:` or `service:` followed by an id that is not empty and holds no NUL character, or which is the writer itself",
         /// A type declared again since its migration was proposed.
         ChangedSinceProposed { #[serde(rename = "type")] ty: TypeName } => "`{ty}` changed since this migration was proposed; propose it again",
         /// A bundle's declaration under a name declared again since it was proposed.
@@ -2025,7 +2028,7 @@ catalog! {
         /// A host's key with no principal named.
         NoForwardedPrincipal => "a host's key acts for the principal `Lakelands-Principal` names by its id, and the call names none",
         /// A forwarded write context that is not one.
-        ForwardedContextForm => "`Lakelands-Context` is not a write context: give its `origin`, `depth` and `cause` as JSON",
+        ForwardedContextForm => "`Lakelands-Context` is not a write context: give its `origin`, `depth`, `cause` and `on_behalf_of` as JSON",
         /// An idempotency key a header cannot carry.
         IdempotencyKeyHeader => "the idempotency key holds a character a header cannot carry, such as a line break",
         /// Both compare-and-set headers.
