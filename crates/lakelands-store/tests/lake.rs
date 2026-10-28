@@ -2315,7 +2315,7 @@ async fn a_declaration_names_every_tool_name_problem_at_once() {
     let Some(Case::ToolNames { problems }) = invalid_case(&r) else {
         panic!("{r:?}")
     };
-    let long = |p: &&NameProblem| matches!(p, NameProblem::TooLong { .. });
+    let long = |p: &&NameProblem| matches!(p, NameProblem::TooLong { from: Some(_), .. });
     assert!(
         problems.iter().filter(long).count() > 1,
         "every too-long tool name is named: {problems:?}"

@@ -261,8 +261,9 @@ fn decimal_of_number(n: &serde_json::Number) -> Option<Decimal> {
     // A float enters by its shortest decimal form, never by its binary
     // expansion: 0.1 is 0.1.
     let shortest = crate::canonical::number(n.as_f64()?);
+    // `1e+21`: a decimal reads no sign on the exponent.
     Decimal::from_str(&shortest)
-        .or_else(|_| Decimal::from_scientific(&shortest))
+        .or_else(|_| Decimal::from_scientific(&shortest.replace("e+", "e")))
         .ok()
 }
 

@@ -390,6 +390,7 @@ impl Turn<'_> {
                 again.insert(t.name.clone());
             }
         }
+        let vocabulary: BTreeSet<_> = held.iter().map(|t| t.name.clone()).collect();
         types.extend(held);
         // The store's own types are declared again where the lake holds
         // an older form, one without a field they have since gained: a
@@ -415,6 +416,16 @@ impl Turn<'_> {
         // appended. A type the lake holds came through a door.
         let mut with = w.ontology.clone();
         for d in types.iter().cloned().map(Declaration::Type) {
+            // A host's type not held yet passes a declaration's checks,
+            // beside the types before it; one held is not judged again.
+            if let Declaration::Type(t) = &d
+                && vocabulary.contains(&t.name)
+                && !w.ontology.types.contains_key(&t.name)
+            {
+                let name = t.name.clone();
+                crate::declare::check_declaration(&with, &d, true)
+                    .map_err(|e| e.within(lakelands_api::error::Place::Type { name }))?;
+            }
             crate::declare::tool_names(&with, &d)?;
             crate::writes::put_as_appended(&mut with, &d, Some);
         }
