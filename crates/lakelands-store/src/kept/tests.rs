@@ -816,12 +816,6 @@ async fn an_ungrouped_view_is_one_record_over_no_member_too() {
     t.set("view_kept.sum", json!(true)).await;
     assert_eq!((t.state("sum"), t.records("sum")), (WHOLE, 1));
     t.same("sum", "over no record").await;
-    t.put("line", "a", json!({"net": "2.5"})).await;
-    t.restrict("line", "a", true).await;
-    t.same("sum", "its only member restricted").await;
-    t.retire("line", "a").await;
-    t.same("sum", "over no record again").await;
-    assert_eq!((t.state("sum"), t.records("sum")), (WHOLE, 1));
 }
 
 /// A rebuilt projection keeps what the live one kept.

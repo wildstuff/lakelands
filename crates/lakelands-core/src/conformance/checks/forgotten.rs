@@ -1194,7 +1194,6 @@ async fn the_expected_time_follows_the_lakes_last_rebuild(
         "a handle opened after a rebuild and a reclaim of {took} ms expects them as the handle \
          that ran them does, with its walk of {walked} ms; it expects {ms} ms"
     );
-    // A rebuild keeps the reclaim's time: a handle opened after it counts it.
     store.rebuild().await.must("rebuilding")?;
     let store = fault(store).await.map_err(opened)?;
     let pre = store.forget_preflight(&crm).await.must("the preflight")?;
