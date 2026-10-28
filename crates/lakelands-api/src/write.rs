@@ -1750,7 +1750,8 @@ pub struct Committed {
     /// How many records were already in the log and appended nothing.
     pub duplicates: u32,
     /// The call's delivery: the caller's, or the store's once a window
-    /// appended; none before. A delivery a record names is not listed:
+    /// appended; none before. The store's names no event where every
+    /// record named its own. A delivery a record names is not listed:
     /// the window's records are the next `records + duplicates +
     /// quarantined.len()` of the stream.
     #[serde(default, skip_serializing_if = "Option::is_none")]

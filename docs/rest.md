@@ -288,7 +288,8 @@ does not is the path's. One call so carries the batches of many sources,
 each record's event stamped with its own. The answer is NDJSON too: one line per commit
 window as it becomes durable,
 `{"position":…,"records":…,"duplicates":…,"delivery":…}`. `?delivery=`
-names the call's delivery, which every record's event carries; without
+names the call's delivery, which the event of every record that names
+none carries; without
 it the store names its own, `d` and the position of the call's first
 event, and a window before any event of the call names none
 (`docs/log-format.md` §1.1). A line may name its own `"delivery"`,

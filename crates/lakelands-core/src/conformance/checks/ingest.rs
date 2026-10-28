@@ -55,7 +55,7 @@ check!(
 
 check!(
     A_DELIVERY_PER_RECORD = one_ingest_carries_a_delivery_per_record,
-    "016 and 065, extended (lakelands#1528): one call in `page` carries `k1` naming no delivery, `k2` naming `item-2` and `k3` and `k4` naming `item-3`: their events name `page`, `item-2`, `item-3` and `item-3`, alike at a `commit_window` of 1 and of 256; taking back `item-3` selects `k3` and `k4` alone, `[item-2, item-3]` three, and the act on `item-3` leaves `k1` and `k2` and retires `k3` and `k4`; the same record under `item-5` and then `item-6` in one call is one event in `item-5` and a duplicate; a record naming `d7` or the empty id is refused `delivery_id_form` with its `index` and `from`, nothing of its window appended"
+    "016 and 065, extended (lakelands#1528): one call in `page` carries `k0` naming `page`, `k1` naming no delivery, `k2` naming `item-2` and `k3` and `k4` naming `item-3`: their events name `page`, `page`, `item-2`, `item-3` and `item-3`, alike at a `commit_window` of 1 and of 256; taking back `item-3` selects `k3` and `k4` alone, `[item-2, item-3]` three, `page` two, and the act on `item-3` leaves `k1` and `k2` and retires `k3` and `k4`; the same record under `item-5` and then `item-6` in one call is one event in `item-5` and a duplicate; a record naming `d7` or the empty id is refused `delivery_id_form` with its `index` and `from`, nothing of its window appended"
 );
 
 async fn one_ingest_carries_a_delivery_per_record(store: Store) -> Held {
@@ -74,6 +74,7 @@ async fn one_ingest_carries_a_delivery_per_record(store: Store) -> Held {
         ..IngestOpts::default()
     };
     let named = [
+        ("k0", Some("page")),
         ("k1", None),
         ("k2", Some("item-2")),
         ("k3", Some("item-3")),
@@ -86,7 +87,7 @@ async fn one_ingest_carries_a_delivery_per_record(store: Store) -> Held {
         let batch = named.iter().map(|(k, d)| r(&key(k), *d)).collect();
         let source = SourceId::from(source);
         let said = ingest_all_with(l.cat.as_ref(), &l.own, &source, page(window), batch);
-        let what = format!("ingesting four records in three deliveries at a window of {window}");
+        let what = format!("ingesting five records in three deliveries at a window of {window}");
         said.await.must(&what)?;
         let events = events_from(store.as_ref(), before.next()).await?;
         let got: Vec<_> = (events.into_iter())
@@ -107,7 +108,7 @@ async fn one_ingest_carries_a_delivery_per_record(store: Store) -> Held {
             Selection::Deliveries(vec!["item-2".into(), "item-3".into()]),
             3,
         ),
-        (Selection::Delivery("page".into()), 1),
+        (Selection::Delivery("page".into()), 2),
     ] {
         let report = store.remove_values_preflight(&all, &selection).await;
         let report = report.must("the preflight")?;

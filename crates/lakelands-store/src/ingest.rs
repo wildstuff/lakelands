@@ -854,7 +854,7 @@ fn ask_apart(
     source: &SourceId,
     records: &[SourceRecord],
 ) {
-    let mut pairs: Vec<Pair> = Vec::new();
+    let mut pairs = BTreeSet::new();
     for r in records {
         let pair = pair_of(r, source);
         let seals =
@@ -866,7 +866,7 @@ fn ask_apart(
                 && (r.delivery.as_ref()).is_none_or(|d| crate::writes::check_delivery(d).is_ok())
                 && !forgotten.contains_key(&pair.0);
         if seals && !pairs.contains(&pair) && kept((lake, w), apart, &pair).is_none() {
-            pairs.push(pair);
+            pairs.insert(pair);
         }
     }
     if pairs.is_empty() {
