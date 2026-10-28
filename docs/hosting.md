@@ -332,7 +332,7 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
     source's records, a migration that re-keyed or renamed them, an act
     of removal in the log, an event of the source's that is not about
     one record, or the host's own `limits.forget_rebuild`. `scoped_ms`
-    and `rebuild_ms` are each way's estimate, and `expected_ms` is the
+    and `rebuild_ms` are each way's estimate, `reclaim_untimed` is true where the lake has timed no reclaim yet and the estimate leaves it out, and `expected_ms` is the
     chosen one's; the refold is taken where it is expected to be no
     slower. Both ways leave the projection alike, which the conformance
     suite holds read for read, so `limits.forget_rebuild` is for a host

@@ -1002,6 +1002,10 @@ pub async fn forget(
     if !report.report_id.is_empty() {
         let (head, id) = (report.position, &report.report_id);
         let seconds = report.expected_ms.div_ceil(1000);
+        let untimed = match report.reclaim_untimed {
+            true => lakelands_api::write::UNTIMED,
+            false => "",
+        };
         if let Some(why) = &report.reclaim_owed {
             put(out, format!("{source}: {}", owed(why)))?;
         }
@@ -1009,7 +1013,7 @@ pub async fn forget(
             out,
             format!(
                 "{source}: preflight at position {head}; the act holds the writer about {seconds} s \
-                 ({} events); forget with --report {id}",
+                 ({} events){untimed}; forget with --report {id}",
                 report.events
             ),
         );
@@ -1066,6 +1070,10 @@ pub async fn values_remove(
     if !report.report_id.is_empty() {
         let (head, id) = (report.position, &report.report_id);
         let seconds = report.expected_ms.div_ceil(1000);
+        let untimed = match report.reclaim_untimed {
+            true => lakelands_api::write::UNTIMED,
+            false => "",
+        };
         if let Some(why) = &report.reclaim_owed {
             put(out, format!("{source}: {}", owed(why)))?;
         }
@@ -1073,7 +1081,7 @@ pub async fn values_remove(
             out,
             format!(
                 "{source}: preflight at position {head}; the act holds the writer about {seconds} s \
-                 ({} events); remove with --report {id}",
+                 ({} events){untimed}; remove with --report {id}",
                 report.log_events
             ),
         );
